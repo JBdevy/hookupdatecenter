@@ -1220,6 +1220,7 @@ final class SetlistKeyView: NSView {
     var delete: (() -> Void)?
     private static weak var deleteOwner: SetlistKeyView?
     static func handleDelete(_ event: NSEvent) -> Bool {
+        guard !RegionShortcutView.envelopeOwnsEditingKey(event) else { return false }
         if RegionShortcutView.handleSelectedObjectsDelete(event) { return true }
         guard [51,117].contains(event.keyCode), event.modifierFlags.intersection([.command,.control,.option,.shift]).isEmpty,
               let owner = deleteOwner, event.window === owner.window, owner.acceptsNavigation,
@@ -1264,6 +1265,9 @@ final class SetlistKeyView: NSView {
         focusObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,object: window,queue: .main) { [weak self] _ in self?.stopRepeating(commit: false) }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown,.keyUp,.flagsChanged,.leftMouseDown,.rightMouseDown]) { [weak self] event in
             guard let self else { return event }
+            if RegionShortcutView.envelopeOwnsEditingKey(event) {
+                self.stopRepeating(commit: false); return event
+            }
             if event.type == .leftMouseDown || event.type == .rightMouseDown {
                 self.notePointerEvent(event)
                 self.stopRepeating(commit: false); return event

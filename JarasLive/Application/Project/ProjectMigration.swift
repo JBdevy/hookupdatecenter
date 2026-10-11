@@ -13,6 +13,20 @@ public enum ProjectMigration {
         public let source: URL?
     }
     private static func invalid(_ detail: String) -> ProjectError { .invalid(detail) }
+    /// Every import gets a new directory, including repeated imports of the
+    /// same source. Existing REAPER/Logic documents and CatLive sessions stay intact.
+    public static func isolatedDestination(for selection: URL) -> URL {
+        let document = selection.pathExtension.lowercased() == "jl" ? selection : selection.appendingPathExtension("jl")
+        let parent = document.deletingLastPathComponent()
+        let name = document.deletingPathExtension().lastPathComponent
+        var folder = parent.appendingPathComponent(name, isDirectory: true)
+        var index = 1
+        while FileManager.default.fileExists(atPath: folder.path) {
+            folder = parent.appendingPathComponent(name + String(format: "-%03d", index), isDirectory: true)
+            index += 1
+        }
+        return folder.appendingPathComponent(document.lastPathComponent)
+    }
     /// Creates a separate CatLive document. An absent source is intentional, not a
     /// copy failure: its clip and path are saved and recovered by the normal UI.
     public static func save(_ result: Result, to destination: URL) throws {
@@ -26,6 +40,7 @@ public enum ProjectMigration {
         let fm = FileManager.default
         var copied: [URL] = []
         do {
+            try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             for media in result.media {
                 try Task.checkCancellation()
                 guard let source = media.source else { continue }

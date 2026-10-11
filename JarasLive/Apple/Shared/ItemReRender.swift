@@ -13,11 +13,13 @@ enum ItemReRender {
             source.tracks[index].role = .other
             source.tracks[index].clips = [clip]
         }
-        var time = source.projectTime; time.timebase = .free; source.timeSettings = time
-        source.markers?.removeAll { $0.isTempo }
+        // Print the same owned tempo sections heard in playback. The result
+        // below records that timing is baked, so these markers cannot stretch
+        // the newly written source a second time.
         for index in source.parts.indices { source.parts[index].pitchSemitones = 0 }
         for index in source.tracks.indices {
             source.tracks[index].fx = nil; source.tracks[index].volume = 1; source.tracks[index].pan = 0
+            source.tracks[index].automation = nil
             source.tracks[index].mute = false; source.tracks[index].solo = false
             for item in source.tracks[index].clips.indices { source.tracks[index].clips[item].muted = false }
         }
@@ -41,8 +43,14 @@ enum ItemReRender {
             result.audioFile = AudioFile(path: "Stems/" + name)
             result.fadeIn = nil; result.fadeOut = nil; result.fadeTimelineStart = nil; result.fadeTimelineDuration = nil
             result.pitchSemitones = nil
+            result.fx = nil; result.fxBypassed = nil
+            result.automation = nil; result.automationSourceOffset = nil
+            result.fadeIn = nil; result.fadeOut = nil
             result.sourceOffset = 0; result.playbackRate = 1; result.gain = 1; result.normalizationGain = nil; result.channelMode = nil; result.phaseInverted = nil; result.pan = nil
+            result.tempoBasePlaybackRate = nil
+            result.renderedTempo = true
             result.loopStart = nil; result.loopLength = nil; result.fx = nil; result.fxBypassed = nil
+            result.automation = nil; result.automationSourceOffset = nil
             result.waveform = overview.waveform; result.waveformChannels = overview.channels
             return result
         } catch { try? FileManager.default.removeItem(at: url); throw error }
@@ -99,13 +107,11 @@ enum ItemReRender {
         let printTrackFX = containsMIDI || (frozenCount > 0 && frozenCount < ordered.count)
         renderedTrack.clips = ordered
         if allMuted { for index in renderedTrack.clips.indices { renderedTrack.clips[index].muted = false } }
-        if containsMIDI {
-            let midi = renderedTrack.clips.filter { $0.midi != nil }
-            let combined = try ItemGlue.midi(song: song, track: track, clips: midi)
-            renderedTrack.clips.removeAll { $0.midi != nil }
-            renderedTrack.clips.append(combined)
-        }
+        // Offline MIDI sequencing already combines the track's ordinary notes.
+        // Keep the original clips so take instruments retain separate states,
+        // envelopes and source clocks until their audio is printed.
         if !printTrackFX { renderedTrack.fx = nil }
+        renderedTrack.automation = nil
         renderedTrack.volume = 1; renderedTrack.pan = 0
         renderedTrack.mute = false; renderedTrack.solo = false; renderedTrack.parentTrackID = nil
         source.tracks = [renderedTrack]
@@ -153,6 +159,7 @@ enum ItemReRender {
         var source = song, renderedTrack = track, sourceClip = clip
         sourceClip.muted = false
         renderedTrack.clips = [sourceClip]
+        renderedTrack.automation = nil
         renderedTrack.volume = 1; renderedTrack.pan = 0; renderedTrack.mute = false; renderedTrack.solo = false
         renderedTrack.parentTrackID = nil
         source.tracks = [renderedTrack]
@@ -171,7 +178,11 @@ enum ItemReRender {
             result.name = url.deletingPathExtension().lastPathComponent
             result.audioFile = AudioFile(path: "Stems/" + name); result.midi = nil; result.frozenMIDI = true
             result.pitchSemitones = nil
+            result.fx = nil; result.fxBypassed = nil
+            result.automation = nil; result.automationSourceOffset = nil
+            result.fadeIn = nil; result.fadeOut = nil
             result.sourceOffset = 0; result.playbackRate = 1; result.gain = 1; result.normalizationGain = nil; result.channelMode = nil; result.phaseInverted = nil; result.pan = nil
+            result.tempoBasePlaybackRate = nil
             result.loopStart = nil; result.loopLength = nil
             result.waveform = overview.waveform; result.waveformChannels = overview.channels
             return result

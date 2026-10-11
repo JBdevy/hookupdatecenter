@@ -14,6 +14,57 @@ MainActor.assumeIsolated {
     precondition(original.clipIndices(inTrack: 0, from: 26, through: 27) == [1, 2])
     precondition(cache.metadata(song: song, key: key) === original, "zoom keeps the existing index snapshot")
 
+    // Revisions and published values can become visible in separate SwiftUI
+    // updates. Equal count alone also misses reordered or relocated items.
+    var sameRevision = song
+    sameRevision.tracks[0].clips.removeLast()
+    let removed = cache.metadata(song: sameRevision, key: key)
+    precondition(removed !== original && removed.clipIndices(inTrack: 0, from: 26, through: 27) == [1])
+    sameRevision.tracks[0].clips.reverse()
+    let reversed = cache.metadata(song: sameRevision, key: key)
+    precondition(reversed !== removed && reversed.clipIndices(inTrack: 0, from: 26, through: 27) == [0])
+    sameRevision.tracks[0].clips[0].startTime = 2000
+    let relocated = cache.metadata(song: sameRevision, key: key)
+    precondition(relocated !== reversed && relocated.clipIndices(inTrack: 0, from: 26, through: 27).isEmpty)
+    var short = track; short.id = UUID(); short.clips = [track.clips[2]]
+    sameRevision.tracks.insert(short, at: 0)
+    let inserted = cache.metadata(song: sameRevision, key: key)
+    precondition(inserted.clipIndices(inTrack: 0, from: 26, through: 27) == [0] &&
+        inserted.clipIndices(inTrack: 1, from: 26, through: 27).isEmpty)
+    sameRevision.tracks.reverse()
+    let trackOrder = cache.metadata(song: sameRevision, key: key)
+    precondition(trackOrder.clipIndices(inTrack: 0, from: 26, through: 27).isEmpty &&
+        trackOrder.clipIndices(inTrack: 1, from: 26, through: 27) == [0])
+    sameRevision.tracks.removeLast()
+    let fewerTracks = cache.metadata(song: sameRevision, key: key)
+    precondition(fewerTracks.clipIndices(inTrack: 1, from: 0, through: 3000).isEmpty)
+    sameRevision.markers = [.init(id: UUID(), name: "TEMPO", position: 0, color: 0,
+        tempoBPM: 145, tempoTimebase: .relative, tempoReferenceBPM: 120)]
+    let newTempo = cache.metadata(song: sameRevision, key: key)
+    precondition(newTempo !== fewerTracks && newTempo.sections(until: 100) == sameRevision.tempoSections(until: 100))
+    for _ in 0..<80 {
+        precondition(cache.metadata(song: sameRevision, key: key) === newTempo,
+            "Coherence checking keeps an unchanged COW snapshot and its cached work")
+    }
+    sameRevision.tracks[0].heightScale = 2
+    precondition(cache.metadata(song: sameRevision, key: key) === newTempo,
+        "Individual height previews must not rebuild item indexes or tempo metadata")
+    sameRevision.tracks[0].audioFile = AudioFile(path: "replacement.wav")
+    let inheritedAudio = cache.metadata(song: sameRevision, key: key)
+    precondition(inheritedAudio !== newTempo, "Inherited track audio changes item media and hit actions")
+    sameRevision.tracks[0].timecode = TimecodeSettings()
+    let timecode = cache.metadata(song: sameRevision, key: key)
+    precondition(timecode !== inheritedAudio, "Track timecode labels belong to the same selection snapshot")
+    sameRevision.tracks[0].clips[0].renderedTiming = true
+    let rendered = cache.metadata(song: sameRevision, key: key)
+    precondition(rendered !== timecode)
+    sameRevision.tracks[0].clips[0].pitchSemitones = 3
+    precondition(cache.metadata(song: sameRevision, key: key) !== rendered,
+        "Rendered timing and pitch updates cannot reuse a stale clip snapshot")
+    precondition(original.clipIndices(inTrack: 0, from: 26, through: 27) == [1, 2],
+        "Previously captured drawing closures retain their original immutable item index")
+    print("TIMELINE_METADATA_SAME_REVISION_CLIP_DELETE_REORDER_MOVE_TRACK_INSERT_REORDER_DELETE_TEMPO_AND_RESIZE_REUSE_OK")
+
     var dragged = song
     dragged.tracks[0].clips[2].startTime = 80
     let dragKey = TimelineRenderKey(revision: key.revision, songID: song.id,

@@ -42,6 +42,34 @@ print("FROZEN_MIDI_CORE_BRIDGE_REPLACE_SAVE_REOPEN_AND_PASTE_FLAG_OK")
 precondition(pasted.project.songs[0].tracks[0].clips.first { $0.id == copied.id }?.renderedTiming == true)
 print("GLUED_AUDIO_TIMING_CORE_LOAD_REPLACE_COPY_ROUNDTRIP_OK")
 
+// Tempo-only printing preserves the region's live tuning. A separate stored
+// reference distinguishes BPM edits from pre-existing imported/manual rates.
+var tempoOnly = frozen
+tempoOnly.id = UUID(); tempoOnly.startTime = 20
+tempoOnly.frozenMIDI = nil; tempoOnly.renderedTiming = nil; tempoOnly.renderedTempo = true
+tempoOnly.playbackRate = 1.5; tempoOnly.tempoBasePlaybackRate = 1.25
+try core.addRecordedClip(JSONEncoder().encode(tempoOnly), track: track.id.uuidString)
+var tempoSnapshot = try JSONDecoder().decode(ShowSnapshot.self, from: core.metadataSnapshot())
+precondition(tempoSnapshot.project.songs[0].tracks[0].clips.first { $0.id == tempoOnly.id } == tempoOnly)
+tempoOnly.playbackRate = 1.75
+try core.replaceAudioClip(JSONEncoder().encode(tempoOnly), track: track.id.uuidString)
+tempoSnapshot = try JSONDecoder().decode(ShowSnapshot.self, from: core.metadataSnapshot())
+try core.load(projectData: JSONEncoder().encode(tempoSnapshot.project))
+let tempoReopened = try JSONDecoder().decode(ShowSnapshot.self, from: core.metadataSnapshot())
+precondition(tempoReopened.project.songs[0].tracks[0].clips.first { $0.id == tempoOnly.id } == tempoOnly)
+try core.execute(command: "tempo", target: nil, value: 240)
+let tempoAdjusted = try JSONDecoder().decode(ShowSnapshot.self, from: core.metadataSnapshot())
+let adjusted = tempoAdjusted.project.songs[0].tracks[0].clips.first { $0.id == tempoOnly.id }!
+precondition(adjusted.tempoBasePlaybackRate == 1.25 && adjusted.audioRate == 3.5)
+precondition(tempoAdjusted.project.songs[0].tracks[0].clips.first { $0.id == frozen.id }?.tempoBasePlaybackRate == 1)
+var tempoCopy = adjusted; tempoCopy.id = UUID(); tempoCopy.startTime = 40
+payload.clips = [tempoCopy]
+try core.pasteItems(JSONEncoder().encode([payload]), song: project.songs[0].id.uuidString, moving: false)
+let copiedTempoSnapshot = try JSONDecoder().decode(ShowSnapshot.self, from: core.metadataSnapshot())
+let copiedTempo = copiedTempoSnapshot.project.songs[0].tracks[0].clips.first { $0.id == tempoCopy.id }!
+precondition(copiedTempo.renderedTempo == true && copiedTempo.tempoBasePlaybackRate == 1.25)
+print("TEMPO_ONLY_PRINT_AND_BASE_RATE_CORE_INSERT_REPLACE_SAVE_PASTE_AND_GLOBAL_BPM_OK")
+
 // Capture probes and the native insertion path must retain the same owner map.
 var captureProject = Project.empty(name: "Owned MIDI capture")
 let captureGroup = Part(id: UUID(), name: "Unified", startTime: 0, endTime: 30)

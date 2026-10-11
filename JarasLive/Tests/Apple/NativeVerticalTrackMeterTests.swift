@@ -284,6 +284,48 @@ import Foundation
     meter.setFrameSize(NSSize(width: 32, height: 80)); meter.layoutSubtreeIfNeeded()
     print("NATIVE_COMPACT_METER_EQUAL_LEFT_RIGHT_WIDTH_OK")
 
+    let resizeGeometry = meter.geometryUpdatesForTest
+    let resizeLayers = meter.layer!.sublayers!
+    let resizeFrames = resizeLayers.map(\.frame)
+    for step in 0..<120 {
+        window.setContentSize(NSSize(width: 80 + step % 40, height: 100))
+        window.contentView?.layoutSubtreeIfNeeded()
+        NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: window)
+    }
+    precondition(meter.geometryUpdatesForTest == resizeGeometry,
+        "Dragging a window edge must not rebuild geometry or glyph measurements for fixed-size meters")
+    precondition(zip(resizeLayers, meter.layer!.sublayers!).allSatisfy { $0 === $1 } &&
+        meter.layer!.sublayers!.map(\.frame) == resizeFrames,
+        "Window resize preserves every retained layer and its precise stereo fractions")
+    window.setContentSize(NSSize(width: 80, height: 100))
+    meter.setFrameSize(NSSize(width: 32, height: 120)); meter.layoutSubtreeIfNeeded()
+    precondition(meter.geometryUpdatesForTest == resizeGeometry + 1 &&
+        meterLayer("meter-level-0").frame.height == 60 && meterLayer("meter-level-1").frame.height == 120,
+        "An actual meter resize still rebuilds once and immediately applies the cached dB levels")
+    NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: window)
+    precondition(meter.geometryUpdatesForTest == resizeGeometry + 1)
+    meter.setFrameSize(NSSize(width: 32, height: 80)); meter.layoutSubtreeIfNeeded()
+    print("NATIVE_METER_WINDOW_120_RESIZES_REUSE_FIXED_GEOMETRY_ACTUAL_METER_RESIZE_ONCE_OK")
+
+    let revealWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 80, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
+    let revealScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 80, height: 100))
+    let revealDocument = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 100))
+    let revealMeter = NativeVerticalTrackMeterView(frame: NSRect(x: 140, y: 0, width: 12, height: 80))
+    let revealLevel = TrackMeterLevel()
+    revealScroll.documentView = revealDocument; revealDocument.addSubview(revealMeter)
+    revealWindow.contentView = revealScroll; revealMeter.bind(revealLevel, showScale: false)
+    revealWindow.orderFront(nil); revealWindow.contentView?.layoutSubtreeIfNeeded()
+    precondition(revealMeter.visibleRect.isEmpty)
+    revealLevel.update(left: 0.1, right: 1, elapsed: 1)
+    revealWindow.setContentSize(NSSize(width: 200, height: 100))
+    revealWindow.contentView?.layoutSubtreeIfNeeded()
+    NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: revealWindow)
+    let revealedRight = revealMeter.layer!.sublayers!.first { $0.name == "meter-level-1" }!
+    precondition(!revealMeter.visibleRect.isEmpty && revealedRight.frame.height == 80,
+        "Expanding the window reveals the latest offscreen meter amplitude without another audio tick")
+    revealWindow.orderOut(nil)
+    print("NATIVE_METER_WINDOW_RESIZE_REVEALS_PENDING_LEVEL_WITHOUT_AUDIO_TICK_OK")
+
     var offscreenLevels: [TrackMeterLevel] = [], offscreenViews: [NativeVerticalTrackMeterView] = []
     for index in 0..<95 {
         let model = TrackMeterLevel()

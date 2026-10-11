@@ -7,6 +7,7 @@ import SwiftUI
 }
 
 final class NativeVerticalTrackMeterView: NSView {}
+private enum JarasTheme { static let text = Color.white }
 
 // INSERT_NATIVE_TRACK_MIXER_VISIBILITY
 
@@ -38,11 +39,12 @@ MainActor.assumeIsolated {
     document.addSubview(first); document.addSubview(distantAncestor); distantAncestor.addSubview(distant)
     document.layoutSubtreeIfNeeded()
     first.place(); distant.place()
-    let identities = distant.subviews.map(ObjectIdentifier.init)
+    let hosts = [distant.meter, distant.activity, distant.controls]
+    let identities = hosts.map(ObjectIdentifier.init)
     let accessibility = app.isFullKeyboardAccessEnabled || NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
     precondition(!first.isHidden, "visible rows remain available")
     precondition(distant.isHidden != accessibility, "only an offscreen non-accessibility row is hidden")
-    precondition(distant.subviews.map(ObjectIdentifier.init) == identities, "hidden rows retain every hosting root")
+    precondition(hosts.allSatisfy { accessibility ? $0.superview === distant : $0.superview == nil }, "offscreen rows detach hosts, while assistive traversal keeps them mounted")
 
     // Reordering/height changes can move only a SwiftUI ancestor, leaving the
     // native controls, viewport and complete document at exactly the same size.
@@ -50,6 +52,7 @@ MainActor.assumeIsolated {
     distantAncestor.setFrameOrigin(CGPoint(x: 0, y: 150))
     precondition(!distant.isHidden, "an ancestor-only move into the viewport reveals controls synchronously")
     distantAncestor.setFrameOrigin(CGPoint(x: 0, y: 1800))
+    precondition(hosts.allSatisfy { accessibility ? $0.window === window : $0.window == nil }, "warm roots leave the window hierarchy when offscreen")
     precondition(distant.isHidden != accessibility && document.frame.size == documentSize,
                  "an ancestor-only move out refreshes visibility without document resizing")
 
@@ -83,5 +86,5 @@ MainActor.assumeIsolated {
     distantAncestor.addSubview(distant)
     distant.place()
     precondition(!distant.isHidden, "reattachment resumes visible controls")
-    print("TRACK_MIXER_NATIVE_VISIBILITY_WARM_SCROLL_IDENTITY_PINNED_FOCUS_RESIZE_AND_REATTACH_OK")
+    print("TRACK_MIXER_NATIVE_VISIBILITY_DETACH_WARM_SCROLL_IDENTITY_PINNED_FOCUS_RESIZE_AND_REATTACH_OK")
 }

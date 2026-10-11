@@ -483,9 +483,10 @@ import AVFoundation
         panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
         panel.nameFieldStringValue = source.deletingPathExtension().lastPathComponent + ".jl"
         panel.title = JarasLocalization.string(isReaper ? "Import REAPER project" : "Import Logic project")
+        panel.message = JarasLocalization.string("A separate folder with this project name will be created in the chosen location for the CatLive project, media and backups.")
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let selected = panel.url else { return }
-        let destination = selected.pathExtension.lowercased() == "jl" ? selected : selected.appendingPathExtension("jl")
+        let destination = ProjectMigration.isolatedDestination(for: selected)
         guard !destination.standardizedFileURL.path.hasPrefix(source.standardizedFileURL.path + "/") else {
             error = "Save the CatLive project outside the Logic package."; return
         }
@@ -493,14 +494,18 @@ import AVFoundation
         catch { self.error = error.localizedDescription; return }
         busy = true; error = ""; warnings = []; migrationNotice = ""
         status = isReaper ? "Importing REAPER project…" : "Importing Logic project…"
+        let pluginImport = isReaper ? Bundle.main.executableURL.map {
+            ReaperVST3ImportSession(executable: $0, catalog: PluginCatalog.shared.plugins, paths: PluginCatalog.shared.paths)
+        } : nil
         Task {
             defer { busy = false }
             do {
                 let (result, teleprompter) = try await Task.detached(priority: .userInitiated) {
-                    let result = try isReaper ? ReaperProjectImporter.read(source) : LogicProjectImporter.read(source)
+                    let result = try isReaper ? ReaperProjectImporter.read(source, resolveVST3: pluginImport.map { session in { try session.resolve($0) } }) : LogicProjectImporter.read(source)
                     try ProjectMigration.save(result, to: destination)
                     return (result, isReaper ? VSHookTeleprompterMigration.read(for: source) : nil)
                 }.value
+                if let pluginImport { PluginCatalog.shared.acceptImportedPlugins(pluginImport.discovered) }
                 if VSHookTeleprompterMigration.applyOnce(teleprompter) {
                     TeleprompterPreferences.shared.reload(); TeleprompterPreferences.second.reload()
                     TPNoticeController.shared.reload()
@@ -888,11 +893,7 @@ private struct ProjectDeletionConfirmation: View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Delete project", systemImage: "trash").font(.title3.bold()).foregroundStyle(.red)
             Text(verbatim: deletion.document.deletingPathExtension().lastPathComponent).font(.headline)
-            if deletion.deletesDirectory {
-                Text("The entire project folder, including audio and backups, will be permanently deleted. This cannot be undone.").font(.body)
-            } else {
-                Text("This project is in a shared folder. Only the selected project file will be permanently deleted and removed from recents. The folder, other projects, audio and backups will be kept. This cannot be undone.").font(.body)
-            }
+            Text("The CatLive project and its own media, waveform caches and backups will be permanently deleted. The containing folder, unrelated files and media shared with other projects will be kept. This cannot be undone.").font(.body)
             Text(verbatim: deletion.target.path).font(.caption).textSelection(.enabled)
                 .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.display).cornerRadius(5)
             if !documents.error.isEmpty { Text(LocalizedStringKey(documents.error)).font(.caption).foregroundStyle(.red) }
@@ -968,7 +969,7 @@ private final class ProjectTitlebarHostingView<Content: View>: NSHostingView<Con
 }
 
 private final class ProjectTitlebarVersionView: NSView {
-    static let text = text(for: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0")
+    static let text = text(for: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.0")
     static func text(for version: String) -> String {
         let components = version.split(separator: ".")
         guard components.count >= 2, let major = Int(components[0]), let minor = Int(components[1]) else {
@@ -1077,6 +1078,17 @@ struct ProjectWindowSizing: NSViewRepresentable {
     func makeNSView(context: Context) -> ProjectWindowAnchor { ProjectWindowAnchor() }
     func updateNSView(_ view: ProjectWindowAnchor, context: Context) { view.editor = editor; view.documents = documents; view.update() }
 }
+// The native window already has explicit editor/browser bounds. Do not ask
+// SwiftUI to measure its entire document again for minimum, ideal and maximum
+// window sizes on every frame of a live resize.
+private protocol ProjectFrameSizedHosting: AnyObject {
+    func useProjectWindowFrame()
+}
+extension NSHostingView: ProjectFrameSizedHosting {
+    fileprivate func useProjectWindowFrame() {
+        if #available(macOS 13, *) { sizingOptions = [] }
+    }
+}
 final class ProjectWindowAnchor: NSView {
     static let editorFrameSize = NSSize(width: 1440, height: 791)
     static func configureChrome(of window: NSWindow) {
@@ -1084,6 +1096,7 @@ final class ProjectWindowAnchor: NSView {
         // host underneath it makes AppKit walk every control's drag-prevention
         // region whenever a sidebar changes width.
         window.backgroundColor = NSColor(JarasTheme.titlebar)
+        (window.contentView as? ProjectFrameSizedHosting)?.useProjectWindowFrame()
         guard window.styleMask.contains(.fullSizeContentView) else { return }
         let frame = window.frame
         window.styleMask.remove(.fullSizeContentView)
@@ -1100,8 +1113,12 @@ final class ProjectWindowAnchor: NSView {
     private var remembersPlacement = false
     private static let placementKey = "jaras.editorWindowFrame"
     private func rememberPlacement() {
-        guard remembersPlacement, let window, !window.styleMask.contains(.fullScreen), !window.isMiniaturized else { return }
-        UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.placementKey)
+        guard remembersPlacement, let window, !window.inLiveResize,
+              !window.styleMask.contains(.fullScreen), !window.isMiniaturized else { return }
+        let value = NSStringFromRect(window.frame)
+        if UserDefaults.standard.string(forKey: Self.placementKey) != value {
+            UserDefaults.standard.set(value, forKey: Self.placementKey)
+        }
     }
     deinit {
         placementObservers.forEach(NotificationCenter.default.removeObserver)
@@ -1141,7 +1158,8 @@ final class ProjectWindowAnchor: NSView {
     }
     private func observePlacement(_ window: NSWindow) {
         placementObservers.forEach(NotificationCenter.default.removeObserver)
-        placementObservers = [NSWindow.didMoveNotification, NSWindow.didResizeNotification, NSWindow.willCloseNotification].map { name in
+        placementObservers = [NSWindow.didMoveNotification, NSWindow.didResizeNotification,
+                              NSWindow.didEndLiveResizeNotification, NSWindow.willCloseNotification].map { name in
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in self?.rememberPlacement() }
         }
     }

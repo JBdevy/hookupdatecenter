@@ -29,8 +29,8 @@ enum TimelineRenderDiagnosticBypass {
 struct GridSelectionItem {
     static let headerScale: CGFloat = 1.3
     static let headerHeight: CGFloat = 17
-    static let headerFontSize: CGFloat = (9 * headerScale).rounded()
     static let headerReadoutFontSize: CGFloat = 9
+    static let headerFontSize: CGFloat = headerReadoutFontSize
     private static let panReadoutWidth: CGFloat = 40
     private static let readoutGap: CGFloat = 0.5
     static let bodyInset: CGFloat = headerHeight + 1
@@ -61,7 +61,7 @@ struct GridSelectionItem {
     var headerRect: CGRect { visibleHeader ?? rect }
     private var controlStart: CGFloat { headerRect.minX + 2 * Self.headerScale }
     var muteRect: CGRect? { editable && headerRect.width >= 21 * Self.headerScale ? CGRect(x: controlStart, y: rect.minY, width: 17 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
-    var fxRect: CGRect? { editable && !midiEditable && headerRect.width >= 41 * Self.headerScale ? CGRect(x: controlStart + 18 * Self.headerScale, y: rect.minY, width: 20 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
+    var fxRect: CGRect? { editable && (!midiEditable || hasFX) && headerRect.width >= 41 * Self.headerScale ? CGRect(x: controlStart + 18 * Self.headerScale, y: rect.minY, width: 20 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
     private var gainKnobOffset: CGFloat { midiEditable ? 39 * Self.headerScale : 70 * Self.headerScale + Self.panReadoutWidth + 2 * Self.readoutGap }
     var gainKnobMinimumWidth: CGFloat { gainKnobOffset + (midiEditable ? 18 : 19) * Self.headerScale }
     var gainKnobRect: CGRect? { editable && headerRect.width >= gainKnobMinimumWidth ? CGRect(x: controlStart + gainKnobOffset, y: rect.minY, width: 15 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
@@ -668,6 +668,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private var pendingSeek: CGPoint?
     private var hasDragged = false
     private var movingAllowed = false
+    var extraBodyHit: ((NSPoint) -> NSView?)?
     var selectRow: ((CGFloat) -> Void)?
     var seek: ((CGFloat, Bool) -> Void)?
     private var anchor: CGPoint?
@@ -685,6 +686,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let local = convert(point, from: superview), viewport = coordinates.viewport
         guard bounds.contains(local), visibleRect.contains(local), viewport.contains(local),
               local.y >= viewport.minY + headerHeight else { return nil }
+        if let extra = extraBodyHit?(convert(local, to: nil)) { return extra }
         // Returning nil allowed the hosting view underneath to reset edge/fade
         // cursors after our handler. Ruler and floating editors stay separate.
         return self
@@ -836,6 +838,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         }.map(positionedHeader)
     }
     @discardableResult func handlePointerEvent(_ event: NSEvent) -> Bool {
+        if activeButton == nil, extraBodyHit?(event.locationInWindow) != nil { return false }
         guard !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window), event.window === window, window != nil, window?.attachedSheet == nil,
               !isHiddenOrHasHiddenAncestor else { return false }
         let down = event.type == .leftMouseDown || event.type == .rightMouseDown
@@ -890,7 +893,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         draggedItem = nil; hasDragged = false; movingAllowed = false; resizingLeft = nil; gainItem = nil; panItem = nil; liveHeaderPan = nil; fadeItem = nil; liveFade = nil
         pressedHeader = nil; headerPressCancelled = false
         guard let item = hitItem(at: timeline) else {
-            if createMIDI != nil && event.clickCount == 2 { createMIDI?(timeline, nil); return }
             if createMIDI != nil && !event.modifierFlags.intersection([.command,.control]).isEmpty { midiStart = timeline; return }
             pendingSeek = timeline; return
         }
@@ -1129,6 +1131,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             }
             let glue = NSMenuItem(title: JarasLocalization.string("Unify items"), action: #selector(glueSelection), keyEquivalent: "")
             glue.target = self; menu.addItem(glue)
+            if item(id: contextItem)?.hasFX == true {
+                let effect = NSMenuItem(title: "FX", action: #selector(openContextFX), keyEquivalent: "")
+                effect.target = self; menu.addItem(effect)
+            }
             return menu
         } else if item(id: contextItem)?.contextActions == true {
                 let item = NSMenuItem(title: JarasLocalization.string("Criar região do item"), action: #selector(createContextRegion), keyEquivalent: "")
@@ -1168,6 +1174,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     @objc private func createContextMIDI() { if let point = midiContextPoint { createMIDI?(point, nil) } }
     @objc private func editContextMIDI() { if let contextItem { editMIDI?(contextItem) } }
+    @objc private func openContextFX() { if let contextItem { fx?(contextItem, false) } }
     private var selectedMIDIItems: [GridSelectionItem] {
         selected.compactMap { item(id: $0) }.filter { $0.editable && $0.midiEditable }
     }

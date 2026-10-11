@@ -12,6 +12,13 @@ final class PlaylistSelectionNotice {
     static let shared = PlaylistSelectionNotice()
     func present(_ name: String, in window: NSWindow) {}
 }
+// The production event routers see an envelope editor in the main document
+// window. Its actual point geometry is covered by AutomationLaneInputTests.
+final class AutomationLaneView: NSView, TimelineGridKeyboardTarget {
+    var received: [UInt16] = []
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) { received.append(event.keyCode) }
+}
 
 // INSERT_NATIVE_DELETE_HANDLERS
 
@@ -48,6 +55,21 @@ items = 1; tracks = 1
 precondition(SetlistKeyView.handleDelete(deletion(repeatKey: true)))
 precondition(items == 1 && tracks == 1, "held Delete cannot cascade through items, tracks and regions")
 precondition(!SetlistKeyView.handleDelete(deletion(flags: .command)))
+let envelope = AutomationLaneView(frame: NSRect(x: 350, y: 40, width: 200, height: 100))
+host.addSubview(envelope)
+precondition(window.makeFirstResponder(envelope))
+for code: UInt16 in [51, 117, 53] {
+    let event = deletion(code)
+    precondition(RegionShortcutView.envelopeOwnsEditingKey(event), "focused envelope owns point deletion and drag cancellation")
+    precondition(!RegionShortcutView.handleSelectedObjectsDelete(event), "stale item or track selection cannot steal envelope editing")
+    precondition(!SetlistKeyView.handleDelete(event), "stale setlist selection cannot steal envelope editing")
+    window.sendEvent(event)
+}
+precondition(envelope.received == [51, 117, 53], "AppKit delivers the protected keys to the envelope responder")
+precondition(items == 1 && tracks == 1 && deletedRegions == 1, "editing envelope points preserves items, tracks and regions")
+precondition(!RegionShortcutView.envelopeOwnsEditingKey(deletion(flags: .command)), "modifier shortcuts retain their normal owner")
+window.makeFirstResponder(nil)
+print("TIMELINE_ENVELOPE_KEYS_PRESERVE_ITEM_TRACK_REGION_SELECTIONS_OK")
 NativeTimelineInputGate.shared.setBlocked(true, for: window)
 precondition(!RegionShortcutView.handleSelectedObjectsDelete(deletion()), "modals preserve all selected objects")
 NativeTimelineInputGate.shared.setBlocked(false, for: window)

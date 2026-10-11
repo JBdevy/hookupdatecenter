@@ -158,6 +158,7 @@ struct MetronomeProgram {
     std::vector<float> a, b;
     int mode = 0;
     bool bounded = false;
+    uint64_t timingRevision = 0;
 };
 struct MetronomeSignal {
     std::atomic<MetronomeProgram*> program{nullptr}, reading{nullptr};
@@ -166,6 +167,7 @@ struct MetronomeSignal {
     std::vector<std::unique_ptr<MetronomeProgram>> programs;
     std::atomic<double> position{0}, loopStart{0}, loopEnd{0}, referenceSample{NAN};
     std::atomic<uint64_t> host{0}, generation{0};
+    std::atomic<uint64_t> retimedGeneration{~uint64_t(0)};
     std::atomic<bool> running{false}, enabled{true};
     struct Jump { uint64_t version=0, host=0; double position=0, sample=NAN, first=0, last=0; };
     std::atomic<uint64_t> jumpVersion{0}, jumpHost{0};
@@ -194,6 +196,7 @@ struct MetronomeSignal {
         jumpVersion.fetch_add(1,std::memory_order_release);
     }
     uint64_t renderedGeneration = ~uint64_t(0);
+    uint64_t renderedTimingRevision = 0, nextTimingRevision = 0, configuredTimingRevision = 0;
     double sampleRate, ticksPerSecond, anchorSample=0, anchorPosition=0;
     double previousPosition=-1, previousSample=-1; int64_t previousBeat=-1; size_t previousSection=~size_t(0);
     struct Voice { size_t frame=0; bool a=true; MetronomeProgram* sound=nullptr; };
@@ -220,6 +223,14 @@ struct MetronomeSignal {
         return position.load()+double(int64_t(now-host.load()))/ticksPerSecond;
     }
     void publish(std::unique_ptr<MetronomeProgram> value) {
+        const auto* current=program.load();
+        bool sameTiming=current && current->bounded==value->bounded && current->sections.size()==value->sections.size();
+        if(sameTiming) for(size_t i=0;i<value->sections.size();++i) {
+            const auto& a=current->sections[i]; const auto& b=value->sections[i];
+            if(a.start!=b.start || a.bpm!=b.bpm || a.beats!=b.beats || a.unit!=b.unit || a.end!=b.end ||
+               !(a.origin==b.origin || (std::isnan(a.origin) && std::isnan(b.origin)))) { sameTiming=false; break; }
+        }
+        value->timingRevision=sameTiming ? current->timingRevision : ++nextTimingRevision;
         auto* next=value.get(); programs.push_back(std::move(value)); program.store(next);
         const auto* protectedProgram=reading.load();
         // Read the callback hazard before the voice hazards: the callback
@@ -230,6 +241,26 @@ struct MetronomeSignal {
             return p.get()!=next && p.get()!=protectedProgram &&
                 std::find(sounding.begin(),sounding.end(),p.get())==sounding.end();
         }),programs.end());
+    }
+    void configure(double nextPosition, uint64_t nextHost, bool nextRunning, double first, double last, double sample) {
+        loopStart.store(first); loopEnd.store(last);
+        const bool wasRunning=running.load();
+        const auto* current=program.load();
+        const bool retime=wasRunning && nextRunning && current && configuredTimingRevision!=0 &&
+            current->timingRevision!=configuredTimingRevision;
+        if(current) configuredTimingRevision=current->timingRevision;
+        if(retime || wasRunning!=nextRunning || std::abs(wrap(clock(nextHost))-nextPosition)>0.06) {
+            cancelJump();
+            position.store(nextPosition); host.store(nextHost); referenceSample.store(sample);
+            const auto version=generation.load()+1;
+            if(retime && wasRunning && nextRunning) retimedGeneration.store(version);
+            generation.store(version,std::memory_order_release);
+        }
+        if(jumpHost.load() && acknowledgedJump.load(std::memory_order_acquire)==jumpVersion.load()) {
+            position.store(jumpPosition.load()); host.store(jumpHost.load()); referenceSample.store(jumpSample.load());
+            cancelJump();
+        }
+        running.store(nextRunning);
     }
     void render(const AudioTimeStamp* time, AVAudioFrameCount count, AudioBufferList* list) {
         MetronomeProgram* p;
@@ -245,13 +276,21 @@ struct MetronomeSignal {
             for(unsigned b=0;b<list->mNumberBuffers;++b) if(list->mBuffers[b].mData) std::memset(list->mBuffers[b].mData,0,list->mBuffers[b].mDataByteSize);
             reading.store(nullptr); return;
         }
+        bool rebaseBeat=p && renderedTimingRevision!=0 && renderedTimingRevision!=p->timingRevision;
+        if(p) renderedTimingRevision=p->timingRevision;
+        const int64_t beatBeforeRetime=previousBeat;
+        const bool preservingPulse=renderedGeneration!=~uint64_t(0) && renderedGeneration!=version &&
+            version==retimedGeneration.load();
         if(renderedGeneration!=version || time->mSampleTime<previousSample) {
+            // Start/seek still owns its destination downbeat. Only an in-place
+            // retiming carries the currently sounding pulse across this reset.
+            rebaseBeat=preservingPulse;
             renderedGeneration=version; anchorSample=time->mSampleTime;
             const double reference=referenceSample.load();
             if(std::isfinite(reference)) { anchorSample=reference; anchorPosition=position.load(); }
             else anchorPosition=clock((time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time());
             previousPosition=-1; previousBeat=-1; previousSection=~size_t(0);
-            if(p && p->bounded) clearVoices();
+            if(p && p->bounded && !preservingPulse) clearVoices();
         }
         previousSample=time->mSampleTime;
         double start=(time->mFlags & kAudioTimeStampSampleTimeValid) ? anchorPosition+(time->mSampleTime-anchorSample)/sampleRate : clock(mach_absolute_time());
@@ -271,7 +310,7 @@ struct MetronomeSignal {
                     start=anchorPosition+(time->mSampleTime-anchorSample)/sampleRate;
                     first=renderJump.position;
                     previousPosition=-1; previousBeat=-1; previousSection=~size_t(0);
-                    section=0; clearVoices();
+                    section=0; rebaseBeat=false; clearVoices();
                     acknowledgedJump.store(consumedJump,std::memory_order_release);
                 }
             }
@@ -290,6 +329,14 @@ struct MetronomeSignal {
                 const double exact=(position-(std::isfinite(tempo.origin) ? tempo.origin : tempo.start))/beatSeconds;
                 const int64_t beat=int64_t(std::floor(std::max(0.0,exact)+1e-9));
                 const double phase=(exact-double(beat))*beatSeconds;
+                // A tempo edit changes the mapping of the current sample, not
+                // the musical event being heard. Adopt its new beat identity
+                // once, then trigger only the following real beat crossings.
+                if(rebaseBeat) {
+                    const bool exactCrossing=preservingPulse && beat!=beatBeforeRetime && phase>=-0.5/sampleRate && phase<=1.0/sampleRate;
+                    if(!exactCrossing) { previousBeat=beat; previousSection=section; }
+                    rebaseBeat=false;
+                }
                 if((beat!=previousBeat || section!=previousSection) && (previousPosition>=0 || phase<0.003)) {
                     const auto index=nextVoice++%voices.size();
                     voices[index]={0,p->mode==1 || (p->mode==0 && beat%tempo.beats==0),p};
@@ -362,21 +409,6 @@ struct MetronomeSignal {
 - (void)cancelJump { _signal->cancelJump(); }
 - (void)setGainA:(float)a gainB:(float)b { _signal->gainA.store(a); _signal->gainB.store(b); }
 - (void)configurePosition:(double)position hostTime:(uint64_t)host running:(BOOL)running loopStart:(double)first loopEnd:(double)last sampleTime:(double)sampleTime {
-    _signal->loopStart.store(first); _signal->loopEnd.store(last);
-    const bool wasRunning=_signal->running.load();
-    if(wasRunning!=bool(running) || std::abs(_signal->wrap(_signal->clock(host))-position)>0.06) {
-        _signal->cancelJump();
-        _signal->position.store(position); _signal->host.store(host); _signal->referenceSample.store(sampleTime);
-        _signal->generation.fetch_add(1,std::memory_order_release);
-    }
-    if(_signal->jumpHost.load() && _signal->acknowledgedJump.load(std::memory_order_acquire)==_signal->jumpVersion.load()) {
-        // The audio callback has crossed the boundary. Keep its exact anchor
-        // when adopting the UI state; never reset to a late, overshot position.
-        _signal->position.store(_signal->jumpPosition.load());
-        _signal->host.store(_signal->jumpHost.load());
-        _signal->referenceSample.store(_signal->jumpSample.load());
-        _signal->cancelJump();
-    }
-    _signal->running.store(running);
+    _signal->configure(position,host,running,first,last,sampleTime);
 }
 @end

@@ -416,7 +416,17 @@ struct DAWRemoteClientView: View {
                     currentEnd: transport.ignoreNextEnd ?? sectionRegion?.endTime),
                 songDisplays: .init(current: displays.current?.displayName ?? song?.name, currentBPM: displays.currentBPM,
                     next: displays.next?.displayName, nextBPM: displays.nextBPM, queued: displays.queued?.displayName, queuedBPM: displays.queuedBPM,
-                    playlistSeconds: show.listedRegions.reduce(0) { $0 + max(0, $1.endTime - $1.startTime) }))
+                    playlistSeconds: show.listedRegions.reduce(0) { $0 + max(0, $1.endTime - $1.startTime) }),
+                setlistBlocks: show.listedBlocks.map {
+                    .init(id: $0.id, name: $0.name, color: $0.color, beforeRegion: $0.beforeRegionId, symbol: $0.showsSymbol)
+                })
+        }
+        session.noticeSendHandler = { [weak show] command in
+            guard command.valid, command.action == .noticeSend, let show,
+                  command.project == show.snapshot.project.id else { return false }
+            let model = TPNoticeController.shared
+            model.select(Int(command.value)); model.draft = command.text ?? ""
+            return model.send()
         }
         session.commandHandler = { [weak show] command in
             guard command.valid else { return }
@@ -503,8 +513,6 @@ struct DAWRemoteClientView: View {
     private static func handleNotice(_ command: DAWRemoteCommand) -> Bool {
         let model = TPNoticeController.shared
         switch command.action {
-        case .noticeSend:
-            model.select(Int(command.value)); model.draft = command.text ?? ""; model.send()
         case .noticeClear: model.clear()
         case .noticePin:
             if model.pinned != (command.value == 1) { model.togglePin() }
@@ -600,6 +608,35 @@ struct DAWRemoteClientView: View {
     }
 }
 #else
+/// A fixed touch target and a real gap keep adjacent controls distinct on
+/// both devices. The rail scrolls on short screens instead of shrinking labels.
+private enum RemoteSidebarMetrics {
+    static let buttonSize: CGFloat = 44
+    static let spacing: CGFloat = 8
+    static let groupSpacing: CGFloat = 16
+    static let horizontalPadding: CGFloat = 4
+    static let verticalPadding: CGFloat = 8
+    static let width = buttonSize + horizontalPadding * 2
+}
+
+private struct RemoteSidebarRail<Content: View>: View {
+    let hidden: Bool
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: RemoteSidebarMetrics.spacing, content: content)
+                    .frame(width: RemoteSidebarMetrics.buttonSize)
+                    .frame(minHeight: max(0, geometry.size.height - RemoteSidebarMetrics.verticalPadding * 2))
+                    .padding(.horizontal, RemoteSidebarMetrics.horizontalPadding)
+                    .padding(.vertical, RemoteSidebarMetrics.verticalPadding)
+            }
+        }.frame(width: hidden ? 0 : RemoteSidebarMetrics.width)
+            .clipped().allowsHitTesting(!hidden).accessibilityHidden(hidden)
+            .background(RemoteSurface.panel)
+    }
+}
+
 @MainActor private struct NativeRemoteWorkspace: View {
     @Environment(\.isEnabled) private var controlsEnabled
     let state: DAWRemoteState
@@ -765,7 +802,7 @@ struct DAWRemoteClientView: View {
     private func hideSidebarButton(width: CGFloat) -> some View {
         Button(action: hideSidebar) {
             Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
-                .frame(width: width, height: 30).contentShape(Rectangle())
+                .frame(width: width, height: RemoteSidebarMetrics.buttonSize).contentShape(Rectangle())
         }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green).accessibilityLabel("Hide sidebar")
     }
     private func restoreSidebarButton(height: CGFloat = 25) -> some View {
@@ -806,32 +843,28 @@ struct DAWRemoteClientView: View {
     }
     private var phoneDirectorWorkspace: some View {
         HStack(spacing: sidebarHidden ? 0 : 1) {
-            GeometryReader { rail in
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 2) {
-                    Menu {
-                        Button("Projects") { projectsOpen = true }
-                        Button("Exit Remote", action: exitRemote)
-                    } label: { Image(systemName: "line.3.horizontal").frame(width: 44, height: 44).contentShape(Rectangle()) }
-                        .accessibilityLabel("Menu")
-                    phonePanelButton(.mixer, title: "Track Mixer", icon: "slider.horizontal.3")
-                    phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet")
-                    phonePanelButton(.grid, title: "Grid", icon: "square.grid.3x3")
-                    phonePanelButton(.teleprompter1, title: "TP1")
-                    phonePanelButton(.teleprompter2, title: "TP2")
-                    phonePanelButton(.notices, title: "Notices", icon: "text.bubble")
-                    Button { timerOpen = true } label: { Image(systemName: "clock").frame(width: 44, height: 44) }
-                        .foregroundStyle(Color.blue).accessibilityLabel("Timer")
-                    Button { confirmSave = true } label: { Image(systemName: "square.and.arrow.down").frame(width: 44, height: 44) }
-                        .foregroundStyle(JarasTheme.green).disabled(!state.pendingSave || state.saving).accessibilityLabel("Save")
-                    Spacer(minLength: 12)
-                    phonePanelButton(.sections, title: "Section manager")
-                    Button { settingsOpen = true } label: { Image(systemName: "gearshape").frame(width: 44, height: 44) }
-                        .accessibilityLabel("Configurações")
-                    hideSidebarButton(width: 44)
-                }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).frame(minHeight: max(0, rail.size.height - 8)).padding(.vertical, 4)
-            }
-            }.frame(width: sidebarHidden ? 0 : 44).clipped().allowsHitTesting(!sidebarHidden).accessibilityHidden(sidebarHidden).background(RemoteSurface.panel)
+            RemoteSidebarRail(hidden: sidebarHidden) {
+                Menu {
+                    Button("Projects") { projectsOpen = true }
+                    Button("Exit Remote", action: exitRemote)
+                } label: { Image(systemName: "line.3.horizontal").frame(width: 44, height: 44).contentShape(Rectangle()) }
+                    .accessibilityLabel("Menu")
+                phonePanelButton(.mixer, title: "Track Mixer", icon: "slider.horizontal.3")
+                phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet")
+                phonePanelButton(.grid, title: "Grid", icon: "square.grid.3x3")
+                phonePanelButton(.teleprompter1, title: "TP1")
+                phonePanelButton(.teleprompter2, title: "TP2")
+                phonePanelButton(.notices, title: "Notices", icon: "text.bubble")
+                Button { timerOpen = true } label: { Image(systemName: "clock").frame(width: 44, height: 44) }
+                    .foregroundStyle(Color.blue).accessibilityLabel("Timer")
+                Button { confirmSave = true } label: { Image(systemName: "square.and.arrow.down").frame(width: 44, height: 44) }
+                    .foregroundStyle(JarasTheme.green).disabled(!state.pendingSave || state.saving).accessibilityLabel("Save")
+                Spacer(minLength: RemoteSidebarMetrics.groupSpacing)
+                phonePanelButton(.sections, title: "Section manager")
+                Button { settingsOpen = true } label: { Image(systemName: "gearshape").frame(width: 44, height: 44) }
+                    .accessibilityLabel("Configurações")
+                hideSidebarButton(width: 44)
+            }.buttonStyle(RemoteFullAreaButtonStyle(surface: true))
             VStack(spacing: 1) {
                 if !prompterFullscreen { phoneTransport }
                 Group {
@@ -948,16 +981,16 @@ struct DAWRemoteClientView: View {
     }
     private var phoneRepertoire: some View {
         HStack(spacing: sidebarHidden ? 0 : 1) {
-            VStack(spacing: 2) {
+            RemoteSidebarRail(hidden: sidebarHidden) {
                 Menu { Button("Exit Remote", action: exitRemote) } label: {
                     Image(systemName: "line.3.horizontal").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Menu")
                 phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet")
                 phonePanelButton(.teleprompter1, title: "TP1")
                 phonePanelButton(.teleprompter2, title: "TP2")
-                Spacer(minLength: 0)
+                Spacer(minLength: RemoteSidebarMetrics.groupSpacing)
                 hideSidebarButton(width: 44)
-            }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).frame(width: sidebarHidden ? 0 : 44).clipped().allowsHitTesting(!sidebarHidden).accessibilityHidden(sidebarHidden).background(RemoteSurface.panel)
+            }.buttonStyle(RemoteFullAreaButtonStyle(surface: true))
             VStack(spacing: 1) {
                 if !prompterFullscreen {
                     VStack(spacing: 5) {
@@ -987,16 +1020,16 @@ struct DAWRemoteClientView: View {
     }
     private var observerWorkspace: some View {
         GeometryReader { geometry in
-            let width = max(1, geometry.size.width - (sidebarHidden ? 0 : 37))
+            let width = max(1, geometry.size.width - (sidebarHidden ? 0 : RemoteSidebarMetrics.width + 1))
             HStack(spacing: sidebarHidden ? 0 : 1) {
-                VStack(spacing: 2) {
-                    Button { navigationOpen.toggle() } label: { Image(systemName: "line.3.horizontal").frame(width: 36, height: 36) }
+                RemoteSidebarRail(hidden: sidebarHidden) {
+                    Button { navigationOpen.toggle() } label: { Image(systemName: "line.3.horizontal").frame(width: 44, height: 44) }
                         .accessibilityLabel("Abrir barra lateral")
-                    topPrompterButton(.first, title: "TP1")
-                    topPrompterButton(.second, title: "TP2")
-                    Spacer()
-                    hideSidebarButton(width: 36)
-                }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).frame(width: sidebarHidden ? 0 : 36).clipped().allowsHitTesting(!sidebarHidden).accessibilityHidden(sidebarHidden).padding(.top, 6).background(RemoteSurface.panel)
+                    topPrompterButton(.first, title: "TP1", minimumHeight: RemoteSidebarMetrics.buttonSize)
+                    topPrompterButton(.second, title: "TP2", minimumHeight: RemoteSidebarMetrics.buttonSize)
+                    Spacer(minLength: RemoteSidebarMetrics.groupSpacing)
+                    hideSidebarButton(width: 44)
+                }.buttonStyle(RemoteFullAreaButtonStyle(surface: true))
                 VStack(spacing: 8) {
                     if !prompterFullscreen {
                         HStack(spacing: 8) {
@@ -1051,7 +1084,10 @@ struct DAWRemoteClientView: View {
         let played = Set(state.playedLiveRegionIDs ?? [])
         return ScrollView(.vertical) {
             LazyVStack(spacing: 5) {
-                ForEach(setlistRowsCache.rows(in: state, expanded: expandedRegions, query: "")) { row in
+                ForEach(setlistRowsCache.entries(in: state, expanded: expandedRegions, query: "")) { entry in
+                    switch entry {
+                    case .block(let block): RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0).equatable()
+                    case .region(let row):
                     let region = row.region
                     setlistLabel(region.name, number: row.number, played: played.contains(region.id), selected: observerRegion(region.id, contains: state.focusedRegion),
                         active: state.playing && observerRegion(region.id, contains: state.currentRegion), queued: observerRegion(region.id, contains: state.queuedRegion),
@@ -1061,8 +1097,9 @@ struct DAWRemoteClientView: View {
                         queueProgress: min(1, max(0, ((state.playbackEnd ?? state.position) - state.position) / max(0.001, (state.playbackEnd ?? state.position) - (state.queueStartedAt ?? state.position)))))
                         .modifier(RemoteRegionDrawerGesture(enabled: row.hasDrawer, toggle: { toggleDrawer(region.id) }))
                         .padding(.leading, row.child ? 20 : 0)
+                    }
                 }
-                if state.regions.isEmpty {
+                if state.regions.isEmpty && (state.setlistBlocks?.isEmpty ?? true) {
                     ForEach(state.songs) { song in Text(verbatim: song.name).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(RemoteSurface.panel).cornerRadius(5) }
                 }
             }.padding(8)
@@ -1074,13 +1111,13 @@ struct DAWRemoteClientView: View {
     }
     private var directorWorkspace: some View {
         GeometryReader { geometry in
-            let contentWidth = max(0, geometry.size.width - (sidebarHidden ? 0 : 37))
+            let contentWidth = max(0, geometry.size.width - (sidebarHidden ? 0 : RemoteSidebarMetrics.width + 1))
             let panelSpace = max(1, contentWidth - 20)
             HStack(spacing: sidebarHidden ? 0 : 1) {
-                VStack(spacing: 0) {
+                RemoteSidebarRail(hidden: sidebarHidden) {
                     Button { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } } label: {
                         Image(systemName: "line.3.horizontal").font(.system(size: 17, weight: .semibold))
-                            .frame(width: 36, height: 36).contentShape(Rectangle())
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).accessibilityLabel("Abrir barra lateral")
                     Button { withAnimation(.easeOut(duration: 0.16)) {
                         let current = panelWidths
@@ -1093,27 +1130,30 @@ struct DAWRemoteClientView: View {
                         Image(systemName: "slider.horizontal.3")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(prompterPanel != nil || mixerCollapsed ? Color(hex: 0xc44545) : JarasTheme.green)
-                            .frame(width: 36, height: 36).contentShape(Rectangle())
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true))
                         .accessibilityLabel(prompterPanel != nil || mixerCollapsed ? "Expandir Track-Mixer" : "Recolher Track-Mixer")
                         .accessibilityValue(prompterPanel != nil || mixerCollapsed ? "Hidden" : "Shown")
                     Button { showPrompter(prompterPanel == .first ? nil : .first) } label: {
-                        Text(verbatim: "TP1").font(.system(size: 10, weight: .bold)).frame(width: 36, height: 36)
+                        Text(verbatim: "TP1").font(.system(size: 10, weight: .bold)).frame(width: 44, height: 44)
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(prompterPanel == .first ? JarasTheme.green : Color(hex: 0xff5555))
                         .accessibilityLabel("Teleprompter 1").accessibilityValue(prompterPanel == .first ? "On" : "Off")
                     Button { showPrompter(prompterPanel == .second ? nil : .second) } label: {
-                        Text(verbatim: "TP2").font(.system(size: 10, weight: .bold)).frame(width: 36, height: 36)
+                        Text(verbatim: "TP2").font(.system(size: 10, weight: .bold)).frame(width: 44, height: 44)
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(prompterPanel == .second ? JarasTheme.green : Color(hex: 0xff5555))
                         .accessibilityLabel("Teleprompter 2").accessibilityValue(prompterPanel == .second ? "On" : "Off")
                     Button { noticesOpen = true } label: {
-                        Image(systemName: "text.bubble").font(.system(size: 15, weight: .medium)).frame(width: 36, height: 36)
+                        Image(systemName: "text.bubble").font(.system(size: 15, weight: .medium)).frame(width: 44, height: 44)
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(JarasTheme.yellow).accessibilityLabel("Notices")
                         .popover(isPresented: $noticesOpen, attachmentAnchor: .rect(.bounds), arrowEdge: .leading) {
                             RemoteNativeNoticesView(close: { noticesOpen = false }, managesSubscription: false)
-                                .frame(width: 440, height: 430).preferredColorScheme(.dark)
+                                // An ideal size lets UIKit reduce the popover
+                                // above the keyboard instead of cropping it.
+                                .frame(idealWidth: 440, maxWidth: 440, idealHeight: 500, maxHeight: 500)
+                                .preferredColorScheme(.dark)
                         }
                     Button { timerOpen = true } label: {
-                        Image(systemName: "clock").font(.system(size: 16, weight: .medium)).frame(width: 36, height: 36)
+                        Image(systemName: "clock").font(.system(size: 16, weight: .medium)).frame(width: 44, height: 44)
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(Color(hex: 0x409cff)).accessibilityLabel("Timer")
                         .popover(isPresented: $timerOpen, attachmentAnchor: .rect(.bounds), arrowEdge: .leading) {
                             VStack(spacing: 0) {
@@ -1127,24 +1167,23 @@ struct DAWRemoteClientView: View {
                                 }
                             }.background(RemoteSurface.panel).preferredColorScheme(.dark)
                         }
-                    Spacer(minLength: 0)
+                    Spacer(minLength: RemoteSidebarMetrics.groupSpacing)
                     Button {
                         let wasOpen = sectionsOpen && !sectionsInList
                         sectionsInList = false
                         sectionsOpen = !wasOpen
                     } label: {
-                        SectionButtonsIcon().frame(width: 36, height: 36)
+                        SectionButtonsIcon().frame(width: 44, height: 44)
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(sectionsOpen && !sectionsInList ? JarasTheme.green : JarasTheme.secondary)
                         .accessibilityLabel("Section manager").accessibilityValue(sectionsOpen && !sectionsInList ? "Shown" : "Hidden")
                     Button { settingsOpen = true } label: {
                         Image(systemName: "gearshape").font(.system(size: 17, weight: .semibold))
-                            .frame(width: 36, height: 36).contentShape(Rectangle())
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(settingsOpen ? JarasTheme.green : JarasTheme.secondary)
                         .accessibilityLabel("Configurações")
                         .popover(isPresented: $settingsOpen) { NativeRemoteSettingsView().preferredColorScheme(.dark) }
-                        .padding(.bottom, 6)
-                    hideSidebarButton(width: 36).padding(.bottom, 4)
-                }.padding(.top, 6).frame(width: sidebarHidden ? 0 : 36).clipped().allowsHitTesting(!sidebarHidden).accessibilityHidden(sidebarHidden).background(RemoteSurface.panel)
+                    hideSidebarButton(width: 44)
+                }
                 VStack(spacing: 1) {
                     if !prompterFullscreen { transportBar }
                     HStack(spacing: 0) {
@@ -1436,9 +1475,9 @@ struct DAWRemoteClientView: View {
             }
         }.padding(6).frame(height: 82, alignment: .top).background(RemoteSurface.panel)
     }
-    private func topPrompterButton(_ panel: PrompterPanel, title: String) -> some View {
+    private func topPrompterButton(_ panel: PrompterPanel, title: String, minimumHeight: CGFloat = 25) -> some View {
         Button { showPrompter(prompterPanel == panel ? nil : panel) } label: {
-            Text(verbatim: title).font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 25)
+            Text(verbatim: title).font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: minimumHeight)
                 .modifier(RemoteControlSurface(radius: 5))
         }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(prompterPanel == panel ? JarasTheme.green : Color(hex: 0xff5555))
             .accessibilityLabel("Teleprompter \(panel.rawValue), controles superiores")
@@ -1532,14 +1571,17 @@ struct DAWRemoteClientView: View {
             ScrollViewReader { scroll in
                 ScrollView {
                     LazyVStack(spacing: 4) {
-                        if state.regions.isEmpty {
+                        if state.regions.isEmpty && (state.setlistBlocks?.isEmpty ?? true) {
                             ForEach(state.songs.filter { search.isEmpty || $0.name.localizedStandardContains(search) }) { song in
                                 Button { action(.selectSong, target: song.id) } label: {
                                     setlistLabel(song.name, selected: song.id == state.song, active: state.playing && song.id == state.song, queued: false, color: JarasTheme.panel)
                                 }.buttonStyle(RemoteFullAreaButtonStyle())
                             }
                         } else {
-                            ForEach(setlistRowsCache.rows(in: state, expanded: expandedRegions, query: search)) { row in
+                            ForEach(setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search)) { entry in
+                                switch entry {
+                                case .block(let block): RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0).equatable()
+                                case .region(let row):
                                 let region = row.region
                                 Button { action(.selectRegion, target: region.id) } label: {
                                     setlistLabel(region.name, number: row.number, played: played.contains(region.id), selected: region.id == state.focusedRegion,
@@ -1551,6 +1593,7 @@ struct DAWRemoteClientView: View {
                                 }.buttonStyle(RemoteFullAreaButtonStyle())
                                     .modifier(RemoteRegionDrawerGesture(enabled: row.hasDrawer, toggle: { toggleDrawer(region.id) }))
                                     .padding(.leading, row.child ? 20 : 0).id(row.id)
+                                }
                             }
                         }
                     }
@@ -1570,6 +1613,32 @@ struct DAWRemoteClientView: View {
             fontStyle: state.setlistFontStyle ?? 0, prepareOnly: state.prepareOnly == true).equatable()
     }
 
+}
+
+/// Playlist block headers keep their saved color, symbol and order; Observer
+/// uses the same display without acquiring any playback controls.
+private struct RemoteSetlistBlockLabel: View, Equatable {
+    let block: DAWRemoteState.SetlistBlock
+    let fontStyle: Int
+    var body: some View {
+        HStack(spacing: 8) {
+            if block.symbol {
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: 6)); path.addLine(to: CGPoint(x: 45, y: 6))
+                    path.move(to: CGPoint(x: 39, y: 0)); path.addLine(to: CGPoint(x: 45, y: 6)); path.addLine(to: CGPoint(x: 39, y: 12))
+                }.stroke(Color.yellow, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                    .frame(width: 45, height: 12).accessibilityHidden(true)
+            }
+            Text(verbatim: block.name)
+                .font(fontStyle == 2 ? .system(size: 13, weight: .bold).italic() : .system(size: 13, weight: fontStyle == 0 ? .regular : .bold))
+                .foregroundStyle(JarasTheme.green).lineLimit(2)
+        }.padding(.horizontal, 10).padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(remoteColor(block.color).opacity(0.15))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(remoteColor(block.color).opacity(0.5)))
+            .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
+    }
 }
 
 /// Static songs do not rebuild text/layout when the transport advances. Only
@@ -2784,26 +2853,44 @@ private struct RemoteNativeNoticeOverlay: View {
     @State private var draft = ""
     @State private var globalDraft = ""
     @State private var slot = -1
+    @StateObject private var sendFeedback = NoticeSendFeedback()
+    @State private var presentation = RemoteNoticePresentation()
     private var notices: DAWRemoteNotices? { remote.remoteState?.notices }
     var body: some View {
-        VStack(spacing: 10) {
+        RemoteNoticePanel {
             HStack {
-                Text("Recados").font(.headline)
+                Text("Messages").font(.headline)
                 Spacer()
-                Button("Fechar", action: close)
+                if let notices {
+                    Text(notices.pinned ? "∞" : "\(notices.remaining)s")
+                        .font(.caption).monospacedDigit().foregroundStyle(JarasTheme.secondary)
+                }
+                Button(action: closeNotices) {
+                    Text("Fechar").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(presentation.dismissed)
             }
+        } actions: {
             if let notices {
                 HStack(spacing: 8) {
-                    Button("Enviar") { command(.noticeSend, value: Double(slot), text: draft) }
-                        .buttonStyle(.borderedProminent).tint(JarasTheme.green)
+                    Button { sendNotice() } label: {
+                        NoticeSendButtonLabel(phase: sendFeedback.phase)
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(NoticeSendButtonStyle(phase: sendFeedback.phase))
                         .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (slot < 0 || !notices.imageSlots[slot]))
-                    Button("Retirar") { command(.noticeClear) }.buttonStyle(.bordered).disabled(!notices.active)
+                    Button { command(.noticeClear) } label: {
+                        Text("Withdraw message").frame(minWidth: 60, minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(RemoteNoticeActionStyle()).disabled(!notices.active)
                     Button { command(.noticePin, value: notices.pinned ? 0 : 1) } label: {
-                        Label("Fixar", systemImage: notices.pinned ? "pin.fill" : "pin")
-                    }.buttonStyle(.bordered).tint(notices.pinned ? JarasTheme.yellow : JarasTheme.secondary)
+                        Label("Pin", systemImage: notices.pinned ? "pin.fill" : "pin")
+                            .frame(minWidth: 60, minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(RemoteNoticeActionStyle())
+                        .foregroundStyle(notices.pinned ? JarasTheme.yellow : JarasTheme.text)
                     Spacer(minLength: 0)
-                    Text(notices.pinned ? "∞" : "\(notices.remaining)s").monospacedDigit().foregroundStyle(JarasTheme.secondary)
                 }.font(.system(size: 13, weight: .semibold))
+            }
+        } content: {
+            if let notices {
+                NoticeSendFeedbackView(feedback: sendFeedback)
                 Picker("Recado", selection: $slot) {
                     Text("Global").tag(-1)
                     ForEach(0..<3) { Text("Recado \($0 + 1)").tag($0) }
@@ -2811,7 +2898,7 @@ private struct RemoteNativeNoticeOverlay: View {
                     draft = value < 0 ? globalDraft : notices.templates[value]
                 }
                 TextEditor(text: $draft).font(.system(size: 18)).scrollContentBackground(.hidden)
-                    .padding(5).background(RemoteSurface.display).cornerRadius(6)
+                    .frame(height: 150).padding(5).background(RemoteSurface.display).cornerRadius(6)
                     .onChange(of: draft) { value in
                         var bounded = String(value.prefix(500))
                         while bounded.utf8.count > 4000 { bounded.removeLast() }
@@ -2835,9 +2922,39 @@ private struct RemoteNativeNoticeOverlay: View {
                     .font(.callout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
                     .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else { ProgressView("Aguardando recados…").frame(maxWidth: .infinity, maxHeight: .infinity) }
-        }.padding(16).background(RemoteSurface.panel).foregroundStyle(JarasTheme.text)
-            .onAppear { if managesSubscription { command(.remotePanel, value: 3) } }
-            .onDisappear { if managesSubscription { command(.remotePanel) } }
+        }.background(RemoteSurface.panel).foregroundStyle(JarasTheme.text)
+            .disabled(presentation.dismissed)
+            .onAppear {
+                presentation = RemoteNoticePresentation(project: remote.remoteState?.project)
+                if managesSubscription { command(.remotePanel, value: 3) }
+            }
+            .onChange(of: remote.remoteState?.project) { presentation.observe(project: $0) }
+            .onDisappear {
+                withdrawPresentedNotice()
+                sendFeedback.reset()
+                if managesSubscription { command(.remotePanel) }
+            }
+    }
+    private func closeNotices() {
+        guard !presentation.dismissed else { return }
+        if let command = presentation.dismiss(project: remote.remoteState?.project, song: remote.remoteState?.song),
+           remote.connected && !remote.reconnecting {
+            // The notices-only close action disconnects. Complete the write
+            // first so disconnect cannot cancel the withdrawal behind it.
+            remote.sendNoticeClear(command, completion: close)
+        } else { close() }
+    }
+    private func withdrawPresentedNotice() {
+        guard let command = presentation.dismiss(project: remote.remoteState?.project, song: remote.remoteState?.song),
+              remote.connected && !remote.reconnecting else { return }
+        remote.send(command)
+    }
+    private func sendNotice() {
+        let id = sendFeedback.begin()
+        guard let state = remote.remoteState else { sendFeedback.complete(id, result: .disconnected); return }
+        let command = DAWRemoteCommand(id: id, project: state.project, song: state.song,
+                                       action: .noticeSend, value: Double(slot), text: draft)
+        remote.sendNotice(command) { [weak sendFeedback] result in sendFeedback?.complete(id, result: result) }
     }
     private func command(_ action: DAWRemoteCommand.Action, value: Double = 0, text: String? = nil, enabled: Bool? = nil) {
         guard let state = remote.remoteState else { return }
@@ -2845,6 +2962,161 @@ private struct RemoteNativeNoticeOverlay: View {
     }
 }
 #endif
+
+// MARK: - Remote notice presentation
+/// Dismissal belongs to the project that opened the editor. It is never queued
+/// for a later connection or allowed to clear another project's notice.
+struct RemoteNoticePresentation {
+    private(set) var project: UUID?
+    private(set) var dismissed = false
+    init(project: UUID? = nil) { self.project = project }
+    mutating func observe(project: UUID?) {
+        if self.project == nil && !dismissed { self.project = project }
+    }
+    mutating func dismiss(project: UUID?, song: UUID?) -> DAWRemoteCommand? {
+        guard !dismissed else { return nil }
+        dismissed = true
+        guard let captured = self.project, project == captured else { return nil }
+        return .init(project: captured, song: song, action: .noticeClear)
+    }
+}
+
+/// Only the editor body scrolls. Header and actions retain their touch targets
+/// when the keyboard reduces either a popover or a phone panel's height.
+struct RemoteNoticePanel<Header: View, Actions: View, Content: View>: View {
+    @ViewBuilder let header: () -> Header
+    @ViewBuilder let actions: () -> Actions
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        VStack(spacing: 0) {
+            header().frame(minHeight: 44).padding(.horizontal, 16).padding(.top, 12)
+                .fixedSize(horizontal: false, vertical: true)
+            actions().padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 12)
+                .fixedSize(horizontal: false, vertical: true)
+            Divider()
+            ScrollView(.vertical) {
+                VStack(spacing: 10) { content() }.frame(maxWidth: .infinity)
+                    .padding(16)
+            }
+            #if os(iOS)
+            .scrollDismissesKeyboard(.interactively)
+            #endif
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+struct RemoteNoticeActionStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color.white.opacity(configuration.isPressed ? 0.22 : 0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
+            .opacity(enabled ? 1 : 0.4)
+    }
+}
+
+// MARK: - Notice delivery feedback
+/// This state is local to the sender. Network delivery can only finish after
+/// a matching application receipt; old receipts cannot confirm a newer tap.
+@MainActor final class NoticeSendFeedback: ObservableObject {
+    enum Phase: Equatable {
+        case idle, sending, finished(DAWRemoteNoticeDelivery)
+        var message: String {
+            switch self {
+            case .idle: return ""
+            case .sending: return "Sending message…"
+            case .finished(.accepted): return "Message sent."
+            case .finished(.rejected): return "Message was not sent."
+            case .finished(.disconnected): return "Not connected. Message was not sent."
+            case .finished(.unconfirmed): return "Could not confirm delivery. Check the PC."
+            }
+        }
+        var accepted: Bool { self == .finished(.accepted) }
+        var failed: Bool {
+            if case .finished(let result) = self { return result != .accepted }
+            return false
+        }
+    }
+    @Published private(set) var phase = Phase.idle
+    private var currentID: UUID?
+    private var dismissal: Task<Void, Never>?
+    private let successDuration: UInt64
+    private let failureDuration: UInt64
+    init(successDuration: UInt64 = 2_500_000_000, failureDuration: UInt64 = 5_000_000_000) {
+        self.successDuration = successDuration; self.failureDuration = failureDuration
+    }
+    func begin() -> UUID {
+        dismissal?.cancel(); dismissal = nil
+        let id = UUID(); currentID = id; phase = .sending
+        return id
+    }
+    func complete(_ id: UUID, result: DAWRemoteNoticeDelivery) {
+        guard currentID == id, phase == .sending else { return }
+        phase = .finished(result)
+        let duration = result == .accepted ? successDuration : failureDuration
+        dismissal = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: duration) } catch { return }
+            guard self?.currentID == id else { return }
+            self?.reset()
+        }
+    }
+    func reset() {
+        dismissal?.cancel(); dismissal = nil; currentID = nil; phase = .idle
+    }
+}
+
+struct NoticeSendButtonLabel: View {
+    let phase: NoticeSendFeedback.Phase
+    var body: some View {
+        Label("Send", systemImage: phase.accepted ? "checkmark" : "paperplane.fill")
+            .font(.system(size: 13, weight: .semibold))
+    }
+}
+struct NoticeSendButtonStyle: ButtonStyle {
+    let phase: NoticeSendFeedback.Phase
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.padding(.horizontal, 12)
+            .frame(minWidth: 76, minHeight: height)
+            .foregroundStyle(Color.black)
+            .background((phase == .sending ? JarasTheme.yellow : JarasTheme.green).opacity(configuration.isPressed ? 0.6 : 1))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+    }
+    private var height: CGFloat {
+        #if os(macOS)
+        return 30
+        #else
+        return 44
+        #endif
+    }
+}
+struct NoticeSendFeedbackView: View {
+    @ObservedObject var feedback: NoticeSendFeedback
+    var body: some View {
+        HStack(spacing: 6) {
+            if feedback.phase == .sending { ProgressView().controlSize(.small).accessibilityHidden(true) }
+            else if feedback.phase != .idle {
+                Image(systemName: feedback.phase.accepted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .accessibilityHidden(true)
+            }
+            Text(LocalizedStringKey(feedback.phase.message)).font(.system(size: 12, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+        }.foregroundStyle(feedback.phase.failed ? Color.red : JarasTheme.green)
+            .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("notice-send-feedback")
+            .accessibilityHidden(feedback.phase == .idle)
+            .onChange(of: feedback.phase) { phase in
+                guard case .finished = phase else { return }
+                let message = JarasLocalization.string(phase.message)
+                #if os(iOS)
+                UIAccessibility.post(notification: .announcement, argument: message)
+                #else
+                NSAccessibility.post(element: NSApplication.shared, notification: .announcementRequested,
+                    userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+                #endif
+            }
+    }
+}
 
 // MARK: - Local Remote timer
 /// Static gradients are shared by the Remote controls. No blur, shadow,

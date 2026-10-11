@@ -1,6 +1,34 @@
 import XCTest
 @testable import JarasApplication
 final class TempoMarkerTests: XCTestCase {
+    func testDenseTempoRampsLimitGridToScreenColumnsAndRetainMusicalCoordinates() {
+        let sections = (0..<12000).map { index in
+            TimelineTempoSection(start: Double(index) / 8, end: Double(index + 1) / 8,
+                bpm: 120 + Double(index % 23), beats: 4, unit: 4, timebase: .free)
+        }
+        for scale in [0.05, 0.25, 1.0, 8.0, 100.0] {
+            let end = min(1500.0, 2400 / scale)
+            let full = TimelineTimeRuler.ticks(in: sections, from: 0, to: end, pixelsPerSecond: scale)
+            let grid = TimelineTimeRuler.ticks(in: sections, from: 0, to: end, pixelsPerSecond: scale, labels: false)
+            XCTAssertLessThanOrEqual(full.count, Int(ceil(end * scale / 8)) + 2)
+            XCTAssertEqual(full.map(\.time), grid.map(\.time), "Ruler and grid use the same density even across thousands of tempo changes")
+            XCTAssertEqual(Set(full.map { Int(floor($0.time * scale / 8 + 1e-9)) }).count, full.count)
+            XCTAssertTrue(full.allSatisfy { abs($0.time * 8 - ($0.time * 8).rounded()) < 1e-8 }, "Visible positions remain actual tempo boundaries")
+            let start = end * 0.37, finish = end * 0.83
+            let tile = TimelineTimeRuler.ticks(in: sections, from: start, to: finish, pixelsPerSecond: scale, labels: false)
+            XCTAssertEqual(tile.map(\.time), grid.filter { $0.time >= start && $0.time <= finish }.map(\.time), "Panning must not move the chosen grid columns")
+        }
+    }
+    func testDenseTempoHistoryDoesNotAddGridLinesOutsideViewport() {
+        var sections = (0..<20000).map { index in
+            TimelineTempoSection(start: Double(index), end: Double(index + 1), bpm: 120, beats: 4, unit: 4, timebase: .free)
+        }
+        sections.append(.init(start: 20000, end: 86400, bpm: 90, beats: 3, unit: 4, timebase: .free))
+        let withHistory = TimelineTimeRuler.ticks(in: sections, from: 43200, to: 43220, pixelsPerSecond: 120, labels: false)
+        let onlyVisible = TimelineTimeRuler.ticks(in: [sections.last!], from: 43200, to: 43220, pixelsPerSecond: 120, labels: false)
+        XCTAssertEqual(withHistory.map(\.time), onlyVisible.map(\.time))
+        XCTAssertTrue(withHistory.allSatisfy { $0.time >= 43200 && $0.time <= 43220 })
+    }
     func testTimeRulerUsesActualGridPositionsAcrossTempoAndMeterChanges() {
         let sections = [TimelineTempoSection(start: 0, end: 5.3, bpm: 120, beats: 4, unit: 4, timebase: .free),
                         TimelineTempoSection(start: 5.3, end: 12, bpm: 90, beats: 3, unit: 4, timebase: .free)]

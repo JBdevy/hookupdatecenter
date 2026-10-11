@@ -2,6 +2,21 @@ import XCTest
 @testable import JarasApplication
 
 final class UnifiedRegionTests: XCTestCase {
+    func testConflictingDrawerMarkersRejectUnificationWithoutChangingTheProject() throws {
+        var project = fixture()
+        let group = try project.unifyRegions(containing: project.songs[0].parts[0].id, name: "Group")
+        project.songs[0].parts.removeAll { $0.name == "Separate song" }
+        project.regionSetlist = nil
+        let next = Part(id: UUID(), name: "Next", startTime: 75, endTime: 90)
+        project.songs[0].parts.append(next)
+        var duplicate = try XCTUnwrap(project.songs[0].markers?.first)
+        duplicate.id = UUID(); duplicate.name = "Conflicting drawer marker"
+        project.songs[0].markers!.append(duplicate)
+        try project.validate()
+        let before = project
+        XCTAssertThrowsError(try project.unifyRegions(containing: group, name: ""))
+        XCTAssertEqual(project, before, "An ambiguous marker must not remove or reparent any region")
+    }
     func testFlatteningGroupsAndDisunifyingPreservesExplicitContentOwnership() throws {
         var project = fixture()
         let first = project.songs[0].parts[0].id
@@ -71,9 +86,9 @@ final class UnifiedRegionTests: XCTestCase {
         XCTAssertEqual(project.overlappingRegions(containing: second.id).map(\.id), [first.id, second.id])
         let groupID = try project.unifyRegions(containing: first.id, name: "  Special region  ")
         let group = try XCTUnwrap(project.songs[0].parts.first { $0.id == groupID })
-        XCTAssertEqual(group.name, "Special region"); XCTAssertEqual(group.startTime, 32); XCTAssertEqual(group.endTime, 80)
+        XCTAssertEqual(group.name, "Special region"); XCTAssertEqual(group.startTime, 30); XCTAssertEqual(group.endTime, 80)
         XCTAssertEqual(project.songs[0].parts.filter { $0.parentRegionID == groupID }.map(\.id), [first.id, second.id])
-        XCTAssertEqual(project.songs[0].parts.first { $0.id == first.id }?.startTime, 32)
+        XCTAssertEqual(project.songs[0].parts.first { $0.id == first.id }?.startTime, 30)
         XCTAssertEqual(project.songs[0].tracks, unchanged.songs[0].tracks)
         XCTAssertEqual(project.songs[0].markers?.map(\.name), [first.name, second.name])
         XCTAssertEqual(project.songs[0].markers?.map(\.position), [30, 50])

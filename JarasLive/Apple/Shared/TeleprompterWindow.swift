@@ -309,7 +309,9 @@ private struct LocalizedTeleprompterConfig: View {
         window.title = "Teleprompter \(index)"; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 320,height: 180)
         window.level = .floating; window.hidesOnDeactivate = false; window.delegate = self
-        window.contentView = NSHostingView(rootView: TeleprompterProjectionView(index: index, display: display, preferences: preferences, video: video))
+        let host = NSHostingView(rootView: TeleprompterProjectionView(index: index, display: display, preferences: preferences, video: video))
+        if #available(macOS 13, *) { host.sizingOptions = [] }
+        window.contentView = host
         self.window = window; visible = true; display.fullscreen = false
         if index == 2 { previewActive = Self.shared.previewActive; display.previewActive = previewActive }
         video.setProjectionEnabled(!preferences.settings.displaysPreview(previewActive) || preferences.settings.isClear)
@@ -416,7 +418,9 @@ private struct LocalizedTeleprompterConfig: View {
     }
     private func showSettings(initialSlot: Int) {
         if let configuration {
-            configuration.contentView = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak configuration] in configuration?.close() }))
+            let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak configuration] in configuration?.close() }))
+            if #available(macOS 13, *) { host.sizingOptions = [] }
+            configuration.contentView = host
             configuration.makeKeyAndOrderFront(nil)
             return
         }
@@ -425,7 +429,9 @@ private struct LocalizedTeleprompterConfig: View {
         panel.contentMinSize = NSSize(width: 500,height: 520)
         panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = true
         panel.level = .normal; panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak panel] in panel?.close() }))
+        let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak panel] in panel?.close() }))
+        if #available(macOS 13, *) { host.sizingOptions = [] }
+        panel.contentView = host
         configuration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
     }
     func configureRemote(show: ShowController, directory: URL?) {
@@ -564,7 +570,7 @@ struct TPNoticeAppearance: Codable {
     var scale = 100.0
     var text: UInt32 = 0xffffff, background: UInt32 = 0x000000, flash: UInt32 = 0xffdc52
 }
-@MainActor final class TPNoticeController: ObservableObject {
+@MainActor final class TPNoticeController: NSObject, ObservableObject, NSWindowDelegate {
     static let shared = TPNoticeController()
     @Published var appearance: TPNoticeAppearance { didSet { persist() } }
     @Published var templates: [String] { didSet { persist() } }
@@ -590,6 +596,7 @@ struct TPNoticeAppearance: Codable {
         let stored = defaults.stringArray(forKey: "jaras.notices.templates") ?? []
         templates = (0..<3).map { stored.indices.contains($0) ? stored[$0] : "" }
         images = (0..<3).map { defaults.data(forKey: "jaras.notices.image.\($0)") }
+        super.init()
     }
     private func persist() {
         if let data = try? JSONEncoder().encode(appearance) { defaults.set(data, forKey: "jaras.notices.appearance") }
@@ -611,10 +618,10 @@ struct TPNoticeAppearance: Codable {
         if slot == -1 { globalDraft = draft }
         slot = index; draft = index == -1 ? globalDraft : templates[index]
     }
-    func send() {
+    @discardableResult func send() -> Bool {
         let value = String(draft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(500))
         let selectedImage = slot >= 0 ? images[slot].flatMap(NSImage.init(data:)) : nil
-        guard !value.isEmpty || selectedImage != nil else { return }
+        guard !value.isEmpty || selectedImage != nil else { return false }
         message = value; image = selectedImage; sentAt = Date(); pausedRemaining = 20
         remoteImage = slot >= 0 ? images[slot].map { "data:image/jpeg;base64," + $0.base64EncodedString() } : nil
         flashing = true; flashTask?.cancel()
@@ -623,6 +630,7 @@ struct TPNoticeAppearance: Codable {
             self?.flashing = false
         }
         schedule(seconds: 20)
+        return true
     }
     private func schedule(seconds: Double) {
         expiry?.cancel(); deadline = pinned ? nil : Date().addingTimeInterval(seconds)
@@ -656,9 +664,17 @@ struct TPNoticeAppearance: Codable {
         if let panel { panel.makeKeyAndOrderFront(nil); return }
         let window = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 520,height: 430),styleMask: [.titled,.closable,.resizable],backing: .buffered,defer: false)
         window.title = JarasLocalization.string("Messages"); window.isReleasedWhenClosed = false
+        window.delegate = self
         window.contentMinSize = NSSize(width: 420,height: 360)
-        window.contentView = NSHostingView(rootView: TPNoticeEditor(model: self))
+        let host = NSHostingView(rootView: TPNoticeEditor(model: self))
+        if #available(macOS 13, *) { host.sizingOptions = [] }
+        window.contentView = host
         window.center(); window.makeKeyAndOrderFront(nil); panel = window
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === panel else { return }
+        clear()
+        panel = nil
     }
 }
 struct TPNoticeButton: View {
@@ -676,15 +692,22 @@ struct TPNoticeButton: View {
 private struct TPNoticeEditor: View {
     @AppStorage("jaras.language") private var language = "en"
     @ObservedObject var model: TPNoticeController
+    @StateObject private var sendFeedback = NoticeSendFeedback()
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Button("Send") { model.send() }.keyboardShortcut(.return, modifiers: .command)
+                Button {
+                    let id = sendFeedback.begin()
+                    sendFeedback.complete(id, result: model.send() ? .accepted : .rejected)
+                } label: { NoticeSendButtonLabel(phase: sendFeedback.phase) }
+                    .buttonStyle(NoticeSendButtonStyle(phase: sendFeedback.phase))
+                    .keyboardShortcut(.return, modifiers: .command)
                 Button("Withdraw message") { model.clear() }.disabled(!model.active)
                 Toggle("Pin", isOn: Binding(get: { model.pinned },set: { _ in model.togglePin() })).toggleStyle(.button)
                 Spacer()
                 TimelineView(.animation(minimumInterval: 0.25, paused: !model.active || model.pinned)) { context in Text("\(Int(ceil(model.remaining(at: context.date))))s").monospacedDigit() }
             }
+            NoticeSendFeedbackView(feedback: sendFeedback)
             Picker("Message", selection: Binding(get: { model.slot },set: { model.select($0) })) {
                 Text("Global").tag(-1)
                 ForEach(0..<3) { index in Text("Message \(index + 1)").tag(index) }
@@ -702,6 +725,7 @@ private struct TPNoticeEditor: View {
                 }
             }
         }.padding(16).background(JarasTheme.panel).foregroundStyle(JarasTheme.text).environment(\.locale, Locale(identifier: language))
+            .onDisappear { sendFeedback.reset() }
     }
 }
 struct TPNoticeSettingsView: View {

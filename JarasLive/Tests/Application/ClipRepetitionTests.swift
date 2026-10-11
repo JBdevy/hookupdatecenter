@@ -23,4 +23,18 @@ final class ClipRepetitionTests: XCTestCase {
         let plain = AudioClip(id: UUID(), name: "MTC", startTime: 30, duration: 100)
         XCTAssertTrue(Array(ClipRepetitionBoundaries(clip: plain, visible: 0...100)).isEmpty)
     }
+    func testSlowedItemUsesSourceTimeForSeamsAcrossTempoChanges() {
+        let item = clip(start: 0, duration: 15)
+        let fragments = [clip(start: 0, duration: 5), clip(start: 5, duration: 10, offset: 5, rate: 0.5)]
+        XCTAssertEqual(ClipRepetitionBoundaries.positions(clip: item, fragments: fragments, visible: 0...100), [])
+        let repeated = clip(start: 0, duration: 25)
+        let repeatedFragments = [fragments[0], clip(start: 5, duration: 20, offset: 5, rate: 0.5)]
+        XCTAssertEqual(ClipRepetitionBoundaries.positions(clip: repeated, fragments: repeatedFragments, visible: 0...100), [15])
+    }
+    func testSeamOnTempoBoundaryAppearsOnce() {
+        let item = clip(start: 0, duration: 30)
+        let fragments = [clip(start: 0, duration: 10), clip(start: 10, duration: 20, offset: 10, rate: 0.5)]
+        XCTAssertEqual(ClipRepetitionBoundaries.positions(clip: item, fragments: fragments, visible: 0...100), [10])
+    }
+
 }

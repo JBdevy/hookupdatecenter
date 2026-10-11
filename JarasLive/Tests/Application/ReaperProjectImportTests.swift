@@ -142,7 +142,7 @@ final class ReaperProjectImportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), original)
         XCTAssertThrowsError(try ProjectMigration.save(result, to: destination))
     }
-    func testSelectedTakeMediaCopyAndIndependentSameNames() throws {
+    func testAllTakeMediaCopyAndIndependentSameNames() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = try fixture("""
@@ -178,16 +178,18 @@ final class ReaperProjectImportTests: XCTestCase {
         let bytes = Data("original".utf8); try bytes.write(to: audio)
         let result = try ReaperProjectImporter.read(url)
         let clips = result.project.songs[0].tracks[0].clips
-        XCTAssertEqual(clips[0].name, "active")
-        XCTAssertEqual(clips[0].sourceOffset, 3)
-        XCTAssertEqual(result.media.count, 2)
+        XCTAssertEqual(clips.map(\.name), ["old", "active", "Guitar.wav"])
+        XCTAssertEqual(clips[1].sourceOffset, 3)
+        XCTAssertEqual(clips[0].startTime, clips[1].startTime)
+        XCTAssertEqual(clips[0].duration, clips[1].duration)
+        XCTAssertEqual(result.media.count, 3)
         XCTAssertNotEqual(clips[0].audioFile, clips[1].audioFile)
         XCTAssertEqual(result.media.filter { $0.source != nil }.count, 1)
         let destination = directory.appendingPathComponent("Out.jl")
         try ProjectMigration.save(result, to: destination)
-        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(clips[0].audioFile!.path)), bytes)
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(clips[1].audioFile!.path)), bytes)
         XCTAssertEqual(try Data(contentsOf: audio), bytes)
-        XCTAssertEqual(ProjectAudioRecovery.missingPaths(in: result.project, directory: directory), [clips[1].audioFile!.path])
+        XCTAssertEqual(ProjectAudioRecovery.missingPaths(in: result.project, directory: directory), [clips[0].audioFile!.path, clips[2].audioFile!.path].sorted())
     }
     func testRejectsMalformedInputWithoutCreatingDestination() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

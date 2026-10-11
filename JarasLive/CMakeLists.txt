@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(JarasLiveCore VERSION 1.0.0 LANGUAGES CXX)
+project(JarasLiveCore VERSION 1.1.0 LANGUAGES CXX)
 add_library(JarasLiveCore Core/Project/Models.cpp Core/Transport/Engine.cpp Core/Import/TrackTaxonomy.cpp)
 target_compile_features(JarasLiveCore PUBLIC cxx_std_17)
 target_include_directories(JarasLiveCore PUBLIC Core)

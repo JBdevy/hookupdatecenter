@@ -51,7 +51,7 @@ PY
 swiftc -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
   Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
-  Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift \
+  Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift \
   Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift \
   Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift \
   "$test_dir/RegionEditor.swift" "$test_dir/main.swift" -o "$test_dir/test"

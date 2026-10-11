@@ -48,6 +48,7 @@ struct MetalTimelineItem: Equatable {
     var headerHeight: Float = 0
     var firstSeamX: CGFloat? = nil
     var repeatSpacing: CGFloat? = nil
+    var visibleX: ClosedRange<CGFloat>? = nil
 }
 
 struct MetalWaveformFrame {
@@ -699,6 +700,7 @@ final class MetalWaveformEngine {
         var border: SIMD4<Float>
         var style: SIMD4<Float>
         var notch: SIMD4<Float>
+        var visibleX: SIMD4<Float>
     }
 
     @discardableResult
@@ -746,7 +748,8 @@ final class MetalWaveformEngine {
                 batch.append(ItemUniforms(rect: SIMD4(Float(r.minX), Float(r.minY), Float(r.maxX), Float(r.maxY)),
                     top: item.topColor, bottom: item.bottomColor, border: item.borderColor,
                     style: SIMD4(max(0, item.cornerRadius), max(0, item.borderWidth), max(0, item.headerHeight), 0),
-                    notch: SIMD4(Float(item.firstSeamX ?? 0), spacing.isFinite && spacing > 0 ? spacing : 0, 4, min(5, Float(r.height) / 3))))
+                    notch: SIMD4(Float(item.firstSeamX ?? 0), spacing.isFinite && spacing > 0 ? spacing : 0, 4, min(5, Float(r.height) / 3)),
+                    visibleX: SIMD4(Float(item.visibleX?.lowerBound ?? -.greatestFiniteMagnitude), Float(item.visibleX?.upperBound ?? .greatestFiniteMagnitude), 0, 0)))
                 if batch.count == 32 { flush() }
             }
             flush()
@@ -859,7 +862,7 @@ final class MetalWaveformEngine {
     #include <metal_stdlib>
     using namespace metal;
     struct TimelineItemUniforms {
-        float4 rect, top, bottom, border, style, notch;
+        float4 rect, top, bottom, border, style, notch, visibleX;
     };
     struct TimelineItemOut {
         float4 position [[position]];
@@ -873,6 +876,7 @@ final class MetalWaveformEngine {
         float padding = u.style.y * 0.5 + 1.0 / screen.z;
         float2 lower = max(u.rect.xy - padding, float2(0));
         float2 upper = min(u.rect.zw + padding, screen.xy);
+        lower.x = max(lower.x, u.visibleX.x); upper.x = min(upper.x, u.visibleX.y);
         float2 point = mix(lower, upper, corners[vertexID]);
         TimelineItemOut out;
         out.screen = point;

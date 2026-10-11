@@ -43,17 +43,24 @@ public extension Project {
         guard existingGroup != nil || !name.isEmpty else { throw ProjectError.invalid("Choose a name") }
         let members = (roots.filter { !replacedGroups.contains($0.id) } + children)
             .sorted { $0.startTime == $1.startTime ? $0.endTime < $1.endTime : $0.startTime < $1.startTime }
-        let firstFile = songs[songIndex].tracks.filter { $0.kind == .standard }.flatMap(\.clips)
-            .filter { $0.startTime >= first.startTime && $0.startTime < first.endTime }.map(\.startTime).min()
-        let start = min(firstFile ?? first.startTime, (members.map(\.endTime).min() ?? first.endTime) - 0.001)
-        let end = roots.map(\.endTime).max()!
+        // The wrapper covers complete songs, including silence before their
+        // first item. Media placement must never trim the first drawer entry.
+        let originalFlags = (songs[songIndex].markers ?? []).filter { $0.unifiedRegionID.map(rootIDs.contains) == true }
+        let start = (roots.map(\.startTime) + members.map(\.startTime) + originalFlags.map(\.position)).min()!
+        let end = (roots.map(\.endTime) + members.map(\.endTime)).max()!
+        var originalMarkers: [UUID: TimelineMarker] = [:]
+        for marker in originalFlags where marker.unifiedRegionID.map(replacedGroups.contains) == true {
+            guard let source = marker.sourceRegionID else { continue }
+            guard originalMarkers.updateValue(marker, forKey: source) == nil else {
+                throw ProjectError.invalid("More than one unified marker refers to the same song. Resolve the duplicate markers before unifying these regions.")
+            }
+        }
         var group = existingGroup ?? Part(id: UUID(), name: name, startTime: start, endTime: end, color: first.color)
         group.startTime = start; group.endTime = end
         songs[songIndex].parts.removeAll { replacedGroups.contains($0.id) }
         let memberIDs = Set(members.map(\.id))
         for index in songs[songIndex].parts.indices where memberIDs.contains(songs[songIndex].parts[index].id) {
             songs[songIndex].parts[index].parentRegionID = group.id
-            songs[songIndex].parts[index].startTime = max(start, songs[songIndex].parts[index].startTime)
         }
         songs[songIndex].parts.append(group)
         for track in songs[songIndex].tracks.indices {
@@ -67,10 +74,6 @@ public extension Project {
         for index in markers.indices where markers[index].regionOwnerID.map(replacedGroups.contains) == true {
             markers[index].regionOwnerID = group.id
         }
-        let originalMarkers = Dictionary(uniqueKeysWithValues: markers.compactMap { marker -> (UUID, TimelineMarker)? in
-            guard let source = marker.sourceRegionID, marker.unifiedRegionID.map(replacedGroups.contains) == true else { return nil }
-            return (source, marker)
-        })
         markers.removeAll { $0.unifiedRegionID.map(replacedGroups.contains) == true }
         markers += members.map { TimelineMarker(id: UUID(), name: originalMarkers[$0.id]?.name ?? $0.name, position: originalMarkers[$0.id]?.position ?? $0.startTime, color: originalMarkers[$0.id]?.color ?? $0.color ?? 0x54ff93, unifiedRegionID: group.id, sourceRegionID: $0.id) }
         songs[songIndex].markers = markers

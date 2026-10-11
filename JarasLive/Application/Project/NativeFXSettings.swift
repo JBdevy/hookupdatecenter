@@ -177,9 +177,9 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public init() {}
     public func validateForClip() throws {
         try validate()
-        guard inserted.allSatisfy({ Self.order.dropFirst().contains($0) || $0 == Self.stemSeparator }),
-              instances?.isEmpty != false, externalPlugins?.isEmpty != false, instrumentID == nil, instrumentParameters == nil, instrumentBypassed == nil
-        else { throw ProjectError.invalid("Items support EQ, Compressor, Pitch, Delay, Reverb and Limiter only") }
+        guard inserted.allSatisfy({ key in Self.order.dropFirst().contains(key) || key == Self.stemSeparator || externalPlugins?.contains(where: { $0.effectKey == key }) == true }),
+              instances?.isEmpty != false, instrumentID == nil, instrumentParameters == nil, instrumentBypassed == nil
+        else { throw ProjectError.invalid("Items support native audio effects and VST3 effects, without native instruments") }
     }
     public func validate() throws {
         try stemMix?.validate()

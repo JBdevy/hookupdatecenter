@@ -74,30 +74,85 @@ public struct MIDIPlaybackNote: Equatable, Sendable {
     public var velocity: Int
     public var channel: Int
 }
+public extension MIDIPlaybackNote {
+    /// Integer UUID words remain exact in the numeric bridge dictionary and
+    /// identify the same held note after a tempo/timebase remap.
+    var sequenceValues: [String: Double] {
+        var result = ["start": start, "end": end, "pitch": Double(pitch), "velocity": Double(velocity), "channel": Double(channel)]
+        var uuid = sourceID.uuid
+        withUnsafeBytes(of: &uuid) { bytes in
+            for word in 0..<4 {
+                var value: UInt32 = 0
+                for byte in 0..<4 { value |= UInt32(bytes[word * 4 + byte]) << (byte * 8) }
+                result["sourceID\(word)"] = Double(value)
+            }
+        }
+        return result
+    }
+}
 public extension AudioClip {
+    /// A take instrument owns its own notes and audio; it must not also feed
+    /// the track instrument. Bypassed/missing inserts retain the track path.
+    var hasTakeInstrument: Bool {
+        midi != nil && fxBypassed != true && fx?.externalPlugins?.contains(where: {
+            !$0.bypassed && $0.category.contains("Instrument") && fx?.inserted.contains($0.effectKey) == true
+        }) == true
+    }
     /// Same source offset/rate contract as audio, including left trims and splits.
     func midiPlaybackNotes() -> [MIDIPlaybackNote] {
         guard let midi, muted != true else { return [] }
         let seconds = 60 / midi.sourceBPM
         let rate = audioRate
         var result: [MIDIPlaybackNote] = []
+        let sourceEnd = sourceOffset + duration * rate
         for note in midi.notes {
-            let rawStart = note.start * seconds, rawEnd = note.end * seconds
-            let start = max(startTime, startTime + (rawStart - sourceOffset) / rate)
-            let end = min(startTime + duration, startTime + (rawEnd - sourceOffset) / rate)
-            if end > start {
-                result.append(MIDIPlaybackNote(sourceID: note.id, start: start, end: end, pitch: note.pitch,
-                    velocity: max(1, min(127, Int((Double(note.velocity) * (gain ?? 1)).rounded()))), channel: note.channel))
+            let noteStart = note.start * seconds, noteEnd = note.end * seconds
+            let loop = loopLength.flatMap { $0 > 0 && $0.isFinite ? $0 : nil }
+            let origin = loopStart ?? 0
+            let firstCycle = loop.map { max(0, Int(floor((sourceOffset - origin) / $0))) } ?? 0
+            let lastCycle = loop.map { max(firstCycle, Int(ceil((sourceEnd - origin) / $0)) - 1) } ?? 0
+            for cycle in firstCycle...lastCycle {
+                let shift = Double(cycle) * (loop ?? 0)
+                let rawStart = loop == nil ? noteStart : max(origin, noteStart) + shift
+                let rawEnd = loop.map { min(origin + $0, noteEnd) + shift } ?? noteEnd
+                guard rawEnd > rawStart else { continue }
+                let start = max(startTime, startTime + (rawStart - sourceOffset) / rate)
+                let end = min(startTime + duration, startTime + (rawEnd - sourceOffset) / rate)
+                if end > start {
+                    // Each repetition must retrigger; only pieces of the same
+                    // held note across tempo boundaries share an identity.
+                    var identifier = note.id.uuid
+                    if cycle > 0 {
+                        withUnsafeMutableBytes(of: &identifier) { bytes in
+                            for index in 0..<8 { bytes[index + 8] ^= UInt8(truncatingIfNeeded: UInt64(cycle) >> (index * 8)) }
+                        }
+                    }
+                    result.append(MIDIPlaybackNote(sourceID: UUID(uuid: identifier), start: start, end: end, pitch: note.pitch,
+                        // Saturate in floating point before converting: a valid
+                        // finite item gain can exceed Int.max when multiplied.
+                        velocity: Int(min(127, max(1, (Double(note.velocity) * (gain ?? 1)).rounded()))), channel: note.channel))
+                }
             }
         }
         return (gain ?? 1) <= 0 ? [] : result.sorted { $0.start < $1.start }
+    }
+    /// Muting a take or lowering its gain must not erase its notes from the
+    /// timeline. Keep the same trim/rate/loop mapping as playback, without its
+    /// audibility filters; the source item's saved state remains unchanged.
+    func midiDisplayNotes() -> [MIDIPlaybackNote] {
+        var visible = self
+        visible.muted = false; visible.gain = 1
+        return visible.midiPlaybackNotes()
     }
 }
 
 public extension Song {
     func midiPlaybackNotes(in clip: AudioClip) -> [MIDIPlaybackNote] {
         var result: [MIDIPlaybackNote] = [], last: [UUID: Int] = [:]
-        for segment in tempoAudioSegments(clip) {
+        var source = clip.sourceOffset
+        for var segment in tempoAudioSegments(clip) {
+            segment.sourceOffset = source
+            source += segment.duration * segment.audioRate
             for note in segment.midiPlaybackNotes() {
                 if let index = last[note.sourceID], abs(result[index].end - note.start) < 0.000001 {
                     result[index].end = note.end

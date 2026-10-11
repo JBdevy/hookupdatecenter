@@ -130,6 +130,7 @@ enum AppStartupPresentation {
                 TeleprompterWindow.second.update(show.snapshot, revision: show.projectRevision)
             }
             #endif
+            show.audioAutomationOverride = { audio.overrideAutomation($0, envelope: $1, value: $2) }
             show.audioFX = { audio.previewFX($0, settings: $1) }
             show.audioClipFX = { audio.previewClipFX($0, settings: $1) }
             show.audioClipFXBypass = { audio.previewClipFXBypass($0, bypassed: $1) }
@@ -140,6 +141,7 @@ enum AppStartupPresentation {
             show.audioItemChannelMode = { audio.previewItemChannelMode($0, mode: $1) }
             show.audioItemNormalization = { audio.previewItemNormalization($0, gain: $1) }
             show.audioVolume = { audio.previewVolume($0, gain: $1) }
+            show.audioMasterPan = { audio.previewMasterPan($0) }
             show.audioPan = { audio.previewPan($0, pan: $1) }
             show.audioMute = { [weak show] track, muted in
                 audio.previewMute(track, muted: muted)

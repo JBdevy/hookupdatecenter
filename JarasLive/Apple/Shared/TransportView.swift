@@ -63,7 +63,7 @@ struct TransportView: View {
                     .frame(height: 43)
             }.frame(width: buttonWidth)
             #endif
-            MasterStrip(show: show).frame(width: 190)
+            MasterStrip(show: show).frame(width: 230)
             VStack(spacing: 5) {
                 HStack(spacing: spacing) {
                     transportDisplay
@@ -98,21 +98,21 @@ struct TransportView: View {
                         Label { Text(verbatim: transport.playing ? "Stop" : "Play") } icon: {
                             Image(systemName: transport.playing ? "stop.fill" : "play.fill").frame(width: 12)
                         }
-                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: transport.playing, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height)).jarasHelp(ControlMappings.shared.shortcutHelp(.playStop))
+                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: transport.playing, fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height)).jarasHelp(ControlMappings.shared.shortcutHelp(.playStop))
                     Button { show.send(.pause) } label: { Image(systemName: "pause.fill") }
-                        .buttonStyle(TransportButtonStyle(fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
+                        .buttonStyle(TransportButtonStyle(fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height))
                         .accessibilityLabel("Pause").jarasHelp("Pause").disabled(!transport.playing)
                     Button { show.send(transport.subPlay.playing ? .subStop : .subPlay) } label: {
                         HStack(spacing: 2) {
                             Image(systemName: transport.subPlay.playing ? "pause.fill" : "play.fill")
                             Text("Sub Play")
                         }
-                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: transport.subPlay.playing, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
+                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: transport.subPlay.playing, fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height))
                         .disabled(!transport.playing).jarasHelp(ControlMappings.shared.shortcutHelp(.subPlayStop))
                     RepeatControl(active: transport.loop.enabled) { show.send(.toggleLoop) }
                     TransportRecordButton(show: show)
                     MetronomeControl(show: show)
-                    }.fixedSize(horizontal: true, vertical: false)
+                    }.environment(\.transportControlWidth, max(46, buttonWidth - 8)).fixedSize(horizontal: true, vertical: false)
                     Spacer(minLength: 0)
                     TempoControl(show: show)
                     #if os(macOS)
@@ -768,14 +768,28 @@ private struct NativeMetronomePulse<Content: View>: NSViewRepresentable {
     let show: ShowController
     let enabled: Bool
     let content: Content
-    @Environment(\.self) private var environment
+    @Environment(\.locale) private var locale
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.font) private var font
+    @Environment(\.controlSize) private var controlSize
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private var hostedContent: AnyView {
+        AnyView(content.environment(\.locale, locale).environment(\.colorScheme, colorScheme)
+            .environment(\.isEnabled, isEnabled)
+            .environment(\.layoutDirection, layoutDirection).environment(\.displayScale, displayScale)
+            .environment(\.font, font).environment(\.controlSize, controlSize)
+            .environment(\.dynamicTypeSize, dynamicTypeSize))
+    }
     func makeNSView(context: Context) -> NativeMetronomePulseHost {
-        let host = NativeMetronomePulseHost(rootView: AnyView(content.environment(\.self, environment)))
+        let host = NativeMetronomePulseHost(rootView: hostedContent)
         host.bind(show, enabled: enabled)
         return host
     }
     func updateNSView(_ host: NativeMetronomePulseHost, context: Context) {
-        host.rootView = AnyView(content.environment(\.self, environment))
+        host.rootView = hostedContent
         host.bind(show, enabled: enabled)
     }
     static func dismantleNSView(_ host: NativeMetronomePulseHost, coordinator: ()) { host.stop() }
@@ -788,7 +802,13 @@ private final class NativeMetronomePulseHost: NSHostingView<AnyView> {
     private var snapshotSubscription: AnyCancellable?
     private var projectSubscription: AnyCancellable?
     private var opacity: Float = 1
-    required init(rootView: AnyView) { super.init(rootView: rootView); wantsLayer = true; applyOpacity() }
+    required init(rootView: AnyView) {
+        super.init(rootView: rootView)
+        // This control already has an explicit transport width and height.
+        if #available(macOS 13, *) { sizingOptions = [] }
+        if #available(macOS 13.3, *) { safeAreaRegions = [] }
+        wantsLayer = true; applyOpacity()
+    }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var layer: CALayer? { didSet { applyOpacity() } }
     private func applyOpacity() {

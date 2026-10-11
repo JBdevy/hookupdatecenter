@@ -2,6 +2,57 @@ import XCTest
 @testable import JarasApplication
 
 final class ProjectFolderDeletionTests: XCTestCase {
+    func testOnlyOwnedMediaCachesAndMatchingBackupsAreDeleted() async throws {
+        let (_, document) = try fixture(), fm = FileManager.default
+        let folder = document.deletingLastPathComponent()
+        var project = Project.empty(name: "Owned")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        track.clips = [AudioClip(id: UUID(), name: "Owned", startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/owned.wav"))]
+        project.songs[0].tracks = [track]
+        try ProjectDocumentCodec.write(project, to: document)
+        let unrelated = ["notes.txt", "original.rpp", "Stems/not-owned.wav", "backups/receipt.pdf"]
+        let owned = ["Stems/owned.wav", "Stems/WF/owned.wav.waveform", "Stems/deleted-earlier.wav", "backups/Media/archived.wav"]
+        for path in unrelated + owned {
+            let url = folder.appendingPathComponent(path)
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data([1, 2, 3]).write(to: url)
+        }
+        try ProjectMediaCleanup.remember(project: project, document: document, knownPaths: ["Stems/deleted-earlier.wav"])
+        var backup = project
+        backup.songs[0].tracks[0].clips[0].audioFile?.path = "backups/Media/archived.wav"
+        let saved = folder.appendingPathComponent("backups/Owned.bkjl")
+        try ProjectDocumentCodec.write(backup, to: saved)
+        let otherBackup = folder.appendingPathComponent("backups/Another.bkjl")
+        try ProjectDocumentCodec.write(.empty(name: "Another"), to: otherBackup)
+        let plan = try ProjectFolderDeletion(document: document)
+        try await Task.sleep(nanoseconds: 3_100_000_000)
+        try plan.remove()
+        for path in owned { XCTAssertFalse(fm.fileExists(atPath: folder.appendingPathComponent(path).path), path) }
+        for path in unrelated { XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(path)), Data([1, 2, 3]), path) }
+        XCTAssertFalse(fm.fileExists(atPath: saved.path))
+        XCTAssertTrue(fm.fileExists(atPath: otherBackup.path))
+        XCTAssertTrue(fm.fileExists(atPath: folder.path))
+    }
+    func testSiblingAddedDuringCountdownProtectsSharedAudioAndUnknownFiles() async throws {
+        let (_, document) = try fixture(), fm = FileManager.default
+        let folder = document.deletingLastPathComponent()
+        var project = Project.empty(name: "One")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        track.clips = [AudioClip(id: UUID(), name: "Shared", startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/shared.wav"))]
+        project.songs[0].tracks = [track]
+        try ProjectDocumentCodec.write(project, to: document)
+        try fm.createDirectory(at: folder.appendingPathComponent("Stems/WF"), withIntermediateDirectories: true)
+        for path in ["Stems/shared.wav", "Stems/WF/shared.wav.waveform"] { try Data([4]).write(to: folder.appendingPathComponent(path)) }
+        let plan = try ProjectFolderDeletion(document: document)
+        var other = Project.empty(name: "Two"); other.songs[0].tracks = [track]
+        let sibling = folder.appendingPathComponent("Other.jl")
+        try ProjectDocumentCodec.encode(other).write(to: sibling)
+        try await Task.sleep(nanoseconds: 3_100_000_000)
+        try plan.remove()
+        XCTAssertTrue(fm.fileExists(atPath: sibling.path))
+        XCTAssertTrue(fm.fileExists(atPath: folder.appendingPathComponent("Stems/shared.wav").path))
+        XCTAssertTrue(fm.fileExists(atPath: folder.appendingPathComponent("Stems/WF/shared.wav.waveform").path))
+    }
     private func fixture() throws -> (URL, URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("jaras-delete-\(UUID())")
         let folder = root.appendingPathComponent("Project")
@@ -11,7 +62,7 @@ final class ProjectFolderDeletionTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         return (root, document)
     }
-    func testDelayAndCompleteFolderRemovalPreservesSiblingsAndLinkedMedia() async throws {
+    func testDelayDeletesDocumentWithoutRemovingUnrelatedContents() async throws {
         let (root, document) = try fixture(), fm = FileManager.default
         let folder = document.deletingLastPathComponent()
         let outside = root.appendingPathComponent("outside.wav")
@@ -29,7 +80,7 @@ final class ProjectFolderDeletionTests: XCTestCase {
         XCTAssertFalse(plan.contains(root.appendingPathComponent("Project-copy/test.jl")))
         try await Task.sleep(nanoseconds: 3_100_000_000)
         try plan.remove()
-        XCTAssertFalse(fm.fileExists(atPath: folder.path))
+        XCTAssertTrue(fm.fileExists(atPath: folder.path))
         XCTAssertEqual(try Data(contentsOf: outside), Data([1, 2, 3]))
     }
     func testSharedProjectsUseFileOnlyDeletionAndAliasesAreRejected() throws {
@@ -57,7 +108,7 @@ final class ProjectFolderDeletionTests: XCTestCase {
         try await Task.sleep(nanoseconds: 3_100_000_000)
         let other = folder.appendingPathComponent("Other.jl")
         try ProjectDocumentCodec.encode(.empty(name: "Other")).write(to: other)
-        XCTAssertThrowsError(try plan.remove())
+        try plan.validate() // A sibling never permits deleting the whole folder.
         try fm.removeItem(at: other)
         try fm.moveItem(at: folder, to: moved)
         try fm.createDirectory(at: folder, withIntermediateDirectories: false)

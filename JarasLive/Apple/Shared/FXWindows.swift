@@ -17,9 +17,9 @@ struct FXInsertEditor: View {
     @State private var browsingExternal = false
     #endif
     private var availableEffects: [String] {
-        var result = track == nil ? ["EQ", "Compressor", "Limiter"] : NativeFXSettings.order.filter { targets.count == 1 || $0 != "Instruments" }
+        var result = NativeFXSettings.order.filter { $0 != "Instruments" || (track != nil && targets.count == 1) }
         #if os(macOS)
-        if track != nil && targets.count == 1 { result.append("CatStemSeparation 5") }
+        if targets.count == 1 { result.append(NativeFXSettings.stemSeparator) }
         result.append("External")
         #endif
         return result
@@ -172,7 +172,11 @@ private struct LocalizedClipFXEditor: View {
     }
     private func content(_ key: WindowKey, show: ShowController, panel: NSPanel, preferredEffect: String?) -> NSView {
         switch key.target {
-        case .clip(let clip): return NSHostingView(rootView: clipContent(clip, show: show, panel: panel))
+        case .clip(let clip):
+            let host = NSHostingView(rootView: clipContent(clip, show: show, panel: panel))
+            // The panel owns its initial size and resizing limits.
+            if #available(macOS 13, *) { host.sizingOptions = [] }
+            return host
         case .track(let track, _):
             let view = TrackFXChainView(show: show, track: track, effect: preferredEffect ?? show.fxSettings(track).effectKeys.first ?? "EQ", panel: panel)
             panel.setContentSize(view.preferredContentSize)
@@ -234,9 +238,11 @@ private struct LocalizedClipFXEditor: View {
         }
     }
     func suspendAudioEditors() {
+        ClipExternalPluginHostView.suspendAll()
         for panel in windows.values { (panel.contentView as? TrackFXChainView)?.suspendAudioEditor() }
     }
     func restoreAudioEditors() {
+        ClipExternalPluginHostView.restoreAll()
         for panel in windows.values { (panel.contentView as? TrackFXChainView)?.restoreAudioEditor() }
     }
     func closeAll() { for panel in Array(windows.values) { panel.close() }; windows.removeAll() }

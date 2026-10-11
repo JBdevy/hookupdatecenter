@@ -1290,3 +1290,44 @@
 "Render each selected region through the Master, including tracks routed to hardware outputs." = "Renderiza cada região selecionada pelo Master, incluindo pistas roteadas para saídas de hardware.";
 
 "Cut" = "Recortar";
+
+"The CatLive project and its own media, waveform caches and backups will be permanently deleted. The containing folder, unrelated files and media shared with other projects will be kept. This cannot be undone." = "O projeto CatLive e suas próprias mídias, caches de waveform e backups serão apagados permanentemente. A pasta, os arquivos não relacionados e as mídias compartilhadas com outros projetos serão preservados. Esta ação não pode ser desfeita.";
+"A separate folder with this project name will be created in the chosen location for the CatLive project, media and backups." = "Uma pasta exclusiva com o nome do projeto será criada no local escolhido para o projeto CatLive, as mídias e os backups.";
+"Choose a CatLive project file, not a symbolic link." = "Selecione o arquivo do projeto CatLive, não um link simbólico.";
+
+"Dock mixer" = "Indexar";
+"Undock mixer" = "Desindexar";
+
+"Envelopes" = "Envelopes";
+
+"Automation enabled" = "Automação ativada";
+
+"Search parameters" = "Buscar parâmetros";
+
+"Visible" = "Visível";
+
+"Arm" = "Armar";
+
+"Select parameters to create envelopes." = "Selecione parâmetros para criar envelopes.";
+
+"Square" = "Quadrada";
+
+"Smooth" = "Suave";
+
+"Fast start" = "Início rápido";
+
+"Fast end" = "Final rápido";
+
+"Double-click to add a point. Drag to move. Shift disables snap. Delete removes selected points. Right-click changes the curve." = "Duplo clique adiciona um ponto. Arraste para mover. Shift libera da grade. Delete apaga pontos selecionados. Clique direito altera a curva.";
+
+"Envelope settings" = "Configurações de envelopes";
+
+"Hide envelope" = "Ocultar envelope";
+
+"Edit envelope points in the grid, below the track." = "Edite os pontos do envelope no grid, abaixo da pista.";
+
+"Sending message…" = "Enviando recado…";
+"Message sent." = "Recado enviado.";
+"Message was not sent." = "O recado não foi enviado.";
+"Not connected. Message was not sent." = "Sem conexão. O recado não foi enviado.";
+"Could not confirm delivery. Check the PC." = "Não foi possível confirmar o envio. Confira no PC.";

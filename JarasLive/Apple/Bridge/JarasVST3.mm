@@ -37,6 +37,8 @@ DEF_CLASS_IID(IEventList) DEF_CLASS_IID(IMidiMapping)
 }}
 namespace {
 template<class T> bool iidIs(const TUID id) { return FUnknownPrivate::iidEqual(id,T::iid); }
+template<> bool iidIs<FUnknown>(const TUID id) { return FUnknownPrivate::iidEqual(id,FUnknown_iid); }
+template<> bool iidIs<IBStream>(const TUID id) { return FUnknownPrivate::iidEqual(id,IBStream_iid); }
 template<class T> T *query(FUnknown *object) { T *result=nullptr; if(object) object->queryInterface(T::iid,(void **)&result); return result; }
 // The scanner enters before global FUID constructors run. Factory interface
 // identifiers must therefore use their constant bytes in that early process.
@@ -91,13 +93,38 @@ public:
 };
 class Stream final: public IBStream {
 public:
+    static constexpr int64 maximumSize=256*1024*1024;
     std::vector<uint8> bytes; int64 position=0; FIXED_REF
     Stream()=default;
-    explicit Stream(NSData *data) { if(data.length) bytes.assign((const uint8 *)data.bytes,(const uint8 *)data.bytes+data.length); }
+    explicit Stream(NSData *data) {
+        if(data.length>maximumSize)throw std::runtime_error("VST3 state exceeds the supported size.");
+        if(data.length)bytes.assign((const uint8 *)data.bytes,(const uint8 *)data.bytes+data.length);
+    }
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override { *out=nullptr;if(iidIs<FUnknown>(id)||iidIs<IBStream>(id)){*out=this;return kResultOk;}return kNoInterface; }
-    tresult PLUGIN_API read(void *data,int32 n,int32 *count) override { if(n<0)return kInvalidArgument;auto c=std::min<int64>(n,std::max<int64>(0,bytes.size()-position));if(c)memcpy(data,bytes.data()+position,c);position+=c;if(count)*count=(int32)c;return c==n?kResultOk:kResultFalse; }
-    tresult PLUGIN_API write(void *data,int32 n,int32 *count) override { if(n<0||position+n>256*1024*1024)return kInvalidArgument;if(position+n>(int64)bytes.size())bytes.resize(position+n);if(n)memcpy(bytes.data()+position,data,n);position+=n;if(count)*count=n;return kResultOk; }
-    tresult PLUGIN_API seek(int64 p,int32 mode,int64 *result) override { auto next=mode==kIBSeekSet?p:mode==kIBSeekCur?position+p:(int64)bytes.size()+p;if(next<0||next>256*1024*1024)return kInvalidArgument;position=next;if(result)*result=next;return kResultOk; }
+    tresult PLUGIN_API read(void *data,int32 n,int32 *count) override {
+        if(count)*count=0;
+        if(n<0||(!data&&n)||position<0||position>maximumSize)return kInvalidArgument;
+        const auto available=position<int64(bytes.size())?int64(bytes.size())-position:0;
+        const auto size=std::min<int64>(n,available);
+        if(size)memcpy(data,bytes.data()+position,size);
+        position+=size;if(count)*count=int32(size);
+        return size==n?kResultOk:kResultFalse;
+    }
+    tresult PLUGIN_API write(void *data,int32 n,int32 *count) override {
+        if(count)*count=0;
+        if(n<0||(!data&&n)||position<0||position>maximumSize||n>maximumSize-position)return kInvalidArgument;
+        if(position+n>int64(bytes.size()))bytes.resize(position+n);
+        if(n)memcpy(bytes.data()+position,data,n);
+        position+=n;if(count)*count=n;return kResultOk;
+    }
+    tresult PLUGIN_API seek(int64 offset,int32 mode,int64 *result) override {
+        int64 base=0;
+        switch(mode){case kIBSeekSet:break;case kIBSeekCur:base=position;break;case kIBSeekEnd:base=int64(bytes.size());break;default:return kInvalidArgument;}
+        // Check before addition: a malformed plugin state can request an
+        // extreme relative offset, which must not overflow signed int64.
+        if(base<0||base>maximumSize||offset < -base||offset>maximumSize-base)return kInvalidArgument;
+        position=base+offset;if(result)*result=position;return kResultOk;
+    }
     tresult PLUGIN_API tell(int64 *p) override { if(!p)return kInvalidArgument;*p=position;return kResultOk; }
     NSString *base64() { return [[NSData dataWithBytes:bytes.data() length:bytes.size()] base64EncodedStringWithOptions:0]; }
 };
@@ -160,6 +187,7 @@ public:
     std::array<MIDI,1024> midi; std::atomic<unsigned> midiRead{0},midiWrite{0}; std::atomic<bool> panic{false};
     bool held[16][128]{}; ParamID midiParameters[16][130];
     void (^edited)(void)=nil;
+    void (^parameterEdited)(unsigned int,double,BOOL)=nil;
     double rate=48000; static constexpr int frames=4096; int mainIn=-1,mainOut=-1; int64 sampleTime=0; int processMode=kRealtime; NSString *appliedComponent=nil,*appliedController=nil;
     FIXED_REF
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override {*out=nullptr;if(iidIs<FUnknown>(id)||iidIs<IComponentHandler>(id)){*out=static_cast<IComponentHandler*>(this);return kResultOk;}if(iidIs<IComponentHandler2>(id)){*out=static_cast<IComponentHandler2*>(this);return kResultOk;}return kNoInterface;}
@@ -168,8 +196,15 @@ public:
     tresult PLUGIN_API startGroupEdit() override{return kResultOk;}
     tresult PLUGIN_API finishGroupEdit() override{if(edited)dispatch_async(dispatch_get_main_queue(),edited);return kResultOk;}
     tresult PLUGIN_API beginEdit(ParamID) override{return kResultOk;}
-    tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override {for(int i=0;i<paramCount;i++)if(params[i].id==id){params[i].pending.store(value);params[i].dirty.store(true,std::memory_order_release);hasChanges.store(true,std::memory_order_release);return kResultOk;}return kInvalidArgument;}
-    tresult PLUGIN_API endEdit(ParamID) override{if(edited)dispatch_async(dispatch_get_main_queue(),edited);return kResultOk;}
+    tresult queueParameter(ParamID id,ParamValue value) {for(int i=0;i<paramCount;i++)if(params[i].id==id){params[i].pending.store(value);params[i].dirty.store(true,std::memory_order_release);hasChanges.store(true,std::memory_order_release);return kResultOk;}return kInvalidArgument;}
+    tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override {
+        auto result=queueParameter(id,value);
+        if(result==kResultOk&&parameterEdited){auto callback=parameterEdited;dispatch_async(dispatch_get_main_queue(),^{callback(id,value,NO);});}
+        return result;
+    }
+    tresult PLUGIN_API endEdit(ParamID id) override{
+        if(parameterEdited&&controller){auto callback=parameterEdited;auto value=controller->getParamNormalized(id);dispatch_async(dispatch_get_main_queue(),^{callback(id,value,YES);});}
+        if(edited)dispatch_async(dispatch_get_main_queue(),edited);return kResultOk;}
     tresult PLUGIN_API restartComponent(int32) override{return kResultFalse;}
     explicit Instance(NSDictionary *spec,double sampleRate,bool offline):rate(sampleRate),processMode(offline?kOffline:kRealtime) { try {
         identifier=spec[@"id"];instrument=[spec[@"category"] containsString:@"Instrument"]; module=loadModule(spec[@"path"]); FUID uid;
@@ -180,8 +215,8 @@ public:
         if(!controller){TUID cid{};if(component->getControllerClassId(cid)==kResultOk&&module->factory->createInstance(cid,IEditController::iid,(void **)&controller)==kResultOk&&controller){if(controller->initialize(&host)!=kResultOk)throw std::runtime_error("VST3 controller initialization failed.");controllerInitialized=true;}}
         if(controller){controller->setComponentHandler(this);source=query<IConnectionPoint>(component);destination=query<IConnectionPoint>(controller);if(source&&destination){source->connect(destination);destination->connect(source);}}
         auto restore=[&](NSString *key,auto target){NSData *data=[[NSData alloc] initWithBase64EncodedString:spec[key]?:@"" options:0];if(data.length){Stream stream(data);target(stream);}};
-        restore(@"componentState",[&](Stream &stream){component->setState(&stream);});
-        if(controller){Stream stream;if(component->getState(&stream)==kResultOk){stream.position=0;controller->setComponentState(&stream);}restore(@"controllerState",[&](Stream &stream){controller->setState(&stream);});}
+        restore(@"componentState",[&](Stream &stream){if(component->setState(&stream)!=kResultOk && [spec[@"strictImportState"] boolValue])throw std::runtime_error("VST3 rejected the imported processor state.");});
+        if(controller){Stream stream;if(component->getState(&stream)==kResultOk){stream.position=0;controller->setComponentState(&stream);}restore(@"controllerState",[&](Stream &stream){if(controller->setState(&stream)!=kResultOk && [spec[@"strictImportState"] boolValue])throw std::runtime_error("VST3 rejected the imported controller state.");});}
         for(int bus=0;bus<component->getBusCount(kEvent,kInput);bus++)component->activateBus(kEvent,kInput,bus,bus==0);
         for(auto &channel:midiParameters)std::fill(std::begin(channel),std::end(channel),kNoParamId);
         if(auto mapping=query<IMidiMapping>(controller)){for(int channel=0;channel<16;channel++)for(int cc=0;cc<130;cc++)mapping->getMidiControllerAssignment(0,channel,cc,midiParameters[channel][cc]);mapping->release();}
@@ -204,7 +239,7 @@ public:
     void close(){if(processing)processor->setProcessing(false);if(active)component->setActive(false);if(source&&destination){source->disconnect(destination);destination->disconnect(source);}if(source)source->release();if(destination)destination->release();if(controller){controller->setComponentHandler(nullptr);if(controllerInitialized)controller->terminate();controller->release();}if(processor)processor->release();if(component){if(initialized)component->terminate();component->release();}}
     void enqueue(uint8 status,uint8 data1,uint8 data2){
         int kind=status&0xf0,channel=status&15;
-        if(kind==0xb0||kind==0xe0){auto cc=kind==0xe0?129:data1;if(cc<130&&midiParameters[channel][cc]!=kNoParamId)performEdit(midiParameters[channel][cc],kind==0xe0?double(data1|(data2<<7))/16383.:double(data2)/127.);if(kind==0xb0&&data1>=120)panic=true;return;}
+        if(kind==0xb0||kind==0xe0){auto cc=kind==0xe0?129:data1;if(cc<130&&midiParameters[channel][cc]!=kNoParamId)queueParameter(midiParameters[channel][cc],kind==0xe0?double(data1|(data2<<7))/16383.:double(data2)/127.);if(kind==0xb0&&data1>=120)panic=true;return;}
         if(kind!=0x80&&kind!=0x90)return;
         auto write=midiWrite.load(std::memory_order_relaxed),read=midiRead.load(std::memory_order_acquire);
         if(write-read>=midi.size()){panic=true;return;}
@@ -257,7 +292,7 @@ public:
         auto current=state();
         if(c&&![c isEqualToString:current[@"componentState"]]){NSData *data=[[NSData alloc]initWithBase64EncodedString:c options:0];if(data.length){Stream stream(data);component->setState(&stream);if(controller){stream.position=0;controller->setComponentState(&stream);}}}
         if(v&&controller&&![v isEqualToString:current[@"controllerState"]]){NSData *data=[[NSData alloc]initWithBase64EncodedString:v options:0];if(data.length){Stream stream(data);controller->setState(&stream);}}
-        if(controller)for(int n=0;n<paramCount;n++)performEdit(params[n].id,controller->getParamNormalized(params[n].id));
+        if(controller)for(int n=0;n<paramCount;n++)queueParameter(params[n].id,controller->getParamNormalized(params[n].id));
         appliedComponent=c;appliedController=v;
     }
     NSDictionary *state(){Stream componentData,controllerData;component->getState(&componentData);if(controller)controller->getState(&controllerData);return @{@"componentState":componentData.base64(),@"controllerState":controllerData.base64()};}
@@ -389,6 +424,7 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
 + (AVAudioUnitEffect *)makeNode {static dispatch_once_t once;AudioComponentDescription d={kAudioUnitType_Effect,'JLV3','Jara',0,0};dispatch_once(&once,^{[AUAudioUnit registerSubclass:JarasVSTAudioUnit.class asComponentDescription:d name:@"CatLive VST3" version:1];});return [[AVAudioUnitEffect alloc]initWithAudioComponentDescription:d];}
 + (BOOL)configure:(AVAudioUnitEffect *)node plugins:(NSArray<NSDictionary *> *)plugins error:(NSError **)error {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;try{if(plugins.count==0){k.replace(nullptr);return YES;}auto next=std::make_unique<Chain>();double rate=[node outputFormatForBus:0].sampleRate;k.sampleRate=rate;for(NSDictionary *spec in plugins){auto i=k.find(spec[@"id"]);if(!i||fabs(i->rate-rate)>0.01)i=std::make_shared<Instance>(spec,rate,node.AUAudioUnit.isRenderingOffline);i->restore(spec);bool bypass=[spec[@"bypassed"]boolValue];if(bypass!=i->bypass.load())i->panic=true;i->bypass=bypass;next->instances.push_back(i);}k.replace(std::move(next));return YES;}catch(const std::exception &e){if(error)*error=failure(e);return NO;}}
 + (void)setSequence:(AVAudioUnitEffect *)node notes:(NSArray<NSDictionary *> *)notes { ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.sequence.setNotes(catMIDINotes(notes)); }
++ (void)setSequence:(AVAudioUnitEffect *)node notes:(NSArray<NSDictionary *> *)notes preserveHeld:(BOOL)preserveHeld { ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.sequence.setNotes(catMIDINotes(notes),preserveHeld); }
 + (void)sequenceClock:(AVAudioUnitEffect *)node head:(int)head position:(double)position clock:(double)clock running:(BOOL)running loopStart:(double)start loopEnd:(double)end { ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.sequence.configure(head,position,clock,running,start,end); }
 + (void)sendMIDI:(AVAudioUnitEffect *)node status:(unsigned char)status data1:(unsigned char)data1 data2:(unsigned char)data2 {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)if(!i->instrument||k.instrumentMIDIInput.load()||(status&0xf0)!=0x90||data2==0)i->enqueue(status,data1,data2);}
 + (void)instrumentMIDIInput:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;k.instrumentMIDIInput.store(enabled);}
@@ -396,8 +432,9 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
 + (void)transport:(AVAudioUnitEffect *)node position:(double)position tempo:(double)tempo beats:(int)beats unit:(int)unit playing:(BOOL)playing {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;k.position=position;k.tempo=tempo;k.beats=beats;k.unit=unit;k.playing=playing;k.clockGeneration.fetch_add(1,std::memory_order_release);}
 + (void)onEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(void))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->edited=[action copy];}
 + (NSDictionary *)state:(AVAudioUnitEffect *)node identifier:(NSString *)id {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);return i?i->state():nil;}
++ (void)onParameterEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(unsigned int,double,BOOL))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->parameterEdited=[action copy];}
 + (NSArray<NSDictionary *> *)parameters:(AVAudioUnitEffect *)node identifier:(NSString *)id {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);NSMutableArray *result=[NSMutableArray array];if(i&&i->controller)for(int n=0;n<i->paramCount;n++){ParameterInfo p{};i->controller->getParameterInfo(n,p);if(p.flags&ParameterInfo::kIsReadOnly)continue;[result addObject:@{@"id":@(p.id),@"name":text(p.title),@"value":@(i->controller->getParamNormalized(p.id))}];}return result;}
-+ (void)setParameter:(AVAudioUnitEffect *)node identifier:(NSString *)id parameter:(unsigned int)param value:(double)value {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i&&i->controller){value=std::clamp(value,0.,1.);i->controller->setParamNormalized(param,value);i->performEdit(param,value);}}
++ (void)setParameter:(AVAudioUnitEffect *)node identifier:(NSString *)id parameter:(unsigned int)param value:(double)value {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i&&i->controller){value=std::clamp(value,0.,1.);i->controller->setParamNormalized(param,value);i->queueParameter(param,value);}}
 + (NSView *)editor:(AVAudioUnitEffect *)node identifier:(NSString *)identifier {
     auto instance = ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(identifier);
     if (!instance || !instance->controller) return nil;
@@ -414,5 +451,33 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
 }
 @end
 // Scan in an isolated process before SwiftUI, login or an audio device exists.
-__attribute__((constructor)) static void scanEntry(){@autoreleasepool{auto args=NSProcessInfo.processInfo.arguments;if(args.count==4&&[args[1]isEqualToString:@"--scan-vst3"]){NSError *error=nil;auto result=[JarasVST3 scan:args[2] error:&error];auto data=[NSJSONSerialization dataWithJSONObject:@{@"plugins":result,@"error":error.localizedDescription?:@""} options:0 error:nil];[data writeToFile:args[3] atomically:YES];exit(error?1:0);}}}
+static void scanEntry(){@autoreleasepool{
+    auto args=NSProcessInfo.processInfo.arguments;
+    if(args.count==4&&[args[1]isEqualToString:@"--scan-vst3"]){
+        NSError *error=nil;auto result=[JarasVST3 scan:args[2] error:&error];
+        auto data=[NSJSONSerialization dataWithJSONObject:@{@"plugins":result,@"error":error.localizedDescription?:@""} options:0 error:nil];
+        [data writeToFile:args[3] atomically:YES];exit(error?1:0);
+    }
+    if(args.count==4&&[args[1]isEqualToString:@"--inspect-vst3"]){
+        NSMutableArray *parameters=[NSMutableArray array];NSString *error=@"";
+        try {
+            auto data=[NSData dataWithContentsOfFile:args[2]];
+            id spec=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
+            if(![spec isKindOfClass:NSDictionary.class])throw std::runtime_error("Invalid VST3 import request.");
+            auto instance=std::make_unique<Instance>(spec,48000,false);
+            if(instance->controller)for(int n=0;n<instance->paramCount;n++){
+                ParameterInfo p{};
+                if(instance->controller->getParameterInfo(n,p)==kResultOk)
+                    [parameters addObject:@{@"index":@(n),@"id":@(p.id),@"name":text(p.title),@"readOnly":@((p.flags&ParameterInfo::kIsReadOnly)!=0),@"value":@(instance->controller->getParamNormalized(p.id))}];
+            }
+        } catch(const std::exception &exception){error=@(exception.what());}
+        auto result=[NSJSONSerialization dataWithJSONObject:@{@"parameters":parameters,@"error":error} options:0 error:nil];
+        [result writeToFile:args[3] atomically:YES];exit(error.length?1:0);
+    }
+}}
+// Ordered initialization keeps the host FUIDs and module cache alive before
+// import inspection creates a processor. This exits before SwiftUI, login or
+// opening any audio device.
+struct IsolatedVST3Entry { IsolatedVST3Entry() { scanEntry(); } };
+static IsolatedVST3Entry isolatedVST3Entry;
 #endif

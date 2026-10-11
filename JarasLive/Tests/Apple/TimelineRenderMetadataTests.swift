@@ -95,6 +95,21 @@ MainActor.assumeIsolated {
     }
     precondition(TimelineMetadataWorkProbe.counts == (1, visible.count), "repeated zoom frames perform no additional tempo work")
 
+    // Header labels use the same effective playback speeds without preparing
+    // playback fragments for thousands of offscreen items during a tempo edit.
+    let labels = TimelineRenderMetadata(song: song)
+    let expectedTitles = visible.enumerated().map { index, clip in
+        TimelineItemPlaybackRate.title(clip.name, rates: expected[index].map(\.audioRate),
+            referenceRate: clip.tempoBasePlaybackRate ?? clip.audioRate)
+    }
+    TimelineMetadataWorkProbe.reset()
+    for _ in 0..<80 {
+        for (index, clip) in visible.enumerated() {
+            precondition(labels.itemTitle(for: clip, track: song.tracks[0]) == expectedTitles[index])
+        }
+    }
+    precondition(TimelineMetadataWorkProbe.counts == (1, 0), "item labels share tempo programs and never build audio fragments")
+
     // A separate one-entry preview cache keeps the unchanged base item hot.
     var preview = visible[0]
     for gain in [0.1, 0.5, 1.8, 0.0] {

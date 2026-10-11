@@ -251,11 +251,19 @@ extension NativeTimelineHeaderView {
     precondition(header.redrawRequestsForTest == initialRedrawRequests + 1 && header.regionProjectionsForTest == initialRegionProjections + 1,
         "crossing a prepared bucket rebuilds the new coverage exactly once")
     header.needsDisplay = false
-    header.configure(configuration())
+    precondition(!header.configure(configuration()), "unchanged content retains structural header preparation")
+    header.project(scale: 10, viewport: CGRect(x: 512, y: 0, width: 700, height: 240),
+        layoutWidth: 100_000, displayScale: 2)
+    precondition(header.redrawRequestsForTest == initialRedrawRequests + 1 && header.regionProjectionsForTest == initialRegionProjections + 1,
+        "an unchanged configure must not discard retained pixels during window layout")
+    let originalName = song.parts[0].name
+    song.parts[0].name = "Updated during layout"
+    precondition(header.configure(configuration()), "actual contents invalidate without needing a new published revision")
     header.project(scale: 10, viewport: CGRect(x: 512, y: 0, width: 700, height: 240),
         layoutWidth: 100_000, displayScale: 2)
     precondition(header.redrawRequestsForTest == initialRedrawRequests + 2 && header.regionProjectionsForTest == initialRegionProjections + 2,
         "structural edits invalidate unchanged viewport geometry")
+    song.parts[0].name = originalName; header.configure(configuration())
     header.project(scale: 10, viewport: viewport, layoutWidth: 100_000, displayScale: 2)
     let initialFrame = header.frame, initialBounds = header.bounds
     let retainedRegions = header.retainedRegionsForTest, retainedMarkers = header.retainedMarkersForTest
@@ -623,3 +631,127 @@ private final class MarkerInputTestWindow: NSWindow {
     window.close()
 }
 MainActor.assumeIsolated { runMarkerInputMutationTests() }
+
+@MainActor private func runDenseTempoHeaderTests() {
+    let markers = (0..<12000).map { index in
+        TimelineMarker(id: UUID(), name: "TEMPO", position: Double(index) / 8,
+            color: 0x999999, tempoBPM: 120 + Double(index % 23), tempoBeats: 4, tempoUnit: 4)
+    }
+    let widths = Dictionary(uniqueKeysWithValues: markers.map { ($0.id, 48.0) })
+    let layout = NativeTimelineMarkerLayout(markers, drawingWidths: widths, inputWidths: widths, regionEnds: [:])
+    let viewport = CGRect(x: 0, y: 0, width: 700, height: 240)
+    var rawVisits = 0, denseVisits = 0
+    layout.forEachProjection(scale: 0.4, viewport: viewport, draggingID: nil) { _, _, _, _ in rawVisits += 1 }
+    layout.forEachTempoProjection(scale: 0.4, viewport: viewport, draggingID: nil) { _, _, _, _ in denseVisits += 1 }
+    precondition(rawVisits == 12000 && denseVisits <= 89, "Dense tempo projection must scale with screen columns instead of marker count")
+    var dragged: Set<UUID> = []
+    layout.forEachTempoProjection(scale: 0.4, viewport: viewport, draggingID: markers[7].id) { marker, _, _, target in
+        if target != nil { dragged.insert(marker.id) }
+    }
+    precondition(dragged.contains(markers[7].id), "An actively dragged tempo must remain editable even within a dense column")
+    var offscreenVisits = 0
+    layout.forEachTempoProjection(scale: 1, viewport: CGRect(x: 10000, y: 0, width: 700, height: 240), draggingID: nil) { _, _, _, _ in offscreenVisits += 1 }
+    precondition(offscreenVisits == 0, "The sorted index must avoid visiting all offscreen tempos")
+
+    let song = Song(id: UUID(), name: "Dense tempo ramp", duration: 1500, bpm: 120, tracks: [], parts: [], markers: markers)
+    let window = MarkerInputTestWindow(contentRect: CGRect(x: -12000, y: 0, width: 700, height: 240),
+        styleMask: [.titled], backing: .buffered, defer: false)
+    let document = NSView(frame: CGRect(x: 0, y: 0, width: 100000, height: 240))
+    window.contentView = document
+    let header = NativeTimelineHeaderView()
+    document.addSubview(header)
+    var edited: UUID?, deleted: UUID?, sought: UUID?
+    header.configure(.init(song: song, lanes: RegionLanes(parts: []), parentIDs: [], regionTargets: [],
+        edit: { edited = $0.id }, delete: { deleted = $0 }, seek: { sought = $0.id }, move: { _ in }))
+    // Warm the largest projected set once. Subsequent zoom frames represent
+    // different logical markers using the exact same attached native views.
+    header.project(scale: 8, viewport: viewport, layoutWidth: 100000, displayScale: 2)
+    let warmInputs = header.subviews.compactMap { $0 as? MarkerEditClickView }
+    let warmIdentity = Set(warmInputs.map(ObjectIdentifier.init))
+    let warmLayers = Dictionary(uniqueKeysWithValues: warmInputs.map { (ObjectIdentifier($0), $0.layer.map(ObjectIdentifier.init)) })
+    var owners: [ObjectIdentifier: UUID] = [:], rebindings = 0
+    func mouse(_ type: NSEvent.EventType, _ point: CGPoint, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: header.convert(point, to: nil), modifierFlags: flags,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+    var frames: [Double] = [], peakProjected = 0, peakInputs = 0, peakMarkerLayers = 0
+    for index in 0..<140 {
+        let scale = [0.4, 0.5, 0.8, 1.2, 2.0, 4.0, 8.0][index % 7]
+        let start = ProcessInfo.processInfo.systemUptime
+        header.project(scale: scale, viewport: viewport, layoutWidth: 100000, displayScale: 2)
+        frames.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+        let projected = header.markersForTest.count
+        let active = header.subviews.compactMap { $0 as? MarkerEditClickView }.filter { !$0.clickBounds.isNull }.count
+        peakProjected = max(peakProjected, projected); peakInputs = max(peakInputs, active)
+        peakMarkerLayers = max(peakMarkerLayers, header.retainedMarkersForTest.count)
+        precondition(projected <= Int(ceil(header.tileForTest.width / 8)) + 2 && active <= projected)
+        precondition(header.retainedMarkersForTest.count <= 1, "Collapsed tempo stems share one shape instead of thousands of layer stacks")
+        let current = header.subviews.compactMap { $0 as? MarkerEditClickView }
+        precondition(Set(current.map(ObjectIdentifier.init)) == warmIdentity && current.allSatisfy {
+            $0.window === window && warmLayers[ObjectIdentifier($0)] == $0.layer.map(ObjectIdentifier.init)
+        }, "Dense zoom must reuse attached inputs and their layers after warmup, not recreate views per marker ID")
+        for (id, _, _) in header.markersForTest {
+            guard let input = header.markerForTest(id), !input.clickBounds.isNull else { continue }
+            let identity = ObjectIdentifier(input)
+            if let previous = owners[identity], previous != id { rebindings += 1 }
+            owners[identity] = id
+        }
+        let target = header.markersForTest.first { _, rect, _ in rect.minX >= 8 && rect.minX < 600 }!.0
+        let input = header.markerForTest(target)!
+        let point = CGPoint(x: input.clickBounds.midX, y: input.clickBounds.midY)
+        precondition(RightClickRouter.shared.handle(mouse(.rightMouseDown, point)) && edited == target,
+            "A recycled marker input must edit its currently projected marker")
+        precondition(RightClickRouter.shared.handle(mouse(.leftMouseDown, point, flags: .option)) && deleted == target,
+            "Option-delete must follow the new marker identity after recycling")
+        input.mouseDown(with: mouse(.leftMouseDown, point)); input.mouseUp(with: mouse(.leftMouseUp, point))
+        precondition(sought == target, "A recycled marker input must seek the current marker")
+    }
+    precondition(rebindings > 1000, "The fixture must actually replace dense tempo representatives repeatedly")
+    // A pending click owns its original identity even while its marker goes
+    // offscreen; it must not become a click on the recycled destination.
+    let heldID = header.markersForTest.first { $0.1.minX >= 8 && $0.1.minX < 600 }!.0
+    let held = header.markerForTest(heldID)!
+    let heldPoint = CGPoint(x: held.clickBounds.midX, y: held.clickBounds.midY)
+    held.mouseDown(with: mouse(.leftMouseDown, heldPoint))
+    header.project(scale: 8, viewport: CGRect(x: 5000, y: 0, width: 700, height: 240), layoutWidth: 100000, displayScale: 2)
+    precondition(header.markerForTest(heldID) === held && held.hasActiveProjectedGesture,
+        "A marker with an active gesture cannot be rebound to another identity")
+    held.mouseUp(with: mouse(.leftMouseUp, heldPoint))
+    precondition(sought == heldID, "A pending marker click retains the original captured seek")
+    let sorted = frames.dropFirst().sorted()
+    print("DENSE_TEMPO_HEADER_12000 raw=\(rawVisits) indexed=\(denseVisits) peakProjected=\(peakProjected) peakInputs=\(peakInputs) peakMarkerLayers=\(peakMarkerLayers) medianMS=\(sorted[sorted.count/2]) p95MS=\(sorted[Int(Double(sorted.count-1)*0.95)])")
+    header.project(scale: 300, viewport: CGRect(x: 0, y: 0, width: 700, height: 240), layoutWidth: 100000, displayScale: 2)
+    let visible = header.markersForTest.filter { $0.1.minX >= 0 && $0.1.minX <= 700 }
+    precondition(visible.count == 19 && visible.allSatisfy { $0.1.width >= 18 }, "Zooming in restores each tempo's distinct flag and label")
+    header.configure(nil)
+    precondition(header.markersForTest.isEmpty && header.retainedMarkersForTest.isEmpty)
+    window.close()
+    print("DENSE_TEMPO_INPUT_REUSE_140_ZOOM_FRAMES_CURRENT_EDIT_DELETE_SEEK_AND_ACTIVE_GESTURE_OK rebindings=\(rebindings)")
+    print("DENSE_TEMPO_SCREEN_BOUND_INPUT_STEM_BATCH_CULL_DRAG_AND_ZOOM_DETAIL_OK")
+}
+MainActor.assumeIsolated { runDenseTempoHeaderTests() }
+
+@MainActor private func testResizeKeepsFreshHeaderCommands() {
+    let marker = TimelineMarker(id: UUID(), name: "Editable", position: 3, color: 0x40a050)
+    let song = Song(id: UUID(), name: "Commands", duration: 60, bpm: 120, tracks: [], parts: [], markers: [marker])
+    let header = NativeTimelineHeaderView()
+    var invoked = 0
+    func configuration(_ generation: Int) -> NativeTimelineHeaderConfiguration {
+        .init(song: song, lanes: RegionLanes(parts: []), parentIDs: [], regionTargets: [],
+            edit: { _ in invoked = generation }, delete: { _ in invoked = generation },
+            seek: { _ in invoked = generation }, move: { _ in invoked = generation })
+    }
+    header.configure(configuration(1))
+    header.project(scale: 10, viewport: CGRect(x: 0, y: 0, width: 700, height: 240), layoutWidth: 1000, displayScale: 2)
+    let prepared = header.redrawRequestsForTest
+    for generation in 2...81 {
+        precondition(!header.configure(configuration(generation)), "Replacing callbacks alone retains marker measurements")
+        guard let input = header.markerForTest(marker.id) else { preconditionFailure("visible marker keeps its input") }
+        input.action?()
+        precondition(invoked == generation, "Retained marker must call the latest editor/session closure")
+    }
+    precondition(header.redrawRequestsForTest == prepared, "Command updates must not rebuild marker pixels")
+    header.configure(nil)
+    print("HEADER_RESIZE_RETAINS_CONTENT_WITH_FRESH_INPUT_CALLBACKS_OK")
+}
+MainActor.assumeIsolated { testResizeKeepsFreshHeaderCommands() }

@@ -1,6 +1,36 @@
 import XCTest
 @testable import JarasApplication
 final class ClickTempoTests: XCTestCase {
+    func testSubBPMOscillationAndAttackNoiseDoNotFloodTheGrid() {
+        var time = 0.125, onsets: [Double] = []
+        for i in 0..<600 {
+            onsets.append(time + [0.0, 0.003, -0.002, 0.005][i % 4])
+            time += 60 / (i % 16 < 8 ? 119.8 : 120.2)
+        }
+        let sections = ClickTempoDetector.sections(onsets: onsets)
+        XCTAssertEqual(sections.count, 1)
+        XCTAssertEqual(sections.first?.bpm, 120)
+        assertPhase(sections, follows: onsets, accuracy: 0.0201)
+    }
+    func testRepeatingAttackOffsetsKeepTheSourceClockInsteadOfEndpointFractions() {
+        for bpm in [120.0, 130, 140, 156] {
+            for count in [8, 48, 600] {
+                for accent in [3, 4, 8] {
+                    let delay = accent == 3 ? 0.015 : 0.025
+                    let onsets = (0..<count).map { 0.123 + Double($0) * 60 / bpm + ($0 % accent == 0 ? delay : 0) }
+                    let result = ClickTempoDetector.sections(onsets: onsets)
+                    XCTAssertEqual(result, [.init(position: onsets[0], bpm: bpm)], "\(bpm) BPM, \(count) clicks, accent \(accent)")
+                }
+            }
+        }
+    }
+    func testFractionalClockWithRepeatingAttackOffsetsIsNotForcedToAnInteger() {
+        let bpm = 130.6
+        let onsets = (0..<600).map { 0.123 + Double($0) * 60 / bpm + ($0 % 4 == 0 ? 0.009 : 0) }
+        let sections = ClickTempoDetector.sections(onsets: onsets)
+        XCTAssertTrue(sections.allSatisfy { abs($0.bpm - 131) > 0.01 })
+        assertPhase(sections, follows: onsets, accuracy: 0.0201)
+    }
     func testTempoChangesKeepTheirFirstBeatAndIgnoreDroppedBeats() {
         let first = (0..<12).map { 0.123 + Double($0) * 0.5 }
         let second = (0..<12).filter { $0 != 5 }.map { 6.123 + Double($0) * (2.0 / 3.0) }
@@ -134,7 +164,7 @@ final class ClickTempoTests: XCTestCase {
         XCTAssertTrue(ClickTempoDetector.sections(onsets: []).isEmpty)
         XCTAssertTrue(ClickTempoDetector.sections(onsets: [0, 0.01, 0.04, 1.8, 1.85, 1.88, 1.9]).isEmpty)
     }
-    func testMarkersFollowClickClipPositionAndFallBackOnlyWithoutClickAudio() throws {
+    func testMarkersFollowClickClipPositionAndRequireClickAudio() throws {
         var song = Project.empty(name: "Test").songs[0]
         let region = Part(id: UUID(), name: "Song", startTime: 10, endTime: 30)
         var click = Track(id: UUID(), name: "CLICK", role: .click)
@@ -149,15 +179,12 @@ final class ClickTempoTests: XCTestCase {
         XCTAssertEqual(detected.markers[0].tempoBPM, 120)
 
         song.tracks = []
-        let fallback = try ClickTempoDetector.markers(song: song, region: region) { _ in
+        let absent = try ClickTempoDetector.markers(song: song, region: region) { _ in
             XCTFail("A file should not be read without a Click clip")
             return []
         }
-        XCTAssertFalse(fallback.hasClickAudio)
-        XCTAssertEqual(fallback.markers.map(\.position), [10])
-        XCTAssertEqual(fallback.markers.first?.tempoBPM, 120)
-        XCTAssertEqual(fallback.markers.first?.tempoBeats, 4)
-        XCTAssertEqual(fallback.markers.first?.tempoUnit, 4)
+        XCTAssertFalse(absent.hasClickAudio)
+        XCTAssertTrue(absent.markers.isEmpty, "A missing click must not fabricate a 120 BPM detection")
 
         song.tracks = [click]
         let silent = try ClickTempoDetector.markers(song: song, region: region) { _ in [] }
@@ -200,7 +227,7 @@ final class ClickTempoTests: XCTestCase {
             let sections = ClickTempoDetector.sections(onsets: onsets)
             XCTAssertTrue(sections.contains { $0.bpm > 130.1 && $0.bpm < 139.9 })
             XCTAssertEqual(sections.last?.bpm, 140)
-            assertPhase(sections, follows: onsets, accuracy: 0.001001)
+            assertPhase(sections, follows: onsets, accuracy: 0.0201)
         }
     }
     func testShortIntroAndFractionalFinalClickAtItemPlaybackRate() {

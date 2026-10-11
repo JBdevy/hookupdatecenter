@@ -3,6 +3,10 @@ import AppKit
     var calls: [(CGRect, CGSize, Double)] = []
     func project(viewport: CGRect, documentSize: CGSize, scale: Double) { calls.append((viewport, documentSize, scale)) }
 }
+@MainActor final class AutomationYPreflightProbe {
+    var calls: [(CGRect, Double)] = []
+    func project(viewport: CGRect, scale: Double) { calls.append((viewport, scale)) }
+}
 @MainActor final class NativeBodyYPreflightFixture {
     struct Configuration {
         var extent: Double = 20
@@ -12,6 +16,7 @@ import AppKit
         var verticalOffsetChanged: (CGFloat) -> Void = { _ in }
     }
     let audioBody = NativeBodyYPreflightProbe()
+    let automationLanes = AutomationYPreflightProbe()
     var configuration: Configuration? = Configuration()
     var preparedHorizontalOffset: CGFloat?
     var preparedVerticalOffset: CGFloat?
@@ -33,6 +38,8 @@ MainActor.assumeIsolated {
     precondition(fixture.audioBody.calls.count == 1)
     let first = fixture.audioBody.calls[0]
     precondition(first.0 == CGRect(x:512,y:1021,width:600,height:260) && first.1 == CGSize(width:12000,height:1975) && first.2==600)
+    precondition(fixture.automationLanes.calls.count == 1 && fixture.automationLanes.calls[0].0 == first.0 && fixture.automationLanes.calls[0].1 == first.2,
+                 "automation lanes must be projected to the same pending viewport before the scroll exposes it")
     precondition(fixture.vertical!.bounds.minY == 800, "native target is prepared before native bounds expose it")
     precondition(fixture.prepareHostedViewport(y:1024), "existing512 publication boundary still requests hosting layout")
     let count = fixture.audioBody.calls.count

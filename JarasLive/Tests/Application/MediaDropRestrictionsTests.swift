@@ -126,6 +126,30 @@ final class MediaDropRestrictionsTests: XCTestCase {
         XCTAssertEqual(reopened.length, file.length)
         XCTAssertEqual(reopened.url, file.url, "The movie soundtrack must reuse its decoded disk cache.")
     }
+    func testOnlyAReadableSilentMovieIsClassifiedAsHavingNoAudioStream() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let silent = try await video(root)
+        XCTAssertThrowsError(try AudioFileRead.openMedia(silent)) { error in
+            XCTAssertTrue(AudioFileRead.isVideoWithoutAudio(error), error.localizedDescription)
+        }
+        let missing = root.appendingPathComponent("Missing.mov")
+        XCTAssertThrowsError(try AudioFileRead.openMedia(missing)) { error in
+            XCTAssertFalse(AudioFileRead.isVideoWithoutAudio(error))
+            XCTAssertTrue(error.localizedDescription.contains("Missing.mov"))
+        }
+        for name in ["Corrupt.mov", "Corrupt.wav", "Empty.mov"] {
+            let url = root.appendingPathComponent(name)
+            try (name == "Empty.mov" ? Data() : Data("not a media file".utf8)).write(to: url)
+            XCTAssertThrowsError(try AudioFileRead.openMedia(url)) { error in
+                XCTAssertFalse(AudioFileRead.isVideoWithoutAudio(error), "\(name) must remain a decoding error")
+            }
+        }
+        XCTAssertThrowsError(try AudioFileRead.openMedia(silent, cancelled: { true })) { error in
+            XCTAssertTrue(error is CancellationError)
+            XCTAssertFalse(AudioFileRead.isVideoWithoutAudio(error))
+        }
+    }
     func testImageAndVideoCopiesRemainUsableAfterOriginalRemoval() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -6,7 +6,7 @@ enum DAWRemoteWire {
     static let service = "jaras-live"
     static let version: UInt8 = 2
     static let maximumPacket = 2 * 1024 * 1024
-    enum Packet { case command(DAWRemoteCommand), state(DAWRemoteState), acknowledge(UInt64), imageAsset(DAWRemoteImageAsset), accessRequest(DAWRemoteAccessRequest), accessStatus(DAWRemoteAccessStatus) }
+    enum Packet { case command(DAWRemoteCommand), state(DAWRemoteState), acknowledge(UInt64), noticeReceipt(DAWRemoteNoticeReceipt), imageAsset(DAWRemoteImageAsset), accessRequest(DAWRemoteAccessRequest), accessStatus(DAWRemoteAccessStatus) }
     enum Failure: Error { case invalid }
     private static func encode<T: Encodable>(_ value: T, kind: UInt8) throws -> Data {
         var data = Data([0x4a, 0x4c, version, kind])
@@ -27,6 +27,7 @@ enum DAWRemoteWire {
         return try encode(request, kind: 5)
     }
     static func accessStatus(_ status: DAWRemoteAccessStatus) throws -> Data { try encode(status, kind: 6) }
+    static func noticeReceipt(_ receipt: DAWRemoteNoticeReceipt) throws -> Data { try encode(receipt, kind: 7) }
     static func acknowledge(_ sequence: UInt64) throws -> Data { try encode(sequence, kind: 3) }
     static func imageAsset(_ asset: DAWRemoteImageAsset) throws -> Data {
         guard asset.data.count <= DAWRemoteImageAsset.maximumBytes else { throw Failure.invalid }
@@ -66,6 +67,9 @@ enum DAWRemoteWire {
         case 6:
             guard data.count <= 1024 else { throw Failure.invalid }
             return .accessStatus(try decoder.decode(DAWRemoteAccessStatus.self, from: payload))
+        case 7:
+            guard data.count <= 256 else { throw Failure.invalid }
+            return .noticeReceipt(try decoder.decode(DAWRemoteNoticeReceipt.self, from: payload))
         default: throw Failure.invalid
         }
     }
@@ -105,6 +109,14 @@ struct DAWRemoteImageAsset: Equatable {
     /// Empty data is an unavailable response, preventing automatic retry loops.
     var data: Data
 }
+struct DAWRemoteNoticeReceipt: Codable, Equatable {
+    var commandID: UUID
+    var project: UUID
+    var accepted: Bool
+}
+enum DAWRemoteNoticeDelivery: Equatable {
+    case accepted, rejected, disconnected, unconfirmed
+}
 struct DAWRemoteCommand: Codable {
     enum Action: String, Codable {
         case play, pause, stop, subPlay, subStop, toggleLoop, seek, queueSection, cancelSection, toggleMultiLoopBypass, toggleSetlistLive
@@ -121,12 +133,15 @@ struct DAWRemoteCommand: Codable {
     var value: Double = 0
     var text: String? = nil
     var enabled: Bool? = nil
+    /// Opt in so hosts never send an unknown packet kind to older clients.
+    var noticeReceiptRequested: Bool? = nil
     var valid: Bool {
         guard value.isFinite else { return false }
         if let text {
             guard [.noticeSend, .noticeSaveTemplate].contains(action), text.count <= 500, text.utf8.count <= 4000 else { return false }
         }
         if enabled != nil && action != .noticeDestination { return false }
+        if noticeReceiptRequested != nil && action != .noticeSend { return false }
         switch action {
         case .toggleMultiLoopBypass, .toggleSetlistLive, .cancelSection: return target == nil && value == 0
         case .resetMeterPeak: return value == 0
@@ -226,6 +241,14 @@ struct DAWRemoteState: Codable, Equatable {
         var parentRegion: UUID? = nil
     }
     struct Song: Codable, Identifiable, Equatable { var id: UUID; var name: String }
+    struct SetlistBlock: Codable, Identifiable, Equatable {
+        var id: UUID
+        var name: String
+        var color: UInt32
+        var beforeRegion: UUID?
+        var symbol: Bool = true
+        var valid: Bool { name.utf8.count <= 4096 && color <= 0xffffff }
+    }
     struct RecentProject: Codable, Identifiable, Equatable {
         var id: UUID; var name: String; var current: Bool
     }
@@ -308,6 +331,9 @@ struct DAWRemoteState: Codable, Equatable {
     var subPlayPosition: Double? = nil
     var sectionPlayback: SectionPlayback? = nil
     var songDisplays: SongDisplays? = nil
+    /// Separators belonging to the current playlist (or All regions), in their
+    /// saved order. These are presentation headers, never playback regions.
+    var setlistBlocks: [SetlistBlock]? = nil
     static func validPeak(_ value: Double?) -> Bool { value.map { $0.isFinite && $0 >= -24 } ?? true }
     var valid: Bool {
         position.isFinite && duration.isFinite && bpm.isFinite && masterVolume.isFinite && Self.validPeak(masterPeakDB) &&
@@ -319,6 +345,8 @@ struct DAWRemoteState: Codable, Equatable {
         (gridDivisions == nil || [0, 2, 4, 8].contains(gridDivisions!)) &&
         (playedLiveRegionIDs ?? []).count <= 8192 &&
         Set(playedLiveRegionIDs ?? []).count == (playedLiveRegionIDs ?? []).count &&
+        (setlistBlocks ?? []).count <= 8192 && (setlistBlocks ?? []).allSatisfy(\.valid) &&
+        Set((setlistBlocks ?? []).map(\.id)).count == (setlistBlocks ?? []).count &&
         (songDisplays?.valid ?? true) && (sectionPlayback?.valid ?? true) && (projects?.valid ?? true) && (notices?.valid ?? true) && (timer?.valid ?? true) &&
         (teleprompters ?? []).count <= 2 && (teleprompters ?? []).allSatisfy(\.valid) &&
         (markers ?? []).count <= 16384 && (markers ?? []).allSatisfy { $0.position.isFinite && $0.position >= 0 } &&
@@ -363,6 +391,13 @@ enum DAWRemoteFaderScale {
 /// Drawer state belongs to the iPad presentation; choosing a child still sends
 /// the normal selectRegion command to the authoritative Mac controller.
 enum DAWRemoteSetlistPresentation {
+    enum Entry: Identifiable {
+        enum ID: Hashable { case region(UUID), block(UUID) }
+        case region(Row), block(DAWRemoteState.SetlistBlock)
+        var id: ID {
+            switch self { case .region(let row): return .region(row.id); case .block(let block): return .block(block.id) }
+        }
+    }
     struct Row: Identifiable {
         var region: DAWRemoteState.Region
         var number: Int?
@@ -397,6 +432,35 @@ enum DAWRemoteSetlistPresentation {
         }
         return rows.filter { query.isEmpty || $0.region.name.localizedStandardContains(query) }
     }
+    static func entries(rows: [Row], blocks: [DAWRemoteState.SetlistBlock], query: String) -> [Entry] {
+        let headers = Dictionary(grouping: blocks, by: \.beforeRegion)
+        var result: [Entry] = []
+        var section: [Entry] = []
+        func appendSection() {
+            guard !section.isEmpty else { return }
+            if query.isEmpty { result += section; section.removeAll(keepingCapacity: true); return }
+            let matchingHeader = section.contains { entry in
+                if case .block(let block) = entry { return block.name.localizedStandardContains(query) }; return false
+            }
+            let matchingRows = section.filter { entry in
+                if case .region(let row) = entry { return matchingHeader || row.region.name.localizedStandardContains(query) }; return false
+            }
+            if matchingHeader || !matchingRows.isEmpty {
+                result += section.filter { if case .block = $0 { return true }; return false }
+                result += matchingRows
+            }
+            section.removeAll(keepingCapacity: true)
+        }
+        for row in rows {
+            if !row.child, let before = headers[row.id], !before.isEmpty {
+                appendSection(); section += before.map(Entry.block)
+            }
+            section.append(.region(row))
+        }
+        appendSection()
+        result += (headers[nil] ?? []).filter { query.isEmpty || $0.name.localizedStandardContains(query) }.map(Entry.block)
+        return result
+    }
 }
 
 /// Playback packets reuse list structure. Only edits, searching or a manual
@@ -407,17 +471,26 @@ final class DAWRemoteSetlistRowsCache {
     private var expanded: Set<UUID> = []
     private var query = ""
     private var cached: [DAWRemoteSetlistPresentation.Row] = []
+    private var blocks: [DAWRemoteState.SetlistBlock] = []
+    private var cachedEntries: [DAWRemoteSetlistPresentation.Entry] = []
     private var initialized = false
     private(set) var rebuildCount = 0
     func rows(in state: DAWRemoteState, expanded: Set<UUID>, query: String) -> [DAWRemoteSetlistPresentation.Row] {
-        if initialized && regions == state.regions && timeline == state.timelineRegions && self.expanded == expanded && self.query == query {
-            return cached
-        }
-        initialized = true; regions = state.regions; timeline = state.timelineRegions
-        self.expanded = expanded; self.query = query
-        cached = DAWRemoteSetlistPresentation.rows(in: state, expanded: expanded, query: query)
-        rebuildCount += 1
+        update(in: state, expanded: expanded, query: query)
         return cached
+    }
+    func entries(in state: DAWRemoteState, expanded: Set<UUID>, query: String) -> [DAWRemoteSetlistPresentation.Entry] {
+        update(in: state, expanded: expanded, query: query)
+        return cachedEntries
+    }
+    private func update(in state: DAWRemoteState, expanded: Set<UUID>, query: String) {
+        if initialized && regions == state.regions && timeline == state.timelineRegions && blocks == (state.setlistBlocks ?? []) && self.expanded == expanded && self.query == query { return }
+        initialized = true; regions = state.regions; timeline = state.timelineRegions
+        self.expanded = expanded; self.query = query; blocks = state.setlistBlocks ?? []
+        let allRows = DAWRemoteSetlistPresentation.rows(in: state, expanded: expanded, query: "")
+        cached = allRows.filter { query.isEmpty || $0.region.name.localizedStandardContains(query) }
+        cachedEntries = DAWRemoteSetlistPresentation.entries(rows: allRows, blocks: blocks, query: query)
+        rebuildCount += 1
     }
 }
 

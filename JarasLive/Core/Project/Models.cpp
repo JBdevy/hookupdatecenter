@@ -105,10 +105,10 @@ void validateClipText(const std::string& text, size_t maximum) {
 }
 void validateClipFXJSON(const std::string& json) {
     const auto first = json.find_first_not_of(" \t\r\n"), last = json.find_last_not_of(" \t\r\n");
-    if (json.empty() || json.size() > 65536 || first == std::string::npos || json[first] != '{' || json[last] != '}')
+    if (json.empty() || json.size() > 32 * 1024 * 1024 || first == std::string::npos || json[first] != '{' || json[last] != '}')
         throw std::invalid_argument("Invalid item FX data");
     // The native bridge parses and canonicalizes JSON before it reaches the core.
-    for (const auto* instrument : {"\"Instruments\"", "\"instrumentID\"", "\"instrumentParameters\"", "\"instrumentBypassed\""})
+    for (const auto* instrument : {"\"instrumentID\"", "\"instrumentParameters\"", "\"instrumentBypassed\""})
         if (json.find(instrument) != std::string::npos) throw std::invalid_argument("Items cannot contain instruments");
     const auto key = json.find("\"inserted\"");
     if (key == std::string::npos) throw std::invalid_argument("Missing item FX selection");
@@ -118,13 +118,14 @@ void validateClipFXJSON(const std::string& json) {
     if (position == std::string::npos || json[position] != '[') throw std::invalid_argument("Invalid item FX selection");
     position = json.find_first_not_of(" \t\r\n", position + 1);
     std::set<std::string> effects;
-    const std::set<std::string> allowed{"EQ", "Compressor", "Pitch", "Delay", "Reverb"};
+    const std::set<std::string> allowed{"EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatStemSeparation 5"};
     while (position != std::string::npos && json[position] != ']') {
         if (json[position] != '"') throw std::invalid_argument("Invalid item FX selection");
         const auto end = json.find('"', position + 1);
         if (end == std::string::npos) throw std::invalid_argument("Invalid item FX selection");
         const auto effect = json.substr(position + 1, end - position - 1);
-        if (!allowed.count(effect) || !effects.insert(effect).second) throw std::invalid_argument("Invalid item FX selection");
+        const bool external = effect.rfind("External:", 0) == 0 && effect.size() > 9 && json.find("\"externalPlugins\"") != std::string::npos;
+        if ((!allowed.count(effect) && !external) || !effects.insert(effect).second) throw std::invalid_argument("Invalid item FX selection");
         position = json.find_first_not_of(" \t\r\n", end + 1);
         if (position == std::string::npos || (json[position] != ',' && json[position] != ']')) throw std::invalid_argument("Invalid item FX selection");
         if (json[position] == ',') {
@@ -209,6 +210,7 @@ void validate(const Project& p) {
     };
     require(!p.masterColor || *p.masterColor <= 0xffffff, "Invalid master color");
     require(!p.savedCursor || (finite(p.savedCursor->position) && p.savedCursor->position >= 0), "Invalid saved cursor position");
+    require(finite(p.masterPan) && p.masterPan >= -1 && p.masterPan <= 1, "Invalid master pan");
     require(finite(p.masterVolume) && p.masterVolume >= 0 && p.masterVolume <= std::pow(10.0, 12.0 / 20.0), "Invalid master volume");
     if (p.masterPatch) validatePatch(*p.masterPatch, false, false, true);
     if (p.masterSecondaryPatch) validatePatch(*p.masterSecondaryPatch, false, false, true);
@@ -284,7 +286,7 @@ void validate(const Project& p) {
             require(!t.clickSound || t.role.id == "generatedClick", "Custom click sound requires a Click track");
             if (t.clickSound) files.push_back(*t.clickSound);
             for (const auto& clip : t.clips) {
-                require((clip.frozenMIDI != true && clip.renderedTiming != true) || (fixed.empty() && clip.audioFile && !clip.midi), "Printed timing requires an audio item");
+                require((clip.frozenMIDI != true && clip.renderedTiming != true && clip.renderedTempo != true) || (fixed.empty() && clip.audioFile && !clip.midi), "Printed timing requires an audio item");
                 if(clip.midi) {
                     const auto& m=*clip.midi;
                     require(fixed.empty() && !clip.audioFile && !clip.text && !clip.loopLength, "MIDI items require an instrument track");
@@ -324,6 +326,7 @@ void validate(const Project& p) {
                 unique(clip.id);
                 require(finite(clip.startTime) && finite(clip.duration) && clip.startTime >= 0 && clip.duration > 0 && clip.startTime + clip.duration <= s.duration, "Invalid clip interval");
                 require(finite(clip.playbackRate) && clip.playbackRate >= 1.0/32 && clip.playbackRate <= 32, "Invalid clip playback rate");
+                require(!clip.tempoBasePlaybackRate || (finite(*clip.tempoBasePlaybackRate) && *clip.tempoBasePlaybackRate >= 1.0/32 && *clip.tempoBasePlaybackRate <= 32), "Invalid tempo playback reference");
                 require(finite(clip.sourceOffset) && clip.sourceOffset >= 0, "Invalid source offset");
                 for (const auto& channel : clip.waveformChannels) for (double peak : channel) require(finite(peak) && peak >= 0 && peak <= 1, "Invalid channel waveform");
                 for (double peak : clip.waveform) require(finite(peak) && peak >= 0 && peak <= 1, "Invalid waveform peak");

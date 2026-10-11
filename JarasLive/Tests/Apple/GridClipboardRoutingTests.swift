@@ -9,6 +9,7 @@ final class ClipboardTestApplication: NSApplication {
     }
 }
 final class ClipboardTestWindow: NSWindow { override var isKeyWindow: Bool { true } }
+final class AutomationLaneView: NSView {}
 final class ControlMappings {
     static let shared = ControlMappings()
     var editing: String?

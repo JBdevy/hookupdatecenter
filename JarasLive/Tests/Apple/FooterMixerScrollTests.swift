@@ -78,6 +78,65 @@ refreshStrips()
 precondition(updatedStrips.isEmpty, "offscreen scalar changes never rebuild visible controls")
 print("MIXER_SCALAR_EDITS_UPDATE_ONLY_CHANGED_HOST_WITHOUT_WINDOW_WIDE_RELAYOUT_OK")
 
+// Shrinking after a wide viewport must not retain every formerly visible host.
+// The channels that remain visible keep their existing control/state instances.
+for width: CGFloat in [2200, 500, 1600, 420, 1800, 500] {
+    let previous = Dictionary(uniqueKeysWithValues: scroll.documentView!.subviews.map { ($0.frame.minX, ObjectIdentifier($0)) })
+    window.setContentSize(NSSize(width: width, height: 242))
+    view.layoutSubtreeIfNeeded()
+    let channels = scroll.documentView!.subviews
+    let viewport = scroll.contentView.bounds
+    let visible = channels.filter { $0.frame.intersects(viewport) }
+    precondition(channels.count <= Int(ceil(viewport.width / 153)) + 6,
+                 "a narrowed mixer must release hosts outside its bounded scroll reserve")
+    precondition(!visible.isEmpty && visible.map(\.frame.maxX).max()! >= viewport.maxX,
+                 "expanding must prepare newly exposed channels synchronously")
+    for channel in visible {
+        if let retained = previous[channel.frame.minX] {
+            precondition(ObjectIdentifier(channel) == retained,
+                         "back-and-forth resize must preserve controls that remain visible")
+        }
+    }
+}
+print("MIXER_WIDE_TO_NARROW_RESIZE_BOUNDS_HOST_COUNT_AND_PREPARES_REVEAL_OK")
+
+private final class FooterFocusProbe: NSView {
+    override var acceptsFirstResponder: Bool { true }
+}
+private struct FooterFocusFixture: NSViewRepresentable {
+    func makeNSView(context: Context) -> FooterFocusProbe { FooterFocusProbe() }
+    func updateNSView(_ view: FooterFocusProbe, context: Context) {}
+}
+private func footerFocusProbe(in view: NSView) -> FooterFocusProbe? {
+    (view as? FooterFocusProbe) ?? view.subviews.compactMap { footerFocusProbe(in: $0) }.first
+}
+window.setContentSize(NSSize(width: 2200, height: 242))
+view.layoutSubtreeIfNeeded()
+var protectedChannels: Set<Int> = [23]
+view.update(width: 8607, stride: 86, count: 100, retainStrip: { protectedChannels.contains($0) }) { _ in
+    AnyView(FooterFocusFixture().frame(width: 83, height: 200))
+}
+view.layoutSubtreeIfNeeded()
+private let focusedStrip = scroll.documentView!.subviews.first { $0.frame.minX == 20 * 86 }!
+private let protectedStrip = scroll.documentView!.subviews.first { $0.frame.minX == 23 * 86 }!
+private let focusProbe = footerFocusProbe(in: focusedStrip)!
+precondition(window.makeFirstResponder(focusProbe))
+window.setContentSize(NSSize(width: 860, height: 242)); view.layoutSubtreeIfNeeded()
+precondition(focusedStrip.window === window && window.firstResponder === focusProbe,
+             "a channel owning keyboard focus or an in-flight fader keeps its control instance when shrinking")
+precondition(protectedStrip.window === window,
+             "an offscreen channel with a pinned menu/button gesture must remain attached")
+precondition(scroll.documentView!.subviews.count <= 16,
+             "focus and pinning retain only their own channels, not every intervening channel")
+window.makeFirstResponder(nil); protectedChannels.removeAll()
+// Same viewport uses prepare's containment fast path, which must also release
+// previously protected channels once the gesture or menu has ended.
+bar.sendAction(bar.action, to: bar.target)
+precondition(focusedStrip.superview == nil && protectedStrip.superview == nil,
+             "the next preparation releases finished focus/menu exceptions even without scrolling")
+window.setContentSize(NSSize(width: 500, height: 242)); view.layoutSubtreeIfNeeded()
+print("MIXER_SHRINK_PRESERVES_FOCUS_AND_PINNED_GESTURES_THEN_RELEASES_ONLY_EXCEPTIONS_OK")
+
 
 // Real native meters inside the separately hosted, virtualized footer strips.
 // Constant readings expose reveal failures hidden by a fresh audio update.
@@ -114,6 +173,9 @@ func checkVisibleMeters(_ stage: String) {
     for meter in visible {
         let backgrounds = meter.layer?.sublayers?.filter { $0.name?.hasPrefix("meter-background-") == true } ?? []
         let levels = meter.layer?.sublayers?.filter { $0.name?.hasPrefix("meter-level-") == true } ?? []
+        if backgrounds.count != 2 || !backgrounds.allSatisfy({ $0.bounds.width > 0 && $0.bounds.height == meter.bounds.height }) {
+            fputs("METER_GEOMETRY \(stage) frame=\(meter.frame) visible=\(meter.visibleRect) background=\(backgrounds.map(\.frame)) needsLayout=\(meter.needsLayout)\n", stderr)
+        }
         precondition(backgrounds.count == 2 && backgrounds.allSatisfy { $0.bounds.width > 0 && $0.bounds.height == meter.bounds.height },
                      "footer meter backgrounds must remain visible: \(stage)")
         precondition(levels.count == 2 && levels.allSatisfy { $0.bounds.width > 0 && $0.bounds.height > 0 },
@@ -129,6 +191,18 @@ for height: CGFloat in [232, 400, 260, 232] {
     view.setFrameSize(NSSize(width: 500, height: height)); view.layoutSubtreeIfNeeded()
     checkVisibleMeters("resize \(height)")
 }
+for width: CGFloat in [500, 2200, 420, 1600, 500] {
+    window.setContentSize(NSSize(width: width, height: 232)); view.layoutSubtreeIfNeeded()
+    let channels = scroll.documentView!.subviews.compactMap { $0 as? FooterMixerHostingView }
+    precondition(channels.count >= 4 && channels.allSatisfy { $0.frame.width == 93 && $0.frame.height == scroll.contentSize.height },
+        "Resizing the window changes the viewport while each retained channel keeps its supplied rectangle")
+    if #available(macOS 13.3, *) {
+        precondition(channels.allSatisfy { $0.safeAreaRegions.isEmpty },
+            "Explicitly positioned channels do not inherit or propagate window safe-area sizing")
+    }
+    checkVisibleMeters("window width \(width)")
+}
+print("FOOTER_WINDOW_WIDTH_RESIZE_RETAINS_CHANNEL_RECTANGLES_WITHOUT_SAFE_AREA_LAYOUT_OK")
 view.isHidden = true
 for model in meterModels { model.reset(); model.update(left: 0.3, right: 0.4, elapsed: 1) }
 view.isHidden = false; view.layoutSubtreeIfNeeded()

@@ -5,19 +5,49 @@ import AVFoundation
 /// after successfully decoding all samples. Other errors remain errors.
 enum AudioFileRead {
     private static let mediaLock = NSLock()
+    enum MediaError: LocalizedError {
+        /// Only a readable movie with a video track and no audio track can
+        /// produce this result. Decoder and filesystem errors remain errors.
+        case noAudioStream(URL)
+        case invalidAudioFormat(URL)
+        var errorDescription: String? {
+            switch self {
+            case .noAudioStream(let url): return "This video has no audio stream: \(url.lastPathComponent)"
+            case .invalidAudioFormat(let url): return "Cannot decode the audio format: \(url.lastPathComponent)"
+            }
+        }
+    }
+    static func isVideoWithoutAudio(_ error: Error) -> Bool {
+        guard let mediaError = error as? MediaError else { return false }
+        if case .noAudioStream = mediaError { return true }
+        return false
+    }
     /// Audio-only containers stay on their native decoder. Movie soundtracks
     /// are decoded once into a bounded disk cache, never in the render callback.
     static func openMedia(_ url: URL, cancelled: () -> Bool = { false }) throws -> AVAudioFile {
         if cancelled() { throw CancellationError() }
         try Task.checkCancellation()
-        if let file = try? AVAudioFile(forReading: url) { return file }
-        let asset = AVURLAsset(url: url)
-        guard let track = asset.tracks(withMediaType: .audio).first,
-              let rawDescription = track.formatDescriptions.first,
-              let source = CMAudioFormatDescriptionGetStreamBasicDescription(rawDescription as! CMAudioFormatDescription)?.pointee else {
-            throw NSError(domain: "CatLive.Media", code: 1, userInfo: [NSLocalizedDescriptionKey: "This video has no audio stream."])
-        }
+        let audioError: Error
+        do { return try AVAudioFile(forReading: url) }
+        catch { audioError = error }
+        // Check the source before asking AVAsset for tracks: a missing or
+        // inaccessible file also yields an empty track list, not a silent movie.
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let asset = AVURLAsset(url: url)
+        let tracks = asset.tracks
+        var assetError: NSError?
+        guard asset.statusOfValue(forKey: "tracks", error: &assetError) == .loaded else {
+            throw assetError ?? audioError
+        }
+        guard let track = tracks.first(where: { $0.mediaType == .audio }) else {
+            guard asset.isReadable, tracks.contains(where: { $0.mediaType == .video }) else { throw audioError }
+            throw MediaError.noAudioStream(url)
+        }
+        guard let rawDescription = track.formatDescriptions.first,
+              let source = CMAudioFormatDescriptionGetStreamBasicDescription(rawDescription as! CMAudioFormatDescription)?.pointee,
+              source.mSampleRate.isFinite, source.mSampleRate > 0, source.mChannelsPerFrame > 0 else {
+            throw MediaError.invalidAudioFormat(url)
+        }
         let signature = url.standardizedFileURL.path + "|" + String(describing: attributes[.size]) + "|" + String((attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
         var hash: UInt64 = 14695981039346656037
         for byte in signature.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }

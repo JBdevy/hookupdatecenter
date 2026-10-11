@@ -365,6 +365,7 @@ struct MappingTransferRequest: Identifiable {
     #if os(macOS)
     func handleKey(_ event: NSEvent) -> Bool {
         guard NSApp.isActive, transferRequest == nil else { return false }
+        if RegionShortcutView.envelopeOwnsEditingKey(event), editing == nil { return false }
         let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if editing != nil {
             if event.keyCode == 53 { editing = nil; return true }

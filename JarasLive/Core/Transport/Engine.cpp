@@ -368,6 +368,7 @@ void Engine::setProjectTiming(double bpm, int beats, int unit, std::optional<Pro
         song->duration *= scale;
         for (auto& track : song->tracks) for (auto& clip : track.clips) {
             const double end = (clip.startTime + clip.duration) * scale;
+            if (!clip.tempoBasePlaybackRate) clip.tempoBasePlaybackRate = clip.playbackRate;
             clip.startTime *= scale; clip.duration = end - clip.startTime; clip.playbackRate *= speed;
             if (clip.timecodeStartOffset) *clip.timecodeStartOffset *= scale;
             if (clip.timecodeEndOffset) *clip.timecodeEndOffset *= scale;
@@ -1076,6 +1077,7 @@ void Engine::execute(const Command& c) {
         }
         break;
     default:
+        if (c.target.empty() && c.kind == CommandKind::pan) { project_.masterPan = std::clamp(c.value, -1.0, 1.0); return; }
         if (c.target.empty() && c.kind == CommandKind::volume) { project_.masterVolume = std::clamp(c.value, 0.0, std::pow(10.0, 12.0 / 20.0)); return; }
         if (c.target.empty() && c.kind == CommandKind::mute) { project_.masterMute = !project_.masterMute; return; }
         if (c.target.empty() && c.kind == CommandKind::phase) { return; }

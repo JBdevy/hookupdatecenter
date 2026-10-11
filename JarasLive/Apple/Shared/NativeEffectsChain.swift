@@ -151,6 +151,7 @@ final class NativeEffectsChain {
     }
     private(set) var externalNodes: [String: AVAudioUnitEffect] = [:]
     var externalError: Error?
+    private var failedExternalPlugins: [String: (ExternalPlugin, Error)] = [:]
     private var instrumentMIDIInput = false
     func enableInstrumentMIDI(_ enabled: Bool) {
         instrumentMIDIInput = enabled
@@ -172,14 +173,18 @@ final class NativeEffectsChain {
         let data = try JSONEncoder().encode([plugin])
         try JarasVST3.configure(node, plugins: JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? [])
         JarasVST3.instrumentMIDIInput(node, enabled: instrumentMIDIInput)
-        JarasVST3.setSequence(node, notes: midiSequenceNotes)
+        JarasVST3.setSequence(node, notes: !midiSequenceInstrumentsOnly || plugin.category.contains("Instrument") ? midiSequenceNotes : [])
         return node
     }
     private var midiSequenceNotes: [[String: Double]] = []
-    func setMIDISequence(_ notes: [[String: Double]]) {
-        guard midiSequenceNotes != notes else { return }
-        midiSequenceNotes = notes
-        for node in externalNodes.values { JarasVST3.setSequence(node, notes: notes) }
+    private var midiSequenceInstrumentsOnly = false
+    func setMIDISequence(_ notes: [[String: Double]], instrumentsOnly: Bool = false, preserveHeld: Bool = false) {
+        guard midiSequenceNotes != notes || midiSequenceInstrumentsOnly != instrumentsOnly || preserveHeld else { return }
+        midiSequenceNotes = notes; midiSequenceInstrumentsOnly = instrumentsOnly
+        for (id, node) in externalNodes {
+            let instrument = settings?.externalPlugins?.first(where: { $0.id == id })?.category.contains("Instrument") == true
+            JarasVST3.setSequence(node, notes: !instrumentsOnly || instrument ? notes : [], preserveHeld: preserveHeld)
+        }
     }
     func setMIDISequenceClock(head: Int, position: Double, clock: Double, running: Bool, loopStart: Double, loopEnd: Double) {
         for node in externalNodes.values { JarasVST3.sequenceClock(node, head: Int32(head), position: position, clock: clock, running: running, loopStart: loopStart, loopEnd: loopEnd) }
@@ -246,6 +251,9 @@ final class NativeEffectsChain {
         // Also accept legacy settings with enabled processors but no inserted list.
         preparedEffects.formUnion(NativeFXSettings.order.dropFirst().filter { next.isEnabled($0) })
         var keys = reorderable ? next.effectKeys : NativeFXSettings.order.dropFirst().filter { preparedEffects.contains($0) }
+        // Item chains keep their shared native stages stable, but take VST3s
+        // and repeated native inserts must still be connected to the signal.
+        if !reorderable { keys += next.effectKeys.filter { !keys.contains($0) } }
         keys += NativeFXSettings.order.dropFirst().filter { preparedEffects.contains($0) && !keys.contains($0) }
         if instrumentMix != nil && !keys.contains("Instruments") { keys.insert("Instruments", at: 0) }
         var includedNodes = Set<ObjectIdentifier>()
@@ -308,7 +316,7 @@ final class NativeEffectsChain {
         preparedEffects = ["EQ"]
         instrumentMix = nil
         #if os(macOS)
-        externalNodes.removeAll()
+        externalNodes.removeAll(); failedExternalPlugins.removeAll()
         stemSeparatorNode = nil; stemSeparatorStarted = false; stemSeparatorError = nil
         #endif
     }
@@ -316,20 +324,29 @@ final class NativeEffectsChain {
         let rate = max(8000, format?.sampleRate ?? equalizer.outputFormat(forBus: 0).sampleRate)
         #if os(macOS)
         let retained = Set((next.externalPlugins ?? []).filter { next.inserted.contains($0.effectKey) }.map(\.id))
-        guard next != settings || rate != sampleRate || Set(externalNodes.keys) != retained else { return }
+        guard next != settings || rate != sampleRate || Set(externalNodes.keys).union(failedExternalPlugins.keys) != retained else { return }
         #else
         guard next != settings || rate != sampleRate else { return }
         #endif
         #if os(macOS)
         configureStemSeparator(next)
-        do {
-            for plugin in next.externalPlugins ?? [] where next.inserted.contains(plugin.effectKey) {
-                if plugin != settings?.externalPlugins?.first(where: { $0.id == plugin.id }) || rate != sampleRate {
+        failedExternalPlugins = failedExternalPlugins.filter { retained.contains($0.key) }
+        for plugin in next.externalPlugins ?? [] where next.inserted.contains(plugin.effectKey) {
+            let failed = failedExternalPlugins[plugin.id]
+            if plugin != settings?.externalPlugins?.first(where: { $0.id == plugin.id }) || rate != sampleRate ||
+                (externalNodes[plugin.id] == nil && failed?.0 != plugin) {
+                do {
                     _ = try prepareExternal(plugin)
+                    failedExternalPlugins[plugin.id] = nil
+                } catch {
+                    // One broken insert must never prevent a later instrument
+                    // or effect from being prepared. Cache unchanged failures
+                    // so a missing library is not reopened on every audio tick.
+                    failedExternalPlugins[plugin.id] = (plugin, error)
                 }
             }
-            externalError = nil
-        } catch { externalError = error }
+        }
+        externalError = (next.externalPlugins ?? []).compactMap { failedExternalPlugins[$0.id]?.1 }.first
         #endif
         if next.inserted.contains("Pitch"), pitch == nil {
             let node = AVAudioUnitTimePitch(); node.rate = 1; node.overlap = 8

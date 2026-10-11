@@ -48,17 +48,40 @@ public enum LogicProjectImporter {
         let fm = FileManager.default
         guard bundle.pathExtension.lowercased() == "logicx" else { throw invalid("Select a .logicx project.") }
         let alternatives = bundle.appendingPathComponent("Alternatives")
-        let information = (try? plist(bundle.appendingPathComponent("Resources/ProjectInformation.plist"))) ?? [:]
+        let information: [String: Any]
+        do { information = try plist(bundle.appendingPathComponent("Resources/ProjectInformation.plist")) }
+        catch {
+            let failure = error as NSError
+            guard failure.domain == NSCocoaErrorDomain,
+                  failure.code == NSFileReadNoSuchFileError || failure.code == NSFileNoSuchFileError else { throw error }
+            information = [:]
+        }
         let available = try fm.contentsOfDirectory(at: alternatives, includingPropertiesForKeys: nil)
             .filter { fm.fileExists(atPath: $0.appendingPathComponent("ProjectData").path) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        let selected: URL?
-        if let value = information["ActiveVariant"] as? NSNumber {
-            selected = available.first { Int($0.lastPathComponent) == value.intValue }
-        } else if let value = information["ActiveVariant"] as? String {
-            selected = available.first { $0.lastPathComponent == value || Int($0.lastPathComponent) == Int(value) }
-        } else { selected = nil }
-        guard let alternative = selected ?? available.first else { throw invalid("No project alternative was found.") }
+        guard !available.isEmpty else { throw invalid("No project alternative was found.") }
+        let alternative: URL
+        if let active = information["ActiveVariant"] {
+            let matches: [URL]
+            if let value = active as? String {
+                // Exact names may be nonnumeric; nil integer conversions must
+                // never make two unrelated alternative names compare equal.
+                let exact = available.filter { $0.lastPathComponent == value }
+                if !exact.isEmpty { matches = exact }
+                else if let number = Int(value) { matches = available.filter { Int($0.lastPathComponent) == number } }
+                else { matches = [] }
+            } else if let value = active as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(),
+                      value.doubleValue.isFinite, value.doubleValue.rounded() == value.doubleValue {
+                matches = available.filter { Int($0.lastPathComponent).map { Double($0) == value.doubleValue } == true }
+            } else { throw invalid("Invalid active project alternative.") }
+            guard matches.count == 1 else {
+                throw invalid(matches.isEmpty ? "The active project alternative was not found." : "The active project alternative is ambiguous.")
+            }
+            alternative = matches[0]
+        } else {
+            guard available.count == 1 else { throw invalid("Multiple project alternatives were found without an active selection. Open and save the desired alternative in Logic first.") }
+            alternative = available[0]
+        }
         let metadata = try plist(alternative.appendingPathComponent("MetaData.plist"))
         let url = alternative.appendingPathComponent("ProjectData")
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0

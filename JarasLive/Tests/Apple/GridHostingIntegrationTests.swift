@@ -662,3 +662,17 @@ RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 precondition(retainedControl.count == 2, "the retained control continues editing after resize")
 resizeWindow.close()
 print("HOSTED_RESIZE_PRESERVES_NATIVE_CONTROLS_STATE_LIVE_ENVIRONMENT_ACTIONS_AND_DOCUMENT_GEOMETRY_OK")
+
+// A viewport can change continuously while the document keeps one capacity.
+let resizeExtents = (513...1024).map { TimelineZoomLimits.minimumExtent(viewportWidth: CGFloat($0)) }
+precondition(Set(resizeExtents).count == 1, "Minimum-zoom document capacity must not change for every resize pixel")
+for width: CGFloat in [0, 1, 511, 512, 513, 1024, 1025, 3840, 7680] {
+    let extent = TimelineZoomLimits.minimumExtent(viewportWidth: width)
+    precondition((extent - 120) * (10 * TimelineZoomLimits.minimum) >= width,
+        "Reserved extent must cover the entire viewport even at the farthest zoom")
+    precondition((extent - 120) * (10 * TimelineZoomLimits.minimum) < width + 512.01,
+        "Blank-space reserve remains bounded to one screen-width bucket")
+    precondition(max(240, 200_000 + 120, extent) >= 200_120,
+        "Viewport capacity cannot truncate a long project or its trailing blank area")
+}
+print("WINDOW_RESIZE_BUCKETED_TIMELINE_EXTENT_MINIMUM_ZOOM_AND_LONG_PROJECT_COVERAGE_OK")

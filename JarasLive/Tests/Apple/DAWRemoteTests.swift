@@ -635,6 +635,7 @@ noticesHost.stateProviderForSession = { session in
     var state = fixture; state.message = "panel-\(session.requestedPanel)"; return state
 }
 noticesHost.commandHandler = { noticeCommands.append($0.action) }
+noticesHost.noticeSendHandler = { noticeCommands.append($0.action); return true }
 let noticesEndpoint = try noticesHost.testListen()
 let noticesClient = DAWRemoteSession(role: .client, name: "Notices phone")
 noticesClient.testConnect(noticesEndpoint, access: nil)

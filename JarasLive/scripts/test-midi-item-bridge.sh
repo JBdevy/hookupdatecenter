@@ -10,6 +10,6 @@ clang++ -std=c++17 -c Core/Import/TrackTaxonomy.cpp -o "$test_dir/taxonomy.o"
 cp Tests/Apple/MIDIItemBridgeTests.swift "$test_dir/main.swift"
 swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasCoreBridge.h \
  Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift \
- Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift \
+ Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift \
  "$test_dir/main.swift" "$test_dir"/*.o -lc++ -o "$test_dir/test"
 "$test_dir/test"

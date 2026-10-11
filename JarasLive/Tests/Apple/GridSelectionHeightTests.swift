@@ -22,10 +22,11 @@ MainActor.assumeIsolated {
         }
     }
     let cache = TimelineSelectionLayoutCache()
+    let content = NSObject()
     var metadataBuilds = 0
     @MainActor func cached(_ height: CGFloat, top: CGFloat = 71, revision: Int = 1) -> GridSelectionLayout {
         let rows = geometry(height)
-        return cache.layout(key: TimelineRenderKey(revision: revision), rowHeight: height, rulerHeight: top,
+        return cache.layout(key: TimelineRenderKey(revision: revision), content: content, rowHeight: height, rulerHeight: top,
                             rowOffsets: rows.offsets, laneHeights: rows.heights) {
             metadataBuilds += 1
             return items(rows, top: top)
@@ -82,7 +83,7 @@ MainActor.assumeIsolated {
         individual.offsets[index] = offset
         offset += CGFloat(lanes[index]) * individual.heights[index]
     }
-    let individualLayout = cache.layout(key: TimelineRenderKey(revision: 1), rowHeight: 64, rulerHeight: 71,
+    let individualLayout = cache.layout(key: TimelineRenderKey(revision: 1), content: content, rowHeight: 64, rulerHeight: 71,
                                        rowOffsets: individual.offsets, laneHeights: individual.heights) {
         metadataBuilds += 1; return items(individual, top: 71)
     }
@@ -101,4 +102,24 @@ MainActor.assumeIsolated {
     let edited = cached(64, revision: 2)
     precondition(metadataBuilds == 2 && edited.items.count == ids.count,"real project edits rebuild metadata exactly once")
     print("GRID_SELECTION_HEIGHT_INDEX_REUSE_EXACT_LANES_HIT_TEST_MARQUEE_ZOOM_REVISION_OK")
+    weak var retainedContent: NSObject?
+    let contentID = UUID(), replacementID = UUID()
+    @MainActor func installContent() {
+        let snapshot = NSObject()
+        retainedContent = snapshot
+        let fresh = cache.layout(key: TimelineRenderKey(revision: 2), content: snapshot,
+            rowHeight: 64, rulerHeight: 71, rowOffsets: [0], laneHeights: [64]) {
+            [GridSelectionItem(id: contentID, rect: CGRect(x: 0, y: 74, width: 1, height: 58), trackIndex: 0)]
+        }
+        precondition(fresh.items.map(\.id) == [contentID], "A new snapshot with unchanged revision must replace selection items")
+    }
+    installContent()
+    precondition(retainedContent != nil, "Selection retains its snapshot identity while its items remain cached")
+    let replacement = cache.layout(key: TimelineRenderKey(revision: 2), content: NSObject(),
+        rowHeight: 64, rulerHeight: 71, rowOffsets: [0], laneHeights: [64]) {
+        [GridSelectionItem(id: replacementID, rect: CGRect(x: 0, y: 74, width: 1, height: 58), trackIndex: 0)]
+    }
+    precondition(retainedContent == nil && replacement.items.map(\.id) == [replacementID],
+                 "Replacing content retires both old hit targets and the retained snapshot")
+    print("GRID_SELECTION_SAME_REVISION_CONTENT_REPLACEMENT_RETAINS_IDENTITY_UNTIL_RETIREMENT_OK")
 }

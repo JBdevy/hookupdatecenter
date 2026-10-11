@@ -50,7 +50,7 @@ public enum ClickTempoDetector {
     public static func sections(onsets: [Double], beatsPerBar: Int = 4) -> [Section] {
         analyze(onsets: onsets, beatsPerBar: beatsPerBar).sections
     }
-    private struct Analysis { var sections: [Section]; var variable = false }
+    private struct Analysis { var sections: [Section] }
     private static func analyze(onsets: [Double], beatsPerBar: Int) -> Analysis {
         var times: [Double] = []
         for time in onsets.filter({ $0.isFinite && $0 >= 0 }).sorted() {
@@ -72,9 +72,51 @@ public enum ClickTempoDetector {
         // Build a piecewise tempo map whose *anchored phase*, not mean fit
         // error, follows every measured pulse. Adjacent spans share an onset,
         // so tempo ramps cannot silently accumulate drift between markers.
-        // Clean clicks allow 1 ms; varying attack timbres allow up to 6 ms.
+        // Attack variation is not a tempo change. Allow a small phase window
+        // instead of adding markers to explain every millisecond of jitter.
         let periodChanges = zip(intervals.dropFirst(), intervals).map { abs($0 - $1) }.sorted()
-        let tolerance = min(0.006, max(0.001, periodChanges[periodChanges.count / 2] * 2))
+        let tolerance = min(0.020, max(0.008, periodChanges[periodChanges.count / 2] * 2))
+        // Estimate speed from several independent distances. Endpoints alone
+        // confuse a rounded downbeat attack with a different clock frequency.
+        // Long lags reject local attack noise; a bar lag compares like timbres.
+        func integerTempo(first: Int, last: Int, anchoredTolerance: Double) -> Double? {
+            let count = last - first + 1
+            let half = (count - 1) / 2
+            let lags = Set([max(1, half - 1), max(1, half), max(1, half + 1), max(1, beatsPerBar)])
+            var slopes: [Double] = []
+            for lag in lags where lag < count {
+                for index in first...(last - lag) {
+                    slopes.append((times[index + lag] - times[index]) / (beatPositions[index + lag] - beatPositions[index]))
+                }
+            }
+            func median(_ values: [Double]) -> Double {
+                let sorted = values.sorted(), middle = sorted.count / 2
+                return sorted.count.isMultiple(of: 2) ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+            }
+            guard !slopes.isEmpty else { return nil }
+            let period = median(slopes), bpm = (60 / period).rounded()
+            guard bpm >= 60, bpm <= 300 else { return nil }
+            let deviation = median(slopes.map { abs($0 - period) })
+            let beats = beatPositions[last] - beatPositions[first]
+            // Keep genuinely fractional clocks, even in short passages. A
+            // rounded label is accepted only within the measured uncertainty.
+            let uncertainty = max(2 / 44100 / max(1, beats), 3 * deviation / sqrt(Double(count)))
+            guard abs(period - 60 / bpm) <= uncertainty else { return nil }
+            var phaseTolerance = anchoredTolerance
+            if beatsPerBar > 0, beatsPerBar < count - 2 {
+                let differences = (first...(last - beatsPerBar)).map { index in
+                    abs(times[index + beatsPerBar] - times[index]
+                        - (beatPositions[index + beatsPerBar] - beatPositions[index]) * 60 / bpm)
+                }
+                // A repeating attack offset can be larger than ordinary jitter.
+                // Grant that window only when bar-to-bar phase is stable; ramps
+                // must still be split rather than accumulating drift.
+                if median(differences) <= 0.002 { phaseTolerance = max(phaseTolerance, 0.030) }
+            }
+            return (first...last).allSatisfy {
+                abs(times[$0] - times[first] - (beatPositions[$0] - beatPositions[first]) * 60 / bpm) <= phaseTolerance
+            } ? bpm : nil
+        }
         var pending = [(first: 0, last: times.count - 1)]
         var sections: [Section] = []
         while let span = pending.popLast() {
@@ -83,13 +125,12 @@ public enum ClickTempoDetector {
             let beats = beatPositions[last] - beatPositions[first]
             let period = (times[last] - times[first]) / beats
             let measuredBPM = 60 / period
-            let integerBPM = measuredBPM.rounded()
-            var integerFits = integerBPM >= 60 && integerBPM <= 300
+            let integerBPM = integerTempo(first: first, last: last, anchoredTolerance: tolerance)
+            let integerFits = integerBPM != nil
             var maximumError = 0.0, split = first
             for index in first...last {
                 let beat = beatPositions[index] - beatPositions[first]
                 let elapsed = times[index] - times[first]
-                if integerFits && abs(elapsed - beat * 60 / integerBPM) > tolerance { integerFits = false }
                 let error = abs(elapsed - beat * period)
                 if index > first && index < last && error > maximumError {
                     maximumError = error; split = index
@@ -102,17 +143,44 @@ public enum ClickTempoDetector {
                 pending.append((first, split))
                 continue
             }
-            let bpm = integerFits ? integerBPM : measuredBPM
+            let bpm = integerBPM ?? measuredBPM
             guard bpm.isFinite, bpm >= 60, bpm <= 300 else { continue }
             // Never merge merely because displayed/rounded BPMs match: a new
             // anchor can be essential to keep the next beats in phase.
             sections.append(Section(position: times[first], bpm: bpm))
         }
-        return Analysis(sections: sections)
+        // Merge sub-BPM fluctuations only while the complete merged span stays
+        // within 20 ms of the measured clicks. Genuine ramps and short, distinct
+        // changes keep their anchors; tiny local variations do not flood the grid.
+        var merged: [Section] = []
+        var index = 0
+        while index < sections.count {
+            let first = times.firstIndex(of: sections[index].position)!
+            var lastSection = index, low = sections[index].bpm, high = low
+            var chosen = sections[index]
+            while lastSection + 1 < sections.count {
+                let next = sections[lastSection + 1]
+                let nextLow = min(low, next.bpm), nextHigh = max(high, next.bpm)
+                guard nextHigh - nextLow < 1 else { break }
+                let last = lastSection + 2 < sections.count
+                    ? times.firstIndex(of: sections[lastSection + 2].position)! : times.count - 1
+                let bpm = 60 * (beatPositions[last] - beatPositions[first]) / (times[last] - times[first])
+                func fits(_ value: Double) -> Bool {
+                    value >= 60 && value <= 300 && (first...last).allSatisfy {
+                        abs(times[$0] - times[first] - (beatPositions[$0] - beatPositions[first]) * 60 / value) <= 0.020
+                    }
+                }
+                guard fits(bpm) else { break }
+                chosen.bpm = integerTempo(first: first, last: last, anchoredTolerance: 0.020) ?? bpm
+                low = nextLow; high = nextHigh; lastSection += 1
+            }
+            merged.append(chosen); index = lastSection + 1
+        }
+        return Analysis(sections: merged)
     }
 
     /// Uses only the Click track inside this region. Imported projects and the
-    /// manual Detect BPM action share the same placement and fallback rules.
+    /// manual Detect BPM action both require measured click evidence.
     public static func markers(song: Song, region: Part, onsetsFor: (AudioFile) throws -> [Double]) throws -> (markers: [TimelineMarker], hasClickAudio: Bool) {
         try markersWithMeter(song: song, region: region, transientsFor: { file in
             try onsetsFor(file).map { Transient(position: $0) }
@@ -141,13 +209,13 @@ public enum ClickTempoDetector {
         var unique: [Transient] = []
         for pulse in pulses.sorted(by: { $0.position < $1.position }) where unique.last.map({ pulse.position - $0.position > 0.08 }) ?? true { unique.append(pulse) }
         let analysis = hasClickAudio ? analyze(onsets: unique.map(\.position), beatsPerBar: meter(transients: unique)?.beats ?? song.meterBeats)
-            : Analysis(sections: [Section(position: region.startTime, bpm: 120)], variable: true)
+            : Analysis(sections: [])
         let sections = analysis.sections
         return (sections.enumerated().map { index, section in
             let end = index + 1 < sections.count ? sections[index + 1].position : region.endTime
-            let detectedMeter = analysis.variable ? Meter(beats: 4, unit: 4) : meter(transients: unique.filter { $0.position >= section.position && $0.position < end })
-            let beats = detectedMeter?.beats ?? (hasClickAudio ? song.meterBeats : 4)
-            let unit = 4
+            let detectedMeter = meter(transients: unique.filter { $0.position >= section.position && $0.position < end })
+            let beats = detectedMeter?.beats ?? song.meterBeats
+            let unit = detectedMeter?.unit ?? song.meterUnit
             let bpm = section.bpm
             return TimelineMarker(id: UUID(), name: "TEMPO", position: section.position, color: 0x999999,
                            tempoBPM: bpm, tempoBeats: beats,

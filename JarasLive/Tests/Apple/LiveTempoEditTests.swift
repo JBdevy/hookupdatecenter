@@ -32,15 +32,18 @@ final class Capture: @unchecked Sendable {
  let descending=ProcessInfo.processInfo.environment["JARAS_TEST_DESCENDING_TEMPO"]=="1"
  let boundary=ProcessInfo.processInfo.environment["JARAS_TEST_BOUNDARY_TEMPO"]=="1"
  let baseline=ProcessInfo.processInfo.environment["JARAS_TEST_BASELINE_TEMPO"]=="1"
+ let sustained=ProcessInfo.processInfo.environment["JARAS_TEST_SUSTAINED_TEMPO"]=="1"
+ let looped=ProcessInfo.processInfo.environment["JARAS_TEST_LOOPED_TEMPO"]=="1"
  let fmt=AVAudioFormat(standardFormatWithSampleRate:rate,channels:2)!
- let pcm=AVAudioPCMBuffer(pcmFormat:fmt,frameCapacity:AVAudioFrameCount(rate*24))!;pcm.frameLength=pcm.frameCapacity
+ let pcm=AVAudioPCMBuffer(pcmFormat:fmt,frameCapacity:AVAudioFrameCount(rate*(sustained ? 64 : 24)))!;pcm.frameLength=pcm.frameCapacity
  // A rising tone also makes a replay of older source audio observable in PCM.
  for ch in 0..<2 {for i in 0..<Int(pcm.frameLength) {let t=Double(i)/rate;pcm.floatChannelData![ch][i]=Float(0.15*sin(2*Double.pi*(220*t+60*t*t)))}}
  do{let f=try AVAudioFile(forWriting:dir.appendingPathComponent("tone.wav"),settings:fmt.settings);try f.write(from:pcm)}
  var p=Project.empty(name:"Live tempo PCM")
- let region=Part(id:UUID(),name:"Song",startTime:0.2,endTime:22.2)
+ let region=Part(id:UUID(),name:"Song",startTime:0.2,endTime:sustained ? 62.2 : 22.2)
  var track=Track(id:UUID(),name:"Audio",role:.other)
- track.clips=[AudioClip(id:UUID(),name:"Tone",startTime:0.2,duration:22,audioFile:AudioFile(path:"tone.wav"),regionOwnerID:region.id)]
+ track.clips=[AudioClip(id:UUID(),name:"Tone",startTime:0.2,duration:sustained ? 62 : 22,audioFile:AudioFile(path:"tone.wav"),regionOwnerID:region.id)]
+ if looped { track.clips[0].loopLength = sustained ? 64 : 24 }
  p.songs[0].parts=[region]
  p.songs[0].tracks=(0..<24).map { index in
   var copy=track;copy.id=UUID();copy.name="Stem \(index)"
@@ -60,9 +63,15 @@ final class Capture: @unchecked Sendable {
  master.installTap(onBus:0,bufferSize:512,format:nil){b,t in capture.append(b,t)};defer{master.removeTap(onBus:0)}
  var last=ProcessInfo.processInfo.systemUptime,edits=0
  let began=last;state.transport.playing=true
- let times=baseline ? [] : boundary ? [2.85,3.0,3.15,3.3,3.45,3.6] : rapid ? (0..<(descending ? 30 : 36)).map{1.0+Double($0)*0.04} : [1.0,1.35,1.7,4.5,4.85,5.2]
+ let times: [Double]
+ if sustained { times = (0..<400).map { 1 + Double($0) * 0.04 } }
+ else if baseline { times = [] }
+ else if boundary { times = [2.85,3.0,3.15,3.3,3.45,3.6] }
+ else if rapid { times = (0..<(descending ? 30 : 36)).map { 1 + Double($0) * 0.04 } }
+ else { times = [1.0,1.35,1.7,4.5,4.85,5.2] }
+
  var maximumEditDuration=0.0, maximumUpdateDuration=0.0
- while ProcessInfo.processInfo.systemUptime-began<(descending ? 24 : 8) {
+ while ProcessInfo.processInfo.systemUptime-began<(sustained ? 24 : descending ? 24 : 8) {
   let now=ProcessInfo.processInfo.systemUptime;state.transport.position += now-last;last=now
   var didEdit=false
   var previousPlayers=Set<ObjectIdentifier>()
@@ -74,7 +83,7 @@ final class Capture: @unchecked Sendable {
     if let node=player.lastRenderTime,let clock=player.playerTime(forNodeTime:node) {previousClocks[ObjectIdentifier(player)]=clock.sampleTime}
    }
    let before=state.project.songs[0];var after=before
-   for i in after.markers!.indices {after.markers![i].tempoBPM! += descending ? -2 : rapid ? (edits.isMultiple(of:2) ? 1 : -1) : (edits < 3 ? 1 : -1)}
+   for i in after.markers!.indices {after.markers![i].tempoBPM! += sustained ? (edits % 80 < 40 ? -1 : 1) : descending ? -2 : rapid ? (edits.isMultiple(of:2) ? 1 : -1) : (edits < 3 ? 1 : -1)}
    let map=TempoEditMap(before:before,after:after);map.apply(to:&after);map.apply(to:&state.transport)
    state.project.songs[0]=after;edits+=1;didEdit=true
   }
@@ -86,7 +95,7 @@ final class Capture: @unchecked Sendable {
   if didEdit {
    let retained=activePlayers(audio)
    print("PLAYERS_RETAINED",edits,previousPlayers.intersection(retained).count,"OF",previousPlayers.count)
-   if !boundary { precondition(previousPlayers.isSubset(of:retained),"Changing BPM must keep the sounding player, including when pending fragments merge into it") }
+   if !boundary && !sustained { precondition(previousPlayers.isSubset(of:retained),"Changing BPM must keep the sounding player, including when pending fragments merge into it") }
    for case let player as AVAudioPlayerNode in engine.attachedNodes {
     if let previous=previousClocks[ObjectIdentifier(player)],let node=player.lastRenderTime,let clock=player.playerTime(forNodeTime:node) {
      if !boundary { precondition(clock.sampleTime>=previous,"Changing BPM must not rewind a sounding player's source clock") }
@@ -103,7 +112,7 @@ final class Capture: @unchecked Sendable {
   try samples.withUnsafeBytes{Data($0)}.write(to:URL(fileURLWithPath:path))
  }
  var minimum=1.0,quiet=0
- for start in stride(from:Int(outputRate*0.7),to:min(samples.count-window,Int(outputRate*(descending ? 23.8 : 7.8))),by:window) {
+ for start in stride(from:Int(outputRate*0.7),to:min(samples.count-window,Int(outputRate*(sustained || descending ? 23.8 : 7.8))),by:window) {
   let rms=sqrt(samples[start..<start+window].reduce(0.0){$0+Double($1*$1)}/Double(window));minimum=min(minimum,rms)
   if rms<0.002 {quiet+=1;print("GAP",Double(start)/outputRate,rms)}
  }
@@ -129,7 +138,7 @@ final class Capture: @unchecked Sendable {
  }
  let frequencyWindow=Int(outputRate*0.1)
  var frequencies=[Double](), largestBackwardStep=0.0
- for start in stride(from:Int(outputRate*0.7),to:min(samples.count-frequencyWindow,Int(outputRate*(descending ? 23.8 : 7.8))),by:frequencyWindow) {
+ for start in stride(from:Int(outputRate*0.7),to:min(samples.count-frequencyWindow,Int(outputRate*(sustained || descending ? 23.8 : 7.8))),by:frequencyWindow) {
   let crossings=(start+1..<start+frequencyWindow).reduce(0){$0+(samples[$1-1]<=0 && samples[$1]>0 ? 1:0)}
   let frequency=Double(crossings)*outputRate/Double(frequencyWindow)
   if ProcessInfo.processInfo.environment["JARAS_TEST_CAPTURE_PATH"] != nil { print("FREQUENCY",Double(start)/outputRate,frequency) }

@@ -69,10 +69,15 @@ for song in project.songs.indices {
 for index in project.songs.indices { project.songs[index].regionOwnershipInitialized = true }
 project.songs[0].tracks[0].clips[0].regionOwnerID = first.id
 project.songs[0].markers?[0].regionOwnerID = first.id
+var automation = TrackAutomation(); automation.mode = .latch
+var envelope = TrackEnvelope(target: AutomationTarget(.pan), name: "Pan", defaultValue: 0.5)
+envelope.armed = true; envelope.points = [.init(time: 0, value: 0.1), .init(time: 12, value: 0.9, shape: .smooth)]
+automation.envelopes = [envelope]
+project.songs[0].tracks[0].automation = automation; project.masterAutomation = automation; project.masterPan = -0.25
 let data = try JSONEncoder().encode(project)
 try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
 SWIFT
-swiftc Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
+swiftc Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
 build/bridge-tests/fixture build/bridge-tests/demo.json
 clang++ -std=c++17 -fobjc-arc -framework Foundation Core/Project/Models.cpp Core/Transport/Engine.cpp Core/Import/TrackTaxonomy.cpp Apple/Bridge/JarasCoreBridge.mm Tests/Core/BridgeTests.mm -o build/bridge-tests/test
 build/bridge-tests/test build/bridge-tests/demo.json

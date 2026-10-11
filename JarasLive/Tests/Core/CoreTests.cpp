@@ -312,10 +312,12 @@ int main() {
     stretched.execute({CommandKind::tempo, "", 240});
     const auto& changed = stretched.project().songs[0];
     expect(changed.tracks[0].clips[0].startTime == 1 && changed.tracks[0].clips[0].duration == 3 && changed.tracks[0].clips[0].playbackRate == 2, "all audio timing follows BPM proportionally");
+    expect(changed.tracks[0].clips[0].tempoBasePlaybackRate == 1, "BPM edit records the original rate explicitly");
     expect(changed.tracks[0].clips[0].sourceOffset == 0.5 && changed.parts[0].endTime == 4 && changed.markers->at(0).position == 1.5, "source offset remains in file seconds; regions and markers follow tempo");
     expect(stretched.transport().position == 1 && stretched.transport().subPlay.position == 2 && stretched.transport().subPlay.playing, "both playback heads preserve their musical position");
     stretched.execute({CommandKind::tempo, "", 120});
     expect(stretched.currentSong()->tracks[0].clips[0].duration == 6 && stretched.currentSong()->tracks[0].clips[0].playbackRate == 1, "restoring tempo restores original audio speed");
+    expect(stretched.currentSong()->tracks[0].clips[0].tempoBasePlaybackRate == 1, "repeated BPM edits preserve the original rate reference");
     stretched.execute({CommandKind::subStop}); stretched.execute({CommandKind::stop});
     expect(stretched.transport().position == 2, "stop anchor follows the tempo changes");
     for (double invalid : {59.0,301.0}) {
@@ -664,6 +666,10 @@ int main() {
     bool missingItemFX = false; try { itemEffects.setClipFX("missing", itemFXJSON); } catch (...) { missingItemFX = true; }
     expect(missingItemFX && itemEffects.project().songs[0].tracks[0].clips[0].fxJSON == itemFXJSON, "unknown item FX target is atomic");
     validate(itemEffects.project());
+    auto externalItemProject = itemEffects.project();
+    externalItemProject.songs[0].tracks[0].clips[0].fxJSON = R"({"inserted":["Limiter","External:take-gain"],"externalPlugins":[{"id":"take-gain","classID":"01234567890123456789012345678901","name":"Instruments","path":"/tmp/GainFixture.vst3"}]})";
+    validate(externalItemProject);
+    expect(externalItemProject.songs[0].tracks[0].clips[0].fxJSON->find("External:take-gain") != std::string::npos, "take VST3 FX and Limiter remain valid item processors");
     auto invalidItemFX = itemEffects.project(); invalidItemFX.songs[0].tracks[0].clips[0].fxJSON = R"({"inserted":["Instruments"]})";
     bool invalidItemFXLoad = false; try { validate(invalidItemFX); } catch (...) { invalidItemFXLoad = true; }
     expect(invalidItemFXLoad, "project load rejects item instruments");

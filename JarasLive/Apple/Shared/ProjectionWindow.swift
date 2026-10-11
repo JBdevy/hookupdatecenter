@@ -25,7 +25,7 @@ final class ProjectionWindow: NSWindow {
     private var placementObservers: [NSObjectProtocol] = []
     private var changingPresentation = false
     private func savePlacement() {
-        guard !changingPresentation, let placementKey else { return }
+        guard !changingPresentation, !inLiveResize, let placementKey else { return }
         UserDefaults.standard.set(NSStringFromRect(saved?.frame ?? frame), forKey: placementKey + ".frame")
         UserDefaults.standard.set(isProjectionFullscreen, forKey: placementKey + ".fullscreen")
         UserDefaults.standard.set(NSStringFromRect(screen?.frame ?? frame), forKey: placementKey + ".screen")
@@ -52,7 +52,8 @@ final class ProjectionWindow: NSWindow {
             let savedScreen = UserDefaults.standard.string(forKey: key + ".screen").map(NSRectFromString)
             toggleProjectionFullscreen(on: NSScreen.screens.first { $0.frame == savedScreen })
         }
-        placementObservers = [NSWindow.didMoveNotification, NSWindow.didResizeNotification].map { name in
+        placementObservers = [NSWindow.didMoveNotification, NSWindow.didResizeNotification,
+                              NSWindow.didEndLiveResizeNotification].map { name in
             NotificationCenter.default.addObserver(forName: name, object: self, queue: .main) { [weak self] _ in self?.savePlacement() }
         }
     }

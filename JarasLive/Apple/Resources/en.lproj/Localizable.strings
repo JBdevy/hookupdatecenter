@@ -1289,3 +1289,9 @@
 "Render each selected region through the Master, including tracks routed to hardware outputs." = "Render each selected region through the Master, including tracks routed to hardware outputs.";
 
 "Cut" = "Cut";
+
+"Sending message…" = "Sending message…";
+"Message sent." = "Message sent.";
+"Message was not sent." = "Message was not sent.";
+"Not connected. Message was not sent." = "Not connected. Message was not sent.";
+"Could not confirm delivery. Check the PC." = "Could not confirm delivery. Check the PC.";

@@ -2,6 +2,8 @@ import SwiftUI
 import CoreMIDI
 let mappingTestApplicationActive = true
 @MainActor enum RegionShortcutView {
+    static var editingEnvelope = false
+    static func envelopeOwnsEditingKey(_ event: NSEvent) -> Bool { editingEnvelope && [51, 117, 53].contains(event.keyCode) }
     static func handleSelectedObjectsDelete(_ event: NSEvent) -> Bool { false }
 }
 
@@ -316,6 +318,23 @@ enum ProjectError: Error { case invalid(String) }
         let afterSubPlay = show.actionsReceived.count
         precondition(mappings.handleKey(key(49, modifiers: .shift, in: parent, isRepeat: true)))
         precondition(show.actionsReceived.count == afterSubPlay, "holding Shift+Space must not toggle Sub Play repeatedly")
+        for code: UInt16 in [51, 117, 53] {
+            mappings.beginAction(.projectEnd, kind: "keyboard")
+            mappings.candidate = ControlInput(kind: "keyboard", label: "Envelope key", key: code, modifiers: 0)
+            mappings.save()
+            precondition(mappings.editing == nil)
+            let before = show.actionsReceived.count
+            RegionShortcutView.editingEnvelope = true
+            precondition(!mappings.handleKey(key(code, in: parent)), "even remapped Delete and Escape belong to the active envelope")
+            precondition(show.actionsReceived.count == before)
+            RegionShortcutView.editingEnvelope = false
+            precondition(mappings.handleKey(key(code, in: parent)), "the mapping resumes after leaving the envelope editor")
+        }
+        RegionShortcutView.editingEnvelope = true
+        mappings.beginAction(.projectEnd, kind: "keyboard")
+        precondition(mappings.handleKey(key(53, in: parent)) && mappings.editing == nil, "the shortcut learner retains its explicit Escape priority")
+        RegionShortcutView.editingEnvelope = false
+        print("ENVELOPE_DELETE_ESCAPE_KEYS_BEFORE_GLOBAL_MAPPINGS_OK")
         parent.orderOut(nil)
         print("DIALOG_ENTER_ESCAPE_PRIORITY_AND_TRANSPORT_RESTORATION_OK")
     }

@@ -549,6 +549,8 @@ precondition(grid.heldItemGuide == nil, "modal cancellation removes guides witho
 print("GRID_ITEM_GUIDES_PRESS_RELEASE_AND_MODAL_CANCELLATION_OK")
 
 let longHeader = GridSelectionItem(id: UUID(), rect: CGRect(x: 100, y: 100, width: 10000, height: 60), name: "LONG ITEM")
+precondition(GridSelectionItem.headerFontSize == GridSelectionItem.headerReadoutFontSize,
+    "Item name and rate share the compact pan/volume font")
 let nameWidth = ("LONG ITEM" as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold)]).width
 for left in [0.0, 500.0, 5000.0, 9800.0] {
     let viewport = CGRect(x: left, y: 0, width: 800, height: 600)
@@ -731,6 +733,22 @@ precondition(unmuteMIDI.items.first?.title == "Unmute items")
 invoke(unmuteMIDI, "muteMIDISelection")
 precondition(toggled == [contextMIDIMuted])
 print("MIDI_CONTEXT_ONLY_MUTE_UNMUTE_MONO_STEREO_AND_MIXED_SELECTION_FILTER_OK")
+
+let midiWithFX = GridSelectionItem(id: UUID(), rect: CGRect(x: 100, y: 100, width: 240, height: 80), audioExportable: false, midiEditable: true, hasFX: true)
+precondition(midiWithFX.fxRect != nil && !midiWithFX.fxRect!.intersects(midiWithFX.gainKnobRect!))
+precondition(menuGrid.items.first(where: { $0.id == contextMIDI })!.fxRect == nil, "plain MIDI keeps its existing compact header")
+menuGrid.items.append(midiWithFX)
+var openedMIDIFX: [(UUID, Bool)] = []
+menuGrid.fx = { openedMIDIFX.append(($0, $1)) }
+invoke(menuGrid.itemContextMenu(for: midiWithFX.id), "openContextFX")
+precondition(openedMIDIFX.count == 1 && openedMIDIFX[0].0 == midiWithFX.id && !openedMIDIFX[0].1)
+grid.items = [midiWithFX]
+grid.fx = { openedMIDIFX.append(($0, $1)) }
+let midiFXPoint = CGPoint(x: midiWithFX.fxRect!.midX, y: midiWithFX.fxRect!.midY)
+_ = grid.handlePointerEvent(event(.leftMouseDown, midiFXPoint))
+_ = grid.handlePointerEvent(event(.leftMouseUp, midiFXPoint))
+precondition(openedMIDIFX.count == 2 && openedMIDIFX[1].0 == midiWithFX.id && !openedMIDIFX[1].1, "MIDI item FX header opens the same item chain as its context menu")
+print("MIDI_EXISTING_FX_HEADER_AND_CONTEXT_OPEN_OWN_ITEM_CHAIN_OK")
 
 var glued = Set<UUID>()
 menuGrid.glue = { glued = $0 }

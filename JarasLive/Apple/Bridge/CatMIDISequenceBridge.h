@@ -3,7 +3,9 @@
 #include "CatMIDISequence.hpp"
 static inline std::vector<CatMIDINote> catMIDINotes(NSArray<NSDictionary*>* values) {
     std::vector<CatMIDINote> notes;notes.reserve(values.count);
-    for(NSDictionary* n in values) notes.push_back({[n[@"start"] doubleValue],[n[@"end"] doubleValue],uint8_t([n[@"pitch"] intValue]),uint8_t([n[@"velocity"] intValue]),uint8_t([n[@"channel"] intValue]-1)});
+    for(NSDictionary* n in values) notes.push_back({[n[@"start"] doubleValue],[n[@"end"] doubleValue],uint8_t([n[@"pitch"] intValue]),uint8_t([n[@"velocity"] intValue]),uint8_t([n[@"channel"] intValue]-1),
+        (uint64_t([n[@"sourceID0"] unsignedIntValue])<<32)|[n[@"sourceID1"] unsignedIntValue],
+        (uint64_t([n[@"sourceID2"] unsignedIntValue])<<32)|[n[@"sourceID3"] unsignedIntValue]});
     return notes;
 }
 static inline double catMIDIClock(const AudioTimeStamp* time,double rate) {

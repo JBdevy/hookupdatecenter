@@ -37,6 +37,120 @@
             metadata: TimelineRenderMetadata(song: source), rulerHeight: 55, selectedClips: selected,
             mediaDirectory: directory, missingAudioPaths: ["missing.wav"])
     }
+    // SwiftUI can publish the new song before the captured render revision is
+    // replaced. Exercise the actual cache and native GPU body at that boundary.
+    // A stale interval index previously addressed removed clip-array elements.
+    let snapshotCache = TimelineRenderMetadataCache()
+    let snapshotRows = TrackLayoutCache(), snapshotSelection = TimelineSelectionLayoutCache()
+    let snapshotDirectory = directory.appendingPathComponent("snapshots", isDirectory: true)
+    try FileManager.default.createDirectory(at: snapshotDirectory, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: url, to: snapshotDirectory.appendingPathComponent("audio.wav"))
+    let unchangedKey = TimelineRenderKey(revision: 1, songID: song.id, movingClip: nil,
+        movingStart: 0, movingTrack: nil, movingRegion: nil, regionDelta: 0,
+        resizingRegion: nil, resizedStart: 0, resizedEnd: 0)
+    var snapshotSong = song
+    snapshotSong.tracks = [audioTrack]
+    snapshotSong.tracks[0].clips = [first, loop]
+    let snapshotBody = NativeTimelineAudioBodyView()
+    let bodyConfigurationCache = NativeTimelineAudioBodyCache()
+    let originalMetadata = snapshotCache.metadata(song: snapshotSong, key: unchangedKey)
+    func projectSnapshot(_ source: Song, expected: Set<UUID>) {
+        let metadata = snapshotCache.metadata(song: source, key: unchangedKey)
+        let rows = snapshotRows.layout(source.tracks, height: 64, key: unchangedKey)
+        let rebuiltRows = TrackRowLayout(tracks: source.tracks, baseHeight: 64)
+        precondition(rows.lanes == rebuiltRows.lanes && rows.offsets == rebuiltRows.offsets && rows.heights == rebuiltRows.heights,
+            "Cached overlap lanes and rows must describe this same clip snapshot")
+        let selection = snapshotSelection.layout(key: unchangedKey, content: metadata,
+            rowHeight: rows.baseHeight, rulerHeight: 55, rowOffsets: rows.offsets, laneHeights: rows.laneHeights) {
+            source.tracks.enumerated().flatMap { index, track in
+                track.clips.map { clip in
+                    let lane = rows.lanes[index].lanes[clip.id] ?? 0
+                    return GridSelectionItem(id: clip.id,
+                        rect: CGRect(x: clip.startTime, y: 55 + rows.offsets[index] + CGFloat(lane) * rows.laneHeights[index] + 3,
+                                     width: clip.duration, height: rows.laneHeights[index] - 6),
+                        name: clip.name, duration: clip.duration, trackIndex: index, laneIndex: lane)
+                }
+            }
+        }
+        let config = bodyConfigurationCache.configuration(song: source,
+            rows: rows, metadata: metadata,
+            rulerHeight: 55, selectedClips: [], mediaDirectory: snapshotDirectory, missingAudioPaths: [])
+        snapshotBody.configure(config)
+        snapshotBody.project(viewport: CGRect(x: 0, y: 0, width: 600, height: 260),
+            documentSize: CGSize(width: 4000, height: 400), scale: 300)
+        precondition(snapshotBody.waveformIDsForTest == expected,
+            "The native body must display the exact latest items, not skip invalid stale indices")
+        let hitIDs = Set(selection.candidates(in: snapshotBody.frame, pixelsPerSecond: 300).map { selection.items[$0].id })
+        precondition(hitIDs == expected,
+            "Drawing and hit testing must retain the same snapshot after deletion, reorder, relocation or track changes")
+        precondition(metadata.song == source, "Body geometry and cached metadata belong to one immutable song snapshot")
+    }
+    projectSnapshot(snapshotSong, expected: [first.id, loop.id])
+    snapshotSong.tracks[0].clips.removeLast()
+    projectSnapshot(snapshotSong, expected: [first.id])
+    snapshotSong.tracks[0].clips = [loop, first]
+    projectSnapshot(snapshotSong, expected: [first.id, loop.id])
+    snapshotSong.tracks[0].clips[1].startTime = 100
+    projectSnapshot(snapshotSong, expected: [loop.id])
+    var otherTrack = audioTrack
+    otherTrack.id = UUID()
+    var otherClip = first; otherClip.id = UUID()
+    otherTrack.clips = [otherClip]
+    snapshotSong.tracks.insert(otherTrack, at: 0)
+    projectSnapshot(snapshotSong, expected: [otherClip.id, loop.id])
+    snapshotSong.tracks.reverse()
+    projectSnapshot(snapshotSong, expected: [otherClip.id, loop.id])
+    snapshotSong.tracks.removeFirst()
+    projectSnapshot(snapshotSong, expected: [otherClip.id])
+    let unchangedMetadata = snapshotCache.metadata(song: snapshotSong, key: unchangedKey)
+    for _ in 0..<80 {
+        precondition(snapshotCache.metadata(song: snapshotSong, key: unchangedKey) === unchangedMetadata,
+            "An unchanged snapshot must retain all cached metadata across zoom frames")
+    }
+    let retainedRows = TrackRowLayout(tracks: snapshotSong.tracks, baseHeight: 64)
+    let retainedConfig = bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows,
+        metadata: unchangedMetadata, rulerHeight: 55, selectedClips: [], mediaDirectory: snapshotDirectory, missingAudioPaths: [])!
+    let fillsBeforeConfigure = snapshotBody.fillSubmissionsForTest
+    let inkBeforeConfigure = snapshotBody.inkUpdatesForTest
+    for _ in 0..<80 {
+        let unchanged = bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows,
+            metadata: unchangedMetadata, rulerHeight: 55, selectedClips: [], mediaDirectory: snapshotDirectory, missingAudioPaths: [])!
+        precondition(unchanged.fallbackIdentity == retainedConfig.fallbackIdentity && unchanged.metadata === retainedConfig.metadata,
+            "Window layout keeps clip classification and hosted-coverage identity independent of viewport dimensions")
+        precondition(!snapshotBody.configure(unchanged), "Viewport-only configure must retain the prepared GPU content")
+        snapshotBody.project(viewport: CGRect(x: 0, y: 0, width: 600, height: 260),
+            documentSize: CGSize(width: 4000, height: 400), scale: 300)
+    }
+    precondition(snapshotBody.fillSubmissionsForTest == fillsBeforeConfigure && snapshotBody.inkUpdatesForTest == inkBeforeConfigure,
+        "No-op host updates cannot clear text/media or resubmit identical GPU item fills")
+    let selectedConfig = bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows,
+        metadata: unchangedMetadata, rulerHeight: 55, selectedClips: [otherClip.id], mediaDirectory: snapshotDirectory, missingAudioPaths: [])!
+    precondition(selectedConfig.fallbackIdentity != retainedConfig.fallbackIdentity && snapshotBody.configure(selectedConfig),
+        "Selection still invalidates retained visual contents")
+    let missingConfig = bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows,
+        metadata: unchangedMetadata, rulerHeight: 55, selectedClips: [], mediaDirectory: snapshotDirectory, missingAudioPaths: ["audio.wav"])!
+    precondition(missingConfig.fallbackIdentity != selectedConfig.fallbackIdentity && snapshotBody.configure(missingConfig),
+        "Relink/missing-media status invalidates actual clip presentation without a new song revision")
+    precondition(bodyConfigurationCache.configuration(song: snapshotSong, rows: retainedRows, metadata: unchangedMetadata,
+        rulerHeight: 55, selectedClips: [], mediaDirectory: nil, missingAudioPaths: []) == nil,
+        "Closing the media directory cannot reuse a previous project's GPU configuration")
+    print("NATIVE_BODY_CONFIGURE_AND_CLASSIFICATION_REUSE_REAL_CONTENT_SELECTION_MISSING_MEDIA_OK")
+    precondition(originalMetadata.clipIndices(inTrack: 0, from: 0, through: 5) == [0, 1],
+        "Replacing the cache must not mutate an older drawing snapshot")
+    snapshotBody.configure(nil)
+    print("NATIVE_BODY_SAME_REVISION_DELETE_REORDER_MOVE_INSERT_TRACKS_EXACT_GPU_SELECTION_ROWS_SNAPSHOT_AND_ZOOM_CACHE_OK")
+    let overlapCache = RegionOverlapCache()
+    var regionSong = snapshotSong
+    regionSong.parts = [Part(id: UUID(), name: "First", startTime: 0, endTime: 5),
+                        Part(id: UUID(), name: "Second", startTime: 3, endTime: 8)]
+    precondition(snapshotRows.regionLanes(regionSong.parts, key: unchangedKey).count == 2)
+    precondition(overlapCache.regions(song: regionSong, revision: 1) == Set(regionSong.parts.map(\.id)))
+    regionSong.parts[1].startTime = 5
+    precondition(snapshotRows.regionLanes(regionSong.parts, key: unchangedKey).count == 1)
+    precondition(overlapCache.regions(song: regionSong, revision: 1).isEmpty)
+    regionSong.parts.removeFirst()
+    precondition(snapshotRows.regionLanes(regionSong.parts, key: unchangedKey).lanes.count == 1)
+    print("REGION_LANE_AND_OVERLAP_SAME_REVISION_MOVE_DELETE_SNAPSHOT_OK")
     let mixed = configuration(song)!
     precondition(mixed.itemIDs == Set([first.id, loop.id, missing.id, textTrack.clips[0].id]))
     precondition(mixed.hasFallbackItems && !mixed.hasFallbackWaveforms,

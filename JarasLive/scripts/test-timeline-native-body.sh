@@ -24,7 +24,11 @@ def between(start, end):
     first = source.index(start)
     return source[first:source.index(end, first)]
 parts = [between('@MainActor private struct NativeTimelineAudioBodyConfiguration', '/// Structural data changes'),
-         between('private final class TimelineRenderMetadata {', '@MainActor private final class TimelineRenderMetadataCache'),
+         between('private final class TimelineRenderMetadata {', '/// During a gain gesture'),
+         declaration('struct TimelineRenderKey:'),
+         declaration('@MainActor private final class TimelineSelectionLayoutCache'),
+         declaration('@MainActor private final class TrackLayoutCache'),
+         declaration('@MainActor private final class RegionOverlapCache'),
          between('@MainActor private struct TrackRowLayout {', 'private struct TimelineHeader:'),
          declaration('private struct TimelineHostedItemCoverage:'),
          declaration('private enum TimelineCanvasCoverage {')]
@@ -95,7 +99,7 @@ swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
   Apple/Shared/TimelineRenderDiagnostics.swift Apple/Shared/TimelineVisibleClipIndex.swift \
   Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
-  Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift \
+  Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift \
   Application/Project/ClipRepetition.swift Application/Project/AudioFileRead.swift \
   Apple/Shared/Theme.swift "$test_dir/TimelineAudioWaveform.swift" \
   "$test_dir/MetalWaveformRenderer.swift" Apple/Shared/TimelineMetalWaveforms.swift \

@@ -9,7 +9,7 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var audioRate: Double { playbackRate ?? 1 } }
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
     var isImage: Bool { isProjectionMedia && ["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "bmp", "webp", "avif"].contains(URL(fileURLWithPath: audioFile?.path ?? "").pathExtension.lowercased()) }
@@ -28,6 +28,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var heightScale: Double? = nil
     public var mute = false, solo = false
     public var output = 1
+    public var automation: TrackAutomation?
     public var fx: NativeFXSettings?
     public var midiInput: Int?
     public var midiChannel: Int?
@@ -407,12 +408,14 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     public var createdAt: String, updatedAt: String
     public var setlists: [Setlist]; public var songs: [Song]
     public var regionSetlist: RegionSetlist?
+    public var masterPan: Double?
     public var masterVolume: Double?
     public var masterMute: Bool?
     public var masterSolo: Bool?
     public var masterMono: Bool?
     public var masterPhaseInverted: Bool?
     public var masterColor: UInt32? = 0x414141
+    public var masterAutomation: TrackAutomation?
     public var masterFX: NativeFXSettings?
     public var masterPatch: OutputPatch?
     public var masterSecondaryPatch: OutputPatch?
@@ -429,8 +432,10 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
             guard savedCursor.position.isFinite, savedCursor.position >= 0 else { throw ProjectError.invalid("Invalid saved cursor position") }
         }
         guard (masterVolume ?? 1).isFinite, (0...pow(10.0, 12.0 / 20.0)).contains(masterVolume ?? 1) else { throw ProjectError.invalid("Invalid master volume") }
+        guard (masterPan ?? 0).isFinite, (-1...1).contains(masterPan ?? 0) else { throw ProjectError.invalid("Invalid master pan") }
         guard masterColor == nil || masterColor! <= 0xffffff else { throw ProjectError.invalid("Invalid master color") }
         try masterFX?.validate()
+        try masterAutomation?.validate()
         try masterPatch?.validate(allowMaster: false, allowNone: true)
         try masterSecondaryPatch?.validate(allowMaster: false, allowNone: true)
         for patch in masterOutputPatches { try patch.validate(allowMaster: false, allowNone: true) }
@@ -470,6 +475,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 guard track.color == nil || track.color! <= 0xffffff else { throw ProjectError.invalid("Invalid track color") }
                 guard track.heightScale == nil || TrackHeightGeometry.isValidScale(track.heightScale!) else { throw ProjectError.invalid("Invalid track height") }
                 try track.fx?.validate()
+                try track.automation?.validate()
                 if track.kind.isSingleLane {
                     let layers = track.kind.isTeleprompter ? [track.clips.filter { !$0.isProjectionMedia }, track.clips.filter(\.isProjectionMedia)] : [track.clips]
                     for layer in layers {
@@ -489,7 +495,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 for patch in track.outputPatches { try patch.validate(allowMaster: true, allowGroup: track.parentTrackID != nil, allowNone: true) }
                 guard track.volume.isFinite, (0...pow(10.0, 12.0 / 20.0)).contains(track.volume), track.pan.isFinite, (-1...1).contains(track.pan), track.output > 0 else { throw ProjectError.invalid("Controle de pista inválido.") }
                 for clip in track.clips {
-                    if clip.frozenMIDI == true || clip.renderedTiming == true {
+                    if clip.frozenMIDI == true || clip.renderedTiming == true || clip.renderedTempo == true {
                         guard track.kind == .standard, clip.audioFile != nil, clip.midi == nil else { throw ProjectError.invalid("Frozen MIDI requires an audio item") }
                     }
                     if let midi = clip.midi {
@@ -504,6 +510,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard clip.fx == nil || track.kind == .standard || clip.isProjectionMedia else { throw ProjectError.invalid("Item FX requires an audio item") }
                     guard clip.fxBypassed == nil || track.kind == .standard || clip.isProjectionMedia else { throw ProjectError.invalid("Item FX requires an audio item") }
                     try clip.fx?.validateForClip()
+                    try clip.automation?.validate()
                     if let settings = clip.timecode {
                         guard track.kind == .timecode else { throw ProjectError.invalid("Timecode settings require a Timecode item") }
                         try settings.validate()
@@ -516,6 +523,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     try register(clip.id)
                     guard (clip.waveformChannels ?? []).allSatisfy({ $0.allSatisfy { $0.isFinite && (0...1).contains($0) } }) else { throw ProjectError.invalid("Invalid channel waveform") }
                     guard clip.audioRate.isFinite, (1.0/32...32).contains(clip.audioRate) else { throw ProjectError.invalid("Invalid audio playback rate.") }
+                    if let reference = clip.tempoBasePlaybackRate { guard reference.isFinite, (1.0/32...32).contains(reference) else { throw ProjectError.invalid("Invalid tempo playback reference.") } }
                     guard clip.channelMode == nil || (0...3).contains(clip.channelMode!) else { throw ProjectError.invalid("Invalid item channel mode") }
                 guard (clip.pitchSemitones ?? 0).isFinite, (-12...12).contains(clip.pitchSemitones ?? 0) else { throw ProjectError.invalid("Invalid item pitch") }
                 guard clip.normalizationGain == nil || (clip.normalizationGain!.isFinite && clip.normalizationGain! >= 0 && clip.normalizationGain! <= pow(10, 24.0 / 20)) else { throw ProjectError.invalid("Invalid normalization gain") }

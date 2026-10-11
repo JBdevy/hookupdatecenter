@@ -136,6 +136,104 @@ int main() {
         }
         assert(signal.programs.size()==1); // finished tails are reclaimable
     }
+    // BPM editing keeps the same musical position even though its timeline
+    // seconds move. Render the production control/render path against a beat
+    // clock integrated independently of those changing timeline coordinates.
+    for(double rate : {44100.,48000.}) for(bool bounded : {false,true}) for(bool smallSteps : {false,true}) {
+        MetronomeSignal signal(rate); signal.gain=1;
+        auto makeProgram=[&](double bpm) {
+            auto p=std::make_unique<MetronomeProgram>(); p->bounded=bounded; p->mode=1;
+            p->sections={{0,bpm,4,4,1000,0}};
+            p->a.assign(size_t(std::round(rate*0.04)),0.2f); return p;
+        };
+        double bpm=120, musicalPosition=20;
+        signal.publish(makeProgram(bpm));
+        signal.configure(musicalPosition*60/bpm,1000000,true,0,0,0);
+        const size_t editEvery=size_t(std::round(rate*0.0173));
+        size_t nextEdit=editEvery, edit=0;
+        int64_t lastExpectedBeat=19;
+        std::vector<size_t> expected;
+        std::vector<float> samples(size_t(rate*4));
+        for(size_t offset=0;offset<samples.size();) {
+            if(offset==nextEdit) {
+                const double large[]={80,160,95,190,115,135,72,120};
+                bpm=smallSteps ? 120+(int(edit%17)-8)*0.12 : large[edit%8];
+                signal.publish(makeProgram(bpm));
+                ++edit; nextEdit+=editEvery;
+            }
+            const auto count=unsigned(std::min({size_t(128),samples.size()-offset,nextEdit-offset}));
+            const auto host=1000000+uint64_t(offset/rate*signal.ticksPerSecond);
+            signal.configure(musicalPosition*60/bpm,host,true,0,0,double(offset));
+            AudioTimeStamp time{}; time.mFlags=kAudioTimeStampSampleTimeValid|kAudioTimeStampHostTimeValid;
+            time.mSampleTime=offset; time.mHostTime=host;
+            AudioBufferList buffers{}; buffers.mNumberBuffers=1;
+            buffers.mBuffers[0]={1,UInt32(count*sizeof(float)),samples.data()+offset};
+            signal.render(&time,count,&buffers);
+            const double perSample=bpm/(60*rate);
+            for(unsigned i=0;i<count;++i) {
+                const auto beat=int64_t(std::floor(musicalPosition+i*perSample+1e-9));
+                if(beat!=lastExpectedBeat) { expected.push_back(offset+i); lastExpectedBeat=beat; }
+            }
+            musicalPosition+=count*perSample; offset+=count;
+        }
+        const auto beats=onsets(samples);
+        if(beats.size()!=expected.size()) std::cerr<<"live BPM onset count rate="<<rate<<" bounded="<<bounded<<" small="<<smallSteps<<" actual="<<beats.size()<<" expected="<<expected.size()<<"\n";
+        assert(beats.size()==expected.size());
+        for(size_t i=0;i<beats.size();++i) {
+            const auto delta=std::abs(double(beats[i])-double(expected[i]));
+            if(delta>1) std::cerr<<"live BPM phase rate="<<rate<<" beat="<<i<<" delta="<<delta<<" frames\n";
+            assert(delta<=1);
+            for(size_t j=beats[i];j<std::min(samples.size(),beats[i]+size_t(std::round(rate*0.04)));++j)
+                assert(std::abs(samples[j]-0.2f)<0.00001f); // old pulse neither restarts nor truncates
+        }
+        for(float value:samples) assert(value<=0.20001f); // catches overlapping retriggers during a pulse
+        assert(edit>200);
+    }
+    // Editing exactly on a genuine beat must keep that beat; revising again
+    // immediately after it must not add a second attack.
+    for(double rate : {44100.,48000.}) for(bool bounded : {false,true}) {
+        MetronomeSignal signal(rate); signal.gain=1;
+        auto makeProgram=[&](double bpm) {
+            auto p=std::make_unique<MetronomeProgram>(); p->bounded=bounded; p->mode=1;
+            p->sections={{0,bpm,4,4,1000,0}}; p->a.assign(size_t(rate*0.04),0.2f); return p;
+        };
+        signal.publish(makeProgram(120)); signal.configure(0,1000000,true,0,0,0);
+        const size_t editAt=size_t(rate*0.5), repeatAt=editAt+1;
+        std::vector<float> samples(size_t(rate*1.31));
+        double bpm=120, musicalPosition=0;
+        for(size_t offset=0;offset<samples.size();) {
+            if(offset==editAt || offset==repeatAt) {
+                bpm=offset==editAt ? 150 : 150.001; signal.publish(makeProgram(bpm));
+            }
+            size_t count=std::min(size_t(128),samples.size()-offset);
+            if(offset<editAt) count=std::min(count,editAt-offset);
+            else if(offset<repeatAt) count=std::min(count,repeatAt-offset);
+            AudioTimeStamp time{}; time.mFlags=kAudioTimeStampSampleTimeValid|kAudioTimeStampHostTimeValid;
+            time.mSampleTime=offset; time.mHostTime=1000000+uint64_t(offset/rate*signal.ticksPerSecond);
+            signal.configure(musicalPosition*60/bpm,time.mHostTime,true,0,0,double(offset));
+            AudioBufferList buffers{}; buffers.mNumberBuffers=1;
+            buffers.mBuffers[0]={1,UInt32(count*sizeof(float)),samples.data()+offset};
+            signal.render(&time,unsigned(count),&buffers);
+            musicalPosition+=count*bpm/(60*rate); offset+=count;
+        }
+        const auto beats=onsets(samples);
+        assert(beats.size()==4 && beats[1]==editAt);
+        for(float value:samples) assert(value<=0.20001f);
+    }
+    for(double rate : {44100.,48000.}) for(bool bounded : {false,true}) {
+        MetronomeSignal signal(rate);
+        auto makeProgram=[&](double bpm) {
+            auto p=std::make_unique<MetronomeProgram>(); p->bounded=bounded; p->mode=1;
+            p->sections={{0,bpm,4,4,1000,0}}; p->a.assign(size_t(rate*0.04),0.2f); return p;
+        };
+        signal.publish(makeProgram(120)); signal.configure(0,1000000,true,0,0,0);
+        render(signal,rate,0.12);
+        signal.configure(0,1000000,false,0,0,0); render(signal,rate,0.06);
+        signal.publish(makeProgram(150)); signal.configure(0,1000000,true,0,0,0);
+        const auto restarted=onsets(render(signal,rate,0.1));
+        assert(restarted.size()==1 && restarted.front()==0); // a genuine Play still owns the first beat
+    }
+    std::cout<<"METRONOME_LIVE_BPM_RETIMING_PCM_OK >200 edits, small/large steps, exact beat edits, pulse tails, sample-accurate beat phase, click/metronome 44100/48000\n";
     std::cout<<"METRONOME_PRESET_CONTINUITY_OK no extra beats, old tails preserved, reclamation 44100/48000\n";
     std::cout<<"SCHEDULED_CLICK_JUMP_PCM_OK first beat, cancellation, metronome/click 44100/48000\n";
     std::cout<<"CLICK_TRACK_PCM_OK bounded items, gaps, meter, tempo, seek, loop, stop at 44100/48000\n";

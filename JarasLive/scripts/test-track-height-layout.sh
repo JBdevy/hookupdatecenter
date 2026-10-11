@@ -15,9 +15,16 @@ cache=grid[grid.index('@MainActor private final class TrackLayoutCache'):grid.in
 row_start=grid.index('@MainActor private struct TrackRowLayout')
 rows=grid[row_start:grid.index('private struct TimelineHeader:', row_start)]
 stubs='''import SwiftUI
-struct Track { var id = UUID(); var heightScale: Double? = nil; var clips: [AudioClip] = [] }
-struct AudioClip { var id = UUID(); var startTime: Double; var duration: Double; var recordingLane: Int? = nil }
-struct Part { var id = UUID(); var parentRegionID: UUID? = nil; var startTime: Double; var endTime: Double }
+struct TrackAutomation {
+ var enabled = true
+ var lanesVisible: Bool? = nil
+ var envelopes: [Envelope] = []
+ var visibleEnvelopes: [Envelope] { !enabled || lanesVisible == false ? [] : envelopes.filter(\\.visible) }
+ struct Envelope { var visible = true }
+}
+struct Track { var automation: TrackAutomation? = nil; var id = UUID(); var heightScale: Double? = nil; var clips: [AudioClip] = [] }
+struct AudioClip: Equatable { var id = UUID(); var startTime: Double; var duration: Double; var recordingLane: Int? = nil }
+struct Part: Equatable { var id = UUID(); var parentRegionID: UUID? = nil; var startTime: Double; var endTime: Double }
 struct TimelineRenderKey: Equatable { let revision: Int }
 enum LaneBuildCounter { static var count = 0 }
 final class RecordingLaneLayout {

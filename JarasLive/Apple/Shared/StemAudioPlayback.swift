@@ -419,9 +419,176 @@ struct TimecodePlaybackSpan {
     private var unifiedPlaybackStarts: [UUID: Double] = [:]
     private var clipIndices: [UUID: Int] = [:]
     private var clipFragments: [UUID: [UUID]] = [:]
+    private var contiguousNext: [UUID: UUID] = [:]
+    private var contiguousPrevious: [UUID: UUID] = [:]
+    private var contiguousSourceEnd: [UUID: Double] = [:]
     private var fragmentStarts: [UUID: Double] = [:]
     private var trackPeaks: [UUID: JarasMeterBank] = [:]
     private var meters: [UUID: TrackMeterLevel] = [:]
+    private var lastTempoEditTime = -Double.infinity
+    private struct AutomatedMix {
+        var gain: Double?
+        var pan: Double?
+        var mute: Bool?
+        var trim = true
+        var baseGain = 1.0
+        var basePan = 0.0
+    }
+    private var automatedMix: [UUID: AutomatedMix] = [:]
+    private var automationPlan: [(UUID, TrackAutomation)] = []
+    private var automationPlanRevision: UInt64?
+    private var automationSong: UUID?
+    private var itemAutomationVoiceKeys = Set<VoiceKey>()
+    private var automationOverrides: [UUID: [UUID: Double]] = [:]
+    private var externalAutomationValues: [String: Double] = [:]
+    private var externalAutomationBase: [String: (UUID, String, UInt32, Double)] = [:]
+    func overrideAutomation(_ track: UUID?, envelope: UUID, value: Double?) {
+        let id = track ?? MultiLoopTrack.masterID
+        automationOverrides[id, default: [:]][envelope] = value
+    }
+    private func automationGain(_ id: UUID, manual: Double) -> Double {
+        guard let mix = automatedMix[id], let value = mix.gain else { return manual }
+        return mix.trim ? manual * value / max(0.000001, mix.baseGain) : value
+    }
+    private func applyAutomation(_ snapshot: ShowSnapshot, song: Song, revision: UInt64) {
+        let masterID = MultiLoopTrack.masterID
+        if automationPlanRevision != revision || automationSong != song.id {
+            automationSong = song.id
+            automationPlan = song.tracks.compactMap { track in track.automation.map { (track.id, $0) } }
+            if let automation = snapshot.project.masterAutomation { automationPlan.append((masterID, automation)) }
+            automationPlanRevision = revision
+        }
+        guard !automationPlan.isEmpty || !automatedMix.isEmpty || !externalAutomationBase.isEmpty else { return }
+        let transport = snapshot.transport
+        let head = transport.subPlay.playing ? 1 : 0
+        let position: Double
+        if realtime, transport.playing || transport.subPlay.playing, let anchor = headAudioClock[head] {
+            let now = mach_absolute_time()
+            position = anchor.position + (now >= anchor.host ? AVAudioTime.seconds(forHostTime: now-anchor.host) : -AVAudioTime.seconds(forHostTime: anchor.host-now))
+        } else { position = transport.subPlay.playing ? transport.subPlay.position : transport.playing ? transport.position : transport.editPosition ?? transport.position }
+        var active = Set<UUID>(), externalActive = Set<String>()
+        for (id, automation) in automationPlan {
+            let target: UUID? = id == masterID ? nil : id
+            let baseFX = target.flatMap { tracks[$0]?.fx } ?? (target == nil ? masterFXSettings : nil) ?? NativeFXSettings()
+            var fx = baseFX, mix = AutomatedMix(); mix.trim = automation.mode == .trimRead
+            if automation.enabled {
+                active.insert(id)
+                for envelope in automation.active {
+                    let value = automationOverrides[id]?[envelope.id] ?? envelope.value(at: position)
+                    switch envelope.target.kind {
+                    case .volume: mix.gain = TrackEnvelope.gain(value); mix.baseGain = TrackEnvelope.gain(envelope.defaultValue)
+                    case .pan: mix.pan = value * 2 - 1; mix.basePan = envelope.defaultValue * 2 - 1
+                    case .mute: mix.mute = value >= 0.5
+                    case .nativeFX: _ = envelope.target.native?.apply(normalized: value, to: &fx)
+                    case .externalFX:
+                        #if os(macOS)
+                        guard let plugin = envelope.target.plugin, let parameter = envelope.target.parameter,
+                              baseFX.externalPlugins?.contains(where: { $0.id == plugin && baseFX.inserted.contains($0.effectKey) }) == true,
+                              let node = effects(for: target)?.externalNode(plugin) else { continue }
+                        let key = id.uuidString + "/" + envelope.target.key
+                        externalActive.insert(key)
+                        if externalAutomationBase[key] == nil {
+                            let original = JarasVST3.parameters(node, identifier: plugin).first { ($0["id"] as? UInt32) == parameter }?["value"] as? Double
+                            if let original { externalAutomationBase[key] = (id, plugin, parameter, original) }
+                        }
+                        if externalAutomationValues[key] != value {
+                            JarasVST3.setParameter(node, identifier: plugin, parameter: parameter, value: value)
+                            externalAutomationValues[key] = value
+                        }
+                        #endif
+                    }
+                }
+            }
+            automatedMix[id] = mix
+            effects(for: target)?.apply(fx)
+            if id == masterID {
+                applyMasterGain()
+                JarasEqualizer.setInputPan(masterChannelMode, pan: min(1, max(-1, mix.pan.map { mix.trim ? masterPan + $0 - mix.basePan : $0 } ?? masterPan)))
+            } else if let track = tracks[id], let bus = trackBuses[id] {
+                applyTrackGain(id)
+                JarasEqualizer.setInputPan(bus.controls, pan: min(1, max(-1, mix.pan.map { mix.trim ? track.pan + $0 - mix.basePan : $0 } ?? track.pan)))
+            }
+        }
+        for id in Set(automatedMix.keys).subtracting(active) {
+            automatedMix[id] = nil
+            if id == masterID {
+                applyMasterGain(); JarasEqualizer.setInputPan(masterChannelMode, pan: masterPan); masterEffects.apply(masterFXSettings)
+            } else if let track = tracks[id], let bus = trackBuses[id] {
+                applyTrackGain(id); JarasEqualizer.setInputPan(bus.controls, pan: track.pan); bus.effects.apply(track.fx ?? NativeFXSettings())
+            }
+        }
+        #if os(macOS)
+        for key in Set(externalAutomationBase.keys).subtracting(externalActive) {
+            if let (id, plugin, parameter, value) = externalAutomationBase.removeValue(forKey: key),
+               let node = effects(for: id == masterID ? nil : id)?.externalNode(plugin) {
+                JarasVST3.setParameter(node, identifier: plugin, parameter: parameter, value: value)
+            }
+            externalAutomationValues[key] = nil
+        }
+        #endif
+    }
+    /// Take automation is evaluated on its own voice and transport head. A
+    /// neighbouring/overlapping item on the same track must never inherit it.
+    private func applyItemAutomation(_ transport: TransportState) {
+        guard !itemAutomationVoiceKeys.isEmpty else { return }
+        for key in itemAutomationVoiceKeys {
+            guard var voice = voices[key] else { itemAutomationVoiceKeys.remove(key); continue }
+            let position: Double
+            if realtime, let anchor = headAudioClock[key.head] {
+                let now = mach_absolute_time()
+                position = anchor.position + (now >= anchor.host ? AVAudioTime.seconds(forHostTime: now-anchor.host) : -AVAudioTime.seconds(forHostTime: anchor.host-now))
+            } else { position = key.head == 0 ? transport.position : key.head == 1 ? transport.subPlay.position : voice.clip.startTime }
+            let clip = voice.clip, values = clip.automatedValues(at: min(voice.clip.startTime + voice.clip.duration, position))
+            var externalActive = Set<String>()
+            #if os(macOS)
+            for entry in values.external {
+                guard let plugin = entry.target.plugin, let parameter = entry.target.parameter,
+                      values.fx.externalPlugins?.contains(where: { $0.id == plugin && values.fx.inserted.contains($0.effectKey) }) == true,
+                      let node = voice.effects?.externalNode(plugin) else { continue }
+                let id = entry.target.key, value = entry.value
+                externalActive.insert(id)
+                if voice.automationExternalBase[id] == nil {
+                    let original = JarasVST3.parameters(node, identifier: plugin).first { ($0["id"] as? UInt32) == parameter }?["value"] as? Double
+                    if let original { voice.automationExternalBase[id] = (plugin, parameter, original) }
+                }
+                if voice.automationExternalValues[id] != value {
+                    JarasVST3.setParameter(node, identifier: plugin, parameter: parameter, value: value)
+                    voice.automationExternalValues[id] = value
+                }
+            }
+            #endif
+            #if os(macOS)
+            for id in Set(voice.automationExternalBase.keys).subtracting(externalActive) {
+                if let (plugin, parameter, value) = voice.automationExternalBase.removeValue(forKey: id),
+                   let node = voice.effects?.externalNode(plugin) { JarasVST3.setParameter(node, identifier: plugin, parameter: parameter, value: value) }
+                voice.automationExternalValues[id] = nil
+            }
+            #endif
+            if values.nativeActive || voice.automationNativeApplied { applyClipFX(values.fx, to: &voice) }
+            voice.automationNativeApplied = values.nativeActive
+            voice.automationApplied = clip.automation?.enabled == true
+            voice.player.volume = values.muted || values.gain <= 0 ? 0 : 1
+            voice.player.pan = Float(values.pan)
+            JarasVoiceGain.setDecibels(voice.gain, decibels: values.muted || values.gain <= 0 ? -96 : min(24, max(-96, 20 * log10(values.gain))))
+            setVoice(voice, for: key)
+        }
+    }
+    private func setVoice(_ voice: Voice?, for key: VoiceKey) {
+        voices[key] = voice
+        if let voice, voice.automationApplied || (voice.clip.automation?.enabled == true && voice.clip.automation?.envelopes.contains(where: \.enabled) == true) {
+            if !itemAutomationVoiceKeys.contains(key) { itemAutomationVoiceKeys.insert(key) }
+        } else if itemAutomationVoiceKeys.contains(key) { itemAutomationVoiceKeys.remove(key) }
+    }
+    private func restoreItemAutomation(_ voice: inout Voice) {
+        #if os(macOS)
+        for (_, (plugin, parameter, value)) in voice.automationExternalBase {
+            if let node = voice.effects?.externalNode(plugin) { JarasVST3.setParameter(node, identifier: plugin, parameter: parameter, value: value) }
+        }
+        #endif
+        voice.automationExternalBase.removeAll(); voice.automationExternalValues.removeAll()
+        if voice.automationNativeApplied { applyClipFX(voice.clip.fx ?? emptyFX, to: &voice) }
+        voice.automationApplied = false; voice.automationNativeApplied = false
+    }
     private var revision: UInt64?
     private var songID: UUID?
     private var timecodeTrackID: UUID?
@@ -434,6 +601,7 @@ struct TimecodePlaybackSpan {
     private var timecodeGenerator: JarasTimecodeGenerator?
     private var timecodeRoutes: [AVAudioUnitEffect] = []
     private var timecodeAnchor: (key: String, position: Double, host: Double)?
+    private var masterPan = 0.0
     private var master = 1.0
     private var loopGainState: MultiLoopPlayback?
     private var loopGainPlan = MultiLoopGainPlan()
@@ -505,7 +673,12 @@ struct TimecodePlaybackSpan {
         var scheduledProcessingDelay = 0.0
         var scheduledSourceStart: AVAudioFramePosition = 0
         var scheduledSourceEnd: AVAudioFramePosition = 0
+        var continuousSource = false
         var mixInputBus: AVAudioNodeBus = 0
+        var automationApplied = false
+        var automationNativeApplied = false
+        var automationExternalBase: [String: (String, UInt32, Double)] = [:]
+        var automationExternalValues: [String: Double] = [:]
     }
     private func sourcePositionAtRenderClock(_ voice: Voice, protectingOnsetFor leadTime: Double = 0) -> Double? {
         guard let onset = voice.scheduledOnset, let node = voice.player.lastRenderTime,
@@ -583,6 +756,7 @@ struct TimecodePlaybackSpan {
         appliedRoutes.removeAll()
         // A project swap rebuilds the graph before it is warmed again by update.
         engine.stop()
+        discardMIDITakeVoices()
         discardNativeMeterPeaks()
         instrumentGeneration = UUID(); instrumentRequests.removeAll(); instrumentNames.removeAll()
         for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeAll()
@@ -599,7 +773,7 @@ struct TimecodePlaybackSpan {
             masterEffects.detach(from: engine); engine.detach(masterGain); engine.detach(masterChannelMode); engine.detach(masterBus)
             masterConfigured = false
         }
-        self.directory = directory; latestPlayback = nil; files.removeAll(); silentVideoFiles.removeAll(); timecodePreviewGain = nil; preparedOnsets.removeAll(); onsetPreparationKey = nil; pitchClipRevision = nil; pitchParts.removeAll(); clipPitches.removeAll(); clipFragments.removeAll(); fragmentStarts.removeAll(); trackPeaks.removeAll(); trackConnections.removeAll(); revision = nil; songID = nil; tempo = nil; subPlayPromotion = 0; sectionJumpSerial = 0
+        self.directory = directory; latestPlayback = nil; automationPlanRevision = nil; automationPlan.removeAll(); automatedMix.removeAll(); automationOverrides.removeAll(); externalAutomationValues.removeAll(); externalAutomationBase.removeAll(); files.removeAll(); silentVideoFiles.removeAll(); timecodePreviewGain = nil; preparedOnsets.removeAll(); onsetPreparationKey = nil; pitchClipRevision = nil; pitchParts.removeAll(); clipPitches.removeAll(); clipFragments.removeAll(); fragmentStarts.removeAll(); trackPeaks.removeAll(); trackConnections.removeAll(); revision = nil; songID = nil; tempo = nil; subPlayPromotion = 0; sectionJumpSerial = 0
         loopGainState = nil; loopGainPlan = MultiLoopGainPlan(); loopGainPlanKey = nil
         configureMaster()
         if realtime {
@@ -791,10 +965,34 @@ struct TimecodePlaybackSpan {
     func effects(for target: UUID?) -> NativeEffectsChain? {
         guard let target else { return masterEffects }
         if let track = trackBuses[target] { return track.effects }
-        for head in 0...2 {
-            let key = VoiceKey(clip: target, head: head)
-            if let chain = voices[key]?.effects ?? effectTails[key]?.voice.effects { return chain }
+        let fragments = clipFragments[target] ?? [target]
+        for fragment in fragments {
+            for head in 0...2 {
+                let key = VoiceKey(clip: fragment, head: head)
+                if let chain = voices[key]?.effects ?? effectTails[key]?.voice.effects ?? midiTakeVoices[key]?.effects { return chain }
+            }
         }
+        for fragment in fragments {
+            guard let index = clipIndices[fragment] else { continue }
+            let (track, clip) = clips[index]
+            if let voice = idleVoices[track]?.first(where: { $0.clip.id == fragment }) { return voice.effects }
+            guard let source = clip.audioFile else { continue }
+            do {
+                // An item FX editor can be opened away from the transport. Keep
+                // its unscheduled voice in the normal pool so Play adopts the
+                // same plugin instance, without rendering it while stopped.
+                let voice = try takeVoice(track: track, clip: clip, file: audioFile(source))
+                JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
+                idleVoices[track, default: []].append(voice)
+                return voice.effects
+            } catch { onError(error); return nil }
+        }
+        #if os(macOS)
+        if let source = midiTakeSources[target], let voice = preparedMIDITakeVoice(for: VoiceKey(clip: target, head: 0), track: source.track) {
+            voice.effects.apply(source.clip.fx ?? emptyFX)
+            return voice.effects
+        }
+        #endif
         return nil
     }
     func observeEffect(_ target: UUID?, effect: String, active: Bool) {
@@ -802,13 +1000,21 @@ struct TimecodePlaybackSpan {
         if active { analysisEffects[key, default: []].insert(effect) }
         else { analysisEffects[key]?.remove(effect) }
         let observed = analysisEffects[key] ?? []
+        if !active { scheduleMIDITakeCleanup() }
         if target == nil || target.flatMap({ trackBuses[$0] }) != nil {
             effects(for: target)?.observe(observed)
         } else if let target {
-            for head in 0...2 {
-                let voiceKey = VoiceKey(clip: target, head: head)
-                voices[voiceKey]?.effects?.observe(observed)
-                effectTails[voiceKey]?.voice.effects?.observe(observed)
+            for fragment in clipFragments[target] ?? [target] {
+                analysisEffects[fragment.uuidString] = observed
+                for head in 0...2 {
+                    let voiceKey = VoiceKey(clip: fragment, head: head)
+                    voices[voiceKey]?.effects?.observe(observed)
+                    midiTakeVoices[voiceKey]?.effects.observe(observed)
+                    effectTails[voiceKey]?.voice.effects?.observe(observed)
+                }
+                if let index = clipIndices[fragment] {
+                    for voice in idleVoices[clips[index].0] ?? [] where voice.clip.id == fragment { voice.effects?.observe(observed) }
+                }
             }
         }
     }
@@ -885,6 +1091,7 @@ struct TimecodePlaybackSpan {
         meterTimer?.invalidate(); meterTimer = nil
         stop()
         engine.stop()
+        discardMIDITakeVoices()
         discardNativeMeterPeaks()
         if let deviceActivity { ProcessInfo.processInfo.endActivity(deviceActivity); self.deviceActivity = nil }
         if deviceSilenceAttached { engine.detach(deviceSilence); deviceSilenceAttached = false }
@@ -912,6 +1119,8 @@ struct TimecodePlaybackSpan {
         idleVoices.removeAll(); suspendedVoiceOutputs.removeAll()
     }
     private func recycle(_ voice: Voice) {
+        var voice = voice
+        restoreItemAutomation(&voice)
         voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
         voice.player.volume = 0
         voice.player.stop()
@@ -980,7 +1189,9 @@ struct TimecodePlaybackSpan {
                 voice.file.processingFormat.isEqual(file.processingFormat) &&
                 voice.usesStretch == (!realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(clipPitches[clip.id] ?? 0) >= 0.000001)
         }
-        if let index = pool.firstIndex(where: matches) {
+        let preferred = pool.firstIndex { $0.clip.id == clip.id && matches($0) }
+        let reusable = pool.firstIndex { matches($0) && analysisEffects[$0.clip.id.uuidString]?.isEmpty != false }
+        if let index = preferred ?? reusable {
             var voice = idleVoices[track]!.remove(at: index)
             // A pooled player's render gate may have been suspended for an
             // entire song. Format converters can then report a fresh sample
@@ -1022,12 +1233,15 @@ struct TimecodePlaybackSpan {
                       self.latestPlayback?.snapshot.transport.playing != true,
                       self.latestPlayback?.snapshot.transport.subPlay.playing != true else { return }
                 do {
-                    if clip.isProjectionMedia {
-                        let path = clip.audioFile!.path
-                        if self.silentVideoFiles.contains(path) { continue }
-                        if (try? self.audioFile(clip.audioFile!)) == nil { self.silentVideoFiles.insert(path); continue }
+                    let source = clip.audioFile!
+                    if clip.isProjectionMedia && self.silentVideoFiles.contains(source.path) { continue }
+                    let file: AVAudioFile
+                    do { file = try self.audioFile(source) }
+                    catch {
+                        guard clip.isProjectionMedia, AudioFileRead.isVideoWithoutAudio(error) else { throw error }
+                        self.silentVideoFiles.insert(source.path)
+                        continue
                     }
-                    let file = try self.audioFile(clip.audioFile!)
                     required[track, default: []].append((file.processingFormat, clip.audioRate))
                     let count = required[track]!.filter { $0.0.isEqual(file.processingFormat) && abs($0.1 - clip.audioRate) < 0.000001 }.count
                     let ready = self.idleVoices[track, default: []].filter { $0.file.processingFormat.isEqual(file.processingFormat) && abs($0.clip.audioRate - clip.audioRate) < 0.000001 }.count
@@ -1099,6 +1313,31 @@ struct TimecodePlaybackSpan {
         }
         recycle(voice)
     }
+    /// Tempo sections of one continuous file share the decoder and stretcher.
+    /// Only their rate changes; there is no new preroll at an internal marker.
+    private func advanceContiguousVoices(head: Int, position: Double) {
+        for originalKey in Array(voices.keys) where originalKey.head == head {
+            guard var voice = voices[originalKey], voice.continuousSource else { continue }
+            var key = originalKey
+            while voice.clip.startTime + voice.clip.duration <= position,
+                  let next = contiguousNext[key.clip], let index = clipIndices[next], voices[VoiceKey(clip: next, head: head)] == nil {
+                let successor = clips[index].1
+                voices[key] = nil; key = VoiceKey(clip: next, head: head)
+                voice.clip = successor
+                voice.pitch = clipPitches[next] ?? voice.pitch
+                configureStretch(voice.stretch, clock: voice.rateClock, rate: Float(successor.audioRate), pitch: voice.pitch)
+                setVoice(voice, for: key)
+            }
+        }
+    }
+    private func hasContinuousPredecessor(_ clip: UUID, head: Int) -> Bool {
+        var previous = contiguousPrevious[clip]
+        while let id = previous {
+            if voices[VoiceKey(clip: id, head: head)]?.continuousSource == true { return true }
+            previous = contiguousPrevious[id]
+        }
+        return false
+    }
     private func clearEffectTails(head: Int) {
         for key in Array(effectTails.keys) where key.head == head {
             if let tail = effectTails.removeValue(forKey: key) { recycle(tail.voice) }
@@ -1121,11 +1360,12 @@ struct TimecodePlaybackSpan {
             if let inverted { clip.phaseInverted = inverted }
             if let pan { clip.pan = pan == 0 ? nil : pan }
         }
+        previewMIDITake(id, change: update)
         for fragment in clipFragments[id] ?? [id] {
             if let index = clipIndices[fragment] { update(&clips[index].1) }
             for head in 0...2 {
                 let key = VoiceKey(clip: fragment, head: head)
-                if var voice = voices[key] { update(&voice.clip); applyNormalization(to: &voice); voices[key] = voice }
+                if var voice = voices[key] { update(&voice.clip); applyNormalization(to: &voice); setVoice(voice, for: key) }
                 if var tail = effectTails[key] { update(&tail.voice.clip); applyNormalization(to: &tail.voice); effectTails[key] = tail }
             }
         }
@@ -1140,7 +1380,7 @@ struct TimecodePlaybackSpan {
                 let key = VoiceKey(clip: fragment, head: head)
                 if var voice = voices[key] {
                     if fadeIn { voice.clip.fadeIn = seconds } else { voice.clip.fadeOut = seconds }
-                    voice.effects?.updateItemFade(voice.clip); voices[key] = voice
+                    voice.effects?.updateItemFade(voice.clip); setVoice(voice, for: key)
                 }
             }
         }
@@ -1151,7 +1391,7 @@ struct TimecodePlaybackSpan {
             if let index = clipIndices[fragment] { clips[index].1.normalizationGain = gain }
             for head in 0...2 {
                 let key = VoiceKey(clip: fragment, head: head)
-                if var voice = voices[key] { voice.clip.normalizationGain = gain; applyNormalization(to: &voice); voices[key] = voice }
+                if var voice = voices[key] { voice.clip.normalizationGain = gain; applyNormalization(to: &voice); setVoice(voice, for: key) }
                 if var tail = effectTails[key] { tail.voice.clip.normalizationGain = gain; applyNormalization(to: &tail.voice); effectTails[key] = tail }
             }
         }
@@ -1162,7 +1402,7 @@ struct TimecodePlaybackSpan {
             if let index = clipIndices[fragment] { clips[index].1.channelMode = mode }
             for head in 0...2 {
                 let key = VoiceKey(clip: fragment, head: head)
-                if var voice = voices[key] { voice.clip.channelMode = mode; applyNormalization(to: &voice); voices[key] = voice }
+                if var voice = voices[key] { voice.clip.channelMode = mode; applyNormalization(to: &voice); setVoice(voice, for: key) }
                 if var tail = effectTails[key] { tail.voice.clip.channelMode = mode; applyNormalization(to: &tail.voice); effectTails[key] = tail }
             }
         }
@@ -1181,21 +1421,24 @@ struct TimecodePlaybackSpan {
         if voice.clip.fxBypassed == true {
             effective.eqEnabled = false; effective.compressorEnabled = false; effective.limiterEnabled = false
             effective.delayEnabled = false; effective.reverbEnabled = false; effective.pitchEnabled = false
+            if let plugins = effective.externalPlugins { effective.externalPlugins = plugins.map { var plugin = $0; plugin.bypassed = true; return plugin } }
         }
         voice.effects?.apply(effective)
         applyNormalization(to: &voice)
     }
     func previewClipFXBypass(_ id: UUID, bypassed: Bool) {
+        previewMIDITake(id) { $0.fxBypassed = bypassed }
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for fragment in clipFragments[id] ?? [id] { previewClipFXBypassFragment(fragment, bypassed: bypassed) }
     }
     private func previewClipFXBypassFragment(_ id: UUID, bypassed: Bool) {
         if let index = clipIndices[id] { clips[index].1.fxBypassed = bypassed }
+        previewIdleClipFX(id) { $0.fxBypassed = bypassed }
         for head in 0...2 {
             let key = VoiceKey(clip: id, head: head)
             if var voice = voices[key], voice.clip.fxBypassed != bypassed {
                 voice.clip.fxBypassed = bypassed
-                applyClipFX(voice.clip.fx ?? emptyFX, to: &voice); voices[key] = voice
+                applyClipFX(voice.clip.fx ?? emptyFX, to: &voice); setVoice(voice, for: key)
             }
             if var tail = effectTails[key], tail.voice.clip.fxBypassed != bypassed {
                 tail.voice.clip.fxBypassed = bypassed
@@ -1204,21 +1447,34 @@ struct TimecodePlaybackSpan {
         }
     }
     func previewClipFX(_ id: UUID, settings: NativeFXSettings) {
+        do { try settings.validateForClip() } catch { return }
+        previewMIDITake(id) { $0.fx = settings }
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for fragment in clipFragments[id] ?? [id] { previewClipFXFragment(fragment, settings: settings) }
     }
     private func previewClipFXFragment(_ id: UUID, settings: NativeFXSettings) {
         do { try settings.validateForClip() } catch { return }
         if let index = clipIndices[id] { clips[index].1.fx = settings }
+        previewIdleClipFX(id) { $0.fx = settings }
         for head in 0...2 {
             let key = VoiceKey(clip: id, head: head)
             if var voice = voices[key] {
-                voice.clip.fx = settings; applyClipFX(settings, to: &voice); voices[key] = voice
+                voice.clip.fx = settings; applyClipFX(settings, to: &voice); setVoice(voice, for: key)
             }
             if var tail = effectTails[key] {
                 tail.voice.clip.fx = settings; applyClipFX(settings, to: &tail.voice); effectTails[key] = tail
             }
         }
+    }
+    private func previewIdleClipFX(_ id: UUID, change: (inout AudioClip) -> Void) {
+        guard let index = clipIndices[id] else { return }
+        let track = clips[index].0
+        guard var pool = idleVoices[track] else { return }
+        for index in pool.indices where pool[index].clip.id == id {
+            change(&pool[index].clip)
+            applyClipFX(pool[index].clip.fx ?? emptyFX, to: &pool[index])
+        }
+        idleVoices[track] = pool
     }
     func previewFX(_ track: UUID?, settings: NativeFXSettings) {
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
@@ -1233,6 +1489,8 @@ struct TimecodePlaybackSpan {
         #endif
     }
     func previewItemGain(_ id: UUID, gain: Double) {
+        guard gain.isFinite, gain >= 0 else { return }
+        previewMIDITake(id) { $0.gain = gain }
         for fragment in clipFragments[id] ?? [id] { previewItemGainFragment(fragment, gain: gain) }
     }
     private func previewItemGainFragment(_ id: UUID, gain: Double) {
@@ -1247,7 +1505,7 @@ struct TimecodePlaybackSpan {
                 voice.clip.gain = gain
                 voice.player.volume = gain <= 0 || voice.clip.muted == true ? 0 : 1
                 JarasVoiceGain.setDecibels(voice.gain, decibels: Double(voice.clip.muted == true || gain <= 0 ? -96 : decibels))
-                voices[key] = voice
+                setVoice(voice, for: key)
             }
             if var tail = effectTails[key], tail.voice.clip.gain != gain {
                 tail.voice.clip.gain = gain
@@ -1271,6 +1529,10 @@ struct TimecodePlaybackSpan {
             master = gain
             applyMasterGain()
         }
+    }
+    func previewMasterPan(_ pan: Double) {
+        masterPan = min(1, max(-1, pan))
+        JarasEqualizer.setInputPan(masterChannelMode, pan: masterPan)
     }
     func previewPan(_ id: UUID, pan: Double) {
         tracks[id]?.pan = pan
@@ -1333,7 +1595,7 @@ struct TimecodePlaybackSpan {
                 let gain = voice.clip.gain ?? 1
                 voice.player.volume = muted || gain <= 0 ? 0 : 1
                 JarasVoiceGain.setDecibels(voice.gain, decibels: Double(muted || gain <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, gain)))))))
-                voices[key] = voice
+                setVoice(voice, for: key)
             }
             if var tail = effectTails[key], tail.voice.clip.muted != muted {
                 tail.voice.clip.muted = muted
@@ -1409,16 +1671,16 @@ struct TimecodePlaybackSpan {
         loopGainState?.gain(manual, rule: loopGainPlan.internalRules[id]) ?? manual
     }
     private func applyMasterGain() {
-        let gain = effectiveLoopGain(MultiLoopTrack.masterID, manual: master)
+        let gain = effectiveLoopGain(MultiLoopTrack.masterID, manual: automationGain(MultiLoopTrack.masterID, manual: master))
         masterGain.globalGain = Float(min(12, max(-96, 20 * log10(max(0.0000001, gain)))))
         // Preserve the existing zero/mute gate before master FX as well as
         // the post-FX gain, including how effect tails behave at zero.
-        masterBus.outputVolume = masterMuted || gain <= 0 ? 0 : 1
+        masterBus.outputVolume = (automatedMix[MultiLoopTrack.masterID]?.mute ?? masterMuted) || gain <= 0 ? 0 : 1
     }
     private func applyTrackGain(_ id: UUID) {
         guard let track = tracks[id], let bus = trackBuses[id] else { return }
-        let gain = effectiveLoopGain(id, manual: track.volume)
-        let audible = !track.mute && (soloAudibleTracks?.contains(id) ?? true) && gain > 0
+        let gain = effectiveLoopGain(id, manual: automationGain(id, manual: track.volume))
+        let audible = !(automatedMix[id]?.mute ?? track.mute) && (soloAudibleTracks?.contains(id) ?? true) && gain > 0
         JarasEqualizer.setInputGain(bus.controls, gain: audible ? min(pow(10, 12.0 / 20), gain) : 0)
     }
     private func applyTrackGate(_ id: UUID) {
@@ -1444,6 +1706,7 @@ struct TimecodePlaybackSpan {
     private func applyLevels() {
         syncInstruments()
         masterEffects.apply(masterFXSettings)
+        JarasEqualizer.setInputPan(masterChannelMode, pan: masterPan)
         JarasEqualizer.setPolarity(masterChannelMode, inverted: false)
         JarasEqualizer.setInputChannelMode(masterChannelMode, mode: masterMono ? 3 : 0)
         applyMasterGain()
@@ -1534,11 +1797,251 @@ struct TimecodePlaybackSpan {
     private var midiPlanRevision: UInt64?
     private var midiPlanSong: UUID?
     private var midiPlans: [UUID: [[String: Double]]] = [:]
+    private struct MIDITakePlan {
+        let track: UUID
+        var clip: AudioClip
+        var segments: [AudioClip]
+        let notes: [[String: Double]]
+    }
+    @MainActor private final class MIDITakeVoice {
+        let source = AVAudioSourceNode { silent, _, _, buffers in
+            silent.pointee = true
+            for buffer in UnsafeMutableAudioBufferListPointer(buffers) {
+                if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+            }
+            return noErr
+        }
+        let effects = NativeEffectsChain()
+        let controls = JarasEqualizer.makeNode()
+        let gain = JarasVoiceGain.makeNode()
+        let track: UUID
+        var clipID: UUID
+        var lastUsed: UInt64 = 0
+        var running = false
+        var planRevision: UInt64?
+        var planSong: UUID?
+        var reportedError: String?
+        var externalBase: [String: (String, UInt32, Double)] = [:]
+        var externalValues: [String: Double] = [:]
+        init(track: UUID, clip: UUID) { self.track = track; self.clipID = clip }
+    }
+    private var midiTakePlans: [UUID: MIDITakePlan] = [:]
+    private var midiTakeSources: [UUID: (track: UUID, clip: AudioClip)] = [:]
+    private var midiTakeVoices: [VoiceKey: MIDITakeVoice] = [:]
+    private var retiredMIDITakeVoices: [MIDITakeVoice] = []
+    private var midiTakeCacheTick: UInt64 = 0
+    private var midiTakeCleanup: Task<Void, Never>?
+    private func pruneMIDITakeCache() {
+        // Keep a small warm cache. An explicitly open take FX editor owns its
+        // instance until it closes, and running/nearby heads cannot be evicted.
+        let idle = (Array(midiTakeVoices.values) + retiredMIDITakeVoices).filter {
+            !$0.running && (analysisEffects[$0.clipID.uuidString]?.isEmpty != false)
+        }.sorted { $0.lastUsed < $1.lastUsed }
+        let count = max(0, idle.count - 8)
+        guard count > 0 else { return }
+        for voice in idle.prefix(count) {
+            for key in Array(midiTakeVoices.keys) where midiTakeVoices[key] === voice { midiTakeVoices[key] = nil }
+            retiredMIDITakeVoices.removeAll { $0 === voice }
+            voice.effects.detach(from: engine)
+            engine.detach(voice.source); engine.detach(voice.controls); engine.detach(voice.gain)
+        }
+    }
+    private func scheduleMIDITakeCleanup() {
+        guard midiTakeVoices.count + retiredMIDITakeVoices.count > 8 else { return }
+        if !realtime { pruneMIDITakeCache(); return }
+        guard midiTakeCleanup == nil else { return }
+        midiTakeCleanup = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self else { return }
+            self.midiTakeCleanup = nil
+            self.pruneMIDITakeCache()
+        }
+    }
+    private func discardMIDITakeVoices() {
+        midiTakeCleanup?.cancel(); midiTakeCleanup = nil
+        for voice in Array(midiTakeVoices.values) + retiredMIDITakeVoices {
+            voice.effects.detach(from: engine)
+            engine.detach(voice.source); engine.detach(voice.controls); engine.detach(voice.gain)
+        }
+        midiTakeVoices.removeAll(); retiredMIDITakeVoices.removeAll(); midiTakePlans.removeAll(); midiTakeSources.removeAll()
+    }
+    private func preparedMIDITakeVoice(for key: VoiceKey, track: UUID) -> MIDITakeVoice? {
+        if let voice = midiTakeVoices[key], voice.track == track { return voice }
+        guard let bus = trackBuses[track] else { return nil }
+        if let old = midiTakeVoices.removeValue(forKey: key) {
+            old.effects.detach(from: engine); engine.detach(old.source); engine.detach(old.controls); engine.detach(old.gain)
+        }
+        let voice: MIDITakeVoice
+        if let index = retiredMIDITakeVoices.firstIndex(where: { $0.track == track && analysisEffects[$0.clipID.uuidString]?.isEmpty != false }) {
+            voice = retiredMIDITakeVoices.remove(at: index)
+            voice.planRevision = nil; voice.planSong = nil
+            #if os(macOS)
+            for (plugin, parameter, value) in voice.externalBase.values {
+                if let node = voice.effects.externalNode(plugin) { JarasVST3.setParameter(node, identifier: plugin, parameter: parameter, value: value) }
+            }
+            #endif
+            voice.externalBase.removeAll(keepingCapacity: true)
+            voice.externalValues.removeAll(keepingCapacity: true)
+            voice.reportedError = nil
+        } else {
+            voice = MIDITakeVoice(track: track, clip: key.clip)
+            engine.attach(voice.source); engine.attach(voice.controls); engine.attach(voice.gain)
+            voice.effects.attach(to: engine, input: voice.source, format: hardwareFormat,
+                destinations: [AVAudioConnectionPoint(node: voice.controls, bus: 0)])
+            engine.connect(voice.controls, to: voice.gain, format: hardwareFormat)
+            engine.connect(voice.gain, to: bus.mix, fromBus: 0, toBus: bus.mix.nextAvailableInputBus, format: hardwareFormat)
+        }
+        // Editors may prepare an item before Play. No generator/DSP is pulled
+        // until a transport head actually activates it.
+        JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
+        voice.clipID = key.clip
+        voice.effects.observe(analysisEffects[key.clip.uuidString] ?? [])
+        midiTakeVoices[key] = voice
+        return voice
+    }
+    private func previewMIDITake(_ id: UUID, change: (inout AudioClip) -> Void) {
+        guard var source = midiTakeSources[id] else { return }
+        let wasInstrument = source.clip.hasTakeInstrument
+        change(&source.clip); midiTakeSources[id] = source
+        if var plan = midiTakePlans[id] {
+            change(&plan.clip)
+            for index in plan.segments.indices { change(&plan.segments[index]) }
+            midiTakePlans[id] = source.clip.hasTakeInstrument ? plan : nil
+        }
+        if let song = latestPlayback?.snapshot.project.songs.first(where: { $0.id == midiPlanSong }) {
+            if source.clip.hasTakeInstrument && midiTakePlans[id] == nil {
+                var notes = source.clip; notes.gain = 1
+                midiTakePlans[id] = MIDITakePlan(track: source.track, clip: source.clip,
+                    segments: song.tempoAudioSegments(source.clip), notes: song.midiPlaybackNotes(in: notes).map(\.sequenceValues))
+            }
+            if wasInstrument != source.clip.hasTakeInstrument {
+                let notes = midiTakeSources.values.filter { $0.track == source.track && !$0.clip.hasTakeInstrument }
+                    .flatMap { song.midiPlaybackNotes(in: $0.clip) }.map(\.sequenceValues)
+                midiPlans[source.track] = notes
+                for (key, sampler) in samplers where key.track == source.track { sampler.setSequenceNotes(notes) }
+                #if os(macOS)
+                trackBuses[source.track]?.effects.setMIDISequence(notes)
+                #endif
+            }
+        }
+        for head in 0..<2 {
+            guard let voice = midiTakeVoices[VoiceKey(clip: id, head: head)] else { continue }
+            let transport = latestPlayback?.snapshot.transport
+            let position = head == 0 ? transport?.position ?? source.clip.startTime : transport?.subPlay.position ?? source.clip.startTime
+            let clip = midiTakePlans[id]?.segments.last(where: { $0.startTime <= position }) ?? source.clip
+            let values = clip.automatedValues(at: position)
+            voice.effects.apply(values.fx)
+            JarasEqualizer.setInputPan(voice.controls, pan: values.pan)
+            JarasEqualizer.setPolarity(voice.controls, inverted: clip.phaseInverted == true)
+            JarasVoiceGain.setDecibels(voice.gain, decibels: values.muted || values.gain <= 0 ? -96 : min(24, max(-96, 20*log10(values.gain))))
+            if !source.clip.hasTakeInstrument {
+                #if os(macOS)
+                voice.effects.setMIDISequenceClock(head: 0, position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0)
+                voice.effects.silenceExternal()
+                #endif
+                JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false); voice.running = false
+            }
+        }
+    }
+    private func updateMIDITakes(_ transport: TransportState, song: Song, preserveHeld: Bool) {
+        #if os(macOS)
+        guard !midiTakePlans.isEmpty || !midiTakeVoices.isEmpty else { return }
+        var active = Set<VoiceKey>(), cacheChanged = false
+        midiTakeCacheTick &+= 1
+        for head in 0..<2 {
+            let running = head == 0 ? transport.playing : transport.subPlay.playing
+            guard running else { continue }
+            let position = head == 0 ? transport.position : transport.subPlay.position
+            let host = audioHostTime(position: position, head: head) ?? mach_absolute_time()
+            let clock = realtime ? AVAudioTime.seconds(forHostTime: host) : Double(engine.manualRenderingSampleTime) / hardwareFormat.sampleRate
+            let loopStart = head == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0
+            let loopEnd = head == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0
+            for (id, plan) in midiTakePlans {
+                let clip = plan.clip, key = VoiceKey(clip: id, head: head)
+                // Prepare only nearby takes. Ended/idle instances keep their
+                // graph but the gate stops all upstream plugin render work.
+                guard clip.muted != true, clip.startTime < position + 2,
+                      clip.startTime + clip.duration > position - 1 else { continue }
+                let existed = midiTakeVoices[key] != nil
+                guard let voice = preparedMIDITakeVoice(for: key, track: plan.track) else { continue }
+                if !existed { cacheChanged = true }
+                voice.lastUsed = midiTakeCacheTick
+                active.insert(key)
+                let segment = plan.segments.last(where: { $0.startTime <= position }) ?? clip
+                let values = segment.automatedValues(at: min(clip.startTime + clip.duration, max(clip.startTime, position)))
+                voice.effects.apply(values.fx)
+                let error = voice.effects.externalError?.localizedDescription
+                if error != voice.reportedError {
+                    voice.reportedError = error
+                    if let failure = voice.effects.externalError { onError(failure) }
+                }
+                let section = song.tempoSection(at: position)
+                voice.effects.externalTransport(position: position, tempo: section.bpm,
+                    beats: Int32(section.beats), unit: Int32(section.unit), playing: true)
+                if voice.planRevision != midiPlanRevision || voice.planSong != midiPlanSong {
+                    voice.effects.setMIDISequence(plan.notes, instrumentsOnly: true, preserveHeld: preserveHeld)
+                    voice.planRevision = midiPlanRevision; voice.planSong = midiPlanSong
+                }
+                voice.effects.setMIDISequenceClock(head: 0, position: position, clock: clock, running: true, loopStart: loopStart, loopEnd: loopEnd)
+                var externalActive = Set<String>()
+                for entry in values.external {
+                    guard let plugin = entry.target.plugin, let parameter = entry.target.parameter,
+                          values.fx.externalPlugins?.contains(where: { $0.id == plugin && values.fx.inserted.contains($0.effectKey) }) == true,
+                          let node = voice.effects.externalNode(plugin) else { continue }
+                    let id = entry.target.key
+                    externalActive.insert(id)
+                    if voice.externalBase[id] == nil,
+                       let original = JarasVST3.parameters(node, identifier: plugin).first(where: { ($0["id"] as? UInt32) == parameter })?["value"] as? Double {
+                        voice.externalBase[id] = (plugin, parameter, original)
+                    }
+                    if voice.externalValues[id] != entry.value {
+                        JarasVST3.setParameter(node, identifier: plugin, parameter: parameter, value: entry.value)
+                        voice.externalValues[id] = entry.value
+                    }
+                }
+                for id in Set(voice.externalBase.keys).subtracting(externalActive) {
+                    if let (plugin, parameter, value) = voice.externalBase.removeValue(forKey: id), let node = voice.effects.externalNode(plugin) {
+                        JarasVST3.setParameter(node, identifier: plugin, parameter: parameter, value: value)
+                    }
+                    voice.externalValues[id] = nil
+                }
+                JarasEqualizer.setInputPan(voice.controls, pan: values.pan)
+                JarasEqualizer.setPolarity(voice.controls, inverted: clip.phaseInverted == true)
+                JarasEqualizer.setInputChannelMode(voice.controls, mode: Int32(clip.channelMode ?? 0))
+                JarasEqualizer.setInputGain(voice.controls, gain: clip.normalizationGain ?? 1)
+                JarasEqualizer.setInputFade(voice.controls, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0,
+                    duration: clip.duration, position: position - clip.startTime,
+                    hostTime: realtime ? host : 0, sampleTime: realtime ? 0 : Double(engine.manualRenderingSampleTime))
+                JarasVoiceGain.setDecibels(voice.gain, decibels: values.muted || values.gain <= 0 ? -96 : min(24, max(-96, 20 * log10(values.gain))))
+                JarasVoiceGain.setRenderEnabled(voice.gain, enabled: true)
+                voice.running = true
+            }
+        }
+        for (key, voice) in midiTakeVoices where !active.contains(key) && voice.running {
+            voice.effects.setMIDISequenceClock(head: 0, position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0)
+            voice.effects.silenceExternal(); voice.effects.resetTails()
+            voice.effects.externalTransport(position: 0, tempo: song.bpm, beats: Int32(song.meterBeats), unit: Int32(song.meterUnit), playing: false)
+            JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
+            voice.running = false
+            cacheChanged = true
+        }
+        if cacheChanged { scheduleMIDITakeCleanup() }
+        #endif
+    }
     private func prepareMIDISequences(song: Song) {
         var plans: [UUID: [[String: Double]]] = [:]
+        midiTakePlans.removeAll(keepingCapacity: true)
+        midiTakeSources.removeAll(keepingCapacity: true)
         for track in song.tracks where track.kind == .standard {
             let notes = track.clips.flatMap { clip -> [MIDIPlaybackNote] in
                 guard clip.midi != nil else { return [] }
+                midiTakeSources[clip.id] = (track.id, clip)
+                if clip.hasTakeInstrument {
+                    var source = clip; source.gain = 1
+                    let notes = song.midiPlaybackNotes(in: source).map(\.sequenceValues)
+                    midiTakePlans[clip.id] = MIDITakePlan(track: track.id, clip: clip, segments: song.tempoAudioSegments(clip), notes: notes)
+                    return []
+                }
                 return song.midiPlaybackNotes(in: clip)
             }
             let values = notes.map { ["start": $0.start, "end": $0.end, "pitch": Double($0.pitch), "velocity": Double($0.velocity), "channel": Double($0.channel)] }
@@ -1567,6 +2070,16 @@ struct TimecodePlaybackSpan {
         }
     }
     private func stopMIDISequences() {
+        for voice in midiTakeVoices.values {
+            #if os(macOS)
+            voice.effects.setMIDISequenceClock(head: 0, position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0)
+            voice.effects.silenceExternal()
+            voice.effects.externalTransport(position: 0, tempo: tempo ?? 120, beats: 4, unit: 4, playing: false)
+            #endif
+            voice.effects.resetTails(); voice.running = false
+            JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
+        }
+        scheduleMIDITakeCleanup()
         for head in 0..<2 {
             for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0) }
             #if os(macOS)
@@ -1633,22 +2146,32 @@ struct TimecodePlaybackSpan {
     // Only a few milliseconds are read on the scheduling thread. The remaining
     // file continues streaming through AVAudioPlayerNode, without a PCM copy.
     private func scheduleLoop(file: AVAudioFile, player: AVAudioPlayerNode, clip: AudioClip, from start: Double, until end: Double, onset: Bool, at playbackTime: AVAudioTime? = nil) throws -> Double {
+        let prepared = try prepareLoop(file: file, player: player, clip: clip, from: start, until: end, onset: onset)
+        prepared.command(playbackTime)
+        return prepared.end
+    }
+    private func prepareLoop(file: AVAudioFile, player: AVAudioPlayerNode, clip: AudioClip, from start: Double, until end: Double, onset: Bool) throws -> (end: Double, command: @Sendable (AVAudioTime?) -> Void) {
         let rate = file.processingFormat.sampleRate
         let loopFirst = max(0, AVAudioFramePosition((clip.loopStart ?? 0) * rate))
         let loopEnd = min(file.length, loopFirst + AVAudioFramePosition((clip.loopLength ?? Double(file.length) / rate) * rate))
         let length = loopEnd - loopFirst
-        guard length > 0 else { return start }
-        var time = start, fade = onset, segments = 0
+        guard length > 0 else { return (start, { _ in }) }
+        var time = start
+        var segments: [(first: AVAudioFramePosition, count: AVAudioFrameCount)] = []
         let limit = min(end, clip.startTime + clip.duration)
-        while time < limit - 0.5 / rate / clip.audioRate && segments < 1024 {
-            let elapsed = AVAudioFramePosition(((time - clip.startTime) * clip.audioRate + clip.sourceOffset) * rate)
+        while time < limit - 0.5 / rate / clip.audioRate && segments.count < 1024 {
+            let elapsed = AVAudioFramePosition((((time - clip.startTime) * clip.audioRate + clip.sourceOffset) * rate).rounded())
             let first = loopFirst + ((elapsed - loopFirst) % length + length) % length
             let count = min(loopEnd - first, max(1, AVAudioFramePosition(((limit - time) * rate * clip.audioRate).rounded())), Int64(UInt32.max))
-            if fade { try scheduleStart(file: file, player: player, first: first, count: AVAudioFrameCount(count), at: playbackTime); fade = false }
-            else { player.scheduleSegment(file, startingFrame: first, frameCount: AVAudioFrameCount(count), at: nil, completionHandler: nil) }
-            time += Double(count) / rate / clip.audioRate; segments += 1
+            segments.append((first, AVAudioFrameCount(count)))
+            time += Double(count) / rate / clip.audioRate
         }
-        return time
+        let initial = try onset ? segments.first.map { try startCommand(file: file, player: player, first: $0.first, count: $0.count) } : nil
+        let queued = initial == nil ? segments[...] : segments.dropFirst()
+        return (time, { at in
+            initial?(at)
+            for segment in queued { player.scheduleSegment(file, startingFrame: segment.first, frameCount: segment.count, at: nil, completionHandler: nil) }
+        })
     }
     private func readOnset(file: AVAudioFile, first: AVAudioFramePosition, frames: AVAudioFrameCount) throws -> AVAudioPCMBuffer {
         guard let onset = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames) else {
@@ -1869,6 +2392,7 @@ struct TimecodePlaybackSpan {
                     prior.tempoReferenceBPM != marker.tempoReferenceBPM
             }
         } == true
+        if tempoChanged || markerTempoChanged { lastTempoEditTime = now }
         if tempoChanged {
             for head in Array(lastPosition.keys) {
                 let old = lastPosition[head]!
@@ -1880,6 +2404,9 @@ struct TimecodePlaybackSpan {
         #if os(macOS)
         for chain in [masterEffects] + trackBuses.values.map(\.effects) { chain.externalTransport(position: transport.position, tempo: song.bpm, beats: Int32(song.meterBeats), unit: Int32(song.meterUnit), playing: transport.playing) }
         #endif
+        if tempoChanged || markerTempoChanged {
+            for (head, position) in previousSourcePositions { advanceContiguousVoices(head: head, position: position) }
+        }
         if self.revision != revision || songID != song.id || lastVideoNoAudio != VideoMediaSettings.shared.noAudio {
             lastVideoNoAudio = VideoMediaSettings.shared.noAudio
             if songID != song.id { stop() }
@@ -1896,6 +2423,7 @@ struct TimecodePlaybackSpan {
                 fragments.map { ($0, original) }
             })
             clipFragments.removeAll(keepingCapacity: true); fragmentStarts.removeAll(keepingCapacity: true)
+            contiguousNext.removeAll(keepingCapacity: true); contiguousPrevious.removeAll(keepingCapacity: true); contiguousSourceEnd.removeAll(keepingCapacity: true)
             clips = song.tracks.flatMap { track in
                 track.clips.filter { clip in
                     guard let path = clip.audioFile?.path, !clip.isImage, track.kind == .standard || clip.isProjectionMedia else { return false }
@@ -1904,6 +2432,16 @@ struct TimecodePlaybackSpan {
                 }.flatMap { clip in
                     let fragments = song.tempoAudioSegments(clip, sections: tempoSections)
                     clipFragments[clip.id] = fragments.map(\.id)
+                    if let last = fragments.last {
+                        let sourceEnd = last.sourceOffset + last.duration * last.audioRate
+                        let continuous = zip(fragments, fragments.dropFirst()).allSatisfy { a, b in
+                            abs(a.sourceOffset + a.duration*a.audioRate - b.sourceOffset) < 0.000001
+                        } && (clip.loopLength == nil || sourceEnd <= (clip.loopStart ?? 0) + clip.loopLength! + 0.000001)
+                        if continuous {
+                            for fragment in fragments { contiguousSourceEnd[fragment.id] = sourceEnd }
+                            for (a, b) in zip(fragments, fragments.dropFirst()) { contiguousNext[a.id] = b.id; contiguousPrevious[b.id] = a.id }
+                        }
+                    }
                     for fragment in fragments { fragmentStarts[fragment.id] = clip.startTime }
                     return fragments.map { (track.id, $0) }
                 }
@@ -1937,6 +2475,7 @@ struct TimecodePlaybackSpan {
             self.revision = revision; songID = song.id
             masterFXSettings = snapshot.project.masterFX ?? NativeFXSettings()
             masterPatches = snapshot.project.masterOutputPatches
+            masterPan = snapshot.project.masterPan ?? 0
             master = snapshot.project.masterVolume ?? 1; masterMuted = snapshot.project.masterMute ?? false
             masterSolo = snapshot.project.masterSolo ?? false
             masterMono = snapshot.project.masterMono ?? false
@@ -2016,13 +2555,13 @@ struct TimecodePlaybackSpan {
                     let nextKey = VoiceKey(clip: current.1.id, head: key.head)
                     if nextKey != key {
                         guard voices[nextKey] == nil else { continue }
-                        voices[nextKey] = voices.removeValue(forKey: key)
+                        setVoice(voices.removeValue(forKey: key), for: nextKey)
                     }
                     // Returning markers to the same rate may merge fragments.
                     // Append any newly exposed source frames to the running
                     // queue instead of restarting its decoder and stretcher.
-                    if current.1.loopLength == nil {
-                        let end = min(voice.file.length, AVAudioFramePosition((current.1.sourceOffset + current.1.duration * current.1.audioRate) * voice.file.processingFormat.sampleRate))
+                    if voice.continuousSource || current.1.loopLength == nil {
+                        let end = min(voice.file.length, AVAudioFramePosition((contiguousSourceEnd[current.1.id] ?? (current.1.sourceOffset + current.1.duration * current.1.audioRate)) * voice.file.processingFormat.sampleRate))
                         let count = end - voice.scheduledSourceEnd
                         if count > 0 && count <= Int64(UInt32.max) {
                             let player = voice.player, file = voice.file, first = voice.scheduledSourceEnd
@@ -2033,7 +2572,7 @@ struct TimecodePlaybackSpan {
                             voice.scheduledSourceEnd = end
                         }
                     }
-                    voices[nextKey] = voice
+                    setVoice(voice, for: nextKey)
                     retainedTempoVoices.insert(nextKey)
                     if audible, !tempoChanged, !rebasedHeads.contains(key.head), let old = previousHeadPositions[key.head],
                        old >= voice.clip.startTime, old < voice.clip.startTime + voice.clip.duration {
@@ -2085,9 +2624,17 @@ struct TimecodePlaybackSpan {
                     configureStretch(voice.stretch, clock: voice.rateClock, rate: Float(current.1.audioRate), pitch: voice.pitch)
                 }
                 var updated = voice
+                if current.1.loopLength != nil && (tempoChanged || markerTempoChanged) {
+                    // The player already owns these source frames. Its queue
+                    // endpoint is not a wall-clock position after a tempo edit.
+                    // Remap it before scheduling the next chunk; otherwise a
+                    // slowdown enqueues earlier audio again several seconds later.
+                    let queuedSource = voice.clip.sourceOffset + (voice.scheduledUntil - voice.clip.startTime) * voice.clip.audioRate
+                    updated.scheduledUntil = current.1.startTime + (queuedSource - current.1.sourceOffset) / current.1.audioRate
+                }
                 updated.clip = current.1
                 applyClipFX(current.1.fx ?? emptyFX, to: &updated)
-                voices[key] = updated
+                setVoice(updated, for: key)
 
             }
             // Pending DSP has only processed silence. Resetting those audio
@@ -2143,11 +2690,28 @@ struct TimecodePlaybackSpan {
                 }
             }
             for key in Array(voices.keys) where key.head == 1 {
-                voices[VoiceKey(clip: key.clip, head: 0)] = voices.removeValue(forKey: key)
+                setVoice(voices.removeValue(forKey: key), for: VoiceKey(clip: key.clip, head: 0))
             }
             clearEffectTails(head: 0)
             for key in Array(effectTails.keys) where key.head == 1 {
                 effectTails[VoiceKey(clip: key.clip, head: 0)] = effectTails.removeValue(forKey: key)
+            }
+            for key in Array(midiTakeVoices.keys) where key.head == 1 {
+                let promoted = midiTakeVoices.removeValue(forKey: key)
+                let main = VoiceKey(clip: key.clip, head: 0)
+                if let old = midiTakeVoices.removeValue(forKey: main) {
+                    // No graph mutation on a live handoff. Retire the old
+                    // head and reuse its already connected chain later.
+                    #if os(macOS)
+                    old.effects.setMIDISequenceClock(head: 0, position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0)
+                    old.effects.silenceExternal()
+                    old.effects.externalTransport(position: 0, tempo: song.bpm, beats: Int32(song.meterBeats), unit: Int32(song.meterUnit), playing: false)
+                    #endif
+                    old.effects.resetTails(); old.running = false
+                    JarasVoiceGain.setRenderEnabled(old.gain, enabled: false)
+                    retiredMIDITakeVoices.append(old)
+                }
+                midiTakeVoices[main] = promoted
             }
             if clickGenerators.count == 2 { clickGenerators.swapAt(0, 1) }
             headAudioClock[0] = headAudioClock[1]; headAudioClock[1] = nil
@@ -2176,7 +2740,7 @@ struct TimecodePlaybackSpan {
                     if let voice = voices.removeValue(forKey: key) { boundaryTails.append((voice, jump.host + AVAudioTime.hostTime(forSeconds: 0.08))) }
                 }
                 clearEffectTails(head: 0)
-                for key in Array(voices.keys) where key.head == 2 { voices[VoiceKey(clip: key.clip, head: 0)] = voices.removeValue(forKey: key) }
+                for key in Array(voices.keys) where key.head == 2 { setVoice(voices.removeValue(forKey: key), for: VoiceKey(clip: key.clip, head: 0)) }
                 headAudioClock[0] = headAudioClock[2]; headAudioClock[2] = nil
                 lastPosition[0] = transport.position - elapsed; lastPosition[2] = nil
                 preparedJump = nil; promotedJump = true
@@ -2252,6 +2816,7 @@ struct TimecodePlaybackSpan {
                 let offset = now >= anchor.host ? AVAudioTime.seconds(forHostTime: now - anchor.host) : -AVAudioTime.seconds(forHostTime: anchor.host - now)
                 audiblePosition = anchor.position + offset
             } else { audiblePosition = position }
+            advanceContiguousVoices(head: head, position: audiblePosition)
             for key in Array(voices.keys) where key.head == head {
                 if let voice = voices[key], voice.clip.startTime + voice.clip.duration <= audiblePosition { remove(key, keepingTailAt: audiblePosition) }
             }
@@ -2266,7 +2831,7 @@ struct TimecodePlaybackSpan {
                     if voice.usesStretch != (!realtime || allowsTempoChanges || abs(voice.clip.audioRate - 1) >= 0.000001 || abs(cents) >= 0.000001) { remove(key); continue }
                     if voice.pitch != cents {
                         configureStretch(voice.stretch, clock: voice.rateClock, rate: Float(voice.clip.audioRate), pitch: cents)
-                        voice.pitch = cents; voices[key] = voice
+                        voice.pitch = cents; setVoice(voice, for: key)
                     }
                 }
             }
@@ -2288,23 +2853,32 @@ struct TimecodePlaybackSpan {
                 let key = VoiceKey(clip: clip.id, head: head)
                 if var voice = voices[key], clip.loopLength != nil {
                     let deadline = min(clip.startTime + clip.duration, schedulingPosition + 5)
-                    if voice.scheduledUntil < deadline - 1 {
+                    if !voice.continuousSource && voice.scheduledUntil < deadline - 1 {
                         voice.scheduledUntil = try scheduleLoop(file: voice.file, player: voice.player, clip: clip, from: voice.scheduledUntil, until: deadline, onset: false)
-                        voices[key] = voice
+                        setVoice(voice, for: key)
                     }
                     continue
                 }
-                guard voices[key] == nil, let audio = clip.audioFile else { continue }
-                if clip.isProjectionMedia {
-                    if silentVideoFiles.contains(audio.path) { continue }
-                    if (try? audioFile(audio)) == nil { silentVideoFiles.insert(audio.path); continue }
+                guard voices[key] == nil, !hasContinuousPredecessor(clip.id, head: head), let audio = clip.audioFile else { continue }
+                // While the tempo is being dragged, distant onsets have no
+                // stable deadline. Reserve only the imminent audio horizon;
+                // ordinary lookahead resumes as soon as editing settles.
+                if realtime, now - lastTempoEditTime < 0.12, clip.startTime - schedulingPosition > 0.65 { continue }
+                if clip.isProjectionMedia && silentVideoFiles.contains(audio.path) { continue }
+                let file: AVAudioFile
+                do { file = try audioFile(audio) }
+                catch {
+                    guard clip.isProjectionMedia, AudioFileRead.isVideoWithoutAudio(error) else { throw error }
+                    silentVideoFiles.insert(audio.path)
+                    continue
                 }
-                let file = try audioFile(audio)
                 let offset = clip.sourceOffset + max(0, schedulingPosition - clip.startTime) * clip.audioRate
                 let first = AVAudioFramePosition(offset * file.processingFormat.sampleRate)
-                let count = min(file.length - first, AVAudioFramePosition((clip.duration - max(0, schedulingPosition - clip.startTime)) * clip.audioRate * file.processingFormat.sampleRate))
+                let sourceEnd = contiguousSourceEnd[clip.id] ?? (clip.sourceOffset + clip.duration * clip.audioRate)
+                let count = min(file.length - first, AVAudioFramePosition(sourceEnd * file.processingFormat.sampleRate) - first)
                 guard clip.loopLength != nil || (first >= 0 && count > 0 && count <= Int64(UInt32.max)) else { continue }
                 var voice = try takeVoice(track: track, clip: clip, file: file)
+                voice.continuousSource = contiguousSourceEnd[clip.id] != nil
                 let player = voice.player
                 // Recycled processors are reset before warming. Do not reset a
                 // running prepared stretcher here: that breaks its input clock.
@@ -2322,7 +2896,7 @@ struct TimecodePlaybackSpan {
                 player.pan = Float(clip.pan ?? 0)
                 JarasVoiceGain.setDecibels(voice.gain, decibels: Double(clip.muted == true || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))))
                 // Register the reserved bus before preparing another overlapping item.
-                voices[key] = voice
+                setVoice(voice, for: key)
                 scheduled.append((key, voice, first, AVAudioFrameCount(max(0, min(Int64(UInt32.max), count))), max(0, clip.startTime - schedulingPosition)))
             }
             if !engine.isRunning { engine.prepare(); try engine.start() }
@@ -2334,9 +2908,22 @@ struct TimecodePlaybackSpan {
             }
             // Finish file reads and latency queries before choosing a common deadline.
             let preparedDelays = scheduled.map { processingDelay($0.1) }
-            let commands = try scheduled.map { entry -> (@Sendable (AVAudioTime?) -> Void)? in
-                guard entry.1.clip.loopLength == nil else { return nil }
-                return try startCommand(file: entry.1.file, player: entry.1.player, first: entry.2, count: entry.3)
+            let commands = try scheduled.map { entry -> (end: Double, command: @Sendable (AVAudioTime?) -> Void) in
+                let voice = entry.1, clip = voice.clip
+                if let length = clip.loopLength {
+                    let sampleRate = voice.file.processingFormat.sampleRate
+                    let loopFirst = AVAudioFramePosition((clip.loopStart ?? 0) * sampleRate)
+                    let loopEnd = min(voice.file.length, loopFirst + AVAudioFramePosition(length * sampleRate))
+                    // REAPER enables looping by default even on ordinary stems.
+                    // A contiguous source span needs one decoder queue, exactly
+                    // like a non-looped file, not periodic five-second appends.
+                    if entry.2 < loopFirst || entry.2 + Int64(entry.3) > loopEnd ||
+                        (clip.sourceOffset + clip.duration * clip.audioRate) * sampleRate > Double(loopEnd) + 0.5 {
+                        let start = max(clip.startTime, schedulingPosition)
+                        return try prepareLoop(file: voice.file, player: voice.player, clip: clip, from: start, until: start + 5, onset: true)
+                    }
+                }
+                return (clip.startTime + clip.duration, try startCommand(file: voice.file, player: voice.player, first: entry.2, count: entry.3))
             }
             if realtime && headAudioClock[head] == nil {
                 let preroll = preparedDelays.max() ?? 0
@@ -2371,16 +2958,12 @@ struct TimecodePlaybackSpan {
                 let fadeHost = realtime ? (audioHostTime(position: schedulingPosition + delay - fadeLatency, head: head) ?? 0) : 0
                 let fadeSample = realtime ? 0 : (Double(engine.manualRenderingSampleTime) / engine.manualRenderingFormat.sampleRate + delay) * voice.file.processingFormat.sampleRate
                 voice.effects?.configureItemFade(clip, position: max(clip.startTime, schedulingPosition), hostTime: fadeHost, sampleTime: fadeSample)
-                if clip.loopLength != nil {
-                    voice.scheduledUntil = try scheduleLoop(file: voice.file, player: voice.player, clip: clip, from: max(clip.startTime, schedulingPosition), until: max(clip.startTime, schedulingPosition) + 5, onset: true, at: playbackTime)
-                } else {
-                    let command = commands[index]!
-                    let time = playbackTime
-                    startCommands.append { command(time) }
-                    voice.scheduledUntil = clip.startTime + clip.duration
-                    voice.scheduledSourceEnd = first + AVAudioFramePosition(count)
-                }
-                voices[key] = voice
+                let command = commands[index].command
+                let time = playbackTime
+                startCommands.append { command(time) }
+                voice.scheduledUntil = commands[index].end
+                if voice.continuousSource || clip.loopLength == nil { voice.scheduledSourceEnd = first + AVAudioFramePosition(count) }
+                setVoice(voice, for: key)
             }
             // Independent players enqueue together instead of spending an I/O
             // synchronization interval per track before the last one is ready.
@@ -2417,12 +3000,15 @@ struct TimecodePlaybackSpan {
                 appliedJumpBoundaries[id] = jump.host
             }
         }
+        applyAutomation(snapshot, song: song, revision: revision)
+        applyItemAutomation(transport)
         updateMetronome(song: song, transport: transport)
         updateClickPosition(transport)
         if midiPlanRevision != revision || midiPlanSong != song.id {
             prepareMIDISequences(song: song); midiPlanRevision = revision; midiPlanSong = song.id
         }
         updateMIDISequenceClocks(transport)
+        updateMIDITakes(transport, song: song, preserveHeld: tempoChanged || markerTempoChanged)
         if !transport.playing && !transport.subPlay.playing {
             prepareIdleVoices(position: transport.editPosition ?? transport.position, revision: revision)
             for voice in retiredVoices { recycle(voice) }
@@ -2520,6 +3106,10 @@ struct VerticalTrackMeter: NSViewRepresentable {
         observers.setObject(observer, forKey: clip)
         return observer
     }
+    static func refreshExisting(in clip: NSClipView) {
+        guard let observer = observers.object(forKey: clip) else { return }
+        for view in observer.views.allObjects { view.refreshVisibleDrawing() }
+    }
     private init(_ clip: NSClipView) {
         clip.postsBoundsChangedNotifications = true
         token = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
@@ -2558,7 +3148,13 @@ struct VerticalTrackMeter: NSViewRepresentable {
         tokens = events.map { name in
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    for view in self?.views.allObjects ?? [] { view.resumeVisibleDrawing() }
+                    for view in self?.views.allObjects ?? [] {
+                        // A window edge moves many fixed-size meter views. Their
+                        // cached layer geometry stays valid; layout/backing events
+                        // already invalidate it when a meter actually changes.
+                        if name == NSWindow.didResizeNotification { view.refreshVisibleDrawing() }
+                        else { view.resumeVisibleDrawing() }
+                    }
                 }
             }
         }
@@ -2569,6 +3165,11 @@ struct VerticalTrackMeter: NSViewRepresentable {
 }
 
 @MainActor final class NativeVerticalTrackMeterView: NSView {
+    /// Virtualized hosts may add meters after the clip's resize notification.
+    /// Flush cached amplitudes only after those channel frames are committed.
+    static func refreshVisibleMeters(in clip: NSClipView) {
+        NativeMeterClipObserver.refreshExisting(in: clip)
+    }
     private weak var meter: TrackMeterLevel?
     private var subscription: AnyCancellable?
     private var peakSubscription: AnyCancellable?

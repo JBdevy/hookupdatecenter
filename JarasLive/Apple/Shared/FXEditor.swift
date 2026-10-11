@@ -255,10 +255,17 @@ struct TabbedClipFXEditor: View {
     @State private var enabledEffects: Set<String> = []
     private var pages: [String] {
         #if os(macOS)
-        return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"] + (show.clipFXSettings(clip).inserted.contains(NativeFXSettings.stemSeparator) ? [NativeFXSettings.stemSeparator] : [])
+        let settings = show.clipFXSettings(clip)
+        return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
+            + (settings.inserted.contains(NativeFXSettings.stemSeparator) ? [NativeFXSettings.stemSeparator] : [])
+            + settings.inserted.filter { $0.hasPrefix("External:") }
         #else
         return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
         #endif
+    }
+    private func title(_ effect: String) -> String {
+        show.clipFXSettings(clip).externalPlugins?.first(where: { $0.effectKey == effect })?.name
+            ?? JarasLocalization.string(effect == "Limiter" ? "CatLive Limiter" : effect)
     }
     private func color(_ effect: String) -> Color {
         switch effect {
@@ -293,24 +300,36 @@ struct TabbedClipFXEditor: View {
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
             }
-            HStack(spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 4) {
                 ForEach(pages, id: \.self) { effect in
                     let active = enabledEffects.contains(effect)
                     let tint = color(effect)
                     Button { page = effect } label: {
-                        Text(LocalizedStringKey(effect == "Limiter" ? "CatLive Limiter" : effect)).font(.system(size: 12, weight: .semibold))
-                            .frame(maxWidth: .infinity).frame(height: 30)
+                        Text(verbatim: title(effect)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                            .frame(minWidth: 100, maxWidth: 180).frame(height: 30)
                             .background(tint.opacity(active ? 0.30 : 0.06))
                             .overlay(RoundedRectangle(cornerRadius: 5).stroke(tint.opacity(page == effect ? 0.95 : active ? 0.55 : 0.14), lineWidth: page == effect ? 1.5 : 1))
                             .cornerRadius(5).contentShape(Rectangle())
                     }.buttonStyle(.plain).foregroundStyle(tint.opacity(active ? 1 : 0.38))
                         .accessibilityAddTraits(page == effect ? .isSelected : [])
                         .accessibilityValue(Text(active ? "Enabled" : "Disabled"))
+                        .jarasHelp(title(effect))
                 }
-            }
+            }}.frame(height: 32)
             #if os(macOS)
             if page == "CatStemSeparation 5" {
                 CatStemFXEditor(show: show, track: nil, clip: clip)
+            } else if page.hasPrefix("External:") {
+                VStack(spacing: 10) {
+                    HStack {
+                        Toggle("Enabled", isOn: Binding(get: { show.clipFXSettings(clip).isEnabled(page) }, set: { enabled in
+                            if show.clipFXSettings(clip).isEnabled(page) != enabled { show.toggleClipFXBypass(clip, effect: page) }
+                        })).toggleStyle(.switch).tint(JarasTheme.green)
+                        Spacer()
+                        Button("Remove effect") { show.removeClipFX(clip, effect: page); page = "EQ" }
+                    }
+                    ClipExternalPluginEditor(show: show, clip: clip, effect: page).id(page)
+                }
             } else {
                 FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: page, close: close).id(page)
             }
@@ -324,6 +343,7 @@ struct TabbedClipFXEditor: View {
                       let fx = item.fx else { return [] }
                 return Set(pages.filter { fx.inserted.contains($0) && fx.isEnabled($0) })
             }.removeDuplicates()) { enabledEffects = $0 }
+            .onChange(of: pages) { available in if !available.contains(page) { page = available.first ?? "EQ" } }
             #if os(macOS)
             .onExitCommand(perform: close)
             #endif

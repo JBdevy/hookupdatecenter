@@ -1,5 +1,25 @@
 import Foundation
 
+/// Item names expose the same source speed used by the playback fragments.
+/// A range describes items crossing several tempo sections without claiming
+/// that the entire item plays at its first section's rate.
+public enum TimelineItemPlaybackRate {
+    public static func title(_ name: String, rates: [Double], referenceRate: Double = 1) -> String {
+        let values = rates.filter { $0.isFinite && $0 > 0 }
+        guard let low = values.min(), let high = values.max(),
+              values.contains(where: { abs($0 - referenceRate) > 0.0000005 }) else { return name }
+        func formatted(_ rate: Double) -> String {
+            var result = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), rate)
+            while result.last == "0" { result.removeLast() }
+            if result.last == "." { result.removeLast() }
+            return result
+        }
+        let first = formatted(low), last = formatted(high)
+        guard first != "1" || last != "1" else { return name }
+        return "[\(first == last ? first : first + "–" + last)] \(name)"
+    }
+}
+
 public enum ProjectTimebase: String, Codable, CaseIterable, Sendable {
     case free, relative
     public var title: String { self == .free ? "Free Grid" : "Relative Grid" }
@@ -136,6 +156,9 @@ public extension Song {
                 let end = (tracks[track].clips[clip].startTime + tracks[track].clips[clip].duration) * scale
                 tracks[track].clips[clip].startTime *= scale
                 tracks[track].clips[clip].duration = end - tracks[track].clips[clip].startTime
+                if tracks[track].clips[clip].tempoBasePlaybackRate == nil {
+                    tracks[track].clips[clip].tempoBasePlaybackRate = tracks[track].clips[clip].audioRate
+                }
                 tracks[track].clips[clip].playbackRate = tracks[track].clips[clip].audioRate * speed
                 if let offset = tracks[track].clips[clip].timecodeStartOffset { tracks[track].clips[clip].timecodeStartOffset = offset * scale }
                 if let offset = tracks[track].clips[clip].timecodeEndOffset { tracks[track].clips[clip].timecodeEndOffset = offset * scale }
@@ -294,7 +317,7 @@ public extension Song {
     /// They do not split project items or create additional media files.
     func tempoAudioSegments(_ clip: AudioClip, sections: [TimelineTempoSection]? = nil) -> [AudioClip] {
         // Printed performances already contain their tempo changes.
-        guard clip.frozenMIDI != true, clip.renderedTiming != true else { return [clip] }
+        guard clip.frozenMIDI != true, clip.renderedTiming != true, clip.renderedTempo != true else { return [clip] }
         guard tempoMarkersAffectAudio else { return [clip] }
         let end = clip.startTime + clip.duration
         var source = clip.sourceOffset, result: [AudioClip] = []
@@ -315,6 +338,7 @@ public extension Song {
             segment.startTime = start; segment.duration = finish - start
             segment.playbackRate = section.timebase == .relative ? clip.audioRate * section.bpm / (section.referenceBPM ?? bpm) : clip.audioRate
             segment.sourceOffset = source
+            segment.automationSourceOffset = clip.automation == nil ? nil : source
             if let length = clip.loopLength, length > 0 {
                 let origin = clip.loopStart ?? 0
                 segment.sourceOffset = origin + ((source - origin).truncatingRemainder(dividingBy: length) + length).truncatingRemainder(dividingBy: length)
@@ -467,6 +491,14 @@ struct TempoEditMap {
     func apply(to song: inout Song) {
         guard changesTime else { return }
         for track in song.tracks.indices {
+            if var automation = song.tracks[track].automation {
+                for envelope in automation.envelopes.indices {
+                    for point in automation.envelopes[envelope].points.indices {
+                        automation.envelopes[envelope].points[point].time = position(automation.envelopes[envelope].points[point].time)
+                    }
+                }
+                song.tracks[track].automation = automation
+            }
             for item in song.tracks[track].clips.indices {
                 let clip = song.tracks[track].clips[item]
                 let start = clipStarts[clip.id] ?? position(clip.startTime), end = position(clip.startTime + clip.duration)
@@ -568,17 +600,39 @@ public enum TimelineTimeRuler {
                              minimumLabelSpacing: Double? = nil) -> [Tick] {
         guard start.isFinite, end.isFinite, scale.isFinite, scale > 0, end >= start else { return [] }
         let spacing = minimumLabelSpacing.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
-            ?? labelSpacing(through: sections.map(\.end).max() ?? end, pixelsPerSecond: scale)
+            ?? labelSpacing(through: sections.last?.end ?? end, pixelsPerSecond: scale)
         let labelSeconds = spacing / scale
+        // Tempo sections are ordered, non-overlapping intervals. Keep a fixed
+        // screen-space density across their boundaries: restarting the grid at
+        // each tiny ramp segment must not draw thousands of coincident lines.
+        let columnWidth = TimelineTempo.minimumGridSpacing / 2
+        let columnSeconds = columnWidth / scale
+        let densityStart = floor(max(0, start) / columnSeconds) * columnSeconds
         var result: [Tick] = []
         var previousLabel = -Double.infinity
-        for section in sections where section.start <= end {
-            if !labels && section.end < start { continue }
+        var lastColumn: Double?
+        func firstSection(endingAfter time: Double, from first: Int) -> Int {
+            var low = first, high = sections.count
+            while low < high {
+                let middle = (low + high) / 2
+                if sections[middle].end <= time { low = middle + 1 } else { high = middle }
+            }
+            return low
+        }
+        var sectionIndex = labels ? 0 : firstSection(endingAfter: densityStart, from: 0)
+        while sectionIndex < sections.count {
+            let section = sections[sectionIndex]
+            if section.start > end { break }
+            sectionIndex += 1
+            if let lastColumn, section.end <= (lastColumn + 1) * columnSeconds {
+                sectionIndex = firstSection(endingAfter: (lastColumn + 1) * columnSeconds, from: sectionIndex)
+                continue
+            }
             let bar = section.barSeconds
             guard bar.isFinite, bar > 0, section.start.isFinite, section.end.isFinite,
                   section.end > section.start else { continue }
             let strideBars = TimelineTempo.barStride(bar: bar, pixelsPerSecond: scale)
-            let first = max(0, Int(floor((start - section.start) / bar)) / strideBars * strideBars)
+            let first = max(0, Int(floor((densityStart - section.start) / bar)) / strideBars * strideBars)
             let last = max(first, Int(ceil((min(section.end, end) - section.start) / bar)))
             let distant = bar * scale < TimelineTempo.minimumGridSpacing * 4
             let minor = distant ? bar * Double(strideBars) / 2 :
@@ -606,9 +660,13 @@ public enum TimelineTimeRuler {
                 }
                 if lastCandidate >= firstAllowedLabel { previousLabel = lastCandidate }
             }
-            guard section.end >= start else { continue }
+            guard section.end > densityStart else { continue }
             func append(_ time: Double, primary: Bool, labeled: Bool) {
-                guard time >= max(0, start), time <= end, time < section.end else { return }
+                guard time >= densityStart, time <= end, time < section.end else { return }
+                let column = floor(time / columnSeconds + 1e-9)
+                guard column != lastColumn else { return }
+                lastColumn = column
+                guard time >= max(0, start) else { return }
                 result.append(Tick(time: time, primary: primary,
                                    label: labels && labeled && time >= firstAllowedLabel ? timeLabel(time) : ""))
             }

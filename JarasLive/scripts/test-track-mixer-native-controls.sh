@@ -16,6 +16,8 @@ a=m.index('/// Uses the existing stereo readings');parts.append(m[a:m.index('pri
 v=Path('Apple/Shared/TimelineGridView.swift').read_text()
 a=v.index('private struct TimelineTrackRowsContainer');parts.append(v[a:v.index('private struct TimelineMixerIdentity',a)])
 parts.append('''
+private enum AutomationTarget { enum Kind { case pan, volume } }
+private final class ShowController: ObservableObject { @Published var snapshot = 0; func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind) -> Double? { nil } }
 private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white }
 private struct TrackControlIdentity: Equatable { let project: UUID; let track: UUID? }
 private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin(track: UUID) {} ; func finish() {} }

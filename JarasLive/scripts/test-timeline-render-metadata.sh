@@ -18,7 +18,7 @@ key = source.index('struct TimelineRenderKey:')
 key_end = source.index('\n}', key) + 2
 tests = Path('Tests/Apple/TimelineRenderMetadataTests.swift').read_text()
 tests += '\n' + Path('Tests/Apple/TimelineVisibleClipMetadataTests.swift').read_text()
-(folder / 'main.swift').write_text('import Foundation\n' + source[start:end] + source[key:key_end] + '\n' + tests)
+(folder / 'main.swift').write_text('import Foundation\nenum JarasLocalization { static func string(_ value: String) -> String { value } }\n' + source[start:end] + source[key:key_end] + '\n' + tests)
 tempo = Path('Application/Project/TimelineTempo.swift').read_text()
 for signature, counter in [
     ('func tempoSections(until end: Double) -> [TimelineTempoSection] {', 'sections'),
@@ -31,7 +31,7 @@ PY
 swiftc -O -swift-version 5 \
   Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
-  Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift \
+  Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift \
   Application/Project/ClipRepetition.swift "$test_dir/TimelineTempo.swift" \
   Apple/Shared/TimelineVisibleClipIndex.swift \
   "$test_dir/main.swift" -o "$test_dir/test"

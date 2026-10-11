@@ -25,6 +25,13 @@ struct RecognizedPlugin: Codable, Identifiable, Sendable {
     func removePath(_ path: String) { paths.removeAll { $0 == path }; savePaths(); plugins.removeAll { $0.path.hasPrefix(path + "/") }; saveCatalog() }
     private func savePaths() { UserDefaults.standard.set(paths, forKey: "jaras.plugins.paths") }
     private func saveCatalog() { UserDefaults.standard.set(try? JSONEncoder().encode(plugins), forKey: "jaras.plugins.catalog") }
+    func acceptImportedPlugins(_ additions: [RecognizedPlugin]) {
+        guard !additions.isEmpty else { return }
+        var indexed = Dictionary(plugins.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for plugin in additions { indexed[plugin.id] = plugin }
+        plugins = indexed.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        saveCatalog()
+    }
     func scan() {
         guard !scanning, let executable = Bundle.main.executableURL else { return }
         scanning = true; status = "Scanning plugins…"
@@ -61,6 +68,116 @@ struct RecognizedPlugin: Codable, Identifiable, Sendable {
         }
     }
 }
+/// One import owns this session on its detached worker. Third-party code is
+/// opened in a disposable process, never on the UI or live audio thread.
+final class ReaperVST3ImportSession: @unchecked Sendable {
+    private let executable: URL
+    private var catalog: [RecognizedPlugin]
+    private let paths: [String]
+    private var scanned = Set<String>()
+    private var candidates: [URL]?
+    private(set) var discovered: [RecognizedPlugin] = []
+    init(executable: URL, catalog: [RecognizedPlugin], paths: [String], reaperConfiguration: URL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/REAPER/reaper.ini")) {
+        self.executable = executable; self.catalog = catalog
+        var search = paths + ["/Library/Audio/Plug-Ins/VST3", NSHomeDirectory() + "/Library/Audio/Plug-Ins/VST3"]
+        if let text = try? String(contentsOf: reaperConfiguration, encoding: .utf8) {
+            for line in text.components(separatedBy: .newlines) {
+                let fields = line.split(separator: "=", maxSplits: 1).map(String.init)
+                if fields.count == 2, ["vstpath_arm64", "vstpath64", "vstpath"].contains(fields[0].lowercased()) {
+                    search += fields[1].split(separator: ";").map { NSString(string: String($0).trimmingCharacters(in: .whitespaces)).expandingTildeInPath }
+                }
+            }
+        }
+        self.paths = Array(Set(search.filter { !$0.isEmpty })).sorted()
+    }
+    private func pluginFiles() throws -> [URL] {
+        if let candidates { return candidates }
+        let fm = FileManager.default
+        var found = Set<URL>()
+        for path in paths {
+            try Task.checkCancellation()
+            let root = URL(fileURLWithPath: path).standardizedFileURL
+            if root.pathExtension.lowercased() == "vst3", fm.fileExists(atPath: root.path) { found.insert(root); continue }
+            if let iterator = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) {
+                for case let url as URL in iterator {
+                    try Task.checkCancellation()
+                    if url.pathExtension.lowercased() == "vst3" { found.insert(url.standardizedFileURL); iterator.skipDescendants() }
+                }
+            }
+        }
+        let result = found.sorted { $0.path < $1.path }; candidates = result
+        return result
+    }
+    private func run(_ arguments: [String], output: URL) throws -> Data {
+        let process = Process(); process.executableURL = executable; process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer { if process.isRunning { process.terminate() } }
+        let deadline = Date().addingTimeInterval(30)
+        while process.isRunning {
+            try Task.checkCancellation()
+            guard Date() < deadline else { throw ProjectError.invalid("VST3 import inspection timed out.") }
+            Thread.sleep(forTimeInterval: 0.025)
+        }
+        guard FileManager.default.fileExists(atPath: output.path) else { throw ProjectError.invalid("VST3 import inspection failed or the plugin process crashed.") }
+        return try Data(contentsOf: output)
+    }
+    func resolve(_ request: ReaperProjectImporter.VST3Request) throws -> ReaperProjectImporter.VST3Resolution? {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent("catlive-vst3-import-" + UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("result.json")
+        let classID = request.plugin.classID.uppercased()
+        var match = catalog.first { $0.classID.uppercased() == classID && fm.fileExists(atPath: $0.path) }
+        if match == nil {
+            let original = request.plugin.path.replacingOccurrences(of: "\\", with: "/")
+            let basename = URL(fileURLWithPath: original).lastPathComponent
+            var files = try pluginFiles()
+            if original.hasPrefix("/"), URL(fileURLWithPath: original).pathExtension.lowercased() == "vst3", fm.fileExists(atPath: original) {
+                files.insert(URL(fileURLWithPath: original), at: 0)
+            }
+            files.sort { left, right in
+                let lm = left.lastPathComponent.caseInsensitiveCompare(basename) == .orderedSame
+                let rm = right.lastPathComponent.caseInsensitiveCompare(basename) == .orderedSame
+                return lm == rm ? left.path < right.path : lm
+            }
+            struct Scan: Decodable { var plugins: [RecognizedPlugin]; var error: String }
+            var scanErrors: [String] = []
+            for file in files where !scanned.contains(file.path) {
+                try Task.checkCancellation(); scanned.insert(file.path)
+                do {
+                    let data = try run(["--scan-vst3", file.path, output.path], output: output)
+                    let result = try JSONDecoder().decode(Scan.self, from: data)
+                    catalog += result.plugins; discovered += result.plugins
+                    if let found = result.plugins.first(where: { $0.classID.uppercased() == classID }) { match = found; break }
+                    if !result.error.isEmpty, file.lastPathComponent.caseInsensitiveCompare(basename) == .orderedSame { scanErrors.append(result.error) }
+                } catch is CancellationError { throw CancellationError() }
+                catch { if file.lastPathComponent.caseInsensitiveCompare(basename) == .orderedSame { scanErrors.append(error.localizedDescription) } }
+                try? fm.removeItem(at: output)
+            }
+            if match == nil, !scanErrors.isEmpty { throw ProjectError.invalid(scanErrors.joined(separator: "\n")) }
+        }
+        guard let match else { return nil }
+        var plugin = request.plugin; plugin.path = match.path
+        if !match.category.isEmpty { plugin.category = match.category }
+        let input = directory.appendingPathComponent("request.json")
+        var spec = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plugin)) as! [String: Any]
+        spec["strictImportState"] = true
+        try JSONSerialization.data(withJSONObject: spec).write(to: input)
+        try? fm.removeItem(at: output)
+        struct Inspection: Decodable {
+            struct Parameter: Decodable { var index: Int; var id: UInt32; var readOnly: Bool }
+            var parameters: [Parameter]; var error: String
+        }
+        let data = try run(["--inspect-vst3", input.path, output.path], output: output)
+        let inspection = try JSONDecoder().decode(Inspection.self, from: data)
+        guard inspection.error.isEmpty else { throw ProjectError.invalid(inspection.error) }
+        let mapping = Dictionary(inspection.parameters.filter { !$0.readOnly }.map { ($0.index, $0.id) }, uniquingKeysWith: { first, _ in first })
+        return .init(plugin: plugin, parameterIDs: mapping)
+    }
+}
+
 struct ExternalPluginBrowser: View {
     @Binding var selected: String?
     let allowsInstruments: Bool

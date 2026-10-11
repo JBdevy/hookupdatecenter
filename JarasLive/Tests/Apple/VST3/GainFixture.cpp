@@ -38,6 +38,9 @@ public:
 };
 class Gain final: public IComponent,public IAudioProcessor,public IEditController,public IMidiMapping {
     std::atomic<uint32> refs{1};std::atomic<float> gain{0.5f};std::atomic<uint64> inputSilence{0};bool note=false,held=false,pedal=false;
+#ifdef CATLIVE_NOTE_ATTACK_COUNTER
+    unsigned attacks=0;
+#endif
 public:
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override{*out=nullptr; if(FUnknownPrivate::iidEqual(id,FUnknown_iid)||FUnknownPrivate::iidEqual(id,IComponent_iid))*out=static_cast<IComponent*>(this);else if(FUnknownPrivate::iidEqual(id,IAudioProcessor_iid))*out=static_cast<IAudioProcessor*>(this);else if(FUnknownPrivate::iidEqual(id,IEditController_iid))*out=static_cast<IEditController*>(this);if(FUnknownPrivate::iidEqual(id,IMidiMapping_iid))*out=static_cast<IMidiMapping*>(this);if(*out){addRef();return kResultOk;}return kNoInterface;}
     uint32 PLUGIN_API addRef() override{return ++refs;}uint32 PLUGIN_API release() override{auto n=--refs;if(!n)delete this;return n;}
@@ -65,9 +68,17 @@ public:
         for(int f=0;f<data.numSamples;f++) {
             while(data.inputEvents && nextEvent<data.inputEvents->getEventCount()) {
                 Event e{};data.inputEvents->getEvent(nextEvent,e);if(e.sampleOffset>f)break;++nextEvent;
-                if(e.type==Event::kNoteOnEvent){held=true;note=true;}if(e.type==Event::kNoteOffEvent){held=false;note=pedal;}
+                if(e.type==Event::kNoteOnEvent){held=true;note=true;
+#ifdef CATLIVE_NOTE_ATTACK_COUNTER
+                    ++attacks;
+#endif
+                }if(e.type==Event::kNoteOffEvent){held=false;note=pedal;}
             }
-            for(int c=0;c<2;c++)data.outputs[0].channelBuffers32[c][f]=data.inputs[0].channelBuffers32[c][f]*gain.load()+(note?0.125f:0);
+            for(int c=0;c<2;c++)data.outputs[0].channelBuffers32[c][f]=data.inputs[0].channelBuffers32[c][f]*gain.load()+(note?0.125f
+#ifdef CATLIVE_NOTE_ATTACK_COUNTER
+                *attacks
+#endif
+                :0);
         }
         return kResultOk;
     }

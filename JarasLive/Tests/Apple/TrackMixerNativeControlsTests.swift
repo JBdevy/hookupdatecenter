@@ -8,6 +8,7 @@
     verifyFooterPanReadout()
     let fixture = FixtureWindow(candidate: true, kinds: [.standard])
     fixture.change(80)
+    verifyGeometryKeepsNativeContent(fixture)
     verifyPeakResetInput(fixture)
     let title = descendants(fixture.host, of: TrackDragTitleView.self).first!
     let faders = descendants(fixture.host, of: DirectVolumeSliderView.self)
@@ -35,15 +36,21 @@
     expect(ObjectIdentifier(retained) == localStateIdentity && retained.value == 1, "Local SwiftUI state did not survive resize")
     fixture.state.title = "Updated long name Árvore 木琴"
     fixture.state.value = -4
+    fixture.state.actionStep = 7
     fixture.state.project = UUID(); fixture.state.track = UUID()
     fixture.settle()
     expect(title.title == fixture.state.title && title.track == fixture.state.track && title.project == fixture.state.project, "Recycled title kept old identity/content")
     for fader in faders { expect(fader.boundTrack == fixture.state.track && fader.boundProject == fixture.state.project, "Recycled fader kept old identity") }
     expect(faders.first(where: { !$0.mini })?.doubleValue == -4, "New volume was not delivered")
+    let currentCalls = fixture.state.calls
+    title.select?()
+    expect(fixture.state.calls == currentCalls + 7, "A changed callback must replace the old action even when native controls are retained")
     let env = descendants(fixture.host, of: StatefulProbeView.self).first!
     expect(env.locale == "en" && env.enabled, "Initial environment missing")
     fixture.state.locale = "pt_BR"; fixture.state.enabled = false; fixture.settle()
     expect(env.locale == "pt_BR" && !env.enabled, "Nested hosting lost locale/isEnabled propagation")
+    fixture.state.dark = false; fixture.state.smallControls = true; fixture.settle()
+    expect(!env.dark && env.smallControls, "Nested hosting lost colorScheme/controlSize propagation")
     fixture.state.enabled = true; fixture.settle()
     let controls = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!.controls
     let fxPoint = controls.convert(NSPoint(x: 113, y: 13), to: controls.superview)
@@ -64,6 +71,20 @@
     baseline.window.close()
     print("NATIVE_ROW_BEHAVIOR_OK actions rebind state focus locale disabled hit-area")
     fixture.window.close()
+}
+@MainActor private func verifyGeometryKeepsNativeContent(_ fixture: FixtureWindow) {
+    let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
+    let original = row.snapshot
+    Counts.reset()
+    for index in 0..<24 {
+        fixture.change(index % 2 == 0 ? 80 : 96, width: 248 + CGFloat(index * 3))
+        expect(row.snapshot === original, "Geometry-only changes must not replace the three hosted control roots")
+    }
+    fixture.state.layoutNoise += 1; fixture.settle()
+    expect(row.snapshot === original && Counts.update == 0,
+        "An unrelated environment/placement change must not rebuild native row content (updates: \(Counts.update))")
+    fixture.change(80)
+    print("NATIVE_ROW_RESIZE_AND_UNRELATED_ENVIRONMENT_ZERO_ROOT_REPLACEMENTS_OK")
 }
 @MainActor private func verifyFooterGainReadout() {
     let project = UUID(), track = UUID(), linked = UUID()
@@ -152,7 +173,9 @@
         "The peak reset target is transparent and sits after the MIDI bar")
     let bar = meter.layer!.sublayers!.first { $0.name == "meter-background-0" }!
     let barPoint = meter.convert(NSPoint(x: 2, y: bar.frame.midY), to: nil)
-    let scalePoint = meter.convert(NSPoint(x: meter.bounds.maxX - 2, y: 2), to: nil)
+    // The peak now occupies the lower-right corner; probe the unused space
+    // above it instead of the number's intentional reset target.
+    let scalePoint = meter.convert(NSPoint(x: meter.bounds.maxX - 2, y: meter.bounds.midY), to: nil)
     for point in [barPoint, scalePoint] {
         expect(row.hitTestTimelineControl(atWindowPoint: point) == nil, "The meter bars and scale must remain available for selecting and dragging the track")
         expect(row.meter.hitTest(row.convert(point, from: nil)) == nil, "The meter hosting view cannot intercept blank meter space")
@@ -170,15 +193,19 @@
 }
 private final class StatefulProbeView: NSView {
     var value = 0; var locale = ""; var enabled = false; var action: (() -> Void)?
+    var dark = true; var smallControls = false
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 private struct StatefulProbe: NSViewRepresentable {
     @Binding var value: Int
     @Environment(\.locale) var locale
     @Environment(\.isEnabled) var enabled
+    @Environment(\.colorScheme) var colorScheme
+    @Environment(\.controlSize) var controlSize
     func makeNSView(context: Context) -> StatefulProbeView { StatefulProbeView() }
     func updateNSView(_ view: StatefulProbeView, context: Context) {
         view.value=value;view.locale=locale.identifier;view.enabled=enabled;view.action={value += 1}
+        view.dark = colorScheme == .dark; view.smallControls = controlSize == .small
     }
 }
 private struct StatefulControl: View {
@@ -188,12 +215,23 @@ private struct StatefulControl: View {
 
 private func expect(_ ok: Bool, _ message: @autoclosure () -> String) { if !ok { FileHandle.standardError.write(Data((message()+"\n").utf8)); exit(1) } }
 private enum Kind: String, CaseIterable { case standard, click, timecode, video, teleprompter }
+private struct FixtureLayoutKey: EnvironmentKey { static let defaultValue = CGRect.zero }
+private extension EnvironmentValues {
+    var fixtureLayout: CGRect {
+        get { self[FixtureLayoutKey.self] }
+        set { self[FixtureLayoutKey.self] = newValue }
+    }
+}
 @MainActor private final class FixtureState: ObservableObject {
     @Published var height: CGFloat = 64
     @Published var width: CGFloat = 248
     @Published var title = "08 · Árvore 木琴 / Stereo synth long track name"
     @Published var enabled = true
     @Published var value = -10.0
+    @Published var actionStep = 1
+    @Published var layoutNoise = 0
+    @Published var dark = true
+    @Published var smallControls = false
     var calls = 0
     @Published var project = UUID()
     @Published var track = UUID()
@@ -208,9 +246,10 @@ private struct FixtureRow: View, Equatable {
     let state: FixtureState
     let title: String
     let value: Double
+    let actionStep: Int
     let project: UUID
     let track: UUID
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.candidate == rhs.candidate && lhs.kind == rhs.kind && lhs.state === rhs.state && lhs.title == rhs.title && lhs.value == rhs.value && lhs.project == rhs.project && lhs.track == rhs.track }
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.candidate == rhs.candidate && lhs.kind == rhs.kind && lhs.state === rhs.state && lhs.title == rhs.title && lhs.value == rhs.value && lhs.actionStep == rhs.actionStep && lhs.project == rhs.project && lhs.track == rhs.track }
     private var lowerTitle: Bool { kind != .teleprompter }
     private var meter: some View { VerticalTrackMeter(meter: state.meter, showScale: true, peakOnly: true).clipped() }
     private var midi: some View { Color.green.frame(width: 4).allowsHitTesting(false) }
@@ -218,7 +257,7 @@ private struct FixtureRow: View, Equatable {
         TrackMixerContinuousContainer(meterWidth: 52, standard: kind == .standard, lowerTitle: lowerTitle) {
             Group { if split { Color.clear } else { meter } }.jarasPlaced(at: 0)
             Group { if split { Color.clear } else { midi } }.jarasPlaced(at: 1)
-            TrackDragTitle(title: title, foreground: 0xffffff, project: project, track: track, state: state.drag, select: { state.calls += 1 }).jarasPlaced(at: 2)
+            TrackDragTitle(title: title, foreground: 0xffffff, project: project, track: track, state: state.drag, select: { state.calls += actionStep }).jarasPlaced(at: 2)
             TrackMixerButtonsContainer(standard: kind == .standard, showsFader: true) {
                 if kind == .standard {
                     Button("FX") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 0)
@@ -258,11 +297,13 @@ private struct Fixture: View {
     var body: some View {
         TimelineTrackRowsContainer(width: state.width, height: max(795, CGFloat(kinds.count) * state.height), top: 0, offsets: kinds.indices.map { CGFloat($0) * state.height }, rowHeights: kinds.map { _ in state.height }) {
             ForEach(kinds.indices, id: \.self) { index in
-                FixtureRow(candidate: candidate, kind: kinds[index], state: state, title: state.title, value: state.value, project: state.project, track: state.track).equatable().frame(height: state.height).clipped().jarasPlaced(at: index)
+                FixtureRow(candidate: candidate, kind: kinds[index], state: state, title: state.title, value: state.value, actionStep: state.actionStep, project: state.project, track: state.track).equatable().frame(height: state.height).clipped().jarasPlaced(at: index)
             }
         }.frame(width: state.width, height: max(795, CGFloat(kinds.count) * state.height), alignment: .topLeading)
          .environment(\.locale, Locale(identifier: state.locale))
-         .environment(\.colorScheme, .dark)
+         .environment(\.colorScheme, state.dark ? .dark : .light)
+         .environment(\.controlSize, state.smallControls ? .small : .regular)
+         .environment(\.fixtureLayout, CGRect(x: CGFloat(state.layoutNoise), y: 0, width: state.width, height: state.height))
          .disabled(!state.enabled)
     }
 }

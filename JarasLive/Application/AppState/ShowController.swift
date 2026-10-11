@@ -611,6 +611,12 @@ public struct ShowTimelinePresentationState: Equatable {
     public var toggleSetlistPanel: () -> Void = {}
     public var onSetlistEdited: () -> Void = {}
     public var audioUpdate: (ShowSnapshot, UInt64) -> Void = { _, _ in }
+    public var audioAutomationOverride: (UUID?, UUID, Double?) -> Void = { _, _, _ in }
+    private var automationRecording: [UUID: TrackAutomation] = [:]
+    private var automationTouched: [UUID: [UUID: Double]] = [:]
+    private var automationLastWritten: [UUID: Double] = [:]
+    private var automationRecordingPlan: [(UUID, TrackAutomation)] = []
+    private var automationRecordingRevision: UInt64?
     public var audioFX: (UUID?, NativeFXSettings) -> Void = { _, _ in }
     public var audioClipFX: (UUID, NativeFXSettings) -> Void = { _, _ in }
     public var audioClipFXBypass: (UUID, Bool) -> Void = { _, _ in }
@@ -725,6 +731,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var audioItemPan: (UUID, Double) -> Void = { _, _ in }
     public var audioItemGain: (UUID, Double) -> Void = { _, _ in }
     public var audioVolume: (UUID?, Double) -> Void = { _, _ in }
+    public var audioMasterPan: (Double) -> Void = { _ in }
     public var audioPan: (UUID, Double) -> Void = { _, _ in }
     public var audioMute: (UUID?, Bool) -> Void = { _, _ in }
     public var audioSolo: (UUID, Bool) -> Void = { _, _ in }
@@ -778,6 +785,7 @@ public struct ShowTimelinePresentationState: Equatable {
         if !preservingMediaStorage { knownMediaPaths.formUnion(snapshot.project.mediaPaths) }
     }
     private func resetHistory() {
+        automationRecording.removeAll(); automationTouched.removeAll(); automationLastWritten.removeAll(); automationRecordingRevision = nil
         pendingFXEdit = false
         clipFXDefaults.removeAll(keepingCapacity: true)
         history = ProjectEditHistory(snapshot.project); canUndo = false; canRedo = false
@@ -1118,9 +1126,10 @@ public struct ShowTimelinePresentationState: Equatable {
             updatingPlaybackSnapshot = true
             snapshot = next
             updatingPlaybackSnapshot = false
+            recordAutomationFrame()
             recordSetlistLivePlayback(before: previous, after: update.transport, elapsed: delta)
             applyLoopMixer(); focusPreparedRegion(previous: previous); rememberCursor()
-            if !isPlaying { timer?.invalidate(); timer = nil; onStop() }
+            if !isPlaying { timer?.invalidate(); timer = nil; finishAutomationRecording(); onStop() }
             audioUpdate(snapshot, audioProjectRevision)
         } catch { message = error.localizedDescription }
     }
@@ -1319,7 +1328,7 @@ public struct ShowTimelinePresentationState: Equatable {
                 focusTimelineRegion(at: snapshot.transport.position, preferredRegion: snapshot.transport.regionId, forceReveal: true)
             }
             rememberCursor()
-            if isPlaying { startClock() } else { timer?.invalidate(); timer = nil; onStop() }
+            if isPlaying { startClock() } else { timer?.invalidate(); timer = nil; finishAutomationRecording(); onStop() }
             audioUpdate(snapshot, audioProjectRevision)
         } catch { message = error.localizedDescription }
     }
@@ -1342,7 +1351,27 @@ public struct ShowTimelinePresentationState: Equatable {
     public private(set) var mixerPreviewValues: [UUID: Double] = [:]
     public private(set) var mixerPreviewIsPan = false
     public func sendMixerControl(_ command: ShowCommand, target: UUID?, value: Double = 0, preview: Bool = false, clearAll: Bool = false) {
-        guard let target else { mixerPreviewValues = [:]; mixerGesture = nil; if preview { previewTrackVolume(nil, gain: value) } else { send(command, value: value) }; return }
+        if !clearAll, command == .mute {
+            let current = automationPlaybackValue(target, kind: .mute)
+            if let current, recordAutomationControl(target, target: AutomationTarget(.mute), value: current >= 0.5 ? 0 : 1) {
+                endAutomationTouch(target); return
+            }
+        }
+        if !clearAll, command == .volume || command == .pan {
+            let parameter = AutomationTarget(command == .volume ? .volume : .pan)
+            let normalized = command == .volume ? TrackEnvelope.normalizedGain(value) : (value+1)/2
+            if recordAutomationControl(target, target: parameter, value: normalized) {
+                if !preview { endAutomationTouch(target) }; return
+            }
+        }
+        guard let target else {
+            mixerPreviewValues = [:]; mixerGesture = nil
+            if preview {
+                if command == .pan { previewMasterPan(value) }
+                else if command == .volume { previewTrackVolume(nil, gain: value) }
+            } else { send(command, value: value) }
+            return
+        }
         guard canExecute(), !finishing, let source = current?.tracks.first(where: { $0.id == target }) else { return }
         if command == .volume || command == .pan {
             if mixerGesture?.project != snapshot.project.id || mixerGesture?.target != target || mixerGesture?.command != command {
@@ -1441,6 +1470,10 @@ public struct ShowTimelinePresentationState: Equatable {
             // again while the previous pending frame still retains their storage.
             if applyingLoopMixer { loopMixerProject = nil }
             if target == nil {
+                if command == .pan {
+                    let pan = min(1, max(-1, value))
+                    project.masterPan = pan; audioMasterPan(pan)
+                }
                 if command == .volume {
                     let gain = min(pow(10, 12.0 / 20), max(0, value))
                     project.masterVolume = gain; audioVolume(nil, gain)
@@ -1499,6 +1532,13 @@ public struct ShowTimelinePresentationState: Equatable {
                 if command == .solo { base.solo.toggle() }
                 loopMixerBase[id] = base
             }
+            if !applyingLoopMixer {
+                let trackValue = target.flatMap { id in project.songs.lazy.flatMap(\.tracks).first { $0.id == id } }
+                if command == .volume { recordAutomationControl(target, target: AutomationTarget(.volume), value: TrackEnvelope.normalizedGain(value)) }
+                if command == .pan { recordAutomationControl(target, target: AutomationTarget(.pan), value: (value+1)/2) }
+                if command == .mute { recordAutomationControl(target, target: AutomationTarget(.mute), value: (trackValue?.mute ?? (project.masterMute == true)) ? 1 : 0) }
+                endAutomationTouch(target)
+            }
             if applyingLoopMixer {
                 loopMixerChanged = true
                 mixerPlaybackRevision &+= 1
@@ -1511,19 +1551,38 @@ public struct ShowTimelinePresentationState: Equatable {
     /// Update the engine while dragging without decoding all waveforms every pixel.
     public func previewTrackVolume(_ track: UUID?, gain: Double) {
         guard canExecute(), !finishing else { return }
+        if recordAutomationControl(track, target: AutomationTarget(.volume), value: TrackEnvelope.normalizedGain(gain)) { return }
         do { try executor.execute(.volume, target: track, value: gain); audioVolume(track, gain); synchronizeLinkedControl(.volume, target: track, value: gain) }
+        catch { message = error.localizedDescription }
+    }
+    public func previewMasterPan(_ pan: Double) {
+        guard canExecute(), !finishing, pan.isFinite else { return }
+        let value = min(1, max(-1, pan))
+        if recordAutomationControl(nil, target: AutomationTarget(.pan), value: (value + 1)/2) { return }
+        do { try executor.execute(.pan, target: nil, value: value); audioMasterPan(value) }
         catch { message = error.localizedDescription }
     }
     public func previewTrackPan(_ track: UUID, pan: Double) {
         guard canExecute(), !finishing else { return }
         let value = min(1, max(-1, pan))
+        if recordAutomationControl(track, target: AutomationTarget(.pan), value: (value + 1)/2) { return }
         do { try executor.execute(.pan, target: track, value: value); audioPan(track, value); synchronizeLinkedControl(.pan, target: track, value: value) }
         catch { message = error.localizedDescription }
     }
     public func previewFX(_ track: UUID?, settings: NativeFXSettings) {
         guard canExecute(), !finishing else { return }
         do {
-            try settings.validate(); try executor.setFX(track, settings: settings)
+            try settings.validate()
+            let previous = fxSettings(track)
+            for envelope in automation(track).envelopes where envelope.armed {
+                if let parameter = envelope.target.native {
+                    let value = parameter.currentValue(in: settings)
+                    if value != parameter.currentValue(in: previous) {
+                        recordAutomationControl(track, target: envelope.target, value: parameter.normalized(value))
+                    }
+                }
+            }
+            try executor.setFX(track, settings: settings)
             if let track {
                 for song in snapshot.project.songs.indices {
                     if let index = snapshot.project.songs[song].tracks.firstIndex(where: { $0.id == track }) { snapshot.project.songs[song].tracks[index].fx = settings }
@@ -1533,7 +1592,7 @@ public struct ShowTimelinePresentationState: Equatable {
             audioFX(track, settings)
         } catch { message = error.localizedDescription }
     }
-    public func commitFX() { guard pendingFXEdit else { return }; pendingFXEdit = false; markChanged(refreshAudio: false) }
+    public func commitFX() { endAutomationTouch(nil, all: true); guard pendingFXEdit else { return }; pendingFXEdit = false; markChanged(refreshAudio: false) }
     public func clipFXSettings(_ clip: UUID) -> NativeFXSettings {
         if let settings = snapshot.project.songs.lazy.flatMap(\.tracks).flatMap(\.clips).first(where: { $0.id == clip })?.fx { return settings }
         if let defaults = clipFXDefaults[clip] { return defaults }
@@ -1647,11 +1706,124 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         catch { message = error.localizedDescription }
     }
+    public func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind) -> Double? {
+        let settings = automation(track)
+        guard settings.enabled, settings.mode != .trimRead,
+              let envelope = settings.active.first(where: { $0.target.kind == kind }) else { return nil }
+        let transport = timelinePlaybackTransport
+        let position = transport.subPlay.playing ? transport.subPlay.position : transport.playing ? transport.position : transport.editPosition ?? transport.position
+        return automationTouched[track ?? MultiLoopTrack.masterID]?[envelope.id] ?? envelope.value(at: position)
+    }
+    private func automationControlValue(_ track: UUID?, envelope: TrackEnvelope) -> Double {
+        let row = track.flatMap { id in current?.tracks.first { $0.id == id } }
+        switch envelope.target.kind {
+        case .volume: return TrackEnvelope.normalizedGain(row?.volume ?? snapshot.project.masterVolume ?? 1)
+        case .pan: return ((row?.pan ?? snapshot.project.masterPan ?? 0)+1)/2
+        case .mute: return (row?.mute ?? (snapshot.project.masterMute == true)) ? 1 : 0
+        case .nativeFX:
+            if let parameter = envelope.target.native { return parameter.normalized(parameter.currentValue(in: fxSettings(track))) }
+            return envelope.defaultValue
+        case .externalFX: return envelope.defaultValue
+        }
+    }
+    public func automation(_ track: UUID?) -> TrackAutomation {
+        let id = track ?? MultiLoopTrack.masterID
+        if let pending = automationRecording[id] { return pending }
+        return track.flatMap { id in snapshot.project.songs.lazy.flatMap(\.tracks).first { $0.id == id }?.automation }
+            ?? (track == nil ? snapshot.project.masterAutomation : nil) ?? TrackAutomation()
+    }
+    public func toggleAutomationLanes(_ track: UUID) {
+        guard let row = current?.tracks.first(where: { $0.id == track }) else { return }
+        var settings = automation(track)
+        settings.toggleLanes(volume: row.volume, volumeName: "Volume")
+        setAutomation(track, settings: settings)
+    }
+    public func setAutomation(_ track: UUID?, settings: TrackAutomation) {
+        guard canExecute(), !finishing else { return }
+        do {
+            try settings.validate()
+            finishAutomationRecording()
+            var project = snapshot.project
+            if let track {
+                guard let location = trackLocation(track) else { return }
+                project.songs[location.song].tracks[location.track].automation = settings
+            } else { project.masterAutomation = settings }
+            guard project != snapshot.project else { return }
+            try executor.applyProjectEdit(project)
+            snapshot.project = project; markChanged(); onProjectEdited()
+        } catch { message = error.localizedDescription }
+    }
+    @discardableResult public func recordAutomationControl(_ track: UUID?, target: AutomationTarget, value: Double) -> Bool {
+        guard isPlaying, value.isFinite, canExecute() else { return false }
+        let settings = automation(track)
+        guard settings.enabled, settings.mode.writes,
+              let envelope = settings.active.first(where: { $0.target.key == target.key && $0.armed }) else { return false }
+        let id = track ?? MultiLoopTrack.masterID
+        automationTouched[id, default: [:]][envelope.id] = min(1, max(0, value))
+        audioAutomationOverride(track, envelope.id, value)
+        recordAutomationFrame()
+        return true
+    }
+    public func endAutomationTouch(_ track: UUID?, all: Bool = false) {
+        recordAutomationFrame()
+        let ids = all ? Array(automationTouched.keys) : [track ?? MultiLoopTrack.masterID]
+        for id in ids {
+            let track: UUID? = id == MultiLoopTrack.masterID ? nil : id
+            if automation(track).mode == .touch {
+                for envelope in automationTouched[id]?.keys ?? Dictionary<UUID, Double>().keys {
+                    audioAutomationOverride(track, envelope, nil); automationLastWritten[envelope] = nil
+                }
+                automationTouched[id] = nil
+            }
+        }
+    }
+    private func recordAutomationFrame() {
+        guard isPlaying else { return }
+        if automationRecordingRevision != projectRevision {
+            automationRecordingPlan = (current?.tracks ?? []).compactMap { row in row.automation.flatMap { $0.enabled && $0.mode.writes ? (row.id, $0) : nil } }
+            if let master = snapshot.project.masterAutomation, master.enabled, master.mode.writes { automationRecordingPlan.append((MultiLoopTrack.masterID, master)) }
+            automationRecordingRevision = projectRevision
+        }
+        guard !automationRecordingPlan.isEmpty else { return }
+        let time = max(0, snapshot.transport.subPlay.playing ? snapshot.transport.subPlay.position : snapshot.transport.position)
+        for (id, configured) in automationRecordingPlan {
+            var settings = automationRecording[id] ?? configured
+            var changed = false
+            for index in settings.envelopes.indices where settings.lanesVisible != false && settings.envelopes[index].visible && settings.envelopes[index].armed && settings.envelopes[index].enabled {
+                let envelope = settings.envelopes[index], touched = automationTouched[id]?[envelope.id]
+                guard settings.mode == .write || touched != nil else { continue }
+                let value = touched ?? automationControlValue(id == MultiLoopTrack.masterID ? nil : id, envelope: envelope)
+                let previous = automationLastWritten[envelope.id]
+                settings.envelopes[index].write(from: previous, to: time, value: value)
+                automationLastWritten[envelope.id] = time
+                audioAutomationOverride(id == MultiLoopTrack.masterID ? nil : id, envelope.id, value)
+                changed = true
+            }
+            if changed { automationRecording[id] = settings; hasUnsavedChanges = true }
+        }
+    }
+    public func finishAutomationRecording() {
+        guard !automationRecording.isEmpty else { return }
+        var project = snapshot.project
+        for (id, recorded) in automationRecording {
+            var settings = recorded
+            if settings.mode == .write { settings.mode = .trimRead }
+            if id == MultiLoopTrack.masterID { project.masterAutomation = settings }
+            else if let location = trackLocation(id) { project.songs[location.song].tracks[location.track].automation = settings }
+            for envelope in settings.envelopes { audioAutomationOverride(id == MultiLoopTrack.masterID ? nil : id, envelope.id, nil) }
+        }
+        do {
+            try project.validate(); try executor.applyProjectEdit(project)
+            automationRecording.removeAll(); automationTouched.removeAll(); automationLastWritten.removeAll()
+            snapshot.project = project; markChanged(); onProjectEdited()
+        } catch { message = error.localizedDescription }
+    }
     public func fxSettings(_ track: UUID?) -> NativeFXSettings {
         track.flatMap { id in snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == id })?.fx } ?? (track == nil ? snapshot.project.masterFX : nil) ?? NativeFXSettings()
     }
     @discardableResult public func insertFX(_ track: UUID?, effect: String) -> String? {
-        guard NativeFXSettings.order.contains(effect) || (track != nil && effect == NativeFXSettings.stemSeparator) else { return nil }
+        guard (NativeFXSettings.order.contains(effect) || effect == NativeFXSettings.stemSeparator),
+              track != nil || effect != "Instruments" else { return nil }
         var value = fxSettings(track)
         let key = value.appendNative(effect)
         previewFX(track, settings: value); commitFX()
@@ -2448,6 +2620,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public func finishCurrentSong(_ value: Bool) { finishing = value; executor.finishCurrentSong(value) }
     public func flushProject() async throws {
         guard !saving else { throw ProjectError.invalid("Salvamento em andamento.") }
+        finishAutomationRecording()
         prepareForSave()
         saving = true
         defer { saving = false }

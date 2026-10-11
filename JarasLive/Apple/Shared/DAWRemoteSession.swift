@@ -409,6 +409,15 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     private var connectionGeneration = UUID()
     var stateProvider: (() -> DAWRemoteState?)?
     var commandHandler: ((DAWRemoteCommand) -> Void)?
+    /// Returns only after the active project has accepted/rejected this notice.
+    var noticeSendHandler: ((DAWRemoteCommand) -> Bool)?
+    private struct PendingNotice {
+        let project: UUID
+        let timeout: DispatchWorkItem
+        let completion: (DAWRemoteNoticeDelivery) -> Void
+    }
+    private var pendingNotices: [UUID: PendingNotice] = [:]
+    private var noticeReceipts: [UUID: DAWRemoteNoticeReceipt] = [:]
     private var stateTimer: Timer?
     private var sendingState = false
     private var waitingForState: UInt64?
@@ -566,6 +575,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     }
     #endif
     func stop() {
+        failPendingNotices(.disconnected)
         dispatchPrecondition(condition: .onQueue(.main))
         reconnectTimer?.invalidate(); reconnectTimer = nil; reconnecting = false
         preferredPeer = nil; resumeAccess = nil; pendingAccess = nil
@@ -573,7 +583,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         connectionGeneration = UUID(); channelReady = false
         accessMode = nil; accessError = ""; authorizing = false; requestedPanel = 0
         stateTimer?.invalidate(); stateTimer = nil; waitingForState = nil; sendingState = false
-        handledCommands.removeAll()
+        handledCommands.removeAll(); noticeReceipts.removeAll()
         listener?.cancel(); listener = nil; browser?.cancel(); browser = nil
         channel?.close(); channel = nil; endpoints = [:]
         enabled = false; connected = false; connecting = false; remoteState = nil; receivedStateSequence = 0
@@ -627,6 +637,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             child.stateProvider = { [weak self] in self?.stateProvider?() }
             child.stateProviderForSession = { [weak self] client in self?.stateProviderForSession?(client) }
             child.commandHandler = { [weak self] command in self?.commandHandler?(command) }
+            child.noticeSendHandler = { [weak self] command in self?.noticeSendHandler?(command) ?? false }
             clients[id] = child; child.attach(connection)
         }
     }
@@ -709,6 +720,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         }
         channel.onClose = { [weak self, weak channel] in
             guard let self, let channel, self.channel === channel else { return }
+            self.failPendingNotices(.disconnected)
             let wasConnected = self.connected
             let resume = self.role == .client && self.enabled && (self.reconnecting || (wasConnected && self.remoteState != nil))
             if resume { self.startReconnecting() }
@@ -718,7 +730,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             self.connected = false; self.connecting = false; self.receivedStateSequence = 0
             if !resume { self.remoteState = nil }
             self.stateTimer?.invalidate(); self.stateTimer = nil; self.waitingForState = nil; self.sendingState = false
-            self.handledCommands.removeAll()
+            self.handledCommands.removeAll(); self.noticeReceipts.removeAll()
             if !resume { self.setImageProject(nil) }
             if self.role == .client { self.beginBrowsing() }
             self.status = wasConnected ? "Disconnected" : "Connection failed. Keep the devices nearby and enable Remote on the PC."
@@ -734,13 +746,80 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         if command.action == .remotePanel { requestedPanel = Int(command.value) }
         channel?.send(data)
     }
+    /// Explicitly closing the Notices-only screen also closes its connection.
+    /// Let the queued withdrawal finish writing first; never queue a withdrawal
+    /// for reconnection or claim that a socket write is an application receipt.
+    func sendNoticeClear(_ command: DAWRemoteCommand, completion: @escaping () -> Void) {
+        guard role == .client, command.action == .noticeClear, command.valid,
+              connected, !reconnecting, remoteState?.project == command.project,
+              DAWRemoteAccessRules.allows(command, mode: accessMode), let channel,
+              let data = try? DAWRemoteWire.command(command) else { completion(); return }
+        let pending = NoticeClearCompletion(completion)
+        let timeout = DispatchWorkItem { pending.finish() }
+        pending.timeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: timeout)
+        channel.send(data) { _ in pending.finish() }
+    }
+    private final class NoticeClearCompletion {
+        private var completion: (() -> Void)?
+        var timeout: DispatchWorkItem?
+        init(_ completion: @escaping () -> Void) { self.completion = completion }
+        func finish() {
+            guard let completion else { return }
+            self.completion = nil
+            timeout?.cancel(); timeout = nil
+            completion()
+        }
+    }
+    func sendNotice(_ command: DAWRemoteCommand, completion: @escaping (DAWRemoteNoticeDelivery) -> Void) {
+        var command = command
+        command.noticeReceiptRequested = true
+        guard role == .client, command.action == .noticeSend, command.valid else { completion(.rejected); return }
+        guard connected, !reconnecting, let channel else { completion(.disconnected); return }
+        guard DAWRemoteAccessRules.allows(command, mode: accessMode),
+              let data = try? DAWRemoteWire.command(command) else { completion(.rejected); return }
+        // Each tap has its own ID; a later tap must never inherit an earlier ACK.
+        guard pendingNotices[command.id] == nil else { completion(.unconfirmed); return }
+        let id = command.id
+        let timeout = DispatchWorkItem { [weak self] in self?.finishNotice(id, result: .unconfirmed) }
+        pendingNotices[id] = PendingNotice(project: command.project, timeout: timeout, completion: completion)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
+        channel.send(data) { [weak self] sent in
+            if !sent { self?.finishNotice(id, result: .disconnected) }
+        }
+    }
+    private func finishNotice(_ id: UUID, result: DAWRemoteNoticeDelivery) {
+        guard let pending = pendingNotices.removeValue(forKey: id) else { return }
+        pending.timeout.cancel(); pending.completion(result)
+    }
+    private func failPendingNotices(_ result: DAWRemoteNoticeDelivery) {
+        let pending = Array(pendingNotices.values)
+        pendingNotices.removeAll()
+        for item in pending { item.timeout.cancel(); item.completion(result) }
+    }
+    private func sendNoticeReceipt(_ receipt: DAWRemoteNoticeReceipt, to source: DAWRemoteChannel) {
+        if let data = try? DAWRemoteWire.noticeReceipt(receipt) { source.send(data) }
+    }
     private func received(_ packet: DAWRemoteWire.Packet, from source: DAWRemoteChannel) {
         guard channel === source, connected, enabled else { return }
         switch packet {
         case .command(let command):
-            guard role == .host, DAWRemoteAccessRules.allows(command, mode: accessMode), !handledCommands.contains(command.id) else { return }
+            guard role == .host, DAWRemoteAccessRules.allows(command, mode: accessMode) else { return }
+            if handledCommands.contains(command.id) {
+                if command.noticeReceiptRequested == true, let receipt = noticeReceipts[command.id], receipt.project == command.project {
+                    sendNoticeReceipt(receipt, to: source)
+                }
+                return
+            }
             handledCommands.append(command.id)
-            if handledCommands.count > 512 { handledCommands.removeFirst() }
+            if handledCommands.count > 512 { noticeReceipts.removeValue(forKey: handledCommands.removeFirst()) }
+            if command.action == .noticeSend {
+                let accepted = noticeSendHandler?(command) ?? false
+                let receipt = DAWRemoteNoticeReceipt(commandID: command.id, project: command.project, accepted: accepted)
+                noticeReceipts[command.id] = receipt
+                if command.noticeReceiptRequested == true { sendNoticeReceipt(receipt, to: source) }
+                return
+            }
             if command.action == .requestImage { serveImage(command, to: source); return }
             if command.action == .remotePanel {
                 guard command.project == imageProject else { return }
@@ -767,6 +846,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
                 if requestedPanel != 0 { send(.init(project: state.project, action: .remotePanel, value: Double(requestedPanel))) }
             }
             if let data = try? DAWRemoteWire.acknowledge(state.sequence) { source.send(data) }
+        case .noticeReceipt(let receipt):
+            guard role == .client, pendingNotices[receipt.commandID]?.project == receipt.project else { return }
+            finishNotice(receipt.commandID, result: receipt.accepted ? .accepted : .rejected)
         case .acknowledge(let sequence):
             if role == .host, sequence == waitingForState { waitingForState = nil }
         case .imageAsset(let asset):
@@ -795,6 +877,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             } else if reconnecting, result.error?.isEmpty != false, let resumeAccess {
                 requestAccess(resumeAccess.mode, pin: resumeAccess.pin)
             } else {
+                failPendingNotices(.disconnected)
                 reconnecting = false; reconnectTimer?.invalidate(); reconnectTimer = nil
                 resumeAccess = nil; pendingAccess = nil
                 remoteState = nil; setImageProject(nil)
@@ -883,7 +966,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         }
         if accessMode == .notices {
             state.regions = []; state.timelineRegions = []; state.markers = nil
-            state.teleprompters = nil; state.sectionPlayback = nil
+            state.teleprompters = nil; state.sectionPlayback = nil; state.setlistBlocks = nil
         }
         setImageProject(state.project)
         stateSequence &+= 1; state.sequence = stateSequence

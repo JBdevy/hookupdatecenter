@@ -34,6 +34,22 @@ final class MIDIItemTests: XCTestCase {
         XCTAssertEqual(playback.count,1,"a held note must not retrigger at a tempo marker")
         XCTAssertEqual(playback.first?.start,0); XCTAssertEqual(playback.first?.end,4)
     }
+    func testLoopedNotesRetriggerAndKeepIdentityAcrossTempoBoundaries() {
+        var song = Project.empty(name: "MIDI repeats").songs[0]
+        var clip = AudioClip(id: UUID(), name: "Loop", startTime: 0, duration: 6, loopStart: 0, loopLength: 2,
+                             midi: MIDIItem(notes: [MIDINote(start: 0, length: 4, pitch: 60)]))
+        let notes = song.midiPlaybackNotes(in: clip)
+        XCTAssertEqual(notes.map(\.start), [0, 2, 4])
+        XCTAssertEqual(notes.map(\.end), [2, 4, 6])
+        XCTAssertEqual(Set(notes.map(\.sourceID)).count, 3)
+        song.timeSettings = ProjectTimeSettings(); song.timeSettings?.timebase = .relative
+        song.markers = [TimelineMarker(id: UUID(), name: "Tempo", position: 3, color: 0, tempoBPM: 240)]
+        clip.duration = 4.5
+        let changed = song.midiPlaybackNotes(in: clip)
+        XCTAssertEqual(changed.map(\.start), [0, 2, 3.5])
+        XCTAssertEqual(changed.map(\.end), [2, 3.5, 4.5])
+        XCTAssertEqual(changed.map(\.sourceID), notes.map(\.sourceID))
+    }
     func testTrimRateMuteAndSerialization() throws {
         let data=MIDIItem(notes:[MIDINote(start:0,length:4,pitch:60),MIDINote(start:6,length:1,pitch:64)],sourceBPM:120)
         var clip=AudioClip(id:UUID(),name:"MIDI",startTime:10,duration:1,sourceOffset:0.5,playbackRate:2,midi:data)
@@ -43,6 +59,19 @@ final class MIDIItemTests: XCTestCase {
         var invalid=data;invalid.notes[0].pitch=128;XCTAssertThrowsError(try invalid.validate())
         invalid=data;invalid.notes.append(invalid.notes[0]);XCTAssertThrowsError(try invalid.validate())
         invalid=data;invalid.notes[0].length = .nan;XCTAssertThrowsError(try invalid.validate())
+    }
+    func testMutedAndSilentTakeNotesRemainVisibleWithoutBecomingAudible() {
+        let data = MIDIItem(notes: [MIDINote(start: 0, length: 4, pitch: 60), MIDINote(start: 6, length: 1, pitch: 64)], sourceBPM: 120)
+        let base = AudioClip(id: UUID(), name: "Inactive take", startTime: 10, duration: 1, sourceOffset: 0.5, playbackRate: 2, midi: data)
+        let expected = base.midiPlaybackNotes()
+        XCTAssertEqual(expected.count, 1)
+        for (muted, gain) in [(true, 1.0), (false, 0.0), (true, 0.0)] {
+            var clip = base; clip.muted = muted; clip.gain = gain
+            let before = clip
+            XCTAssertEqual(clip.midiDisplayNotes(), expected)
+            XCTAssertTrue(clip.midiPlaybackNotes().isEmpty)
+            XCTAssertEqual(clip, before, "drawing cannot unmute or change the saved gain")
+        }
     }
 }
 
@@ -259,6 +288,20 @@ extension MIDIItemTests {
     }
 }
 extension MIDIItemTests {
+    func testLargeFiniteClipGainSaturatesMIDIVelocityBeforeIntegerConversion() throws {
+        var project = Project.empty(name: "MIDI gain")
+        let note = MIDINote(start: 0, length: 1, pitch: 60, velocity: 64)
+        var clip = AudioClip(id: UUID(), name: "MIDI", startTime: 0, duration: 1, waveform: [])
+        clip.midi = MIDIItem(notes: [note])
+        var track = Track(id: UUID(), name: "MIDI", role: .keys)
+        for (gain, expected) in [(0.0, nil), (0.5, 32), (1.0, 64), (2.0, 127), (1e300, 127), (Double.greatestFiniteMagnitude, 127)] as [(Double, Int?)] {
+            clip.gain = gain
+            track.clips = [clip]; project.songs[0].tracks = [track]
+            try project.validate()
+            XCTAssertEqual(clip.midiPlaybackNotes().first?.velocity, expected)
+            XCTAssertEqual(clip.midiDisplayNotes().first?.velocity, 64)
+        }
+    }
     @MainActor func testCreateEditUndoRedoEncryptedSaveResizeAndSplit() throws {
         let executor=MIDIEditExecutor()
         var project=Project.empty(name:"MIDI")

@@ -332,11 +332,12 @@ enum TimelineMetalWaveformFrameBuilder {
             guard channelHeight > 0 else { continue }
             let amplitude = channelHeight * 0.98 * min(pow(10, 24.0 / 20), max(0, item.clip.gain ?? 1))
             let localItem = rect.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
-            var visibleSeams = ClipRepetitionBoundaries(clip: item.clip,
-                visible: max(item.clip.startTime, (viewport.minX - 4) / scale)...max(item.clip.startTime, (viewport.maxX + 4) / scale), minimumSpacing: 10 / scale).makeIterator()
-            let firstSeam = visibleSeams.next().map { CGFloat($0 * scale - viewport.minX) }
-            let seamSpacing = item.clip.loopLength.map { CGFloat(max(1, ceil(10 / ($0 / item.clip.audioRate * scale))) * $0 / item.clip.audioRate * scale) }
             for (fragmentIndex, fragment) in item.fragments.enumerated() {
+                var visibleSeams = ClipRepetitionBoundaries(clip: fragment,
+                    visible: max(item.clip.startTime, (viewport.minX - 4) / scale)...max(item.clip.startTime, (viewport.maxX + 4) / scale), minimumSpacing: 10 / scale,
+                    itemRange: item.clip.startTime...(item.clip.startTime + item.clip.duration)).makeIterator()
+                let firstSeam = visibleSeams.next().map { CGFloat($0 * scale - viewport.minX) }
+                let seamSpacing = fragment.loopLength.map { CGFloat(max(1, ceil(10 / ($0 / fragment.audioRate * scale))) * $0 / fragment.audioRate * scale) }
                 let rate = fragment.audioRate
                 guard rate.isFinite, rate > 0 else { continue }
                 let first = max(fragment.startTime, max(rect.minX, viewport.minX) / scale)

@@ -17,8 +17,9 @@ struct Project {
     std::optional<RegionSetlist> regionSetlist;
     std::optional<OutputPatch> masterPatch, masterSecondaryPatch;
     std::optional<std::vector<OutputPatch>> masterOutputs;
-    std::optional<std::string> masterFXJSON;
+    std::optional<std::string> masterFXJSON, masterAutomationJSON;
     double masterVolume = 1;
+    double masterPan = 0;
     bool masterMute = false, masterSolo = false, masterMono = false;
     std::optional<bool> masterPhaseInverted;
     std::optional<unsigned> masterColor;

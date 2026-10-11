@@ -84,6 +84,41 @@ final class FrozenMIDITests: XCTestCase {
         XCTAssertNoThrow(try ItemGlue.validate(track: track, clips: [audio, frozen]))
     }
 
+    func testSingleMIDIGluePreservesTakeInstrumentAndEnvelopeSourceClock() throws {
+        let song = Project.empty(name: "Take glue").songs[0]
+        let track = Track(id: UUID(), name: "MIDI", role: .keys)
+        let plugin = ExternalPlugin(classID: "fixture", name: "Synth", path: "/Synth.vst3", category: "Instrument")
+        var fx = NativeFXSettings(); fx.inserted = [plugin.effectKey]; fx.externalPlugins = [plugin]
+        var clip = AudioClip(id: UUID(), name: "Take", startTime: 4, duration: 3, sourceOffset: 0.5,
+            gain: 0.7, pan: -0.3, playbackRate: 2, fx: fx,
+            midi: MIDIItem(notes: [MIDINote(start: 1, length: 8, pitch: 64)]))
+        var envelope = TrackEnvelope(target: AutomationTarget(.volume), name: "Take gain", defaultValue: TrackEnvelope.normalizedGain(1))
+        envelope.points = [.init(time: 0.5, value: TrackEnvelope.normalizedGain(0.5)), .init(time: 4.5, value: TrackEnvelope.normalizedGain(1))]
+        clip.automation = TrackAutomation(); clip.automation?.envelopes = [envelope]
+        let result = try ItemGlue.midi(song: song, track: track, clips: [clip])
+        XCTAssertNotEqual(result.id, clip.id)
+        XCTAssertEqual(result.fx, clip.fx); XCTAssertEqual(result.automation, clip.automation)
+        XCTAssertEqual(song.midiPlaybackNotes(in: result), song.midiPlaybackNotes(in: clip))
+        XCTAssertEqual(result.automatedValues(at: 5).gain, clip.automatedValues(at: 5).gain, accuracy: 1e-12)
+        XCTAssertEqual(result.pan, clip.pan)
+    }
+    func testMultipleMIDIGlueRejectsIndependentTakeProcessingInsteadOfLosingIt() throws {
+        let song = Project.empty(name: "Take glue").songs[0]
+        let track = Track(id: UUID(), name: "MIDI", role: .keys)
+        let a = AudioClip(id: UUID(), name: "A", startTime: 0, duration: 2, midi: MIDIItem(notes: [MIDINote(start: 0, length: 4, pitch: 60)]))
+        var b = a; b.id = UUID(); b.startTime = 2
+        XCTAssertNoThrow(try ItemGlue.midi(song: song, track: track, clips: [a,b]))
+        var fx = NativeFXSettings(); fx.inserted = ["Delay"]
+        b.fx = fx
+        XCTAssertThrowsError(try ItemGlue.midi(song: song, track: track, clips: [a,b])) { error in
+            XCTAssertTrue(String(describing: error).contains("Re-render"))
+        }
+        b.fx = nil; b.automation = TrackAutomation(); b.automation?.envelopes = [TrackEnvelope(target: AutomationTarget(.pan), name: "Pan", defaultValue: 0.5)]
+        XCTAssertThrowsError(try ItemGlue.midi(song: song, track: track, clips: [a,b]))
+        b.automation = nil; b.pan = 0.3
+        XCTAssertThrowsError(try ItemGlue.midi(song: song, track: track, clips: [a,b]))
+    }
+
     @MainActor func testGlueMultipleTracksOneUndoStaleGuardAndAudioTimingRoundtrip() throws {
         var project = Project.empty(name: "Glue transaction")
         let a = AudioClip(id: UUID(), name: "A", startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/a.wav"))

@@ -14,6 +14,11 @@ import Combine
     var failMixerCommand: ShowCommand?
     var failSettingsCommand: String?
     var failSettingsCommandAt: Int?
+    func setFX(_ track: UUID?, settings: NativeFXSettings) throws {
+        try settings.validate()
+        if let track, let index = project.songs[0].tracks.firstIndex(where: { $0.id == track }) { project.songs[0].tracks[index].fx = settings }
+        else if track == nil { project.masterFX = settings }
+    }
     func load(_ project: Project) throws {
         try project.validate(); self.project = project
         transport.songId = project.songs.first?.id; transport.regionId = project.songs.first?.parts.first?.id
@@ -831,4 +836,46 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(show.setlistNavigationRequest?.direction, -1)
     }
 
+}
+
+
+extension IncrementalTrackSettingsTests {
+    @MainActor func testEnvelopeTouchLatchAndWriteSaveWithoutChangingManualFader() throws {
+        for mode in [AutomationMode.touch, .latch, .write] {
+            var project = fixture()
+            let index = try XCTUnwrap(project.songs[0].tracks.firstIndex { $0.kind == .standard })
+            let track = project.songs[0].tracks[index]
+            var automation = TrackAutomation(); automation.mode = mode
+            var envelope = TrackEnvelope(target: AutomationTarget(.volume), name: "Volume", defaultValue: TrackEnvelope.normalizedGain(track.volume))
+            envelope.armed = true; automation.envelopes = [envelope]
+            project.songs[0].tracks[index].automation = automation
+            let (controller, executor) = try show(project)
+            var overrides: [Double?] = []
+            controller.audioAutomationOverride = { _, _, value in overrides.append(value) }
+            controller.sendMixerControl(.volume, target: track.id, value: 0.5, preview: true)
+            executor.transport.position = 38; controller.tick()
+            controller.sendMixerControl(.volume, target: track.id, value: 0.25, preview: false)
+            executor.transport.position = 39; controller.tick()
+            XCTAssertEqual(controller.current?.tracks[index].volume, track.volume, "Writing an envelope does not overwrite the trim fader")
+            controller.finishAutomationRecording()
+            let saved = try XCTUnwrap(controller.current?.tracks[index].automation)
+            let curve = try XCTUnwrap(saved.envelopes.first)
+            XCTAssertEqual(TrackEnvelope.gain(curve.value(at: 38)), 0.25, accuracy: 1e-8)
+            if mode == .touch { XCTAssertEqual(TrackEnvelope.gain(curve.value(at: 39)), track.volume, accuracy: 1e-8) }
+            else { XCTAssertEqual(TrackEnvelope.gain(curve.value(at: 39)), 0.25, accuracy: 1e-8) }
+            XCTAssertEqual(saved.mode, mode == .write ? .trimRead : mode)
+            XCTAssertTrue(overrides.last! == nil, "The audio override is released after recording")
+            XCTAssertTrue(controller.hasUnsavedChanges)
+            XCTAssertEqual(executor.project.songs[0].tracks[index].automation, saved)
+        }
+    }
+    @MainActor func testAllNativeMasterEffectsExceptInstruments() throws {
+        let (controller, _) = try show(fixture())
+        for kind in ["EQ", "Compressor", "Limiter", "Pitch", "Delay", "Reverb", NativeFXSettings.stemSeparator] {
+            XCTAssertNotNil(controller.insertFX(nil, effect: kind), kind)
+            XCTAssertTrue(controller.fxSettings(nil).inserted.contains(kind))
+        }
+        XCTAssertNil(controller.insertFX(nil, effect: "Instruments"))
+        XCTAssertFalse(controller.fxSettings(nil).inserted.contains("Instruments"))
+    }
 }

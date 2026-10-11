@@ -1,4 +1,4 @@
-# CatLive 1.0.0
+# CatLive 1.01
 
 Fundação nativa de um software de multitracks para palco. O foco atual é o
 **desktop**. A etapa de tablet foi adiada por orientação do produto: terminar
@@ -41,7 +41,7 @@ clipes. Os controles alteram estado real do núcleo; não simulam som inexistent
 ## Abrir e executar
 
 Abra `CatLive.xcodeproj` no Xcode e selecione o scheme **CatLive macOS**,
-destino My Mac, e Run. A versão permanece 1.0.0. A equipe de desenvolvimento
+destino My Mac, e Run. A versão pública é 1.01. A equipe de desenvolvimento
 atualmente configurada é 573QZX9H7Y; outro desenvolvedor deve escolher sua própria
 equipe em Signing & Capabilities.
 
