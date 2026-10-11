@@ -2,6 +2,16 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
 const HOOK_CENTER_IS_MACOS = window.hookUpdateCenter?.platform === 'darwin';
 
+// Pause visual work while the updater is behind the DAW or hidden in the tray.
+// Network/bridge, downloads and playback have independent lifetimes.
+function updateInterfaceActivity() {
+  document.body.classList.toggle('ui-inactive', document.hidden || !document.hasFocus());
+}
+window.addEventListener('focus', updateInterfaceActivity);
+window.addEventListener('blur', updateInterfaceActivity);
+document.addEventListener('visibilitychange', updateInterfaceActivity);
+updateInterfaceActivity();
+
 let state = null;
 let currentYoutubeWatchUrl = "";
 let pendingModalRequest = null;

@@ -3301,7 +3301,6 @@ body.sidebar-open .sidebar {
 #hookCenterLearnButton:not(:disabled) {
   animation: hookCenterSoftJump 1.05s ease-in-out infinite !important;
   transform-origin: center;
-  will-change: transform;
 }
 
 #openVideoModalButton {
@@ -10918,4 +10917,36 @@ body.account-locked .app-shell {
   .account-login-card {
     animation: none !important;
   }
+}
+
+/* Highlights run briefly when their panel appears, then leave the updater idle.
+   Progress indicators and recording feedback keep their own active lifetimes. */
+#hookCenterLearnButton:not(:disabled),
+#openVideoModalButton,
+#hookCenterUpdateButton,
+#homeView #hookCenterLearnButton.home-learn-pulse-button,
+#homeView .home-tutorials-button,
+#homeView #updateCard .update-actions-inline #downloadButton:not(:disabled),
+#homeView #updateDescriptionCard.update-description-card,
+#homeView #updateDescriptionCard.update-description-card::after,
+#homeView .video-click-indicator,
+#lyricsView .lyrics-preset-button.preset-selected,
+#lyricsView .lyrics-config-tab.active {
+  animation-iteration-count: 2 !important;
+}
+
+/* The login backdrop is a static composition, not a full-window render loop. */
+.account-ambient,
+.account-orbit,
+.account-light,
+.account-particles,
+.account-logo-halo,
+.account-login-logo {
+  animation: none !important;
+}
+
+body.ui-inactive *,
+body.ui-inactive *::before,
+body.ui-inactive *::after {
+  animation-play-state: paused !important;
 }

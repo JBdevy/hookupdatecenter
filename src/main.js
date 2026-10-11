@@ -19,6 +19,7 @@ const physicalFs = (() => {
 const os = require('os');
 const crypto = require('crypto');
 const Store = require('electron-store');
+const { createStoreSnapshotReader } = require('./store-snapshot');
 const { spawn, execFile, execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
 const http = require('http');
@@ -152,6 +153,8 @@ const store = new Store({
     }
   }
 });
+
+const readRuntimeSettings = createStoreSnapshotReader(store);
 
 let mainWindow = null;
 let tray = null;
@@ -928,7 +931,7 @@ function removeSignedLicenseToken() {
 
 
 function getStoredDeviceName() {
-  return String(store.get('deviceName') || '').trim()
+  return String(readRuntimeSettings().deviceName || '').trim()
 }
 
 function saveStoredDeviceName(name) {
@@ -2577,14 +2580,15 @@ function normalizeDirectCableChannel(value) {
 }
 
 function migrateLegacyDirectCableConfiguration() {
-  const legacyAdapterId = String(store.get('directCable.adapterId') || '').trim();
-  const legacyIp = String(store.get('directCable.ip') || '').trim();
+  const legacy = readRuntimeSettings().directCable || {};
+  const legacyAdapterId = String(legacy.adapterId || '').trim();
+  const legacyIp = String(legacy.ip || '').trim();
   if (!legacyAdapterId || !legacyIp) return;
-  const legacyConfiguredAt = store.get('directCable.configuredAt') || null;
+  const legacyConfiguredAt = legacy.configuredAt || null;
   // A configuração antiga compartilhava somente Project Sync e Time Code.
   // A placa reserva é um terceiro cabo físico e nunca pode herdar esse perfil.
   for (const channel of ['projectSync', 'timecode']) {
-    const existing = store.get(`directCable.${channel}`);
+    const existing = readRuntimeSettings().directCable?.[channel];
     if (existing && typeof existing === 'object' && existing.adapterId) continue;
     store.set(`directCable.${channel}`, {
       adapterId: legacyAdapterId,
@@ -2601,7 +2605,7 @@ function migrateLegacyDirectCableConfiguration() {
 function getStoredDirectCableChannel(channelValue) {
   migrateLegacyDirectCableConfiguration();
   const channel = normalizeDirectCableChannel(channelValue);
-  const stored = store.get(`directCable.${channel}`);
+  const stored = readRuntimeSettings().directCable?.[channel];
   return stored && typeof stored === 'object'
       ? {
         adapterId: String(stored.adapterId || ''),
@@ -3761,7 +3765,7 @@ function getBridgeAppCacheVersion() {
 }
 
 function isVsHookLicenseActiveForBridge() {
-  const license = store.get('license') || {};
+  const license = readRuntimeSettings().license || {};
   return license.active === true;
 }
 
