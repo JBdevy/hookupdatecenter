@@ -2,6 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Encryption is provided by Apple's CryptoKit and system networking. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>O CatLive usa a entrada de áudio para gravar e monitorar as pistas no modo Nativo. / CatLive uses the audio input to record and monitor tracks in Native mode.</string>
 	<key>UIBackgroundModes</key>
