@@ -1,7 +1,43 @@
 import XCTest
+import Darwin
 @testable import JarasApplication
 
 final class PortableProjectPackageTests: XCTestCase {
+    func testLargePackageImportKeepsTemporaryReadBuffersBounded() throws {
+        let source = try write("Stems/large.wav", Data())
+        let output = try FileHandle(forWritingTo: source)
+        let chunk = Data(repeating: 37, count: 262_144)
+        for _ in 0..<128 { try output.write(contentsOf: chunk) }
+        try output.close()
+        let archive = try autoreleasepool { try export(project(["Stems/large.wav"])) }
+        final class MemoryProbe: @unchecked Sendable {
+            var peak: UInt64 = 0
+            func sample() -> UInt64 {
+                var info = mach_task_basic_info()
+                var count = mach_msg_type_number_t(MemoryLayout.size(ofValue: info) / MemoryLayout<integer_t>.size)
+                let result = withUnsafeMutablePointer(to: &info) { pointer in
+                    pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                        task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+                    }
+                }
+                let bytes = result == KERN_SUCCESS ? UInt64(info.resident_size) : 0
+                peak = max(peak, bytes)
+                return bytes
+            }
+        }
+        malloc_zone_pressure_relief(nil, 0)
+        let probe = MemoryProbe()
+        let baseline = probe.sample()
+        try autoreleasepool {
+            let imported = try PortableProjectPackage.importSynchronously(archive, into: directory.appendingPathComponent("Imported"), limits: .init()) { _ in
+                _ = probe.sample()
+            }
+            let media = imported.documentURL.deletingLastPathComponent().appendingPathComponent("Stems/large.wav")
+            XCTAssertEqual(try media.resourceValues(forKeys: [.fileSizeKey]).fileSize, 33_554_432)
+        }
+        print("PACKAGE_IMPORT_MEMORY_GROWTH_BYTES=\(probe.peak - baseline)")
+        XCTAssertLessThan(probe.peak - baseline, 16 * 1_048_576, "Import must release read buffers as it streams, even inside a long-lived autorelease pool")
+    }
     func testNativeRecentProjectSurvivesSandboxReplacement() throws {
         let old = "/var/mobile/Containers/Data/Application/OLD/Documents/CatLive/Projects/Teste/Teste.jl"
         let current = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application/NEW/Documents")

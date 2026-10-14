@@ -283,7 +283,14 @@ public enum PortableProjectPackage {
     static func fingerprint(_ file: URL) throws -> FileRecord {
         let handle = try FileHandle(forReadingFrom: file); defer { try? handle.close() }
         var hash = SHA256(), count: UInt64 = 0
-        while let data = try handle.read(upToCount: 262_144), !data.isEmpty { try Task.checkCancellation(); count += UInt64(data.count); hash.update(data: data) }
+        // FileHandle can return autoreleased buffers on Apple platforms. Drain
+        // them per chunk rather than at the end of a multi-gigabyte package.
+        while try autoreleasepool(invoking: {
+            try Task.checkCancellation()
+            guard let data = try handle.read(upToCount: 262_144), !data.isEmpty else { return false }
+            count += UInt64(data.count); hash.update(data: data)
+            return true
+        }) {}
         return FileRecord(path: "", bytes: count, sha256: digest(hash.finalize()))
     }
     static func digest<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 { digest.map { String(format: "%02x", $0) }.joined() }
@@ -342,11 +349,14 @@ final class StoredProjectZIPWriter {
         header.zipLE(UInt16(0)); header.zipLE(UInt16(0x21)); header.zipLE(UInt32(0)); header.zipLE(large ? UInt32.max : 0); header.zipLE(large ? UInt32.max : 0)
         header.zipLE(UInt16(name.count)); header.zipLE(UInt16(extra.count)); header.append(name); header.append(extra); try write(header)
         var crc = UInt32.max, sha = SHA256(), count: UInt64 = 0
-        while let data = try next(), !data.isEmpty {
-            try Task.checkCancellation(); count += UInt64(data.count)
+        while try autoreleasepool(invoking: {
+            try Task.checkCancellation()
+            guard let data = try next(), !data.isEmpty else { return false }
+            count += UInt64(data.count)
             guard count <= expected.bytes else { throw PortableProjectPackage.invalid("A project source changed while exporting.") }
             PackageCRC.update(&crc, data: data); sha.update(data: data); try write(data); progress(count)
-        }
+            return true
+        }) {}
         guard count == expected.bytes, PortableProjectPackage.digest(sha.finalize()) == expected.sha256 else { throw PortableProjectPackage.invalid("A project source changed while exporting.") }
         crc ^= UInt32.max
         var descriptor = Data(); descriptor.zipLE(UInt32(0x08074b50)); descriptor.zipLE(crc)
@@ -488,10 +498,12 @@ final class StoredProjectZIPReader {
         let destination = try FileHandle(forWritingTo: target); defer { try? destination.close() }
         var copied: UInt64 = 0, crc = UInt32.max, sha = SHA256()
         while copied < entry.size {
-            try Task.checkCancellation()
-            let bytes = try read(at: start + copied, count: Int(min(262_144, entry.size - copied)))
-            copied += UInt64(bytes.count); PackageCRC.update(&crc, data: bytes); sha.update(data: bytes)
-            try destination.write(contentsOf: bytes); progress(copied)
+            try autoreleasepool {
+                try Task.checkCancellation()
+                let bytes = try read(at: start + copied, count: Int(min(262_144, entry.size - copied)))
+                copied += UInt64(bytes.count); PackageCRC.update(&crc, data: bytes); sha.update(data: bytes)
+                try destination.write(contentsOf: bytes); progress(copied)
+            }
         }
         guard copied == expected.bytes, crc ^ UInt32.max == entry.crc, PortableProjectPackage.digest(sha.finalize()) == expected.sha256 else { throw PortableProjectPackage.invalid("A package file failed its integrity check.") }
     }
