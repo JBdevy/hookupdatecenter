@@ -1594,3 +1594,14 @@
 "Open a new empty composition in Resolume before creating the project." = "Abra uma composição nova e vazia no Resolume antes de criar o projeto.";
 "The Resolume composition contains media. Open a new empty composition first." = "A composição do Resolume contém mídias. Abra uma composição nova e vazia primeiro.";
 "Resolume did not confirm saving the .avc file. Check its Webserver and save the composition in Resolume." = "O Resolume não confirmou o salvamento do arquivo .avc. Confira o Webserver e salve a composição no Resolume.";
+
+"Free trial: %lld day(s) remaining" = "Teste grátis: %lld dia(s) restante(s)";
+"Continue free trial" = "Continuar teste grátis";
+"Start 7-day free trial" = "Iniciar teste grátis de 7 dias";
+"Your 7-day free trial has ended." = "Seu teste grátis de 7 dias terminou.";
+"The free trial is unavailable right now. Try again shortly." = "O teste grátis está indisponível no momento. Tente novamente em instantes.";
+"Try all Native features for 7 days. Afterward, Native mode requires the one-time purchase shown above. Your projects are kept. Remote stays free. No automatic charge." = "Experimente todos os recursos do Nativo por 7 dias. Depois, o modo Nativo exige a compra única pelo valor acima. Seus projetos são preservados. O Remoto continua grátis. Sem cobrança automática.";
+"The trial could not be verified. Check the iPad date and time, then try again." = "Não foi possível verificar o teste grátis. Confira a data e a hora do iPad e tente novamente.";
+"Trial awaiting approval. Access will unlock when Apple confirms it." = "Teste aguardando aprovação. O acesso será liberado quando a Apple confirmar.";
+"The free trial could not be started. Please try again." = "Não foi possível iniciar o teste grátis. Tente novamente.";
+"Free trial restored." = "Teste grátis restaurado.";

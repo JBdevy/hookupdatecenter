@@ -6,6 +6,7 @@ import StoreKit
     let updates: AsyncStream<Void>
     private var listener: Task<Void, Never>?
     private var storeProduct: StoreKit.Product?
+    private var freeTrialProduct: StoreKit.Product?
 
     init() {
         var continuation: AsyncStream<Void>.Continuation!
@@ -14,7 +15,7 @@ import StoreKit
             for await result in StoreKit.Transaction.updates {
                 guard !Task.isCancelled else { break }
                 guard case .verified(let transaction) = result,
-                      transaction.productID == NativePurchaseStore.productID else { continue }
+                      [NativePurchaseStore.productID, NativePurchaseStore.trialProductID].contains(transaction.productID) else { continue }
                 // Includes revocations/refunds and purchases approved on another device.
                 continuation.yield(())
                 await transaction.finish()
@@ -32,6 +33,27 @@ import StoreKit
         }
         return false
     }
+    func trialEntitlement() async -> NativeTrialEntitlement? {
+        for await result in StoreKit.Transaction.currentEntitlements {
+            if case .verified(let transaction) = result,
+               transaction.productID == NativePurchaseStore.trialProductID,
+               transaction.productType == .nonConsumable,
+               transaction.revocationDate == nil, !transaction.isUpgraded {
+                return NativeTrialEntitlement(originalPurchaseDate: transaction.originalPurchaseDate, signedDate: transaction.signedDate)
+            }
+        }
+        return nil
+    }
+    func trialProduct() async throws -> NativePurchaseProduct {
+        guard let product = try await StoreKit.Product.products(for: [NativePurchaseStore.trialProductID]).first,
+              product.type == .nonConsumable, product.price == 0 else { throw PurchaseError.unavailable }
+        freeTrialProduct = product
+        return NativePurchaseProduct(displayPrice: product.displayPrice)
+    }
+    func beginTrial() async throws -> NativePurchaseResult {
+        guard let freeTrialProduct, freeTrialProduct.price == 0 else { throw PurchaseError.unavailable }
+        return try await buy(freeTrialProduct, expectedID: NativePurchaseStore.trialProductID)
+    }
     func product() async throws -> NativePurchaseProduct {
         guard let product = try await StoreKit.Product.products(for: [NativePurchaseStore.productID]).first,
               product.type == .nonConsumable else { throw PurchaseError.unavailable }
@@ -40,10 +62,13 @@ import StoreKit
     }
     func purchase() async throws -> NativePurchaseResult {
         guard let storeProduct else { throw PurchaseError.unavailable }
-        switch try await storeProduct.purchase() {
+        return try await buy(storeProduct, expectedID: NativePurchaseStore.productID)
+    }
+    private func buy(_ product: StoreKit.Product, expectedID: String) async throws -> NativePurchaseResult {
+        switch try await product.purchase() {
         case .success(let result):
             guard case .verified(let transaction) = result,
-                  transaction.productID == NativePurchaseStore.productID,
+                  transaction.productID == expectedID,
                   transaction.productType == .nonConsumable,
                   transaction.revocationDate == nil, !transaction.isUpgraded else { throw PurchaseError.unverified }
             await transaction.finish()
@@ -58,7 +83,7 @@ import StoreKit
 }
 
 extension NativePurchaseStore {
-    static let shared = NativePurchaseStore(client: NativeStoreKitClient())
+    static let shared = NativePurchaseStore(client: NativeStoreKitClient(), secureStore: KeychainStore(service: "com.hookdeveloper.jaraslive.native-trial"))
 }
 
 @MainActor struct IpadNativePurchaseView: View {
@@ -155,6 +180,26 @@ extension NativePurchaseStore {
             }.buttonStyle(.plain).disabled(store.busy || (!store.unlocked && store.product == nil))
                 .opacity(store.product == nil && !store.unlocked ? 0.45 : 1)
                 .accessibilityIdentifier("native-purchase-buy")
+            if !store.unlocked {
+                if store.trialDaysRemaining > 0 {
+                    Text("Free trial: \(store.trialDaysRemaining) day(s) remaining")
+                        .font(.subheadline.bold()).foregroundStyle(green)
+                    Button("Continue free trial", action: openNative).buttonStyle(.bordered).tint(green).disabled(store.busy)
+                } else if store.trialExpiresAt != nil {
+                    Text("Your 7-day free trial has ended.").font(.subheadline).foregroundStyle(.orange)
+                } else {
+                    Button("Start 7-day free trial") { Task { await store.startTrial() } }
+                        .buttonStyle(.bordered).tint(green).controlSize(.large)
+                        .disabled(store.busy || store.trialProduct == nil || store.product == nil)
+                        .accessibilityIdentifier("native-purchase-trial")
+                    if !store.loading && store.trialProduct == nil {
+                        Text("The free trial is unavailable right now. Try again shortly.").font(.caption).foregroundStyle(.white.opacity(0.65))
+                    }
+                }
+                Text("Try all Native features for 7 days. Afterward, Native mode requires the one-time purchase shown above. Your projects are kept. Remote stays free. No automatic charge.")
+                    .font(.caption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Button("Restore purchases") { Task { await store.restore() } }
                 .buttonStyle(.plain).foregroundStyle(green).frame(minHeight: 44).disabled(store.busy)
                 .accessibilityIdentifier("native-purchase-restore")
@@ -162,7 +207,7 @@ extension NativePurchaseStore {
                 Text(LocalizedStringKey(store.notice)).font(.footnote).foregroundStyle(.white.opacity(0.85))
                     .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
-            if store.product == nil && !store.loading && !store.unlocked {
+            if (store.product == nil || (store.trialProduct == nil && store.trialExpiresAt == nil)) && !store.loading && !store.unlocked {
                 Button("Try again") { Task { await store.load() } }.disabled(store.busy)
             }
             Text("Payment is handled by the App Store. Restore your purchase using the same Apple Account.")

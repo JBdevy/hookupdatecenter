@@ -1558,3 +1558,14 @@
 "Open a new empty composition in Resolume before creating the project." = "Open a new empty composition in Resolume before creating the project.";
 "The Resolume composition contains media. Open a new empty composition first." = "The Resolume composition contains media. Open a new empty composition first.";
 "Resolume did not confirm saving the .avc file. Check its Webserver and save the composition in Resolume." = "Resolume did not confirm saving the .avc file. Check its Webserver and save the composition in Resolume.";
+
+"Free trial: %lld day(s) remaining" = "Free trial: %lld day(s) remaining";
+"Continue free trial" = "Continue free trial";
+"Start 7-day free trial" = "Start 7-day free trial";
+"Your 7-day free trial has ended." = "Your 7-day free trial has ended.";
+"The free trial is unavailable right now. Try again shortly." = "The free trial is unavailable right now. Try again shortly.";
+"Try all Native features for 7 days. Afterward, Native mode requires the one-time purchase shown above. Your projects are kept. Remote stays free. No automatic charge." = "Try all Native features for 7 days. Afterward, Native mode requires the one-time purchase shown above. Your projects are kept. Remote stays free. No automatic charge.";
+"The trial could not be verified. Check the iPad date and time, then try again." = "The trial could not be verified. Check the iPad date and time, then try again.";
+"Trial awaiting approval. Access will unlock when Apple confirms it." = "Trial awaiting approval. Access will unlock when Apple confirms it.";
+"The free trial could not be started. Please try again." = "The free trial could not be started. Please try again.";
+"Free trial restored." = "Free trial restored.";

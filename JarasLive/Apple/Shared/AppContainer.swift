@@ -27,6 +27,7 @@ enum AppStartupPresentation {
     #if os(iOS)
     @Published private(set) var localPlaybackEnabled = false
     private var localPlaybackTransition: UInt64 = 0
+    private var nativeAccessObservation: AnyCancellable?
     #endif
     #if os(macOS)
     private let accessConnectivity = NWPathMonitor()
@@ -62,7 +63,12 @@ enum AppStartupPresentation {
         auth.onPendingRevocation = { [weak show] pending in show?.finishCurrentSong(pending) }
         #if os(iOS)
         // The mode picker and Remote never activate the local audio graph.
-        show.canExecute = { [weak self] in preview || self?.localPlaybackEnabled == true }
+        show.canExecute = { [weak self] in preview || (self?.localPlaybackEnabled == true && NativePurchaseStore.shared.canAccessNative) }
+        if !preview {
+            nativeAccessObservation = NativePurchaseStore.shared.$canAccessNative.removeDuplicates().sink { [weak show] allowed in
+                show?.finishCurrentSong(!allowed)
+            }
+        }
         #else
         show.canExecute = { [weak auth] in preview || auth?.allowed == true }
         #endif
@@ -212,7 +218,7 @@ enum AppStartupPresentation {
     @discardableResult
     func setLocalPlaybackEnabled(_ enabled: Bool) async -> Bool {
         guard !preview else { localPlaybackEnabled = enabled; return true }
-        if enabled && !localPlaybackEnabled && !NativePurchaseStore.shared.unlocked {
+        if enabled && !localPlaybackEnabled && !NativePurchaseStore.shared.canAccessNative {
             show.message = "Unlock Native mode to play projects on this iPad."
             return false
         }

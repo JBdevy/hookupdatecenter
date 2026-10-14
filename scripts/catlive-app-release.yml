@@ -1,0 +1,84 @@
+# Installed in JBdevy/vshookapploja by build catlive app.command.
+name: CatLive App - IPA and App Store Connect
+run-name: CatLive App ${{ github.ref_name }}
+on:
+  push:
+    tags: ['catlive-app-v*-build*']
+permissions:
+  contents: read
+concurrency:
+  group: catlive-app-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.manifest.outputs.version }}
+      build_number: ${{ steps.manifest.outputs.build_number }}
+      source_ref: ${{ steps.manifest.outputs.source_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          data = json.load(open('.github/catlive-app-release.json'))
+          version, build, source = (str(data[k]) for k in ('version', 'build_number', 'source_ref'))
+          assert re.fullmatch(r'[0-9]+\.[0-9]{2}', version), 'Invalid version'
+          assert re.fullmatch(r'[1-9][0-9]*', build), 'Invalid build'
+          assert re.fullmatch(r'[0-9a-f]{40}', source), 'Invalid source commit'
+          assert source == '__CATLIVE_SOURCE_SHA__', 'Workflow/source mismatch'
+          assert os.environ['RELEASE_TAG'] == f'catlive-app-v{version}-build{build}', 'Tag/manifest mismatch'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f'version={version}\nbuild_number={build}\nsource_ref={source}\n')
+          PY
+  ios:
+    needs: prepare
+    uses: JBdevy/hookupdatecenter/.github/workflows/catlive-ios-appstore.yml@__CATLIVE_SOURCE_SHA__
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      build_number: ${{ needs.prepare.outputs.build_number }}
+      source_ref: ${{ needs.prepare.outputs.source_ref }}
+    secrets:
+      IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+      IOS_CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
+      IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+      IOS_PROVISION_PROFILE_BASE64: ${{ secrets.CATLIVE_IOS_PROVISION_PROFILE_BASE64 }}
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.CATLIVE_APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.CATLIVE_APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.CATLIVE_APP_STORE_CONNECT_API_KEY_P8_BASE64 }}
+  release:
+    needs: [prepare, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: CatLive-iOS-${{ needs.prepare.outputs.version }}
+          path: ipa
+      - name: Prepare IPA
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          files = list(Path('ipa').rglob('*.ipa'))
+          assert len(files) == 1, 'Expected exactly one IPA'
+          Path('release').mkdir()
+          files[0].rename('release/CatLive.ipa')
+          PY
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CatLive App ${{ needs.prepare.outputs.version }} - Build ${{ needs.prepare.outputs.build_number }}
+          make_latest: false
+          fail_on_unmatched_files: true
+          body: |
+            CatLive para iPad e iPhone.
+            Versão ${{ needs.prepare.outputs.version }}, build ${{ needs.prepare.outputs.build_number }}.
+            Código: JBdevy/hookupdatecenter@${{ needs.prepare.outputs.source_ref }}
+            IPA enviado ao App Store Connect para processamento no TestFlight.
+          files: release/CatLive.ipa

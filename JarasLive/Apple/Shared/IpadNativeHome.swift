@@ -24,6 +24,7 @@ extension UTType {
         Group {
             if native, let container = bootstrap.container {
                 RootView(container: container, leaveNative: { leave(container) })
+                    .modifier(NativeTrialSession(show: container.show, purchases: purchases) { showingPurchase = true })
             } else if starting {
                 StartupView(progress: nil, stage: "Iniciando…")
             } else {
@@ -33,6 +34,12 @@ extension UTType {
                         mode("Native", detail: "Play your projects directly on this iPad.", icon: "waveform", action: { enter() })
                         mode("Remote", detail: "Control or follow your PC’s session.", icon: "network", action: { remote = true })
                     }.frame(maxWidth: 760)
+                    if !purchases.unlocked, purchases.trialDaysRemaining > 0 {
+                        HStack {
+                            Text("Free trial: \(purchases.trialDaysRemaining) day(s) remaining")
+                            Button("Unlock Native mode") { showingPurchase = true }
+                        }.font(.callout).foregroundStyle(JarasTheme.green)
+                    }
                     if entering { ProgressView() }
                     if !error.isEmpty { Text(LocalizedStringKey(error)).foregroundStyle(.red).multilineTextAlignment(.center) }
                     Picker("Language", selection: $language) {
@@ -82,7 +89,7 @@ extension UTType {
         Task {
             defer { entering = false }
             await purchases.refresh()
-            guard purchases.unlocked else {
+            guard purchases.canAccessNative else {
                 pendingPackage = package; showingPurchase = true; starting = false
                 return
             }
@@ -107,6 +114,25 @@ extension UTType {
                 container.documents.error = error.localizedDescription
                 _ = await container.setLocalPlaybackEnabled(true)
             }
+        }
+    }
+}
+
+/// Present the unlock screen after playback ends, without cutting a performance or deleting work.
+private struct NativeTrialSession: ViewModifier {
+    let show: ShowController
+    @ObservedObject var purchases: NativePurchaseStore
+    let expired: () -> Void
+    @StateObject private var updates: ShowPresentationObserver
+    init(show: ShowController, purchases: NativePurchaseStore, expired: @escaping () -> Void) {
+        self.show = show; self.purchases = purchases; self.expired = expired
+        _updates = StateObject(wrappedValue: show.presentationObserver)
+    }
+    func body(content: Content) -> some View {
+        content.onChange(of: purchases.canAccessNative) { allowed in
+            if !allowed && !show.isPlaying { expired() }
+        }.onChange(of: show.isPlaying) { playing in
+            if !playing && !purchases.canAccessNative { expired() }
         }
     }
 }
