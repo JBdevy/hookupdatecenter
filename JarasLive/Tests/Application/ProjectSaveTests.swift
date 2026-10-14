@@ -1098,12 +1098,18 @@ final class ProjectSaveTests: XCTestCase {
         project.songs[0].parts = regions; project.songs[0].duration = 200
         let executor = SaveTestExecutor()
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        func waitForSelections(_ count: Int) async throws {
+            let deadline = ProcessInfo.processInfo.systemUptime + 3
+            while executor.regionSelections.count < count, ProcessInfo.processInfo.systemUptime < deadline {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
         for _ in 0..<8 { show.stepRegion(1, commitAfterDelay: false) }
         XCTAssertEqual(show.focusedRegion, regions[7].id)
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertTrue(executor.regionSelections.isEmpty, "holding must not seek even before the first repeat")
         show.finishRegionNavigation()
-        try await Task.sleep(nanoseconds: 250_000_000)
+        try await waitForSelections(1)
         XCTAssertEqual(executor.regionSelections, [regions[7].id])
         show.stepRegion(-1, commitAfterDelay: false)
         show.finishRegionNavigation()
@@ -1111,7 +1117,7 @@ final class ProjectSaveTests: XCTestCase {
         try await Task.sleep(nanoseconds: 250_000_000)
         XCTAssertEqual(executor.regionSelections, [regions[7].id], "a new hold cancels the previous release")
         show.finishRegionNavigation()
-        try await Task.sleep(nanoseconds: 250_000_000)
+        try await waitForSelections(2)
         XCTAssertEqual(executor.regionSelections, [regions[7].id, regions[5].id])
     }
     @MainActor func testArrowNavigationVisitsOpenDrawerInBothDirectionsAndSkipsClosedChildren() throws {
