@@ -161,12 +161,34 @@ private struct NativeProjectPicker: UIViewControllerRepresentable {
     }
 }
 
+/// Keep the granted URLs alive until the picker has completely dismissed and
+/// ProjectDocuments has taken ownership of its own security-scoped access.
+private final class NativeProjectPickerSelection {
+    let urls: [URL]
+    let kind: ProjectDocuments.NativePicker
+    private let scopedURLs: [URL]
+    init(urls: [URL], kind: ProjectDocuments.NativePicker) {
+        self.urls = urls; self.kind = kind
+        scopedURLs = urls.filter { $0.startAccessingSecurityScopedResource() }
+    }
+    deinit { for url in scopedURLs { url.stopAccessingSecurityScopedResource() } }
+}
+
 struct NativeProjectPresentation: ViewModifier {
     @ObservedObject var documents: ProjectDocuments
+    @State private var pickerSelection: NativeProjectPickerSelection?
+    @State private var presentedPicker: ProjectDocuments.NativePicker?
     func body(content: Content) -> some View {
         content
-            .sheet(item: $documents.nativePicker) { kind in
-                NativeProjectPicker(kind: kind, picked: { documents.receiveNativeFiles($0, kind: kind) }, cancelled: { documents.cancelNativePicker(kind: kind) })
+            .sheet(item: $documents.nativePicker, onDismiss: pickerDismissed) { kind in
+                NativeProjectPicker(kind: kind, picked: { urls in
+                    pickerSelection = NativeProjectPickerSelection(urls: urls, kind: kind)
+                    documents.nativePicker = nil
+                }, cancelled: { documents.nativePicker = nil })
+                    // UIKit's Files controller handles its own keyboard and
+                    // rename popovers; a second SwiftUI resize can steal focus.
+                    .ignoresSafeArea(.keyboard, edges: .bottom)
+                    .onAppear { presentedPicker = kind }
             }
             .alert("Import", isPresented: Binding(get: { !documents.audioImportError.isEmpty }, set: { if !$0 { documents.audioImportError = "" } })) {
                 Button("OK") { documents.audioImportError = "" }
@@ -176,6 +198,15 @@ struct NativeProjectPresentation: ViewModifier {
                 Button("Cancel", role: .cancel) { documents.cancelNativeProjectName() }
                 Button("Create") { documents.confirmNativeProjectName() }
             }
+    }
+    private func pickerDismissed() {
+        let selection = pickerSelection, kind = presentedPicker
+        pickerSelection = nil; presentedPicker = nil
+        if let selection {
+            documents.receiveNativeFiles(selection.urls, kind: selection.kind)
+        } else if let kind {
+            documents.cancelNativePicker(kind: kind)
+        }
     }
 }
 #endif

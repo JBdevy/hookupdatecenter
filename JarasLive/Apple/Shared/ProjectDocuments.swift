@@ -871,6 +871,13 @@ import AppKit
         guard show.canExecute(), !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(iOS)
         if !(scan != nil && adding) {
+            // Choose storage before showing the name alert. Presenting Files
+            // from the alert's button can leave its keyboard window in charge
+            // while Files tries to focus its new-folder rename field.
+            guard nativeStorageDirectory != nil else {
+                afterNativeStorage = { [weak self] in self?.finish(scan: scan, detectBPM: detectBPM) }
+                nativePicker = .storage; return
+            }
             nativePendingCreation = (scan, detectBPM); nativeProjectName = ""; nativeNamePrompt = true; return
         }
         #endif
