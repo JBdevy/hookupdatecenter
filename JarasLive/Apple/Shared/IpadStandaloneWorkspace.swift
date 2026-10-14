@@ -193,8 +193,16 @@ import Combine
         .onChange(of: local.projectRevision) { _ in inspectOutputRoutes() }
         .onChange(of: local.state?.project) { _ in inspectOutputRoutes() }
         .onChange(of: audio.channels) { _ in inspectOutputRoutes() }
-        .disabled(dialogOpen).accessibilityHidden(dialogOpen)
+        .disabled(dialogOpen || audio.localSessionReconfiguring).accessibilityHidden(dialogOpen)
         .overlay { workspaceDialogs }
+        .overlay(alignment: .bottom) {
+            if audio.localSessionReconfiguring && !audio.error.isEmpty {
+                Text(verbatim: audio.error).font(.callout).multilineTextAlignment(.center)
+                    .foregroundStyle(.white).padding(12)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0.4, green: 0.08, blue: 0.08)))
+                    .padding()
+            }
+        }
         .alert("Recording", isPresented: Binding(get: { !recorder.error.isEmpty }, set: { if !$0 { recorder.error = "" } })) {
             Button("OK") { recorder.error = "" }
         } message: { Text(LocalizedStringKey(recorder.error)) }

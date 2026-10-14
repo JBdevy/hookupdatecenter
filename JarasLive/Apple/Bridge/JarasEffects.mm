@@ -1,4 +1,6 @@
 #import "JarasEffects.h"
+#include "JarasOutputChannelMap.hpp"
+#include <TargetConditionals.h>
 #import <Accelerate/Accelerate.h>
 #if defined(__x86_64__)
 #include <xmmintrin.h>
@@ -40,6 +42,16 @@
                 userInfo:@{NSLocalizedDescriptionKey: @"Audio output is unavailable"}];
             return nil;
         }
+#if TARGET_OS_IOS
+        if (!engine.isInManualRenderingMode) {
+            const OSStatus status = jaras::configureDiscreteOutputMap(engine.outputNode.audioUnit, channels);
+            if (status != noErr) {
+                if (error) *error = [NSError errorWithDomain:@"CatLive.AudioOutput" code:status
+                    userInfo:@{NSLocalizedDescriptionKey: @"Unable to configure audio output channels."}];
+                return nil;
+            }
+        }
+#endif
         [engine connect:engine.mainMixerNode to:engine.outputNode format:format];
         return format;
     } @catch (NSException *exception) {

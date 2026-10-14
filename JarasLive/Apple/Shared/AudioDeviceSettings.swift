@@ -18,6 +18,31 @@ struct MIDIInputDevice: Identifiable, Equatable {
     let name: String
 }
 #if os(iOS)
+/// HAL can deadlock internally while a USB route disappears on iOS 16.
+/// A blocked stop must never own the main actor or be followed by graph edits.
+final class MobileAudioHardwareStop: @unchecked Sendable {
+    enum Failure: Error { case timedOut }
+    private let lock = NSLock()
+    private var finished = false
+    private let began = ProcessInfo.processInfo.systemUptime
+    init(settlingTime: Double = 0.25, stop: @escaping @Sendable () -> Void) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + settlingTime) { [self] in
+            stop()
+            lock.lock(); finished = true; lock.unlock()
+        }
+    }
+    private func hasFinished() -> Bool {
+        lock.lock(); defer { lock.unlock() }; return finished
+    }
+    func wait(timeout: Double = 4) async throws {
+        while !hasFinished() {
+            try Task.checkCancellation()
+            if ProcessInfo.processInfo.systemUptime - began >= timeout { throw Failure.timedOut }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        try Task.checkCancellation()
+    }
+}
 enum MobileAudioSessionEvent {
     case interrupted
     case interruptionEnded

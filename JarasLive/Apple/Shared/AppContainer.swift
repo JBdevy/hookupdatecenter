@@ -245,22 +245,33 @@ enum AppStartupPresentation {
                 return true
             } catch {
                 localPlaybackEnabled = false
+                settings.beginLocalRouteChange()
                 TrackRecording.shared.setLocalAudioAvailable(false)
                 audio.suspendDeviceSession()
                 show.message = error.localizedDescription
-                do { try settings.deactivateLocalSession() }
+                do {
+                    try await audio.waitForSuspendedProcessors()
+                    try await TrackRecording.shared.waitForLocalHardwareSuspension()
+                    guard transition == localPlaybackTransition else { return false }
+                    try settings.deactivateLocalSession()
+                }
                 catch { show.message += "\n" + error.localizedDescription }
                 return false
             }
         }
         show.send(.stopAll)
         localPlaybackEnabled = false
+        settings.beginLocalRouteChange()
         TrackRecording.shared.setLocalAudioAvailable(false)
         audio.suspendDeviceSession()
-        await TrackRecording.shared.finishAndWait()
-        guard transition == localPlaybackTransition else { return true }
-        do { try settings.deactivateLocalSession(); return true }
-        catch { show.message = error.localizedDescription; return false }
+        do {
+            try await audio.waitForSuspendedProcessors()
+            try await TrackRecording.shared.waitForLocalHardwareSuspension()
+            await TrackRecording.shared.finishAndWait()
+            guard transition == localPlaybackTransition else { return true }
+            try settings.deactivateLocalSession(); return true
+        }
+        catch { settings.error = error.localizedDescription; show.message = error.localizedDescription; return false }
     }
     private func handleMobileAudioEvent(_ event: MobileAudioSessionEvent) {
         guard localPlaybackEnabled else { return }
@@ -285,12 +296,21 @@ enum AppStartupPresentation {
             TrackRecording.shared.setLocalAudioAvailable(false)
             show.send(.stopAll)
             localPlaybackEnabled = false
-            try? settings.deactivateLocalSession()
+            let transition = localPlaybackTransition
+            Task { @MainActor in
+                do {
+                    try await audio.waitForSuspendedProcessors()
+                    try await TrackRecording.shared.waitForLocalHardwareSuspension()
+                    guard transition == localPlaybackTransition, !localPlaybackEnabled else { return }
+                    try settings.deactivateLocalSession()
+                } catch { show.message = error.localizedDescription }
+            }
             show.message = JarasLocalization.string("Audio services restarted. Close and reopen CatLive to restore audio.")
         }
     }
     private func recoverMobileRoute(outputRemoved: Bool) {
         let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        settings.error = ""
         mobileRouteRevision &+= 1
         let revision = mobileRouteRevision, transition = localPlaybackTransition
         let alreadySuspended = mobileRouteRecovery != nil
@@ -308,8 +328,9 @@ enum AppStartupPresentation {
                 // channel layout settles. Only the last route can rebuild.
                 try await Task.sleep(nanoseconds: 150_000_000)
                 guard let self else { return }
-                await TrackRecording.shared.finishAndWait()
                 try await audio.waitForSuspendedProcessors()
+                try await TrackRecording.shared.waitForLocalHardwareSuspension()
+                await TrackRecording.shared.finishAndWait()
                 try Task.checkCancellation()
                 guard localPlaybackEnabled, transition == localPlaybackTransition,
                       revision == mobileRouteRevision, !settings.localSessionInterrupted else { return }
@@ -323,8 +344,10 @@ enum AppStartupPresentation {
             } catch is CancellationError { }
             catch {
                 guard let self, revision == mobileRouteRevision else { return }
-                audio.suspendDeviceSession()
-                settings.finishLocalRouteChange()
+                // A failed HAL stop may still be holding its internal lock.
+                // Keep the graph gated; the error must not reopen that lock
+                // through a meter, preview or another recovery attempt.
+                settings.error = error.localizedDescription
                 show.message = error.localizedDescription
                 mobileRouteRecovery = nil
             }

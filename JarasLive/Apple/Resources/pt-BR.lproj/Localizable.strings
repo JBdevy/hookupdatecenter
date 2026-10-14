@@ -1616,3 +1616,7 @@
 "Choose file" = "Escolher arquivo";
 "Select the .ziplive file to open. Next, you will choose where to save the extracted project." = "Selecione o arquivo .ziplive que deseja abrir. Em seguida, você escolherá onde salvar o projeto descompactado.";
 "Select a folder where CatLive will extract and save the project and its media. It will open as a normal project, independent of the .ziplive file." = "Escolha uma pasta para o CatLive descompactar e salvar o projeto e suas mídias. Ele será aberto como um projeto normal, independente do arquivo .ziplive.";
+
+"Audio device did not respond. Reopen CatLive to restore audio." = "O dispositivo de áudio não respondeu. Reabra o CatLive para restaurar o áudio.";
+
+"Unable to configure audio output channels." = "Não foi possível configurar os canais de saída de áudio.";

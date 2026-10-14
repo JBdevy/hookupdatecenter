@@ -8,6 +8,7 @@ enum Command { case stopAll }
     var localSessionInterrupted = false, localSessionReconfiguring = false
     var inputDeviceChanged: (() -> Void)?
     var failActivation = false
+    var error = ""
     func beginLocalRouteChange() { localSessionReconfiguring = true; Events.values.append("gate") }
     func finishLocalRouteChange() { localSessionReconfiguring = false; Events.values.append("ungate") }
     func activateLocalSession() throws {
@@ -37,6 +38,7 @@ enum Command { case stopAll }
         available = value; Events.values.append(value ? "record-on" : "record-off")
     }
     func finish() { }
+    func waitForLocalHardwareSuspension() async throws { }
     // PRODUCTION_FINISH_AND_WAIT
 }
 @MainActor final class ShowProbe {
@@ -99,7 +101,8 @@ enum Command { case stopAll }
     settings.failActivation = true
     probe.event(.routeChanged(outputRemoved: true))
     await probe.mobileRouteRecovery?.value
-    precondition(audio.starts == 3 && !recorder.available && !settings.localSessionReconfiguring && !probe.show.message.isEmpty)
+    precondition(audio.starts == 3 && !recorder.available && settings.localSessionReconfiguring && !probe.show.message.isEmpty,
+                 "A failed device must stay gated instead of entering its hardware lock again")
     print("IPAD_USB_ROUTE_STOP_ORDER_ASYNC_RECORDING_WORKERS_COALESCING_INTERRUPTION_EXIT_AND_ERROR_OK")
 }
 Task { @MainActor in

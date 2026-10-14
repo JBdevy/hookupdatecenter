@@ -190,10 +190,21 @@ private final class CaptureWriter: @unchecked Sendable {
     private var requestingMicrophone = false
     #if os(iOS)
     private var localAudioAvailable = false
+    private var mobileCaptureStop: MobileAudioHardwareStop?
     func setLocalAudioAvailable(_ available: Bool) {
         localAudioAvailable = available
         if available { reconcileArming() }
         else { finish(); releaseInput() }
+    }
+    func waitForLocalHardwareSuspension() async throws {
+        guard let pending = mobileCaptureStop else { return }
+        do { try await pending.wait() }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw ProjectError.invalid(JarasLocalization.string("Audio device did not respond. Reopen CatLive to restore audio.")) }
+        if mobileCaptureStop === pending {
+            mobileCaptureStop = nil
+            finishInputRelease()
+        }
     }
     #endif
     func bind(_ show: ShowController) {
@@ -672,11 +683,26 @@ private final class CaptureWriter: @unchecked Sendable {
         releaseInput()
     }
     private func releaseInput() {
+        #if os(iOS)
+        if AudioDeviceSettings.shared.localSessionReconfiguring {
+            // A route callback cannot synchronously stop another RemoteIO
+            // engine either. Preserve the tap/rings until its stop finishes.
+            captureRing?.endCapture()
+            if mobileCaptureStop == nil, captureRing != nil || tapInstalled || !monitorConfig.isEmpty {
+                let hardware = captureEngine
+                mobileCaptureStop = MobileAudioHardwareStop { hardware.stop() }
+            }
+            return
+        }
+        #endif
         guard captureRing != nil || tapInstalled || !monitorConfig.isEmpty || captureEngine.isRunning else { return }
+        captureEngine.stop()
+        finishInputRelease()
+    }
+    private func finishInputRelease() {
         for config in monitorConfig { StemAudioPlayback.shared.setInputMonitor(config.track, source: nil) }
         monitorConfig = []; monitorRings = []
         captureRing?.endCapture()
-        captureEngine.stop()
         if tapInstalled { captureEngine.inputNode.removeTap(onBus: 0); tapInstalled = false }
         captureRing = nil
     }

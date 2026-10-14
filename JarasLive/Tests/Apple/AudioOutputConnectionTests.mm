@@ -1,6 +1,20 @@
 #import "JarasEffects.h"
+#include "JarasOutputChannelMap.hpp"
 #include <cassert>
 #include <cmath>
+
+static UInt32 expectedChannels = 0;
+static OSStatus mapStatus = noErr;
+static unsigned mapWrites = 0;
+static OSStatus verifyOutputMap(AudioUnit unit, AudioUnitPropertyID property, AudioUnitScope scope,
+                               AudioUnitElement bus, const void *data, UInt32 bytes) {
+    assert(unit && property == kAudioOutputUnitProperty_ChannelMap && scope == kAudioUnitScope_Global && bus == 0);
+    assert(bytes == expectedChannels * sizeof(SInt32));
+    const auto *mapping = static_cast<const SInt32 *>(data);
+    for (UInt32 channel = 0; channel < expectedChannels; ++channel) assert(mapping[channel] == channel);
+    ++mapWrites;
+    return mapStatus;
+}
 
 // Simulates transient HAL results without changing a real device or system
 // preference. Objective-C dispatch lets the exact production bridge exercise
@@ -57,6 +71,18 @@
 
 int main() {
     @autoreleasepool {
+        for (UInt32 channels : {1u, 2u, 6u, 8u, 10u, 18u}) {
+            expectedChannels = channels;
+            assert(jaras::configureDiscreteOutputMap(reinterpret_cast<AudioUnit>(1), channels, verifyOutputMap) == noErr);
+        }
+        const unsigned writes = mapWrites;
+        assert(jaras::configureDiscreteOutputMap(nullptr, 2, verifyOutputMap) != noErr);
+        assert(jaras::configureDiscreteOutputMap(reinterpret_cast<AudioUnit>(1), 0, verifyOutputMap) != noErr);
+        assert(jaras::configureDiscreteOutputMap(reinterpret_cast<AudioUnit>(1), 1025, verifyOutputMap) != noErr);
+        assert(mapWrites == writes);
+        mapStatus = kAudioUnitErr_InvalidPropertyValue;
+        assert(jaras::configureDiscreteOutputMap(reinterpret_cast<AudioUnit>(1), expectedChannels, verifyOutputMap) == mapStatus);
+        puts("REMOTEIO_OUTPUT_MAP_PRESERVES_EVERY_DISCRETE_CHANNEL_AND_REPORTS_FAILURE_OK");
         for (double rate : {44100.0, 48000.0, 96000.0}) {
             for (AVAudioChannelCount channels : {1u, 2u, 8u}) {
                 OutputEngineFixture *engine = [OutputEngineFixture new];

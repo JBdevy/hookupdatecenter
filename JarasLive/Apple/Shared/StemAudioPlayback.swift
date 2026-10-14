@@ -734,6 +734,11 @@ struct TimecodePlaybackSpan {
         return previous.sampleRate != current.sampleRate || previous.channelCount != current.channelCount
     }
     private func scheduleDeviceRecovery() {
+        #if os(iOS)
+        // Session recovery owns a gated engine. A second engine notification
+        // must not stop it synchronously while its HAL worker is suspended.
+        guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
+        #endif
         #if os(macOS)
         if usesSelectedHardware && !AudioDeviceSettings.shared.outputDeviceIsBound {
             engine.mainMixerNode.outputVolume = 0
@@ -789,6 +794,12 @@ struct TimecodePlaybackSpan {
         if realtime { try prepareDevice() }
     }
     func open(directory: URL) {
+        #if os(iOS)
+        guard mobileHardwareStop == nil else {
+            onError(ProjectError.invalid(JarasLocalization.string("Audio device did not respond. Reopen CatLive to restore audio.")))
+            return
+        }
+        #endif
         deviceRecovery?.cancel(); deviceRecovery = nil
         configureGraph(directory: directory, resetProject: true)
     }
@@ -1011,9 +1022,21 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     var onError: (Error) -> Void = { _ in }
     private var suspendedEffectChains: [NativeEffectsChain] = []
     #if os(iOS)
+    private var mobileHardwareStop: MobileAudioHardwareStop?
     /// Let an in-flight ML prediction return on its worker before admitting a
     /// replacement session. The main thread stays available during this wait.
     func waitForSuspendedProcessors() async throws {
+        if let pending = mobileHardwareStop {
+            do { try await pending.wait() }
+            catch is CancellationError { throw CancellationError() }
+            catch {
+                throw ProjectError.invalid(JarasLocalization.string("Audio device did not respond. Reopen CatLive to restore audio."))
+            }
+            if mobileHardwareStop === pending {
+                mobileHardwareStop = nil
+                finishDeviceSuspension()
+            }
+        }
         let deadline = ProcessInfo.processInfo.systemUptime + 30
         while suspendedEffectChains.contains(where: { $0.stemSeparatorWorkerRunning }) {
             if ProcessInfo.processInfo.systemUptime >= deadline {
@@ -1052,9 +1075,22 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         deviceSessionActive = false
         deviceRecovery?.cancel(); deviceRecovery = nil
         meterTimer?.invalidate(); meterTimer = nil
+        #if os(iOS)
+        if usesSelectedHardware {
+            setGraphRenderEnabled(false)
+            if mobileHardwareStop == nil {
+                let hardware = engine
+                mobileHardwareStop = MobileAudioHardwareStop { hardware.stop() }
+            }
+            return
+        }
+        #endif
+        engine.stop()
+        finishDeviceSuspension()
+    }
+    private func finishDeviceSuspension() {
         // The hardware may already have lost its render format. Stop pulls
         // before resetting players, detaching monitoring or stopping workers.
-        engine.stop()
         var chains = [masterEffects] + trackBuses.values.map(\.effects)
         chains += voices.values.compactMap(\.effects)
         chains += idleVoices.values.flatMap { $0 }.compactMap(\.effects)
@@ -1275,6 +1311,11 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         if deviceSessionActive { startMeterClock() }
     }
     func prepareForClosing() {
+        #if os(iOS)
+        // A timed-out HAL stop is still owned by its worker. Do not acquire
+        // that same engine lock from a project-close/UI callback.
+        guard mobileHardwareStop == nil else { return }
+        #endif
         deviceSessionActive = false
         deviceRecovery?.cancel(); deviceRecovery = nil
         meterTimer?.invalidate(); meterTimer = nil
@@ -3460,6 +3501,9 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
         }
     }
     private func pollMeters(now: Double = ProcessInfo.processInfo.systemUptime) {
+        #if os(iOS)
+        guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
+        #endif
         guard engine.isRunning, transportWasRunning || instrumentRenderPending else { return }
         if now - lastMeterUpdate >= 1.0 / 30.0 - 0.002 {
             let elapsed = lastMeterUpdate == 0 ? 1.0 / 30.0 : now - lastMeterUpdate
