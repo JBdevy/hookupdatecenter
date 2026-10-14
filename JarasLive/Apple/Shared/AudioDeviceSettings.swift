@@ -199,7 +199,7 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         }
         #else
         let session = AVAudioSession.sharedInstance()
-        devices = session.currentRoute.outputs.map { OutputDevice(id: $0.uid, name: $0.portName, channels: $0.channels?.count ?? 2, hardwareID: 0) }
+        devices = session.currentRoute.outputs.map { OutputDevice(id: $0.uid, name: $0.portName, channels: session.outputNumberOfChannels, hardwareID: 0) }
         if selectedUID != "none" { selectedUID = devices.first?.id ?? "" }
         channels = selectedUID == "none" ? 0 : devices.first?.channels ?? 0
         // iOS does not enumerate availableInputs until a recording category is
@@ -280,6 +280,15 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
                 try session.setPreferredInput(port)
             }
         }
+        try configureMobileOutputChannels(session)
+    }
+    private func configureMobileOutputChannels(_ session: AVAudioSession) throws {
+        // USB interfaces may start with only a stereo session. Request their
+        // available channels before building the discrete hardware graph.
+        let maximum = session.maximumOutputNumberOfChannels
+        guard maximum > 0, session.outputNumberOfChannels != maximum,
+              session.preferredOutputNumberOfChannels != maximum else { return }
+        try session.setPreferredOutputNumberOfChannels(maximum)
     }
     func requireLocalInput(expectedUID: String? = nil) throws {
         guard localSessionEnabled, !localSessionInterrupted, !inputUID.isEmpty,
@@ -307,6 +316,8 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
             let raw = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue
             Task { @MainActor [weak self] in
                 guard let self, self.localSessionEnabled else { return }
+                do { try self.configureMobileOutputChannels(AVAudioSession.sharedInstance()) }
+                catch { self.error = error.localizedDescription }
                 self.refresh(); self.refreshSampleRate(); self.refreshBuffer()
                 self.mobileSessionEvent?(.routeChanged(outputRemoved: raw == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue))
             }

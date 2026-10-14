@@ -2597,6 +2597,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         lhs.project == rhs.project && lhs.song == rhs.song && lhs.scrolling === rhs.scrolling &&
             lhs.track.id == rhs.track.id && lhs.track.name == rhs.track.name && lhs.track.color == rhs.track.color &&
             lhs.track.nameColor == rhs.track.nameColor && lhs.track.clips == rhs.track.clips &&
+            lhs.track.silenced == rhs.track.silenced &&
             lhs.track.laneCount == rhs.track.laneCount && lhs.track.heightScale == rhs.track.heightScale && lhs.track.emphasized == rhs.track.emphasized &&
             lhs.width == rhs.width && lhs.displayScale == rhs.displayScale && lhs.heightScale == rhs.heightScale &&
             lhs.selectedItem == rhs.selectedItem && lhs.start == rhs.start && lhs.end == rhs.end && lhs.nativeRevision == rhs.nativeRevision && lhs.nativeDirectory == rhs.nativeDirectory && lhs.hasRegion == rhs.hasRegion && lhs.local == rhs.local &&
@@ -2646,7 +2647,9 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     var body: some View {
         ZStack(alignment: .topLeading) {
             remoteColor(backgroundColor).opacity(local ? 0 : 1)
-            if local && track.emphasized == true { remoteColor(track.color).opacity(0.16).allowsHitTesting(false) }
+            if local && track.emphasized == true {
+                remoteColor(track.color).opacity(0.16).saturation(track.silenced == true ? 0 : 1).allowsHitTesting(false)
+            }
             Canvas { context, size in
                 if gridLines && !local {
                     var primary = Path(), secondary = Path()
@@ -2668,7 +2671,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     sourceFraction: (left - clip.start) / max(0.001, clip.duration),
                     visibleFraction: (right - left) / max(0.001, clip.duration),
                     mute: { control(.clipMute, clip.id, 0) },
-                    setGain: { control(.clipGain, clip.id, $0) }, local: local,
+                    setGain: { control(.clipGain, clip.id, $0) }, local: local, trackSilenced: track.silenced == true,
                     nativeWaveform: nativeDirectory != nil && nativeTrack?.clips.contains(where: { $0.id == clip.id && !$0.isImage && ($0.audioFile ?? nativeTrack?.audioFile) != nil }) == true,
                     select: local ? { scrolling.selectedItem = clip.id; selectTrack?() } : nil,
                     openMenu: openItemMenu.map { callback in { callback(clip.id) } }, openFX: openItemFX.map { callback in { callback(clip.id) } })
@@ -2728,7 +2731,7 @@ private struct IpadNativeWaveformRow: View {
                 TimelineWaveformItem(clip: source.clip, fragments: source.fragments, url: source.url,
                     rect: CGRect(x: source.clip.startTime * scale, y: Double(lanes[source.clip.id] ?? 0) * laneHeight,
                                  width: source.clip.duration * scale, height: laneHeight),
-                    gray: source.clip.muted == true ? 0.78 : gray, sourcePath: source.path)
+                    gray: remoteTrack.silenced == true || source.clip.muted == true ? 0.78 : gray, sourcePath: source.path)
             }
         MetalWaveformView(frame: TimelineMetalWaveformFrameBuilder.make(items: items, viewport: viewport,
             scale: scale, cache: cache, owner: owner, contentRevision: Int(truncatingIfNeeded: revision)))
@@ -2767,6 +2770,7 @@ private struct RemoteNativeGridItem: View, Equatable {
     let mute: () -> Void
     let setGain: (Double) -> Void
     var local = false
+    var trackSilenced = false
     var nativeWaveform = false
     var select: (() -> Void)? = nil
     var openMenu: (() -> Void)? = nil
@@ -2777,11 +2781,13 @@ private struct RemoteNativeGridItem: View, Equatable {
         lhs.clip == rhs.clip && lhs.width == rhs.width && lhs.height == rhs.height && lhs.color == rhs.color &&
             lhs.nameColor == rhs.nameColor && lhs.scrolling === rhs.scrolling &&
             lhs.sourceFraction == rhs.sourceFraction && lhs.visibleFraction == rhs.visibleFraction &&
-            lhs.local == rhs.local && lhs.nativeWaveform == rhs.nativeWaveform && (lhs.openMenu != nil) == (rhs.openMenu != nil) &&
+            lhs.local == rhs.local && lhs.trackSilenced == rhs.trackSilenced && lhs.nativeWaveform == rhs.nativeWaveform && (lhs.openMenu != nil) == (rhs.openMenu != nil) &&
             (lhs.openFX != nil) == (rhs.openFX != nil)
     }
     var body: some View {
         let headerHeight = min(local ? GridSelectionItem.headerHeight : 28 * GridSelectionItem.headerScale, height)
+        let silenced = trackSilenced || clip.muted == true
+        let itemColor = silenced ? Color(white: 0.55) : remoteColor(color)
         VStack(spacing: 0) {
             HStack(spacing: 4) {
                 Button(action: mute) { Text(verbatim: "M").font(.system(size: local ? GridSelectionItem.headerFontSize : 11 * GridSelectionItem.headerScale, weight: .bold)).frame(width: (local ? 17 : 28) * GridSelectionItem.headerScale, height: headerHeight) }
@@ -2823,12 +2829,12 @@ private struct RemoteNativeGridItem: View, Equatable {
                     let height = size.height * amplitude
                     wave.addRect(CGRect(x: CGFloat(index) * 3, y: (size.height - height) / 2, width: 1.5, height: height))
                 }
-                context.fill(wave, with: .color(clip.muted == true ? .gray : remoteColor(nameColor).opacity(0.75)))
+                context.fill(wave, with: .color(silenced ? .gray : remoteColor(nameColor).opacity(0.75)))
             }.frame(height: max(0, height - headerHeight)).allowsHitTesting(false)
         }.frame(width: width, height: height, alignment: .topLeading).clipped()
-            .background(LinearGradient(colors: [remoteColor(color).opacity(clip.muted == true ? 0.55 : 1), remoteColor(color).opacity(clip.muted == true ? 0.25 : 0.78)], startPoint: .top, endPoint: .bottom))
+            .background(LinearGradient(colors: [itemColor.opacity(silenced ? 0.55 : 1), itemColor.opacity(silenced ? 0.25 : 0.78)], startPoint: .top, endPoint: .bottom))
             .clipShape(RoundedRectangle(cornerRadius: 3))
-            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(remoteColor(color).opacity(0.75), lineWidth: 0.6).allowsHitTesting(false))
+            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(itemColor.opacity(0.75), lineWidth: 0.6).allowsHitTesting(false))
             .background(RemoteGridItemHoldProbe(controller: scrolling, tap: select, hold: { if let openMenu { openMenu() } else { editorOpen = true } }))
             .popover(isPresented: $editorOpen, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
                 RemoteNativeItemEditor(clip: clip, color: color, setGain: setGain, mute: mute, close: { editorOpen = false })
