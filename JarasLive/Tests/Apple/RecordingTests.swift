@@ -90,6 +90,64 @@ precondition(producerFinished.wait(timeout: .now() + 3) == .success, "realtime p
 let late = samples.withUnsafeMutableBufferPointer { stoppedRing.readFrames($0.baseAddress!, maximum: 96000) }
 precondition(late == 0 && accepted % 48000 == 0, "stop drains complete accepted buffers without a late write")
 print("RECORDING_STOP_GATE_REUSE_AND_CONCURRENT_PRODUCER_OK")
+
+// Overflow reports a partial take, preserving every PCM frame accepted by
+// the real bridge ring. A later armed track and a new session must not inherit
+// loss that happened before their capture began.
+let lossWarningKey = "Some audio was lost during recording. The captured audio was preserved, but the recording may be incomplete."
+precondition(JarasLocalization.string(lossWarningKey, language: "en") == lossWarningKey)
+precondition(JarasLocalization.string(lossWarningKey, language: "pt-BR") == "Parte do áudio foi perdida durante a gravação. O áudio capturado foi preservado, mas a gravação pode estar incompleta.",
+             "recording loss warning follows the selected application language")
+let lossRing = JarasCaptureRing(channels: 4, capacity: 100)
+lossRing.push(buffer)
+precondition(lossRing.droppedFrames == 47900, "fixture starts with a previously used ring")
+let lossTrack = CaptureTarget(track: UUID(), input: .stereo, format: "wav32", name: "Overflow - 001")
+let cleanTrack = CaptureTarget(track: UUID(), input: .stereo, format: "wav32", name: "Overflow - 002")
+let lossWriter = try CaptureWriter(targets: [lossTrack], directory: directory, format: format, ring: lossRing)
+lossWriter.start()
+precondition(lossRing.droppedFrames == 0, "beginCapture clears loss from a prior session")
+lossRing.push(buffer)
+precondition(lossRing.droppedFrames == 47900, "one oversized capture block deterministically overflows the tiny ring")
+let lossDone = DispatchSemaphore(value: 0)
+lossWriter.changeTargets([cleanTrack], position: 10) { items, message in
+    precondition(items.count == 1 && items[0].track == lossTrack.track, "overflow preserves the partially recorded item")
+    precondition(message == JarasLocalization.string(lossWarningKey), "a partial take explicitly reports the lost audio")
+    let file = try! AVAudioFile(forReading: directory.appendingPathComponent(items[0].clip.audioFile!.path))
+    precondition(file.length == 100 && items[0].clip.duration == 100.0 / 48000,
+                 "overflow does not invent missing samples or delete accepted frames")
+    let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 100)!
+    try! file.read(into: pcm)
+    for channel in 0..<2 { for frame in 0..<100 {
+        precondition(abs(pcm.floatChannelData![channel][frame] - buffer.floatChannelData![channel][frame]) < 0.000001,
+                     "overflow leaves captured PCM intact")
+    } }
+    lossDone.signal()
+}
+precondition(lossDone.wait(timeout: .now() + 5) == .success, "partial take warning completes while another track stays armed")
+let cleanBlock = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64)!
+cleanBlock.frameLength = 64
+for channel in 0..<4 { for frame in 0..<64 { cleanBlock.floatChannelData![channel][frame] = buffer.floatChannelData![channel][frame] } }
+lossRing.push(cleanBlock)
+let cleanDone = DispatchSemaphore(value: 0)
+lossWriter.finish(start: 10) { items, message in
+    precondition(items.count == 1 && items[0].track == cleanTrack.track && message == nil,
+                 "a track armed after the overflow does not inherit an earlier take's warning")
+    precondition(items[0].clip.duration == 64.0 / 48000, "the later track only receives its own captured frames")
+    cleanDone.signal()
+}
+precondition(cleanDone.wait(timeout: .now() + 5) == .success)
+let cleanSession = try CaptureWriter(targets: [CaptureTarget(track: UUID(), input: .stereo, format: "wav32", name: "Overflow - 003")],
+                                     directory: directory, format: format, ring: lossRing)
+cleanSession.start(); lossRing.push(cleanBlock)
+let cleanSessionDone = DispatchSemaphore(value: 0)
+cleanSession.finish(start: 20) { items, message in
+    precondition(items.count == 1 && message == nil && lossRing.droppedFrames == 0,
+                 "a new recording reusing the ring starts without a stale loss warning")
+    cleanSessionDone.signal()
+}
+precondition(cleanSessionDone.wait(timeout: .now() + 5) == .success)
+print("RECORDING_OVERFLOW_LOCALIZED_PARTIAL_TAKE_WARNING_PRESERVED_PCM_NEW_TARGET_AND_REUSED_SESSION_OK")
+
 // Independent arming while global REC stays active, including zero targets.
 let dynamic = try CaptureWriter(targets: [], directory: directory, format: format)
 let a = CaptureTarget(track: UUID(), input: .stereo, format: "wav", name: "Capture - 007", lane: 4)

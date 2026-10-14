@@ -50,6 +50,8 @@ __PRODUCTION_FLAGS__
     private func applyLoopMixer() { snapshot.gain -= 0.001 }
     private func focusPreparedRegion(previous: TransportState) {}
     private func rememberCursor() {}
+    private func recordAutomationFrame() {}
+    private func finishAutomationRecording() {}
 __PRODUCTION_GETTER__
 __PRODUCTION_TICK__
 }

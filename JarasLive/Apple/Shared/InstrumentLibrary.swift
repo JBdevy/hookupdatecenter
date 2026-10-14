@@ -314,14 +314,32 @@ struct LibraryInstrument: Identifiable {
     @Published private(set) var sources: [String:URL] = [:]
     @Published var error = ""
     private var jobs: [String:Task<Void,Never>] = [:]
+    private var projectDirectory: URL?
     private init() {
         directory = FileManager.default.urls(for: .applicationSupportDirectory,in: .userDomainMask)[0].appendingPathComponent("JarasLive/Instruments",isDirectory: true)
         try? FileManager.default.createDirectory(at: directory,withIntermediateDirectories: true)
         refresh()
     }
-    func file(_ id: String) -> URL { directory.appendingPathComponent(id).appendingPathExtension("sf2") }
+    func file(_ id: String, projectDirectory: URL? = nil) -> URL {
+        // A portable project owns its instrument bank just like its stems.
+        // Prefer that exact bank over a separately downloaded catalog copy.
+        if let bundled = projectDirectory?.appendingPathComponent("Instruments", isDirectory: true)
+            .appendingPathComponent(id).appendingPathExtension("sf2"),
+           FileManager.default.fileExists(atPath: bundled.path) { return bundled }
+        return directory.appendingPathComponent(id).appendingPathExtension("sf2")
+    }
+    func resolvedFile(_ id: String, projectDirectory: URL?) -> URL? {
+        guard Self.catalog.contains(where: { $0.id == id }) else { return nil }
+        let source = file(id, projectDirectory: projectDirectory)
+        return FileManager.default.fileExists(atPath: source.path) ? source : nil
+    }
+    func setProjectDirectory(_ directory: URL?) {
+        guard projectDirectory != directory else { return }
+        projectDirectory = directory
+        refresh()
+    }
     func refresh() {
-        downloaded = Set(Self.catalog.filter { FileManager.default.fileExists(atPath: file($0.id).path) }.map(\.id))
+        downloaded = Set(Self.catalog.filter { resolvedFile($0.id, projectDirectory: projectDirectory) != nil }.map(\.id))
         sources = Dictionary(uniqueKeysWithValues: Self.catalog.map { ($0.id, $0.url) })
     }
 

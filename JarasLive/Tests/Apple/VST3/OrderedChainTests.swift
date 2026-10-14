@@ -1,7 +1,14 @@
 import Foundation
 import AVFoundation
+import Darwin
 try MainActor.assumeIsolated {
     let path = CommandLine.arguments[1]
+    let fixture = dlopen(Bundle(path: path)!.executablePath!, RTLD_NOW | RTLD_LOCAL)!
+    defer { dlclose(fixture) }
+    func diagnostic(_ name: String) -> Int32 {
+        let read = unsafeBitCast(dlsym(fixture, name)!, to: (@convention(c) () -> Int32).self)
+        return read()
+    }
     var error: NSError?
     let catalog = JarasVST3.scan(path, error: &error)
     precondition(error == nil && catalog.count == 1)
@@ -23,6 +30,8 @@ try MainActor.assumeIsolated {
         chain.apply(settings)
         precondition(chain.externalError == nil)
         let node = chain.externalNode(plugin.id)!
+        precondition(diagnostic("catliveLastSetupMode") == 2,
+                     "export must set kOffline during setupProcessing, before engine.prepare/start propagates the AU flag")
         try engine.start()
         let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
         func level() throws -> Float {
@@ -30,6 +39,8 @@ try MainActor.assumeIsolated {
             return output.floatChannelData![0][128]
         }
         let before = try level()
+        precondition(diagnostic("catliveLastProcessMode") == 2 && diagnostic("catliveProcessModeMismatches") == 0,
+                     "offline process blocks must match the mode used by setupProcessing")
         settings.inserted = ["Compressor", plugin.effectKey]
         chain.apply(settings)
         let after = try level()
@@ -61,4 +72,26 @@ try MainActor.assumeIsolated {
         engine.stop()
         print("ORDERED_NATIVE_AND_VST3_CHAIN_PCM_IDENTITY_BYPASS_REMOVAL_OK rate=\(rate) before=\(before) after=\(after)")
     }
+
+    // No hardware playback is needed to verify live setup or a graph-mode
+    // transition. Reusing a plugin ID must not retain the previous DSP mode.
+    let engine = AVAudioEngine(), format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    let source = AVAudioMixerNode(), chain = NativeEffectsChain()
+    engine.attach(source); chain.attach(to: engine, input: source, format: format)
+    let plugin = ExternalPlugin(classID: catalog[0]["classID"] as! String, name: "Gain fixture", path: path)
+    let node = try chain.prepareExternal(plugin)
+    precondition(diagnostic("catliveLastSetupMode") == 0, "live graph retains kRealtime setup")
+    let specs = try JSONSerialization.jsonObject(with: JSONEncoder().encode([plugin])) as! [[String: Any]]
+    var setups = diagnostic("catliveProcessingSetups")
+    try JarasVST3.configure(node, plugins: specs)
+    precondition(diagnostic("catliveProcessingSetups") == setups, "unchanged mode reuses the processor")
+    for (offline, expected) in [(true, Int32(2)), (false, Int32(0))] {
+        node.auAudioUnit.isRenderingOffline = offline
+        try JarasVST3.configure(node, plugins: specs)
+        setups += 1
+        precondition(diagnostic("catliveLastSetupMode") == expected && diagnostic("catliveProcessingSetups") == setups,
+                     "realtime/offline transition requires fresh setupProcessing")
+    }
+    chain.detach(from: engine)
+    print("VST3_OFFLINE_SETUP_BEFORE_ENGINE_PREPARE_PROCESS_MODE_MATCH_AND_LIVE_MODE_TRANSITIONS_OK")
 }

@@ -1,0 +1,110 @@
+{
+  "checkpoint": "5c90dfd2-34c22ccb",
+  "sha256": "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd",
+  "sources": [
+    "drums",
+    "bass",
+    "other",
+    "vocals",
+    "guitar",
+    "piano"
+  ],
+  "sample_rate": 44100,
+  "window_frames": 44100,
+  "fft": 4096,
+  "hop": 1024,
+  "spectral_frames": 44,
+  "torch": "2.2.2",
+  "precision": "fp16",
+  "conversion": {
+    "coremltools": "9.0",
+    "numpy": "1.26.4",
+    "torch": "2.2.2",
+    "minimum_ios": "16.0",
+    "io_dtype": "float32",
+    "weights_and_compute": "float16"
+  },
+  "validation": {
+    "host": "arm64",
+    "execution": "Core ML CPU_AND_GPU on development Mac; not an iPad performance measurement",
+    "absolute_rms_tolerance": 2e-05,
+    "relative_rms_tolerance": 0.02,
+    "first_uncached_prediction_seconds": 7.802,
+    "warm_inference_seconds": [
+      0.08504,
+      0.07489
+    ],
+    "fixtures": {
+      "silence": {
+        "seconds": 0.5331786249998913,
+        "errors": {
+          "spectrum_out": {
+            "maximum_absolute": 0.0,
+            "rms": 0.0,
+            "reference_rms": 0.0,
+            "relative_rms": 0.0
+          },
+          "audio_out": {
+            "maximum_absolute": 0.0,
+            "rms": 0.0,
+            "reference_rms": 0.0,
+            "relative_rms": 0.0
+          },
+          "pcm": {
+            "rms": 0.0,
+            "reference_rms": 0.0,
+            "relative_rms": 0.0,
+            "maximum_absolute": 0.0
+          }
+        }
+      },
+      "noise": {
+        "seconds": 0.11757933299941214,
+        "errors": {
+          "spectrum_out": {
+            "maximum_absolute": 0.0014570802450180054,
+            "rms": 4.237850029498045e-05,
+            "reference_rms": 0.02123571552940582,
+            "relative_rms": 0.001995623845888192
+          },
+          "audio_out": {
+            "maximum_absolute": 6.855931133031845e-05,
+            "rms": 6.688680506302576e-06,
+            "reference_rms": 0.002563636385974725,
+            "relative_rms": 0.0026090597492278373
+          },
+          "pcm": {
+            "rms": 5.461495469263334e-05,
+            "reference_rms": 0.03651879765502359,
+            "relative_rms": 0.0014955299243024343,
+            "maximum_absolute": 0.0006146840751171112
+          }
+        }
+      },
+      "tones": {
+        "seconds": 0.08774812499996187,
+        "errors": {
+          "spectrum_out": {
+            "maximum_absolute": 0.06165611743927002,
+            "rms": 0.0001271791650127363,
+            "reference_rms": 0.011328669860773645,
+            "relative_rms": 0.011226310465017923
+          },
+          "audio_out": {
+            "maximum_absolute": 0.0004948489367961884,
+            "rms": 2.0425435900257406e-05,
+            "reference_rms": 0.022119783535120542,
+            "relative_rms": 0.0009234012560668622
+          },
+          "pcm": {
+            "rms": 0.00017287826588501779,
+            "reference_rms": 0.027231799820246615,
+            "relative_rms": 0.00634839661815097,
+            "maximum_absolute": 0.001861516386270523
+          }
+        }
+      }
+    }
+  },
+  "weight_sha256": "7a881e7b6e69b0cab811d7f1f65e6fb59b7dce424b8a65baa780f5ab7ecf18a6"
+}

@@ -140,7 +140,7 @@ MainActor.assumeIsolated {
         styleMask: .borderless, backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     let show = ShowController(); show.publish(main: 100)
-    let host = NeedleHostingView(rootView: NativeTimelineNeedles(show: show, width: 10000, height: 240,
+    let host = NeedleHostingView(rootView: NeedleFixtureHost(show: show, width: 10000, height: 240,
         rulerHeight: 48, verticalOffset: 0, extent: 1000, seek: { _, _ in }, marker: { _ in })
         .frame(width: 10000, height: 240))
     window.contentView = host; host.layoutSubtreeIfNeeded()

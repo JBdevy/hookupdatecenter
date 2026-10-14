@@ -597,7 +597,7 @@ final class TimelineAudioWaveform: ObservableObject {
     /// Map compact .waveform peak levels and prepare a complete small overview.
     /// Detailed pages remain reclaimable file-backed memory; only visible GPU
     /// blocks occupy the bounded drawing cache.
-    @MainActor func preload(_ urls: [URL], cancelled: @escaping @Sendable () -> Bool = { false }, progress: @escaping @MainActor (Int, Int) -> Void = { _, _ in }) async {
+    @MainActor func preload(_ urls: [URL], cachedOnly: Bool = false, cancelled: @escaping @Sendable () -> Bool = { false }, progress: @escaping @MainActor (Int, Int) -> Void = { _, _ in }) async {
         let files = Array(Set(urls.map { $0.standardizedFileURL })).sorted { $0.path < $1.path }
         // A complete fallback for every file fits a project-wide 32 MiB target.
         // It remains available when detailed vertex blocks are evicted.
@@ -614,10 +614,13 @@ final class TimelineAudioWaveform: ObservableObject {
                     let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
                     let header = Header(rate: audio.processingFormat.sampleRate, frames: audio.length,
                         channels: Int(audio.processingFormat.channelCount), sourcePath: url.path, sourceVersion: "\(size):\(modified)")
-                    guard let prefix = header.cachePrefix, let identity = header.vertexSource,
-                          let source = try? (pinnedSource(identity) ?? WaveformSource.loadOrBuild(url, header: header, cancelled: cancelled)),
-                          let overview = prepareZoomOutVertices(source, header: header, prefix: prefix, overviewPixels: overviewPixels) else { return nil }
+                    // Publish the current identity even when the peak file is
+                    // absent/outdated, so on-demand drawing cannot reuse the
+                    // previous audio's cached header at the same path.
                     headers.setObject(header, forKey: url.path as NSString)
+                    guard let prefix = header.cachePrefix, let identity = header.vertexSource,
+                          let source = try? (pinnedSource(identity) ?? WaveformSource.loadOrBuild(url, header: header, buildIfMissing: !cachedOnly, cancelled: cancelled)),
+                          let overview = prepareZoomOutVertices(source, header: header, prefix: prefix, overviewPixels: overviewPixels) else { return nil }
                     sources.setObject(source, forKey: prefix as NSString, cost: source.cost)
                     return (url, header, overview, source)
                 }
@@ -1675,7 +1678,7 @@ private final class WaveformSource: NSObject {
         return directory.appendingPathComponent("Stems", isDirectory: true).appendingPathComponent("WF", isDirectory: true)
             .appendingPathComponent(url.lastPathComponent + ".waveform")
     }
-    static func loadOrBuild(_ url: URL, header: TimelineAudioWaveform.Header, cancelled: () -> Bool = { false }) throws -> WaveformSource {
+    static func loadOrBuild(_ url: URL, header: TimelineAudioWaveform.Header, buildIfMissing: Bool = true, cancelled: () -> Bool = { false }) throws -> WaveformSource {
         if cancelled() { throw CancellationError() }
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
@@ -1707,6 +1710,10 @@ private final class WaveformSource: NSObject {
             source.persist(to: destination, size: size, modified: modified)
             return mapped(destination, header: header, size: size, modified: modified) ?? source
         }
+        // Opening a native project may map existing peaks, but must not wait
+        // for a full PCM pass over every uncached stem. Visible sources are
+        // prepared by prepareSource on its worker and persisted for next time.
+        guard buildIfMissing else { throw NSError(domain: "JarasWaveform", code: 3) }
         let audio = try AVAudioFile(forReading: url)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: AVAudioFrameCount(TimelineAudioWaveform.blockFrames)) else {
             throw NSError(domain: "JarasWaveform", code: 1)

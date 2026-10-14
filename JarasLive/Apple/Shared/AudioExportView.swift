@@ -16,7 +16,7 @@ import AppKit
         cancellation = AudioExportCancellation()
         let token = cancellation
         let instruments = Dictionary(uniqueKeysWithValues: song.tracks.filter { $0.clips.contains { $0.midi != nil } }
-            .map { ($0.id, ItemReRender.midiInstruments(for: $0)) })
+            .map { ($0.id, ItemReRender.midiInstruments(for: $0, projectDirectory: media)) })
         running = true; finished = false; error = ""; progress = nil
         DispatchQueue.global(qos: .userInitiated).async {
             do {

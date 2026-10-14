@@ -1,3 +1,20 @@
+/// Test-only SwiftUI mount for the native needle view used by the timeline host.
+private struct NeedleFixtureHost: NSViewRepresentable {
+    let show: ShowController
+    let width: CGFloat
+    let height: CGFloat
+    let rulerHeight: CGFloat
+    let verticalOffset: CGFloat
+    let extent: Double
+    let seek: (Double, Bool) -> Void
+    let marker: (Bool) -> Void
+    func makeNSView(context: Context) -> NativeTimelineNeedlesView { NativeTimelineNeedlesView() }
+    func updateNSView(_ view: NativeTimelineNeedlesView, context: Context) {
+        view.configure(show: show, size: CGSize(width: width, height: height),
+            rulerHeight: rulerHeight, verticalOffset: verticalOffset, extent: extent, seek: seek, marker: marker)
+    }
+    static func dismantleNSView(_ view: NativeTimelineNeedlesView, coordinator: ()) { view.stop() }
+}
 @MainActor private final class NeedleHostingView<Content: View>: NSHostingView<Content> {
     var layouts = 0
     override func layout() { layouts += 1; super.layout() }
@@ -12,7 +29,7 @@ MainActor.assumeIsolated {
     scroll.horizontalScrollElasticity = .none; scroll.verticalScrollElasticity = .none
     let show = ShowController()
     var seeks: [(Double, Bool)] = []
-    let host = NeedleHostingView(rootView: NativeTimelineNeedles(show: show, width: 10000, height: 240,
+    let host = NeedleHostingView(rootView: NeedleFixtureHost(show: show, width: 10000, height: 240,
         rulerHeight: 48, verticalOffset: 0, extent: 1000, seek: { seeks.append(($0, $1)) }, marker: { _ in }).frame(width: 10000, height: 240))
     host.frame = CGRect(x: 0, y: 0, width: 10000, height: 240)
     window.contentView = scroll; scroll.documentView = host; scroll.tile(); window.orderFrontRegardless()
@@ -102,7 +119,7 @@ MainActor.assumeIsolated {
     }
     print("NATIVE_NEEDLES_VISIBLE_PIXELS_AT_DISTANT_AND_MINIMUM_ZOOM_OK")
     for width in [1000000.0, 100000, 12000, 1500] {
-        host.rootView = NativeTimelineNeedles(show: show, width: width, height: 240,
+        host.rootView = NeedleFixtureHost(show: show, width: width, height: 240,
             rulerHeight: 48, verticalOffset: 0, extent: 1000,
             seek: { _, _ in }, marker: { _ in }).frame(width: width, height: 240)
         host.setFrameSize(CGSize(width: width, height: 240)); host.layoutSubtreeIfNeeded()
@@ -148,6 +165,19 @@ MainActor.assumeIsolated {
                      pinnedNeedles.layer!.sublayers![0].position == layerPosition,
                      "vertical pinning preserves the screen position without repainting needle geometry")
     }
+    stopped.timelineFollowPaused = true
+    stopped.publish(main: 80, playing: true); pump(0.03)
+    pinnedNeedles.freezeTimerForTest()
+    inner.contentView.scroll(to: .zero)
+    stopped.timelineFollowPaused = false
+    pinnedNeedles.fireFrameForTest()
+    stopped.timelineFollowPaused = true
+    pump(0.01)
+    precondition(inner.contentView.bounds.minX == 0,
+                 "A header click cancels a follow scroll queued before the click, without waiting for another frame")
+    stopped.timelineFollowPaused = false; pump(0.03)
+    precondition(inner.contentView.bounds.minX > 0, "Resuming follow presents the current playback head")
+    print("NATIVE_NEEDLES_HEADER_PAUSE_CANCELS_PENDING_FOLLOW_AND_RESUMES_OK")
     pinnedNeedles.stop(); pinnedWindow.orderOut(nil); pinnedWindow.close()
     print("NATIVE_NEEDLES_VERTICAL_PINNING_WITH_UNCHANGED_PROJECTION_AND_STOPPED_TIMER_OK")
 }

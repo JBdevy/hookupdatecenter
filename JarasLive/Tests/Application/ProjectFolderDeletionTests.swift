@@ -156,7 +156,7 @@ final class ProjectFolderDeletionTests: XCTestCase {
         await store.select(url: document, id: project.id)
         await store.deselect()
         try FileManager.default.removeItem(at: document.deletingLastPathComponent())
-        try await store.save(project)
+        do { try await store.save(project); XCTFail("A detached document must never report that it was saved") } catch {}
         let loaded = try await store.load()
         XCTAssertNil(loaded)
         XCTAssertFalse(FileManager.default.fileExists(atPath: document.deletingLastPathComponent().path))

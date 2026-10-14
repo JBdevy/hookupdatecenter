@@ -7,14 +7,15 @@ python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys
 source=Path('Apple/Shared/ProjectDocuments.swift').read_text()
-methods=source[source.index('    func addProject()'):source.index('    private func analyzeFolders(')]
+methods=source[source.index('    func chooseStems(adding: Bool)'):source.index('    private func localizedStemWarning(')]
 finish=source[source.index('    private func finish(scan:'):source.index('        do { try ProjectDirectoryPolicy.validate(url) }',source.index('    private func finish(scan:'))]
 # Stop exactly at destination resolution, before validation, media I/O or saving.
-finish+='        resolvedURL = url\n        #endif\n    }\n'
+finish+='        resolvedURL = url\n    }\n'
 state='''
 @MainActor final class ProjectDocuments {
     var ready = false, busy = false, adding = false, showingOpenProjectAlert = false
     var currentURL: URL?
+    var folderSelectionRoot: URL?
     var folderReview: [URL]?
     var folders: [URL] = [], selectedFolders: [URL] = []
     var scan: StemScan?
@@ -29,7 +30,7 @@ state='''
     func resolveImportDestination() { finish(scan: scan, detectBPM: false) }
 '''
 review=Path('Apple/Shared/FolderImportReview.swift').read_text()
-review=review[review.index('struct FolderImportReview: View {'):review.index('    var body: some View {')]
+review=review[review.index('struct FolderImportReview: View {'):review.index('    var body: some View {', review.index('struct FolderImportReview: View {'))]
 review=review.replace('struct FolderImportReview: View {','struct FolderImportReview {',1)
 review+='    var testedSelection: FolderImportSelection { selection }\n}\n'
 fixture=Path('Tests/Apple/AddProjectFlowTests.swift').read_text()

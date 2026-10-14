@@ -292,7 +292,7 @@ private struct LocalizedTeleprompterConfig: View {
             }
         }
         preferenceObservation = preferences.$settings.dropFirst().sink { [weak self] _ in
-            guard self?.visible == true || (self?.index == 1 && TeleprompterRemote.shared.enabled) else { return }
+            guard self?.visible == true || (self.map { TeleprompterRemote.panel($0.index).enabled } ?? false) else { return }
             // Published sends before the stored profile changes. Read it on the
             // next main-queue turn so progress mode also changes while stopped.
             DispatchQueue.main.async { [weak self] in
@@ -339,7 +339,7 @@ private struct LocalizedTeleprompterConfig: View {
     /// INIT AUTO observes only playback identity; closed projections do no content work.
     func update(_ snapshot: ShowSnapshot, revision: UInt64 = 0) {
         if index == 1 { TeleprompterTimerController.shared.observePlayback(snapshot) }
-        guard visible || (index == 1 && TeleprompterRemote.shared.enabled) else { return }
+        guard visible || TeleprompterRemote.panel(index).enabled else { return }
         if !visible {
             let now = ProcessInfo.processInfo.systemUptime
             guard now - lastRemoteRefresh >= 0.1 else { return }
@@ -347,7 +347,7 @@ private struct LocalizedTeleprompterConfig: View {
         }
         guard let originalSong = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }) ?? snapshot.project.songs.first else {
             if display.data != TPProjectionData() { display.data = TPProjectionData() }
-            if index == 1 { TeleprompterRemote.shared.clear() }
+            TeleprompterRemote.panel(index).clear()
             return
         }
         let song = snapshot.transport.multiLoop?.projectionSong(originalSong) ?? originalSong
@@ -384,13 +384,13 @@ private struct LocalizedTeleprompterConfig: View {
         next.preview = cachedPreview
         if visible, display.data != next { display.data = next }
         if let window, display.fullscreen != window.isProjectionFullscreen { display.fullscreen = window.isProjectionFullscreen }
-        if index == 1 && TeleprompterRemote.shared.enabled {
+        if TeleprompterRemote.panel(index).enabled {
             let blocks = Array(next.preview.dropFirst(previewPage * 4).prefix(4)).map { block in
                 TeleprompterRemoteBlock(name: block.name, color: block.color, duration: block.duration, songs: block.songs.map {
                     TeleprompterRemoteSong(name: $0.name, color: $0.id == next.currentRegion ? preferences.settings.highlightColor : $0.id == next.queuedRegion ? preferences.settings.queueNameColor : $0.color, duration: $0.duration)
                 })
             }
-            TeleprompterRemote.shared.update(text: next.text, chords: next.chords, song: next.song, queued: next.queued, progress: next.progress, preview: previewActive, blocks: blocks, snapshot: snapshot)
+            TeleprompterRemote.panel(index).update(text: next.text, chords: next.chords, song: next.song, queued: next.queued, progress: next.progress, preview: previewActive, blocks: blocks, snapshot: snapshot)
         }
     }
     private func preview(song: Song, project: Project) -> [TPPreviewBlock] {
@@ -436,7 +436,7 @@ private struct LocalizedTeleprompterConfig: View {
     }
     func configureRemote(show: ShowController, directory: URL?) {
         self.show = show
-        TeleprompterRemote.shared.configure(directory: directory) { [weak self, weak show] in
+        TeleprompterRemote.panel(index).configure(directory: directory) { [weak self, weak show] in
             guard let self, let show else { return }
             self.update(show.snapshot, revision: show.projectRevision)
         }
@@ -448,7 +448,7 @@ private struct LocalizedTeleprompterConfig: View {
         panel.title = JarasLocalization.string("TP Remoto"); panel.isReleasedWhenClosed = false
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
         panel.hidesOnDeactivate = true; panel.delegate = self
-        panel.contentView = NSHostingView(rootView: TeleprompterRemoteView(close: { [weak panel] in panel?.close() }))
+        panel.contentView = NSHostingView(rootView: TeleprompterRemoteView(close: { [weak panel] in panel?.close() }, remote: TeleprompterRemote.panel(index)))
         remoteConfiguration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
     }
     func windowDidResize(_ notification: Notification) {
@@ -462,7 +462,7 @@ private struct LocalizedTeleprompterConfig: View {
             visible = false; window?.contentView = nil; window = nil
             video.setProjectionEnabled(false)
             cachedPreview = []; cachedRevision = nil
-            if index == 2 || !TeleprompterRemote.shared.enabled { show = nil }
+            if !TeleprompterRemote.panel(index).enabled { show = nil }
         } else if closed === configuration { configuration?.contentView = nil; configuration = nil }
         else if closed === remoteConfiguration { remoteConfiguration?.contentView = nil; remoteConfiguration = nil }
     }
@@ -492,7 +492,7 @@ struct TeleprompterToggleButton: View {
         }.buttonStyle(.plain)
             .contextMenu {
                 Button("Configurações") { controller.showSettings() }
-                if index == 1 { Button("TP Remoto") { controller.showRemote(show: show, directory: directory) } }
+                Button("TP Remoto") { controller.showRemote(show: show, directory: directory) }
             }
             .jarasHelp(index == 1 ? ControlMappings.shared.shortcutHelp(.toggleTeleprompter) : "Teleprompter 2")
             .accessibilityLabel("Teleprompter \(index)")

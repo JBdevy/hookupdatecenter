@@ -16,5 +16,6 @@ source = source.replace('private struct', 'struct').replace('private final class
 Path(sys.argv[1]).write_text(source)
 PY
 cp Tests/Apple/RecordingTests.swift "$build_dir/main.swift"
-swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasRecording.h Application/Project/{ProjectModels,MIDIItem,ProjectDocumentCodec,ProjectDocumentAppearance,MultiLoop,AudioFileRead,TimelineTempo,OutputPatch,TrackRouting,ClipRepetition,NativeFXSettings,RecordingOverview,StemProjectImporter,MediaFileNames,HookImportRules}.swift "$build_dir/Writer.swift" "$build_dir/main.swift" "$build_dir"/*.o -lc++ -o "$build_dir/test"
+cp -R Apple/Resources/en.lproj Apple/Resources/pt-BR.lproj "$build_dir/"
+swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasRecording.h Apple/Shared/NativeTooltips.swift Application/Controls/NativeFXParameter.swift Application/Project/{ProjectModels,MIDIItem,ProjectDocumentCodec,ProjectDocumentAppearance,MultiLoop,AudioFileRead,TimelineTempo,OutputPatch,TrackRouting,ClipRepetition,NativeFXSettings,TrackAutomation,RecordingOverview,StemProjectImporter,MediaFileNames,HookImportRules}.swift "$build_dir/Writer.swift" "$build_dir/main.swift" "$build_dir"/*.o -lc++ -o "$build_dir/test"
 "$build_dir/test"

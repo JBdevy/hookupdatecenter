@@ -233,7 +233,10 @@ import Foundation
         "Levels and the fixed gradient retain the full bar height")
     level.peakHold.clear(); level.peakHold.record(pow(10, -24.0 / 20))
     let compactPeak = (meterLayer("meter-peak") as! CATextLayer).string as! NSAttributedString
-    precondition(compactPeak.size().width <= 26 && meterLayer("meter-peak").frame == CGRect(x: 21, y: 0, width: 31, height: 12),
+    precondition((compactPeak.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == 8,
+        "The recorded peak uses the larger desktop readout font")
+    precondition(compactPeak.size().width <= 31 && compactPeak.size().height <= 12
+        && meterLayer("meter-peak").frame == CGRect(x: 21, y: 0, width: 31, height: 12),
         "The full negative peak fits beside MIDI without clipping")
     meter.setFrameSize(NSSize(width: 40, height: 80)); meter.layoutSubtreeIfNeeded()
     meter.bind(level, showScale: false, peakOnly: true)

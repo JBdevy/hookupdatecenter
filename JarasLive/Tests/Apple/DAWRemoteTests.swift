@@ -113,6 +113,21 @@ markerFixture.markers = [.init(id: UUID(), name: "Entrada", position: 2, color: 
 if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(markerFixture)) {
     require(decoded.markers?.first?.name == "Entrada" && decoded.markers?.first?.position == 2, "grid marker metadata roundtrip")
 } else { fatalError("marker state packet") }
+var duplicateMarkerFixture = markerFixture
+duplicateMarkerFixture.markers!.append(duplicateMarkerFixture.markers![0])
+require(!duplicateMarkerFixture.valid, "duplicate marker IDs are rejected before the grid builds unique-key dictionaries")
+do {
+    // Encode directly to exercise received input independently of the host's
+    // own outgoing snapshot validation.
+    var malformed = Data([0x4a, 0x4c, DAWRemoteWire.version, 2])
+    malformed.append(try JSONEncoder().encode(duplicateMarkerFixture))
+    _ = try DAWRemoteWire.decode(malformed)
+    fatalError("received duplicate marker IDs must be rejected")
+} catch DAWRemoteWire.Failure.invalid {}
+var sharedMarkerNameFixture = markerFixture
+sharedMarkerNameFixture.markers!.append(.init(id: UUID(), name: "Entrada", position: 2, color: 0x00ff9a))
+require(sharedMarkerNameFixture.valid, "separate markers may share a name and position without sharing identity")
+print("REMOTE_DUPLICATE_MARKER_IDENTITIES_REJECTED_BEFORE_GRID_DICTIONARIES_OK")
 markerFixture.markers![0].position = .nan
 require(!markerFixture.valid, "marker invalid time rejected")
 var laneFixture = fixture
@@ -1104,3 +1119,21 @@ for mutate: (inout DAWRemoteState) -> Void in [
     require(DAWRemoteSnapshotComparison.differs(changed, from: fixture) == (changed != fixture), "Fast snapshot comparison preserves full-state change semantics")
 }
 print("REMOTE_SNAPSHOT_TRANSPORT_FAST_PATH_AND_METADATA_FALLBACK_OK")
+
+let partsOpen = DAWRemotePartsWidths(available: 380, requested: 240, visible: true, handle: 22)
+require(partsOpen.total == 262 && partsOpen.content == 240, "Parts occupies grid space, preserving Setlist")
+let partsConstrained = DAWRemotePartsWidths(available: 150, requested: 400, visible: true, handle: 22)
+require(partsConstrained.content == 128 && partsConstrained.total == 150, "large Parts shrinks when mixer returns")
+require(DAWRemotePartsWidths(available: 600, requested: 400, visible: true, handle: 22).content == 400, "preferred Parts width restored after mixer closes")
+require(DAWRemotePartsWidths(available: 0, requested: 400, visible: true, handle: 22).total == 0, "no grid space cannot steal Setlist width")
+require(DAWRemotePartsWidths(available: 600, requested: 400, visible: false, handle: 22).total == 0, "hidden Parts returns all space")
+let editSong = DAWRemoteCommand(project: project, song: song, action: .editRegion, target: regionID, value: 0x123456, text: "Edited song")
+require(editSong.valid && DAWRemoteAccessRules.allows(editSong, mode: .director), "Director may edit regions")
+require(!DAWRemoteAccessRules.allows(editSong, mode: .observer) && !DAWRemoteAccessRules.allows(editSong, mode: .notices), "read-only modes cannot edit regions")
+require(!DAWRemoteCommand(project: project, song: song, action: .editRegion, target: regionID, value: -1, text: "Name").valid, "invalid region color rejected")
+require(!DAWRemoteCommand(project: project, song: song, action: .renamePlaylist, target: regionID, text: "  ").valid, "empty playlist name rejected")
+let removeFromList = DAWRemoteCommand(project: project, song: song, action: .deleteRegion, target: regionID, playlist: UUID())
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(removeFromList)) {
+    require(decoded.playlist == removeFromList.playlist, "remove preserves explicit playlist even after selection changes")
+} else { fatalError("playlist removal packet") }
+print("REMOTE_PARTS_WIDTH_AND_EDIT_MENUS_OK")

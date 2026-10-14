@@ -27,16 +27,24 @@ final class NativeEffectsChain {
     private var pitch: AVAudioUnitTimePitch?
     let delay = AVAudioUnitDelay()
     let reverb = JarasDynamics.makeReverb()
+    private var itemInputMix: AVAudioMixerNode?
     private let outputMix = AVAudioMixerNode()
     private var outputDestination: AVAudioNode?
     private var instanceNodes: [String: AVAudioNode] = [:]
     private var instanceDelayProbes: [String: (JarasAudioAnalysisProbe, JarasAudioAnalysisProbe)] = [:]
+    // Adjacent delays share one boundary: the first output is the next input.
+    // AVAudioNode permits only one tap per bus, even during an editor switch.
+    private var delayAnalysisProbes: [ObjectIdentifier: JarasAudioAnalysisProbe] = [:]
+    private var delayAnalysisPeaks: [ObjectIdentifier: (time: Double, values: [Float])] = [:]
     private var observedEffects = Set<String>()
     func instrumentInput(for key: String) -> AVAudioMixerNode? {
         key == "Instruments" ? instrumentInput : instanceNodes[key] as? AVAudioMixerNode
     }
     private func configureInstances(_ next: NativeFXSettings, rate: Double) {
         for instance in next.instances ?? [] where next.inserted.contains(instance.effectKey) {
+            #if os(iOS)
+            guard instance.kind != "Instruments" else { continue }
+            #endif
             let key = instance.effectKey, value = instance.settings
             let node: AVAudioNode
             if let existing = instanceNodes[key] { node = existing }
@@ -85,7 +93,6 @@ final class NativeEffectsChain {
     private var observesDelay = false
     private var delayInputProbe: JarasAudioAnalysisProbe?
     private var delayOutputProbe: JarasAudioAnalysisProbe?
-    #if os(macOS)
     private var stemSeparatorNode: AVAudioUnitEffect?
     private var stemSeparatorStarted = false
     private var stemSeparatorError: String?
@@ -110,8 +117,12 @@ final class NativeEffectsChain {
         }
         if next.isEnabled(NativeFXSettings.stemSeparator), !stemSeparatorStarted {
             do {
+                #if os(macOS)
                 let paths = try CatStemRealtimeRuntime.paths()
                 try JarasStemSeparator.start(node, executable: paths.executable, worker: paths.worker, modelCache: paths.models)
+                #else
+                try JarasStemSeparator.start(node, coreMLModel: CatStemRealtimeRuntime.modelURL())
+                #endif
                 stemSeparatorStarted = true; stemSeparatorError = nil
             } catch { stemSeparatorError = error.localizedDescription }
         }
@@ -142,6 +153,14 @@ final class NativeEffectsChain {
         throw ProjectError.invalid("CatStem demorou demais para iniciar.")
     }
     var stemSeparatorLatency: Double { stemSeparatorNode?.auAudioUnit.latency ?? 0 }
+    /// Cancel a model process while its chain is still owned. Full graph
+    /// teardown also cancels it in detach. Cancellation is asynchronous;
+    /// the UI never waits for worker termination.
+    func stopStemSeparator() {
+        guard let node = stemSeparatorNode else { return }
+        JarasStemSeparator.stop(node)
+        stemSeparatorStarted = false; stemSeparatorError = nil
+    }
     /// Export owns this chain on its worker thread and must release its model
     /// lease before starting the next render batch.
     func stopStemSeparatorAndWait() throws {
@@ -149,6 +168,14 @@ final class NativeEffectsChain {
         try JarasStemSeparator.stopAndWait(node, timeout: 5)
         stemSeparatorStarted = false
     }
+    func resumeStemSeparator() {
+        if engine != nil, let settings { configureStemSeparator(settings) }
+    }
+    var stemSeparatorWorkerRunning: Bool {
+        guard let node = stemSeparatorNode else { return false }
+        return JarasStemSeparator.status(node)["workerRunning"] as? Bool == true
+    }
+    #if os(macOS)
     private(set) var externalNodes: [String: AVAudioUnitEffect] = [:]
     var externalError: Error?
     private var failedExternalPlugins: [String: (ExternalPlugin, Error)] = [:]
@@ -158,6 +185,14 @@ final class NativeEffectsChain {
         for node in externalNodes.values { JarasVST3.instrumentMIDIInput(node, enabled: enabled) }
     }
     func externalNode(_ identifier: String) -> AVAudioUnitEffect? { externalNodes[identifier] }
+    /// The processor already owns this state. A Save only updates the cached
+    /// description, so a later native-parameter edit cannot restore an old preset.
+    func rememberCapturedPluginState(_ plugin: ExternalPlugin, source: AVAudioUnitEffect) {
+        guard externalNodes[plugin.id] === source,
+              let index = settings?.externalPlugins?.firstIndex(where: { $0.id == plugin.id }) else { return }
+        settings?.externalPlugins?[index].componentState = plugin.componentState
+        settings?.externalPlugins?[index].controllerState = plugin.controllerState
+    }
     func prepareExternal(_ plugin: ExternalPlugin) throws -> AVAudioUnitEffect {
         let node: AVAudioUnitEffect
         if let existing = externalNodes[plugin.id] { node = existing }
@@ -170,6 +205,11 @@ final class NativeEffectsChain {
             }
             externalNodes[plugin.id] = node
         }
+        // AVAudioEngine propagates this flag only during prepare/start. VST3
+        // setupProcessing happens now, while the export graph is being built,
+        // so the processor must receive its owning graph's mode explicitly.
+        let offline = engine?.isInManualRenderingMode == true && engine?.manualRenderingMode == .offline
+        if node.auAudioUnit.isRenderingOffline != offline { node.auAudioUnit.isRenderingOffline = offline }
         let data = try JSONEncoder().encode([plugin])
         try JarasVST3.configure(node, plugins: JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? [])
         JarasVST3.instrumentMIDIInput(node, enabled: instrumentMIDIInput)
@@ -204,7 +244,7 @@ final class NativeEffectsChain {
         #if os(macOS)
         return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + (stemSeparatorNode.map { [$0] } ?? []) + Array(externalNodes.values)
         #else
-        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? [])
+        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + (stemSeparatorNode.map { [$0] } ?? [])
         #endif
     }
     var output: AVAudioNode { outputDestination ?? outputMix }
@@ -232,18 +272,31 @@ final class NativeEffectsChain {
     private var sampleRate = 0.0
     func attach(to engine: AVAudioEngine, input: AVAudioNode, format: AVAudioFormat, destinations: [AVAudioConnectionPoint] = []) {
         self.engine = engine; self.input = input; self.format = format
+        if !reorderable {
+            let mix = AVAudioMixerNode()
+            engine.attach(mix); engine.connect(input, to: mix, format: format)
+            itemInputMix = mix; self.input = mix
+        }
         settings = nil; sampleRate = 0
         preparedEffects = reorderable ? ["EQ"] : Set(NativeFXSettings.order.dropFirst())
         for node in nodes { engine.attach(node) }
-        // Tracks already end at their printed-MIDI mixer and items at their
-        // gain unit. Use that stable sink directly instead of rendering an
-        // additional unity mixer for every chain on every device cycle.
-        outputDestination = destinations.count == 1 && destinations[0].bus == 0 ? destinations[0].node : nil
+        // Track chains already end at a mixer. Items keep two stable mixer
+        // boundaries so editing their processors never resets the player's
+        // queue or the time-stretch samples already waiting to be heard.
+        outputDestination = reorderable && destinations.count == 1 && destinations[0].bus == 0 ? destinations[0].node : nil
         if outputDestination == nil {
             engine.attach(outputMix)
             if !destinations.isEmpty { engine.connect(outputMix, to: destinations, fromBus: 0, format: format) }
         }
         apply(NativeFXSettings())
+        if let itemInputMix, let first = connected.first {
+            // Keep an inaudible connection alive through every graph edit.
+            // Its per-destination volume leaves the FX branch at unity and
+            // avoids the doubled signal of a temporary audible fanout.
+            engine.connect(itemInputMix, to: [AVAudioConnectionPoint(node: first, bus: 0),
+                AVAudioConnectionPoint(node: outputMix, bus: 1)], fromBus: 0, format: format)
+            itemInputMix.destination(forMixer: outputMix, bus: 1)!.volume = 0
+        }
     }
     private func connect(_ next: NativeFXSettings) {
         guard let engine, let input, let format else { return }
@@ -267,10 +320,8 @@ final class NativeEffectsChain {
             case "Pitch": return pitch
             case "Delay": return delay
             case "Reverb": return reverb
-            #if os(macOS)
             case NativeFXSettings.stemSeparator:
                 return next.inserted.contains(NativeFXSettings.stemSeparator) && next.stemMix != nil ? stemSeparatorNode : nil
-            #endif
             default:
                 #if os(macOS)
                 return next.externalPlugins?.first(where: { $0.effectKey == key }).flatMap { externalNodes[$0.id] }
@@ -280,20 +331,28 @@ final class NativeEffectsChain {
             }
         }.filter { includedNodes.insert(ObjectIdentifier($0)).inserted }
         guard ordered.map(ObjectIdentifier.init) != connected.map(ObjectIdentifier.init) else { return }
-        delayInputProbe?.detach(); delayOutputProbe?.detach()
-        // Keep the upstream players connected to a live destination while
-        // rebuilding the processors. Disconnecting the input first causes
-        // AVAudioEngine to discard their scheduled PCM during a live reorder.
-        engine.connect(input, to: output, fromBus: 0, toBus: 0, format: format)
-        for node in connected { engine.disconnectNodeOutput(node) }
+        detachDelayAnalysis()
+        // Preserve every unchanged leading connection. In an item chain the
+        // combined EQ/compressor is always first: rewiring its player input
+        // discards scheduled PCM, even when the player is immediately reconnected.
+        var sharedPrefix = 0
+        while sharedPrefix < min(ordered.count, connected.count), ordered[sharedPrefix] === connected[sharedPrefix] {
+            sharedPrefix += 1
+        }
+        let bridge = sharedPrefix > 0 ? ordered[sharedPrefix - 1] : input
+        // Keep the unchanged prefix in place. Item input/output boundaries
+        // retain their silent anchor throughout this rewiring, so neither
+        // the player nor its buffered time-stretch audio is restarted.
+        if connected.count > sharedPrefix {
+            engine.connect(bridge, to: output, fromBus: 0, toBus: 0, format: format)
+        }
+        for node in connected.dropFirst(sharedPrefix) { engine.disconnectNodeOutput(node) }
         var destination: AVAudioNode = output
-        for node in ordered.reversed() {
-            if let mixer = destination as? AVAudioMixerNode { engine.connect(node, to: mixer, fromBus: 0, toBus: 0, format: format) }
-            else { engine.connect(node, to: destination, format: format) }
+        for node in ordered.dropFirst(sharedPrefix).reversed() {
+            engine.connect(node, to: destination, fromBus: 0, toBus: 0, format: format)
             destination = node
         }
-        if let mixer = destination as? AVAudioMixerNode { engine.connect(input, to: mixer, fromBus: 0, toBus: 0, format: format) }
-        else { engine.connect(input, to: destination, format: format) }
+        engine.connect(bridge, to: destination, fromBus: 0, toBus: 0, format: format)
         connected = ordered
         observe(observedEffects)
     }
@@ -301,24 +360,23 @@ final class NativeEffectsChain {
         for node in nodes { node.auAudioUnit.reset() }
         for node in instanceNodes.values { (node as? AVAudioUnit)?.auAudioUnit.reset() }
         meterTime = 0; meterCache.removeAll(keepingCapacity: true)
+        delayAnalysisPeaks.removeAll(keepingCapacity: true)
     }
     func detach(from engine: AVAudioEngine) {
-        #if os(macOS)
         if let node = stemSeparatorNode { JarasStemSeparator.stop(node) }
-        #endif
-        delayInputProbe?.detach(); delayOutputProbe?.detach()
-        for probes in instanceDelayProbes.values { probes.0.detach(); probes.1.detach() }; instanceDelayProbes.removeAll()
+        detachDelayAnalysis()
         for node in instanceNodes.values { engine.detach(node) }; instanceNodes.removeAll()
         for node in nodes { engine.detach(node) }
         if let instrumentMix { engine.detach(instrumentMix) }
+        if let itemInputMix { engine.detach(itemInputMix) }; itemInputMix = nil
         if outputDestination == nil { engine.detach(outputMix) }
         outputDestination = nil; connected.removeAll(); self.engine = nil; input = nil
         preparedEffects = ["EQ"]
         instrumentMix = nil
         #if os(macOS)
         externalNodes.removeAll(); failedExternalPlugins.removeAll()
-        stemSeparatorNode = nil; stemSeparatorStarted = false; stemSeparatorError = nil
         #endif
+        stemSeparatorNode = nil; stemSeparatorStarted = false; stemSeparatorError = nil
     }
     func apply(_ next: NativeFXSettings) {
         let rate = max(8000, format?.sampleRate ?? equalizer.outputFormat(forBus: 0).sampleRate)
@@ -328,8 +386,8 @@ final class NativeEffectsChain {
         #else
         guard next != settings || rate != sampleRate else { return }
         #endif
-        #if os(macOS)
         configureStemSeparator(next)
+        #if os(macOS)
         failedExternalPlugins = failedExternalPlugins.filter { retained.contains($0.key) }
         for plugin in next.externalPlugins ?? [] where next.inserted.contains(plugin.effectKey) {
             let failed = failedExternalPlugins[plugin.id]
@@ -366,15 +424,12 @@ final class NativeEffectsChain {
         }
         configureInstances(next, rate: rate)
         connect(next)
-        #if os(macOS)
         if !next.inserted.contains(NativeFXSettings.stemSeparator), let node = stemSeparatorNode {
             JarasStemSeparator.stop(node); engine?.detach(node)
             stemSeparatorNode = nil; stemSeparatorStarted = false; stemSeparatorError = nil
         }
-        #endif
         let nativeRetained = Set((next.instances ?? []).filter { next.inserted.contains($0.effectKey) }.map(\.effectKey))
         for key in Set(instanceNodes.keys).subtracting(nativeRetained) {
-            if let probes = instanceDelayProbes.removeValue(forKey: key) { probes.0.detach(); probes.1.detach() }
             if let node = instanceNodes.removeValue(forKey: key) { engine?.detach(node) }
         }
         #if os(macOS)
@@ -417,11 +472,6 @@ final class NativeEffectsChain {
             case "Reverb":
                 JarasDynamics.setAnalysisEnabled(node as! AVAudioUnitEffect, input: true, enabled: enabled)
                 JarasDynamics.setAnalysisEnabled(node as! AVAudioUnitEffect, input: false, enabled: enabled)
-            case "Delay":
-                if enabled, let index = connected.firstIndex(where: { $0 === node }), let predecessor = index > 0 ? connected[index - 1] : input {
-                    let probes = instanceDelayProbes[key] ?? (JarasAudioAnalysisProbe(), JarasAudioAnalysisProbe())
-                    instanceDelayProbes[key] = probes; probes.0.attach(to: predecessor); probes.1.attach(to: node)
-                } else if let probes = instanceDelayProbes[key] { probes.0.detach(); probes.1.detach() }
             default: break
             }
         }
@@ -432,14 +482,52 @@ final class NativeEffectsChain {
         JarasDynamics.setAnalysisEnabled(reverb, input: false, enabled: effects.contains("Reverb"))
         observesDelay = effects.contains("Delay"); updateDelayAnalysis()
     }
+    private func detachDelayAnalysis() {
+        for probe in delayAnalysisProbes.values { probe.detach() }
+        delayAnalysisProbes.removeAll(); delayAnalysisPeaks.removeAll()
+        instanceDelayProbes.removeAll()
+        delayInputProbe = nil; delayOutputProbe = nil
+    }
     private func updateDelayAnalysis() {
-        guard observesDelay, let index = connected.firstIndex(where: { $0 === delay }),
-              let predecessor = index > 0 ? connected[index - 1] : input else {
-            delayInputProbe?.detach(); delayOutputProbe?.detach(); return
+        var boundaries: [String: (AVAudioNode, AVAudioNode)] = [:]
+        func include(_ key: String, node: AVAudioNode) {
+            guard let index = connected.firstIndex(where: { $0 === node }),
+                  let predecessor = index > 0 ? connected[index - 1] : input else { return }
+            boundaries[key] = (predecessor, node)
         }
-        if delayInputProbe == nil { delayInputProbe = JarasAudioAnalysisProbe() }
-        if delayOutputProbe == nil { delayOutputProbe = JarasAudioAnalysisProbe() }
-        delayInputProbe?.attach(to: predecessor); delayOutputProbe?.attach(to: delay)
+        if observesDelay { include("Delay", node: delay) }
+        for (key, node) in instanceNodes where node is AVAudioUnitDelay && observedEffects.contains(key) {
+            include(key, node: node)
+        }
+        let retained = Set(boundaries.values.flatMap { [ObjectIdentifier($0.0), ObjectIdentifier($0.1)] })
+        // Release obsolete taps first; never remove a shared tap through one
+        // effect's old pair while another effect still needs the same node.
+        for id in Set(delayAnalysisProbes.keys).subtracting(retained) {
+            if let probe = delayAnalysisProbes.removeValue(forKey: id) {
+                probe.detach(); delayAnalysisPeaks[ObjectIdentifier(probe)] = nil
+            }
+        }
+        func probe(for node: AVAudioNode) -> JarasAudioAnalysisProbe {
+            let id = ObjectIdentifier(node)
+            if let probe = delayAnalysisProbes[id] { return probe }
+            let probe = JarasAudioAnalysisProbe(); probe.attach(to: node)
+            delayAnalysisProbes[id] = probe
+            return probe
+        }
+        delayInputProbe = nil; delayOutputProbe = nil; instanceDelayProbes.removeAll()
+        for (key, nodes) in boundaries {
+            let pair = (probe(for: nodes.0), probe(for: nodes.1))
+            if key == "Delay" { delayInputProbe = pair.0; delayOutputProbe = pair.1 }
+            else { instanceDelayProbes[key] = pair }
+        }
+    }
+    private func delayPeaks(_ probe: JarasAudioAnalysisProbe?) -> [Float] {
+        guard let probe else { return [0, 0] }
+        let id = ObjectIdentifier(probe), now = ProcessInfo.processInfo.systemUptime
+        if let cached = delayAnalysisPeaks[id], now - cached.time < 1.0 / 40 { return cached.values }
+        let values = probe.takePeaks().map(\.floatValue)
+        delayAnalysisPeaks[id] = (now, values)
+        return values
     }
     func spectrum(_ effect: String) -> Data? {
         if let node = instanceNodes[effect] {
@@ -460,7 +548,7 @@ final class NativeEffectsChain {
             switch settings?.kind(of: effect) {
             case "Compressor", "Limiter": return JarasDynamics.takeCompressorPeaks(node as! AVAudioUnitEffect).map(\.floatValue)
             case "Reverb": return JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: true).map(\.floatValue) + JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: false).map(\.floatValue)
-            case "Delay": return (instanceDelayProbes[effect]?.0.takePeaks().map(\.floatValue) ?? [0,0]) + (instanceDelayProbes[effect]?.1.takePeaks().map(\.floatValue) ?? [0,0])
+            case "Delay": return delayPeaks(instanceDelayProbes[effect]?.0) + delayPeaks(instanceDelayProbes[effect]?.1)
             default: return [0,0,0,0]
             }
         }
@@ -468,8 +556,8 @@ final class NativeEffectsChain {
         if now - meterTime > 1.0 / 40 {
             meterTime = now
             let compressor = compressorPeaks()
-            let delayIn = delayInputProbe?.takePeaks().map(\.floatValue) ?? [0, 0]
-            let delayOut = delayOutputProbe?.takePeaks().map(\.floatValue) ?? [0, 0]
+            let delayIn = delayPeaks(delayInputProbe)
+            let delayOut = delayPeaks(delayOutputProbe)
             let reverbIn = JarasDynamics.analysisPeaks(reverb, input: true).map(\.floatValue)
             let reverbOut = JarasDynamics.analysisPeaks(reverb, input: false).map(\.floatValue)
             meterCache = ["Compressor":compressor, "Delay":delayIn+delayOut, "Reverb":reverbIn+reverbOut, "Limiter":limiter.map { JarasDynamics.takeCompressorPeaks($0).map(\.floatValue) } ?? [0,0,0,0]]

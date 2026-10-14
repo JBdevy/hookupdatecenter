@@ -518,7 +518,8 @@ void Engine::setTimecode(const ID& id, TimecodeSettings settings) {
     throw std::invalid_argument("Unknown Timecode track");
 }
 void Engine::setFX(const ID& id, std::string json) {
-    if(json.empty() || json.size()>65536) throw std::invalid_argument("Invalid FX data");
+    // Track/Master VST3 presets need the same capacity as item FX snapshots.
+    if(json.empty() || json.size()>32 * 1024 * 1024) throw std::invalid_argument("Invalid FX data");
     if(id.empty()) { project_.masterFXJSON=std::move(json); return; }
     for(auto& song:project_.songs) for(auto& track:song.tracks) if(track.id==id) { if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX"); track.fxJSON=std::move(json); return; }
     throw std::invalid_argument("Unknown FX track");

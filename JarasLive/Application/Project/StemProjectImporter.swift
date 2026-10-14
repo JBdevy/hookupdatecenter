@@ -161,8 +161,23 @@ enum StemProjectImporter {
                 let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
                 guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
                 do {
+                    let duration: Double
+                    #if os(iOS)
+                    var coordinationError: NSError?
+                    var read: Result<Double, Error>?
+                    NSFileCoordinator().coordinate(readingItemAt: file, options: [], error: &coordinationError) { available in
+                        read = Result {
+                            let audio = try AVAudioFile(forReading: available)
+                            return Double(audio.length) / audio.processingFormat.sampleRate
+                        }
+                    }
+                    if let coordinationError { throw coordinationError }
+                    guard let read else { throw ProjectError.invalid("Could not access the selected file.") }
+                    duration = try read.get()
+                    #else
                     let audio = try AVAudioFile(forReading: file)
-                    let duration = Double(audio.length) / audio.processingFormat.sampleRate
+                    duration = Double(audio.length) / audio.processingFormat.sampleRate
+                    #endif
                     guard duration.isFinite, duration > 0 else { throw ProjectError.invalid("Invalid duration") }
                     // Duration comes from the container; scanning names must not decode every sample.
                     files.append(ImportSourceFile(url: file, name: file.lastPathComponent, duration: duration))

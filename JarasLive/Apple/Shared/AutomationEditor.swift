@@ -10,6 +10,12 @@ import Combine
 }
 @MainActor enum AutomationWindows {
     private static var windows: [String: NSWindow] = [:]
+    static func closeAll() {
+        // Closing calls didClose, which mutates the registry.
+        let closing = Array(windows.values)
+        windows.removeAll()
+        for window in closing { window.close() }
+    }
     static func open(show: ShowController, track: UUID?) {
         let key = show.snapshot.project.id.uuidString + (track?.uuidString ?? "master")
         if let window = windows[key] { window.makeKeyAndOrderFront(nil); return }

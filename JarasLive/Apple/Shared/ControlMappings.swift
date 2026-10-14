@@ -76,6 +76,7 @@ struct MappingTransferRequest: Identifiable {
             }
         }
         #endif
+        #if os(macOS)
         if client == 0 {
             let result = MIDIClientCreateWithBlock("CatLive Controls" as CFString, &client) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.refreshSources() }
@@ -110,6 +111,7 @@ struct MappingTransferRequest: Identifiable {
             }
         }
         refreshSources()
+        #endif
     }
     func refreshSources() {
         guard port != 0 else { return }

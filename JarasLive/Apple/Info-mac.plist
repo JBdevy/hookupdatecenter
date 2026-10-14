@@ -17,6 +17,11 @@
 <key>NSBonjourServices</key><array><string>_jaras-live._tcp</string></array>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleDocumentTypes</key><array><dict>
+<key>CFBundleTypeName</key><string>CatLive Portable Project</string>
+<key>CFBundleTypeRole</key><string>Editor</string>
+<key>LSHandlerRank</key><string>Owner</string>
+<key>LSItemContentTypes</key><array><string>com.hookdeveloper.catlive.ziplive</string></array>
+</dict><dict>
 <key>CFBundleTypeName</key><string>CatLive Project</string>
 <key>CFBundleTypeIconFile</key><string>CatLiveIcon.icns</string>
 <key>CFBundleTypeRole</key><string>Editor</string>
@@ -45,6 +50,11 @@
 <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><string>rpp</string></dict>
 </dict></array>
 <key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.ziplive</string>
+<key>UTTypeDescription</key><string>CatLive Portable Project</string>
+<key>UTTypeConformsTo</key><array><string>public.zip-archive</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><string>ziplive</string></dict>
+</dict><dict>
 <key>UTTypeIdentifier</key><string>com.hookdeveloper.jaraslive.project</string>
 <key>UTTypeIconFile</key><string>CatLiveIcon.icns</string>
 <key>UTTypeDescription</key><string>CatLive Project</string>

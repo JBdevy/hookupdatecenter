@@ -9,6 +9,25 @@ final class ReaperProjectImportTests: XCTestCase {
         try text.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
+    func testMalformedTakeNestingFailsWithoutCrashingOrChangingSource() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let malformed = [
+            "<TAKE_INLINE\nTAKE\n>\n",
+            "<ITEM\nTAKE\n>\n",
+            "<REAPER_PROJECT\n<TAKE_INLINE\nTAKE\n>\n>\n",
+            "<REAPER_PROJECT\n<TRACK\n<TAKE_INLINE\nTAKE\n>\n>\n>\n",
+            "<REAPER_PROJECT\n<TRACK\n<ITEM\nTAKE\n"
+        ]
+        for text in malformed {
+            let source = try fixture(text, in: directory)
+            let original = try Data(contentsOf: source)
+            XCTAssertThrowsError(try ReaperProjectImporter.read(source), text) { error in
+                XCTAssertTrue(error is ProjectError, "Malformed take structures must produce an import error")
+            }
+            XCTAssertEqual(try Data(contentsOf: source), original)
+        }
+    }
     func testTrackMixerVolumePanMuteIncludingFoldersSurvivesSave() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -2,6 +2,29 @@ import XCTest
 @testable import JarasApplication
 
 final class ProjectEditingTests: XCTestCase {
+    func testRoundedImportedRegionOnsetUsesSameOwnershipInPreviewAndPersistence() throws {
+        var project = Project.empty(name: "Rounded region")
+        let region = Part(id: UUID(), name: "Song", startTime: 11958.400000432, endTime: 12174.900000432)
+        let item = AudioClip(id: UUID(), name: "Click", startTime: 11958.4, duration: 216.5)
+        var track = Track(id: UUID(), name: "Audio", role: .other); track.clips = [item]
+        project.songs[0].parts = [region]; project.songs[0].tracks = [track]; project.songs[0].duration = 15000
+        let song = project.songs[0]
+        XCTAssertEqual(song.regionOwner(at: item.startTime), region.id)
+        XCTAssertNil(song.regionOwner(at: region.startTime - 0.00001), "actual positions before the edge stay outside")
+        XCTAssertNil(song.regionOwner(at: region.endTime), "the end is half-open")
+        let preview = song.previewMovingRegion(region.id, to: 14000)
+        XCTAssertEqual(preview.tracks[0].clips[0].startTime, item.startTime + 14000 - region.startTime, accuracy: 1e-9)
+        project.songs[0].regionOwnershipInitialized = true
+        project.songs[0].regionOwnershipVersion = 2
+        let loosePreview = project.songs[0].previewMovingRegion(region.id, to: 14000)
+        XCTAssertEqual(loosePreview.tracks[0].clips[0].startTime, item.startTime, "initialized nil remains deliberately unattached")
+        project.songs[0].tracks[0].clips[0].regionOwnerID = region.id
+        let restored = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
+        XCTAssertEqual(restored.songs[0].regionOwnershipVersion, 2, "encrypted document retains the one-time migration version")
+        let restoredPreview = restored.songs[0].previewMovingRegion(region.id, to: 14000)
+        XCTAssertEqual(restoredPreview.tracks[0].clips[0].startTime, preview.tracks[0].clips[0].startTime, accuracy: 1e-9)
+    }
+
     func testRecordingLanesOnlyExpandForOverlaps() {
         var track = Track(id: UUID(), name: "Input", role: .other)
         let original = AudioClip(id: UUID(), name: "Original", startTime: 10, duration: 5)

@@ -152,6 +152,21 @@ private actor PresentationSaveStore: ProjectPersistence {
 }
 
 final class IncrementalTrackSettingsTests: XCTestCase {
+    @MainActor func testBatchFXInsertionUndoesAndRedoesAllTracksInOneStep() throws {
+        var project = fixture()
+        project.songs[0].tracks.append(Track(id: UUID(), name: "Second", role: .other))
+        let (show, executor) = try show(project)
+        let ids = Array(project.songs[0].tracks.dropFirst().map { Optional($0.id) })
+        let keys = show.insertFX(ids + ids, effect: "Compressor")
+        XCTAssertEqual(keys.count, 2)
+        for id in ids { XCTAssertEqual(show.fxSettings(id).effectKeys.count, 1) }
+        XCTAssertEqual(executor.fullEdits, 0, "Insertion must preserve incremental realtime updates")
+        show.undo()
+        for id in ids { XCTAssertTrue(show.fxSettings(id).effectKeys.isEmpty) }
+        show.redo()
+        for id in ids { XCTAssertEqual(show.fxSettings(id).effectKeys, [keys[id]!]) }
+    }
+
     @MainActor func testMIDIChannelIsIncrementalAndFiltersEveryVoiceMessage() throws {
         let project = fixture(), (show, executor) = try show(project)
         let id = project.songs[0].tracks[1].id

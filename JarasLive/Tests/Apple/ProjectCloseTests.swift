@@ -41,7 +41,9 @@ enum CloseTestCommand { case stopAll }
 @MainActor final class TrackRecording {
     static let shared = TrackRecording()
     var recording = false, busy = false, error = ""
+    var closes = 0
     func finishAndWait() async {}
+    func closeProject() { precondition(!recording && !busy); closes += 1 }
 }
 @MainActor final class ClosingLogo { func begin() {} ; func advance(_ value: Double) {} ; func finish(restore: Bool) {} ; func focus() -> Bool { false } }
 @MainActor final class FXWindows { static let shared = FXWindows(); func closeAll() {} }
@@ -63,6 +65,7 @@ Task { @MainActor in
         let documents = ProjectDocuments(), guardClose = ProjectCloseGuard()
         guardClose.attach(window: window, documents: documents)
         CloseTestAlert.response = choice
+        let previousCloses = TrackRecording.shared.closes
         var outcome: Bool?
         guardClose.request { outcome = $0 }
         while outcome == nil { await Task.yield() }
@@ -71,6 +74,7 @@ Task { @MainActor in
         precondition(documents.show.hasUnsavedChanges == (writes == 0))
         precondition(documents.cleanups == 0)
         precondition(!guardClose.pending)
+        precondition(TrackRecording.shared.closes == previousCloses + (allowed ? 1 : 0), "capture resources close only after the close decision succeeds")
         precondition(CloseTestAlert.buttons.map(\.title) == ["Save", "Close without saving", "Cancel"])
         precondition(CloseTestAlert.buttons[0].keyEquivalent == "\r")
         precondition(CloseTestAlert.buttons[1].keyEquivalent.isEmpty, "discard is never the default keyboard action")

@@ -13,6 +13,7 @@ final class Capture: @unchecked Sendable {
     func read() -> [Float] { lock.lock(); defer { lock.unlock() }; return samples }
 }
 @MainActor func run(mode: String) throws {
+    let looping = ["loop", "edit", "cursor", "controls"].contains(mode)
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("catlive-seek-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -35,13 +36,18 @@ final class Capture: @unchecked Sendable {
     var track = Track(id: UUID(), name: "Tone", role: .other)
     track.clips = [AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 5, sourceOffset: 0, waveform: [], audioFile: AudioFile(path: "tone.wav"))]
     project.songs[0].duration = 5; project.songs[0].tracks = [track]
+    if mode == "controls" {
+        var reference = Track(id: UUID(), name: "Uninterrupted reference", role: .other)
+        reference.clips = [AudioClip(id: UUID(), name: "Reference", startTime: 0, duration: 5, audioFile: AudioFile(path: "tone.wav"), gain: 0.4)]
+        project.songs[0].tracks.append(reference)
+    }
     project.songs[0].parts = [Part(id: UUID(), name: "Song", startTime: mode == "start" ? 0.2 : 0, endTime: 5)]
     let a = TimelineMarker(id: UUID(), name: "A", position: 0.2, color: 0, section: true)
     let b = TimelineMarker(id: UUID(), name: "B", position: 1, color: 0, section: true)
     let c = TimelineMarker(id: UUID(), name: "C", position: 2, color: 0, section: true)
     let d = TimelineMarker(id: UUID(), name: "D", position: 3, color: 0, section: true)
     project.songs[0].markers = [a,b,c,d]
-    var state = ShowSnapshot(project: project, transport: TransportState(sectionJumpSerial: 0, playing: true, songId: project.songs[0].id, position: 0.2, queue: QueueState(), loop: LoopState(enabled: (mode == "loop" || mode == "edit"), start: 0.2, end: 1), subPlay: SubPlayState(playing: false, position: 0)))
+    var state = ShowSnapshot(project: project, transport: TransportState(sectionJumpSerial: 0, playing: true, songId: project.songs[0].id, position: 0.2, queue: QueueState(), loop: LoopState(enabled: looping, start: 0.2, end: 1), subPlay: SubPlayState(playing: false, position: 0)))
     if mode == "seek" || mode == "cancel" { state.transport.queuedSectionMarkerId = c.id }
     if mode == "start" { state.transport.queuedSectionMarkerId = project.songs[0].parts[0].id }
     try renderer.update(state, revision: 1)
@@ -51,11 +57,12 @@ final class Capture: @unchecked Sendable {
     defer { engine.mainMixerNode.removeTap(onBus: 0) }
     let start = ProcessInfo.processInfo.systemUptime
     var last = start
+    var controlStep = -1
     while ProcessInfo.processInfo.systemUptime - start < 4.5 {
         RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 30))
         let now = ProcessInfo.processInfo.systemUptime
         var position = state.transport.position + now - last; last = now
-        if (mode == "loop" || mode == "edit"), position >= 1 {
+        if looping, position >= 1 {
             position = 0.2 + (position - 0.2).truncatingRemainder(dividingBy: 0.8); state.transport.sectionJumpSerial! += 1
         } else if mode == "start", position >= 1 {
             position = 0.2 + position - 1; state.transport.sectionJumpSerial! += 1
@@ -68,6 +75,27 @@ final class Capture: @unchecked Sendable {
         } else if mode == "cancel", position >= 0.5 { state.transport.queuedSectionMarkerId = nil }
         if mode == "edit", now - start > 0.3 {
             renderer.previewItemGain(track.clips[0].id, gain: 0.5)
+        }
+        if mode == "cursor" { state.transport.editPosition = Double(Int((now - start) * 20) % 5) }
+        if mode == "controls" {
+            let step = Int((now - start) / 0.3)
+            if step != controlStep {
+                controlStep = step
+                var neutralFX = NativeFXSettings(); neutralFX.inserted = ["EQ"]
+                switch step {
+                case 1: renderer.previewMute(track.id, muted: true)
+                case 2: renderer.previewMute(track.id, muted: false)
+                case 3: renderer.previewClipMute(track.clips[0].id, muted: true)
+                case 4: renderer.previewClipMute(track.clips[0].id, muted: false)
+                case 5: renderer.previewFX(track.id, settings: neutralFX)
+                case 6: renderer.previewClipFX(track.clips[0].id, settings: neutralFX)
+                case 7: renderer.previewFX(track.id, settings: NativeFXSettings())
+                case 8: renderer.previewClipFX(track.clips[0].id, settings: NativeFXSettings())
+                case 9: renderer.previewFX(nil, settings: neutralFX)
+                case 10: renderer.previewFX(nil, settings: NativeFXSettings())
+                default: break
+                }
+            }
         }
         state.transport.position = position
         try renderer.update(state, revision: 1)
@@ -82,9 +110,17 @@ final class Capture: @unchecked Sendable {
     let silence = Double(longest) / rate
     print("REALTIME_\(mode.uppercased())_MAX_SILENCE_SECONDS=\(silence) RATE=\(rate) JUMPS=\(state.transport.sectionJumpSerial!)")
     precondition(silence < 0.008, "a loop must not add UI/preroll silence")
+    let peak = samples.map { abs($0) }.max() ?? 0
+    precondition(peak < (mode == "controls" ? 0.040 : 0.029), "prepared destinations must not overlap outgoing audio: \(peak)")
+    if mode == "controls" {
+        let final = samples.suffix(Int(rate * 0.3))
+        let mean = final.reduce(0) { $0 + Double(abs($1)) } / Double(final.count)
+        precondition(abs(mean - 0.035) < 0.003, "mute/unmute and FX changes retain both sources and their gains: \(mean)")
+        print("LIVE_MUTE_UNMUTE_TRACK_ITEM_MASTER_FX_INSERT_REMOVE_DURING_LOOPS_OK")
+    }
     if mode == "edit" {
         let later = samples.dropFirst(Int(rate * 0.5))
         precondition((later.map { abs($0) }.max() ?? 1) < 0.014, "prepared voices receive live item gain changes before promotion")
     }
 }
-try MainActor.assumeIsolated { for mode in ["loop", "seek", "cancel", "edit", "start"] { try run(mode: mode) } }
+try MainActor.assumeIsolated { for mode in ["loop", "seek", "cancel", "edit", "start", "cursor", "controls"] { try run(mode: mode) } }

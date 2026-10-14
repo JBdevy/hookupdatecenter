@@ -40,7 +40,7 @@ struct ProjectFolderDeletion: Identifiable, Sendable {
     var visible = false
     func toggle(show: Show) { visible.toggle() }
 }
-@MainActor final class TeleprompterRemote { static let shared = TeleprompterRemote(); func setDirectory(_ directory: URL?) {} }
+@MainActor final class TeleprompterRemote { static let shared = TeleprompterRemote(); static func setProjectDirectory(_ directory: URL?) {} }
 @MainActor final class VideoPlayback {
     static let shared = VideoPlayback(), teleprompter = VideoPlayback(), teleprompter2 = VideoPlayback()
     func closeProject() {}; func open(directory: URL) {}
@@ -51,6 +51,8 @@ struct ProjectFolderDeletion: Identifiable, Sendable {
 }
 let testPreferences = UserDefaults(suiteName: "jaras-delete-test-\(UUID())")!
 @MainActor final class ProjectDocuments {
+    func closeProjectEditors() {}
+    func resetProjectSelections() {}
     let show = Show(), store = Store()
     var ready = true, busy = false, importingAudio = false, adding = false
     var status = "", error = "", migrationNotice = ""
@@ -59,6 +61,8 @@ let testPreferences = UserDefaults(suiteName: "jaras-delete-test-\(UUID())")!
     var scan: Int?, folderReview: Int?, addTarget: Int?, missingAudioPrompt: Int?, pendingAudioDrop: Int?
     var warnings: [String] = [], missingAudioPaths: Set<String> = []
     var opened = UUID()
+    var importClears = 0
+    func clearImportSelection() { importClears += 1; scan = nil; folderReview = nil; addTarget = nil }
     // INSERT_DELETION_CONTROLLER
 }
 func require(_ condition: @autoclosure () -> Bool, _ message: String) { if !condition() { fatalError(message) } }
@@ -86,9 +90,11 @@ Task { @MainActor in
         let selected = await docs.store.selected
         require(docs.show.canExecute(), "command gate restored")
         if failure {
+            require(docs.importClears == 0, "failed deletion preserves the import selection")
             require(docs.ready && docs.currentURL != nil && selected, "failed deletion keeps current document selected")
             require(docs.recent.count == 2 && !docs.error.isEmpty, "failed deletion retains recent entry and reports error")
         } else {
+            require(docs.importClears == 1, "successful deletion clears the old import selection")
             require(!docs.ready && docs.currentURL == nil && !selected, "success returns to startup and detaches store")
             require(docs.show.snapshot.project.id != oldProject && !docs.show.hasUnsavedChanges, "old project leaves memory")
             require(docs.recent.count == 1 && !docs.recent.contains(target), "deleted recent entry removed")

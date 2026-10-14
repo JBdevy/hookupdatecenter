@@ -55,6 +55,36 @@ import XCTest
 }
 
 final class ProjectCursorTests: XCTestCase {
+    @MainActor func testHeaderClickPausesFollowWithoutSeekingOrChangingRegionSelection() throws {
+        var project = Project.empty(name: "Header navigation")
+        let part = Part(id: UUID(), name: "Song", startTime: 10, endTime: 40)
+        project.songs[0].parts = [part]; project.songs[0].duration = 40
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.send(.editSeek, value: 15)
+        show.send(.play)
+        show.send(.editSeek, value: 27)
+        let position = show.snapshot.transport.position
+        let focusRequest = show.regionFocusRequest
+        show.pauseTimelineFollow()
+        XCTAssertTrue(show.timelineFollowPaused)
+        XCTAssertEqual(show.timelineZoomPosition, 27)
+        XCTAssertEqual(show.snapshot.transport.position, position)
+        XCTAssertEqual(show.snapshot.transport.editPosition, 27)
+        XCTAssertNil(show.selectedTimelineRegion, "Blank header, marker and ruler clicks must not select another band")
+        XCTAssertEqual(show.regionFocusRequest, focusRequest, "Pausing follow must not recenter the grid")
+        show.selectTimelineRegion(part.id)
+        XCTAssertEqual(show.snapshot.transport.editPosition, 27, "The band selects without seeking to the region start")
+        XCTAssertEqual(show.selectedTimelineRegion, part.id)
+        executor.advance(1)
+        show.tick()
+        XCTAssertTrue(show.timelineFollowPaused)
+        show.send(.stop)
+        XCTAssertFalse(show.timelineFollowPaused)
+        show.pauseTimelineFollow()
+        XCTAssertEqual(show.selectedTimelineRegion, part.id, "Header interaction preserves the white selection")
+    }
+
     @MainActor func testRegionBandClickPausesFollowUntilStopOrNextSongAndKeepsHighlight() throws {
         var project = Project.empty(name: "Navigation")
         let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)

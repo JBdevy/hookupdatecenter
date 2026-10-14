@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 import Combine
 enum SidebarWidthLimits {
     #if os(macOS)
-    static let trackMixer: CGFloat = 248.6796875
+    static let trackMixer: CGFloat = 280.7578125
     #else
     static let trackMixer: CGFloat = 230
     #endif
@@ -43,11 +43,14 @@ struct MainView: View {
     }
     @State private var panel: Panel?
     @State private var trackEdit: TrackDetailsEditRequest?
+    #if !os(macOS)
     private struct FXTarget: Identifiable { let track: UUID?; let effect: String; var id: String { (track.map { "track:" + $0.uuidString } ?? "master") + effect } }
     @State private var fxTargets: [FXTarget] = []
     @State private var clipFXTargets: [UUID] = []
+    #endif
     @State private var textItemTarget: UUID?
     @State private var lastObservedProjectID: UUID?
+    @State private var presentedSessionID: UUID?
     @AppStorage("jaras.language") private var language = "en"
     @State private var navigationOpen = false
     @State private var footerMixerOpen = false
@@ -68,7 +71,7 @@ struct MainView: View {
             - (footerMixerOpen ? min(723.55859375, max(232, footerMixerHeight)) : 0)))
     }
     @AppStorage("jaras.trackColumnWidth") private var mixerWidth = Double(SidebarWidthLimits.trackMixer)
-    @AppStorage("jaras.trackColumnRestoreWidth") private var mixerRestoreWidth = 248.0
+    @AppStorage("jaras.trackColumnRestoreWidth") private var mixerRestoreWidth = Double(SidebarWidthLimits.trackMixer)
     #if os(macOS)
     @State private var setlistScrollController = SidebarScrollController()
     #endif
@@ -79,7 +82,7 @@ struct MainView: View {
         self.auth = auth; self.backend = backend; self.documents = documents
         let prefix = remotePresentation ? "jaras.remote." : "jaras."
         _mixerWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnWidth")
-        _mixerRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 280 : 248, prefix + "trackColumnRestoreWidth")
+        _mixerRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnRestoreWidth")
         _setlistWidth = AppStorage(wrappedValue: remotePresentation ? 370 : Double(SidebarWidthLimits.setlistDefault), prefix + "setlistWidth")
         _setlistRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 370 : 240, prefix + "setlistRestoreWidth")
     }
@@ -102,7 +105,6 @@ struct MainView: View {
     private func showDetachedMixer() {
         footerMixerOpen = false; sectionsPresentation = nil
         detachedMixer.open(show: show, openFX: { track, effect in
-            FXWindows.shared.documents = documents
             FXWindows.shared.open(show: show, track: track, effect: effect, language: language)
         }, editTrack: { request in
             guard request.project == show.snapshot.project.id else { return }
@@ -262,8 +264,8 @@ struct MainView: View {
             }
             .sheet(item: $documents.pendingAudioDrop) { drop in
                 AudioDropOptions { layout, gap in
+                    guard show.snapshot.project.id == drop.project, show.projectSessionID == drop.session else { return }
                     documents.pendingAudioDrop = nil
-                    guard show.snapshot.project.id == drop.project else { return }
                     _ = documents.importAudio(drop.providers, start: drop.start, track: drop.track, song: drop.song, layout: layout, gap: gap)
                 }
             }
@@ -273,7 +275,6 @@ struct MainView: View {
 
             .environment(\.openFX, { track, effect in
                 #if os(macOS)
-                FXWindows.shared.documents = documents
                 FXWindows.shared.open(show: show, track: track, effect: effect, language: language)
                 #else
                 let target = FXTarget(track: track, effect: effect)
@@ -282,7 +283,6 @@ struct MainView: View {
             })
             .environment(\.openClipFXChain, { clip in
                 #if os(macOS)
-                FXWindows.shared.documents = documents
                 FXWindows.shared.openClipChain(show: show, clip: clip)
                 #else
                 if !clipFXTargets.contains(clip) { clipFXTargets.append(clip) }
@@ -292,7 +292,10 @@ struct MainView: View {
                 // A recreated publisher immediately emits its current ID. Only
                 // a different project dismisses an existing editing panel.
                 if let lastObservedProjectID, lastObservedProjectID != projectID {
-                    clipFXTargets = []; fxTargets = []; textItemTarget = nil; trackEdit = nil
+                    #if !os(macOS)
+                    clipFXTargets = []; fxTargets = []
+                    #endif
+                    textItemTarget = nil; trackEdit = nil
                 }
                 if lastObservedProjectID != projectID { lastObservedProjectID = projectID }
             }
@@ -340,13 +343,14 @@ struct MainView: View {
                 }
                 ForEach(clipFXTargets, id: \.self) { clip in
                     MovableFXPanel {
-                        TabbedClipFXEditor(show: show, clip: clip, close: { clipFXTargets.removeAll { $0 == clip } })
+                        ClipFXChainEditor(show: show, clip: clip, close: { clipFXTargets.removeAll { $0 == clip } })
                     }
                 }
                 #endif
             }
             .onAppear {
                 guard !remotePresentation else { return }
+                presentedSessionID = show.projectSessionID
                 #if os(macOS)
                 DAWRemoteHostBridge.bind(show)
                 #endif
@@ -365,10 +369,15 @@ struct MainView: View {
             }
             .onDisappear {
                 guard !remotePresentation else { return }
+                #if os(macOS)
+                detachedMixer.close()
+                #endif
+                // SwiftUI presents the replacement .id before removing the old
+                // workspace. The old view must not erase the new callbacks.
+                guard presentedSessionID == show.projectSessionID else { return }
                 show.toggleTracksPanel = {}; show.toggleSetlistPanel = {}
                 #if os(macOS)
                 FXWindows.shared.closeAll()
-                detachedMixer.close()
                 RightClickRouter.shared.interactionBlocked = false
                 #endif
             }

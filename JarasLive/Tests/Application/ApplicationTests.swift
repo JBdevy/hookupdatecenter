@@ -109,13 +109,13 @@ final class ApplicationTests: XCTestCase {
         XCTAssertTrue(output); XCTAssertTrue(auth.allowed)
         XCTAssertTrue(auth.restriction.isEmpty)
     }
-    func testOfflineExpiryUsesServerClockAndCannotExtendTrialByLocalClockOffset() async throws {
+    func testSavedActivationUsesBusinessExpiryAndServerClockNotPeriodicOfflineTTL() async throws {
         let backend = MockBackendClient(), installed = device("Mac")
         var login = try await backend.login(email: "demo@catlive.app", password: "catlive123", device: installed)
         let server = Date(timeIntervalSince1970: 2_000_000_000), local = Date(timeIntervalSince1970: 1_000_000_000)
         login.entitlement.serverTime = server
         login.entitlement.expiresAt = server.addingTimeInterval(100)
-        login.entitlement.offlineValidUntil = server.addingTimeInterval(100)
+        login.entitlement.offlineValidUntil = server.addingTimeInterval(10)
         let cache = SessionCache(login: login, validatedAt: local)
         let service = EntitlementService(backend: backend)
         XCTAssertTrue(service.permitsOffline(cache, installationId: installed.id, feature: "desktop", date: local.addingTimeInterval(99)))

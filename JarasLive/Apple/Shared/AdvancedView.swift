@@ -3,12 +3,24 @@ import SwiftUI
 struct AdvancedView: View {
     @ObservedObject var show: ShowController
     let documents: ProjectDocuments?
+    var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
         case timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
         var icon: String { switch self { case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet" } }
     }
+    private var availableTabs: [Tab] {
+        #if os(iOS)
+        [.timeline, .setlist]
+        #else
+        Tab.allCases
+        #endif
+    }
+    #if os(iOS)
+    @State private var tab = Tab.timeline
+    #else
     @State private var tab = Tab.timeProject
+    #endif
     @State private var bpm: String
     @State private var beats: String
     @State private var unit: String
@@ -17,8 +29,8 @@ struct AdvancedView: View {
     @State private var shake = 0.0
     @FocusState private var focus: Int?
 
-    init(show: ShowController, documents: ProjectDocuments? = nil) {
-        self.show = show; self.documents = documents
+    init(show: ShowController, documents: ProjectDocuments? = nil, close: (() -> Void)? = nil) {
+        self.show = show; self.documents = documents; self.close = close
         let timing = GlobalProjectTiming.load() ?? show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming()
         _bpm = State(initialValue: String(format: "%g", timing.bpm))
         _beats = State(initialValue: String(timing.beats))
@@ -28,16 +40,20 @@ struct AdvancedView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            #if os(iOS)
+            IpadModalHeader(title: "Advanced", close: finish)
+            #else
             HStack {
                 Text("Advanced").font(.headline)
                 Spacer()
-                Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
+                Button { finish() } label: { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).accessibilityLabel("Close")
             }.padding(.horizontal, 16).padding(.vertical, 6)
+            #endif
             Divider()
             HStack(spacing: 0) {
                 VStack(spacing: 6) {
-                    ForEach(Tab.allCases, id: \.self) { item in
+                    ForEach(availableTabs, id: \.self) { item in
                         Button { tab = item } label: {
                             Label { Text(LocalizedStringKey(item.rawValue)).lineLimit(2).minimumScaleFactor(0.8) } icon: { Image(systemName: item.icon) }
                                 .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
@@ -68,11 +84,18 @@ struct AdvancedView: View {
                         .font(.caption).foregroundStyle(.red)
                 } else if !show.message.isEmpty { Text(LocalizedStringKey(show.message)).font(.caption).foregroundStyle(.red) }
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { finish() }.keyboardShortcut(.cancelAction)
                 if tab == .timeProject { Button("Apply", action: apply).keyboardShortcut(.defaultAction) }
             }.padding(14).fixedSize(horizontal: false, vertical: true)
-        }.frame(width: 760, height: 420).foregroundStyle(JarasTheme.text).background(JarasTheme.background)
+        }
+        #if os(macOS)
+        .frame(width: 760, height: 420)
+        #else
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #endif
+        .foregroundStyle(JarasTheme.text).background(JarasTheme.background)
     }
+    private func finish() { if let close { close() } else { dismiss() } }
     private var timingControls: some View {
         VStack(alignment: .leading, spacing: 22) {
             HStack(spacing: 14) {
@@ -116,7 +139,7 @@ struct AdvancedView: View {
         invalidField = nil
         if show.configureProjectTime(bpm: tempo, beats: numerator, unit: denominator, settings: settings) {
             GlobalProjectTiming(bpm: tempo, beats: numerator, unit: denominator, settings: settings).save()
-            dismiss()
+            finish()
         }
     }
 }

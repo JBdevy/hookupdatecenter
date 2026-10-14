@@ -8,6 +8,6 @@ public struct EntitlementService: Sendable {
     }
     public func permitsOffline(_ cache: SessionCache, installationId: UUID, feature: String, date: Date = Date()) -> Bool {
         let serverDate = cache.login.entitlement.serverTime.map { $0.addingTimeInterval(max(0, date.timeIntervalSince(cache.validatedAt))) } ?? date
-        return cache.login.device.installationId == installationId && cache.login.device.status == .active && cache.login.entitlement.permits(feature, at: serverDate) && cache.login.entitlement.offlineValidUntil > serverDate && date >= cache.validatedAt.addingTimeInterval(-300)
+        return cache.login.device.installationId == installationId && cache.login.device.status == .active && cache.login.entitlement.permits(feature, at: serverDate) && date >= cache.validatedAt.addingTimeInterval(-300)
     }
 }

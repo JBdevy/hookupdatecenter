@@ -18,6 +18,7 @@ let cursorProbeMethod = class_getInstanceMethod(NSCursor.self, NSSelectorFromStr
 method_exchangeImplementations(cursorSetMethod, cursorProbeMethod)
 
 final class GridCursorWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
     var gridCursorInvalidations = 0
     var pointerLocation: CGPoint?
     override var mouseLocationOutsideOfEventStream: NSPoint {
@@ -854,3 +855,53 @@ precondition(projectedSeeks == [24, 12, 6, 48] && projectionView.itemGuide == ni
              "zoom reversals use the new scale and clear a completed drag guide")
 projectionWindow.close()
 print("STABLE_ITEM_ACTIONS_FOLLOW_COMMITTED_ZOOM_GEOMETRY_OK")
+
+// A native item press can consume the event before the passive panel monitor.
+// Selecting its track must not retain the previous mixer/setlist keyboard focus.
+MainActor.assumeIsolated {
+let focusWindow = GridCursorWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+let focusRoot = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 400))
+focusWindow.contentView = focusRoot
+let focusGrid = GridSelectionView(frame: NSRect(x: 200, y: 0, width: 600, height: 400))
+focusRoot.addSubview(focusGrid)
+let focusItems = [GridSelectionItem(id: UUID(), rect: CGRect(x: 100, y: 100, width: 200, height: 80)),
+                  GridSelectionItem(id: UUID(), rect: CGRect(x: 350, y: 100, width: 100, height: 80))]
+var focusTrackSelected = false, focusGridAll = 0, focusTracksAll = 0, focusListAll = 0
+let focusInput = GridSelectionInput(origin: .zero, headerHeight: 40, items: focusItems, selected: [],
+    selectionChanged: { _ in }, mute: { _ in }, move: { _, _, _, _ in }, seek: { _, _ in }, createRegion: { _ in },
+    selectRow: { _ in focusTrackSelected = true }, pointerDown: { EditorSelectionRouter.shared.handlePointer($0) })
+focusInput.apply(to: focusGrid)
+func focusArea(_ rect: CGRect, _ scope: EditorSelectionArea.Scope, _ action: @escaping () -> Bool) -> EditorSelectionAreaView {
+    let area = EditorSelectionAreaView(frame: rect); area.scope = scope; area.selectAll = action
+    focusRoot.addSubview(area); return area
+}
+let focusGridArea = focusArea(CGRect(x: 0, y: 0, width: 800, height: 400), .grid) {
+    focusGridAll += 1; focusGrid.updateSelection(Set(focusItems.map(\.id))); return true
+}
+let focusTrackArea = focusArea(CGRect(x: 0, y: 0, width: 200, height: 400), .tracks) { focusTracksAll += 1; return true }
+let focusListArea = focusArea(CGRect(x: 800, y: 0, width: 200, height: 400), .setlist) { focusListAll += 1; return true }
+func focusClick(_ type: NSEvent.EventType, _ point: CGPoint) -> NSEvent {
+    NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: focusWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+}
+let focusKey = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+    windowNumber: focusWindow.windowNumber, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)!
+let focusRouter = EditorSelectionRouter.shared
+for previousX: CGFloat in [100, 900] {
+    focusRouter.handlePointer(focusClick(.leftMouseDown, CGPoint(x: previousX, y: 200)))
+    precondition(focusRouter.selectAll(focusKey))
+    let itemPoint = focusGrid.convert(CGPoint(x: 180, y: 145), to: nil)
+    // Deliberately do NOT deliver this consumed click to the passive router.
+    precondition(focusGrid.handlePointerEvent(focusClick(.leftMouseDown, itemPoint)))
+    precondition(focusGrid.handlePointerEvent(focusClick(.leftMouseUp, itemPoint)))
+    precondition(focusTrackSelected && focusGrid.selected == [focusItems[0].id])
+    precondition(focusRouter.selectAll(focusKey))
+    precondition(focusGrid.selected == Set(focusItems.map(\.id)))
+}
+precondition(focusGridAll == 2 && focusTracksAll == 1 && focusListAll == 1)
+// Explicitly clicking the mixer still restores track selection priority.
+focusRouter.handlePointer(focusClick(.leftMouseDown, CGPoint(x: 100, y: 200)))
+precondition(focusRouter.selectAll(focusKey) && focusTracksAll == 2 && focusGridAll == 2)
+withExtendedLifetime([focusGridArea, focusTrackArea, focusListArea, focusWindow]) {}
+print("CONSUMED_ITEM_CLICK_OWNS_SELECT_ALL_DESPITE_TRACK_SELECTION_OK")
+}

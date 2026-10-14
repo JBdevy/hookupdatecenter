@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import CoreAudio
+import AudioToolbox
 import Darwin
 
 setbuf(stdout, nil)
@@ -77,6 +79,107 @@ setbuf(stdout, nil)
     try await Task.sleep(nanoseconds: 1_200_000_000)
     precondition(!hardware.isRunning, "the idle watchdog must not reopen a closed session")
     print("PHYSICAL_IDLE_RENDER_CLOCK_RECOVERY_AND_FINAL_RELEASE_OK")
+
+    // Exercise the selected-output engine alongside another shared Core Audio client.
+    // Throw assertions here so defer always closes the test engines on failure.
+    func require(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+        guard condition() else { throw NSError(domain: "AudioDeviceSessionTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+    }
+    let settings = AudioDeviceSettings.shared
+    let originalOutput = settings.selectedUID, originalInput = settings.inputUID, originalError = settings.error
+    let preferences = UserDefaults.standard
+    let savedOutput = preferences.object(forKey: "jaras.audioOutputUID")
+    let savedInput = preferences.object(forKey: "catlive.audioInputUID")
+    let selected = StemAudioPlayback(engine: settings.engine)
+    defer {
+        selected.prepareForClosing()
+        settings.selectInput(originalInput)
+        settings.select(originalOutput)
+        settings.error = originalError
+        if let savedOutput { preferences.set(savedOutput, forKey: "jaras.audioOutputUID") }
+        else { preferences.removeObject(forKey: "jaras.audioOutputUID") }
+        if let savedInput { preferences.set(savedInput, forKey: "catlive.audioInputUID") }
+        else { preferences.removeObject(forKey: "catlive.audioInputUID") }
+    }
+    let target = settings.devices.first(where: { $0.id == originalOutput }) ?? settings.devices.first
+    guard let target else { throw NSError(domain: "AudioDeviceSessionTests", code: 2, userInfo: [NSLocalizedDescriptionKey: "A physical output device is required for the selected-device integration test."]) }
+    func requireSharedOutput() throws {
+        try require(settings.outputDeviceIsBound, "the engine must remain bound to the selected physical output")
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyHogMode,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        if AudioObjectHasProperty(target.hardwareID, &address) {
+            var owner: pid_t = -1, bytes = UInt32(MemoryLayout<pid_t>.size)
+            let result = AudioObjectGetPropertyData(target.hardwareID, &address, 0, nil, &bytes, &owner)
+            try require(result == noErr && bytes == MemoryLayout<pid_t>.size, "the selected output ownership must be readable")
+            try require(owner != getpid(), "CatLive must not reserve exclusive device access")
+        }
+    }
+    var selectionFailure: Error?
+    selected.onError = { selectionFailure = $0 }
+    func waitForSelectedOutput() async throws {
+        for _ in 0..<30 {
+            if let selectionFailure { throw selectionFailure }
+            if settings.engine.isRunning { return }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        try require(settings.engine.isRunning, "selecting an output must recover the selected-device session")
+    }
+
+    settings.selectInput("")
+    settings.select(target.id)
+    try selected.startDeviceSession()
+    try await Task.sleep(nanoseconds: 1_400_000_000)
+    try requireSharedOutput()
+    // A second client can render at the same time on the same physical output.
+    let concurrentEngine = AVAudioEngine()
+    guard let concurrentUnit = concurrentEngine.outputNode.audioUnit else {
+        throw NSError(domain: "AudioDeviceSessionTests", code: 3)
+    }
+    var targetID = target.hardwareID
+    let concurrentBinding = AudioUnitSetProperty(concurrentUnit, kAudioOutputUnitProperty_CurrentDevice,
+        kAudioUnitScope_Global, 0, &targetID, UInt32(MemoryLayout<AudioDeviceID>.size))
+    try require(concurrentBinding == noErr, "the second client must bind the selected output")
+    let concurrent = StemAudioPlayback(engine: concurrentEngine)
+    defer { concurrent.prepareForClosing() }
+    try concurrent.startDeviceSession()
+    try await Task.sleep(nanoseconds: 300_000_000)
+    let selectedTime = settings.engine.outputNode.lastRenderTime?.sampleTime
+    let concurrentTime = concurrentEngine.outputNode.lastRenderTime?.sampleTime
+    try await Task.sleep(nanoseconds: 300_000_000)
+    try require(settings.engine.isRunning && concurrentEngine.isRunning, "both shared clients must run simultaneously")
+    try require((settings.engine.outputNode.lastRenderTime?.sampleTime ?? 0) > (selectedTime ?? Int64.max), "CatLive's shared render clock must advance")
+    try require((concurrentEngine.outputNode.lastRenderTime?.sampleTime ?? 0) > (concurrentTime ?? Int64.max), "the second client's render clock must advance")
+    try requireSharedOutput()
+    concurrent.prepareForClosing()
+    print("TWO_SHARED_CLIENTS_RENDER_ON_SELECTED_OUTPUT_OK")
+    selected.prepareForClosing()
+    settings.select("none")
+    try selected.startDeviceSession()
+    selected.open(directory: directory)
+    snapshot.transport.playing = true; snapshot.transport.paused = false
+    try selected.update(snapshot, revision: 2)
+    try await Task.sleep(nanoseconds: 1_200_000_000)
+    try require(!settings.engine.isRunning, "None must stay stopped even when Play and the watchdog run")
+
+    settings.select(target.id)
+    try await waitForSelectedOutput()
+    try requireSharedOutput()
+    selected.stop()
+    try await Task.sleep(nanoseconds: 200_000_000)
+    try require(settings.engine.isRunning, "Stop must preserve the selected output session")
+    try requireSharedOutput()
+
+    settings.select("none")
+    try selected.update(snapshot, revision: 2)
+    try await Task.sleep(nanoseconds: 1_200_000_000)
+    try require(!settings.engine.isRunning, "None must stop the previously selected output without watchdog reopening it")
+    settings.select(target.id)
+    try await waitForSelectedOutput()
+    try requireSharedOutput()
+    selected.prepareForClosing()
+    try await Task.sleep(nanoseconds: 1_200_000_000)
+    try require(!settings.engine.isRunning, "closing must stop hardware and disable recovery")
+    print("SELECTED_OUTPUT_SHARED_NONE_STOP_RESELECT_WATCHDOG_CLOSE_OK device=\(target.name)")
 }
 
 Task { @MainActor in

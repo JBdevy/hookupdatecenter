@@ -5,6 +5,13 @@ import Foundation
     private var trackSelections: [UUID:Set<UUID>] = [:]
     private var clipSelections: [UUID:Set<UUID>] = [:]
     private var regionSelections: [UUID:Set<UUID>] = [:]
+    /// Selections belong to an open session, not to UUIDs preserved in a copy
+    /// or backup of the project. Call after committing a new session.
+    func clear() {
+        trackSelections.removeAll()
+        clipSelections.removeAll()
+        regionSelections.removeAll()
+    }
     func setTracks(_ ids: Set<UUID>, song: UUID?) { if let song { trackSelections[song] = ids } }
     func setClips(_ ids: Set<UUID>, song: UUID?) { if let song { clipSelections[song] = ids } }
     func setRegions(_ ids: Set<UUID>, song: UUID?) { if let song { regionSelections[song] = ids } }

@@ -6,6 +6,7 @@ public protocol BackendClient: Sendable {
     func resetPassword(email: String) async throws
     func refresh(_ session: AuthSession) async throws -> AuthSession
     func accessStatus(_ session: AuthSession) async throws
+    func accessStatus(_ session: AuthSession, activationProof: LicenseLeaseProof?) async throws
     func entitlement(_ session: AuthSession) async throws -> Entitlement
     func device(_ session: AuthSession, installationId: UUID) async throws -> AuthorizedDevice
     func devices(_ session: AuthSession) async throws -> [AuthorizedDevice]
@@ -16,6 +17,7 @@ public protocol BackendClient: Sendable {
 }
 public extension BackendClient {
     func accessStatus(_ session: AuthSession) async throws {}
+    func accessStatus(_ session: AuthSession, activationProof: LicenseLeaseProof?) async throws { try await accessStatus(session) }
     func credentialDevices(email: String, cpf: String) async throws -> [AuthorizedDevice] { throw BackendFailure.notConfigured }
     func revokeDevice(email: String, cpf: String, installationId: UUID) async throws { throw BackendFailure.notConfigured }
     func revokeDevice(_ session: AuthSession, installationId: UUID) async throws { throw BackendFailure.notConfigured }
@@ -85,7 +87,14 @@ public struct RemoteBackendClient: BackendClient {
     public func resetPassword(email: String) async throws { throw BackendFailure.notConfigured }
     public func refresh(_ session: AuthSession) async throws -> AuthSession { try await call("refresh", body: ["refreshToken": session.refreshToken]) }
     public func accessStatus(_ session: AuthSession) async throws {
-        let _: OK = try await call("access-status", body: ["refreshToken": session.refreshToken])
+        try await accessStatus(session, activationProof: nil)
+    }
+    public func accessStatus(_ session: AuthSession, activationProof: LicenseLeaseProof?) async throws {
+        var body: [String: Any] = ["refreshToken": session.refreshToken]
+        if let activationProof {
+            body["activationProof"] = ["payload": activationProof.payload, "signature": activationProof.signature]
+        }
+        let _: OK = try await call("access-status", body: body)
     }
     public func entitlement(_ session: AuthSession) async throws -> Entitlement { try await call("entitlement", token: session.accessToken) }
     public func device(_ session: AuthSession, installationId: UUID) async throws -> AuthorizedDevice {

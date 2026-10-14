@@ -10,12 +10,24 @@ struct TestSnapshot { var project = TestProject() }
 struct AutomationTarget { enum Kind { case externalFX }; init(_ kind: Kind, plugin: String, parameter: UInt32) {} }
 @MainActor final class ShowController {
     var snapshot = TestSnapshot(), current: TestSong?
+    var message = ""
+    var rejectSavedCapture = false
     var trackSettings: [UUID: NativeFXSettings] = [:], masterSettings = NativeFXSettings()
-    var clipWrites: [UUID] = [], trackWrites = 0, automationWrites = 0
+    var clipWrites: [UUID] = [], trackWrites = 0, automationWrites = 0, playbackUpdates = 0
     func fxSettings(_ track: UUID?) -> NativeFXSettings { track.flatMap { trackSettings[$0] } ?? masterSettings }
     func clipFXSettings(_ clip: UUID) -> NativeFXSettings { snapshot.project.clips[clip]!.fx! }
-    func previewClipFX(_ clip: UUID, settings: NativeFXSettings) { snapshot.project.clips[clip]!.fx = settings; clipWrites.append(clip) }
-    func previewFX(_ track: UUID?, settings: NativeFXSettings) { trackWrites += 1; if let track { trackSettings[track] = settings } else { masterSettings = settings } }
+    func previewClipFX(_ clip: UUID, settings: NativeFXSettings) { playbackUpdates += 1; snapshot.project.clips[clip]!.fx = settings; clipWrites.append(clip) }
+    func previewFX(_ track: UUID?, settings: NativeFXSettings) { playbackUpdates += 1; trackWrites += 1; if let track { trackSettings[track] = settings } else { masterSettings = settings } }
+    func storeCapturedPluginState(_ track: UUID?, clip: UUID? = nil, identifier: String, componentState: String?, controllerState: String?) throws -> Bool {
+        if rejectSavedCapture { throw ProjectError.invalid("Rejected preset") }
+        var settings = clip.map(clipFXSettings) ?? fxSettings(track)
+        guard let index = settings.externalPlugins?.firstIndex(where: { $0.id == identifier }) else { return false }
+        settings.externalPlugins?[index].componentState = componentState
+        settings.externalPlugins?[index].controllerState = controllerState
+        if let clip { snapshot.project.clips[clip]!.fx = settings; clipWrites.append(clip) }
+        else { trackWrites += 1; if let track { trackSettings[track] = settings } else { masterSettings = settings } }
+        return true
+    }
     func commitFX() {}
     func recordAutomationControl(_ track: UUID?, target: AutomationTarget, value: Double) { automationWrites += 1 }
     func endAutomationTouch(_ track: UUID?) {}
@@ -31,5 +43,6 @@ enum FXModelLookup { static func clip(_ id: UUID, in project: TestProject) -> Te
     var chains: [UUID: NativeEffectsChain] = [:], observed: Set<UUID> = [], lookups = 0
     func effects(for target: UUID?) -> NativeEffectsChain? { lookups += 1; return target.flatMap { chains[$0] } }
     func observeEffect(_ target: UUID?, effect: String, active: Bool) { if let target { if active { observed.insert(target) } else { observed.remove(target) } } }
+    func rememberCapturedPluginState(track: UUID?, clip: UUID?, plugin: ExternalPlugin, source: AVAudioUnitEffect) {}
 }
 enum JarasTheme { static let panel = Color.black, text = Color.white }

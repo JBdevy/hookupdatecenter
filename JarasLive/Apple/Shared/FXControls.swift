@@ -38,11 +38,9 @@ struct FXKnob: View {
                 #if os(macOS)
                 .overlay(FXKnobMouseInput(fraction: Binding(get: { fraction }, set: { set($0) }), reset: { value = reset }))
                 #else
-                .gesture(DragGesture(minimumDistance: 0).onChanged { event in
-                    if origin == nil { origin = fraction }
-                    set((origin ?? fraction)-event.translation.height/180)
-                }.onEnded { _ in origin = nil })
-                .simultaneousGesture(TapGesture(count: 2).onEnded { value = reset })
+                .overlay(FXTouchDrag(began: { _ in origin = fraction }, changed: { _, translation in
+                    set((origin ?? fraction) - translation.height / 180)
+                }, ended: { origin = nil }, reset: { value = reset }))
                 #endif
                 .accessibilityElement().accessibilityLabel(LocalizedStringKey(title)).accessibilityValue(String(format: "%.1f %@",value*multiplier,unit))
                 .accessibilityAdjustableAction { set(fraction + ($0 == .increment ? 0.01 : -0.01)) }
@@ -114,5 +112,72 @@ private final class FXKnobMouseView: NSView {
         changed?(min(1,max(0,startValue + Double(event.locationInWindow.y-startY)/180)))
     }
     override func mouseUp(with event: NSEvent) { mouseDragged(with: event); startY = nil }
+}
+#endif
+
+#if os(iOS)
+import UIKit
+
+/// Claim a touch that starts on an FX control before an ancestor scroll view can
+/// turn it into scrolling. Touches outside the control still scroll normally.
+struct FXTouchDrag: UIViewRepresentable {
+    @Environment(\.isEnabled) private var enabled
+    let began: (CGPoint) -> Void
+    let changed: (CGPoint, CGSize) -> Void
+    let ended: () -> Void
+    var reset: (() -> Void)? = nil
+    func makeUIView(context: Context) -> FXTouchDragView { FXTouchDragView() }
+    func updateUIView(_ view: FXTouchDragView, context: Context) {
+        view.began = began; view.changed = changed; view.ended = ended; view.reset = reset
+        view.isUserInteractionEnabled = enabled
+    }
+}
+final class FXTouchDragView: UIView {
+    var began: ((CGPoint) -> Void)?
+    var changed: ((CGPoint, CGSize) -> Void)?
+    var ended: (() -> Void)?
+    var reset: (() -> Void)?
+    private var resetting = false
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        addGestureRecognizer(FXImmediateDrag(target: self, action: #selector(handle(_:))))
+        isAccessibilityElement = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func handle(_ gesture: FXImmediateDrag) {
+        switch gesture.state {
+        case .began:
+            resetting = gesture.tapCount == 2 && reset != nil
+            if resetting { reset?() } else { began?(gesture.start) }
+        case .changed:
+            if !resetting {
+                changed?(gesture.point, CGSize(width: gesture.point.x - gesture.start.x, height: gesture.point.y - gesture.start.y))
+            }
+        case .ended, .cancelled, .failed:
+            ended?(); resetting = false
+        default: break
+        }
+    }
+}
+private final class FXImmediateDrag: UIGestureRecognizer {
+    private(set) var start = CGPoint.zero
+    private(set) var point = CGPoint.zero
+    private(set) var tapCount = 0
+    private weak var activeTouch: UITouch?
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard activeTouch == nil, let touch = touches.first else { return }
+        activeTouch = touch; point = touch.location(in: view); start = point
+        tapCount = touch.tapCount; state = .began
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let activeTouch, touches.contains(activeTouch) else { return }
+        point = activeTouch.location(in: view); state = .changed
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let activeTouch, touches.contains(activeTouch) else { return }
+        point = activeTouch.location(in: view); state = .ended
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { state = .cancelled }
+    override func reset() { super.reset(); activeTouch = nil }
 }
 #endif

@@ -3,8 +3,8 @@ import Foundation
 import AppKit
 #endif
 
-/// A file icon survives Finder's cached type previews. Atomic saves replace the
-/// file inode, so attach it after every successful write as well as on open.
+/// Refresh a stale Finder preview when opening a document. Saves use the
+/// registered document type icon and must not synchronously enter AppKit.
 enum ProjectDocumentAppearance {
     static func apply(to url: URL) {
         #if os(macOS)

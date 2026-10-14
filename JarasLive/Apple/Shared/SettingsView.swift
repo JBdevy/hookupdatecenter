@@ -5,12 +5,14 @@ struct SettingsView: View {
     let backend: any BackendClient
     @AppStorage("jaras.language") private var language = "en"
     @ObservedObject private var audio = AudioDeviceSettings.shared
+    @ObservedObject private var recorder = TrackRecording.shared
+    private var audioConfigurationLocked: Bool { show.isPlaying || recorder.recording || recorder.busy }
     enum Section: String, CaseIterable { case general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
         var icon: String { switch self { case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
     }
     private var availableSections: [Section] {
         #if os(iOS)
-        Section.allCases.filter { $0 != .account && $0 != .plugins }
+        [.general, .audio]
         #else
         Section.allCases
         #endif
@@ -46,26 +48,34 @@ struct SettingsView: View {
                         Text("Language").font(.headline)
                         Picker("Language", selection: $language) { Text("English").tag("en"); Text("Português").tag("pt-BR") }.pickerStyle(.segmented).labelsHidden()
                     case .audio:
+                        if audioConfigurationLocked {
+                            Label("Stop the transport before changing the audio device.", systemImage: "pause.circle.fill")
+                                .font(.callout.weight(.medium)).foregroundStyle(JarasTheme.yellow)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         Text("Audio device — Input").font(.headline)
-                        Picker("Audio device — Input", selection: Binding(get: { audio.inputUID }, set: { audio.selectInput($0) })) {
+                        Picker("Audio device — Input", selection: Binding(get: { audio.inputUID }, set: { if !audioConfigurationLocked { audio.selectInput($0) } })) {
                             Text(verbatim: "None").tag("")
                             if !audio.inputUID.isEmpty && audio.inputDevice == nil { Text("Disconnected").tag(audio.inputUID) }
                             ForEach(audio.inputDevices) { device in Text(device.name).tag(device.id) }
-                        }.labelsHidden().frame(maxWidth: .infinity)
+                        }.labelsHidden().frame(maxWidth: .infinity).disabled(audioConfigurationLocked)
                         Text("Audio device — Output").font(.headline)
-                        Picker("Output device", selection: Binding(get: { audio.selectedUID.isEmpty ? "none" : audio.selectedUID }, set: { audio.select($0) })) {
+                        Picker("Output device", selection: Binding(get: { audio.selectedUID.isEmpty ? "none" : audio.selectedUID }, set: { if !audioConfigurationLocked { audio.select($0) } })) {
                             Text(verbatim: "None").tag("none")
+                            if !audio.selectedUID.isEmpty && audio.selectedUID != "none" && !audio.devices.contains(where: { $0.id == audio.selectedUID }) {
+                                Text("Disconnected").tag(audio.selectedUID)
+                            }
                             ForEach(audio.devices) { device in Text(device.name).tag(device.id) }
-                        }.labelsHidden().frame(maxWidth: .infinity)
+                        }.labelsHidden().frame(maxWidth: .infinity).disabled(audioConfigurationLocked)
                         Text("\(audio.channels) output channels").foregroundStyle(JarasTheme.secondary)
                         Text("Sample rate").font(.headline)
-                        Picker("Sample rate", selection: Binding(get: { audio.sampleRate }, set: { audio.setSampleRate($0) })) {
+                        Picker("Sample rate", selection: Binding(get: { audio.sampleRate }, set: { if !audioConfigurationLocked { audio.setSampleRate($0) } })) {
                             ForEach(audio.sampleRateChoices, id: \.self) { rate in Text(String(format: "%.0f Hz", rate)).tag(rate) }
-                        }.labelsHidden()
+                        }.labelsHidden().disabled(audioConfigurationLocked)
                         Text("Buffer size").font(.headline)
-                        Picker("Buffer size", selection: Binding(get: { audio.bufferFrames }, set: { audio.setBuffer($0) })) {
+                        Picker("Buffer size", selection: Binding(get: { audio.bufferFrames }, set: { if !audioConfigurationLocked { audio.setBuffer($0) } })) {
                             ForEach(audio.bufferChoices, id: \.self) { frames in Text("\(frames) samples").tag(frames) }
-                        }.labelsHidden()
+                        }.labelsHidden().disabled(audioConfigurationLocked)
                         Text("Smaller buffers reduce latency and use more CPU.").font(.caption).foregroundStyle(JarasTheme.secondary)
                         Button("Refresh devices") { audio.refresh(); audio.refreshSampleRate(); audio.refreshBuffer() }
                         if !audio.error.isEmpty { Text(LocalizedStringKey(audio.error)).foregroundStyle(.red).font(.caption) }

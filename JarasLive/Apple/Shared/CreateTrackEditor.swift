@@ -17,13 +17,26 @@ struct CreateTrackEditor: View {
     private var specialTrackExists: Bool {
         kind != .standard && show.snapshot.project.songs.contains { $0.tracks.contains { $0.kind == kind } }
     }
-    private var unavailable: Bool { specialTrackExists }
+    private var availableKinds: [TrackKind] {
+        #if os(iOS)
+        TrackKind.allCases.filter { $0 != .video && $0 != .timecode }
+        #else
+        TrackKind.allCases.filter { $0 != .video }
+        #endif
+    }
+    private var unavailable: Bool { specialTrackExists || !availableKinds.contains(kind) }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Criar pista").font(.title2.bold())
             Picker("Type", selection: $kind) {
-                ForEach(TrackKind.allCases.filter { $0 != .video }, id: \.self) { kind in Text(LocalizedStringKey(kind.title)).tag(kind) }
+                ForEach(availableKinds, id: \.self) { kind in Text(LocalizedStringKey(kind.title)).tag(kind) }
             }
+            #if os(iOS)
+            .pickerStyle(.menu).padding(10).frame(maxWidth: .infinity)
+            .background(Color.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.white.opacity(0.25)))
+            .tint(JarasTheme.green)
+            #endif
             if kind == .standard {
                 TextField("Nome da pista", text: $name).textFieldStyle(.roundedBorder)
                     .focused($nameFocused).onSubmit(create)

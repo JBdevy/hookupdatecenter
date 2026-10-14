@@ -177,9 +177,10 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public init() {}
     public func validateForClip() throws {
         try validate()
-        guard inserted.allSatisfy({ key in Self.order.dropFirst().contains(key) || key == Self.stemSeparator || externalPlugins?.contains(where: { $0.effectKey == key }) == true }),
-              instances?.isEmpty != false, instrumentID == nil, instrumentParameters == nil, instrumentBypassed == nil
+        guard inserted.allSatisfy({ key in Self.order.dropFirst().contains(key) || key == Self.stemSeparator || externalPlugins?.contains(where: { $0.effectKey == key }) == true || instances?.contains(where: { $0.effectKey == key }) == true }),
+              instrumentID == nil, instrumentParameters == nil, instrumentBypassed == nil
         else { throw ProjectError.invalid("Items support native audio effects and VST3 effects, without native instruments") }
+        for instance in instances ?? [] { try instance.settings.validateForClip() }
     }
     public func validate() throws {
         try stemMix?.validate()
@@ -208,6 +209,13 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
 
 extension NativeFXSettings {
     public var effectKeys: [String] { inserted }
+    /// Item audio keeps the original native stages before repeated inserts
+    /// and external plugins. Show that execution order without rewriting the
+    /// persisted insertion order or enabling unsupported item reordering.
+    public var clipEffectKeys: [String] {
+        let originals = Self.order.dropFirst().filter { inserted.contains($0) }
+        return originals + inserted.filter { !originals.contains($0) }
+    }
     public func kind(of key: String) -> String { instances?.first { $0.effectKey == key }?.kind ?? key }
     public func settings(for key: String) -> Self { instances?.first { $0.effectKey == key }?.settings ?? self }
     public var instrumentKeys: [String] { inserted.filter { kind(of: $0) == "Instruments" && settings(for: $0).instrumentID != nil } }

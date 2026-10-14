@@ -8,4 +8,4 @@ inline bool validProjectTimeSettings(const ProjectTimeSettings& settings) {
     return (settings.divisions == 0 || settings.divisions == 2 || settings.divisions == 4 || settings.divisions == 8) &&
         (settings.timebase == ProjectTimebase::free || settings.timebase == ProjectTimebase::relative);
 }
-struct Song { ID id; std::string name; double duration = 0, bpm = 120; std::vector<Track> tracks; std::vector<Part> parts; std::optional<std::vector<TimelineMarker>> markers; int beatsPerBar = 4, beatUnit = 4; std::optional<ProjectTimeSettings> timeSettings; bool regionOwnershipInitialized = false; }; }
+struct Song { ID id; std::string name; double duration = 0, bpm = 120; std::vector<Track> tracks; std::vector<Part> parts; std::optional<std::vector<TimelineMarker>> markers; int beatsPerBar = 4, beatUnit = 4; std::optional<ProjectTimeSettings> timeSettings; bool regionOwnershipInitialized = false; int regionOwnershipVersion = 0; }; }

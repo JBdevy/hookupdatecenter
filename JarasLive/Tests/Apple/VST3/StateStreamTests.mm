@@ -6,6 +6,14 @@
 #include <random>
 #include <cstdio>
 #include <thread>
+#include <chrono>
+#include <dlfcn.h>
+
+static std::atomic<bool> exitEntered{false},exitMayFinish{false};
+static void pauseModuleExit(){
+    exitEntered.store(true,std::memory_order_release);
+    while(!exitMayFinish.load(std::memory_order_acquire))std::this_thread::yield();
+}
 
 int main(int argc,char **argv) { @autoreleasepool {
     Stream stream;
@@ -116,4 +124,69 @@ int main(int argc,char **argv) { @autoreleasepool {
     kernel.replace(nullptr);
     assert(kernel.retired.empty()&&kernel.readers.load()==0);
     std::puts("VST3_RENDER_CONCURRENT_REPLACEMENT_REMOVAL_AND_MODULE_LIFETIME_OK");
+
+    // Keep code mapped only for this diagnostic: duplicate bundleEntry is
+    // itself the failure. A baseline implementation can otherwise unmap the
+    // old thread while it is paused inside bundleExit and obscure the race.
+    NSString *executable=[@(argv[1]) stringByAppendingPathComponent:@"Contents/MacOS/GainFixture"];
+    void *diagnostics=dlopen(executable.UTF8String,RTLD_NOW|RTLD_LOCAL);assert(diagnostics);
+    auto setExitCallback=(void (*)(void (*)()))dlsym(diagnostics,"catliveSetModuleExitCallback");
+    auto overlaps=(unsigned (*)())dlsym(diagnostics,"catliveOverlappingModuleEntries");
+    assert(setExitCallback&&overlaps);
+    auto module=loadModule(@(argv[1]));
+    setExitCallback(pauseModuleExit);
+    std::thread release([owned=std::move(module)]()mutable{owned.reset();});
+    while(!exitEntered.load(std::memory_order_acquire))std::this_thread::yield();
+    std::shared_ptr<Module> reloaded;
+    std::atomic<bool> reloadStarted{false},reloadFinished{false};
+    std::thread reload([&]{@autoreleasepool{
+        reloadStarted=true;reloaded=loadModule(@(argv[1]));reloadFinished=true;
+    }});
+    while(!reloadStarted.load())std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    const bool completedDuringExit=reloadFinished.load();
+    setExitCallback(nullptr);exitMayFinish=true;
+    release.join();reload.join();
+    assert(!completedDuringExit&&overlaps()==0);
+    assert(reloaded&&reloaded->factory->countClasses()==1);
+    reloaded.reset();dlclose(diagnostics);
+    std::puts("VST3_MODULE_RELOAD_WAITS_FOR_PREVIOUS_BUNDLE_EXIT_AND_UNLOAD_OK");
+
+    // CoreAudio may query AU latency on a different thread while inserts are
+    // removed/replaced. The chain must stay alive through the whole query.
+    setenv("CATLIVE_TEST_VST3_LATENCY_FRAMES","777",1);
+    auto unit=(JarasVSTAudioUnit *)[JarasVST3 makeNode].AUAudioUnit;
+    std::atomic<bool> querying{true};std::atomic<unsigned> queries{0};
+    std::thread queryLatency([&]{
+        while(querying.load()){
+            const double value=unit.latency;
+            assert(value==0||std::abs(value-777.0/48000)<1e-12);
+            ++queries;
+        }
+    });
+    for(int i=0;i<256;++i){
+        auto next=std::make_unique<Chain>();
+        auto instance=std::make_shared<Instance>(spec,48000,false);
+        instance->bypass=(i%3==0);next->instances.push_back(instance);
+        unit->kernel.replace(std::move(next));
+        unit->kernel.replace(nullptr);
+    }
+    querying=false;queryLatency.join();unsetenv("CATLIVE_TEST_VST3_LATENCY_FRAMES");
+    assert(queries.load()>0&&unit.latency==0);
+    std::puts("VST3_LATENCY_QUERY_CONCURRENT_REPLACEMENT_BYPASS_AND_REMOVAL_OK");
+
+    // Some processors change latency when a parameter selects a processing
+    // mode. Protecting chain ownership must not freeze the setup-time value.
+    setenv("CATLIVE_TEST_VST3_DYNAMIC_LATENCY","1",1);
+    auto dynamicNode=[JarasVST3 makeNode];NSError *error=nil;
+    assert([JarasVST3 configure:dynamicNode plugins:@[spec] error:&error]);
+    assert(std::abs(dynamicNode.AUAudioUnit.latency-2048.0/48000)<1e-12);
+    for(const double value:{0.25,0.75,0.0,1.0}){
+        [JarasVST3 setParameter:dynamicNode identifier:@"lifetime" parameter:0 value:value];
+        assert(std::abs(dynamicNode.AUAudioUnit.latency-value*4096/48000)<1e-12);
+    }
+    assert([JarasVST3 configure:dynamicNode plugins:@[] error:&error]);
+    unsetenv("CATLIVE_TEST_VST3_DYNAMIC_LATENCY");
+    assert(dynamicNode.AUAudioUnit.latency==0);
+    std::puts("VST3_PARAMETER_DEPENDENT_LATENCY_REMAINS_CURRENT_WITHOUT_RECONFIGURE_OK");
 } }

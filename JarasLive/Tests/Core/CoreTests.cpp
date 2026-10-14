@@ -636,6 +636,24 @@ int main() {
     Engine itemEffects; itemEffects.loadProject(itemFXProject);
     itemEffects.execute({CommandKind::play}); itemEffects.advance(0.5);
     itemEffects.execute({CommandKind::subSeek, "", 4}); itemEffects.execute({CommandKind::subPlay});
+    {
+        Engine capturedPresets; capturedPresets.loadProject(itemEffects.project());
+        capturedPresets.execute({CommandKind::play}); capturedPresets.advance(0.5);
+        const auto track = capturedPresets.project().songs[0].tracks[0].id;
+        const std::string preset = "{\"inserted\":[\"External:large\"],\"externalPlugins\":[{\"id\":\"large\",\"componentState\":\"" + std::string(128 * 1024, 'A') + "\"}]}";
+        capturedPresets.setFX(track, preset); capturedPresets.setFX("", preset);
+        expect(capturedPresets.project().songs[0].tracks[0].fxJSON == preset && capturedPresets.project().masterFXJSON == preset,
+               "track and Master save VST3 presets larger than 64 KiB like item FX");
+        expect(capturedPresets.transport().playing && capturedPresets.transport().position == 0.5,
+               "capturing large presets leaves playback untouched");
+        const std::string excessive(32 * 1024 * 1024 + 1, 'x');
+        for (const auto& target : {track, std::string()}) {
+            bool rejected = false;
+            try { capturedPresets.setFX(target, excessive); } catch (...) { rejected = true; }
+            expect(rejected && capturedPresets.project().songs[0].tracks[0].fxJSON == preset && capturedPresets.project().masterFXJSON == preset,
+                   "oversized preset rejection preserves the last captured state");
+        }
+    }
     const std::string itemFXJSON = R"({"inserted":["EQ","Delay"],"eqEnabled":true,"delayMix":25})";
     itemEffects.setClipFX("clip", itemFXJSON);
     const auto& itemWithFX = itemEffects.project().songs[0].tracks[0].clips[0];

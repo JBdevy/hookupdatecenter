@@ -1,12 +1,16 @@
 #import <AVFoundation/AVFoundation.h>
 #import <TargetConditionals.h>
-#if TARGET_OS_OSX
+#if TARGET_OS_OSX || TARGET_OS_IOS
 NS_ASSUME_NONNULL_BEGIN
 /// Continuous track processor. Control methods are never called by the audio callback.
 @interface JarasStemSeparator : NSObject
 + (AVAudioUnitEffect *)makeNode;
 /// Returns immediately after admission; inspect status for asynchronous model readiness.
+#if TARGET_OS_OSX
 + (BOOL)start:(AVAudioUnitEffect *)node executable:(NSURL *)executable worker:(NSURL *)worker modelCache:(NSURL *)modelCache error:(NSError **)error;
+#else
++ (BOOL)start:(AVAudioUnitEffect *)node coreMLModel:(NSURL *)model error:(NSError **)error;
+#endif
 + (void)configure:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gains:(NSArray<NSNumber *> *)gains muteMask:(NSUInteger)muteMask soloMask:(NSUInteger)soloMask;
 + (void)invalidate:(AVAudioUnitEffect *)node;
 + (void)stop:(AVAudioUnitEffect *)node;

@@ -82,6 +82,50 @@ for (name, scene, previous) in cases {
         "identical already-presented scenes must stay idle")
     print("METAL_\(name.uppercased())_PENDING_RETRY_RECOVERY_AND_PRESENTED_IDLE_OK")
 }
+// Structural replacement must retire obsolete pixels even when Metal cannot
+// immediately provide a drawable. Retaining fine detail from the same clip is
+// useful; retaining deleted tracks or a previous project's rows is incorrect.
+for reason in ["PROJECT_REPLACEMENT", "ITEM_DELETION"] {
+    func scene(revision: Int, rows: [CGFloat], gray: Float = 0.7) -> MetalWaveformFrame {
+        let strokes = rows.map { y in
+            MetalWaveformStroke(block: block, channel: 0, scale: SIMD2(100, 1),
+                translation: SIMD2(14, Float(y)), clip: CGRect(x: 0, y: y - 4, width: 128, height: 8),
+                color: SIMD4(gray, gray, gray, 1), itemRect: CGRect(x: 0, y: y - 4, width: 128, height: 8))
+        }
+        return MetalWaveformFrame(size: size, strokes: strokes,
+            coordinateSpace: .init(documentOrigin: .zero, pixelsPerSecond: 100, contentRevision: revision))
+    }
+    let original = scene(revision: 10, rows: [25, 64, 105])
+    surface.submit(original)
+    awaitValue("previous multirow waveform must present") { surface.presentedForRecoveryTest?.hasSameContent(as: original) == true }
+    settle()
+    let originalCount = surface.submittedFrameCount
+    // This same-content readiness update takes the asynchronous presentation
+    // path. Do not run Main before replacing its content: its already queued
+    // presentation callback must never revive the obsolete waveform.
+    let retired = scene(revision: 10, rows: [25, 64, 105], gray: 0.8)
+    surface.submit(retired)
+    check(surface.submittedFrameCount == originalCount + 1, "fixture submits a deferred old-content presentation")
+    MetalDrawableRecoveryProbe.blocked = true
+    let replacement = scene(revision: 11, rows: [25])
+    let firstAttempt = MetalDrawableRecoveryProbe.attempts
+    surface.submit(replacement)
+    check(surface.subviews.first?.alphaValue == 0,
+        "\(reason): a pending new structural scene must immediately hide the old project's/deleted items' pixels")
+    awaitValue("replacement exhausts bounded acquisition retry") { MetalDrawableRecoveryProbe.attempts >= firstAttempt + 2 }
+    settle()
+    check(surface.subviews.first?.alphaValue == 0 && surface.pendingForRecoveryTest,
+        "\(reason): delayed readiness presentation cannot revive retired rows")
+    MetalDrawableRecoveryProbe.blocked = false
+    surface.submit(replacement)
+    awaitValue("replacement must recover without a zoom or scroll") { surface.presentedForRecoveryTest?.hasSameContent(as: replacement) == true }
+    check(surface.subviews.first?.alphaValue == 1 && !surface.pendingForRecoveryTest)
+    let recoveredCount = surface.submittedFrameCount
+    for _ in 0..<100 { surface.submit(replacement) }
+    settle()
+    check(surface.submittedFrameCount == recoveredCount, "recovered structural scene must retain its idle cache")
+    print("METAL_\(reason)_RETIRES_OLD_PIXELS_AND_DELAYED_PRESENTATION_RECOVERS_WITHOUT_SCROLL_OK")
+}
 // NativeTimelineAudioBodyView retains identical projections and may never call
 // submit again. Visibility must recover the pending scene on its own.
 for restoreWindow in [true, false] {

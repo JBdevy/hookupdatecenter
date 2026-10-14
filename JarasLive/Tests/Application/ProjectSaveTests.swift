@@ -113,11 +113,13 @@ import XCTest
 }
 private actor SaveTestStore: ProjectPersistence {
     let fails: Bool
+    private(set) var lastProject: Project?
     init(fails: Bool = false) { self.fails = fails }
     func load() async throws -> Project? { nil }
     func save(_ project: Project) async throws {
         try await Task.sleep(nanoseconds: 30_000_000)
         if fails { throw ProjectError.invalid("Disk unavailable") }
+        lastProject = project
     }
 }
 final class ProjectSaveTests: XCTestCase {
@@ -231,8 +233,8 @@ final class ProjectSaveTests: XCTestCase {
         show.regionFromTimeSelection(song: UUID(), start: 30, end: 40)
         XCTAssertEqual(show.current?.parts, [region])
     }
-    @MainActor func testTabbedItemFXDefaultsAreStableDisabledAndDoNotEditProject() throws {
-        var project = Project.empty(name: "Tabbed effects")
+    @MainActor func testItemFXManagerRequiresExplicitInsertionBeforeEditing() throws {
+        var project = Project.empty(name: "Item FX manager")
         var track = Track(id: UUID(), name: "Audio", role: .other)
         let clip = AudioClip(id: UUID(), name: "Stem", startTime: 30, duration: 10)
         track.clips = [clip]; project.songs[0].tracks = [track]
@@ -252,15 +254,51 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertTrue(show.clipFXSettings(clip.id).inserted.isEmpty)
         eq.eqEnabled = true
         show.updateClipFX(clip.id, effect: "EQ", settings: eq); show.commitFX()
+        XCTAssertEqual(show.snapshot.project, original, "Controls for an absent effect must never insert it")
+        XCTAssertFalse(show.hasUnsavedChanges); XCTAssertFalse(show.canUndo)
+        XCTAssertEqual(executor.clipFXCommands, 0)
+        XCTAssertEqual(show.insertClipFX(clip.id, effect: "EQ"), "EQ")
+        show.updateClipFX(clip.id, effect: "EQ", settings: eq); show.commitFX()
         XCTAssertEqual(show.clipFXSettings(clip.id).inserted, ["EQ"])
         XCTAssertEqual(show.clipFXSettings(clip.id).bands[1].gain, 4)
         XCTAssertFalse(show.clipFXSettings(clip.id).compressorEnabled)
+    }
+    @MainActor func testClosingRemovedItemEditorsCannotReinsertEffectsDuringPlayback() throws {
+        var project = Project.empty(name: "Removed item effects")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        let clip = AudioClip(id: UUID(), name: "Stem", startTime: 0, duration: 10)
+        track.clips = [clip]; project.songs[0].tracks = [track]
+        let executor = SaveTestExecutor(); executor.playing = true
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        defer { show.send(.stopAll) }
+        let transport = show.snapshot.transport
+        for kind in ["EQ", "Delay", NativeFXSettings.stemSeparator] {
+            let effect = try XCTUnwrap(show.insertClipFX(clip.id, effect: kind))
+            let repeated = kind == NativeFXSettings.stemSeparator ? effect : try XCTUnwrap(show.insertClipFX(clip.id, effect: kind))
+            for key in Set([effect, repeated]) {
+                let stale = show.clipFXSettings(clip.id).settings(for: key)
+                show.removeClipFX(clip.id, effect: key)
+                let removed = show.snapshot.project, commands = executor.clipFXCommands, revision = show.projectRevision
+                show.updateClipFX(clip.id, effect: key, settings: stale); show.commitFX()
+                XCTAssertEqual(show.snapshot.project, removed, "An outgoing editor must not recreate a removed insert")
+                XCTAssertEqual(executor.clipFXCommands, commands)
+                XCTAssertEqual(show.projectRevision, revision)
+                XCTAssertEqual(show.snapshot.transport, transport)
+            }
+        }
     }
     @MainActor func testAllItemFXBypassPreservesParametersTransportAndFailedWrites() throws {
         var project = Project.empty(name: "Chain bypass")
         var track = Track(id: UUID(), name: "Audio", role: .other)
         var effects = NativeFXSettings(); effects.inserted = ["EQ", "Delay"]
         effects.eqEnabled = true; effects.delayEnabled = true; effects.feedback = 42
+        let repeatedDelay = effects.appendNative("Delay")
+        var repeatedSettings = effects.settings(for: repeatedDelay); repeatedSettings.delayTime = 0.875
+        effects = effects.merging(effect: repeatedDelay, from: repeatedSettings)
+        effects.setEnabled(repeatedDelay, enabled: false)
+        var plugin = ExternalPlugin(classID: String(repeating: "C", count: 32), name: "Take FX", path: "/Library/Audio/Plug-Ins/VST3/Take.vst3")
+        plugin.componentState = "retained-preset"
+        effects.externalPlugins = [plugin]; effects.inserted.append(plugin.effectKey)
         let clip = AudioClip(id: UUID(), name: "Stem", startTime: 30, duration: 10, fx: effects)
         track.clips = [clip]; project.songs[0].tracks = [track]
         let executor = SaveTestExecutor(); executor.playing = true
@@ -353,6 +391,69 @@ final class ProjectSaveTests: XCTestCase {
         show.redo(); XCTAssertEqual(show.clipFXSettings(clip.id).threshold,-12)
         show.toggleClipFXBypass(clip.id,effect: "EQ"); XCTAssertFalse(show.clipFXSettings(clip.id).eqEnabled)
         show.removeClipFX(clip.id,effect: "EQ"); XCTAssertEqual(show.clipFXSettings(clip.id).inserted,["Compressor"])
+    }
+    @MainActor func testItemFXManagerAddsIndependentInstancesAndRemovesThemWithoutChangingTrackFX() throws {
+        var project = Project.empty(name: "Item FX manager")
+        var track = Track(id: UUID(), name: "Stem", role: .other)
+        let clip = AudioClip(id: UUID(), name: "Audio", startTime: 30, duration: 10)
+        var trackFX = NativeFXSettings(); trackFX.appendNative("Delay"); trackFX.delayTime = 1.5
+        track.fx = trackFX; track.clips = [clip]; project.songs[0].tracks = [track]
+        let executor = SaveTestExecutor(); executor.playing = true
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        let snapshots = executor.snapshotCount, transport = show.snapshot.transport
+        var previews = 0
+        show.audioClipFX = { id, _ in XCTAssertEqual(id, clip.id); previews += 1 }
+        XCTAssertTrue(show.clipFXSettings(clip.id).effectKeys.isEmpty)
+        let first = try XCTUnwrap(show.insertClipFX(clip.id, effect: "Delay"))
+        let second = try XCTUnwrap(show.insertClipFX(clip.id, effect: "Delay"))
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(show.clipFXSettings(clip.id).effectKeys, [first, second])
+        var draft = show.clipFXSettings(clip.id).settings(for: second); draft.delayTime = 0.875
+        show.updateClipFX(clip.id, effect: second, settings: draft); show.commitFX()
+        XCTAssertEqual(show.clipFXSettings(clip.id).settings(for: second).delayTime, 0.875)
+        XCTAssertEqual(show.clipFXSettings(clip.id).settings(for: first).delayTime, 0.25)
+        show.toggleClipFXBypass(clip.id, effect: second)
+        XCTAssertTrue(show.clipFXSettings(clip.id).isEnabled(first))
+        XCTAssertFalse(show.clipFXSettings(clip.id).isEnabled(second))
+        let beforeRemoval = show.clipFXSettings(clip.id)
+        show.removeClipFX(clip.id, effect: second)
+        XCTAssertEqual(show.clipFXSettings(clip.id).effectKeys, [first])
+        XCTAssertTrue(show.clipFXSettings(clip.id).instances?.isEmpty == true)
+        XCTAssertEqual(show.fxSettings(track.id), trackFX)
+        XCTAssertEqual(executor.snapshotCount, snapshots); XCTAssertEqual(executor.projectEditCount, 0)
+        XCTAssertEqual(show.snapshot.transport, transport); XCTAssertGreaterThan(previews, 3)
+        show.undo(); XCTAssertEqual(show.clipFXSettings(clip.id), beforeRemoval)
+        show.redo(); XCTAssertEqual(show.clipFXSettings(clip.id).effectKeys, [first])
+        show.removeClipFX(clip.id, effect: first)
+        XCTAssertTrue(show.clipFXSettings(clip.id).effectKeys.isEmpty)
+        XCTAssertNil(show.insertClipFX(clip.id, effect: "Instruments"))
+        executor.failsClipFX = true
+        XCTAssertNil(show.insertClipFX(clip.id, effect: "EQ"))
+        XCTAssertTrue(show.clipFXSettings(clip.id).effectKeys.isEmpty)
+    }
+    @MainActor func testItemFXManagerKeepsMIDITakePluginStateThroughNativeInsertsBypassAndRemoval() throws {
+        var project = Project.empty(name: "MIDI take FX manager")
+        var plugin = ExternalPlugin(classID: String(repeating: "B", count: 32), name: "Take synth", path: "/Library/Audio/Plug-Ins/VST3/Synth.vst3", category: "Instrument|Synth")
+        plugin.componentState = "saved-component"; plugin.controllerState = "saved-controller"
+        var fx = NativeFXSettings(); fx.externalPlugins = [plugin]; fx.inserted = [plugin.effectKey]
+        let midi = MIDIItem(notes: [MIDINote(start: 0, length: 4, pitch: 60)])
+        let clip = AudioClip(id: UUID(), name: "Take", startTime: 0, duration: 10, fx: fx, midi: midi)
+        project.songs[0].tracks = [Track(id: UUID(), name: "MIDI", role: .other, clips: [clip])]
+        let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
+        let eq = try XCTUnwrap(show.insertClipFX(clip.id, effect: "EQ"))
+        XCTAssertEqual(show.clipFXSettings(clip.id).externalPlugins, [plugin])
+        show.toggleClipFXBypass(clip.id, effect: plugin.effectKey)
+        plugin.bypassed = true
+        XCTAssertEqual(show.clipFXSettings(clip.id).externalPlugins, [plugin])
+        show.removeClipFX(clip.id, effect: eq)
+        XCTAssertEqual(show.clipFXSettings(clip.id).externalPlugins, [plugin])
+        show.removeClipFX(clip.id, effect: plugin.effectKey)
+        XCTAssertTrue(show.clipFXSettings(clip.id).effectKeys.isEmpty)
+        XCTAssertTrue(show.clipFXSettings(clip.id).externalPlugins?.isEmpty == true)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].midi, midi)
+        show.undo()
+        XCTAssertEqual(show.clipFXSettings(clip.id).externalPlugins, [plugin])
+        XCTAssertEqual(show.current?.tracks[0].clips[0].midi, midi)
     }
     @MainActor func testItemFXRejectsInstrumentsSpecialTracksAndFailedWrites() throws {
         var project = Project.empty(name: "Restricted item effects")
@@ -1185,6 +1286,63 @@ final class ProjectSaveTests: XCTestCase {
         try await show.saveForClosing()
         XCTAssertFalse(show.hasUnsavedChanges)
     }
+
+    @MainActor func testSaveDuringAutomationKeepsPlaybackAndWritingPassUntouched() async throws {
+        for mode in [AutomationMode.write, .touch, .latch] {
+            var project = Project.empty(name: "Save while performing")
+            var row = Track(id: UUID(), name: "Synth", role: .keys)
+            var automation = TrackAutomation(); automation.mode = mode
+            var envelope = TrackEnvelope(target: AutomationTarget(.pan), name: "Pan", defaultValue: 0.5)
+            envelope.armed = true; automation.envelopes = [envelope]
+            row.automation = automation; project.songs[0].tracks = [row]
+            let executor = SaveTestExecutor(); executor.playing = true
+            let store = SaveTestStore()
+            let show = try ShowController(executor: executor, persistence: store, initialProject: project)
+            var overrides: [Double?] = [], audioUpdates = 0
+            show.audioAutomationOverride = { _, _, value in overrides.append(value) }
+            show.audioUpdate = { _, _ in audioUpdates += 1 }
+            XCTAssertTrue(show.recordAutomationControl(row.id, target: envelope.target, value: 0.8))
+            let pending = show.automation(row.id), transport = show.snapshot.transport
+            let overrideCount = overrides.count, revision = show.projectRevision
+            try await show.flushProject()
+            let saved = await store.lastProject
+            XCTAssertEqual(saved?.songs[0].tracks[0].automation, pending)
+            XCTAssertEqual(show.automation(row.id), pending, "Save must not end the current automation pass")
+            XCTAssertEqual(show.automation(row.id).mode, mode)
+            XCTAssertEqual(show.snapshot.transport, transport)
+            XCTAssertEqual(show.projectRevision, revision)
+            XCTAssertEqual(audioUpdates, 0, "Saving must not reschedule playing audio")
+            XCTAssertEqual(executor.projectEditCount, 0)
+            XCTAssertEqual(overrides.count, overrideCount, "Save must not release live automation overrides")
+            XCTAssertFalse(show.hasUnsavedChanges)
+            XCTAssertTrue(show.recordAutomationControl(row.id, target: envelope.target, value: 0.3))
+            XCTAssertTrue(show.hasUnsavedChanges)
+            XCTAssertEqual(show.automation(row.id).envelopes[0].value(at: 0), 0.3)
+        }
+    }
+
+    @MainActor func testAutomationWrittenDuringSaveRemainsPending() async throws {
+        var project = Project.empty(name: "Automation save race")
+        var automation = TrackAutomation(); automation.mode = .latch
+        var envelope = TrackEnvelope(target: AutomationTarget(.volume), name: "Volume", defaultValue: 0.5)
+        envelope.armed = true; automation.envelopes = [envelope]; project.masterAutomation = automation
+        let executor = SaveTestExecutor(); executor.playing = true
+        let store = SaveTestStore()
+        let show = try ShowController(executor: executor, persistence: store, initialProject: project)
+        XCTAssertTrue(show.recordAutomationControl(nil, target: envelope.target, value: 0.6))
+        let save = Task { try await show.flushProject() }
+        while !show.saving { await Task.yield() }
+        XCTAssertTrue(show.recordAutomationControl(nil, target: envelope.target, value: 0.9))
+        try await save.value
+        let saved = await store.lastProject
+        XCTAssertEqual(saved?.masterAutomation?.envelopes[0].value(at: 0), 0.6)
+        XCTAssertTrue(show.hasUnsavedChanges)
+        XCTAssertEqual(show.automation(nil).envelopes[0].value(at: 0), 0.9)
+        try await show.flushProject()
+        let latest = await store.lastProject
+        XCTAssertEqual(latest?.masterAutomation, show.automation(nil))
+        XCTAssertFalse(show.hasUnsavedChanges)
+    }
     @MainActor func testClosingPropagatesSaveFailure() async throws {
         let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(fails: true), initialProject: .empty(name: "Close failure"))
         show.addTrack(name: "One", role: .keys)
@@ -1200,6 +1358,26 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertFalse(show.saving)
         XCTAssertEqual(show.message, "Disk unavailable")
         XCTAssertNil(show.lastSavedAt, "failed writes must not advance the displayed saved date")
+    }
+    @MainActor func testDetachedOrDifferentDocumentCannotReportSuccessfulSaveOrClearDirtyState() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("catlive-save-selection-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("Show.jl")
+        for mismatchedDocument in [false, true] {
+            let store = DocumentProjectStore()
+            let project = Project.empty(name: "Unsaved edits")
+            if mismatchedDocument { await store.select(url: destination, id: UUID()) }
+            let show = try ShowController(executor: SaveTestExecutor(), persistence: store, initialProject: project)
+            show.addTrack(name: "Keep this edit", role: .keys)
+            await show.save()
+            XCTAssertTrue(show.hasUnsavedChanges)
+            XCTAssertFalse(show.saving)
+            XCTAssertNil(show.lastSavedAt)
+            XCTAssertFalse(show.message.isEmpty)
+            XCTAssertNotEqual(show.message, "Projeto salvo.")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+            XCTAssertEqual(show.snapshot.project.songs[0].tracks.last?.name, "Keep this edit")
+        }
     }
 }
 

@@ -1,5 +1,10 @@
 #import <AVFoundation/AVFoundation.h>
 NS_ASSUME_NONNULL_BEGIN
+/// Validate one hardware-format snapshot and contain Core Audio exceptions at
+/// the Objective-C API boundary if a device vanishes during connection.
+@interface JarasAudioOutputConnection : NSObject
++ (nullable AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error NS_SWIFT_NAME(connect(_:));
+@end
 /// A bounded analysis tap, installed only while an effect editor is observing.
 @interface JarasAudioAnalysisProbe : NSObject
 - (void)attachToNode:(AVAudioNode *)node;

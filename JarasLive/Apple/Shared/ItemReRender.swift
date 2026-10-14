@@ -135,7 +135,7 @@ enum ItemReRender {
         } catch { try? FileManager.default.removeItem(at: url); throw error }
     }
 
-    @MainActor static func midiInstruments(for track: Track) -> [String: OfflineMIDIInstrument] {
+    @MainActor static func midiInstruments(for track: Track, projectDirectory: URL? = nil) -> [String: OfflineMIDIInstrument] {
         guard let fx = track.fx else { return [:] }
         var sources: [String: OfflineMIDIInstrument] = [:]
         for key in fx.instrumentKeys where fx.isEnabled(key) {
@@ -144,7 +144,7 @@ enum ItemReRender {
             let category = InstrumentLibrary.category(id)
             var parameters = voice.instrumentParameters ?? InstrumentLibrary.parameters(id)
             if parameters.controllers == nil { parameters.controllers = InstrumentLibrary.controllers(category) }
-            sources[key] = OfflineMIDIInstrument(url: InstrumentLibrary.shared.file(id), parameters: parameters,
+            sources[key] = OfflineMIDIInstrument(url: InstrumentLibrary.shared.file(id, projectDirectory: projectDirectory), parameters: parameters,
                                                 drums: category == .drum, monophonic: category == .lead)
         }
         return sources

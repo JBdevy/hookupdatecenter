@@ -5,6 +5,13 @@ import AppKit
 @MainActor final class MIDIEditorWindows: NSObject, NSWindowDelegate {
     static let shared = MIDIEditorWindows()
     private var windows: [UUID: NSWindow] = [:]
+    func closeAll() {
+        // Reopening a copy can preserve every UUID. Retire the editing session
+        // explicitly so its note selection and pending sheets cannot survive.
+        let closing = Array(windows.values)
+        windows.removeAll()
+        for window in closing { window.close() }
+    }
     func open(show: ShowController, item: UUID) {
         guard let song = show.current, song.tracks.contains(where: { $0.clips.contains { $0.id == item && $0.midi != nil } }) else { return }
         if let window = windows[item] { window.makeKeyAndOrderFront(nil); return }

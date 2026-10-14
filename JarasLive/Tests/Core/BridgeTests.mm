@@ -34,6 +34,8 @@ int main(int argc,char**argv){@autoreleasepool{
     NSDictionary* original=[NSJSONSerialization JSONObjectWithData:input options:0 error:&error];
     NSDictionary* snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect(equalJSON(original,snapshot[@"project"]),"bridge round trip preserves all fields and clips");
+    expect([snapshot[@"project"][@"songs"][0][@"regionOwnershipVersion"] intValue] == 2,
+           "native snapshots retain versioned region ownership so loose items are not migrated again");
     expectMetadataSnapshot(core,snapshot);
     expect([core executeCommand:@"toggleMultiLoopBypass" target:nil value:0 error:&error], "global bypass command reaches engine");
     NSDictionary* bypassState=[NSJSONSerialization JSONObjectWithData:[core playbackSnapshotWithError:&error] options:0 error:&error];

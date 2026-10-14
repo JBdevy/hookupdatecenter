@@ -42,6 +42,7 @@ private final class CaptureWriter: @unchecked Sendable {
         var overview: RecordingOverview
         var frames: Int64 = 0
         var position: Double?
+        var droppedFramesAtStart: UInt = 0
         init(target: CaptureTarget,url: URL,file: AVAudioFile,buffer: AVAudioPCMBuffer) {
             self.target=target; self.url=url; self.file=file; self.buffer=buffer
             overview=RecordingOverview(channels: target.channelCount,sampleRate: buffer.format.sampleRate)
@@ -63,7 +64,9 @@ private final class CaptureWriter: @unchecked Sendable {
             let settings: [String: Any] = [AVFormatIDKey:kAudioFormatLinearPCM, AVSampleRateKey:sampleRate, AVNumberOfChannelsKey:target.channelCount, AVLinearPCMBitDepthKey:target.format.hasSuffix("16pcm") ? 16 : (target.format == "wav32" || target.format.hasSuffix("32pcm")) ? 32 : 24, AVLinearPCMIsFloatKey:target.format == "wav32", AVLinearPCMIsBigEndianKey:aiff, AVLinearPCMIsNonInterleaved:false]
             let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
             guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw ProjectError.invalid("Could not allocate recording buffer") }
-        return Take(target: target, url: url, file: file, buffer: buffer)
+        let take = Take(target: target, url: url, file: file, buffer: buffer)
+        take.droppedFramesAtStart = ring.droppedFrames
+        return take
     }
     func setInitialPosition(_ position: Double) { for take in takes { take.position = position } }
     func changeTargets(_ targets: [CaptureTarget], position: Double, completion: @escaping @Sendable ([CapturedItem], String?) -> Void) {
@@ -83,6 +86,9 @@ private final class CaptureWriter: @unchecked Sendable {
     func start(preview: (@Sendable (Double,[UUID:[[Double]]]) -> Void)? = nil) {
         ring.beginCapture()
         queue.async {
+            // beginCapture resets the shared ring's loss counter. Initial
+            // takes belong to this new session, even if the ring was reused.
+            for take in self.takes { take.droppedFramesAtStart = 0 }
             self.preview = preview
             let timer = DispatchSource.makeTimerSource(queue: self.queue)
             timer.schedule(deadline: .now(), repeating: .milliseconds(20), leeway: .milliseconds(3))
@@ -121,6 +127,8 @@ private final class CaptureWriter: @unchecked Sendable {
         guard !completed.isEmpty else { return }
         for take in completed { take.file = nil }
         let failure = self.failure?.localizedDescription
+        let dropped = ring.droppedFrames
+        let lostAudio = completed.contains { dropped > $0.droppedFramesAtStart }
         pendingFiles.enter()
         DispatchQueue.global(qos: .userInitiated).async {
             defer { self.pendingFiles.leave() }
@@ -149,6 +157,10 @@ private final class CaptureWriter: @unchecked Sendable {
                     items.append(CapturedItem(track: take.target.track, clip: clip))
                 } catch { message = error.localizedDescription }
             }
+            if lostAudio && !items.isEmpty {
+                let warning = JarasLocalization.string("Some audio was lost during recording. The captured audio was preserved, but the recording may be incomplete.")
+                message = [message, warning].compactMap { $0 }.joined(separator: "\n")
+            }
             completion(items, message)
         }
     }
@@ -176,8 +188,19 @@ private final class CaptureWriter: @unchecked Sendable {
     private var microphoneTracks: Set<UUID> = []
     private var selectionObservation: AnyCancellable?
     private var requestingMicrophone = false
+    #if os(iOS)
+    private var localAudioAvailable = false
+    func setLocalAudioAvailable(_ available: Bool) {
+        localAudioAvailable = available
+        if available { reconcileArming() }
+        else { finish(); releaseInput() }
+    }
+    #endif
     func bind(_ show: ShowController) {
         self.show = show
+        AudioDeviceSettings.shared.canChangeConfiguration = { [weak self, weak show] in
+            show?.isPlaying != true && self?.recording != true && self?.busy != true
+        }
         AudioDeviceSettings.shared.inputDeviceChanged = { [weak self] in
             guard let self else { return }
             if self.recording { self.finish() }
@@ -209,6 +232,9 @@ private final class CaptureWriter: @unchecked Sendable {
     private var tapInstalled = false
     private var updatingMonitoring = false
     private func refreshMonitoring() {
+        #if os(iOS)
+        guard localAudioAvailable else { return }
+        #endif
         guard !updatingMonitoring else { return }
         updatingMonitoring = true; defer { updatingMonitoring = false }
         let tracks = show?.current?.tracks ?? []
@@ -221,9 +247,10 @@ private final class CaptureWriter: @unchecked Sendable {
         for config in monitorConfig { playback.setInputMonitor(config.track, source: nil) }
         monitorConfig = []; monitorRings = []
         guard !desired.isEmpty else { rebuildInputTap(); releaseInputIfIdle(); return }
-        configureInput()
+        do { try configureInput() }
+        catch { self.error = error.localizedDescription; releaseInput(); return }
         let format = captureEngine.inputNode.outputFormat(forBus: 0)
-        guard format.channelCount > 0, format.sampleRate > 0 else { return }
+        guard format.channelCount > 0, format.sampleRate > 0 else { releaseInput(); return }
         for config in desired where config.patch.firstChannel >= 1 && config.patch.firstChannel + config.patch.channelCount - 1 <= Int(format.channelCount) {
             let ring = JarasCaptureRing(channels: UInt(format.channelCount), capacity: UInt(max(8192, format.sampleRate / 4)))
             let count = min(config.channels, config.patch.channelCount)
@@ -236,10 +263,11 @@ private final class CaptureWriter: @unchecked Sendable {
             captureRing?.endCapture()
         }
         rebuildInputTap()
-        do { if !captureEngine.isRunning { captureEngine.prepare(); try captureEngine.start() } }
+        do { try startInputEngine() }
         catch { self.error = error.localizedDescription; releaseInput() }
     }
     private func rebuildInputTap() {
+        guard tapInstalled || captureRing != nil else { return }
         let input = captureEngine.inputNode
         if tapInstalled { input.removeTap(onBus: 0); tapInstalled = false }
         guard let ring = captureRing else { return }
@@ -267,16 +295,82 @@ private final class CaptureWriter: @unchecked Sendable {
     private var lastTime = 0.0
     var defaultInputPatch: OutputPatch { OutputPatch(firstChannel: 1, channelCount: min(2, max(1, inputChannels))) }
     var inputChannels: Int { AudioDeviceSettings.shared.inputDevice?.channels ?? 0 }
-    private func configureInput(allowCaptureSetup: Bool = false) {
-        guard (!recording && !busy) || (allowCaptureSetup && writer == nil) else { return }
+    private func configureInput(allowCaptureSetup: Bool = false) throws {
         #if os(macOS)
         let audio = AudioDeviceSettings.shared
-        guard let device = audio.inputDevice else { releaseInput(); configuredInput = 0; return }
+        guard let device = audio.inputDevice, device.hardwareID != 0 else {
+            releaseInput(); configuredInput = 0
+            throw ProjectError.invalid(JarasLocalization.string("Choose an audio input device in Settings."))
+        }
         var selected = device.hardwareID
-        guard selected != 0, selected != configuredInput, let unit = captureEngine.inputNode.audioUnit else { return }
-        releaseInput()
-        if AudioUnitSetProperty(unit,kAudioOutputUnitProperty_CurrentDevice,kAudioUnitScope_Global,0,&selected,UInt32(MemoryLayout<UInt32>.size)) == noErr { configuredInput = selected }
+        let canConfigure = (!recording && !busy) || (allowCaptureSetup && writer == nil)
+        guard selected == configuredInput || canConfigure else {
+            throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
+        }
+        guard let unit = captureEngine.inputNode.audioUnit else {
+            throw ProjectError.invalid(JarasLocalization.string("No audio inputs available."))
+        }
+        // A remembered selection does not prove which hardware this unit uses.
+        // Verify the actual route before reusing an existing input configuration.
+        let actual = try actualInputDevice(unit)
+        guard selected != configuredInput || actual != selected else { return }
+        guard canConfigure else {
+            throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
+        }
+        releaseInput(); configuredInput = 0
+        let result = AudioUnitSetProperty(unit,kAudioOutputUnitProperty_CurrentDevice,kAudioUnitScope_Global,0,&selected,UInt32(MemoryLayout<UInt32>.size))
+        guard result == noErr else {
+            throw ProjectError.invalid(JarasLocalization.string("Could not open the selected audio input device.") + " (\(result))")
+        }
+        guard try actualInputDevice(unit) == selected else {
+            throw ProjectError.invalid(JarasLocalization.string("Could not open the selected audio input device."))
+        }
+        configuredInput = selected
+        #else
+        guard localAudioAvailable else {
+            throw ProjectError.invalid(JarasLocalization.string("Open Native mode to record audio."))
+        }
+        try AudioDeviceSettings.shared.requireLocalInput()
         #endif
+    }
+    #if os(macOS)
+    private func actualInputDevice(_ unit: AudioUnit) throws -> UInt32 {
+        var actual: UInt32 = 0, bytes = UInt32(MemoryLayout<UInt32>.size)
+        let result = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &actual, &bytes)
+        guard result == noErr else {
+            throw ProjectError.invalid(JarasLocalization.string("Could not open the selected audio input device.") + " (\(result))")
+        }
+        guard bytes == UInt32(MemoryLayout<UInt32>.size) else {
+            throw ProjectError.invalid(JarasLocalization.string("Could not open the selected audio input device."))
+        }
+        return actual
+    }
+    #endif
+    private func requireConfiguredInput(expectedUID: String? = nil, expectedDevice: UInt32? = nil) throws {
+        #if os(macOS)
+        let audio = AudioDeviceSettings.shared
+        guard let device = audio.inputDevice, device.hardwareID != 0 else {
+            throw ProjectError.invalid(JarasLocalization.string("Choose an audio input device in Settings."))
+        }
+        guard configuredInput == device.hardwareID,
+              expectedUID == nil || expectedUID == audio.inputUID,
+              expectedDevice == nil || expectedDevice == device.hardwareID else {
+            throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
+        }
+        guard let unit = captureEngine.inputNode.audioUnit,
+              try actualInputDevice(unit) == device.hardwareID else {
+            throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
+        }
+        #else
+        guard localAudioAvailable else {
+            throw ProjectError.invalid(JarasLocalization.string("Open Native mode to record audio."))
+        }
+        try AudioDeviceSettings.shared.requireLocalInput(expectedUID: expectedUID)
+        #endif
+    }
+    private func startInputEngine() throws {
+        try requireConfiguredInput()
+        if !captureEngine.isRunning { captureEngine.prepare(); try captureEngine.start() }
     }
     func open(directory: URL, project: UUID) {
         if recording { finish() }
@@ -302,6 +396,9 @@ private final class CaptureWriter: @unchecked Sendable {
         reconcileArming()
     }
     private func reconcileArming() {
+        #if os(iOS)
+        guard localAudioAvailable else { return }
+        #endif
         guard !busy else { return }
         let wanted = armState.armed
         if let show {
@@ -411,6 +508,11 @@ private final class CaptureWriter: @unchecked Sendable {
         if recording { finish(); return }
         guard !busy, show.canExecute(), let directory, project == show.snapshot.project.id else { return }
         let tracks = show.current?.tracks.filter { $0.kind == .standard && armed.contains($0.id) } ?? []
+        #if os(iOS)
+        guard !tracks.isEmpty, tracks.allSatisfy({ $0.recordingMode != .midi }) else {
+            error = JarasLocalization.string("Arm an audio track before recording."); return
+        }
+        #endif
         let audioTracks = tracks.filter { $0.recordingMode != .midi }
         if !audioTracks.isEmpty, !AudioDestinationSpace.confirm(at: directory.appendingPathComponent("Stems/Recordings", isDirectory: true)) { return }
         busy = true; self.show = show; error = ""; previewSession = UUID()
@@ -439,7 +541,9 @@ private final class CaptureWriter: @unchecked Sendable {
         let allowed = permission == .authorized ? true : permission == .notDetermined ? await AVCaptureDevice.requestAccess(for: .audio) : false
         guard allowed else { throw ProjectError.invalid("Allow microphone access in System Settings to record audio.") }
         guard inputChannels > 0 else { throw ProjectError.invalid("Choose an audio input device in Settings.") }
-        configureInput(allowCaptureSetup: true)
+        try configureInput(allowCaptureSetup: true)
+        let requestedInputUID = AudioDeviceSettings.shared.inputUID
+        let requestedInputDevice = configuredInput
         let input = captureEngine.inputNode, format = input.outputFormat(forBus: 0)
         guard format.channelCount > 0 && format.sampleRate > 0 else { throw ProjectError.invalid("No audio input is available.") }
         let position = show.snapshot.transport.playing ? show.snapshot.transport.position : show.snapshot.transport.editPosition ?? show.snapshot.transport.position
@@ -448,9 +552,19 @@ private final class CaptureWriter: @unchecked Sendable {
         ring.endCapture()
         do {
             let writer = try await Task.detached(priority: .userInitiated) { try CaptureWriter(targets: targets, directory: directory, format: format, ring: ring) }.value
-            guard project == requestedProject, project == show.snapshot.project.id, show.canExecute(), !wasRecording || recording else {
+            do {
+                guard project == requestedProject, project == show.snapshot.project.id, show.canExecute(), !wasRecording || recording else {
+                    throw ProjectError.invalid("The destination project is no longer available.")
+                }
+                // Creating files yields to the main actor. The selected input or
+                // its format may have changed before the writer is ready.
+                try requireConfiguredInput(expectedUID: requestedInputUID, expectedDevice: requestedInputDevice)
+                guard format.isEqual(captureEngine.inputNode.outputFormat(forBus: 0)) else {
+                    throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
+                }
+            } catch {
                 writer.finish(start: position) { _, _ in }
-                throw ProjectError.invalid("The destination project is no longer available.")
+                throw error
             }
             let actualPosition = show.snapshot.transport.playing ? show.snapshot.transport.position : show.snapshot.transport.editPosition ?? show.snapshot.transport.position
             self.writer = writer
@@ -476,7 +590,7 @@ private final class CaptureWriter: @unchecked Sendable {
                 captureRing = ring
                 rebuildInputTap()
             }
-            do { if !captureEngine.isRunning { captureEngine.prepare(); try captureEngine.start() } }
+            do { try startInputEngine() }
             catch {
                 releaseInput(); self.writer = nil; activeTargets = [:]
                 writer.finish(start: actualPosition) { _, _ in }
@@ -589,7 +703,9 @@ struct TrackRecordButton: View {
                 Picker("Recording mode", selection: Binding(get: { track.recordingChannels ?? 2 }, set: { show.setRecordingChannels(track.id, channel: $0) })) {
                     Text("Mono").tag(1)
                     Text("Stereo").tag(2)
+                    #if os(macOS)
                     Text("MIDI").tag(0)
+                    #endif
                 }.pickerStyle(.segmented).labelsHidden().disabled(recorder.recording || recorder.busy)
                 if track.recordingMode != .midi {
                     Picker("Input monitoring", selection: Binding(get: { track.inputMonitoring != false }, set: { show.setInputMonitoring(track.id, enabled: $0) })) {

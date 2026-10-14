@@ -20,6 +20,7 @@ private actor SignedTrialBackend: BackendClient {
     var failure: BackendFailure?
     func fail(_ value: BackendFailure) { failure = value }
     var requests = 0
+    var lastActivationProof: LicenseLeaseProof?
     init(result: LoginResult) { self.result = result }
     func setOffline() { offline = true }
     func available() throws { requests += 1; if let failure { throw failure }; if offline { throw BackendFailure.unavailable } }
@@ -31,15 +32,20 @@ private actor SignedTrialBackend: BackendClient {
     func entitlement(_ session: AuthSession) throws -> Entitlement { try available(); return result.entitlement }
     func device(_ session: AuthSession, installationId: UUID) throws -> AuthorizedDevice { try available(); return result.device }
     func devices(_ session: AuthSession) throws -> [AuthorizedDevice] { try available(); return [result.device] }
+    func accessStatus(_ session: AuthSession) throws { try available() }
+    func accessStatus(_ session: AuthSession, activationProof: LicenseLeaseProof?) throws {
+        lastActivationProof = activationProof
+        try available()
+    }
     func revokeDevice(_ session: AuthSession, installationId: UUID) throws { try available() }
     func logout(_ session: AuthSession, installationId: UUID) throws {}
 }
 final class LicenseLeaseTests: XCTestCase {
-    func fixture(leaseDuration: Double = 7*86400, plan: String = "trial") throws -> (LoginResult, LicenseLeaseVerifier) {
+    func fixture(leaseDuration: Double = 7*86400, plan: String = "trial", accessDuration: Double = 7*86400, issuedAt now: Date = Date()) throws -> (LoginResult, LicenseLeaseVerifier) {
         let store = MemorySecureStore(), key = Curve25519.Signing.PrivateKey()
         let device = try DeviceAuthorizationService.installation(store: store, name: "Signed trial", platform: "macOS")
-        let account = UserAccount(id: UUID(), name: "Trial", email: "test@trial.invalid"), now = Date()
-        let lease = Entitlement(status: "active", planId: plan, expiresAt: now.addingTimeInterval(7*86400), offlineValidUntil: now.addingTimeInterval(leaseDuration), serverTime: now, maxDevices: 4, features: ["desktop"])
+        let account = UserAccount(id: UUID(), name: "Trial", email: "test@trial.invalid")
+        let lease = Entitlement(status: "active", planId: plan, expiresAt: now.addingTimeInterval(accessDuration), offlineValidUntil: now.addingTimeInterval(leaseDuration), serverTime: now, maxDevices: 4, features: ["desktop"])
         return (LoginResult(account: account, session: AuthSession(accessToken: "signed-access", refreshToken: "signed-refresh", expiresAt: now.addingTimeInterval(900)), entitlement: try signedLease(lease, key: key, account: account.id, device: device.id), device: device), LicenseLeaseVerifier(publicKey: key.publicKey.rawRepresentation))
     }
     func testSignatureRejectsEditedDatesPlanSeatsAccountDeviceAndSigningKey() throws {
@@ -71,8 +77,8 @@ final class LicenseLeaseTests: XCTestCase {
         XCTAssertEqual(after, requests, "no validation request before trial expiry")
         XCTAssertTrue(restart.workspaceAllowed)
     }
-    @MainActor func testModifiedCacheCannotExtendRunningMonotonicLease() async throws {
-        let (result, verifier) = try fixture(leaseDuration: 0.4), store = MemorySecureStore(), backend = SignedTrialBackend(result: result)
+    @MainActor func testModifiedCacheCannotExtendRunningTrialDeadline() async throws {
+        let (result, verifier) = try fixture(accessDuration: 0.4), store = MemorySecureStore(), backend = SignedTrialBackend(result: result)
         let auth = AuthService(backend: backend, store: store, installation: result.device, feature: "desktop", verifier: verifier)
         await auth.startTrial(hardwareID: "hardware-test"); XCTAssertTrue(auth.allowed)
         auth.isPlaying = { true }
@@ -84,6 +90,87 @@ final class LicenseLeaseTests: XCTestCase {
         XCTAssertFalse(auth.allowed)
         await auth.revalidate()
         XCTAssertFalse(auth.allowed, "offline retries must not reset the monotonic expiry")
+    }
+    @MainActor func testActivatedPlansRestoreWithExpiredOfflineTTLAndTokensWithoutNetwork() async throws {
+        for plan in ["6-meses", "1-ano", "vitalicio", "trial"] {
+            let issuedAt = Date().addingTimeInterval(-2*86400)
+            let (result, verifier) = try fixture(leaseDuration: 86400, plan: plan, issuedAt: issuedAt)
+            let store = MemorySecureStore(), backend = SignedTrialBackend(result: result)
+            await backend.fail(.invalidSession)
+            store.write(try JSONEncoder().encode(SessionCache(login: result, validatedAt: issuedAt)), key: "catlive.production.session")
+            let auth = AuthService(backend: backend, store: store, installation: result.device, feature: "desktop", verifier: verifier)
+            var audioStates: [Bool] = []
+            auth.onAudioAuthorization = { audioStates.append($0) }
+            await auth.restore()
+            XCTAssertTrue(auth.allowed, "Previously activated \(plan) must not require periodic online validation")
+            XCTAssertTrue(auth.workspaceAllowed)
+            XCTAssertEqual(auth.phase, .offlineAuthorized)
+            XCTAssertEqual(audioStates, [true])
+            XCTAssertEqual(auth.loginResult?.session, result.session, "Startup must not rotate credentials")
+            let requests = await backend.requests
+            XCTAssertEqual(requests, 0, "Even expired tokens and offline TTL cannot cause startup network I/O")
+            if plan == "trial" {
+                XCTAssertEqual(auth.trialDaysRemaining, 5, "Legacy trial migration must preserve elapsed time")
+                XCTAssertNotNil(store.read("catlive.production.trialClock"))
+            }
+        }
+    }
+    @MainActor func testOfflineTTLPassingDuringPlaybackDoesNotCloseAudioOrCommandGate() async throws {
+        let (result, verifier) = try fixture(leaseDuration: 0.05, plan: "6-meses")
+        let store = MemorySecureStore(), backend = SignedTrialBackend(result: result)
+        await backend.fail(.unavailable)
+        store.write(try JSONEncoder().encode(SessionCache(login: result, validatedAt: Date())), key: "catlive.production.session")
+        let auth = AuthService(backend: backend, store: store, installation: result.device, feature: "desktop", verifier: verifier)
+        await auth.restore()
+        auth.isPlaying = { true }
+        var audioChanges: [Bool] = []
+        auth.onAudioAuthorization = { audioChanges.append($0) }
+        let engine = LicenseCommandExecutor()
+        let show = try ShowController(executor: engine, persistence: MemoryProjectStore(), initialProject: engine.project)
+        show.canExecute = { auth.allowed }
+        try await Task.sleep(nanoseconds: 120_000_000)
+        for _ in 0..<60 { auth.checkLocalExpiry() }
+        show.send(.play); show.send(.subPlay)
+        XCTAssertTrue(auth.allowed)
+        XCTAssertTrue(auth.restriction.isEmpty)
+        XCTAssertTrue(audioChanges.isEmpty, "An obsolete offline TTL must never stop the active show")
+        XCTAssertTrue(engine.commands.contains(.play)); XCTAssertTrue(engine.commands.contains(.subPlay))
+        let requests = await backend.requests
+        XCTAssertEqual(requests, 0)
+    }
+    @MainActor func testBackgroundQuarantineUsesSavedActivationProofAfterTokensExpire() async throws {
+        let issuedAt = Date().addingTimeInterval(-120*86400)
+        let (result, verifier) = try fixture(leaseDuration: 86400, plan: "1-ano", accessDuration: 365*86400, issuedAt: issuedAt)
+        let store = MemorySecureStore(), backend = SignedTrialBackend(result: result)
+        store.write(try JSONEncoder().encode(SessionCache(login: result, validatedAt: issuedAt)), key: "catlive.production.session")
+        let auth = AuthService(backend: backend, store: store, installation: result.device, feature: "desktop", verifier: verifier)
+        await auth.restore()
+        XCTAssertTrue(auth.allowed)
+        await backend.fail(.quarantined)
+        await auth.checkOnlineAccess()
+        let sentProof = await backend.lastActivationProof
+        XCTAssertEqual(sentProof, result.entitlement.proof)
+        XCTAssertFalse(auth.allowed)
+        XCTAssertNil(auth.loginResult)
+        XCTAssertNotNil(store.read("catlive.production.quarantineNotice"))
+        let requests = await backend.requests
+        XCTAssertEqual(requests, 1, "Only the explicit background quarantine request uses the network")
+    }
+    @MainActor func testExpiredBusinessPlanOrTrialRemainsBlockedLocallyWithoutStartupRequests() async throws {
+        for plan in ["6-meses", "1-ano", "trial"] {
+            let (result, verifier) = try fixture(plan: plan, accessDuration: -1)
+            let store = MemorySecureStore(), backend = SignedTrialBackend(result: result)
+            await backend.fail(.unavailable)
+            store.write(try JSONEncoder().encode(SessionCache(login: result, validatedAt: Date())), key: "catlive.production.session")
+            let auth = AuthService(backend: backend, store: store, installation: result.device, feature: "desktop", verifier: verifier)
+            await auth.restore()
+            XCTAssertFalse(auth.allowed)
+            XCTAssertTrue(auth.workspaceAllowed, "Expired access must still allow the editor to save")
+            XCTAssertFalse(auth.restriction.isEmpty)
+            XCTAssertFalse(auth.restriction.contains("internet"))
+            let requests = await backend.requests
+            XCTAssertEqual(requests, 0)
+        }
     }
     @MainActor func testForgedBackendLeaseNeverEnablesAudio() async throws {
         var (result, verifier) = try fixture(); result.entitlement.expiresAt = .distantFuture
@@ -221,7 +308,7 @@ extension LicenseLeaseTests {
 }
 extension LicenseLeaseTests {
     @MainActor func testExpiredLicenseBlocksPlaySubPlayAndNewTracksButAllowsSaving() async throws {
-        let (result, verifier) = try fixture(leaseDuration: 0.25)
+        let (result, verifier) = try fixture(accessDuration: 0.25)
         let auth = AuthService(backend: SignedTrialBackend(result: result), store: MemorySecureStore(), installation: result.device, feature: "desktop", verifier: verifier)
         let engine = LicenseCommandExecutor(), persistence = MemoryProjectStore()
         let show = try ShowController(executor: engine, persistence: persistence, initialProject: engine.project)

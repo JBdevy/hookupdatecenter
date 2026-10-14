@@ -36,7 +36,8 @@ public actor DocumentProjectStore: ProjectPersistence {
         return try await ProjectStore(url: url).load()
     }
     public func save(_ project: Project) async throws {
-        guard let url, project.id == projectID else { return }
+        guard let url else { throw ProjectError.invalid("No project is open for saving.") }
+        guard project.id == projectID else { throw ProjectError.invalid("The open project changed before saving. The project was not saved.") }
         try ProjectBackups.save(project, to: url)
     }
 }

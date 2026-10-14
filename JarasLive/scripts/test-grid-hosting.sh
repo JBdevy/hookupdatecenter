@@ -31,7 +31,6 @@ mount_start = source.index('private struct NativeTimelineBaseSlot:')
 mount = source[mount_start:source.index('\n@MainActor private final class NativeTimelineBaseController', mount_start)]
 tests += '\n' + mount + '\n' + Path('Tests/Apple/TimelineNativeMountTests.swift').read_text()
 zoom = source[source.index('private final class TimelineCoordinatePlane:'):source.index('/// Empty layers keep their content subscriptions')]
-zoom += source[source.index('private struct TimelineZoomLayer<'):source.index('private struct TimelineViewportLayer<')]
 limits = source[source.index('enum TimelineZoomLimits'):source.index('private let markerLaneHeight')]
 Path(sys.argv[1]).write_text(limits + zoom + tests + '\nextension NormalizationFixtureContent {\n' + source[start:end] + '\n}\n')
 PYTEST

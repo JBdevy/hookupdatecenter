@@ -124,6 +124,7 @@ struct DAWRemoteCommand: Codable {
         case remotePanel, noticeSend, noticeClear, noticePin, noticeDestination, noticeSaveTemplate
         case requestImage
         case timerStart, timerStop
+        case editRegion, deleteRegion, renamePlaylist, duplicatePlaylist, deletePlaylist
     }
     var id = UUID()
     var project: UUID
@@ -135,14 +136,19 @@ struct DAWRemoteCommand: Codable {
     var enabled: Bool? = nil
     /// Opt in so hosts never send an unknown packet kind to older clients.
     var noticeReceiptRequested: Bool? = nil
+    var playlist: UUID? = nil
     var valid: Bool {
         guard value.isFinite else { return false }
         if let text {
-            guard [.noticeSend, .noticeSaveTemplate].contains(action), text.count <= 500, text.utf8.count <= 4000 else { return false }
+            guard [.noticeSend, .noticeSaveTemplate, .editRegion, .renamePlaylist].contains(action), text.count <= 500, text.utf8.count <= 4000 else { return false }
         }
+        if playlist != nil && action != .deleteRegion { return false }
         if enabled != nil && action != .noticeDestination { return false }
         if noticeReceiptRequested != nil && action != .noticeSend { return false }
         switch action {
+        case .editRegion: return target != nil && text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false && (0...16777215).contains(value) && value.rounded() == value
+        case .renamePlaylist: return target != nil && value == 0 && text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        case .deleteRegion, .duplicatePlaylist, .deletePlaylist: return target != nil && value == 0
         case .toggleMultiLoopBypass, .toggleSetlistLive, .cancelSection: return target == nil && value == 0
         case .resetMeterPeak: return value == 0
         case .timerStart: return target == nil && (0...359999).contains(value) && value.rounded() == value
@@ -181,6 +187,12 @@ struct DAWRemoteState: Codable, Equatable {
         var gain: Double? = nil
         var muted: Bool? = nil
         var lane: Int? = nil
+        /// In-process only: never encoded into Remote packets or accepted from a peer.
+        var waveform: [Double]? = nil
+        var waveformLoopLength: Double? = nil
+        var waveformOffset: Double? = nil
+        var waveformRate: Double? = nil
+        private enum CodingKeys: String, CodingKey { case id, name, start, duration, gain, muted, lane }
     }
     struct Marker: Codable, Identifiable, Equatable {
         var id: UUID; var name: String; var position: Double; var color: UInt32
@@ -350,6 +362,7 @@ struct DAWRemoteState: Codable, Equatable {
         (songDisplays?.valid ?? true) && (sectionPlayback?.valid ?? true) && (projects?.valid ?? true) && (notices?.valid ?? true) && (timer?.valid ?? true) &&
         (teleprompters ?? []).count <= 2 && (teleprompters ?? []).allSatisfy(\.valid) &&
         (markers ?? []).count <= 16384 && (markers ?? []).allSatisfy { $0.position.isFinite && $0.position >= 0 } &&
+        Set((markers ?? []).map(\.id)).count == (markers ?? []).count &&
         position >= 0 && duration >= 0 && tracks.count <= 4096 && regions.count <= 8192 &&
         timelineRegions.count <= 8192 && songs.count <= 4096 &&
         tracks.allSatisfy { Self.validPeak($0.peakDB) && $0.volume.isFinite && $0.pan.isFinite && ($0.heightScale == nil || ($0.heightScale!.isFinite && (0.1...10).contains($0.heightScale!))) && $0.clips.count <= 16384 && ($0.laneCount == nil || (1...10001).contains($0.laneCount!)) &&
@@ -714,4 +727,16 @@ struct DAWRemoteTimerState: Codable, Equatable {
     var remainingSeconds: Double
     var commandID: UUID? = nil
     var valid: Bool { (0...359999).contains(targetSeconds) && remainingSeconds.isFinite }
+}
+
+/// Parts consumes the remaining grid, never the saved Setlist or mixer widths.
+struct DAWRemotePartsWidths {
+    let content: Double
+    let handle: Double
+    var total: Double { content + handle }
+    init(available: Double, requested: Double, visible: Bool, handle: Double) {
+        let available = available.isFinite ? max(0, available) : 0
+        self.handle = visible ? min(available, max(0, handle)) : 0
+        self.content = visible ? min(max(0, available - self.handle), max(0, requested.isFinite ? requested : 240)) : 0
+    }
 }

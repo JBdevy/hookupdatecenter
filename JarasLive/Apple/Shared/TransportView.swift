@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import Combine
 struct TransportView: View {
+    @State private var showingPortableExport = false
     @State private var showingExport = false
     @State private var showingAdvanced = false
     let show: ShowController
@@ -41,6 +42,11 @@ struct TransportView: View {
         }.frame(height: 86).clipped()
             .sheet(isPresented: $showingExport) { AudioExportView(project: show.snapshot.project, song: show.current, mediaDirectory: mediaDirectory) }
             .sheet(isPresented: $showingAdvanced) { AdvancedView(show: show, documents: documents) }
+            #if os(macOS)
+            .sheet(isPresented: $showingPortableExport) {
+                if let documents { PortableProjectExportView(documents: documents) }
+            }
+            #endif
     }
     private func transportContent(spacing: CGFloat, buttonWidth: CGFloat) -> some View {
         let transport = show.snapshot.transport
@@ -134,7 +140,8 @@ struct TransportView: View {
                     }
                     #endif
                     Spacer(minLength: 0)
-                    ProjectSaveButton(pending: show.needsSave, saving: show.saving, message: show.message) { Task { await show.save() } }
+                    ProjectSaveButton(pending: show.needsSave, saving: show.saving, message: show.message,
+                                      exportToIPad: documents == nil ? nil : { showingPortableExport = true }) { Task { await show.save() } }
                     Spacer(minLength: 0)
                     PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist", tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
                         .frame(width: buttonWidth, height: TransportControlMetrics.height)
@@ -604,10 +611,11 @@ private struct ProjectSaveButton: View {
     let pending: Bool
     let saving: Bool
     let message: String
+    var exportToIPad: (() -> Void)? = nil
     let action: () -> Void
     @State private var confirmingSave = false
     var body: some View {
-        Button { confirmingSave = true } label: {
+        Button { if pending { confirmingSave = true } } label: {
             Label(LocalizedStringKey(saving ? "Salvando…" : pending ? "Save" : "Salvo"), systemImage: pending ? "square.and.arrow.down" : "checkmark")
                 .font(.system(size: TransportControlMetrics.font, weight: .semibold))
                 .lineLimit(1).minimumScaleFactor(0.8)
@@ -617,7 +625,10 @@ private struct ProjectSaveButton: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(pending ? JarasTheme.green.opacity(0.7) : JarasTheme.line))
                 .modifier(JarasSavePulse(active: pending))
                 .contentShape(Rectangle())
-        }.buttonStyle(.plain).disabled(!pending || saving)
+        }.buttonStyle(.plain).disabled(saving)
+            #if os(macOS)
+            .immediateRightClick { exportToIPad?() }
+            #endif
             .keyboardShortcut("s", modifiers: .command)
             .alert(Text(verbatim: confirmingSave ? JarasLocalization.string("Do you want to save this project?") : ""), isPresented: $confirmingSave) {
                 Button("Cancel", role: .cancel) {}.keyboardShortcut(.cancelAction)
@@ -867,7 +878,7 @@ private final class NativeMetronomePulseHost: NSHostingView<AnyView> {
     }
 }
 #endif
-private struct MetronomeEditor: View {
+struct MetronomeEditor: View {
     @ObservedObject private var settings = MetronomeSettings.shared
     @ObservedObject private var audio = AudioDeviceSettings.shared
     @Environment(\.dismiss) private var dismiss

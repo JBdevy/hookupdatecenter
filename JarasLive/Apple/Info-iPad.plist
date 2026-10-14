@@ -1,7 +1,64 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>NSLocalNetworkUsageDescription</key><string>O CatLive encontra Macs próximos e conecta diretamente para controlar seu projeto pelo Remote. / CatLive finds nearby Macs and connects directly to control your project through Remote.</string>
-<key>NSBonjourServices</key><array><string>_jaras-live._tcp</string></array>
-<key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>O CatLive usa a entrada de áudio para gravar e monitorar as pistas no modo Nativo. / CatLive uses the audio input to record and monitor tracks in Native mode.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>O CatLive encontra computadores próximos para controlar seu projeto pelo Remote. / CatLive finds nearby computers to control your project through Remote.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_jaras-live._tcp</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.hookdeveloper.catlive.ziplive</string>
+			<key>UTTypeDescription</key>
+			<string>CatLive iPadOS project</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.zip-archive</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>ziplive</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>CatLive iPadOS project</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.hookdeveloper.catlive.ziplive</string>
+			</array>
+		</dict>
+	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+</dict>
+</plist>

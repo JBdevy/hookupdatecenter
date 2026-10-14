@@ -124,5 +124,47 @@ private struct NativeMountFixture: View {
 MainActor.assumeIsolated {
     verifyStructuralNativeMounts(nested: false)
     verifyStructuralNativeMounts(nested: true)
+    verifyHeaderClickBoundsAndGating()
 }
 print("NATIVE_TIMELINE_MOUNTS_SHRINK_GROW_ORIGIN_PINNING_INPUT_AND_REUSE_OK")
+
+@MainActor private func verifyHeaderClickBoundsAndGating() {
+    let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 600, height: 400),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let mount = NativeTimelineBaseMountView(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+    window.contentView = mount
+    mount.headerInteractionHeight = 100
+    var clicks = 0
+    mount.headerInteraction = { clicks += 1 }
+    func click(_ x: CGFloat, _ y: CGFloat, type: NSEvent.EventType = .leftMouseDown,
+               windowNumber: Int? = nil) {
+        let event = NSEvent.mouseEvent(with: type, location: mount.convert(CGPoint(x: x, y: y), to: nil),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: windowNumber ?? window.windowNumber, context: nil, eventNumber: 0,
+            clickCount: 1, pressure: 1)!
+        mount.handleHeaderMouseDown(event)
+    }
+    // All header lanes, including their empty parts; body/outside/right clicks
+    // must not change follow or steal the original controls' event.
+    for y in [1.0, 25, 50, 75, 99] { click(300, y) }
+    precondition(clicks == 5, "Every visible header lane pauses follow")
+    click(300, 100); click(300, 250); click(-1, 20); click(601, 20); click(300, -1)
+    click(300, 20, type: .rightMouseDown)
+    precondition(clicks == 5, "Only left clicks inside the visible header count")
+    NativeTimelineInputGate.shared.setBlocked(true, for: window)
+    click(300, 20)
+    NativeTimelineInputGate.shared.setBlocked(false, for: window)
+    mount.isHidden = true; click(300, 20); mount.isHidden = false
+    let other = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+    other.isReleasedWhenClosed = false
+    click(300, 20, windowNumber: other.windowNumber)
+    precondition(clicks == 5, "Modal, hidden and unrelated windows cannot pause timeline navigation")
+    mount.headerInteraction = { clicks += 10 }
+    click(300, 20)
+    precondition(clicks == 15, "A reused mount uses its latest project callback")
+    mount.headerInteraction = nil; click(300, 20)
+    precondition(clicks == 15, "Detached input callback cannot affect a closed project")
+    other.close(); window.close()
+    print("NATIVE_TIMELINE_HEADER_ALL_LANES_BOUNDS_GATING_AND_CALLBACK_REUSE_OK")
+}

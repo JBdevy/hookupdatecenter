@@ -47,18 +47,22 @@ for lowerTitle in [false,true] {
     }
 }
 
-// Env added a seventh control in the top row. At the minimum sidebar width
-// the old folder action overlapped it; folder/title must own separate hit areas.
-for width: CGFloat in [184, 212, 232, 248.6796875, 400] {
+// The minimum is the width chosen by the user. The group action belongs to
+// the Patch row, with independent hit areas even after group indentation.
+precondition(SidebarWidthLimits.trackMixer == 280.7578125)
+for width: CGFloat in [SidebarWidthLimits.trackMixer - 16, SidebarWidthLimits.trackMixer, 400] {
     for meterWidth: CGFloat in [12, 40, 52] {
         for height: CGFloat in [64, 64.1, 80, 240] {
             let frames = TrackMixerHeightGeometry.frames(width: width, height: height,
                 meterWidth: meterWidth, standard: true, lowerTitle: true, controlsWidth: 210, folder: true)
             let folder = frames[5]
-            precondition(folder.width == 28 && folder.height == 16 && folder.maxY <= height)
+            precondition(folder.width == 28 && folder.height == 20 && folder.maxY <= height && folder.minX >= 0)
             precondition(!folder.intersects(frames[3]), "folder action must not cover Patch or another top-row control")
             precondition(!folder.intersects(frames[4]), "folder action must not cover volume controls")
-            precondition(folder.maxX + 4 <= frames[2].minX, "folder action reserves space before the group name")
+            precondition(folder.maxX + 3 == frames[3].minX && folder.midY == frames[3].midY,
+                "folder action must sit immediately to the left of Patch, vertically centered")
+            precondition(!folder.intersects(frames[2]), "folder action must not cover the group name")
+            precondition(!folder.intersects(frames[1]), "the folder cannot cover the MIDI meter")
             precondition(frames[2].maxX <= width && frames[2].width > 0)
         }
     }
@@ -79,18 +83,20 @@ private struct FolderFixture: View {
         TrackMixerContinuousLayout(meterWidth: 40, standard: true, lowerTitle: true, folder: true) {
             ForEach(0..<7) { slot in
                 Probe(counts: counts, slot: slot)
-                    .frame(width: slot == 3 ? 210 : nil, height: slot == 5 ? 16 : nil)
+                    .frame(width: slot == 3 ? 210 : nil, height: slot == 5 ? 20 : nil)
             }
-        }.frame(width: 232, height: 64)
+        }.frame(width: SidebarWidthLimits.trackMixer, height: 64)
     }
 }
 private let folderHost = NSHostingView(rootView: FolderFixture(counts: Counts()))
-folderHost.frame = CGRect(x: 0, y: 0, width: 232, height: 64)
+folderHost.frame = CGRect(x: 0, y: 0, width: SidebarWidthLimits.trackMixer, height: 64)
 window.contentView = folderHost
 folderHost.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.02)); folderHost.layoutSubtreeIfNeeded()
 let folderSlots = Dictionary(uniqueKeysWithValues: probes(folderHost).map { ($0.slot, $0.convert($0.bounds, to: folderHost)) })
 precondition(!folderSlots[5]!.intersects(folderSlots[3]!) && !folderSlots[5]!.intersects(folderSlots[4]!))
-precondition(folderSlots[5]!.maxX + 4 <= folderSlots[2]!.minX)
+precondition(abs(folderSlots[5]!.maxX + 3 - folderSlots[3]!.minX) < 1,
+    "the actual AppKit folder frame must stay immediately left of Patch")
+precondition(!folderSlots[5]!.intersects(folderSlots[2]!))
 print("MIXER_GROUP_FOLDER_PATCH_TITLE_AND_VOLUME_HIT_AREAS_SEPARATED_OK")
 
 // Exercise the real AppKit title, whose intrinsic 28px height used to override

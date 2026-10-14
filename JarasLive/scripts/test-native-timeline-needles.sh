@@ -28,13 +28,13 @@ multi = Path('Application/Project/MultiLoop.swift').read_text()
 start = multi.index('public struct MultiLoopPlayback:')
 multi = multi[start:multi.index('\n}', start) + 2]
 # Only the track payload type is irrelevant to this view; all transport fields,
-# the presentation helper, the SwiftUI layer and native follow remain real code.
+# the presentation helper, needle view and native follow remain real code.
 presentation = Path('Application/Transport/TimelinePlaybackPresentation.swift').read_text().split('/// Song names and explicit tempo metadata')[0]
 Path(sys.argv[1]).with_name('Presentation.swift').write_text(presentation)
 stub_track = 'public struct MultiLoopTrack: Codable, Equatable, Sendable {}\n'
 stubs = Path('Tests/Apple/TimelinePlaybackLayerTests.swift').read_text().split('@MainActor private final class PresentationJournal')[0]
 stubs = stubs.replace('let duration: Double; let parts:', 'let id = UUID(); let duration: Double; let parts:')
-stubs = stubs.replace('var isPlaying: Bool', '@Published var subCursorPreview = false\n    var timelineFollowPaused = false\n    var subCursorVisible: Bool { subCursorPreview || snapshot.transport.subPlay.playing }\n    var isPlaying: Bool')
+stubs = stubs.replace('var isPlaying: Bool', '@Published var subCursorPreview = false\n    @Published var timelineFollowPaused = false\n    var subCursorVisible: Bool { subCursorPreview || snapshot.transport.subPlay.playing }\n    var isPlaying: Bool')
 stubs = stubs.replace('    private var sampledAt =', '    var timelinePlaybackIsPublishingTick = false\n    private var sampledAt =', 1)
 stubs = stubs.replace('subPlaying: Bool = false) {', 'subPlaying: Bool = false, tick: Bool = false) {', 1)
 stubs = stubs.replace('        generation += 1', '        timelinePlaybackIsPublishingTick = tick\n        defer { timelinePlaybackIsPublishingTick = false }\n        generation += 1', 1)

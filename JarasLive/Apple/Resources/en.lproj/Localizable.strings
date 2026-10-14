@@ -60,6 +60,8 @@
 "PARADO" = "STOPPED";
 "Fim do repertório" = "End of setlist";
 "Validando acesso…" = "Checking access…";
+"Restaurando ativação…" = "Restoring activation…";
+"Não foi possível restaurar a ativação deste dispositivo. Faça login novamente." = "This device's activation could not be restored. Please sign in again.";
 "Tentar novamente" = "Try again";
 "Iniciando…" = "Starting…";
 "Idioma" = "Language";
@@ -1166,6 +1168,8 @@
 "Recent Projects" = "Recent Projects";
 "Audio device — Input" = "Audio device — Input";
 "Audio device — Output" = "Audio device — Output";
+"Stop the transport before changing the audio device." = "Stop the transport before changing the audio device.";
+"The selected audio output could not be confirmed." = "The selected audio output could not be confirmed.";
 "Enter a positive whole number." = "Enter a positive whole number.";
 "Choose an audio input device in Settings." = "Choose an audio input device in Settings.";
 
@@ -1295,3 +1299,203 @@
 "Message was not sent." = "Message was not sent.";
 "Not connected. Message was not sent." = "Not connected. Message was not sent.";
 "Could not confirm delivery. Check the PC." = "Could not confirm delivery. Check the PC.";
+
+/* Compact DAW migration report */
+"Project imported. Review these notes before playback." = "Project imported. Review these notes before playback.";
+"Import notes: %ld" = "Import notes: %ld";
+"%@: REAPER FX containers are not supported; effects inside containers were not imported." = "%@: REAPER FX containers are not supported; effects inside containers were not imported.";
+"%@: %@ was not imported; only VST3 effects are supported during REAPER migration." = "%@: %@ was not imported; only VST3 effects are supported during REAPER migration.";
+"%@: VST3 %@ has no class ID and was not imported." = "%@: VST3 %@ has no class ID and was not imported.";
+"%@: %@ state was not imported: %@" = "%@: %@ state was not imported: %@";
+"%@: VST3 %@ was not found. Its saved state was retained, but the effect was not inserted. Install the same VST3 and import again." = "%@: VST3 %@ was not found. Its saved state was retained, but the effect was not inserted. Install the same VST3 and import again.";
+"%@: VST3 %@ could not be restored. Its reference was retained but the effect was not inserted: %@" = "%@: VST3 %@ could not be restored. Its reference was retained but the effect was not inserted: %@";
+"%@: %@ is categorized as a MIDI effect; VST3 MIDI-output transformations are not supported and were not migrated." = "%@: %@ is categorized as a MIDI effect; VST3 MIDI-output transformations are not supported and were not migrated.";
+"%@: %@ automation parameter %@ could not be identified; that envelope was not applied." = "%@: %@ automation parameter %@ could not be identified; that envelope was not applied.";
+"%@: unsupported REAPER automation mode was imported as Read." = "%@: unsupported REAPER automation mode was imported as Read.";
+"%@: REAPER %@ automation is not supported and was not applied (%ld points)." = "%@: REAPER %@ automation is not supported and was not applied (%ld points).";
+"%@: %@ contains automation items; pooled automation items were not imported." = "%@: %@ contains automation items; pooled automation items were not imported.";
+"%@: %@ envelope exceeds the CatLive parameter range and was not applied." = "%@: %@ envelope exceeds the CatLive parameter range and was not applied.";
+"Item pitch outside the supported ±12 semitone range was not converted." = "Item pitch outside the supported ±12 semitone range was not converted.";
+"%@ / %@: MIDI take VST3 effects and their saved states were retained, but no active take instrument generates audio for them. MIDI-only transformations are not supported; these take effects are not applied." = "%@ / %@: MIDI take VST3 effects and their saved states were retained, but no active take instrument generates audio for them. MIDI-only transformations are not supported; these take effects are not applied.";
+"MIDI notes were imported. Choose an instrument in CatLive; no compatible VST3 instrument was inserted on this track or take." = "MIDI notes were imported. Choose an instrument in CatLive; no compatible VST3 instrument was inserted on this track or take.";
+"REAPER video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound." = "REAPER video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound.";
+"%@ / %@: MIDI take automation was retained, but cannot be applied independently through a shared track instrument. An active VST3 instrument on the take is required." = "%@ / %@: MIDI take automation was retained, but cannot be applied independently through a shared track instrument. An active VST3 instrument on the take is required.";
+"MIDI controllers, program changes and SysEx are not migrated; review the instrument settings." = "MIDI controllers, program changes and SysEx are not migrated; review the instrument settings.";
+"Muted MIDI notes were omitted because individual note mute is not supported." = "Muted MIDI notes were omitted because individual note mute is not supported.";
+"MIDI notes without a matching note-off were omitted." = "MIDI notes without a matching note-off were omitted.";
+"Some Logic mixer channels use an unsupported layout. Their volume, pan and mute were left at defaults; review those tracks." = "Some Logic mixer channels use an unsupported layout. Their volume, pan and mute were left at defaults; review those tracks.";
+"MIDI notes were imported. Choose an instrument in CatLive; Logic instruments and plug-ins are not migrated." = "MIDI notes were imported. Choose an instrument in CatLive; Logic instruments and plug-ins are not migrated.";
+"Logic MIDI controller, expression and nested sequence events are not migrated; review those regions." = "Logic MIDI controller, expression and nested sequence events are not migrated; review those regions.";
+"Only MIDI notes within each region's visible bounds were imported." = "Only MIDI notes within each region's visible bounds were imported.";
+"REAPER sends and advanced playback settings are not converted. Review the migrated mix." = "REAPER sends and advanced playback settings are not converted. Review the migrated mix.";
+"Invalid VST3 state encoding or size." = "Invalid VST3 state encoding or size.";
+"Truncated VST3 state." = "Truncated VST3 state.";
+"Unsupported VST3 routing-state format." = "Unsupported VST3 routing-state format.";
+"Invalid VST3 input count." = "Invalid VST3 input count.";
+"Invalid VST3 output count." = "Invalid VST3 output count.";
+"Truncated VST3 processor state." = "Truncated VST3 processor state.";
+"Unsupported VST3 state record." = "Unsupported VST3 state record.";
+"Duplicate VST3 processor state." = "Duplicate VST3 processor state.";
+"Duplicate VST3 controller state." = "Duplicate VST3 controller state.";
+"VST3 import inspection timed out." = "VST3 import inspection timed out.";
+"VST3 import inspection failed or the plugin process crashed." = "VST3 import inspection failed or the plugin process crashed.";
+"VST3 resolver returned a different plugin class." = "VST3 resolver returned a different plugin class.";
+"VS Hook: um marcador de trecho fora de uma música foi mantido como marcador comum." = "VS Hook: a section marker outside a song was retained as a normal marker.";
+"VS Hook: uma pasta e uma pista filha estão marcadas com #. O CatLive aplica a transposição uma única vez; revise essa seleção." = "VS Hook: a folder and a child track are marked with #. CatLive applies transposition only once; review that selection.";
+"VS Hook: um par de multiloop incompleto foi mantido como marcador; revise os pontos *1 a *4." = "VS Hook: an incomplete multiloop pair was retained as markers; review points *1 to *4.";
+"VS Hook: limites de Auto Fader acima de +12 dB foram ajustados ao máximo do CatLive." = "VS Hook: Auto Fader limits above +12 dB were adjusted to the CatLive maximum.";
+"VS Hook: músicas removidas do projeto de origem foram ignoradas nos repertórios." = "VS Hook: songs removed from the source project were omitted from playlists.";
+
+"The selected audio output is disconnected." = "The selected audio output is disconnected.";
+
+"The selected audio input is disconnected." = "The selected audio input is disconnected.";
+
+"Unable to open audio device (%d)." = "Unable to open audio device (%d).";
+
+"Could not open the selected audio input device." = "Could not open the selected audio input device.";
+
+"The audio input changed while preparing the recording. Start recording again." = "The audio input changed while preparing the recording. Start recording again.";
+
+
+"No project is open for saving." = "No project is open for saving.";
+
+"Audio output is unavailable" = "Audio output is unavailable. Check the device in Audio settings.";
+
+"The open project changed before saving. The project was not saved." = "The open project changed before saving. The project was not saved.";
+
+"The project changed while saving. Save again before closing." = "The project changed while saving. Save again before closing.";
+
+"Some audio was lost during recording. The captured audio was preserved, but the recording may be incomplete." = "Some audio was lost during recording. The captured audio was preserved, but the recording may be incomplete.";
+
+"Native" = "Native";
+"Modes" = "Modes";
+"Play your projects directly on this iPad." = "Play your projects directly on this iPad.";
+"Could not open Native mode." = "Could not open Native mode.";
+"Back to project" = "Back to project";
+"ZIP · CatLive iPadOS" = "ZIP · CatLive iPadOS";
+"Add Stems to Open Project" = "Add Stems to Open Project";
+"Project name" = "Project name";
+"Choose a project name without slashes or special path characters." = "Choose a project name without slashes or special path characters.";
+"Importing CatLive project…" = "Importing CatLive project…";
+"Export to CatLive iPadOS" = "Export to CatLive iPadOS";
+"Create a .ziplive package with this project, its media and native instruments." = "Create a .ziplive package with this project, its media and native instruments.";
+"External VST3 plug-ins will not be included. Native effects will be preserved." = "External VST3 plug-ins will not be included. Native effects will be preserved.";
+"Save the project before exporting to iPadOS." = "Save the project before exporting to iPadOS.";
+"Exporting project…" = "Exporting project…";
+"Project exported successfully." = "Project exported successfully.";
+"Show in Finder" = "Show in Finder";
+"Download the native instrument before exporting: %@" = "Download the native instrument before exporting: %@";
+"Export canceled." = "Export canceled.";
+"System audio input" = "System audio input";
+"Audio is interrupted by another app. Try again when it finishes." = "Audio is interrupted by another app. Try again when it finishes.";
+"Open Native mode to record audio." = "Open Native mode to record audio.";
+"Audio services restarted. Close and reopen CatLive to restore audio." = "Audio services restarted. Close and reopen CatLive to restore audio.";
+
+"Some output channels are unavailable on this iPad." = "Some output channels are unavailable on this iPad.";
+
+"The CatStem Core ML model is missing from this installation." = "The CatStem Core ML model is missing from this installation.";
+
+"CatStem is still finishing its previous session. Try again shortly." = "CatStem is still finishing its previous session. Try again shortly.";
+
+"Not selected" = "Not selected";
+
+"Patch · Selected tracks" = "Patch · Selected tracks";
+
+"Apply to selected tracks" = "Apply to selected tracks";
+
+"Applied" = "Applied";
+
+"Add .ziplive" = "Add .ziplive";
+
+"Export CatLive project" = "Export CatLive project";
+
+"Save to Files" = "Save to Files";
+
+"Save the project before exporting." = "Save the project before exporting.";
+
+"Choose a folder for the imported project" = "Choose a folder for the imported project";
+
+"Project not found" = "Project not found";
+
+"Rename playlist" = "Rename playlist";
+
+"Delete region and its contents?" = "Delete region and its contents?";
+
+"Remove from playlist?" = "Remove from playlist?";
+
+"Open drawer" = "Open drawer";
+
+"Close drawer" = "Close drawer";
+
+"Convert" = "Convert";
+
+"Color" = "Color";
+
+"Open the folder containing your songs, check the folders you want, then continue." = "Open the folder containing your songs, check the folders you want, then continue.";
+
+"Use this folder" = "Use this folder";
+
+"Open folder" = "Open folder";
+
+"Choose the folder containing your song folders" = "Choose the folder containing your song folders";
+
+"Choose an external folder for CatLive projects" = "Choose an external folder for CatLive projects";
+
+"Project folder" = "Project folder";
+
+"Choose an external folder" = "Choose an external folder";
+
+"External folder selected" = "External folder selected";
+
+"Choose a folder outside CatLive to keep projects and media after deleting the app. Existing projects will be copied there." = "Choose a folder outside CatLive to keep projects and media after deleting the app. Existing projects will be copied there.";
+
+"Choose a folder outside the CatLive app folder. Files inside the app are removed when it is deleted." = "Choose a folder outside the CatLive app folder. Files inside the app are removed when it is deleted.";
+
+"Could not verify the project copy. The original project was preserved." = "Could not verify the project copy. The original project was preserved.";
+
+"Choose the external project folder again to restore access." = "Choose the external project folder again to restore access.";
+
+"Could not access the selected folder." = "Could not access the selected folder.";
+
+"Preparing external project folder…" = "Preparing external project folder…";
+
+"Songs will be added after the last song in your project." = "Songs will be added after the last song in your project.";
+
+"Check your songs before creating the project." = "Check your songs before creating the project.";
+
+"%lld songs" = "%lld songs";
+
+"%lld audio files" = "%lld audio files";
+
+"Import order" = "Import order";
+
+"Track names" = "Track names";
+
+"Remove repeated words from track names, if needed. Original files remain unchanged." = "Remove repeated words from track names, if needed. Original files remain unchanged.";
+
+"Suggestions" = "Suggestions";
+
+"Add to project" = "Add to project";
+
+"%@ contains no readable WAV, AIFF or MP3 files. Open the folder and select the song folders containing audio." = "%@ contains no readable WAV, AIFF or MP3 files. Open the folder and select the song folders containing audio.";
+
+"No audio directly in this folder" = "No audio directly in this folder";
+
+"Select folders containing audio files." = "Select folders containing audio files.";
+
+"Stop playback before importing audio." = "Stop playback before importing audio.";
+
+"Project editing is not available right now." = "Project editing is not available right now.";
+
+"Could not access the selected file." = "Could not access the selected file.";
+
+"Arm an audio track before recording." = "Arm an audio track before recording.";
+"The region and its contents will be deleted." = "The region and its contents will be deleted.";
+
+"Open Remote on another device and choose this iPad." = "Open Remote on another device and choose this iPad.";
+
+"Audio continues on this iPad. Connect both devices to the same local network." = "Audio continues on this iPad. Connect both devices to the same local network.";
+
+"Audio continues on the Mac. Nearby Apple devices can connect directly over peer-to-peer Wi-Fi." = "Audio continues on the Mac. Nearby Apple devices can connect directly over peer-to-peer Wi-Fi.";
+
+"Audio continues on this iPad. Use the same local network or a direct connection between nearby Apple devices." = "Audio continues on this iPad. Use the same local network or a direct connection between nearby Apple devices.";

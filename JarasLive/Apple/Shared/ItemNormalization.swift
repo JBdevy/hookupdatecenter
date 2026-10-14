@@ -93,6 +93,7 @@ struct ItemNormalizationEditor: View {
     let show: ShowController
     let documents: ProjectDocuments
     let items: Set<UUID>
+    var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var mode = NormalizationMode.peak
     @State private var target = "-1.00"
@@ -101,6 +102,7 @@ struct ItemNormalizationEditor: View {
     @State private var progress = ""
     @State private var error = ""
     @State private var worker: Task<Void, Never>?
+    private func finish() { if let close { close() } else { dismiss() } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Normalize").font(.headline)
@@ -116,7 +118,7 @@ struct ItemNormalizationEditor: View {
             if !progress.isEmpty { HStack { ProgressView().controlSize(.small); Text(progress).font(.caption).lineLimit(1) } }
             if !error.isEmpty { Text(error).foregroundStyle(.red).font(.caption) }
             HStack {
-                Button("Cancel") { worker?.cancel(); dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { worker?.cancel(); finish() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Normalize", action: apply).keyboardShortcut(.defaultAction).disabled(worker != nil)
             }
@@ -156,7 +158,7 @@ struct ItemNormalizationEditor: View {
                 try Task.checkCancellation()
                 if show.normalizeItems(gains, project: project) {
                     NormalizationTargetPreferences.remember(value,for: selectedMode)
-                    dismiss()
+                    finish()
                 }
             } catch is CancellationError {} catch { self.error = error.localizedDescription }
             progress = ""; worker = nil

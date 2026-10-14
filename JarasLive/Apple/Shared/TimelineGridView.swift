@@ -281,6 +281,7 @@ private struct TimelineGridContent: View, Equatable {
                                     }
                                 }.equatable().frame(width: labelWidth, alignment: .leading).clipped().allowsHitTesting(labelWidth > 0)
                                     #if os(macOS)
+                                    .background(EditorSelectionArea(scope: .tracks) { show.selectAllMixerTracks() })
                                     .background(TimelineMixerHeightWheelInput { factor, smoothWheel in
                                     changeTrackHeight(factor, smoothWheel: smoothWheel, rows: rows)
                                     })
@@ -570,6 +571,7 @@ private struct TimelineGridContent: View, Equatable {
             }
         }
         #if os(macOS)
+        .background(EditorSelectionArea(scope: .grid) { selectAllItems() })
         .background(RegionShortcut(hasDeletionSelection: { deleteTarget != .none }, delete: { deleteSelection() }, undo: { show.undo() }, redo: { show.redo() }, create: {
             if let range = TimelineAreaSelection.shared.range, range.song == show.current?.id {
                 show.regionFromTimeSelection(song: range.song, start: range.start, end: range.end)
@@ -849,7 +851,7 @@ private struct TimelineGridContent: View, Equatable {
             let id = song.tracks[index].id
             selectedTrack = id
             selectedTracks = [id]
-        })
+        }, pointerDown: { EditorSelectionRouter.shared.handlePointer($0) })
     }
     #endif
     private func makeTimelineDrawing(viewport: CGRect, song: Song, rows: TrackRowLayout,
@@ -1024,9 +1026,9 @@ private struct TimelineGridContent: View, Equatable {
         insertionPreview.update(nil)
     }
     private func selectAllItems() -> Bool {
-        guard let song = show.current, !selectedClips.isEmpty else { return false }
+        guard let song = show.current else { return false }
         let all = Set(song.tracks.flatMap(\.clips).map(\.id))
-        guard !selectedClips.isDisjoint(with: all) else { return false }
+        guard !all.isEmpty else { return false }
         selectedClips = all
         if selectedClip.map(all.contains) != true { selectedClip = song.tracks.lazy.flatMap(\.clips).first?.id }
         return true
@@ -1044,7 +1046,7 @@ private struct TimelineGridContent: View, Equatable {
         catch { show.message = JarasLocalization.string(error.localizedDescription); return }
         if groups.contains(where: { $0.1.contains { $0.midi == nil } }), !AudioDestinationSpace.confirm(at: directory.appendingPathComponent("Stems", isDirectory: true)) { return }
         let project = show.snapshot.project, cancellation = AudioExportCancellation(), progressModel = reRenderProgress
-        let instruments = Dictionary(uniqueKeysWithValues: groups.map { ($0.0.id, ItemReRender.midiInstruments(for: $0.0)) })
+        let instruments = Dictionary(uniqueKeysWithValues: groups.map { ($0.0.id, ItemReRender.midiInstruments(for: $0.0, projectDirectory: directory)) })
         glueCancellation = cancellation; reRenderTitle = "Unify items"
         reRenderProgress.total = groups.count; reRenderProgress.index = 0
         reRenderProgress.fileName = groups[0].0.name; reRenderProgress.fraction = 0; reRenderProgress.error = nil
@@ -1112,7 +1114,7 @@ private struct TimelineGridContent: View, Equatable {
                     reRenderProgress.index = index; reRenderProgress.fileName = clip.name
                     reRenderProgress.fraction = 0
                     let progressModel = reRenderProgress
-                    let instruments = midiChannels.map { _ in ItemReRender.midiInstruments(for: track) }
+                    let instruments = midiChannels.map { _ in ItemReRender.midiInstruments(for: track, projectDirectory: directory) }
                     let result = try await Task.detached(priority: .utility) {
                         if let midiChannels, let instruments {
                             return try ItemReRender.renderMIDI(project: project, song: song, track: track, clip: clip, directory: directory,
@@ -1282,15 +1284,6 @@ private struct TimelineGridContent: View, Equatable {
         #endif
         selectedTrack = id; selectedTracks = [id]
     }
-    private func trackToggle(_ title: String, active: Bool, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).font(.system(size: 10, weight: .bold))
-                .foregroundStyle(active ? Color.black : JarasTheme.secondary)
-                .frame(width: 23, height: 24)
-                .background(active ? color : Color.black.opacity(0.3))
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-        }.buttonStyle(.plain).accessibilityValue(active ? "On" : "Off")
-    }
     #if os(macOS)
     /// Commands are retained across scale changes; geometry still updates every
     /// display frame and drag math reads the current native projection.
@@ -1304,7 +1297,7 @@ private struct TimelineGridContent: View, Equatable {
                   current.parts.contains(where: { $0.id == part.id }) else { return }
             regionExport = RegionAudioExportRequest(project: show.snapshot.project, song: current,
                 regions: [part.id], mediaDirectory: documents.currentURL?.deletingLastPathComponent())
-        }, resizable: !unified, seek: { show.selectTimelineRegion(part.id); show.send(.editSeek, value: part.startTime) }, drag: { translation, ended, edge in
+        }, resizable: !unified, seek: { show.selectTimelineRegion(part.id) }, drag: { translation, ended, edge in
             let pixelsPerSecond = nativeBase.pixelsPerSecond
             let original = part
             if edge != 0 {
@@ -2940,6 +2933,9 @@ private struct NativeTimelineBaseSlot: NSViewRepresentable {
 private final class NativeTimelineBaseMountView: NSView {
     enum Kind { case background, ruler, foreground }
     weak var controller: NativeTimelineBaseController?
+    var headerInteractionHeight: CGFloat = 0
+    var headerInteraction: (() -> Void)? { didSet { updateHeaderClickMonitor() } }
+    private var headerClickMonitor: Any?
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     // The controller positions its children in document coordinates. The last
@@ -2952,10 +2948,34 @@ private final class NativeTimelineBaseMountView: NSView {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateHeaderClickMonitor()
         controller?.observeScroll()
         if window == nil { controller?.detachIfUnused() }
     }
     override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); controller?.observeScroll() }
+    private func updateHeaderClickMonitor() {
+        guard window != nil, headerInteraction != nil else {
+            if let headerClickMonitor { NSEvent.removeMonitor(headerClickMonitor); self.headerClickMonitor = nil }
+            return
+        }
+        guard headerClickMonitor == nil else { return }
+        // Observe the click before its region/marker/ruler target handles it.
+        // The event still reaches that target, preserving editing and dragging.
+        headerClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            self?.handleHeaderMouseDown(event)
+            return event
+        }
+    }
+    fileprivate func handleHeaderMouseDown(_ event: NSEvent) {
+        guard event.type == .leftMouseDown, let window, event.window === window,
+              window.attachedSheet == nil, !isHiddenOrHasHiddenAncestor,
+              !NativeTimelineInputGate.shared.isBlocked(window) else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard point.y >= bounds.minY, point.y < bounds.minY + headerInteractionHeight,
+              visibleRect.contains(point) else { return }
+        headerInteraction?()
+    }
+    deinit { if let headerClickMonitor { NSEvent.removeMonitor(headerClickMonitor) } }
 }
 
 @MainActor private final class NativeTimelineBaseController {
@@ -3013,6 +3033,7 @@ private final class NativeTimelineBaseMountView: NSView {
         case .ruler:
             rulerMount = mount
             mount.addSubview(ruler); mount.addSubview(header); mount.addSubview(rulerInput)
+            updateHeaderInteraction()
         case .foreground:
             foregroundMount = mount
             mount.addSubview(selectionPin); mount.addSubview(automationLanes); mount.addSubview(needlePin)
@@ -3033,6 +3054,7 @@ private final class NativeTimelineBaseMountView: NSView {
         } ?? true
         if drawingChanged || bodyChanged || headerChanged || self.style != style { revision &+= 1 }
         configuration = value; self.style = style
+        updateHeaderInteraction()
         documentSize.hostedProjectionDidLayout = { [weak self] in self?.commitHostedProjection() ?? true }
         let automationChanged = previous.map {
             $0.show !== value.show || $0.rulerHeight != value.rulerHeight || $0.rows != value.rows ||
@@ -3085,6 +3107,11 @@ private final class NativeTimelineBaseMountView: NSView {
         } else { project(zoom: state.value) }
         observeScroll()
         wheel.focus(request: value.focusRequest, x: value.focusTime.map { $0 * pixelsPerSecond })
+    }
+    private func updateHeaderInteraction() {
+        guard let configuration, let rulerMount else { return }
+        rulerMount.headerInteractionHeight = configuration.rulerHeight
+        rulerMount.headerInteraction = { [weak show = configuration.show] in show?.pauseTimelineFollow() }
     }
     func observeScroll() {
         // Representable updates and native mount/layout callbacks arrive here.
@@ -3140,6 +3167,7 @@ private final class NativeTimelineBaseMountView: NSView {
             guard let self, self.backgroundMount?.window == nil, self.rulerMount?.window == nil, self.foregroundMount?.window == nil else { return }
             self.zoomSubscription = nil; self.zoomState = nil
             self.configuration = nil; self.style = nil
+            self.rulerMount?.headerInteraction = nil
             self.documentSize.hostedProjectionDidLayout = nil
             (self.horizontal?.superview as? GridNativeScrollView)?.prepareHostedHorizontalScroll = nil
             (self.vertical?.superview as? GridNativeScrollView)?.prepareHostedVerticalScroll = nil
@@ -3315,22 +3343,6 @@ private final class NativeTimelineBaseMountView: NSView {
 #if os(macOS)
 /// Moving needles update Core Animation layers without invalidating the hosted
 /// track/item tree. Transport samples and their epochs stay paired between ticks.
-private struct NativeTimelineNeedles: NSViewRepresentable {
-    let show: ShowController
-    let width: CGFloat
-    let height: CGFloat
-    let rulerHeight: CGFloat
-    let verticalOffset: CGFloat
-    let extent: Double
-    let seek: (Double, Bool) -> Void
-    let marker: (Bool) -> Void
-    func makeNSView(context: Context) -> NativeTimelineNeedlesView { NativeTimelineNeedlesView() }
-    func updateNSView(_ view: NativeTimelineNeedlesView, context: Context) {
-        view.configure(show: show, size: CGSize(width: width, height: height),
-            rulerHeight: rulerHeight, verticalOffset: verticalOffset, extent: extent, seek: seek, marker: marker)
-    }
-    static func dismantleNSView(_ view: NativeTimelineNeedlesView, coordinator: ()) { view.stop() }
-}
 private final class NativeTimelineNeedlesView: NSView {
     private final class Needle {
         struct Appearance: Equatable {
@@ -3405,6 +3417,15 @@ private final class NativeTimelineNeedlesView: NSView {
                     self.requiresImmediateSample(snapshot.transport))
             })
             subscriptions.append(show.$subCursorPreview.sink { [weak self] _ in self?.scheduleSample() })
+            subscriptions.append(show.$timelineFollowPaused.removeDuplicates().sink { [weak self] paused in
+                guard let self else { return }
+                if paused {
+                    // Cancel an already queued scroll before the next display
+                    // frame, so a header click cannot leave one last advance.
+                    self.follow.update(position: nil, pixelsPerSecond: self.size.width / max(1, self.extent),
+                        contentWidth: self.size.width, source: "")
+                } else { self.scheduleSample() }
+            })
             for (index, pair) in [("jaras.timeline.playCursor", TimelineAppearanceDefaults.playCursor),
                                   ("jaras.timeline.editCursor", TimelineAppearanceDefaults.editCursor),
                                   ("jaras.timeline.subPlayCursor", TimelineAppearanceDefaults.subPlayCursor)].enumerated() {
@@ -3473,6 +3494,7 @@ private final class NativeTimelineNeedlesView: NSView {
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); sample(); manageTimer(); paint() }
     func stop() {
         timer?.invalidate(); timer = nil; subscriptions.removeAll(); show = nil
+        follow.update(position: nil, pixelsPerSecond: 0, contentWidth: 0, source: "")
         pendingSample = false; pendingImmediatePaint = false
         seek = { _, _ in }; marker = { _ in }
     }
@@ -4122,12 +4144,6 @@ private struct TimelineHeaderScaleLayer<Content: View>: View {
         TimelineScaleLayer(state: state, extent: extent, content: content)
         #endif
     }
-}
-
-private struct TimelineZoomLayer<Content: View>: View {
-    @ObservedObject var state: TimelineZoomState
-    @ViewBuilder let content: (Binding<Double>) -> Content
-    var body: some View { content($state.value) }
 }
 
 private struct TimelineViewportLayer<Content: View>: View {
@@ -5164,10 +5180,6 @@ final class MixerDividerView: NSView {
     private var pointerCursorMonitor: Any?
     private static weak var pointerCursorOwner: MixerDividerView?
     var scrollIndicatorVisible: Bool { scrollController?.metrics.canScroll == true }
-    private var pendingScroll: CGFloat?
-    private var hasScrolledInDrag = false
-    private var cancelScrollDisplayLink: (() -> Void)?
-    private var scrollFrameTimer: Timer?
     private var latestWidth: CGFloat = 0
     private var resizeLayoutInProgress = false
     var resizeLayout: (() -> Void)?
@@ -5237,7 +5249,7 @@ final class MixerDividerView: NSView {
         super.viewDidMoveToWindow()
         if let pointerCursorMonitor { NSEvent.removeMonitor(pointerCursorMonitor); self.pointerCursorMonitor = nil }
         if window == nil {
-            mouseIsDown = false; stopScrollUpdates()
+            mouseIsDown = false
             releasePointerCursor()
         } else {
             // Tracking exits can be lost when a drag changes hosting/clip bounds.
@@ -5250,44 +5262,6 @@ final class MixerDividerView: NSView {
         }
     }
     private func refreshIndicator() { needsDisplay = true }
-    private func queueScroll(to offset: CGFloat) {
-        // AppKit coalesces mouse-drag events already. Waiting for a newly-created
-        // display link here made the thumb lag one frame behind every movement.
-        pendingScroll = offset
-        hasScrolledInDrag = true
-        flushPendingScroll()
-    }
-    private func scheduleScrollFrame() {
-        guard cancelScrollDisplayLink == nil, scrollFrameTimer == nil else { return }
-        if #available(macOS 14.0, *), window?.isVisible == true {
-            let target = SidebarScrollFrameTarget { [weak self] in self?.advanceScrollFrame() }
-            let link = displayLink(target: target, selector: #selector(SidebarScrollFrameTarget.tick))
-            link.add(to: .main, forMode: .common)
-            cancelScrollDisplayLink = { link.invalidate() }
-        } else {
-            let timer = Timer(timeInterval: 1.0 / 60, repeats: false) { [weak self] _ in self?.advanceScrollFrame() }
-            timer.tolerance = 0
-            scrollFrameTimer = timer
-            RunLoop.main.add(timer, forMode: .common)
-        }
-    }
-    /// One latest target per display frame; mouse-up flushes without waiting.
-    func advanceScrollFrame() {
-        cancelScrollDisplayLink?(); cancelScrollDisplayLink = nil
-        scrollFrameTimer?.invalidate(); scrollFrameTimer = nil
-        guard mouseIsDown, window != nil else { pendingScroll = nil; return }
-        flushPendingScroll()
-    }
-    private func flushPendingScroll() {
-        guard let offset = pendingScroll else { return }
-        pendingScroll = nil
-        scrollController?.scroll(to: offset)
-    }
-    private func stopScrollUpdates() {
-        cancelScrollDisplayLink?(); cancelScrollDisplayLink = nil
-        scrollFrameTimer?.invalidate(); scrollFrameTimer = nil
-        pendingScroll = nil; hasScrolledInDrag = false
-    }
     private func commitResizeLayout() {
         guard !resizeLayoutInProgress, let content = window?.contentView else { return }
         resizeLayoutInProgress = true
@@ -5322,7 +5296,6 @@ final class MixerDividerView: NSView {
         }
     }
     override func mouseDown(with event: NSEvent) {
-        stopScrollUpdates()
         Self.pointerCursorOwner = self
         Self.resizeCursor.set()
         if event.clickCount == 2 {
@@ -5355,7 +5328,8 @@ final class MixerDividerView: NSView {
         }
         if dragAxis == .scroll {
             Self.resizeCursor.set()
-            queueScroll(to: startingScroll + dy * scrollPerPoint)
+            // Apply the pointer destination in this event; AppKit already coalesces drag events.
+            scrollController?.scroll(to: startingScroll + dy * scrollPerPoint)
             return
         }
         Self.resizeCursor.set()
@@ -5370,8 +5344,6 @@ final class MixerDividerView: NSView {
         guard mouseIsDown else { return }
         updateDrag(with: event, layoutResize: false)
         let finishedAxis = dragAxis
-        flushPendingScroll()
-        stopScrollUpdates()
         mouseIsDown = false
         dragAxis = .pending
         if finishedAxis == .resize {
@@ -5386,16 +5358,10 @@ final class MixerDividerView: NSView {
     }
     deinit {
         if let pointerCursorMonitor { NSEvent.removeMonitor(pointerCursorMonitor) }
-        cancelScrollDisplayLink?(); scrollFrameTimer?.invalidate()
         if let controller = scrollController, let id = scrollObserver {
             Task { @MainActor in controller.removeObserver(id) }
         }
     }
-}
-private final class SidebarScrollFrameTarget: NSObject {
-    let callback: () -> Void
-    init(_ callback: @escaping () -> Void) { self.callback = callback }
-    @objc func tick() { callback() }
 }
 
 #endif
@@ -5489,8 +5455,9 @@ final class RegionShortcutView: NSView {
                   !(self.window?.firstResponder is NSTextView), !(self.window?.firstResponder is NSTextField) else { return event }
             let flags = event.modifierFlags.intersection([.shift, .command, .control, .option])
             if event.keyCode == 53, flags.isEmpty, NativeTimelineInputGate.shared.cancelActiveResize(for: event.window) { return nil }
-            if (flags == .command || flags == .control), event.charactersIgnoringModifiers?.lowercased() == "a",
-               !event.isARepeat, self.selectAllItems?() == true { return nil }
+            if (flags == .command || flags == .control), event.charactersIgnoringModifiers?.lowercased() == "a" {
+                return EditorSelectionRouter.shared.selectAll(event) ? nil : event
+            }
             if Self.handleSelectedObjectsDelete(event) { return nil }
             if ControlMappings.shared.handleKey(event) { return nil }
             if flags == .command || flags == .control {
@@ -5682,30 +5649,6 @@ private struct TimelineHeader: View, Equatable {
         canvas
         #endif
     }
-    #if os(macOS)
-    private var nativeRuler: some View {
-        GeometryReader { geometry in
-            let size = CGSize(width: documentWidth ?? geometry.size.width, height: geometry.size.height)
-            let tile = TimelineCanvasCoverage.preparedRect(visibleRect: visibleRect, documentSize: size)
-            let scale = size.width / extent
-            let lanes = cachedLanes ?? RegionLanes(parts: song.parts)
-            let regionHeight = CGFloat(lanes.count) * 16
-            let barTop = regionHeight + markerLaneHeight + tempoLaneHeight
-            let sample = TimelineTimeRuler.labelSample(through: extent)
-            let labelWidth = TimelineStaticText.label(sample, style: .barNumber, displayScale: displayScale).map { Double($0.size.width) }
-            let spacing = TimelineTimeRuler.labelSpacing(through: extent, measuredWidth: labelWidth, pixelsPerSecond: scale)
-            let ticks = TimelineTimeRuler.ticks(in: cachedTempoSections ?? song.tempoSections(until: extent),
-                from: max(0, Double((tile.minX - spacing) / scale)), to: Double(tile.maxX / scale),
-                pixelsPerSecond: scale, divisions: song.projectTime.divisions, minimumLabelSpacing: spacing)
-            let lines = (0...lanes.count).map { CGFloat($0) * 16 + 0.5 } +
-                [regionHeight + markerLaneHeight + 0.5, barTop + 0.5, size.height - 0.5]
-            TimelineNativeRuler(viewport: tile, displayScale: displayScale, barTop: barTop,
-                ticks: ticks.map { .init(x: $0.time * scale, primary: $0.primary, text: $0.label) }, rows: lines,
-                background: NSColor(JarasTheme.panel).cgColor, lineColor: NSColor(JarasTheme.line).cgColor)
-                .frame(width: tile.width, height: tile.height).offset(x: tile.minX, y: tile.minY)
-        }.allowsHitTesting(false)
-    }
-    #endif
     private var canvas: some View {
         ViewportTimelineCanvas(visibleRect: visibleRect, synchronized: true, documentWidth: documentWidth, diagnosticName: "header", identity: TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light)) { context, size, tile, waveformOwner in
             #if !os(macOS)

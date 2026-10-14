@@ -1,8 +1,8 @@
-#if os(macOS)
 import SwiftUI
-import AppKit
 import AVFoundation
 import Combine
+#if os(macOS)
+import AppKit
 
 struct CatStemRequest {
     let project: Project
@@ -159,6 +159,8 @@ private enum CatStemRenderer {
     }
 }
 
+#endif
+
 /// The processor belongs to the track/item FX chain, independent of this window.
 /// Closing the editor never stops the worker or removes the saved stem mix.
 struct CatStemFXEditor: View {
@@ -228,10 +230,23 @@ struct CatStemFXEditor: View {
             }.disabled(!available || !settings.isEnabled(NativeFXSettings.stemSeparator))
             Text(verbatim: status).font(.caption).foregroundStyle(failed ? Color.red : JarasTheme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-        }.padding(20).frame(width: 560).background(JarasTheme.background).foregroundStyle(JarasTheme.text)
+        }.padding(20)
+        #if os(macOS)
+        .frame(width: 560)
+        #else
+        .frame(maxWidth: .infinity)
+        #endif
+        .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
             .onAppear {
                 project = show.snapshot.project.id; settings = current
-                do { _ = try CatStemRealtimeRuntime.paths(); available = true; refreshStatus() }
+                do {
+                    #if os(macOS)
+                    _ = try CatStemRealtimeRuntime.paths()
+                    #else
+                    _ = try CatStemRealtimeRuntime.modelURL()
+                    #endif
+                    available = true; refreshStatus()
+                }
                 catch { available = false; failed = true; status = error.localizedDescription }
             }
             .onReceive(timer) { _ in settings = current; refreshStatus() }
@@ -271,11 +286,21 @@ private struct CatStemRealtimeRow: View {
                     .offset(y: position)
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .contentShape(Rectangle())
+                #if os(iOS)
+                .overlay(FXTouchDrag(began: { point in
+                    let fraction = Double(min(1, max(0, 1 - (point.y - 11) / travel)))
+                    source.gain = fraction <= 0 ? 0 : min(4, pow(10, (fraction * 72 - 60) / 20))
+                }, changed: { point, _ in
+                    let fraction = Double(min(1, max(0, 1 - (point.y - 11) / travel)))
+                    source.gain = fraction <= 0 ? 0 : min(4, pow(10, (fraction * 72 - 60) / 20))
+                }, ended: commit, reset: { source.gain = 1; commit() }))
+                #else
                 .gesture(DragGesture(minimumDistance: 0).onChanged { event in
                     let fraction = Double(min(1, max(0, 1 - (event.location.y - 11) / travel)))
                     source.gain = fraction <= 0 ? 0 : min(4, pow(10, (fraction * 72 - 60) / 20))
                 }.onEnded { _ in commit() })
                 .onTapGesture(count: 2) { source.gain = 1; commit() }
+                #endif
                 .accessibilityElement().accessibilityLabel(stem.rawValue)
                 .accessibilityValue(readout)
                 .accessibilityAdjustableAction { direction in
@@ -304,4 +329,3 @@ private struct CatStemRealtimeRow: View {
             .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 7))
     }
 }
-#endif

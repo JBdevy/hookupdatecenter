@@ -7,11 +7,16 @@
 #include <stdexcept>
 #include <unordered_map>
 namespace jaras {
+// Imported region boundaries are commonly rounded to microseconds while item
+// positions retain sample/tempo precision. Less than one microsecond is the
+// same placement edge; it is still below one sample at 384 kHz.
+static constexpr double regionPlacementTolerance = 1e-6;
+static constexpr int regionOwnershipVersion = 2;
 // Membership is established on placement, never by moving a region across material.
 std::optional<ID> regionOwnerAt(const Song& song, double start, std::optional<double> end) {
     const Part* selected = nullptr;
     for (const auto& part : song.parts) {
-        if (start < part.startTime - 1e-8 || start >= part.endTime - 1e-8 || (end && *end > part.endTime + 1e-8)) continue;
+        if (start < part.startTime - regionPlacementTolerance || start >= part.endTime - regionPlacementTolerance || (end && *end > part.endTime + regionPlacementTolerance)) continue;
         if (!selected || (part.parentRegionID.has_value() != selected->parentRegionID.has_value() ? part.parentRegionID.has_value() :
             part.endTime - part.startTime != selected->endTime - selected->startTime ? part.endTime - part.startTime < selected->endTime - selected->startTime : part.id < selected->id)) selected = &part;
     }
@@ -28,6 +33,19 @@ void synchronizeRegionOwnership(Project& project, const Project* previous) {
         const Song* old = nullptr;
         if (previous) for (const auto& candidate : previous->songs) if (candidate.id == song.id) { old = &candidate; break; }
         const bool initialize = !song.regionOwnershipInitialized;
+        // Earlier documents persisted nil when an onset was a fraction of a
+        // microsecond before its rounded region start. Repair only that narrow
+        // old boundary case, once at load. Nil within a region remains loose;
+        // subsequent loads must never acquire items covered by a region move.
+        const bool repairRoundedBoundary = !old && !initialize && song.regionOwnershipVersion < regionOwnershipVersion;
+        const auto roundedBoundaryOwner = [&](double position) -> std::optional<ID> {
+            if (!repairRoundedBoundary) return {};
+            const auto owner = regionOwnerAt(song, position);
+            if (!owner) return {};
+            const auto part = std::find_if(song.parts.begin(), song.parts.end(), [&](const auto& value) { return value.id == *owner; });
+            const double gap = part->startTime - position;
+            return gap > 1e-8 && gap <= regionPlacementTolerance ? owner : std::nullopt;
+        };
         const auto valid = [&](const std::optional<ID>& owner) { return !owner || std::any_of(song.parts.begin(), song.parts.end(), [&](const auto& part) { return part.id == *owner; }); };
         const auto regionMoved = [&](const std::optional<ID>& owner) {
             if (!old || !owner) return false;
@@ -54,6 +72,7 @@ void synchronizeRegionOwnership(Project& project, const Project* previous) {
             else if (prior && clip.startTime != prior->startTime && !regionMoved(prior->regionOwnerID)) clip.regionOwnerID = regionOwnerAt(song, clip.startTime);
             else if (!valid(clip.regionOwnerID)) clip.regionOwnerID.reset();
             else if (prior && !clip.regionOwnerID) clip.regionOwnerID = regionOwnerAt(created, clip.startTime);
+            else if (!clip.regionOwnerID) clip.regionOwnerID = roundedBoundaryOwner(clip.startTime);
         }
         if (song.markers) for (auto& marker : *song.markers) {
             const auto priorEntry = oldMarkers.find(marker.id);
@@ -63,8 +82,10 @@ void synchronizeRegionOwnership(Project& project, const Project* previous) {
             else if (prior && marker.position != prior->position && !regionMoved(prior->regionOwnerID)) marker.regionOwnerID = regionOwnerAt(song, marker.position);
             else if (!valid(marker.regionOwnerID)) marker.regionOwnerID.reset();
             else if (prior && !marker.regionOwnerID) marker.regionOwnerID = regionOwnerAt(created, marker.position);
+            else if (!marker.regionOwnerID) marker.regionOwnerID = roundedBoundaryOwner(marker.position);
         }
         song.regionOwnershipInitialized = true;
+        song.regionOwnershipVersion = std::max(song.regionOwnershipVersion, regionOwnershipVersion);
     }
 }
 void orderSpecialTracks(Project& project) {

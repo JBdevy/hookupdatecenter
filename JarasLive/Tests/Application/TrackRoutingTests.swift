@@ -29,6 +29,30 @@ import XCTest
     func applyProjectEdit(_ p: Project) throws { try p.validate(); project = p; fullEdits += 1 }
 }
 final class TrackRoutingTests: XCTestCase {
+    func testLongRoutingChainValidatesWithoutRecursionAndRejectsCycleAtEnd() throws {
+        var project = Project.empty(name: "Long routing chain")
+        var tracks = (0..<30_000).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        for index in tracks.indices.dropLast() {
+            tracks[index].routing = TrackRouting(transmitters: [tracks[index + 1].id])
+        }
+        project.songs[0].tracks = tracks
+        XCTAssertNoThrow(try project.validate())
+        project.songs[0].tracks[tracks.count - 1].routing = TrackRouting(transmitters: [tracks[tracks.count - 8].id])
+        XCTAssertThrowsError(try project.validate()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("audio feedback loop"))
+        }
+    }
+    func testDuplicateTrackIDsAreRejectedWithoutRoutingDictionaryCrash() throws {
+        var project = Project.empty(name: "Damaged routing")
+        let destination = Track(id: UUID(), name: "Destination", role: .other)
+        var source = Track(id: UUID(), name: "Source", role: .other)
+        source.routing = TrackRouting(transmitters: [destination.id])
+        project.songs[0].tracks = [source, source, destination]
+        XCTAssertEqual(project.songs[0].trackConnections.count, 1)
+        XCTAssertThrowsError(try project.validate()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("UUID"))
+        }
+    }
     @MainActor func testNormalTrackYellowDropEntersAtHitRowIncludingLastChild() throws {
         for targetIndex in [1, 4] {
             let project = groupDropProject(), tracks = project.songs[0].tracks

@@ -293,6 +293,7 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
         }
         NSMutableDictionary* song=[@{@"id":text(s.id),@"name":text(s.name),@"duration":@(s.duration),@"bpm":@(s.bpm),@"beatsPerBar":@(s.beatsPerBar),@"beatUnit":@(s.beatUnit),@"tracks":tracks,@"parts":parts} mutableCopy];
         song[@"regionOwnershipInitialized"] = @(s.regionOwnershipInitialized);
+        song[@"regionOwnershipVersion"] = @(s.regionOwnershipVersion);
         if (s.timeSettings) song[@"timeSettings"] = timeSettingsJSON(*s.timeSettings);
         if (s.markers) {
             NSMutableArray* markers=[NSMutableArray new];
@@ -369,6 +370,11 @@ static Project readProject(NSDictionary* d) {
     for (id rawSong in array(d[@"songs"])) {
         NSDictionary* sd=object(rawSong); Song s; s.id=str(sd[@"id"]); s.name=str(sd[@"name"]); s.duration=number(sd[@"duration"]); s.bpm=number(sd[@"bpm"]); s.beatsPerBar=sd[@"beatsPerBar"] ? number(sd[@"beatsPerBar"]) : 4; s.beatUnit=sd[@"beatUnit"] ? number(sd[@"beatUnit"]) : 4;
         s.regionOwnershipInitialized = [sd[@"regionOwnershipInitialized"] respondsToSelector:@selector(boolValue)] && [sd[@"regionOwnershipInitialized"] boolValue];
+        if (sd[@"regionOwnershipVersion"] && sd[@"regionOwnershipVersion"] != NSNull.null) {
+            const double version = number(sd[@"regionOwnershipVersion"]);
+            if (version < 0 || version > 1000000 || version != std::floor(version)) throw std::invalid_argument("Invalid region ownership version");
+            s.regionOwnershipVersion = static_cast<int>(version);
+        }
         if (sd[@"timeSettings"] && sd[@"timeSettings"] != NSNull.null) s.timeSettings = readTimeSettings(object(sd[@"timeSettings"]));
         for (id rawTrack in array(sd[@"tracks"])) s.tracks.push_back(readTrack(object(rawTrack)));
         for (id rawPart in array(sd[@"parts"])) { NSDictionary* part=object(rawPart); s.parts.push_back({str(part[@"id"]),str(part[@"name"]),number(part[@"startTime"]),number(part[@"endTime"])}); if (part[@"multiLoops"] && part[@"multiLoops"] != NSNull.null) s.parts.back().multiLoops = readMultiLoops(part[@"multiLoops"]); if (part[@"totalLoop"] && part[@"totalLoop"] != NSNull.null) s.parts.back().totalLoop = [part[@"totalLoop"] boolValue]; if (part[@"color"] && part[@"color"] != NSNull.null) { double color = number(part[@"color"]); if (color < 0 || color > 0xFFFFFF || color != (unsigned)color) throw std::invalid_argument("Invalid region color"); s.parts.back().color = (unsigned)color; } if (part[@"uppercaseName"] && part[@"uppercaseName"] != NSNull.null) s.parts.back().uppercaseName = [part[@"uppercaseName"] boolValue]; if (part[@"parentRegionID"] && part[@"parentRegionID"] != NSNull.null) s.parts.back().parentRegionID = str(part[@"parentRegionID"]); if (part[@"pitchSemitones"] && part[@"pitchSemitones"] != NSNull.null) { double value = number(part[@"pitchSemitones"]); if (value != std::round(value) || value < -12 || value > 12) throw std::invalid_argument("Invalid region pitch"); s.parts.back().pitchSemitones = (int)value; } for (NSString* key in @[@"pitchTrackIDs", @"pitchGroupIDs"]) if (part[key] && part[key] != NSNull.null) { std::vector<ID> ids; for (id value in array(part[key])) ids.push_back(str(value)); if ([key isEqualToString:@"pitchTrackIDs"]) s.parts.back().pitchTrackIDs = std::move(ids); else s.parts.back().pitchGroupIDs = std::move(ids); } }

@@ -11,6 +11,45 @@
 #include <set>
 #include <vector>
 #include <mach/mach_time.h>
+
+@implementation JarasAudioOutputConnection
++ (AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error {
+    // A HAL route change can report 0 Hz / 0 channels while the selected
+    // device is still settling. Do not manufacture a rate or borrow another
+    // device, and never let an AVFAudio NSException unwind through SwiftUI.
+    @try {
+        AVAudioFormat *output = engine.isInManualRenderingMode
+            ? engine.manualRenderingFormat : [engine.outputNode outputFormatForBus:0];
+        const double rate = output.sampleRate;
+        const AVAudioChannelCount channels = output.channelCount;
+        if (!std::isfinite(rate) || rate <= 0 || channels == 0) {
+            if (error) *error = [NSError errorWithDomain:@"CatLive.AudioOutput" code:1
+                userInfo:@{NSLocalizedDescriptionKey: @"Audio output is unavailable"}];
+            return nil;
+        }
+        AVAudioFormat *format;
+        if (channels <= 2) {
+            format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:channels];
+        } else {
+            AVAudioChannelLayout *layout = [[AVAudioChannelLayout alloc]
+                initWithLayoutTag:kAudioChannelLayoutTag_DiscreteInOrder | channels];
+            format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channelLayout:layout];
+        }
+        if (!format) {
+            if (error) *error = [NSError errorWithDomain:@"CatLive.AudioOutput" code:1
+                userInfo:@{NSLocalizedDescriptionKey: @"Audio output is unavailable"}];
+            return nil;
+        }
+        [engine connect:engine.mainMixerNode to:engine.outputNode format:format];
+        return format;
+    } @catch (NSException *exception) {
+        if (error) *error = [NSError errorWithDomain:@"CatLive.AudioOutput" code:2
+            userInfo:@{NSLocalizedDescriptionKey: @"Audio output is unavailable",
+                       NSDebugDescriptionErrorKey: exception.reason ?: exception.name}];
+        return nil;
+    }
+}
+@end
 // A callback may pull several nested units. Only the outermost unit changes
 // the floating-point mode; restoring it preserves the caller's environment.
 struct ScopedAudioDenormals {

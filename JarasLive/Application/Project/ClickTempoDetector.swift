@@ -57,6 +57,22 @@ public enum ClickTempoDetector {
             if times.last.map({ time - $0 > 0.000001 }) ?? true { times.append(time) }
         }
         guard times.count >= 4 else { return Analysis(sections: []) }
+        // A lone attack after the click has ended is not evidence of a new
+        // tempo. Keep real rests (whole beat distances), but exclude an off-grid
+        // tail after a stable clock before fitting: its endpoint otherwise
+        // forces many false corrections throughout the preceding song.
+        if times.count >= 10 {
+            let tail = times.count - 1
+            let recent = (tail - 8..<tail).map { times[$0] - times[$0 - 1] }.sorted()
+            let period = (recent[3] + recent[4]) / 2
+            let gap = times[tail] - times[tail - 1]
+            let distance = gap / period
+            let stable = recent.filter { abs($0 - period) <= period * 0.04 }.count >= 7
+            if stable, distance > 1.5,
+               abs(gap - distance.rounded() * period) > max(0.030, period * 0.05) {
+                times.removeLast()
+            }
+        }
         let intervals = zip(times.dropFirst(), times).map(-)
         // Assign missing clicks their beat distance using neighboring intervals.
         // A sustained half/double tempo remains one beat per pulse, while an
@@ -98,10 +114,11 @@ public enum ClickTempoDetector {
             guard bpm >= 60, bpm <= 300 else { return nil }
             let deviation = median(slopes.map { abs($0 - period) })
             let beats = beatPositions[last] - beatPositions[first]
-            // Keep genuinely fractional clocks, even in short passages. A
-            // rounded label is accepted only within the measured uncertainty.
+            // Tiny clock/attack measurement differences such as 130.001 are
+            // not a distinct musical tempo. Still validate the full anchored
+            // phase below so rounding cannot hide accumulated timing drift.
             let uncertainty = max(2 / 44100 / max(1, beats), 3 * deviation / sqrt(Double(count)))
-            guard abs(period - 60 / bpm) <= uncertainty else { return nil }
+            guard abs(60 / period - bpm) <= 0.01 || abs(period - 60 / bpm) <= uncertainty else { return nil }
             var phaseTolerance = anchoredTolerance
             if beatsPerBar > 0, beatsPerBar < count - 2 {
                 let differences = (first...(last - beatsPerBar)).map { index in
@@ -149,19 +166,19 @@ public enum ClickTempoDetector {
             // anchor can be essential to keep the next beats in phase.
             sections.append(Section(position: times[first], bpm: bpm))
         }
-        // Merge sub-BPM fluctuations only while the complete merged span stays
+        // Merge attack-induced splits only while the complete merged span stays
         // within 20 ms of the measured clicks. Genuine ramps and short, distinct
         // changes keep their anchors; tiny local variations do not flood the grid.
         var merged: [Section] = []
         var index = 0
         while index < sections.count {
             let first = times.firstIndex(of: sections[index].position)!
-            var lastSection = index, low = sections[index].bpm, high = low
+            var lastSection = index
             var chosen = sections[index]
             while lastSection + 1 < sections.count {
-                let next = sections[lastSection + 1]
-                let nextLow = min(low, next.bpm), nextHigh = max(high, next.bpm)
-                guard nextHigh - nextLow < 1 else { break }
+                // A single delayed attack can give a very short span an
+                // apparent change of several BPM. Validate measured phase,
+                // not the extrema of those noisy per-span estimates.
                 let last = lastSection + 2 < sections.count
                     ? times.firstIndex(of: sections[lastSection + 2].position)! : times.count - 1
                 let bpm = 60 * (beatPositions[last] - beatPositions[first]) / (times[last] - times[first])
@@ -171,8 +188,10 @@ public enum ClickTempoDetector {
                     }
                 }
                 guard fits(bpm) else { break }
-                chosen.bpm = integerTempo(first: first, last: last, anchoredTolerance: 0.020) ?? bpm
-                low = nextLow; high = nextHigh; lastSection += 1
+                if let integer = integerTempo(first: first, last: last, anchoredTolerance: 0.020), fits(integer) {
+                    chosen.bpm = integer
+                } else { chosen.bpm = bpm }
+                lastSection += 1
             }
             merged.append(chosen); index = lastSection + 1
         }
@@ -211,7 +230,7 @@ public enum ClickTempoDetector {
         let analysis = hasClickAudio ? analyze(onsets: unique.map(\.position), beatsPerBar: meter(transients: unique)?.beats ?? song.meterBeats)
             : Analysis(sections: [])
         let sections = analysis.sections
-        return (sections.enumerated().map { index, section in
+        var markers = sections.enumerated().map { index, section in
             let end = index + 1 < sections.count ? sections[index + 1].position : region.endTime
             let detectedMeter = meter(transients: unique.filter { $0.position >= section.position && $0.position < end })
             let beats = detectedMeter?.beats ?? song.meterBeats
@@ -220,7 +239,16 @@ public enum ClickTempoDetector {
             return TimelineMarker(id: UUID(), name: "TEMPO", position: section.position, color: 0x999999,
                            tempoBPM: bpm, tempoBeats: beats,
                            tempoUnit: unit, tempoTimebase: .global, tempoReferenceBPM: bpm)
-        }, hasClickAudio)
+        }
+        // The first audible click can follow a silent/count-in-free intro.
+        // Protect that intro from the preceding song's tempo without moving
+        // the measured first beat (which anchors both grid and metronome).
+        if var initial = markers.first, initial.position > region.startTime {
+            initial.id = UUID()
+            initial.position = region.startTime
+            markers.insert(initial, at: 0)
+        }
+        return (markers, hasClickAudio)
     }
 }
 

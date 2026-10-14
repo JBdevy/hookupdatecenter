@@ -1,6 +1,13 @@
 import SwiftUI
 import AppKit
 
+/// Test-only binding adapter to exercise the native scroll host at changing document scales.
+private struct ZoomFixtureBinding<Content: View>: View {
+    @ObservedObject var state: TimelineZoomState
+    @ViewBuilder let content: (Binding<Double>) -> Content
+    var body: some View { content($state.value) }
+}
+
 final class HostingFixtureState {
     var seeks: [CGFloat] = []
     var selections: [Set<UUID>] = []
@@ -218,7 +225,7 @@ private struct IsolatedZoomFixture: View {
     let counters: ZoomLayoutCounters
     var body: some View {
         let _ = counters.parent += 1
-        TimelineZoomLayer(state: state) { zoom in
+        ZoomFixtureBinding(state: state) { zoom in
             let _ = counters.document += 1
             let width = 3000 * zoom.wrappedValue
             GridScrollView(axis: .horizontal, contentWidth: width, contentHeight: 300) {
@@ -271,7 +278,7 @@ private struct VirtualViewportFixture: View {
     var body: some View {
         let _ = counters.parent += 1
         GridScrollView(axis: .horizontal, contentWidth: 3000, contentHeight: documentHeight, viewportWidth: 800) {
-            TimelineZoomLayer(state: state) { zoom in
+            ZoomFixtureBinding(state: state) { zoom in
                 let _ = counters.document += 1
                 let width = 3000 * zoom.wrappedValue
                 ZStack(alignment: .topLeading) {

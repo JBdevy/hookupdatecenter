@@ -11,8 +11,8 @@ import AVFoundation
     let imported = try await Task.detached {
         try StemProjectImporter.prepareDroppedAudio([source],start: 30,destinationTracks: [videoTrackID],destination: directory.appendingPathComponent("test.jl"),destinationKind: .video)
     }.value
-    precondition(imported.tracks.count == 1 && imported.tracks[0].kind == .video && imported.tracks[0].name == "Video")
-    precondition(imported.tracks[0].id == videoTrackID, "video attaches to an explicitly chosen existing Video track")
+    precondition(imported.tracks.count == 1 && imported.tracks[0].kind == .standard)
+    precondition(imported.tracks[0].id == videoTrackID, "video attaches to an explicitly chosen standard track")
     let clip = imported.tracks[0].clips[0]
     precondition(clip.audioFile!.path.hasPrefix("Videos/"), "videos use their own media folder")
     precondition(clip.startTime == 30 && clip.duration > 1 && clip.waveform.isEmpty)
@@ -113,7 +113,7 @@ import AVFoundation
     snapshot.project.songs[0].tracks[0].clips = originalVideoClips
     let teleprompterID = UUID()
     let tpImport = try StemProjectImporter.prepareDroppedAudio([source], start: 30, destinationTracks: [teleprompterID], destination: directory.appendingPathComponent("test.jl"), destinationKind: .teleprompt)
-    precondition(tpImport.tracks[0].kind == .teleprompt && tpImport.tracks[0].name == "Teleprompter")
+    precondition(tpImport.tracks[0].kind == .teleprompt)
     var tpTrack = tpImport.tracks[0]
     tpTrack.clips.append(AudioClip(id: UUID(), name: "Lyrics", startTime: 30, duration: 10, text: "Text over video"))
     snapshot.project.songs[0].tracks.append(tpTrack)
@@ -134,6 +134,83 @@ import AVFoundation
     tpController.setStretch(true)
     precondition(tpController.player.currentItem === tpItem && !controller.stretch, "TP Stretch never changes the video window or reopens the media")
     precondition(VideoPlayback(preferences: preferences, trackKind: .teleprompt).stretch)
+    // Exercise the real AVPlayer transport for all three projection surfaces.
+    var tp2Track = tpTrack
+    tp2Track.id = UUID(); tp2Track.role = TrackRole(rawValue: TrackKind.teleprompt2.rawValue)
+    tp2Track.clips = tp2Track.clips.map { value in var copy = value; copy.id = UUID(); return copy }
+    snapshot.project.songs[0].tracks.append(tp2Track)
+    let tp2Controller = VideoPlayback(preferences: preferences, trackKind: .teleprompt2)
+    tp2Controller.open(directory: directory); tp2Controller.setProjectionEnabled(true)
+    let projections = [controller, tpController, tp2Controller]
+    func publish() { for projection in projections { projection.update(snapshot) } }
+    func advance(from start: Double, duration: Double) async throws {
+        let begin = ProcessInfo.processInfo.systemUptime
+        while ProcessInfo.processInfo.systemUptime - begin < duration {
+            snapshot.transport.position = start + ProcessInfo.processInfo.systemUptime - begin
+            publish()
+            try await Task.sleep(nanoseconds: 16_666_667)
+        }
+    }
+    snapshot.transport.playing = true; snapshot.transport.position = 30
+    publish()
+    try await advance(from: 30, duration: 0.6)
+    func checkFrames(_ target: Double, tolerance: Double = 0.15, _ reason: String) {
+        for (index, projection) in projections.enumerated() {
+            let actual = projection.player.currentTime().seconds
+            precondition(actual.isFinite && abs(actual - target) < tolerance,
+                         "Surface \(index): \(reason); expected \(target), actual \(actual)")
+        }
+    }
+    checkFrames(snapshot.transport.position - 30, "normal playback")
+    let identities = projections.map { $0.player.currentItem }
+    // Moving the edit cursor while playing must not seek any decoder.
+    snapshot.transport.editPosition = 35; publish()
+    try await advance(from: snapshot.transport.position, duration: 0.2)
+    checkFrames(snapshot.transport.position - 30, "edit cursor must not restart playback")
+    // Forward and backward jumps on the same video, including repeated loop turns.
+    for destination in [31.0, 30.15, 31.25, 30.2, 30.7, 30.2] {
+        snapshot.transport.position = destination
+        snapshot.transport.sectionJumpSerial = (snapshot.transport.sectionJumpSerial ?? 0) + 1
+        publish()
+        try await advance(from: destination, duration: 0.3)
+        checkFrames(snapshot.transport.position - 30, "section jump or loop")
+    }
+    precondition(zip(projections, identities).allSatisfy { $0.player.currentItem === $1 },
+                 "jumps within a clip reuse all three decoders")
+    let shortJump = snapshot.transport.position - 0.1
+    snapshot.transport.position = shortJump
+    snapshot.transport.sectionJumpSerial = (snapshot.transport.sectionJumpSerial ?? 0) + 1
+    publish()
+    try await advance(from: shortJump, duration: 0.3)
+    checkFrames(snapshot.transport.position - 30, tolerance: 0.07, "short explicit section jump")
+    snapshot.transport.playing = false; snapshot.transport.paused = true
+    snapshot.transport.position = 30.8; snapshot.transport.editPosition = 35
+    publish(); try await Task.sleep(nanoseconds: 250_000_000)
+    checkFrames(0.8, tolerance: 0.05, "pause follows playback, not the edit cursor")
+    precondition(projections.allSatisfy { $0.player.rate == 0 }, "all projections pause")
+    // A source repetition wraps independently of a continuously advancing grid.
+    for trackIndex in snapshot.project.songs[0].tracks.indices {
+        for clipIndex in snapshot.project.songs[0].tracks[trackIndex].clips.indices
+            where snapshot.project.songs[0].tracks[trackIndex].clips[clipIndex].isProjectionMedia {
+            snapshot.project.songs[0].tracks[trackIndex].clips[clipIndex].loopLength = 0.8
+            snapshot.project.songs[0].tracks[trackIndex].clips[clipIndex].playbackRate = 1.5
+        }
+    }
+    snapshot.transport.playing = true; snapshot.transport.paused = false
+    snapshot.transport.position = 30; publish()
+    try await advance(from: 30, duration: 1.35)
+    checkFrames(((snapshot.transport.position - 30) * 1.5).truncatingRemainder(dividingBy: 0.8),
+                "source loop and playback rate")
+    snapshot.transport.playing = false; snapshot.transport.editPosition = snapshot.project.songs[0].duration + 1
+    publish(); try await Task.sleep(nanoseconds: 100_000_000)
+    precondition(projections.allSatisfy { $0.player.currentItem == nil }, "no stale video outside items")
+    snapshot.transport.editPosition = 30; publish()
+    snapshot.transport.editPosition = snapshot.project.songs[0].duration + 1; publish()
+    try await Task.sleep(nanoseconds: 250_000_000)
+    precondition(projections.allSatisfy { $0.player.currentItem == nil }, "late seeks cannot revive stopped media")
+    snapshot.transport.editPosition = 30; publish()
+    tp2Controller.setProjectionEnabled(false)
+    print("VIDEO_TP1_TP2_REAL_PLAYER_JUMPS_LOOPS_RATE_PAUSE_EDIT_CURSOR_AND_STALE_SEEKS_OK")
     snapshot.project.songs[0].tracks.removeAll { $0.id == teleprompterID }
     tpController.update(snapshot)
     precondition(tpController.player.currentItem == nil, "a video on the Video track never appears in the teleprompter")

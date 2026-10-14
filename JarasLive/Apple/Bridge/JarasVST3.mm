@@ -21,6 +21,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <condition_variable>
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -143,11 +144,45 @@ struct Module {
     ~Module(){close();}
     void close(){if(factory)factory->release();if(bundle){if(entered){auto exit=(bool (*)())CFBundleGetFunctionPointerForName(bundle,CFSTR("bundleExit"));if(exit)exit();}CFBundleUnloadExecutable(bundle);CFRelease(bundle);}}
 };
+struct ModuleSlot {
+    std::weak_ptr<Module> owner;
+    std::atomic<bool> loaded{false};
+};
+struct ModuleRegistry {
+    std::mutex mutex;
+    std::condition_variable released;
+    std::map<std::string,std::shared_ptr<ModuleSlot>> slots;
+};
 std::shared_ptr<Module> loadModule(NSString *path) {
-    static std::mutex mutex;static std::map<std::string,std::weak_ptr<Module>> cache;
-    std::lock_guard<std::mutex> lock(mutex);auto key=std::string(path.UTF8String);
-    if(auto existing=cache[key].lock())return existing;
-    auto loaded=std::make_shared<Module>(path);cache[key]=loaded;return loaded;
+    // The registry also belongs to each deleter, so process teardown cannot
+    // destroy its mutex before the final editor/processor releases a bundle.
+    static const auto registry=std::make_shared<ModuleRegistry>();
+    NSString *canonical=path.stringByStandardizingPath.stringByResolvingSymlinksInPath;
+    std::unique_lock<std::mutex> lock(registry->mutex);auto key=std::string(canonical.UTF8String);
+    auto &entry=registry->slots[key];if(!entry)entry=std::make_shared<ModuleSlot>();
+    const auto slot=entry;
+    for(;;){
+        if(auto existing=slot->owner.lock())return existing;
+        if(!slot->loaded)break;
+        // A weak_ptr expires before its destructor finishes. A new instance
+        // must wait for bundleExit/unload, otherwise that old unload can tear
+        // down the executable and factory of the new processor.
+        registry->released.wait(lock);
+    }
+    const auto lifetime=registry;
+    auto loaded=std::shared_ptr<Module>(new Module(canonical),[lifetime,slot](Module *module){
+        // shared_ptr invokes its deleter if allocating the control block
+        // fails, before publication and while the caller still owns the lock.
+        if(!slot->loaded.load()){delete module;return;}
+        // Keep this slot occupied but allow other modules to load/unload
+        // while plugin-owned teardown code runs.
+        delete module;
+        std::lock_guard<std::mutex> lock(lifetime->mutex);
+        slot->owner.reset();
+        slot->loaded=false;
+        lifetime->released.notify_all();
+    });
+    slot->owner=loaded;slot->loaded=true;return loaded;
 }
 struct Param { ParamID id=0; std::atomic<double> pending{0}; std::atomic<bool> dirty{false}; };
 class Queue final: public IParamValueQueue {
@@ -176,6 +211,17 @@ public:
     tresult PLUGIN_API addEvent(Event &event) override{if(count==18432)return kResultFalse;events[count++]=event;return kResultOk;}
 };
 struct MIDI {uint8 status,data1,data2;};
+struct MIDIPerformance {
+    std::array<MIDI,1024> midi;
+    std::atomic<unsigned> read{0},write{0};
+    std::atomic<bool> panic{false};
+    // Only the audio callback reads/writes held notes. Replacement instances
+    // share the queue, then chase held notes in their first render block.
+    uint8 held[16][128]{},sustained[16][128]{};
+    bool pedal[16]{};std::atomic<bool> controllersChanged{false};
+    std::atomic<double> controllers[16][130];
+    MIDIPerformance(){for(auto &channel:controllers)for(auto &value:channel)value=-1;}
+};
 class Instance final: public IComponentHandler, public IComponentHandler2 {
 public:
     std::shared_ptr<Module> module; Host host; IComponent *component=nullptr; IAudioProcessor *processor=nullptr; IEditController *controller=nullptr;
@@ -184,27 +230,31 @@ public:
     NSString *identifier; std::atomic<bool> bypass{false},hasChanges{false}; std::unique_ptr<Param[]> params; int paramCount=0; Changes changes;
     std::vector<AudioBusBuffers> inputs,outputs; std::vector<std::vector<float>> storage; std::vector<std::vector<float *>> pointers;
     EventList events;
-    std::array<MIDI,1024> midi; std::atomic<unsigned> midiRead{0},midiWrite{0}; std::atomic<bool> panic{false};
-    bool held[16][128]{}; ParamID midiParameters[16][130];
+    std::shared_ptr<MIDIPerformance> midiPerformance=std::make_shared<MIDIPerformance>();
+    bool resumeMIDI=false;
+    ParamID midiParameters[16][130];
+    std::shared_ptr<std::atomic<bool>> editCallbacksActive=std::make_shared<std::atomic<bool>>(true);
+    std::atomic<bool> hasNativeEditor{false};
     void (^edited)(void)=nil;
     void (^parameterEdited)(unsigned int,double,BOOL)=nil;
     double rate=48000; static constexpr int frames=4096; int mainIn=-1,mainOut=-1; int64 sampleTime=0; int processMode=kRealtime; NSString *appliedComponent=nil,*appliedController=nil;
     FIXED_REF
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override {*out=nullptr;if(iidIs<FUnknown>(id)||iidIs<IComponentHandler>(id)){*out=static_cast<IComponentHandler*>(this);return kResultOk;}if(iidIs<IComponentHandler2>(id)){*out=static_cast<IComponentHandler2*>(this);return kResultOk;}return kNoInterface;}
-    tresult PLUGIN_API setDirty(TBool dirty) override{if(dirty&&edited)dispatch_async(dispatch_get_main_queue(),edited);return kResultOk;}
+    void notifyEdit(){if(edited){auto callback=edited;auto active=editCallbacksActive;dispatch_async(dispatch_get_main_queue(),^{if(active->load())callback();});}}
+    tresult PLUGIN_API setDirty(TBool dirty) override{if(dirty)notifyEdit();return kResultOk;}
     tresult PLUGIN_API requestOpenEditor(FIDString) override{return kResultFalse;}
     tresult PLUGIN_API startGroupEdit() override{return kResultOk;}
-    tresult PLUGIN_API finishGroupEdit() override{if(edited)dispatch_async(dispatch_get_main_queue(),edited);return kResultOk;}
+    tresult PLUGIN_API finishGroupEdit() override{notifyEdit();return kResultOk;}
     tresult PLUGIN_API beginEdit(ParamID) override{return kResultOk;}
     tresult queueParameter(ParamID id,ParamValue value) {for(int i=0;i<paramCount;i++)if(params[i].id==id){params[i].pending.store(value);params[i].dirty.store(true,std::memory_order_release);hasChanges.store(true,std::memory_order_release);return kResultOk;}return kInvalidArgument;}
     tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override {
         auto result=queueParameter(id,value);
-        if(result==kResultOk&&parameterEdited){auto callback=parameterEdited;dispatch_async(dispatch_get_main_queue(),^{callback(id,value,NO);});}
+        if(result==kResultOk&&parameterEdited){auto callback=parameterEdited;auto active=editCallbacksActive;dispatch_async(dispatch_get_main_queue(),^{if(active->load())callback(id,value,NO);});}
         return result;
     }
     tresult PLUGIN_API endEdit(ParamID id) override{
-        if(parameterEdited&&controller){auto callback=parameterEdited;auto value=controller->getParamNormalized(id);dispatch_async(dispatch_get_main_queue(),^{callback(id,value,YES);});}
-        if(edited)dispatch_async(dispatch_get_main_queue(),edited);return kResultOk;}
+        if(parameterEdited&&controller){auto callback=parameterEdited;auto active=editCallbacksActive;auto value=controller->getParamNormalized(id);dispatch_async(dispatch_get_main_queue(),^{if(active->load())callback(id,value,YES);});}
+        notifyEdit();return kResultOk;}
     tresult PLUGIN_API restartComponent(int32) override{return kResultFalse;}
     explicit Instance(NSDictionary *spec,double sampleRate,bool offline):rate(sampleRate),processMode(offline?kOffline:kRealtime) { try {
         identifier=spec[@"id"];instrument=[spec[@"category"] containsString:@"Instrument"]; module=loadModule(spec[@"path"]); FUID uid;
@@ -228,7 +278,7 @@ public:
         inputs.resize(inCount);outputs.resize(outCount);
         storage.reserve((inCount+outCount)*2);pointers.resize(inCount+outCount);
         for(int dir=0;dir<2;dir++){auto &buses=dir?outputs:inputs;for(int i=0;i<(int)buses.size();i++){BusInfo info{};component->getBusInfo(kAudio,dir?kOutput:kInput,i,info);if(info.channelCount<0||info.channelCount>64||(dir&&i==mainOut&&info.channelCount<1))throw std::runtime_error("Unsupported VST3 bus width.");auto &p=pointers[(dir?inCount:0)+i];p.resize(info.channelCount);for(int c=0;c<info.channelCount;c++){storage.emplace_back(frames,0);p[c]=storage.back().data();}buses[i].numChannels=info.channelCount;buses[i].channelBuffers32=p.data();component->activateBus(kAudio,dir?kOutput:kInput,i,i==(dir?mainOut:mainIn));}}
-        if(controller){paramCount=std::min(65536,std::max(0,controller->getParameterCount()));params=std::make_unique<Param[]>(paramCount);changes.capacity=paramCount;changes.queues=std::make_unique<Queue[]>(paramCount);for(int i=0;i<paramCount;i++){ParameterInfo info{};controller->getParameterInfo(i,info);params[i].id=info.id;params[i].pending=controller->getParamNormalized(info.id);}}
+        if(controller){paramCount=std::min(65536,std::max(0,controller->getParameterCount()));params=std::make_unique<Param[]>(paramCount);changes.capacity=paramCount;changes.queues=std::make_unique<Queue[]>(paramCount);for(int i=0;i<paramCount;i++){ParameterInfo info{};controller->getParameterInfo(i,info);params[i].id=info.id;params[i].pending=controller->getParamNormalized(info.id);params[i].dirty=true;}hasChanges=paramCount>0;}
         ProcessSetup setup{processMode,kSample32,frames,rate};if(processor->setupProcessing(setup)!=kResultOk)throw std::runtime_error("VST3 audio setup failed.");
         if(component->setActive(true)!=kResultOk)throw std::runtime_error("Could not activate this VST3 processor.");active=true;
         if(processor->setProcessing(true)!=kResultOk)throw std::runtime_error("Could not start this VST3 processor.");processing=true;
@@ -236,10 +286,11 @@ public:
         bypass=[spec[@"bypassed"] boolValue];
     } catch (...) { close(); throw; } }
     ~Instance(){close();}
-    void close(){if(processing)processor->setProcessing(false);if(active)component->setActive(false);if(source&&destination){source->disconnect(destination);destination->disconnect(source);}if(source)source->release();if(destination)destination->release();if(controller){controller->setComponentHandler(nullptr);if(controllerInitialized)controller->terminate();controller->release();}if(processor)processor->release();if(component){if(initialized)component->terminate();component->release();}}
+    void close(){editCallbacksActive->store(false);if(processing)processor->setProcessing(false);if(active)component->setActive(false);if(source&&destination){source->disconnect(destination);destination->disconnect(source);}if(source)source->release();if(destination)destination->release();if(controller){controller->setComponentHandler(nullptr);if(controllerInitialized)controller->terminate();controller->release();}if(processor)processor->release();if(component){if(initialized)component->terminate();component->release();}}
     void enqueue(uint8 status,uint8 data1,uint8 data2){
+        auto &midi=midiPerformance->midi;auto &midiRead=midiPerformance->read;auto &midiWrite=midiPerformance->write;auto &panic=midiPerformance->panic;
         int kind=status&0xf0,channel=status&15;
-        if(kind==0xb0||kind==0xe0){auto cc=kind==0xe0?129:data1;if(cc<130&&midiParameters[channel][cc]!=kNoParamId)queueParameter(midiParameters[channel][cc],kind==0xe0?double(data1|(data2<<7))/16383.:double(data2)/127.);if(kind==0xb0&&data1>=120)panic=true;return;}
+        if(kind==0xb0||kind==0xe0){auto cc=kind==0xe0?129:data1;if(cc<130){const double value=kind==0xe0?double(data1|(data2<<7))/16383.:double(data2)/127.;midiPerformance->controllers[channel][cc]=value;midiPerformance->controllersChanged=true;if(midiParameters[channel][cc]!=kNoParamId)queueParameter(midiParameters[channel][cc],value);}if(kind==0xb0&&data1>=120)panic=true;return;}
         if(kind!=0x80&&kind!=0x90)return;
         auto write=midiWrite.load(std::memory_order_relaxed),read=midiRead.load(std::memory_order_acquire);
         if(write-read>=midi.size()){panic=true;return;}
@@ -247,6 +298,23 @@ public:
     }
     void process(AudioBufferList *buffer,unsigned count,double position,double tempo,int beats,int unit,bool playing,const CatMIDIEvent* sequence,unsigned sequenceCount){
         if(bypass.load()||count>frames)return;
+        auto &midi=midiPerformance->midi;auto &midiRead=midiPerformance->read;auto &midiWrite=midiPerformance->write;auto &panic=midiPerformance->panic;auto &held=midiPerformance->held;
+        const bool resuming=resumeMIDI;
+        if(midiPerformance->controllersChanged.exchange(false)||resuming){
+            for(int channel=0;channel<16;++channel){
+                const bool pedal=midiPerformance->controllers[channel][64].load()>=.5;
+                if(!pedal)memset(midiPerformance->sustained[channel],0,sizeof(midiPerformance->sustained[channel]));
+                midiPerformance->pedal[channel]=pedal;
+            }
+        }
+        uint8 resumed[16][128],resumedReleased[16][128];
+        if(resuming){
+            memcpy(resumed,held,sizeof(resumed));memcpy(resumedReleased,midiPerformance->sustained,sizeof(resumedReleased));resumeMIDI=false;
+            for(int channel=0;channel<16;++channel)for(int cc=0;cc<130;++cc){
+                const auto value=midiPerformance->controllers[channel][cc].load();
+                if(value>=0&&midiParameters[channel][cc]!=kNoParamId)queueParameter(midiParameters[channel][cc],value);
+            }
+        }
         // Report exact silence to the plugin, including unused sidechain buses.
         // Still process every block: MIDI instruments and effect tails may
         // produce audio with silent input. Storage was allocated during setup.
@@ -267,9 +335,13 @@ public:
         for(auto &bus:outputs){bus.silenceFlags=0;for(int c=0;c<bus.numChannels;c++)memset(bus.channelBuffers32[c],0,count*sizeof(float));}
         changes.count=0;if(hasChanges.exchange(false,std::memory_order_acq_rel))for(int i=0;i<paramCount;i++)if(params[i].dirty.exchange(false,std::memory_order_acq_rel)){int32 index;auto q=changes.addParameterData(params[i].id,index);q->addPoint(0,params[i].pending.load(),index);}
         events.count=0;
-        if(panic.load()){bool remaining=false;for(int channel=0;channel<16;channel++)for(int note=0;note<128;note++)if(held[channel][note]){Event event{};event.type=Event::kNoteOffEvent;event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.noteId=-1;if(events.addEvent(event)==kResultOk)held[channel][note]=false;else remaining=true;}panic=remaining;}
+        auto recordNote=[&](int channel,int note,uint8 velocity){
+            if(velocity){held[channel][note]=velocity;midiPerformance->sustained[channel][note]=0;}
+            else{if(midiPerformance->pedal[channel]&&held[channel][note])midiPerformance->sustained[channel][note]=held[channel][note];held[channel][note]=0;}
+        };
+        if(panic.load()){memset(midiPerformance->sustained,0,sizeof(midiPerformance->sustained));if(resuming){memset(resumed,0,sizeof(resumed));memset(resumedReleased,0,sizeof(resumedReleased));}bool remaining=false;for(int channel=0;channel<16;channel++)for(int note=0;note<128;note++)if(held[channel][note]){Event event{};event.type=Event::kNoteOffEvent;event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.noteId=-1;if(events.addEvent(event)==kResultOk)held[channel][note]=false;else remaining=true;}panic=remaining;}
         auto read=midiRead.load(std::memory_order_relaxed),write=midiWrite.load(std::memory_order_acquire);
-        while(read!=write&&events.count<18432){auto message=midi[read++%midi.size()];Event event{};int channel=message.status&15,note=message.data1&127;bool on=(message.status&0xf0)==0x90&&message.data2>0;event.type=on?Event::kNoteOnEvent:Event::kNoteOffEvent;if(on){event.noteOn.channel=channel;event.noteOn.pitch=note;event.noteOn.velocity=message.data2/127.f;event.noteOn.noteId=-1;}else{event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.velocity=message.data2/127.f;event.noteOff.noteId=-1;}events.addEvent(event);held[channel][note]=on;}
+        while(read!=write&&events.count<18432){auto message=midi[read++%midi.size()];Event event{};int channel=message.status&15,note=message.data1&127;bool on=(message.status&0xf0)==0x90&&message.data2>0;event.type=on?Event::kNoteOnEvent:Event::kNoteOffEvent;if(on){event.noteOn.channel=channel;event.noteOn.pitch=note;event.noteOn.velocity=message.data2/127.f;event.noteOn.noteId=-1;}else{event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.velocity=message.data2/127.f;event.noteOff.noteId=-1;}events.addEvent(event);recordNote(channel,note,on?message.data2:0);}
         midiRead.store(read,std::memory_order_release);
         for(unsigned i=0;i<sequenceCount;++i) {
             const auto& message=sequence[i];Event event{};event.sampleOffset=message.offset;
@@ -278,22 +350,43 @@ public:
             event.type=on?Event::kNoteOnEvent:Event::kNoteOffEvent;
             if(on){event.noteOn.channel=channel;event.noteOn.pitch=note;event.noteOn.velocity=message.velocity/127.f;event.noteOn.noteId=-1;}
             else{event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.noteId=-1;}
-            events.addEvent(event);held[channel][note]=on;
+            events.addEvent(event);recordNote(channel,note,on?message.velocity:0);
         }
-        std::sort(events.events,events.events+events.count,[](const Event&a,const Event&b){return a.sampleOffset==b.sampleOffset ? a.type==Event::kNoteOffEvent && b.type==Event::kNoteOnEvent : a.sampleOffset<b.sampleOffset;});
+        if(resuming)for(int channel=0;channel<16;++channel)for(int note=0;note<128;++note){
+            const auto velocity=resumed[channel][note]?resumed[channel][note]:resumedReleased[channel][note];
+            if(!velocity)continue;
+            Event event{};event.flags=Event::kUserReserved1;event.type=Event::kNoteOnEvent;event.noteOn.channel=channel;event.noteOn.pitch=note;
+            event.noteOn.velocity=velocity/127.f;event.noteOn.noteId=-1;events.addEvent(event);
+            if(!resumed[channel][note]){event={};event.type=Event::kNoteOffEvent;event.noteOff.channel=channel;event.noteOff.pitch=note;event.noteOff.noteId=-1;events.addEvent(event);}
+        }
+        std::sort(events.events,events.events+events.count,[](const Event&a,const Event&b){
+            if(a.sampleOffset!=b.sampleOffset)return a.sampleOffset<b.sampleOffset;
+            // Chasing happens before ordinary offset-zero note-offs. This also
+            // rebuilds pedal-held voices with NoteOn then NoteOff at the same
+            // sample, so releasing the pedal subsequently releases the voice.
+            const bool resumeA=a.flags&Event::kUserReserved1,resumeB=b.flags&Event::kUserReserved1;
+            if(resumeA!=resumeB)return resumeA;
+            return a.type==Event::kNoteOffEvent&&b.type==Event::kNoteOnEvent;
+        });
+        if(resuming)for(int index=0;index<events.count;++index)events.events[index].flags&=~Event::kUserReserved1;
         ProcessContext context{};context.sampleRate=rate;context.projectTimeSamples=llround(position*rate);context.tempo=tempo;context.timeSigNumerator=beats;context.timeSigDenominator=unit;context.projectTimeMusic=position*tempo/60.;context.state=ProcessContext::kTempoValid|ProcessContext::kTimeSigValid|ProcessContext::kProjectTimeMusicValid|(playing?ProcessContext::kPlaying:0);
         ProcessData data;data.processMode=processMode;data.numSamples=count;data.numInputs=(int)inputs.size();data.numOutputs=(int)outputs.size();data.inputs=inputs.data();data.outputs=outputs.data();data.inputParameterChanges=&changes;data.inputEvents=&events;data.processContext=&context;
         if(processor->process(data)==kResultOk){auto &bus=outputs[mainOut];for(int c=0;c<(int)std::min(2u,buffer->mNumberBuffers);c++)if(buffer->mBuffers[c].mData){auto dest=(float *)buffer->mBuffers[c].mData;auto source=bus.channelBuffers32[std::min(c,bus.numChannels-1)];if(bus.silenceFlags&(1ull<<std::min(c,bus.numChannels-1))){if(!instrument)memset(dest,0,count*sizeof(float));}else for(unsigned f=0;f<count;f++){const float generated=std::isfinite(source[f])?source[f]:0;dest[f]=(instrument?dest[f]:0)+generated;}}}
         sampleTime+=count;
     }
-    void restore(NSDictionary *spec){
+    NSDictionary *replacementSpec(NSDictionary *spec){
         NSString *c=spec[@"componentState"],*v=spec[@"controllerState"];
-        if((c==appliedComponent||[c isEqualToString:appliedComponent])&&(v==appliedController||[v isEqualToString:appliedController]))return;
+        if((c==appliedComponent||[c isEqualToString:appliedComponent])&&(v==appliedController||[v isEqualToString:appliedController]))return nil;
         auto current=state();
-        if(c&&![c isEqualToString:current[@"componentState"]]){NSData *data=[[NSData alloc]initWithBase64EncodedString:c options:0];if(data.length){Stream stream(data);component->setState(&stream);if(controller){stream.position=0;controller->setComponentState(&stream);}}}
-        if(v&&controller&&![v isEqualToString:current[@"controllerState"]]){NSData *data=[[NSData alloc]initWithBase64EncodedString:v options:0];if(data.length){Stream stream(data);controller->setState(&stream);}}
-        if(controller)for(int n=0;n<paramCount;n++)queueParameter(params[n].id,controller->getParamNormalized(params[n].id));
-        appliedComponent=c;appliedController=v;
+        if((!c||[c isEqualToString:current[@"componentState"]])&&(!v||[v isEqualToString:current[@"controllerState"]])){
+            // A save may acknowledge the current preset without changing DSP.
+            appliedComponent=c;appliedController=v;return nil;
+        }
+        NSMutableDictionary *replacement=[spec mutableCopy];
+        // Missing blobs mean "leave this portion unchanged", as before.
+        if(!c)replacement[@"componentState"]=current[@"componentState"];
+        if(!v)replacement[@"controllerState"]=current[@"controllerState"];
+        return replacement;
     }
     NSDictionary *state(){Stream componentData,controllerData;component->getState(&componentData);if(controller)controller->getState(&controllerData);return @{@"componentState":componentData.base64(),@"controllerState":controllerData.base64()};}
 };
@@ -312,6 +405,14 @@ struct Kernel {
         double time=position.load()+clockFrames/sampleRate.load();
         if(chain)for(auto &i:chain->instances)i->process(b,n,time,tempo.load(),beats.load(),unit.load(),playing.load(),sequence.events.data(),sequence.count);
         clockFrames+=n;readers.fetch_sub(1);
+    }
+    double latency(){
+        // CoreAudio can query latency concurrently with insert removal. Use
+        // the render reader lease, and keep querying the processor so a
+        // parameter-dependent latency is never frozen at initial setup.
+        readers.fetch_add(1);auto chain=published.load();double seconds=0;
+        if(chain)for(auto &i:chain->instances)if(!i->bypass.load())seconds+=i->processor->getLatencySamples()/i->rate;
+        readers.fetch_sub(1);return seconds;
     }
     void replace(std::unique_ptr<Chain> next){auto old=std::move(current);current=std::move(next);published.store(current.get());if(old)retired.push_back(std::move(old));if(readers.load()==0)retired.clear();}
     std::shared_ptr<Instance> find(NSString *id){if(current)for(auto &i:current->instances)if([i->identifier isEqualToString:id])return i;return nullptr;}
@@ -347,12 +448,29 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)d options:(AudioComponentInstantiationOptions)o error:(NSError **)e {if((self=[super initWithComponentDescription:d options:o error:e])){auto f=[[AVAudioFormat alloc]initStandardFormatWithSampleRate:48000 channels:2];_input=[[AUAudioUnitBus alloc]initWithFormat:f error:e];_output=[[AUAudioUnitBus alloc]initWithFormat:f error:e];_inputs=[[AUAudioUnitBusArray alloc]initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];_outputs=[[AUAudioUnitBusArray alloc]initWithAudioUnit:self busType:AUAudioUnitBusTypeOutput busses:@[_output]];self.maximumFramesToRender=4096;}return self;}
 - (AUAudioUnitBusArray *)inputBusses{return _inputs;}
 - (AUAudioUnitBusArray *)outputBusses{return _outputs;}
-- (NSTimeInterval)latency {double seconds=0;if(kernel.current)for(auto &i:kernel.current->instances)if(!i->bypass.load())seconds+=i->processor->getLatencySamples()/i->rate;return seconds;}
+- (NSTimeInterval)latency {return kernel.latency();}
 - (AUInternalRenderBlock)internalRenderBlock {Kernel *state=&kernel;return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *t,AVAudioFrameCount n,NSInteger bus,AudioBufferList *out,const AURenderEvent *events,AURenderPullInputBlock pull){if(!pull)return kAudioUnitErr_NoConnection;auto result=pull(flags,t,n,0,out);if(result==noErr)state->process(out,n,t);if(state->published.load())*flags&=~kAudioUnitRenderAction_OutputIsSilence;return result;};}
 @end
 @interface JarasVSTEditorView: NSView { @public std::shared_ptr<Instance> instance; IPlugView *plugView; std::unique_ptr<Frame> frame; BOOL attached; }
+- (void)replaceInstance:(std::shared_ptr<Instance>)replacement;
 @end
+static NSHashTable<JarasVSTEditorView *> *nativeEditors(){
+    // Only the main thread accesses Cocoa editors, including this weak table.
+    static NSHashTable<JarasVSTEditorView *> *views;
+    if(!views)views=[NSHashTable weakObjectsHashTable];
+    return views;
+}
 @implementation JarasVSTEditorView
+- (void)replaceInstance:(std::shared_ptr<Instance>)replacement {
+    auto next=replacement->controller?replacement->controller->createView(ViewType::kEditor):nullptr;
+    if(next&&next->isPlatformTypeSupported(kPlatformTypeNSView)!=kResultOk){next->release();next=nullptr;}
+    // Remove the old editor while its controller is still retained. The NSView
+    // stays in its existing FX window, and edits now address the new processor.
+    if(plugView){if(attached)plugView->removed();plugView->setFrame(nullptr);plugView->release();}
+    attached=NO;plugView=next;instance=std::move(replacement);
+    if(plugView){plugView->setFrame(frame.get());[self attachEditor];}
+    self.needsDisplay=YES;
+}
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     if(!plugView) return;
@@ -380,18 +498,31 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
 }
 - (void)dealloc {if(plugView){if(attached)plugView->removed();plugView->setFrame(nullptr);plugView->release();}}
 @end
+static void replaceNativeEditors(std::shared_ptr<Instance> previous,std::shared_ptr<Instance> replacement){
+    if(!previous->hasNativeEditor.load())return;
+    auto rebind=^{
+        for(JarasVSTEditorView *view in nativeEditors().allObjects)if(view->instance==previous){
+            replacement->hasNativeEditor=true;[view replaceInstance:replacement];
+        }
+    };
+    if(NSThread.isMainThread)rebind();else dispatch_async(dispatch_get_main_queue(),rebind);
+}
+
 @implementation JarasVST3
 + (NSArray<NSDictionary *> *)scan:(NSString *)path error:(NSError **)error {
     try {
-        Module module(path);
-        auto f2 = query<IPluginFactory2>(module.factory);
-        auto f3 = query<IPluginFactory3>(module.factory);
+        // A rescan can run while a live/offline instance still owns this
+        // bundle. Share ownership: unloading a separate scan Module would
+        // invalidate the active processor's factory and executable code.
+        auto module = loadModule(path);
+        auto f2 = query<IPluginFactory2>(module->factory);
+        auto f3 = query<IPluginFactory3>(module->factory);
         PFactoryInfo factoryInfo{};
-        module.factory->getFactoryInfo(&factoryInfo);
+        module->factory->getFactoryInfo(&factoryInfo);
         NSMutableArray *result = [NSMutableArray array];
-        for (int index = 0; index < module.factory->countClasses(); ++index) {
+        for (int index = 0; index < module->factory->countClasses(); ++index) {
             PClassInfo info{};
-            if (module.factory->getClassInfo(index, &info) != kResultOk ||
+            if (module->factory->getClassInfo(index, &info) != kResultOk ||
                 strcmp(info.category, kVstAudioEffectClass)) continue;
             NSString *name = @(info.name);
             NSString *vendor = @(factoryInfo.vendor);
@@ -422,13 +553,51 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
     }
 }
 + (AVAudioUnitEffect *)makeNode {static dispatch_once_t once;AudioComponentDescription d={kAudioUnitType_Effect,'JLV3','Jara',0,0};dispatch_once(&once,^{[AUAudioUnit registerSubclass:JarasVSTAudioUnit.class asComponentDescription:d name:@"CatLive VST3" version:1];});return [[AVAudioUnitEffect alloc]initWithAudioComponentDescription:d];}
-+ (BOOL)configure:(AVAudioUnitEffect *)node plugins:(NSArray<NSDictionary *> *)plugins error:(NSError **)error {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;try{if(plugins.count==0){k.replace(nullptr);return YES;}auto next=std::make_unique<Chain>();double rate=[node outputFormatForBus:0].sampleRate;k.sampleRate=rate;for(NSDictionary *spec in plugins){auto i=k.find(spec[@"id"]);if(!i||fabs(i->rate-rate)>0.01)i=std::make_shared<Instance>(spec,rate,node.AUAudioUnit.isRenderingOffline);i->restore(spec);bool bypass=[spec[@"bypassed"]boolValue];if(bypass!=i->bypass.load())i->panic=true;i->bypass=bypass;next->instances.push_back(i);}k.replace(std::move(next));return YES;}catch(const std::exception &e){if(error)*error=failure(e);return NO;}}
++ (BOOL)configure:(AVAudioUnitEffect *)node plugins:(NSArray<NSDictionary *> *)plugins error:(NSError **)error {
+    auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;
+    try {
+        if(plugins.count==0){k.replace(nullptr);return YES;}
+        auto next=std::make_unique<Chain>();
+        std::vector<std::pair<std::shared_ptr<Instance>,std::shared_ptr<Instance>>> replacements;
+        const double rate=[node outputFormatForBus:0].sampleRate;
+        const bool offline=node.AUAudioUnit.isRenderingOffline;
+        const int processMode=offline?kOffline:kRealtime;
+        k.sampleRate=rate;
+        for(NSDictionary *spec in plugins){
+            auto previous=k.find(spec[@"id"]),i=previous;
+            NSDictionary *replacement=nil;
+            // State restoration is arbitrary plugin code. Never run setState
+            // on the processor concurrently serving the render callback.
+            if(!i||fabs(i->rate-rate)>0.01||i->processMode!=processMode)replacement=spec;
+            else replacement=i->replacementSpec(spec);
+            if(replacement){
+                i=std::make_shared<Instance>(replacement,rate,offline);
+                i->appliedComponent=spec[@"componentState"];i->appliedController=spec[@"controllerState"];
+                if(previous){
+                    i->edited=previous->edited;i->parameterEdited=previous->parameterEdited;
+                    i->hasNativeEditor=previous->hasNativeEditor.load();
+                    i->midiPerformance=previous->midiPerformance;i->resumeMIDI=true;
+                    replacements.emplace_back(previous,i);
+                }
+            }
+            const bool bypass=[spec[@"bypassed"]boolValue];
+            if(bypass!=i->bypass.load())i->midiPerformance->panic=true;
+            i->bypass=bypass;next->instances.push_back(i);
+        }
+        k.replace(std::move(next));
+        for(auto &pair:replacements){
+            pair.first->editCallbacksActive->store(false);
+            replaceNativeEditors(pair.first,pair.second);
+        }
+        return YES;
+    }catch(const std::exception &e){if(error)*error=failure(e);return NO;}
+}
 + (void)setSequence:(AVAudioUnitEffect *)node notes:(NSArray<NSDictionary *> *)notes { ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.sequence.setNotes(catMIDINotes(notes)); }
 + (void)setSequence:(AVAudioUnitEffect *)node notes:(NSArray<NSDictionary *> *)notes preserveHeld:(BOOL)preserveHeld { ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.sequence.setNotes(catMIDINotes(notes),preserveHeld); }
 + (void)sequenceClock:(AVAudioUnitEffect *)node head:(int)head position:(double)position clock:(double)clock running:(BOOL)running loopStart:(double)start loopEnd:(double)end { ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.sequence.configure(head,position,clock,running,start,end); }
 + (void)sendMIDI:(AVAudioUnitEffect *)node status:(unsigned char)status data1:(unsigned char)data1 data2:(unsigned char)data2 {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)if(!i->instrument||k.instrumentMIDIInput.load()||(status&0xf0)!=0x90||data2==0)i->enqueue(status,data1,data2);}
 + (void)instrumentMIDIInput:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;k.instrumentMIDIInput.store(enabled);}
-+ (void)silence:(AVAudioUnitEffect *)node {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)i->panic=true;}
++ (void)silence:(AVAudioUnitEffect *)node {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)i->midiPerformance->panic=true;}
 + (void)transport:(AVAudioUnitEffect *)node position:(double)position tempo:(double)tempo beats:(int)beats unit:(int)unit playing:(BOOL)playing {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;k.position=position;k.tempo=tempo;k.beats=beats;k.unit=unit;k.playing=playing;k.clockGeneration.fetch_add(1,std::memory_order_release);}
 + (void)onEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(void))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->edited=[action copy];}
 + (NSDictionary *)state:(AVAudioUnitEffect *)node identifier:(NSString *)id {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);return i?i->state():nil;}
@@ -447,6 +616,7 @@ NSError *failure(const std::exception &e){return [NSError errorWithDomain:@"Jara
     auto view = [[JarasVSTEditorView alloc] initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
     view->instance = instance; view->plugView = plugin; view->frame = std::make_unique<Frame>(view);
     plugin->setFrame(view->frame.get());
+    instance->hasNativeEditor=true;[nativeEditors() addObject:view];
     return view;
 }
 @end

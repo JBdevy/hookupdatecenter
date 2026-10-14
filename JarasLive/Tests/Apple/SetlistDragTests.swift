@@ -8,6 +8,7 @@ func precondition(_ condition: @autoclosure () -> Bool, _ message: String) {
 struct Part { let id: UUID; let name: String }
 enum Entry { case region(Part, Int); var id: UUID { switch self { case .region(let p, _): return p.id } } }
 @MainActor final class ShowController: ObservableObject {
+ var projectSessionID = UUID()
  let current: Part? = Part(id: UUID(),name:"Project")
  let selectedRegionPlaylist: Part? = Part(id:UUID(),name:"Playlist")
  @Published var setlistEntries: [Entry] = (0..<4).map { .region(Part(id:UUID(),name:"Song \($0)"),$0) }

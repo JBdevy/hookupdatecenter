@@ -1,6 +1,9 @@
-#if os(macOS)
 import SwiftUI
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Network
 import CoreImage
 import UniformTypeIdentifiers
@@ -223,12 +226,21 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
 }
 
 @MainActor final class TeleprompterRemote: ObservableObject {
-    static let shared = TeleprompterRemote()
+    static let shared = TeleprompterRemote(index: 1)
+    static let second = TeleprompterRemote(index: 2)
+    static func panel(_ index: Int) -> TeleprompterRemote { index == 2 ? second : shared }
+    static func setProjectDirectory(_ directory: URL?) {
+        shared.setDirectory(directory); second.setDirectory(directory)
+    }
+    let index: Int
+    private var preferences: TeleprompterPreferences { index == 2 ? .second : .shared }
+    init(index: Int) { self.index = index }
     @Published private(set) var enabled = false
     @Published private(set) var link = ""
     @Published private(set) var message = ""
-    @Published private(set) var qrCode: NSImage?
+    @Published private(set) var qrCode: CGImage?
     private var server: TeleprompterHTTPServer?
+    private var listeningPort: UInt16?
     private var refresh: (() -> Void)?
     private var directory: URL?
     private var payload = TeleprompterRemotePayload()
@@ -240,20 +252,18 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
     func setEnabled(_ value: Bool) {
         guard value != enabled else { return }
         if !value {
-            enabled = false; server?.stop(); server = nil
+            enabled = false; server?.stop(); server = nil; listeningPort = nil
             heartbeat?.invalidate(); heartbeat = nil; link = ""; qrCode = nil; message = ""
             payload = TeleprompterRemotePayload(); mediaURL = nil
             return
         }
         enabled = true; message = ""; lastPublish = 0
         let service = TeleprompterHTTPServer(); server = service
-        service.start(ready: { [weak self, weak service] port in
+        service.start(port: UInt16(10100 + index), ready: { [weak self, weak service] port in
             Task { @MainActor in
                 guard let self, let service, self.server === service, self.enabled else { return }
-                let address = Self.networkAddress()
-                self.link = "http://\(address ?? "127.0.0.1"):\(port)"
-                self.qrCode = Self.qr(self.link)
-                if address == nil { self.message = "Connect to a local network to use TP Remote." }
+                self.listeningPort = port
+                self.updateNetworkLink()
                 self.refresh?(); self.publish()
             }
         }, failed: { [weak self, weak service] error in
@@ -263,22 +273,30 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
             }
         })
         heartbeat = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh?(); self?.publish() }
+            MainActor.assumeIsolated { self?.updateNetworkLink(); self?.refresh?(); self?.publish() }
         }
         RunLoop.main.add(heartbeat!, forMode: .common)
         refresh?(); publish()
+    }
+    private func updateNetworkLink() {
+        guard enabled, let port = listeningPort else { return }
+        let address = Self.networkAddress()
+        let next = address.map { "http://\($0):\(port)" } ?? ""
+        if link != next { link = next; qrCode = next.isEmpty ? nil : Self.qr(next) }
+        let nextMessage = address == nil ? "Connect to a local network to use TP Remote." : ""
+        if message != nextMessage { message = nextMessage }
     }
     func clear() { payload = TeleprompterRemotePayload(); mediaURL = nil; publish() }
     func update(text: String, chords: String, song: String, queued: String, progress: Double, preview: Bool, blocks: [TeleprompterRemoteBlock], snapshot: ShowSnapshot) {
         guard enabled, ProcessInfo.processInfo.systemUptime - lastPublish >= 0.1 else { return }
         payload.text = text; payload.chords = chords; payload.song = song; payload.queued = queued
-        payload.progress = progress; payload.preview = TeleprompterPreferences.shared.settings.displaysPreview(preview); payload.blocks = blocks
-        payload.mediaStretch = TeleprompterPreferences.shared.settings.stretchesMedia
+        payload.progress = progress; payload.preview = preferences.settings.displaysPreview(preview); payload.blocks = blocks
+        payload.mediaStretch = preferences.settings.stretchesMedia
         mediaURL = nil; payload.mediaID = nil; payload.mediaKind = nil
         let t = snapshot.transport, position = t.playing || t.paused == true ? t.position : t.editPosition ?? t.position
-        if !payload.preview || TeleprompterPreferences.shared.settings.isClear, let directory,
+        if !payload.preview || preferences.settings.isClear, let directory,
            let song = snapshot.project.songs.first(where: { $0.id == t.songId }),
-           let clip = song.tracks.lazy.filter({ $0.kind == .teleprompt && !$0.mute }).flatMap(\.clips).first(where: { $0.isProjectionMedia && $0.muted != true && position >= $0.startTime && position < $0.startTime + $0.duration }),
+           let clip = song.tracks.lazy.filter({ $0.kind == (self.index == 2 ? .teleprompt2 : .teleprompt) && !$0.mute }).flatMap(\.clips).first(where: { $0.isProjectionMedia && $0.muted != true && position >= $0.startTime && position < $0.startTime + $0.duration }),
            let file = clip.audioFile {
             mediaURL = directory.appendingPathComponent(file.path)
             payload.mediaID = clip.id.uuidString
@@ -290,7 +308,7 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
     }
     private func publish() {
         guard enabled else { return }
-        payload.settings = TeleprompterPreferences.shared.settings
+        payload.settings = preferences.settings
         payload.timer = TeleprompterTimerController.shared.displayText(spaced: true)
         payload.expired = TeleprompterTimerController.shared.expired()
         let values = Calendar.current.dateComponents([.hour, .minute, .second], from: Date())
@@ -298,11 +316,11 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
         lastPublish = ProcessInfo.processInfo.systemUptime
         server?.publish(payload, mediaURL: mediaURL)
     }
-    private static func qr(_ link: String) -> NSImage? {
+    private static func qr(_ link: String) -> CGImage? {
         guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         filter.setValue(Data(link.utf8), forKey: "inputMessage"); filter.setValue("M", forKey: "inputCorrectionLevel")
         guard let output = filter.outputImage, let bitmap = CIContext().createCGImage(output, from: output.extent) else { return nil }
-        return NSImage(cgImage: bitmap, size: output.extent.size)
+        return bitmap
     }
     private static func networkAddress() -> String? {
         var addresses: UnsafeMutablePointer<ifaddrs>?
@@ -326,18 +344,18 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode)retu
 
 struct TeleprompterRemoteView: View {
     let close: () -> Void
-    @ObservedObject private var remote = TeleprompterRemote.shared
+    @ObservedObject var remote: TeleprompterRemote = .shared
     @AppStorage("jaras.language") private var language = "en"
     @State private var copied = false
     var body: some View {
         VStack(spacing: 16) {
             HStack {
-                Text("TP Remoto").font(.headline)
+                Text(verbatim: "TP \(remote.index) · " + JarasLocalization.string("TP Remoto")).font(.headline)
                 Spacer()
                 Toggle("Enabled", isOn: Binding(get: { remote.enabled }, set: { remote.setEnabled($0); copied = false })).toggleStyle(.switch).tint(JarasTheme.green).accessibilityLabel("Enabled")
             }
             if let image = remote.qrCode {
-                Image(nsImage: image).interpolation(.none).resizable().scaledToFit().frame(width: 190, height: 190).padding(10).background(Color.white).cornerRadius(6)
+                Image(decorative: image, scale: 1).interpolation(.none).resizable().scaledToFit().frame(width: 190, height: 190).padding(10).background(Color.white).cornerRadius(6)
             } else {
                 Image(systemName: "qrcode").font(.system(size: 100)).foregroundStyle(JarasTheme.secondary).frame(width: 210, height: 210)
             }
@@ -347,13 +365,17 @@ struct TeleprompterRemoteView: View {
                 Text(remote.link.isEmpty ? "—" : remote.link).font(.system(size: 11, design: .monospaced)).lineLimit(2).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(8).background(JarasTheme.display).cornerRadius(5)
                 Button(copied ? "Copied" : "Copy link") {
-                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(remote.link, forType: .string); copied = true
+                    #if os(macOS)
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(remote.link, forType: .string)
+                    #else
+                    UIPasteboard.general.string = remote.link
+                    #endif
+                    copied = true
                 }.disabled(remote.link.isEmpty)
             }
             if !remote.message.isEmpty { Text(LocalizedStringKey(remote.message)).font(.caption).foregroundStyle(JarasTheme.yellow) }
             HStack { Spacer(); Button("Close", action: close).keyboardShortcut(.cancelAction) }
-        }.padding(20).frame(width: 420).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+        }.padding(20).frame(maxWidth: 420).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
     }
 }
-#endif

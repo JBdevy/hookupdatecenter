@@ -28,6 +28,9 @@ for name in ['VST3-LICENSE.txt','VST3-SOURCE.txt']:
  legalRefs.append(add('vst3:'+name, f'isa = PBXFileReference; lastKnownFileType = text; path = {q("Core/ThirdParty/VST3/"+name)}; sourceTree = SOURCE_ROOT;'))
 stemWorker=add('stemWorker', 'isa = PBXFileReference; lastKnownFileType = folder; path = Apple/Resources/StemSeparation; sourceTree = SOURCE_ROOT;')
 stemRuntime=add('stemRuntime', 'isa = PBXFileReference; lastKnownFileType = folder; path = build/StemSeparationRuntime; sourceTree = SOURCE_ROOT;')
+stemModel=add('stemCoreMLModel', 'isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = Apple/Resources/CatStemHTDemucs6.mlpackage; sourceTree = SOURCE_ROOT;')
+stemModelLicense=add('stemCoreMLLicense', 'isa = PBXFileReference; lastKnownFileType = text; path = Apple/Resources/CatStemModel-LICENSE.txt; sourceTree = SOURCE_ROOT;')
+stemFrameworks=[add('framework:'+name, f'isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = System/Library/Frameworks/{name}.framework; sourceTree = SDKROOT;') for name in ['CoreML','Accelerate']]
 products=[];targets=[];attributes=[]
 for platform,label,bundle in [('macosx','macOS','com.hookdeveloper.jaraslive.mac'),('iphoneos','iPadOS','com.hookdeveloper.jaraslive')]:
  key='target:'+label;tid=uid(key)
@@ -35,12 +38,15 @@ for platform,label,bundle in [('macosx','macOS','com.hookdeveloper.jaraslive.mac
  builds=[]
  for rel,ref in refs.items():
   if Path(rel).suffix in ['.swift','.cpp','.mm','.c']: builds.append(add('build:'+label+rel,f'isa = PBXBuildFile; fileRef = {ref};'))
+ if platform=='iphoneos': builds.append(add('stemCoreMLBuild:'+label, f'isa = PBXBuildFile; fileRef = {stemModel};'))
  sources=add('sources:'+label,f'isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = {arr(builds)}; runOnlyForDeploymentPostprocessing = 0;')
- frameworks=add('frameworks:'+label,'isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;')
+ frameworkBuilds=[add('frameworkBuild:'+label+ref, f'isa = PBXBuildFile; fileRef = {ref};') for ref in stemFrameworks] if platform=='iphoneos' else []
+ frameworks=add('frameworks:'+label,f'isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = {arr(frameworkBuilds)}; runOnlyForDeploymentPostprocessing = 0;')
  assetBuild=add('assetBuild:'+label,f'isa = PBXBuildFile; fileRef = {assets};')
  localizedBuild=add('localizedBuild:'+label,f'isa = PBXBuildFile; fileRef = {localization};')
  legalBuilds=[add('legalBuild:'+label+ref,f'isa = PBXBuildFile; fileRef = {ref};') for ref in legalRefs]
  if platform=='macosx': legalBuilds += [add('stemBuild:'+ref, f'isa = PBXBuildFile; fileRef = {ref};') for ref in [stemWorker,stemRuntime]]
+ if platform=='iphoneos': legalBuilds.append(add('stemCoreMLLicenseBuild:'+label, f'isa = PBXBuildFile; fileRef = {stemModelLicense};'))
  iconBuilds=[add('iconBuild:'+label,f'isa = PBXBuildFile; fileRef = {icon};')] if platform=='macosx' else []
  resources=add('resources:'+label,f'isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = {arr([localizedBuild,assetBuild]+legalBuilds+iconBuilds)}; runOnlyForDeploymentPostprocessing = 0;')
  configs=[]
@@ -60,7 +66,7 @@ def folderGroup(folder):
  direct=sorted({folder+'/'+rest[len(prefix):].split('/')[0] for rest in subfolders})
  for child in direct: children.append(folderGroup(child))
  children += [ref for rel,ref in refs.items() if str(Path(rel).parent)==folder]
- if folder=='Apple': children += [localization,assets,icon]
+ if folder=='Apple': children += [localization,assets,icon,stemModel,stemModelLicense]+stemFrameworks
  return add('group:'+folder,f'isa = PBXGroup; children = {arr(children)}; name = {q(Path(folder).name)}; sourceTree = "<group>";')
 group=add('root',f'isa = PBXGroup; children = {arr([folderGroup(folder) for folder in ["Core","Application","Apple"]]+[productGroup])}; sourceTree = "<group>";')
 

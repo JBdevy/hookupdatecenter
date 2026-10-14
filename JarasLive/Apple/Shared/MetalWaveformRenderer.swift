@@ -290,6 +290,9 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             retryPendingContent()
             return
         }
+        let replacesContent = latestFrame.map {
+            !$0.isEmpty && $0.coordinateSpace?.contentRevision != frame.coordinateSpace?.contentRevision
+        } ?? false
         latestFrame = frame
         // An empty viewport has no GPU work. Hide any old drawable immediately
         // and invalidate delayed presentations instead of allocating, clearing
@@ -304,8 +307,16 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             didPresent?(frame)
             return
         }
+        if replacesContent {
+            // A busy drawable or a failed GPU allocation must not leave items
+            // from a removed track/previous project visible under new headers.
+            // Keep immutable source buffers reusable, but retire their pixels
+            // and every presentation already issued for the obsolete content.
+            lastPresentedSequence = submittedFrameCount
+            setContentVisible(false)
+        }
         drawableRetryUsed = false
-        requiresImmediateSubmission = !allowCoalescing
+        requiresImmediateSubmission = replacesContent || !allowCoalescing
         if requiresImmediateSubmission {
             // Do not hold every drawable in main-queue presentation callbacks
             // while a non-affine edit synchronously requests another one.

@@ -16,12 +16,15 @@ public extension Song {
     /// A set avoids doubling the signal when both ends name each other.
     var trackConnections: Set<TrackConnection> {
         var result: Set<TrackConnection> = []
+        // Routing is checked before duplicate IDs are rejected by Project.validate.
+        // Preserve the original first-match semantics without trapping on a bad file.
+        let tracksByID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for track in tracks {
             for destination in track.routing?.transmitters.compactMap({ $0 }) ?? [] { result.insert(TrackConnection(source: track.id, destination: destination)) }
             for source in track.routing?.receives.compactMap({ $0 }) ?? [] { result.insert(TrackConnection(source: source, destination: track.id)) }
         }
         return result.filter { edge in
-            guard let source = tracks.first(where: { $0.id == edge.source }) else { return true }
+            guard let source = tracksByID[edge.source] else { return true }
             return source.parentTrackID != edge.destination || !source.outputPatches.contains(.masterGroup)
         }
     }
@@ -37,18 +40,24 @@ public extension Song {
             }
         }
         var adjacency: [UUID: Set<UUID>] = [:]
+        var incoming: [UUID: Int] = [:]
         for edge in edges {
             guard edge.source != edge.destination, audio.contains(edge.source), audio.contains(edge.destination) else { throw ProjectError.invalid("Invalid track routing") }
             adjacency[edge.source, default: []].insert(edge.destination)
+            incoming[edge.destination, default: 0] += 1
         }
-        var visiting: Set<UUID> = [], finished: Set<UUID> = []
-        func visit(_ id: UUID) throws {
-            if finished.contains(id) { return }
-            guard visiting.insert(id).inserted else { throw ProjectError.invalid("This routing would create an audio feedback loop.") }
-            for next in adjacency[id] ?? [] { try visit(next) }
-            visiting.remove(id); finished.insert(id)
+        // Iterative topological traversal also detects disconnected cycles, but
+        // does not consume one stack frame per track in a long routing chain.
+        var pending = audio.filter { incoming[$0, default: 0] == 0 }.map { $0 }
+        var visited = 0
+        while let id = pending.popLast() {
+            visited += 1
+            for next in adjacency[id] ?? [] {
+                incoming[next, default: 0] -= 1
+                if incoming[next] == 0 { pending.append(next) }
+            }
         }
-        for id in audio { try visit(id) }
+        guard visited == audio.count else { throw ProjectError.invalid("This routing would create an audio feedback loop.") }
     }
 }
 

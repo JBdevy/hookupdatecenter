@@ -76,6 +76,44 @@ final class ClipFXTests: XCTestCase {
             XCTAssertThrowsError(try special.validate())
         }
     }
+    func testRepeatedNativeItemEffectsPersistWithIndependentSettingsAndRejectNativeInstruments() throws {
+        var project = fixture()
+        var settings = NativeFXSettings()
+        let first = settings.appendNative("Delay")
+        let second = settings.appendNative("Delay")
+        settings.delayTime = 0.125
+        var repeatSettings = settings.settings(for: second)
+        repeatSettings.delayTime = 0.75
+        settings = settings.merging(effect: second, from: repeatSettings)
+        settings.setEnabled(second, enabled: false)
+        XCTAssertNotEqual(first, second)
+        XCTAssertTrue(settings.isEnabled(first)); XCTAssertFalse(settings.isEnabled(second))
+        XCTAssertEqual(settings.settings(for: first).delayTime, 0.125)
+        XCTAssertEqual(settings.settings(for: second).delayTime, 0.75)
+        try settings.validateForClip()
+        project.songs[0].tracks[0].clips[0].fx = settings
+        let decoded = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
+        XCTAssertEqual(decoded.songs[0].tracks[0].clips[0].fx, settings)
+        var invalid = NativeFXSettings()
+        invalid.appendNative("Instruments", instrument: "piano")
+        invalid.appendNative("Instruments", instrument: "organ")
+        invalid.inserted.removeAll { $0 == "Instruments" }
+        invalid.instrumentID = nil; invalid.instrumentParameters = nil; invalid.instrumentBypassed = nil
+        XCTAssertThrowsError(try invalid.validateForClip(), "native instruments cannot enter an item through a repeated instance")
+    }
+    func testItemManagerShowsFixedNativeStagesBeforeRepeatedAndExternalInsertsWithoutRewritingOrder() throws {
+        var settings = NativeFXSettings()
+        let firstDelay = settings.appendNative("Delay")
+        let plugin = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "External", path: "/tmp/Fixture.vst3")
+        settings.externalPlugins = [plugin]; settings.inserted.append(plugin.effectKey)
+        let repeatedDelay = settings.appendNative("Delay")
+        settings.appendNative("EQ")
+        let stored = settings.inserted
+        XCTAssertEqual(settings.clipEffectKeys, ["EQ", firstDelay, plugin.effectKey, repeatedDelay])
+        XCTAssertEqual(settings.inserted, stored)
+        XCTAssertEqual(settings.effectKeys, stored, "track managers retain their reorderable insertion order")
+        try settings.validateForClip()
+    }
     func testItemEffectsRejectInstrumentsUnknownEffectsAndSpecialTracks() throws {
         var project = fixture()
         var effects = NativeFXSettings()

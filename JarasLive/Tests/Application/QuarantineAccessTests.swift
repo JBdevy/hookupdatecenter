@@ -80,4 +80,47 @@ final class QuarantineAccessTests: XCTestCase {
         await backend.finishDelayedCheck(); await check.value
         XCTAssertTrue(auth.allowed); XCTAssertNotNil(auth.loginResult)
     }
+    @MainActor func testAutomaticMonitorOnlyBlocksQuarantineNotExpiredTokensOrOtherAccountResponses() async throws {
+        let backend = QuarantineBackend(), store = MemorySecureStore()
+        let device = try DeviceAuthorizationService.installation(store: store, name: "Test", platform: "macOS")
+        let auth = AuthService(backend: backend, store: store, installation: device, feature: "desktop")
+        _ = await auth.login(email: "demo@catlive.app", password: "catlive123")
+        let cached = store.read("catlive.production.session")
+        auth.isPlaying = { true }
+        var stopped = false
+        auth.onAudioAuthorization = { if !$0 { stopped = true } }
+        for failure: BackendFailure in [.invalidSession, .revoked, .blocked, .expired, .unavailable] {
+            await backend.setFailure(failure)
+            await auth.checkOnlineAccess()
+            XCTAssertTrue(auth.allowed)
+            XCTAssertNotNil(auth.loginResult)
+            XCTAssertEqual(store.read("catlive.production.session"), cached)
+        }
+        XCTAssertFalse(stopped)
+        await backend.setFailure(.quarantined)
+        await auth.checkOnlineAccess()
+        XCTAssertFalse(auth.allowed)
+        XCTAssertTrue(stopped)
+        XCTAssertNotNil(store.read("catlive.production.quarantineNotice"))
+    }
+    @MainActor func testPersistedQuarantineCannotRestoreAnOldActiveCache() async throws {
+        let backend = QuarantineBackend(), store = MemorySecureStore()
+        let device = try DeviceAuthorizationService.installation(store: store, name: "Test", platform: "macOS")
+        let original = AuthService(backend: backend, store: store, installation: device, feature: "desktop")
+        _ = await original.login(email: "demo@catlive.app", password: "catlive123")
+        XCTAssertNotNil(store.read("catlive.production.session"))
+        store.write(Data([1]), key: "catlive.production.quarantineNotice")
+        await backend.setFailure(.unavailable)
+        let restart = AuthService(backend: backend, store: store, installation: device, feature: "desktop")
+        var audioEnabled = false
+        restart.onAudioAuthorization = { if $0 { audioEnabled = true } }
+        await restart.restore()
+        XCTAssertFalse(restart.allowed); XCTAssertFalse(audioEnabled)
+        XCTAssertNil(restart.loginResult)
+        XCTAssertNil(store.read("catlive.production.session"))
+        XCTAssertNotNil(store.read("catlive.production.quarantineNotice"))
+        XCTAssertEqual(restart.message, BackendFailure.quarantined.localizedDescription)
+        let checks = await backend.checks
+        XCTAssertEqual(checks, 0, "Persisted quarantine needs no network confirmation")
+    }
 }

@@ -365,6 +365,15 @@ var coldDone = false
 var coldProgress: [Int] = []
 let coldCache = TimelineAudioWaveform()
 Task { @MainActor in
+    await coldCache.preload(coldURLs, cachedOnly: true)
+    coldDone = true
+}
+let _: Bool = awaitValue { coldDone ? true : nil }
+precondition(coldCache.projectPinnedCountForTest() == 0)
+precondition(coldURLs.allSatisfy { !FileManager.default.fileExists(atPath: TimelineAudioWaveform.diskCacheURL($0).path) },
+             "native opening must not decode and generate every missing waveform before showing the project")
+coldDone = false
+Task { @MainActor in
     await coldCache.preload(coldURLs + coldURLs + [missingURL]) { done, total in
         precondition(total == 9)
         coldProgress.append(done)
@@ -379,12 +388,37 @@ let cacheBytes = try coldURLs.map { try Data(contentsOf: TimelineAudioWaveform.d
 precondition(cacheBytes.allSatisfy { $0 == cacheBytes[0] }, "concurrent decoding produces identical peaks for identical audio")
 coldDone = false
 let reopenedCache = TimelineAudioWaveform()
-Task { @MainActor in await reopenedCache.preload(coldURLs); coldDone = true }
+Task { @MainActor in await reopenedCache.preload(coldURLs, cachedOnly: true); coldDone = true }
 let _: Bool = awaitValue { coldDone ? true : nil }
 let reopenedDates = try coldURLs.map { try FileManager.default.attributesOfItem(atPath: TimelineAudioWaveform.diskCacheURL($0).path)[.modificationDate] as! Date }
 precondition(cacheDates == reopenedDates && reopenedCache.projectPinnedCountForTest() == 8,
              "a fresh project cache reuses every persistent waveform without rebuilding")
 print("GPU_CONCURRENT_COLD_PRELOAD_DEDUP_FAILURE_PROGRESS_AND_WARM_DISK_REUSE_OK")
+
+// Changing media at the same path must invalidate its cached drawing identity,
+// even though native opening deliberately does not regenerate stale peaks.
+let replacedURL = coldDirectory.appendingPathComponent("replaced.wav")
+try FileManager.default.copyItem(at: coldURLs[0], to: replacedURL)
+let replacementCache = TimelineAudioWaveform()
+coldDone = false
+Task { @MainActor in await replacementCache.preload([replacedURL]); coldDone = true }
+let _: Bool = awaitValue { coldDone ? true : nil }
+let oldPrefix = replacementCache.header(replacedURL)!.cachePrefix
+let oldDiskPeaks = try Data(contentsOf: TimelineAudioWaveform.diskCacheURL(replacedURL))
+let oldModified = try FileManager.default.attributesOfItem(atPath: replacedURL.path)[.modificationDate] as! Date
+try FileManager.default.setAttributes([.modificationDate: oldModified.addingTimeInterval(10)], ofItemAtPath: replacedURL.path)
+coldDone = false
+Task { @MainActor in await replacementCache.preload([replacedURL], cachedOnly: true); coldDone = true }
+let _: Bool = awaitValue { coldDone ? true : nil }
+precondition(replacementCache.header(replacedURL)!.cachePrefix != oldPrefix,
+             "cache-only opening must never retain a replaced source's old header")
+precondition(replacementCache.projectPinnedCountForTest() == 0,
+             "outdated peaks are not installed as current project geometry")
+let unchangedDiskPeaks = try Data(contentsOf: TimelineAudioWaveform.diskCacheURL(replacedURL))
+precondition(unchangedDiskPeaks == oldDiskPeaks,
+             "cache-only opening never decodes replacement media")
+print("GPU_CACHE_ONLY_OPEN_REPLACED_AUDIO_INVALIDATES_HEADER_WITHOUT_REBUILD_OK")
+
 
 let preloadedDecode = DispatchQueue(label: "jaras.preload.test.decode")
 let preloadedCache = TimelineAudioWaveform(worker: preloadedDecode)

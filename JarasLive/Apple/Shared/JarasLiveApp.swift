@@ -1,15 +1,47 @@
 import SwiftUI
 #if os(iOS)
 import UIKit
+
+@MainActor final class JarasMobileApplicationDelegate: NSObject, UIApplicationDelegate {
+    private static var iPadOrientations: UIInterfaceOrientationMask = .landscape
+
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        UIDevice.current.userInterfaceIdiom == .pad ? Self.iPadOrientations : .portrait
+    }
+
+    static func setObserverOrientation(_ observer: Bool) {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        iPadOrientations = observer ? .all : .landscape
+        updateOrientations()
+    }
+
+    static func updateOrientations() {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            where scene.activationState == .foregroundActive {
+            for window in scene.windows {
+                var controller = window.rootViewController
+                while let current = controller {
+                    current.setNeedsUpdateOfSupportedInterfaceOrientations()
+                    controller = current.presentedViewController
+                }
+            }
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: iPadOrientations)) { error in
+                NSLog("CatLive: unable to update iPad orientation: %@", error.localizedDescription)
+            }
+        }
+    }
+}
 #endif
 @MainActor final class Bootstrap: ObservableObject {
     @Published var container: AppContainer?
     @Published var error: String?
     init() {
         #if os(iOS)
-        if UIDevice.current.userInterfaceIdiom == .phone { return }
-        #endif
+        return
+        #else
         retry()
+        #endif
     }
     func retry() { do { container = try AppContainer(); error = nil } catch { self.error = error.localizedDescription } }
 }
@@ -18,11 +50,13 @@ import UIKit
     @Environment(\.scenePhase) private var scenePhase
     #if os(macOS)
     @NSApplicationDelegateAdaptor(JarasApplicationDelegate.self) private var appDelegate
+    #else
+    @UIApplicationDelegateAdaptor(JarasMobileApplicationDelegate.self) private var appDelegate
     #endif
     @ViewBuilder private var appContent: some View {
         #if os(iOS)
         if UIDevice.current.userInterfaceIdiom == .phone { PhoneRemoteHomeView() }
-        else { bootstrappedContent }
+        else { IpadNativeHome(bootstrap: bootstrap) }
         #else
         bootstrappedContent
         #endif
@@ -54,6 +88,7 @@ import UIKit
         }
         .onChange(of: scenePhase) { phase in
             UIApplication.shared.isIdleTimerDisabled = phase == .active
+            if phase == .active { JarasMobileApplicationDelegate.updateOrientations() }
         }
         #endif
     }
@@ -63,7 +98,11 @@ struct RootView: View {
     @ObservedObject var container: AppContainer
     @ObservedObject private var auth: AuthService
     @ObservedObject private var documents: ProjectDocuments
-    init(container: AppContainer) { self.container = container; auth = container.auth; documents = container.documents }
+    var leaveNative: (() -> Void)? = nil
+    @State private var browsingNative = false
+    init(container: AppContainer, leaveNative: (() -> Void)? = nil) {
+        self.container = container; self.leaveNative = leaveNative; auth = container.auth; documents = container.documents
+    }
     private var canEnter: Bool {
         #if os(iOS)
         true
@@ -76,11 +115,35 @@ struct RootView: View {
             if container.starting {
                 StartupView(progress: container.startupProgress, stage: container.startupStage)
             } else if canEnter {
-                if documents.ready { MainView(show: container.show, auth: auth, backend: container.backend, documents: documents) }
+                #if os(iOS)
+                if documents.ready && !browsingNative {
+                    IpadStandaloneWorkspace(show: container.show, documents: documents, auth: auth, backend: container.backend, onExit: { browsingNative = true })
+                        .id(documents.opened)
+                } else {
+                    VStack(spacing: 0) {
+                        HStack {
+                            Button("Modes") { leaveNative?() }.disabled(documents.busy)
+                            Spacer()
+                            Text("Native").font(.headline).foregroundStyle(JarasTheme.green)
+                            Spacer()
+                            if documents.ready { Button("Back to project") { browsingNative = false } }
+                        }.padding(16).background(JarasTheme.panel)
+                        ProjectBrowserView(documents: documents) { if documents.ready { browsingNative = false } }
+                    }
+                }
+                #else
+                if documents.ready {
+                    MainView(show: container.show, auth: auth, backend: container.backend, documents: documents)
+                        // A successful open starts a new workspace, even for
+                        // a backup/copy carrying the same project UUID. Native
+                        // surfaces, gestures and local editors cannot survive it.
+                        .id(documents.opened)
+                }
                 else { ProjectBrowserView(documents: documents) }
+                #endif
             }
             else if [.launching,.checkingSession,.checkingLicense,.checkingDevice].contains(auth.phase) {
-                StartupView(progress: nil, stage: "Validando acesso…")
+                StartupView(progress: nil, stage: [.launching, .checkingSession].contains(auth.phase) ? "Restaurando ativação…" : "Validando acesso…")
             } else { LoginView(auth: auth, backend: container.backend) }
         }
         #if os(macOS)
@@ -102,13 +165,39 @@ struct RootView: View {
         .overlay { if !container.starting { LicenseNotice(auth: auth, backend: container.backend) } }
         .background(FloatingStartup(active: container.starting, progress: container.startupProgress, stage: container.startupStage, language: language))
         #endif
-        .onOpenURL { url in if ["jl", "bkjl", "logicx", "rpp"].contains(url.pathExtension.lowercased()) { documents.open(url) } }
+        .onOpenURL { url in
+            #if os(macOS)
+            if ["jl", "bkjl", "logicx", "rpp", "ziplive", "zip"].contains(url.pathExtension.lowercased()) { documents.open(url) }
+            #else
+            if ["ziplive", "zip"].contains(url.pathExtension.lowercased()) { documents.importPortablePackage(url) }
+            #endif
+        }
+        #if os(iOS)
+        .disabled(documents.busy)
+        .overlay {
+            if documents.busy {
+                ZStack {
+                    Color.black.opacity(0.45).ignoresSafeArea()
+                    VStack(spacing: 16) {
+                        ProgressView(value: documents.audioImportProgress).tint(JarasTheme.green)
+                        Text(LocalizedStringKey(documents.status)).font(.callout)
+                        if documents.canCancelOpening { Button("Cancel") { documents.cancelOpening() } }
+                    }.padding(28).frame(width: 360).background(JarasTheme.panel)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+            }
+        }
+        .modifier(NativeProjectPresentation(documents: documents))
+        .onChange(of: documents.folderReview != nil || documents.scan != nil) { reviewing in if reviewing { browsingNative = true } }
+        #endif
         .sheet(item: $documents.missingAudioPrompt) { _ in
             MissingAudioRecoveryView(documents: documents)
         }
-        .alert("Project migration", isPresented: Binding(get: { !documents.migrationNotice.isEmpty }, set: { if !$0 { documents.migrationNotice = "" } })) {
-            Button("OK") { documents.migrationNotice = "" }
-        } message: { Text(documents.migrationNotice) }
+        .sheet(isPresented: Binding(get: { !documents.migrationNotice.isEmpty }, set: { if !$0 { documents.migrationNotice = "" } })) {
+            ProjectMigrationNotice(notice: documents.migrationNotice, language: language) {
+                documents.migrationNotice = ""
+            }
+        }
         .overlay(alignment: .top) {
             if !documents.closeNotice.isEmpty {
                 Text(LocalizedStringKey(documents.closeNotice)).font(.callout)
@@ -123,6 +212,56 @@ struct RootView: View {
         .environment(\.locale, Locale(identifier: language)).task { await container.start() }
     }
 }
+/// A native alert sizes itself to all of its text, which can put its dismiss
+/// button below the screen for projects with many unsupported effects. Only
+/// the details scroll here; the title and confirmation remain in view.
+struct ProjectMigrationNotice: View {
+    let notice: String
+    let language: String
+    let dismiss: () -> Void
+    private var notes: [String] { notice.components(separatedBy: "\n\n").filter { !$0.isEmpty } }
+    private var preferredHeight: CGFloat { min(360, max(220, CGFloat(notes.count) * 62 + 136)) }
+    private func text(_ key: String) -> String { JarasLocalization.string(key, language: language) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(verbatim: text("Project migration")).font(.headline)
+                Text(verbatim: text("Project imported. Review these notes before playback."))
+                    .font(.callout).foregroundStyle(JarasTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.accessibilityIdentifier("migration-notice-header")
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(notes.enumerated()), id: \.offset) { index, note in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(verbatim: "\(index + 1).").foregroundStyle(JarasTheme.yellow)
+                            Text(verbatim: note).frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                        }
+                    }
+                }.font(.system(size: 12)).padding(12)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(JarasTheme.background)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .accessibilityIdentifier("migration-notice-details")
+            HStack {
+                Text(verbatim: String(format: text("Import notes: %ld"), notes.count))
+                    .font(.caption).foregroundStyle(JarasTheme.secondary)
+                Spacer()
+                Button(action: dismiss) {
+                    Text(verbatim: text("OK")).frame(minWidth: 64, minHeight: 24)
+                }.keyboardShortcut(.defaultAction).accessibilityIdentifier("migration-notice-ok")
+            }
+        }
+        .padding(20).background(JarasTheme.panel)
+        .frame(minWidth: 320, idealWidth: 520, maxWidth: 520,
+               minHeight: 200, idealHeight: preferredHeight, maxHeight: preferredHeight)
+        .preferredColorScheme(.dark)
+        .environment(\.locale, Locale(identifier: language))
+    }
+}
+
 struct UnauthorizedPreview: PreviewProvider { static var previews: some View { let container = try! AppContainer(preview: true); LoginView(auth: container.auth, backend: container.backend).frame(width: 1100, height: 720) } }
 
 struct StartupView: View {
@@ -396,6 +535,7 @@ private struct ClosingLogoView: View {
                 if save { try await documents.show.saveForClosing() }
                 closingLogo.advance(0.25)
                 FXWindows.shared.closeAll()
+                capture.closeProject()
                 StemAudioPlayback.shared.prepareForClosing()
                 try await documents.rememberProjectMedia()
                 closingLogo.advance(1)

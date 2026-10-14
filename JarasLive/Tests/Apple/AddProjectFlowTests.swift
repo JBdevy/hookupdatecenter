@@ -55,7 +55,7 @@ final class TrackRecording {
     }
     func beginAppend(_ documents: ProjectDocuments) {
         NSOpenPanel.nextURLs = [a, b, c]; NSOpenPanel.reply = .OK; NSOpenPanel.onRun = nil
-        documents.addProject()
+        documents.chooseStems(adding: true)
     }
     func assertCleared(_ documents: ProjectDocuments) {
         precondition(documents.scan == nil && documents.folderReview == nil)
@@ -63,7 +63,7 @@ final class TrackRecording {
         precondition(documents.removal.isEmpty && !documents.adding && !documents.hasAppendDestination)
     }
     let absent = ProjectDocuments()
-    absent.addProject()
+    absent.chooseStems(adding: true)
     precondition(absent.showingOpenProjectAlert && NSOpenPanel.creations == 0 && NSSavePanel.creations == 0,
                  "Add Project without an open document alerts without opening any panel")
     absent.cancelImport(); absent.chooseStems(adding: true)
@@ -95,7 +95,7 @@ final class TrackRecording {
     precondition(documents.error.isEmpty && documents.warnings.isEmpty && documents.status.isEmpty && !documents.showingOpenProjectAlert)
 
     let single = openDocument()
-    NSOpenPanel.nextURLs = [b]; single.addProject()
+    NSOpenPanel.nextURLs = [b]; single.chooseStems(adding: true)
     precondition(single.folderReview == [b] && single.scan == nil, "one folder still gets append review")
     single.cancelImport()
 
@@ -114,20 +114,20 @@ final class TrackRecording {
     let panelChangedSession = openDocument()
     NSOpenPanel.nextURLs = [a]
     NSOpenPanel.onRun = { panelChangedSession.show.snapshot.project.id = UUID() }
-    panelChangedSession.addProject(); NSOpenPanel.onRun = nil
+    panelChangedSession.chooseStems(adding: true); NSOpenPanel.onRun = nil
     panelChangedSession.confirmFolders([a]); panelChangedSession.resolveImportDestination()
     precondition(panelChangedSession.resolvedURL == nil && !panelChangedSession.error.isEmpty,
                  "session identity is captured before the source panel runs")
 
     let cancelled = openDocument(); beginAppend(cancelled); cancelled.confirmFolders([a])
-    NSOpenPanel.reply = .cancel; cancelled.addProject(); assertCleared(cancelled)
+    NSOpenPanel.reply = .cancel; cancelled.chooseStems(adding: true); assertCleared(cancelled)
     NSOpenPanel.reply = .OK
     let guarded = openDocument()
     let count = NSOpenPanel.creations
-    guarded.busy = true; guarded.addProject(); guarded.busy = false
-    guarded.show.isPlaying = true; guarded.addProject(); guarded.show.isPlaying = false
-    TrackRecording.shared.recording = true; guarded.addProject(); TrackRecording.shared.recording = false
-    TrackRecording.shared.busy = true; guarded.addProject(); TrackRecording.shared.busy = false
+    guarded.busy = true; guarded.chooseStems(adding: true); guarded.busy = false
+    guarded.show.isPlaying = true; guarded.chooseStems(adding: true); guarded.show.isPlaying = false
+    TrackRecording.shared.recording = true; guarded.chooseStems(adding: true); TrackRecording.shared.recording = false
+    TrackRecording.shared.busy = true; guarded.chooseStems(adding: true); TrackRecording.shared.busy = false
     precondition(NSOpenPanel.creations == count && NSSavePanel.creations == 0,
                  "busy, playback and recording guards never display panels")
     print("ADD_PROJECT_REAL_FLOW_OK no-project alert; folders-only; B,A back restoration; cancel; UUID+URL destination guards; zero save panels")

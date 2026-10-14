@@ -32,7 +32,12 @@ import AVFoundation
         JarasVST3.setParameter(node, identifier: plugin.id, parameter: 0, value: 0.37)
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
         for _ in 0..<4 { let status = try engine.renderOffline(512, to: buffer); precondition(status == .success) }
+        show.rejectSavedCapture = true
+        do { try ExternalPluginState.captureAllForSaving(show: show); preconditionFailure("Save must propagate rejected preset capture") }
+        catch { precondition(show.clipWrites.isEmpty && show.playbackUpdates == 0) }
+        show.rejectSavedCapture = false
         ExternalPluginState.captureAll(show: show)
+        precondition(show.playbackUpdates == 0, "Save must persist the live preset without reapplying it to audio")
         let saved = show.clipFXSettings(clipID)
         precondition(show.clipWrites == [clipID] && show.trackWrites == 0, "take edits must never write track or Master settings")
         precondition(show.trackSettings[trackID] == originalTrack && show.masterSettings == originalMaster)
@@ -42,6 +47,9 @@ import AVFoundation
         precondition(abs(gain - 0.37) < 0.000001, "edited processor preset must be captured")
         let reopened = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(saved))
         precondition(reopened == saved)
+        for _ in 0..<4 { let status = try engine.renderOffline(512, to: buffer); precondition(status == .success) }
+        precondition(abs(buffer.floatChannelData![0][256] - 0.2 * 0.37) < 0.000001,
+                     "The current processor continues rendering its captured gain without interruption")
         let lookupCount = StemAudioPlayback.shared.lookups
         ExternalPluginState.captureAll(show: show)
         precondition(StemAudioPlayback.shared.lookups == lookupCount, "saving must not prepare unobserved item chains")
@@ -50,12 +58,28 @@ import AVFoundation
         precondition(!StemAudioPlayback.shared.observed.contains(clipID), "closing releases the protected item voice")
         editor.resume()
         precondition(StemAudioPlayback.shared.observed.contains(clipID))
+        JarasVST3.setParameter(node, identifier: plugin.id, parameter: 0, value: 0.52)
+        for _ in 0..<4 { let status = try engine.renderOffline(512, to: buffer); precondition(status == .success) }
+        show.snapshot.project.clips.removeValue(forKey: clipID)
+        editor.suspend(); editor.resume()
+        precondition(!StemAudioPlayback.shared.observed.contains(clipID), "a deleted item must not regain an editor or an observed voice")
+        precondition(show.clipWrites == [clipID], "late close/capture after deleting an item cannot restore or write it")
+        show.snapshot.project.clips[clipID] = TestClip(id: clipID, fx: saved)
+        editor.resume()
+        show.snapshot.project.clips[clipID]?.fx?.externalPlugins = []
+        show.snapshot.project.clips[clipID]?.fx?.inserted = []
+        editor.suspend(); editor.resume()
+        precondition(!StemAudioPlayback.shared.observed.contains(clipID), "removing the selected plugin releases its observation")
+        precondition(show.clipWrites == [clipID], "a removed plugin cannot be reinserted by a late capture")
+        show.snapshot.project.clips[clipID] = TestClip(id: clipID, fx: saved)
+        editor.resume()
+        precondition(StemAudioPlayback.shared.observed.contains(clipID))
         show.snapshot.project.id = UUID()
         JarasVST3.setParameter(node, identifier: plugin.id, parameter: 0, value: 0.81)
         for _ in 0..<4 { let status = try engine.renderOffline(512, to: buffer); precondition(status == .success) }
         editor.suspend()
         precondition(show.clipWrites == [clipID], "closing an editor from an old project cannot mutate the replacement project")
         precondition(show.automationWrites == 0)
-        print("Clip VST3 editor preset/save isolation, no-op capture, voice observation and project teardown passed")
+        print("Clip VST3 editor preset/save isolation, no-op capture, voice observation, deleted item/plugin and project teardown passed")
     }
 }

@@ -1,5 +1,5 @@
 #import "JarasStemSeparator.h"
-#if TARGET_OS_OSX
+#if TARGET_OS_OSX || TARGET_OS_IOS
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -15,6 +15,11 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+#if TARGET_OS_IOS
+#import <CoreML/CoreML.h>
+#include "CatStemSpectrogram.hpp"
+#endif
 
 namespace CatStemRealtime {
 // Three hops cover right context, GPU scheduling jitter and host render bursts.
@@ -201,6 +206,7 @@ struct State {
     }
 };
 
+#if TARGET_OS_OSX
 std::atomic<bool> workerLease{false},offlineWorkerLease{false};
 struct Runtime {
     std::shared_ptr<State> state;
@@ -368,6 +374,9 @@ struct Runtime {
         }
     }
 };
+#else
+#include "CatStemCoreMLRuntime.inc"
+#endif
 }
 
 @interface JarasStemAudioUnit : AUAudioUnit {
@@ -420,6 +429,7 @@ struct Runtime {
     dispatch_once(&once,^{[AUAudioUnit registerSubclass:JarasStemAudioUnit.class asComponentDescription:d name:@"CatStemSeparation 5" version:1];});
     return [[AVAudioUnitEffect alloc]initWithAudioComponentDescription:d];
 }
+#if TARGET_OS_OSX
 + (BOOL)start:(AVAudioUnitEffect *)node executable:(NSURL *)executable worker:(NSURL *)worker modelCache:(NSURL *)modelCache error:(NSError **)error {
     auto *unit=(JarasStemAudioUnit *)node.AUAudioUnit;
     if(unit->runtime&&!unit->runtime->cancelled.load()&&unit->state->admitted.load())return YES;
@@ -434,6 +444,23 @@ struct Runtime {
     auto runtime=std::make_shared<CatStemRealtime::Runtime>(unit->state);unit->runtime=runtime;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{runtime->run(executable,worker,modelCache);});return YES;
 }
+#else
++ (BOOL)start:(AVAudioUnitEffect *)node coreMLModel:(NSURL *)model error:(NSError **)error {
+    auto *unit=(JarasStemAudioUnit *)node.AUAudioUnit;
+    if(unit->runtime&&!unit->runtime->cancelled.load()&&unit->state->admitted.load())return YES;
+    BOOL directory=NO;
+    NSString *failure=nil;
+    if(![model.pathExtension isEqualToString:@"mlmodelc"] || ![NSFileManager.defaultManager fileExistsAtPath:model.path isDirectory:&directory] || !directory)
+        failure=@"The CatStem Core ML model is missing from this installation.";
+    bool expected=false;
+    auto &lease=unit->state->offline.load()?CatStemRealtime::offlineWorkerLease:CatStemRealtime::workerLease;
+    if(!failure&&!lease.compare_exchange_strong(expected,true))failure=@"CatStem is already processing another track or finishing a previous session.";
+    if(failure){if(error)*error=[NSError errorWithDomain:@"CatStemSeparation" code:2 userInfo:@{NSLocalizedDescriptionKey:failure}];return NO;}
+    unit->state->fault.store(CatStemRealtime::none);unit->state->warmReady.store(false);unit->state->requestedEpoch.fetch_add(1);unit->state->admitted.store(true);
+    auto runtime=std::make_shared<CatStemRealtime::Runtime>(unit->state);unit->runtime=runtime;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{runtime->run(model);});return YES;
+}
+#endif
 + (void)configure:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gains:(NSArray<NSNumber *> *)gains muteMask:(NSUInteger)muteMask soloMask:(NSUInteger)soloMask {
     auto &state=*((JarasStemAudioUnit *)node.AUAudioUnit)->state;
     for(unsigned s=0;s<5;s++){double value=s<gains.count?gains[s].doubleValue:1;state.gains[s].store(float(std::isfinite(value)?std::clamp(value,0.0,4.0):0));}
@@ -464,7 +491,7 @@ struct Runtime {
     NSString *message=@"";
     if(unit->runtime){std::lock_guard<std::mutex> lock(unit->runtime->messageMutex);message=[NSString stringWithUTF8String:unit->runtime->message.c_str()];}
     if(!message.length&&fault){message=fault==CatStemRealtime::inputOverrun?@"O CatStem não conseguiu acompanhar a entrada de áudio.":fault==CatStemRealtime::outputUnderrun?@"O CatStem não entregou o áudio dentro da latência prevista.":fault==CatStemRealtime::offlineTimeout?@"O processamento offline CatStem excedeu o tempo limite.":@"O processamento CatStem foi interrompido.";}
-    return @{@"state":phase,@"ready":@(ready&&fault==0),@"error":message,@"latencyFrames":@(admitted?state.latencyFrames.load():0),@"latencySeconds":@(node.AUAudioUnit.latency),@"underruns":@(state.underruns.load()),@"overruns":@(state.overruns.load()),@"generation":@(state.requestedEpoch.load())};
+    return @{@"state":phase,@"workerRunning":@(unit->runtime&&!unit->runtime->finished.load()),@"ready":@(ready&&fault==0),@"error":message,@"latencyFrames":@(admitted?state.latencyFrames.load():0),@"latencySeconds":@(node.AUAudioUnit.latency),@"underruns":@(state.underruns.load()),@"overruns":@(state.overruns.load()),@"generation":@(state.requestedEpoch.load())};
 }
 @end
 #endif

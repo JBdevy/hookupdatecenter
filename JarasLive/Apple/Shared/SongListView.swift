@@ -343,6 +343,12 @@ struct SongListView: View {
             if creatingPlaylist { creationPanel }
         }
         #if os(macOS)
+        .background(EditorSelectionArea(scope: .setlist) {
+            guard !creatingPlaylist, !visible.isEmpty else { return false }
+            selectedEntries = Set(visible.map(\.id)); entrySelectionAnchor = visible.first?.id
+            show.selectSetlistBlock(nil)
+            return true
+        })
          .background(SetlistArrowKeys(search: {
             guard !creatingPlaylist else { return false }
             choosingPlaylist = false
@@ -618,10 +624,18 @@ struct SetlistFooterControls: View {
                     }
                 }.frame(height: 22)
             } else { Spacer(minLength: 0) }
+            #if os(iOS)
+            if visible { Spacer().frame(width: 10) }
+            #endif
             Button { visible.toggle() } label: {
                 Image(systemName: visible ? "chevron.down" : "chevron.up")
                     .font(.system(size: 10, weight: .bold)).foregroundStyle(JarasTheme.green)
-                    .frame(width: 14, height: visible ? 28 : 16).contentShape(Rectangle())
+                    #if os(iOS)
+                    .frame(width: 24, height: visible ? 28 : 16)
+                    #else
+                    .frame(width: 14, height: visible ? 28 : 16)
+                    #endif
+                    .contentShape(Rectangle())
             }.buttonStyle(.plain)
                 .accessibilityLabel(visible ? "Hide setlist controls" : "Show setlist controls")
                 .accessibilityIdentifier("setlist-footer-visibility")
@@ -1383,6 +1397,18 @@ private struct SetlistBlockRow: View {
             .contentShape(Rectangle()).accessibilityLabel(block.name)
     }
 }
+/// Project copies preserve model UUIDs, but must not inherit an in-flight drag
+/// or a queued provider callback from the document that was previously open.
+@MainActor enum SetlistSessionState {
+    static func reset() {
+        SetlistReorderState.shared.finish()
+        #if os(macOS)
+        SetlistNativeDragRouter.shared.reset()
+        PlaylistSelectionNotice.shared.dismiss()
+        #endif
+    }
+}
+
 /// One indicator per drag; cancellation outside the list must also clear it.
 private final class SetlistReorderState: ObservableObject {
     static let shared = SetlistReorderState()
@@ -1488,6 +1514,7 @@ private final class SetlistNativeDragSource: NSObject, NSDraggingSource {
     private weak var pressedRow: SetlistNativeDragView?
     private var pressedIdentity = ""
     private var start: NSPoint?
+    func reset() { pressedRow = nil; pressedIdentity = ""; start = nil }
     func add(_ row: SetlistNativeDragView) {
         rows.add(row)
         guard monitor == nil else { return }
@@ -1552,6 +1579,7 @@ private struct SetlistInsertionDrop: DropDelegate {
         guard state.scope == scope else { return false }
         state.finish()
         guard let provider = info.itemProviders(for: [Self.type]).first else { return false }
+        let session = show.projectSessionID
         _ = provider.loadObject(ofClass: String.self) { value, _ in
             guard let value else { return }
             let parts = value.split(separator: ":")
@@ -1559,6 +1587,7 @@ private struct SetlistInsertionDrop: DropDelegate {
                   String(parts[1]) + ":" + String(parts[2]) == scope else { return }
             let ids = Set(parts[3].split(separator: ",").compactMap { UUID(uuidString: String($0)) })
             Task { @MainActor in
+                guard show.projectSessionID == session else { return }
                 let currentScope = (show.current?.id.uuidString ?? "") + ":" + (show.selectedRegionPlaylist?.id.uuidString ?? "all")
                 guard currentScope == scope else { return }
                 show.moveSetlistEntries(ids, relativeTo: entry, after: insertAfter)
@@ -1640,9 +1669,13 @@ private final class PlaylistSelectionNotice {
     static let shared = PlaylistSelectionNotice()
     private var panel: NSPanel?
     private var dismissal: DispatchWorkItem?
-    func present(_ name: String, in owner: NSWindow) {
-        dismissal?.cancel()
+    func dismiss() {
+        dismissal?.cancel(); dismissal = nil
         if let panel { panel.parent?.removeChildWindow(panel); panel.orderOut(nil) }
+        panel = nil
+    }
+    func present(_ name: String, in owner: NSWindow) {
+        dismiss()
         let notice = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 380,height: 90),styleMask: [.borderless,.nonactivatingPanel],backing: .buffered,defer: false)
         notice.isReleasedWhenClosed = false; notice.isOpaque = false; notice.backgroundColor = .clear
         notice.ignoresMouseEvents = true; notice.hasShadow = true

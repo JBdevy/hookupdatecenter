@@ -41,6 +41,19 @@ func peak() throws -> Float {
 }
 func check(_ expected: Float, _ message: String = "DSP level") throws { let result = try peak(); precondition(abs(result-expected) < 0.00001, message + ": \(result) vs \(expected)") }
 try check(0.1)
+let aliasFolder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+try FileManager.default.createDirectory(at: aliasFolder, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: aliasFolder) }
+let alias = aliasFolder.appendingPathComponent("GainAlias.vst3")
+try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: URL(fileURLWithPath: path))
+for scanPath in [path, alias.path, path] {
+    var rescanError: NSError?
+    let again = JarasVST3.scan(scanPath, error: &rescanError)
+    precondition(rescanError == nil && again.count == 1)
+    try check(0.1, "rescanning a loaded VST3, including a path alias, must preserve its live module and PCM")
+    precondition(JarasVST3.state(plugin, identifier: "fixture") != nil)
+}
+print("VST3_RESCAN_LOADED_MODULE_AND_PATH_ALIAS_PRESERVE_PROCESSOR_AND_PCM_OK")
 func inputSilenceMask() -> UInt64 {
     let state = JarasVST3.state(plugin, identifier: "fixture")!
     let bytes = Data(base64Encoded: state["componentState"] as! String)!

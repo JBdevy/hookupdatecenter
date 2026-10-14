@@ -24,10 +24,15 @@ enum AppStartupPresentation {
     @Published private(set) var startupProgress = 0.1
     @Published private(set) var startupStage = "Carregando projeto…"
     private var started = false
+    #if os(iOS)
+    @Published private(set) var localPlaybackEnabled = false
+    private var localPlaybackTransition: UInt64 = 0
+    #endif
     #if os(macOS)
     private let accessConnectivity = NWPathMonitor()
     #endif
     private var armedInstrumentObservation: AnyCancellable?
+    private var projectInstrumentObservation: AnyCancellable?
     let documents: ProjectDocuments
     let preview: Bool
     init(preview: Bool = false) throws {
@@ -56,8 +61,8 @@ enum AppStartupPresentation {
         auth.isPlaying = { [weak show] in show?.isPlaying ?? false }
         auth.onPendingRevocation = { [weak show] pending in show?.finishCurrentSong(pending) }
         #if os(iOS)
-        // The iPad preview runs locally without account or license checks.
-        show.canExecute = { true }
+        // The mode picker and Remote never activate the local audio graph.
+        show.canExecute = { [weak self] in preview || self?.localPlaybackEnabled == true }
         #else
         show.canExecute = { [weak auth] in preview || auth?.allowed == true }
         #endif
@@ -69,6 +74,11 @@ enum AppStartupPresentation {
         #endif
         if !preview {
             let audio = StemAudioPlayback.shared
+            #if os(macOS)
+            projectInstrumentObservation = documents.$currentURL.removeDuplicates().sink { url in
+                InstrumentLibrary.shared.setProjectDirectory(url?.deletingLastPathComponent())
+            }
+            #endif
             #if os(macOS)
             AudioLicenseAccess.shared.setAllowed(false)
             audio.setLicenseAllowed(false)
@@ -82,10 +92,14 @@ enum AppStartupPresentation {
             }
             #endif
             TrackRecording.shared.bind(show)
+            #if os(macOS)
             armedInstrumentObservation = TrackRecording.shared.$armed.sink { [weak show] _ in
                 // Published state is sent before the REC button redraws. Queue
                 // graph changes after the click, and only wake live instruments.
-                Task { @MainActor [weak show] in
+                Task { @MainActor [weak self, weak show] in
+                    #if os(iOS)
+                    guard self?.localPlaybackEnabled == true, !AudioDeviceSettings.shared.localSessionInterrupted else { return }
+                    #endif
                     guard let show else { return }
                     let instruments = Set(show.snapshot.project.songs.flatMap(\.tracks).filter { track in
                         track.fx?.instrumentKeys.isEmpty == false || (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
@@ -94,22 +108,29 @@ enum AppStartupPresentation {
                     audio.setArmedInstrumentTracks(TrackRecording.shared.armed.intersection(instruments))
                 }
             }
-            audio.instrumentFile = { id in
-                guard let instrument = InstrumentLibrary.catalog.first(where: { $0.id == id }), InstrumentLibrary.shared.downloaded.contains(id) else { return nil }
-                return (InstrumentLibrary.shared.file(id),instrument.percussion)
+            audio.instrumentFile = { [weak audio] id in
+                guard let instrument = InstrumentLibrary.catalog.first(where: { $0.id == id }),
+                      let file = InstrumentLibrary.shared.resolvedFile(id, projectDirectory: audio?.mediaDirectory) else { return nil }
+                return (file, instrument.percussion)
             }
+            #endif
             show.selectedLoopArea = { [weak show] in
                 guard let area = TimelineAreaSelection.shared.range, area.song == show?.snapshot.transport.songId else { return nil }
                 return area.start...area.end
             }
             show.audioPresentationPosition = { [weak audio] head, time in audio?.presentationPosition(head: head, sampledAt: time) }
             var repeatWasEnabled = show.snapshot.transport.loop.enabled
-            show.audioUpdate = { [weak show] snapshot, revision in
+            show.audioUpdate = { [weak self, weak show] snapshot, revision in
+                #if os(iOS)
+                guard self?.localPlaybackEnabled == true,
+                      !AudioDeviceSettings.shared.localSessionInterrupted else { return }
+                #endif
                 let repeatEnabled = snapshot.transport.loop.enabled
                 if repeatWasEnabled && !repeatEnabled { TimelineAreaSelection.shared.clear() }
                 repeatWasEnabled = repeatEnabled
                 do {
-                    try audio.update(snapshot, revision: revision); TrackRecording.shared.observe(snapshot); VideoPlayback.shared.update(snapshot)
+                    try audio.update(snapshot, revision: revision, sampledAt: show?.timelinePlaybackSampleTime ?? ProcessInfo.processInfo.systemUptime)
+                    TrackRecording.shared.observe(snapshot); VideoPlayback.shared.update(snapshot)
                     if repeatEnabled, let start = snapshot.transport.loop.start, let end = snapshot.transport.loop.end, let song = snapshot.transport.songId {
                         TimelineAreaSelection.shared.update(song: song, from: start, to: end)
                     }
@@ -157,7 +178,7 @@ enum AppStartupPresentation {
             show.audioMasterSolo = { audio.previewMasterSolo($0) }
             show.audioClipMute = { audio.previewClipMute($0, muted: $1) }
             #if os(macOS)
-            show.prepareForSave = { [weak show] in if let show { ExternalPluginState.captureAll(show: show) } }
+            show.prepareForSave = { [weak show] in if let show { try ExternalPluginState.captureAllForSaving(show: show) } }
             #endif
             show.audioRouting = { audio.previewRouting($0) }
             show.audioPatches = { [weak show] track, patches in
@@ -179,10 +200,90 @@ enum AppStartupPresentation {
             audio.afterAudioGraphReset = { FXWindows.shared.restoreAudioEditors() }
             #endif
             audio.onError = { [weak show] error in show?.message = error.localizedDescription }
+            #if os(macOS)
             do { try audio.startDeviceSession() } catch { audio.onError(error) }
+            #else
+            AudioDeviceSettings.shared.mobileSessionEvent = { [weak self] event in self?.handleMobileAudioEvent(event) }
+            #endif
         }
         show.onStop = { [weak auth] in auth?.transportDidStop() }
     }
+    #if os(iOS)
+    @discardableResult
+    func setLocalPlaybackEnabled(_ enabled: Bool) async -> Bool {
+        guard !preview else { localPlaybackEnabled = enabled; return true }
+        localPlaybackTransition &+= 1
+        let transition = localPlaybackTransition
+        let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        if enabled {
+            guard !localPlaybackEnabled else { return true }
+            do {
+                try await audio.waitForSuspendedProcessors()
+                guard transition == localPlaybackTransition else { return false }
+                try settings.activateLocalSession()
+                localPlaybackEnabled = true
+                try audio.startDeviceSession()
+                if documents.ready { show.preparePlayback() }
+                TrackRecording.shared.setLocalAudioAvailable(true)
+                return true
+            } catch {
+                localPlaybackEnabled = false
+                TrackRecording.shared.setLocalAudioAvailable(false)
+                audio.suspendDeviceSession()
+                show.message = error.localizedDescription
+                do { try settings.deactivateLocalSession() }
+                catch { show.message += "\n" + error.localizedDescription }
+                return false
+            }
+        }
+        show.send(.stopAll)
+        localPlaybackEnabled = false
+        TrackRecording.shared.setLocalAudioAvailable(false)
+        audio.suspendDeviceSession()
+        await TrackRecording.shared.finishAndWait()
+        guard transition == localPlaybackTransition else { return true }
+        do { try settings.deactivateLocalSession(); return true }
+        catch { show.message = error.localizedDescription; return false }
+    }
+    private func handleMobileAudioEvent(_ event: MobileAudioSessionEvent) {
+        guard localPlaybackEnabled else { return }
+        let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        switch event {
+        case .interrupted:
+            show.send(.stopAll)
+            TrackRecording.shared.setLocalAudioAvailable(false)
+            audio.suspendDeviceSession()
+        case .interruptionEnded:
+            let transition = localPlaybackTransition
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    try await audio.waitForSuspendedProcessors()
+                    guard localPlaybackEnabled, transition == localPlaybackTransition else { return }
+                    try settings.activateLocalSession()
+                    try audio.startDeviceSession()
+                    if documents.ready { show.preparePlayback() }
+                    TrackRecording.shared.setLocalAudioAvailable(true)
+                } catch { show.message = error.localizedDescription }
+            }
+        case let .routeChanged(outputRemoved):
+            if outputRemoved {
+                show.send(.stopAll)
+                TrackRecording.shared.setLocalAudioAvailable(false)
+            }
+            settings.inputDeviceChanged?()
+            settings.deviceChanged?()
+            if outputRemoved, !settings.localSessionInterrupted { TrackRecording.shared.setLocalAudioAvailable(true) }
+        case .mediaServicesReset:
+            show.send(.stopAll)
+            TrackRecording.shared.setLocalAudioAvailable(false)
+            audio.suspendDeviceSession()
+            localPlaybackEnabled = false
+            try? settings.deactivateLocalSession()
+            show.message = JarasLocalization.string("Audio services restarted. Close and reopen CatLive to restore audio.")
+        }
+    }
+    #endif
     func start() async {
         guard !preview else { starting = false; return }
         guard !started else { return }
@@ -195,7 +296,7 @@ enum AppStartupPresentation {
         // A document is loaded only after an explicit choice in the project launcher.
         startupProgress = 0.55
         #if os(macOS)
-        startupStage = "Validando acesso…"
+        startupStage = "Restaurando ativação…"
         await auth.restore()
         accessConnectivity.pathUpdateHandler = { [weak auth] path in
             guard path.status == .satisfied else { return }
@@ -215,16 +316,13 @@ enum AppStartupPresentation {
         guard !Task.isCancelled else { return }
         starting = false
         #if os(macOS)
-        var nextValidation = ProcessInfo.processInfo.systemUptime
+        var nextQuarantineCheck = ProcessInfo.processInfo.systemUptime
         while !Task.isCancelled {
             do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
             auth.checkLocalExpiry()
-            if ProcessInfo.processInfo.systemUptime >= nextValidation {
-                nextValidation = ProcessInfo.processInfo.systemUptime + 30
-                Task {
-                    await auth.checkOnlineAccess()
-                    if !auth.allowed { await auth.revalidate() }
-                }
+            if ProcessInfo.processInfo.systemUptime >= nextQuarantineCheck {
+                nextQuarantineCheck = ProcessInfo.processInfo.systemUptime + 30
+                Task { await auth.checkOnlineAccess() }
             }
         }
         #endif

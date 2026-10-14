@@ -145,7 +145,7 @@ public struct ShowTimelinePresentationState: Equatable {
         }
     }
     @Published public private(set) var focusedRegion: UUID?
-    /// A region-band click pauses navigation, independently of setlist selection.
+    /// A timeline-header click pauses navigation, independently of setlist selection.
     /// The highlight survives Stop and song transitions; only the pause expires.
     @Published public private(set) var selectedTimelineRegion: UUID?
     @Published public private(set) var timelineFollowPaused = false
@@ -159,6 +159,10 @@ public struct ShowTimelinePresentationState: Equatable {
     public func selectTimelineRegion(_ id: UUID) {
         guard current?.parts.contains(where: { $0.id == id && $0.parentRegionID == nil }) == true else { return }
         selectedTimelineRegion = id
+        pauseTimelineFollow()
+    }
+    public func pauseTimelineFollow() {
+        guard current != nil else { return }
         timelineFollowPaused = true
     }
     private var selectedSetlistBlock: UUID?
@@ -524,6 +528,13 @@ public struct ShowTimelinePresentationState: Equatable {
         if mixerTrackSelection != valid { mixerTrackSelection = valid }
     }
 
+    @discardableResult public func selectAllMixerTracks() -> Bool {
+        let ids = Set((current?.tracks ?? []).filter { $0.kind == .standard }.map(\.id))
+        guard !ids.isEmpty else { return false }
+        setMixerTrackSelection(ids, anchor: selectedTrackForActions)
+        return true
+    }
+
     public struct SetlistNavigationRequest: Equatable {
         public let id: UUID
         public let direction: Int
@@ -613,6 +624,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var audioUpdate: (ShowSnapshot, UInt64) -> Void = { _, _ in }
     public var audioAutomationOverride: (UUID?, UUID, Double?) -> Void = { _, _, _ in }
     private var automationRecording: [UUID: TrackAutomation] = [:]
+    private var automationRecordingSequence: UInt64 = 0
     private var automationTouched: [UUID: [UUID: Double]] = [:]
     private var automationLastWritten: [UUID: Double] = [:]
     private var automationRecordingPlan: [(UUID, TrackAutomation)] = []
@@ -739,7 +751,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var audioMasterMono: (Bool) -> Void = { _ in }
     public var audioMasterSolo: (Bool) -> Void = { _ in }
     public var audioClipMute: (UUID, Bool) -> Void = { _, _ in }
-    public var prepareForSave: () -> Void = {}
+    public var prepareForSave: () throws -> Void = {}
     public var audioRouting: ([UUID: TrackRouting]) -> Void = { _ in }
     public var audioPatches: (UUID?, [OutputPatch]) -> Void = { _, _ in }
     public var audioPatch: (UUID?, OutputPatch, Int) -> Void = { _, _, _ in }
@@ -769,6 +781,9 @@ public struct ShowTimelinePresentationState: Equatable {
     public var needsSave: Bool { hasUnsavedChanges || editingCursor != lastSavedCursor }
     @Published public private(set) var saving = false
     public private(set) var projectRevision: UInt64 = 0
+    /// Opening another saved copy may retain every model UUID. Async work is
+    /// scoped to this loaded session, not just to the document's persistent ID.
+    public private(set) var projectSessionID = UUID()
     private var audioProjectRevision: UInt64 = 0
     private var finishing = false
     private var history: ProjectEditHistory?
@@ -785,7 +800,7 @@ public struct ShowTimelinePresentationState: Equatable {
         if !preservingMediaStorage { knownMediaPaths.formUnion(snapshot.project.mediaPaths) }
     }
     private func resetHistory() {
-        automationRecording.removeAll(); automationTouched.removeAll(); automationLastWritten.removeAll(); automationRecordingRevision = nil
+        discardAutomationRecording()
         pendingFXEdit = false
         clipFXDefaults.removeAll(keepingCapacity: true)
         history = ProjectEditHistory(snapshot.project); canUndo = false; canRedo = false
@@ -1088,7 +1103,12 @@ public struct ShowTimelinePresentationState: Equatable {
         try restoreGlobalBypass(); try restoreCursor(); resetHistory()
     }
     public func restore() async {
-        do { if let project = try await persistence.load() { try replaceProject(project) } else { try await persistence.save(snapshot.project) } } catch { message = error.localizedDescription }
+        let session = projectSessionID
+        do {
+            let project = try await persistence.load()
+            guard projectSessionID == session else { return }
+            if let project { try replaceProject(project) } else { try await persistence.save(snapshot.project) }
+        } catch { if projectSessionID == session { message = error.localizedDescription } }
     }
     public func startClock() {
         guard timer == nil, isPlaying else { return }; lastTime = playbackClock()
@@ -1616,12 +1636,12 @@ public struct ShowTimelinePresentationState: Equatable {
             }
         }
     }
-    public func insertClipFX(_ clip: UUID, effect: String) {
-        guard NativeFXSettings.order.dropFirst().contains(effect) || effect == NativeFXSettings.stemSeparator else { return }
+    @discardableResult public func insertClipFX(_ clip: UUID, effect: String) -> String? {
+        guard NativeFXSettings.order.dropFirst().contains(effect) || effect == NativeFXSettings.stemSeparator else { return nil }
         var value = clipFXSettings(clip)
-        guard !value.inserted.contains(effect) else { return }
-        value.inserted.append(effect); value.setEnabled(effect, enabled: true)
+        let key = value.appendNative(effect)
         previewClipFX(clip, settings: value); commitFX()
+        return clipFXSettings(clip).inserted.contains(key) ? key : nil
     }
     public func toggleClipFXBypass(_ clip: UUID, effect: String) {
         var value = clipFXSettings(clip)
@@ -1638,11 +1658,9 @@ public struct ShowTimelinePresentationState: Equatable {
         previewClipFX(clip, settings: value); commitFX(); onProjectEdited()
     }
     public func updateClipFX(_ clip: UUID, effect: String, settings: NativeFXSettings) {
-        guard NativeFXSettings.order.dropFirst().contains(effect) || effect == NativeFXSettings.stemSeparator else { return }
         let current = clipFXSettings(clip)
-        var value = current.merging(effect: effect, from: settings)
-        if value.isEnabled(effect), !value.inserted.contains(effect) { value.inserted.append(effect) }
-        previewClipFX(clip, settings: value)
+        guard current.inserted.contains(effect) else { return }
+        previewClipFX(clip, settings: current.merging(effect: effect, from: settings))
     }
     public func toggleClipFXAllBypass(_ clip: UUID) {
         guard canExecute(), !finishing else { return }
@@ -1799,7 +1817,11 @@ public struct ShowTimelinePresentationState: Equatable {
                 audioAutomationOverride(id == MultiLoopTrack.masterID ? nil : id, envelope.id, value)
                 changed = true
             }
-            if changed { automationRecording[id] = settings; hasUnsavedChanges = true }
+            if changed {
+                automationRecording[id] = settings
+                automationRecordingSequence &+= 1
+                hasUnsavedChanges = true
+            }
         }
     }
     public func finishAutomationRecording() {
@@ -1818,8 +1840,58 @@ public struct ShowTimelinePresentationState: Equatable {
             snapshot.project = project; markChanged(); onProjectEdited()
         } catch { message = error.localizedDescription }
     }
+    private func discardAutomationRecording() {
+        for id in Set(automationRecording.keys).union(automationTouched.keys) {
+            let envelopes = Set(automationRecording[id]?.envelopes.map(\.id) ?? [])
+                .union(automationTouched[id]?.keys ?? Dictionary<UUID, Double>().keys)
+            for envelope in envelopes {
+                audioAutomationOverride(id == MultiLoopTrack.masterID ? nil : id, envelope, nil)
+            }
+        }
+        automationRecording.removeAll(); automationTouched.removeAll(); automationLastWritten.removeAll()
+        automationRecordingPlan.removeAll(); automationRecordingRevision = nil
+    }
     public func fxSettings(_ track: UUID?) -> NativeFXSettings {
         track.flatMap { id in snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == id })?.fx } ?? (track == nil ? snapshot.project.masterFX : nil) ?? NativeFXSettings()
+    }
+    /// Persist a preset read from an already running processor. This is not an
+    /// FX edit: replaying the captured preset or publishing an old transport
+    /// sample to audio here can interrupt playback during Save.
+    @discardableResult public func storeCapturedPluginState(_ track: UUID?, clip: UUID? = nil, identifier: String,
+                                                            componentState: String?, controllerState: String?) throws -> Bool {
+        let location: (song: Int, track: Int, clip: Int)?
+        if let clip {
+            location = snapshot.project.songs.indices.lazy.compactMap { song in
+                self.snapshot.project.songs[song].tracks.indices.lazy.compactMap { track in
+                    self.snapshot.project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == clip })
+                        .map { (song, track, $0) }
+                }.first
+            }.first
+            guard location != nil else { return false }
+        } else {
+            location = nil
+            if let track, trackLocation(track) == nil { return false }
+        }
+        var settings = clip.map(clipFXSettings) ?? fxSettings(track)
+        guard let index = settings.externalPlugins?.firstIndex(where: { $0.id == identifier }) else { return false }
+        guard settings.externalPlugins?[index].componentState != componentState ||
+                settings.externalPlugins?[index].controllerState != controllerState else { return false }
+        settings.externalPlugins?[index].componentState = componentState
+        settings.externalPlugins?[index].controllerState = controllerState
+        do {
+            if let clip, let location {
+                try settings.validateForClip(); try executor.setClipFX(clip, settings: settings)
+                snapshot.project.songs[location.song].tracks[location.track].clips[location.clip].fx = settings
+            } else {
+                try settings.validate(); try executor.setFX(track, settings: settings)
+                if let track, let location = trackLocation(track) {
+                    snapshot.project.songs[location.song].tracks[location.track].fx = settings
+                } else { snapshot.project.masterFX = settings }
+            }
+            effectRevision &+= 1; projectRevision &+= 1; hasUnsavedChanges = true
+            recordEdit(preservingMediaStorage: true)
+            return true
+        } catch { hasUnsavedChanges = true; throw error }
     }
     @discardableResult public func insertFX(_ track: UUID?, effect: String) -> String? {
         guard (NativeFXSettings.order.contains(effect) || effect == NativeFXSettings.stemSeparator),
@@ -1828,6 +1900,22 @@ public struct ShowTimelinePresentationState: Equatable {
         let key = value.appendNative(effect)
         previewFX(track, settings: value); commitFX()
         return key
+    }
+    /// One insertion gesture creates one history entry, regardless of track count.
+    @discardableResult public func insertFX(_ targets: [UUID?], effect: String) -> [UUID?: String] {
+        guard canExecute(), !finishing,
+              NativeFXSettings.order.contains(effect) || effect == NativeFXSettings.stemSeparator,
+              effect != "Instruments" else { return [:] }
+        var inserted: [UUID?: String] = [:]
+        for target in targets where inserted[target] == nil {
+            guard target == nil || snapshot.project.songs.contains(where: { song in song.tracks.contains { $0.id == target } }) else { continue }
+            var settings = fxSettings(target)
+            let key = settings.appendNative(effect)
+            previewFX(target, settings: settings)
+            if fxSettings(target).inserted.contains(key) { inserted[target] = key }
+        }
+        commitFX()
+        return inserted
     }
     public func toggleFXBypass(_ track: UUID?, effect: String) {
         var value = fxSettings(track)
@@ -2620,16 +2708,26 @@ public struct ShowTimelinePresentationState: Equatable {
     public func finishCurrentSong(_ value: Bool) { finishing = value; executor.finishCurrentSong(value) }
     public func flushProject() async throws {
         guard !saving else { throw ProjectError.invalid("Salvamento em andamento.") }
-        finishAutomationRecording()
-        prepareForSave()
         saving = true
         defer { saving = false }
-        let revision = projectRevision, effects = effectRevision, setlist = setlistRevision
+        try prepareForSave()
+        let revision = projectRevision, effects = effectRevision, setlist = setlistRevision, session = projectSessionID
+        let automationSequence = automationRecordingSequence
         var project = snapshot.project; project.updatedAt = ISO8601DateFormatter().string(from: Date())
         project.savedCursor = editingCursor
+        // Saving takes a copy of the current pass. Finishing that pass here
+        // would release Touch/Latch overrides, change Write mode and rebuild
+        // playback while the user is still performing.
+        for (id, settings) in automationRecording {
+            if id == MultiLoopTrack.masterID { project.masterAutomation = settings }
+            else if let location = trackLocation(id) {
+                project.songs[location.song].tracks[location.track].automation = settings
+            }
+        }
         try await persistence.save(project)
-        if snapshot.project.id == project.id { lastSavedCursor = project.savedCursor; lastSavedAt = project.updatedAt }
-        if projectRevision == revision && effectRevision == effects && setlistRevision == setlist { hasUnsavedChanges = false }
+        if projectSessionID == session && snapshot.project.id == project.id { lastSavedCursor = project.savedCursor; lastSavedAt = project.updatedAt }
+        if projectSessionID == session && snapshot.project.id == project.id && projectRevision == revision && effectRevision == effects &&
+            setlistRevision == setlist && automationRecordingSequence == automationSequence { hasUnsavedChanges = false }
     }
     public func saveForClosing() async throws {
         if hasUnsavedChanges { try await flushProject() }
@@ -2638,7 +2736,9 @@ public struct ShowTimelinePresentationState: Equatable {
         }
     }
     public func save() async {
-        do { try await flushProject(); message = "Projeto salvo." } catch { message = error.localizedDescription }
+        let session = projectSessionID
+        do { try await flushProject(); if projectSessionID == session { message = "Projeto salvo." } }
+        catch { if projectSessionID == session { message = error.localizedDescription } }
     }
     private func trackLocation(_ id: UUID) -> (song: Int, track: Int)? {
         for song in snapshot.project.songs.indices {
@@ -2655,27 +2755,50 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     /// Prepare playback after the document has selected its media directory.
     public func preparePlayback() { audioUpdate(snapshot, audioProjectRevision) }
-    public func replaceProject(_ project: Project) throws {
-        lastSavedAt = nil
+    private func beginProjectSession(_ loaded: ShowSnapshot) {
+        // Clear only document-local interaction state. Audio-device preferences,
+        // license restrictions and the global bypass remain owned by the app.
         regionNavigationTask?.cancel(); regionNavigationTask = nil
-        try project.validate()
+        subCursorHideTask?.cancel(); subCursorHideTask = nil; subCursorPreview = false
         timer?.invalidate(); timer = nil
-        try executor.load(project); snapshot = try executor.snapshot(); resetLoopMixer(); try restoreGlobalBypass()
-        setlistLiveTracker = SetlistLivePlaybackTracker()
-        lastSavedCursor = project.savedCursor
-        projectRevision &+= 1; hasUnsavedChanges = false
-        audioProjectRevision &+= 1
+        lastTime = playbackClock()
+        discardAutomationRecording()
+        resetLoopMixer(); loopMixerProject = nil; loopMixerChanged = false; applyingLoopMixer = false
+        mixerGesture = nil; mixerPreviewValues = [:]; mixerPreviewIsPan = false
+        mixerTrackSelection = []; selectedTrackForActions = nil; trackSelectionRequest = nil
+        setlistNavigationRequest = nil; setlistFocusRequest = UUID(); timelineNavigationCache = nil
+        splitItemsRequest = 0; normalizeItemsRequest = 0; tempoMarkerRequest = 0; addTrackRequest = 0
+        detectBPMRegion = nil; detectBPMRegions = []; modalNotice = nil
+        resetTapTempo()
+        pendingFXEdit = false; clipFXDefaults.removeAll()
         itemClipboard = nil
         selectedSetlistBlock = nil
         selectedTimelineRegion = nil; timelineFollowPaused = false
         focusedRegion = nil; restoredCursorPosition = nil; navigationFocusPosition = nil; regionFocusRequest = UUID(); message = ""
+        lastSavedAt = nil
+        setlistLiveTracker = SetlistLivePlaybackTracker()
+        projectSessionID = UUID()
+        snapshot = loaded
+        playedLiveRegionIDs = SetlistLivePlaybackTracker.normalizedMarks(project: loaded.project,
+            marked: Set(loaded.project.regionSetlist?.playedLiveRegionIDs ?? []))
+    }
+    public func replaceProject(_ project: Project) throws {
+        try project.validate()
+        try executor.load(project)
+        let loaded = try executor.snapshot()
+        beginProjectSession(loaded)
+        try restoreGlobalBypass()
+        lastSavedCursor = project.savedCursor
+        projectRevision &+= 1; hasUnsavedChanges = false
+        audioProjectRevision &+= 1
         try restoreCursor(); resetHistory()
     }
     public func importProject(_ data: Data) throws {
         let project = try ProjectDocumentCodec.decode(data)
-        selectedTimelineRegion = nil; timelineFollowPaused = false
-        try executor.load(project); snapshot = try executor.snapshot(); resetLoopMixer(); try restoreGlobalBypass(); try restoreCursor(); markChanged()
-        setlistLiveTracker = SetlistLivePlaybackTracker()
+        try executor.load(project)
+        let loaded = try executor.snapshot()
+        beginProjectSession(loaded)
+        try restoreGlobalBypass(); try restoreCursor(); markChanged()
         lastSavedCursor = project.savedCursor
     }
 }

@@ -3,6 +3,7 @@ import SwiftUI
 struct MultiLoopsEditor: View {
     @ObservedObject var show: ShowController
     let regionID: UUID
+    var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var stage = 0
     @State private var name = ""
@@ -30,14 +31,19 @@ struct MultiLoopsEditor: View {
             Divider()
             HStack {
                 Button(stage == 0 ? "Close" : "Cancel") {
-                    if stage == 0 { dismiss() } else { stage = 0; draft = nil }
+                    if stage == 0 { if let close { close() } else { dismiss() } } else { stage = 0; draft = nil }
                 }.keyboardShortcut(.cancelAction)
                 Spacer()
                 if stage == 1 { Button("Next", action: acceptName).keyboardShortcut(.defaultAction) }
                 if stage == 2 { Button("OK", action: acceptMarkers).keyboardShortcut(.defaultAction).disabled(!validPair) }
                 if stage == 3 { Button("Save") { if let draft { commit(draft) } }.keyboardShortcut(.defaultAction) }
             }
-        }.padding(20).frame(width: 660, height: 490)
+        }.padding(20)
+            #if os(macOS)
+            .frame(width: 660, height: 490)
+            #else
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            #endif
             .alert("A multiloop cannot exist inside another multiloop.", isPresented: $pairWarning) {
                 Button("OK", role: .cancel) { pairWarning = false }
             }

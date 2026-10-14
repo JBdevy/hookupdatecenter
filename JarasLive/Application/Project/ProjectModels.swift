@@ -244,6 +244,7 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     public var beatsPerBar: Int?
     public var beatUnit: Int?
     public var regionOwnershipInitialized: Bool? = nil
+    public var regionOwnershipVersion: Int? = nil
     public var timeSettings: ProjectTimeSettings? = nil
     public var projectTime: ProjectTimeSettings { timeSettings ?? .legacy }
     public var meterBeats: Int { beatsPerBar ?? 4 }
@@ -773,7 +774,8 @@ extension Track {
 public extension Song {
     /// Resolve imported material once; nil then means intentionally unattached.
     func regionOwner(at start: Double, end: Double? = nil) -> UUID? {
-        parts.filter { start >= $0.startTime - 1e-8 && start < $0.endTime - 1e-8 && (end == nil || end! <= $0.endTime + 1e-8) }
+        // Match core placement precision for rounded imported region edges.
+        parts.filter { start >= $0.startTime - 1e-6 && start < $0.endTime - 1e-6 && (end == nil || end! <= $0.endTime + 1e-6) }
             .min {
                 if ($0.parentRegionID != nil) != ($1.parentRegionID != nil) { return $0.parentRegionID != nil }
                 if $0.endTime - $0.startTime != $1.endTime - $1.startTime { return $0.endTime - $0.startTime < $1.endTime - $1.startTime }

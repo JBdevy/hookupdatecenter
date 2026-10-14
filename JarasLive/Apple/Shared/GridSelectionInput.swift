@@ -521,6 +521,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var split: (Set<UUID>) -> Void = { _ in }
     var export: (Set<UUID>) -> Void = { _ in }
     var selectRow: (CGFloat) -> Void = { _ in }
+    var pointerDown: (NSEvent) -> Void = { _ in }
     var itemGuide: CGRect? = nil
     func projected(pixelsPerSecond: CGFloat, itemGuide: CGRect?) -> Self {
         var input = self
@@ -541,6 +542,7 @@ struct GridSelectionInput: NSViewRepresentable {
         view.timelineOrigin = origin; view.headerHeight = headerHeight
         view.itemGuide = itemGuide
         view.interactionBlocked = interactionBlocked
+        view.pointerDown = pointerDown
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
@@ -670,6 +672,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private var movingAllowed = false
     var extraBodyHit: ((NSPoint) -> NSView?)?
     var selectRow: ((CGFloat) -> Void)?
+    var pointerDown: ((NSEvent) -> Void)?
     var seek: ((CGFloat, Bool) -> Void)?
     private var anchor: CGPoint?
     private var selectionRect: CGRect?
@@ -885,6 +888,9 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     override var acceptsFirstResponder: Bool { true }
     override func mouseDown(with event: NSEvent) {
+        // This view consumes native clicks before later event monitors run.
+        // Report the editing area before selecting the item's owning track.
+        pointerDown?(event)
         window?.makeFirstResponder(self)
         heldItemGuide = nil
         pendingSeek = nil
@@ -1072,6 +1078,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         if NSCursor.current !== NSCursor.arrow { NSCursor.arrow.set() }
     }
     override func rightMouseDown(with event: NSEvent) {
+        pointerDown?(event)
         window?.makeFirstResponder(self)
         anchor = timelinePoint(event)
         anchorInWindow = event.locationInWindow

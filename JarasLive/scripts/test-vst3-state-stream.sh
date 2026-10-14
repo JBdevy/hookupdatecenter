@@ -9,6 +9,7 @@ cat > "$plugin/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.catlive.test.state-stream</string><key>CFBundleExecutable</key><string>GainFixture</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>
 PLIST
 clang++ -std=c++17 -fPIC -bundle -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -DCATLIVE_MODULE_LIFECYCLE_DIAGNOSTICS \
     -ICore/ThirdParty/VST3 Tests/Apple/VST3/GainFixture.cpp \
     Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp \
     Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp -framework CoreFoundation \

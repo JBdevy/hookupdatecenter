@@ -5,20 +5,27 @@ import ImageIO
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
+typealias ProjectionImage = NSImage
+#else
+import UIKit
+typealias ProjectionImage = UIImage
+#endif
 
 /// AVPlayer owns decoding and presentation. The UI only publishes transport
 /// changes; normal playback never seeks or copies decoded frames on each tick.
-@MainActor final class VideoPlayback: NSObject, ObservableObject, NSWindowDelegate {
+@MainActor final class VideoPlayback: NSObject, ObservableObject {
     static let shared = VideoPlayback()
     static let teleprompter = VideoPlayback(preferences: .standard, trackKind: .teleprompt)
     static let teleprompter2 = VideoPlayback(preferences: .standard, trackKind: .teleprompt2)
     @Published private(set) var visible = false
     @Published private(set) var message = ""
     @Published private(set) var stretch: Bool
-    @Published private(set) var image: NSImage?
+    @Published private(set) var image: ProjectionImage?
     @Published private(set) var opacity = 1.0
     let player = AVPlayer()
+    #if os(macOS)
     private var window: NSWindow?
+    #endif
     private var directory: URL?
     private var snapshot: ShowSnapshot?
     private var clipID: UUID?
@@ -29,6 +36,7 @@ import AppKit
     private var playbackRate: Float = 0
     private var lastSourcePosition: Double?
     private var lastPosition: Double?
+    private var lastSectionJumpSerial: UInt64?
     private var lastHost = 0.0
     private var lastCorrection = 0.0
     private var generation = UUID()
@@ -76,9 +84,13 @@ import AppKit
         reset(); self.directory = directory; snapshot = nil
     }
     func closeProject() {
-        window?.close(); projectionEnabled = false
+        #if os(macOS)
+        window?.close()
+        #endif
+        visible = false; projectionEnabled = false
         reset(); directory = nil; snapshot = nil; message = ""
     }
+    #if os(macOS)
     func toggle() {
         if visible { window?.close(); return }
         let window = ProjectionWindow(contentRect: NSRect(x: 0,y: 0,width: 800,height: 450), styleMask: [.titled,.closable,.resizable,.miniaturizable], backing: .buffered, defer: false)
@@ -98,10 +110,20 @@ import AppKit
         if !active { reset() }
         window?.contentView = nil; window = nil
     }
+    #else
+    func toggle() { setVisible(!visible) }
+    func setVisible(_ value: Bool) {
+        visible = value
+        if !active { reset() }
+        else if let snapshot { update(snapshot) }
+    }
+    #endif
     private func reset() {
         generation = UUID(); pendingSeek = nil; seeking = false
         player.pause(); player.replaceCurrentItem(with: nil)
         itemStatus = nil; clipID = nil; playbackRate = 0; lastPosition = nil; lastSourcePosition = nil
+        lastSectionJumpSerial = nil
+        if !message.isEmpty { message = "" }
         if image != nil { image = nil }
     }
     func update(_ snapshot: ShowSnapshot) {
@@ -133,7 +155,13 @@ import AppKit
                         return CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: thumbnailLimit] as CFDictionary)
                     }.value
                     guard let self, self.generation == requestedGeneration, self.active else { return }
-                    if let decoded { self.image = NSImage(cgImage: decoded, size: .zero) }
+                    if let decoded {
+                        #if os(macOS)
+                        self.image = NSImage(cgImage: decoded, size: .zero)
+                        #else
+                        self.image = UIImage(cgImage: decoded)
+                        #endif
+                    }
                 }
             }
             return
@@ -151,22 +179,30 @@ import AppKit
             let item = AVPlayerItem(url: url)
             item.preferredForwardBufferDuration = 1
             if trackKind == .video { item.preferredMaximumResolution = VideoMediaSettings.shared.size }
+            let requestedGeneration = generation
             itemStatus = item.observe(\.status, options: [.new]) { [weak self] item,_ in
                 let error = item.error?.localizedDescription
-                Task { @MainActor [weak self] in if let error { self?.message = error } }
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == requestedGeneration else { return }
+                    if let error { self.message = error }
+                }
             }
             player.replaceCurrentItem(with: item)
             applyVideoColor()
             message = ""
         }
-        let sourceJumped = lastSourcePosition.map { abs(source - $0 - (playbackRate != 0 ? (now - lastHost) * Double(playbackRate) : 0)) > 0.12 } ?? true
-        let jumped = lastPosition.map { abs(position - $0 - (playbackRate != 0 ? now-lastHost : 0)) > 0.12 } ?? true
+        // Explicit jumps and loop wraps cannot use the drift tolerance: a
+        // short jump is intentional even when it is less than 120 ms.
+        let sectionJumped = lastSectionJumpSerial != transport.sectionJumpSerial
+        let sourceJumped = lastSourcePosition.map { source < $0 - 0.001 || abs(source - $0 - (playbackRate != 0 ? (now - lastHost) * Double(playbackRate) : 0)) > 0.12 } ?? true
+        let jumped = lastPosition.map { position < $0 - 0.001 || abs(position - $0 - (playbackRate != 0 ? now-lastHost : 0)) > 0.12 } ?? true
         let playerTime = player.currentTime().seconds
         let drifted = rate != 0 && !seeking && now - lastCorrection > 1.8 && playerTime.isFinite && abs(playerTime - source) > 0.15
-        if changedClip || jumped || sourceJumped || drifted || rate != playbackRate || (rate == 0 && lastPosition != position) {
+        if changedClip || sectionJumped || jumped || sourceJumped || drifted || rate != playbackRate || (rate == 0 && lastPosition != position) {
             lastCorrection = now; seek(source, rate: rate)
         }
         playbackRate = rate; lastPosition = position; lastSourcePosition = source; lastHost = now
+        lastSectionJumpSerial = transport.sectionJumpSerial
     }
     private func applyVideoColor() {
         guard trackKind == .video, let item = player.currentItem else { return }
@@ -215,7 +251,10 @@ import AppKit
         }
     }
 }
-private struct VideoSurface: View {
+#if os(macOS)
+extension VideoPlayback: NSWindowDelegate {}
+#endif
+struct VideoSurface: View {
     @ObservedObject var controller: VideoPlayback
     var body: some View {
         ZStack { Color.black; ProjectionMediaSurface(controller: controller)
@@ -230,9 +269,9 @@ struct ProjectionMediaSurface: View {
         GeometryReader { geometry in
             if let image = controller.image {
                 if controller.stretch {
-                    Image(nsImage: image).resizable().frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                    projectionImage(image).resizable().frame(width: geometry.size.width, height: geometry.size.height).clipped()
                 } else {
-                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                    projectionImage(image).resizable().aspectRatio(contentMode: .fit)
                         .frame(width: geometry.size.width, height: geometry.size.height).clipped()
                 }
             } else {
@@ -240,7 +279,15 @@ struct ProjectionMediaSurface: View {
             }
         }.opacity(controller.opacity).saturation(controller.usesVideoSettings && settings.blackAndWhite ? 0 : 1).allowsHitTesting(false)
     }
+    private func projectionImage(_ image: ProjectionImage) -> Image {
+        #if os(macOS)
+        Image(nsImage: image)
+        #else
+        Image(uiImage: image)
+        #endif
+    }
 }
+#if os(macOS)
 private struct NativeVideoLayer: NSViewRepresentable {
     let player: AVPlayer
     let stretch: Bool
@@ -268,12 +315,27 @@ private final class VideoLayerView: NSView {
     }
 }
 #else
-@MainActor final class VideoPlayback {
-    static let shared = VideoPlayback()
-    static let teleprompter = VideoPlayback()
-    static let teleprompter2 = VideoPlayback()
-    func open(directory: URL) {}
-    func closeProject() {}
-    func update(_ snapshot: ShowSnapshot) {}
+private struct NativeVideoLayer: UIViewRepresentable {
+    let player: AVPlayer
+    let stretch: Bool
+    func makeUIView(context: Context) -> VideoLayerView { VideoLayerView(player: player, stretch: stretch) }
+    func updateUIView(_ view: VideoLayerView, context: Context) { view.setStretch(stretch) }
+    static func dismantleUIView(_ view: VideoLayerView, coordinator: ()) { view.video.player = nil }
+}
+private final class VideoLayerView: UIView {
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
+    var video: AVPlayerLayer { layer as! AVPlayerLayer }
+    init(player: AVPlayer, stretch: Bool) {
+        super.init(frame: .zero)
+        backgroundColor = .black; video.player = player; setStretch(stretch)
+    }
+    func setStretch(_ enabled: Bool) {
+        let gravity: AVLayerVideoGravity = enabled ? .resize : .resizeAspect
+        guard video.videoGravity != gravity else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        video.videoGravity = gravity
+        CATransaction.commit()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 #endif

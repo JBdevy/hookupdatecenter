@@ -42,7 +42,7 @@ struct FXEditor: View {
         return track.flatMap { id in FXModelLookup.track(id, in: show.snapshot.project)?.name } ?? "Master"
     }
     private var currentSettings: NativeFXSettings {
-        if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project)?.fx ?? fallbackSettings }
+        if let clip { return (FXModelLookup.clip(clip, in: show.snapshot.project)?.fx ?? fallbackSettings).settings(for: effectKey) }
         return show.fxSettings(track).settings(for: effectKey)
     }
     private var audioTarget: UUID? { clip ?? track }
@@ -114,7 +114,12 @@ struct FXEditor: View {
 
             }
         }.environment(\.fxMIDIScope, FXMIDIScope(track: track, clip: clip, effect: effectKey))
+        #if os(iOS)
+        .padding(12).frame(maxWidth: .infinity, minHeight: compactControls ? 260 : 410)
+        .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+        #else
         .padding(clipChainEditor ? 0 : 20).frame(minWidth: clipChainEditor ? 600 : 640, idealWidth: clipChainEditor ? 700 : 740, maxWidth: .infinity, minHeight: compactControls ? (clipChainEditor ? 260 : 340) : (clipChainEditor ? 410 : 540), idealHeight: compactControls ? (clipChainEditor ? 280 : 360) : (clipChainEditor ? 440 : 560), maxHeight: .infinity).background(JarasTheme.panel).foregroundStyle(JarasTheme.text).clipShape(RoundedRectangle(cornerRadius: 12)).shadow(radius: clipChainEditor ? 0 : 20)
+        #endif
             .onChange(of: settings) { value in
                 guard show.snapshot.project.id == project else { return }
                 guard currentSettings.merging(effect: page, from: value) != currentSettings else { return }
@@ -177,6 +182,17 @@ struct FXEditor: View {
                         let y = (24 - band.gain) / 48 * geometry.size.height
                         Circle().fill(selected == band.id ? JarasTheme.yellow : JarasTheme.green).frame(width: 12, height: 12)
                             .overlay(Circle().stroke(Color.black, lineWidth: 1)).frame(width: 26, height: 26).contentShape(Circle())
+                            #if os(iOS)
+                            .overlay(FXTouchDrag(began: { _ in selected = band.id }, changed: { point, _ in
+                                guard let index = settings.bands.firstIndex(where: { $0.id == band.id }) else { return }
+                                let current = settings.bands[index]
+                                let px = log(current.frequency / 20) / log(1000) * geometry.size.width + point.x - 13
+                                let py = (24 - current.gain) / 48 * geometry.size.height + point.y - 13
+                                settings.bands[index].frequency = min(20000, max(20, 20 * pow(1000, Double(px / geometry.size.width))))
+                                if !band.type.hasSuffix("Cut") { settings.bands[index].gain = min(24, max(-24, 24 - py / geometry.size.height * 48)) }
+                            }, ended: {}))
+                            .position(x: x, y: y)
+                            #else
                             .position(x: x, y: y)
                             .onTapGesture { selected = band.id }
                             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("eqPlot")).onChanged { event in
@@ -185,6 +201,7 @@ struct FXEditor: View {
                                 settings.bands[index].frequency = min(20000,max(20,20 * pow(1000.0, Double(event.location.x / geometry.size.width))))
                                 if !band.type.hasSuffix("Cut") { settings.bands[index].gain = min(24,max(-24,24 - event.location.y / geometry.size.height * 48)) }
                             })
+                            #endif
                             .jarasHelp(String(format: "%.0f Hz · %.1f dB", band.frequency, band.gain))
                     }
                 }.coordinateSpace(name: "eqPlot").clipped().cornerRadius(6)
@@ -246,109 +263,82 @@ struct FXEditor: View {
         }.mapFXMIDI(parameter, name: label, range: range, band: band)
     }
 }
-/// Item FX share one window. Opening or changing pages only reads the project.
-struct TabbedClipFXEditor: View {
+#if !os(macOS)
+/// Touch item manager. macOS uses TrackFXChainView for both tracks and items.
+struct ClipFXChainEditor: View {
     @ObservedObject var show: ShowController
     let clip: UUID
     let close: () -> Void
-    @State private var page = "EQ"
-    @State private var enabledEffects: Set<String> = []
-    private var pages: [String] {
-        #if os(macOS)
-        let settings = show.clipFXSettings(clip)
-        return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
-            + (settings.inserted.contains(NativeFXSettings.stemSeparator) ? [NativeFXSettings.stemSeparator] : [])
-            + settings.inserted.filter { $0.hasPrefix("External:") }
-        #else
-        return ["EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
-        #endif
-    }
+    @State private var selected: String?
+    @State private var adding = false
+    private var settings: NativeFXSettings { show.clipFXSettings(clip) }
+    private var effects: [String] { settings.clipEffectKeys }
     private func title(_ effect: String) -> String {
-        show.clipFXSettings(clip).externalPlugins?.first(where: { $0.effectKey == effect })?.name
-            ?? JarasLocalization.string(effect == "Limiter" ? "CatLive Limiter" : effect)
-    }
-    private func color(_ effect: String) -> Color {
-        switch effect {
-        case "EQ": return JarasTheme.green
-        case "Compressor": return Color(hex: 0xffb547)
-        case "Limiter": return Color(hex: 0xff625b)
-        case "Pitch": return Color(hex: 0xc39aff)
-        case "Delay": return Color(hex: 0x56bfff)
-        default: return Color(hex: 0xca88ff)
-        }
+        settings.externalPlugins?.first(where: { $0.effectKey == effect })?.name
+            ?? JarasLocalization.string(settings.kind(of: effect))
     }
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Text("CatLive FX · " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")).font(.headline).lineLimit(1)
+                Text(JarasLocalization.string("FX Manager") + " - " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—"))
+                    .font(.headline).lineLimit(1)
                 Spacer()
-                #if os(macOS)
-                Menu {
-                    if show.clipFXSettings(clip).inserted.contains(NativeFXSettings.stemSeparator) {
-                        Button("Remove CatStemSeparation 5") {
-                            show.removeClipFX(clip, effect: NativeFXSettings.stemSeparator)
-                            if page == NativeFXSettings.stemSeparator { page = "EQ" }
-                        }
-                    } else {
-                        Button("CatStemSeparation 5") {
-                            show.insertClipFX(clip, effect: NativeFXSettings.stemSeparator)
-                            page = NativeFXSettings.stemSeparator
-                        }
-                    }
-                } label: { Image(systemName: "plus") }.frame(width: 44)
-                #endif
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
             }
-            ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 4) {
-                ForEach(pages, id: \.self) { effect in
-                    let active = enabledEffects.contains(effect)
-                    let tint = color(effect)
-                    Button { page = effect } label: {
-                        Text(verbatim: title(effect)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                            .frame(minWidth: 100, maxWidth: 180).frame(height: 30)
-                            .background(tint.opacity(active ? 0.30 : 0.06))
-                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(tint.opacity(page == effect ? 0.95 : active ? 0.55 : 0.14), lineWidth: page == effect ? 1.5 : 1))
-                            .cornerRadius(5).contentShape(Rectangle())
-                    }.buttonStyle(.plain).foregroundStyle(tint.opacity(active ? 1 : 0.38))
-                        .accessibilityAddTraits(page == effect ? .isSelected : [])
-                        .accessibilityValue(Text(active ? "Enabled" : "Disabled"))
-                        .jarasHelp(title(effect))
-                }
-            }}.frame(height: 32)
-            #if os(macOS)
-            if page == "CatStemSeparation 5" {
-                CatStemFXEditor(show: show, track: nil, clip: clip)
-            } else if page.hasPrefix("External:") {
-                VStack(spacing: 10) {
-                    HStack {
-                        Toggle("Enabled", isOn: Binding(get: { show.clipFXSettings(clip).isEnabled(page) }, set: { enabled in
-                            if show.clipFXSettings(clip).isEnabled(page) != enabled { show.toggleClipFXBypass(clip, effect: page) }
-                        })).toggleStyle(.switch).tint(JarasTheme.green)
-                        Spacer()
-                        Button("Remove effect") { show.removeClipFX(clip, effect: page); page = "EQ" }
+            HStack(spacing: 12) {
+                VStack(spacing: 8) {
+                    ScrollView {
+                        LazyVStack(spacing: 3) {
+                            ForEach(effects, id: \.self) { effect in
+                                HStack(spacing: 4) {
+                                    Button { show.toggleClipFXBypass(clip, effect: effect) } label: {
+                                        Text("By").font(.system(size: 11, weight: .semibold)).frame(width: 34, height: 34)
+                                            .background(settings.isEnabled(effect) ? Color.white.opacity(0.12) : Color.red.opacity(0.75))
+                                            .cornerRadius(3).contentShape(Rectangle())
+                                    }.buttonStyle(.plain).accessibilityLabel(Text("Bypass") + Text(" · " + title(effect)))
+                                    Button { selected = effect } label: {
+                                        Text(verbatim: title(effect)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                                            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading).contentShape(Rectangle())
+                                    }.buttonStyle(.plain)
+                                }.padding(.horizontal, 4)
+                                    .background(selected == effect ? JarasTheme.green.opacity(0.3) : Color.clear)
+                                    .cornerRadius(4)
+                            }
+                        }
                     }
-                    ClipExternalPluginEditor(show: show, clip: clip, effect: page).id(page)
-                }
-            } else {
-                FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: page, close: close).id(page)
+                    HStack {
+                        Button("Add") { adding = true }.frame(maxWidth: .infinity)
+                        Button("Remove") {
+                            if let selected { show.removeClipFX(clip, effect: selected) }
+                        }.disabled(selected == nil).frame(maxWidth: .infinity)
+                    }.buttonStyle(.bordered)
+                }.frame(width: 180)
+                Divider()
+                Group {
+                    if let selected, effects.contains(selected) {
+                        if selected == NativeFXSettings.stemSeparator {
+                            CatStemFXEditor(show: show, track: nil, clip: clip).id(selected)
+                        } else {
+                            FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: selected, close: close).id(selected)
+                        }
+                    } else { Color.clear }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            #else
-            FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: page, close: close).id(page)
-            #endif
-        }.padding(20).frame(minWidth: 640, idealWidth: 740, maxWidth: .infinity, minHeight: 540, idealHeight: 560, maxHeight: .infinity)
+        }.padding(20).frame(minWidth: 840, idealWidth: 940, maxWidth: .infinity, minHeight: 540, idealHeight: 560, maxHeight: .infinity)
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
-            .onReceive(show.$snapshot.map { snapshot -> Set<String> in
-                guard let item = FXModelLookup.clip(clip, in: snapshot.project), item.fxBypassed != true,
-                      let fx = item.fx else { return [] }
-                return Set(pages.filter { fx.inserted.contains($0) && fx.isEnabled($0) })
-            }.removeDuplicates()) { enabledEffects = $0 }
-            .onChange(of: pages) { available in if !available.contains(page) { page = available.first ?? "EQ" } }
-            #if os(macOS)
-            .onExitCommand(perform: close)
-            #endif
+            .onAppear { if selected == nil { selected = effects.first } }
+            .onChange(of: effects) { available in
+                if selected.map({ !available.contains($0) }) ?? true { selected = available.first }
+            }
+            .sheet(isPresented: $adding) {
+                FXInsertEditor(show: show, track: nil, targets: [nil], clip: clip, inserted: { selected = $0 }, isActive: { adding }, dismiss: { adding = false })
+                    .background(JarasTheme.panel)
+            }
     }
 }
+#endif
+
 #if os(macOS)
 import AppKit
 private struct EQBandWheelInput: NSViewRepresentable {

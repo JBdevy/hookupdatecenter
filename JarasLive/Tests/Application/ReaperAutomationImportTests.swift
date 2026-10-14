@@ -118,6 +118,61 @@ final class ReaperAutomationImportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: file), original)
         XCTAssertEqual(try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(result.project)), result.project)
     }
+    func testWarningTemplatesUseSelectedLanguageWithoutChangingNamesOrPercentSigns() throws {
+        let trackName = "Pista \"principal\" 100%"
+        let pluginName = "JS: Compressor \"Master\" 50% %@"
+        let (folder, file) = try fixture("""
+        <TRACK
+          NAME `\(trackName)`
+          <FXCHAIN
+            <JS `\(pluginName)`
+            >
+            \(vst("0"))
+          >
+        >
+        """)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let original = try Data(contentsOf: file)
+        let resources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Apple/Resources")
+        for language in ["pt-BR", "en"] {
+            let bundle = try XCTUnwrap(Bundle(path: resources.appendingPathComponent(language + ".lproj").path))
+            let imported = try ReaperProjectImporter.read(file, localizeWarning: {
+                bundle.localizedString(forKey: $0, value: $0, table: nil)
+            })
+            let unsupported = language == "pt-BR"
+                ? "\(trackName): \(pluginName) não foi importado; somente efeitos VST3 são compatíveis com a importação do REAPER."
+                : "\(trackName): \(pluginName) was not imported; only VST3 effects are supported during REAPER migration."
+            XCTAssertTrue(imported.warnings.contains(unsupported), imported.warnings.description)
+            XCTAssertTrue(imported.warnings.contains { $0.contains(trackName) && $0.contains("Gain fixture") && $0.contains(language == "pt-BR" ? "não foi encontrado" : "was not found") })
+            XCTAssertTrue(imported.warnings.contains { $0.contains(language == "pt-BR" ? "parâmetro de automação" : "automation parameter") })
+            XCTAssertEqual(imported.project.songs[0].tracks[0].name, trackName)
+            XCTAssertEqual(try Data(contentsOf: file), original)
+        }
+    }
+    func testInvalidVST3StateWarningsLocalizeTheDetailAfterTheREAPERPrefix() throws {
+        let invalidState = vst().replacingOccurrences(of: state, with: "broken")
+        let (folder, file) = try fixture("<TRACK\nNAME FX\n<FXCHAIN\n\(invalidState)\n>\n>")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let resources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Apple/Resources")
+        for language in ["pt-BR", "en"] {
+            let bundle = try XCTUnwrap(Bundle(path: resources.appendingPathComponent(language + ".lproj").path))
+            let imported = try ReaperProjectImporter.read(file, resolveVST3: { request in
+                var plugin = request.plugin; plugin.classID = String(repeating: "0", count: 32)
+                return .init(plugin: plugin)
+            }, localizeWarning: { bundle.localizedString(forKey: $0, value: $0, table: nil) })
+            let expected = language == "pt-BR"
+                ? "FX: a configuração de Gain fixture não foi importada: REAPER: Codificação ou tamanho inválido da configuração do VST3."
+                : "FX: Gain fixture state was not imported: REAPER: Invalid VST3 state encoding or size."
+            XCTAssertTrue(imported.warnings.contains(expected), imported.warnings.description)
+            let resolverDetail = language == "pt-BR"
+                ? "REAPER: A busca do VST3 retornou uma classe de plug-in diferente."
+                : "REAPER: VST3 resolver returned a different plugin class."
+            XCTAssertTrue(imported.warnings.contains { $0.contains(resolverDetail) }, imported.warnings.description)
+            XCTAssertTrue(imported.project.songs[0].tracks[0].fx?.inserted.isEmpty == true)
+        }
+    }
     func testFaderScaledEnvelopeMatchesREAPEROracle() throws {
         let (folder, file) = try fixture("""
         <TRACK
