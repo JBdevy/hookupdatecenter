@@ -126,6 +126,29 @@ final class PortableProjectPackageTests: XCTestCase {
         try writer.add(path: "readme.txt", data: Data("Not a CatLive project".utf8)); try writer.finish()
         XCTAssertThrowsError(try read(ordinary))
     }
+    func testExtractedProjectCanBeEditedAndBackedUpAfterDeletingArchive() async throws {
+        let bytes = Data("Project media".utf8)
+        try write("Stems/song.wav", bytes)
+        let archive = try export(project(["Stems/song.wav"]))
+        let result = try read(archive)
+        try FileManager.default.removeItem(at: archive)
+        let folder = result.documentURL.deletingLastPathComponent()
+        for path in ["Stems", "Stems/WF", "backups"] {
+            var isDirectory: ObjCBool = false
+            XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent(path).path, isDirectory: &isDirectory))
+            XCTAssertTrue(isDirectory.boolValue)
+        }
+        var edited = result.project
+        edited.name = "Edited on iPad"
+        try ProjectBackups.save(edited, to: result.documentURL)
+        let reopened = try await ProjectStore(url: result.documentURL).load()
+        XCTAssertEqual(reopened, edited)
+        XCTAssertFalse(try ProjectBackups.files(for: result.documentURL).isEmpty)
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("Stems/song.wav")), bytes)
+        let rediscovered = try NativeProjectFolderStorage.prepare(root: folder.deletingLastPathComponent(),
+            legacy: directory.appendingPathComponent("Deleted app/Projects"), container: directory.appendingPathComponent("New app"))
+        XCTAssertTrue(rediscovered.documents.contains { $0.resolvingSymlinksInPath() == result.documentURL.resolvingSymlinksInPath() })
+    }
     func testDedupRequiresMatchingNameAndContentAndUsesCollisionSuffix() throws {
         for (path, content) in [("One/clip.wav", "same"), ("Two/clip.wav", "same"), ("Three/clip.wav", "different"), ("Four/other.wav", "same")] {
             try write(path, Data(content.utf8))

@@ -1575,3 +1575,8 @@
 "Unable to reach the App Store. Check your connection and try again." = "Unable to reach the App Store. Check your connection and try again.";
 
 "The App Store could not load this purchase. Please try again." = "The App Store could not load this purchase. Please try again.";
+
+"Choose a CatLive project" = "Choose a CatLive project";
+"Choose file" = "Choose file";
+"Select the .ziplive file to open. Next, you will choose where to save the extracted project." = "Select the .ziplive file to open. Next, you will choose where to save the extracted project.";
+"Select a folder where CatLive will extract and save the project and its media. It will open as a normal project, independent of the .ziplive file." = "Select a folder where CatLive will extract and save the project and its media. It will open as a normal project, independent of the .ziplive file.";

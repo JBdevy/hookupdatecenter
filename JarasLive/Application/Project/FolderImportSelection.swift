@@ -36,13 +36,17 @@ enum NativeProjectFolderStorage {
         let movedDocuments: [URL: URL]
         let documents: [URL]
     }
-    static func prepare(root: URL, legacy: URL, container: URL) throws -> Prepared {
-        let fm = FileManager.default
+    static func externalRoot(_ root: URL, container: URL) throws -> URL {
         let root = root.standardizedFileURL.resolvingSymlinksInPath()
         let home = container.standardizedFileURL.resolvingSymlinksInPath().path
         guard root.path != home, !root.path.hasPrefix(home + "/") else {
             throw failure("Choose a folder outside the CatLive app folder. Files inside the app are removed when it is deleted.")
         }
+        return root
+    }
+    static func prepare(root: URL, legacy: URL, container: URL) throws -> Prepared {
+        let fm = FileManager.default
+        let root = try externalRoot(root, container: container)
         let directory = root.lastPathComponent == "CatLive" ? root.appendingPathComponent("Projects", isDirectory: true)
             : root.appendingPathComponent("CatLive/Projects", isDirectory: true)
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -74,7 +78,14 @@ enum NativeProjectFolderStorage {
                 for document in projects { moved[document.standardizedFileURL] = target.appendingPathComponent(document.lastPathComponent) }
             }
         }
-        let documents = try directories(directory).flatMap { try projectFiles($0) }
+        var documents = try directories(directory).flatMap { try projectFiles($0) }
+        // A .ziplive import uses the user's exact destination. Discover these
+        // ordinary projects again when access is granted after reinstalling.
+        documents += try projectFiles(root)
+        for folder in try directories(root) where UUID(uuidString: String(folder.lastPathComponent.suffix(36))) != nil {
+            documents += try projectFiles(folder)
+        }
+        documents = Array(Set(documents)).sorted { $0.path < $1.path }
         return Prepared(directory: directory, movedDocuments: moved, documents: documents)
     }
     private static func failure(_ message: String) -> NSError {

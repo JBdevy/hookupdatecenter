@@ -5,19 +5,52 @@ import AVFoundation
 import AppKit
 #endif
 
+enum PortableProjectImportPrompt: String, Identifiable {
+    case file, destination
+    var id: String { rawValue }
+    var title: String { self == .file ? "Choose a CatLive project" : "Choose a folder for the imported project" }
+    var message: String {
+        self == .file
+            ? "Select the .ziplive file to open. Next, you will choose where to save the extracted project."
+            : "Select a folder where CatLive will extract and save the project and its media. It will open as a normal project, independent of the .ziplive file."
+    }
+    var action: String { self == .file ? "Choose file" : "Choose folder" }
+}
+
 @MainActor final class ProjectDocuments: ObservableObject {
     #if os(iOS)
-    enum NativePicker: String, Identifiable { case package, stems, trackAudio, trackMedia, storage; var id: String { rawValue } }
+    enum NativePicker: String, Identifiable { case package, packageDestination, stems, trackAudio, trackMedia, storage; var id: String { rawValue } }
     @Published var nativePicker: NativePicker?
+    @Published var nativePackagePrompt: PortableProjectImportPrompt?
     @Published private(set) var nativeStorageDirectory: URL?
     private var nativeStorageScopes: [URL] = []
     private var afterNativeStorage: (() -> Void)?
     private var nativePackageScope: URL?
+    private var nativePendingPackage: URL?
+    func continueNativePackageImport(_ prompt: PortableProjectImportPrompt) {
+        nativePackagePrompt = nil
+        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
+            cancelNativePackageImport(); return
+        }
+        if prompt == .file { nativePicker = .package }
+        else if nativePendingPackage != nil { nativePicker = .packageDestination }
+    }
+    func cancelNativePackageImport() {
+        nativePackagePrompt = nil; nativePendingPackage = nil
+        nativePackageScope?.stopAccessingSecurityScopedResource(); nativePackageScope = nil
+    }
     func chooseNativeStorage() {
         guard !busy, !show.isPlaying else { return }
         nativePicker = .storage
     }
     private func restoreNativeStorage() {
+        // Imported projects can live in individually chosen folders without
+        // changing the default project folder or moving any existing projects.
+        for data in UserDefaults.standard.array(forKey: "jaras.nativeImportedProjectBookmarks") as? [Data] ?? [] {
+            if let root = try? Self.resolveNativeImportBookmark(data), root.startAccessingSecurityScopedResource() {
+                nativeStorageScopes.append(root)
+            }
+        }
         let bookmarks = UserDefaults.standard.array(forKey: "jaras.nativeStorageBookmarks") as? [Data] ?? []
         for (index, data) in bookmarks.enumerated() {
             do {
@@ -30,6 +63,32 @@ import AppKit
                         : root.appendingPathComponent("CatLive/Projects", isDirectory: true)
                 }
             } catch { self.error = "Choose the external project folder again to restore access." }
+        }
+    }
+    private static func resolveNativeImportBookmark(_ data: Data) throws -> URL {
+        var stale = false
+        return try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+    }
+    private func receiveNativePackageDestination(_ root: URL) {
+        guard let archive = nativePendingPackage else { return }
+        defer { cancelNativePackageImport() }
+        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        let scoped = root.startAccessingSecurityScopedResource()
+        guard scoped else { error = "Could not access the selected folder."; return }
+        do {
+            let destination = try NativeProjectFolderStorage.externalRoot(root, container: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
+            let bookmark = try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            var bookmarks = UserDefaults.standard.array(forKey: "jaras.nativeImportedProjectBookmarks") as? [Data] ?? []
+            bookmarks.removeAll { (try? Self.resolveNativeImportBookmark($0).standardizedFileURL) == root.standardizedFileURL }
+            bookmarks.append(bookmark)
+            UserDefaults.standard.set(bookmarks, forKey: "jaras.nativeImportedProjectBookmarks")
+            if nativeStorageScopes.contains(where: { $0.standardizedFileURL == root.standardizedFileURL }) {
+                root.stopAccessingSecurityScopedResource()
+            } else { nativeStorageScopes.append(root) }
+            importPortablePackage(archive, into: destination)
+        } catch {
+            root.stopAccessingSecurityScopedResource()
+            self.error = error.localizedDescription
         }
     }
     private func receiveNativeStorage(_ root: URL) {
@@ -89,9 +148,9 @@ import AppKit
         nativePicker = .trackMedia
     }
     func cancelNativePicker(kind: NativePicker? = nil) {
+        if kind == .package || kind == .packageDestination { cancelNativePackageImport() }
         if kind == .storage || nativePicker == .storage {
             afterNativeStorage = nil
-            nativePackageScope?.stopAccessingSecurityScopedResource(); nativePackageScope = nil
             nativePendingCreation = nil
         }
         nativePicker = nil; nativeAudioTarget = nil; cancelImport()
@@ -104,6 +163,7 @@ import AppKit
     func receiveNativeFiles(_ urls: [URL], kind: NativePicker) {
         nativePicker = nil
         if kind == .storage { if let root = urls.first { receiveNativeStorage(root) }; return }
+        if kind == .packageDestination { if let root = urls.first { receiveNativePackageDestination(root) }; return }
         if kind == .trackAudio || kind == .trackMedia {
             guard let target = nativeAudioTarget else { return }
             nativeAudioTarget = nil
@@ -162,21 +222,30 @@ import AppKit
     func importPortablePackage(_ url: URL) {
         guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(macOS)
+        guard confirmPortableImportPrompt(.destination) else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.allowsMultipleSelection = false; panel.canCreateDirectories = true
         panel.title = JarasLocalization.string("Choose a folder for the imported project")
         guard panel.runModal() == .OK, let selected = panel.url else { return }
-        let destination = selected.resolvingSymlinksInPath()
+        importPortablePackage(url, into: selected.resolvingSymlinksInPath())
         #else
-        guard let destination = nativeStorageDirectory else {
-            if nativePackageScope == nil, url.startAccessingSecurityScopedResource() { nativePackageScope = url }
-            afterNativeStorage = { [weak self] in
-                self?.importPortablePackage(url)
-                self?.nativePackageScope?.stopAccessingSecurityScopedResource(); self?.nativePackageScope = nil
-            }
-            nativePicker = .storage; return
-        }
+        cancelNativePackageImport()
+        nativePendingPackage = url
+        if url.startAccessingSecurityScopedResource() { nativePackageScope = url }
+        nativePackagePrompt = .destination
         #endif
+    }
+    #if os(macOS)
+    private func confirmPortableImportPrompt(_ prompt: PortableProjectImportPrompt) -> Bool {
+        let alert = NSAlert(); alert.alertStyle = .informational
+        alert.messageText = JarasLocalization.string(prompt.title)
+        alert.informativeText = JarasLocalization.string(prompt.message)
+        alert.addButton(withTitle: JarasLocalization.string(prompt.action))
+        alert.addButton(withTitle: JarasLocalization.string("Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+    #endif
+    private func importPortablePackage(_ url: URL, into destination: URL) {
         let scoped = url.startAccessingSecurityScopedResource()
         beginOpening {
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -785,22 +854,20 @@ import AppKit
         let response = withExtendedLifetime(validator) { panel.runModal() }
         if response == .OK, let url = panel.url { open(url) }
         #else
-        nativePicker = .package
+        browsePortablePackage()
         #endif
     }
     func browsePortablePackage() {
-        #if os(iOS)
-        guard nativeStorageDirectory != nil else {
-            afterNativeStorage = { [weak self] in self?.browsePortablePackage() }
-            nativePicker = .storage; return
-        }
-        #endif
+        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(macOS)
+        guard confirmPortableImportPrompt(.file) else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(filenameExtension: "ziplive") ?? .zip, .zip]
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = false; panel.canChooseDirectories = false
+        panel.title = JarasLocalization.string("Choose a CatLive project")
         if panel.runModal() == .OK, let url = panel.url { importPortablePackage(url) }
         #else
-        nativePicker = .package
+        cancelNativePackageImport()
+        nativePackagePrompt = .file
         #endif
     }
     func chooseStems(adding: Bool) {

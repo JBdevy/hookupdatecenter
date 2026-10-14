@@ -144,11 +144,13 @@ private struct NativeProjectPicker: UIViewControllerRepresentable {
     let cancelled: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let types: [UTType] = (kind == .stems || kind == .storage) ? [.folder] : kind == .trackAudio ? [.mp3, .wav, .aiff] : kind == .trackMedia ? [.image, .movie] : [.catLivePackage, .zip]
+        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination) ? [.folder] : kind == .trackAudio ? [.mp3, .wav, .aiff] : kind == .trackMedia ? [.image, .movie] : [.catLivePackage, .zip]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: kind == .trackAudio || kind == .trackMedia)
         picker.allowsMultipleSelection = kind == .stems
         if kind == .stems { picker.title = JarasLocalization.string("Choose the folder containing your song folders") }
         if kind == .storage { picker.title = JarasLocalization.string("Choose an external folder for CatLive projects") }
+        if kind == .package { picker.title = JarasLocalization.string("Choose a CatLive project") }
+        if kind == .packageDestination { picker.title = JarasLocalization.string("Choose a folder for the imported project") }
         picker.delegate = context.coordinator
         return picker
     }
@@ -189,6 +191,12 @@ struct NativeProjectPresentation: ViewModifier {
                     // rename popovers; a second SwiftUI resize can steal focus.
                     .ignoresSafeArea(.keyboard, edges: .bottom)
                     .onAppear { presentedPicker = kind }
+            }
+            .alert(item: $documents.nativePackagePrompt) { prompt in
+                Alert(title: Text(LocalizedStringKey(prompt.title)),
+                      message: Text(LocalizedStringKey(prompt.message)),
+                      primaryButton: .default(Text(LocalizedStringKey(prompt.action))) { documents.continueNativePackageImport(prompt) },
+                      secondaryButton: .cancel(Text("Cancel")) { documents.cancelNativePackageImport() })
             }
             .alert("Import", isPresented: Binding(get: { !documents.audioImportError.isEmpty }, set: { if !$0 { documents.audioImportError = "" } })) {
                 Button("OK") { documents.audioImportError = "" }

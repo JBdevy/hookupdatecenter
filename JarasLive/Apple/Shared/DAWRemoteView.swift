@@ -2393,10 +2393,11 @@ private struct RemoteNativeTimeline: View {
                     for marker in song.markers ?? [] where marker.isTempo && marker.position >= start && marker.position <= end {
                         let x = gridX(marker.position, width: size.width)
                         let label = String(format: "%.3f", marker.tempoBPM ?? song.bpm).replacingOccurrences(of: #"\.?0+$"#, with: "", options: .regularExpression)
-                        let rect = CGRect(x: x, y: 0, width: 66, height: 16)
+                        let text = TimelineStaticText.label(label + " " + String(marker.tempoBeats ?? song.meterBeats) + "/" + String(marker.tempoUnit ?? song.meterUnit), style: .regionIdentifier, displayScale: displayScale)
+                        let rect = CGRect(x: x, y: 0, width: (text?.width ?? 0) + 6, height: 16)
                         context.fill(Path(roundedRect: rect, cornerRadius: 3), with: .color(.black.opacity(0.85)))
                         context.stroke(Path(roundedRect: rect, cornerRadius: 3), with: .color(.white.opacity(0.35)), lineWidth: 1)
-                        context.draw(Text(verbatim: label + " " + String(marker.tempoBeats ?? song.meterBeats) + "/" + String(marker.tempoUnit ?? song.meterUnit)).font(.system(size: 9, weight: .semibold)).foregroundColor(.white), in: rect.insetBy(dx: 3, dy: 2))
+                        text?.draw(at: CGPoint(x: rect.minX + 3, y: rect.minY + 2), context: &context)
                     }
                 }
             }

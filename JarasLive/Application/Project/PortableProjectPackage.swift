@@ -245,6 +245,11 @@ public enum PortableProjectPackage {
             try zip.extract(file.path, to: target, expected: file) { bytes in progress(Double(copied + bytes) / Double(max(1, zip.totalBytes))) }
             copied += file.bytes
         }
+        // Imported packages become ordinary editable projects. Caches and new
+        // backups belong to this extracted copy, never to the source archive.
+        for folder in ["Stems/WF", "backups"] {
+            try fm.createDirectory(at: staging.appendingPathComponent(folder, isDirectory: true), withIntermediateDirectories: true)
+        }
         // Sound banks are data, never executable bundles. Validate their header
         // before exposing them to the sampler or registering the new project.
         for path in manifest.instruments.values {
