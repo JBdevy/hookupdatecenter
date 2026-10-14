@@ -49,6 +49,7 @@ jobs:
           swift test --jobs 2
           bash scripts/test-bridge.sh
           bash scripts/test-control-mappings.sh
+          bash scripts/test-daw-remote.sh
 
       - name: Prepare CatStemSeparation runtime
         working-directory: JarasLive
@@ -198,7 +199,6 @@ jobs:
         with:
           tag_name: catlive-v${{ inputs.version }}
           name: CatLive ${{ inputs.version }} macOS
-          target_commitish: ${{ github.sha }}
           make_latest: false
           generate_release_notes: true
           fail_on_unmatched_files: true

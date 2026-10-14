@@ -294,6 +294,7 @@ enum AppStartupPresentation {
     }
     private func recoverMobileRoute(outputRemoved: Bool) {
         let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        let disconnectedNotice = JarasLocalization.string("Audio device disconnected. Playback stopped.")
         settings.error = ""
         mobileRouteRevision &+= 1
         let revision = mobileRouteRevision, transition = localPlaybackTransition
@@ -305,7 +306,7 @@ enum AppStartupPresentation {
             TrackRecording.shared.setLocalAudioAvailable(false)
             show.send(.stopAll)
         }
-        if outputRemoved { show.message = JarasLocalization.string("Audio device disconnected. Playback stopped.") }
+        if outputRemoved { show.message = disconnectedNotice }
         mobileRouteRecovery = Task { @MainActor [weak self] in
             do {
                 // USB removal emits several session/engine changes while its
@@ -324,6 +325,7 @@ enum AppStartupPresentation {
                 if documents.ready { show.preparePlayback() }
                 settings.inputDeviceChanged?()
                 TrackRecording.shared.setLocalAudioAvailable(true)
+                if show.message == disconnectedNotice { show.message = "" }
                 mobileRouteRecovery = nil
             } catch is CancellationError { }
             catch {

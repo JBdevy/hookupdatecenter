@@ -345,7 +345,15 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         }
         // Encode peak vertices at this frame's scale. Geometry changes submit
         // within the current layout transaction; no old texture is scaled.
+        #if os(iOS)
+        // SwiftUI delivers representable updates before finishing its item
+        // layers. Present with UIKit's display pass so the waveform and those
+        // layers share the committed viewport, rather than showing Metal's
+        // new pan position while item headers still show the preceding one.
+        setNeedsDisplay()
+        #else
         draw()
+        #endif
     }
 
     /// Projection caches may not submit again when a hidden window becomes

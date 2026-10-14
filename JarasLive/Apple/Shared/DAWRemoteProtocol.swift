@@ -238,13 +238,14 @@ struct DAWRemoteState: Codable, Equatable {
         var heightScale: Double? = nil
         var peakDB: Double? = nil
         var canMeter: Bool? = nil
+        var parentTrack: UUID? = nil
         /// Clip geometry belongs to the grid. Position packets or changes to
         /// clips must not rebuild the mixer's faders and native touch views.
         func hasSameMixerControls(as other: Self) -> Bool {
             id == other.id && name == other.name && color == other.color &&
             volume == other.volume && pan == other.pan && mute == other.mute && solo == other.solo &&
             nameColor == other.nameColor && emphasized == other.emphasized && silenced == other.silenced &&
-            linkedTrack == other.linkedTrack && peakDB == other.peakDB && canMeter == other.canMeter
+            linkedTrack == other.linkedTrack && peakDB == other.peakDB && canMeter == other.canMeter && parentTrack == other.parentTrack
         }
     }
     struct Region: Codable, Identifiable, Equatable {
@@ -742,5 +743,24 @@ struct DAWRemotePartsWidths {
         let available = available.isFinite ? max(0, available) : 0
         self.handle = visible ? min(available, max(0, handle)) : 0
         self.content = visible ? min(max(0, available - self.handle), max(0, requested.isFinite ? requested : 240)) : 0
+    }
+}
+
+/// The same parent chain is sent to native and LAN workspaces. Hidden rows
+/// still participate in ancestry; only the final displayed rows need guides.
+struct DAWRemoteTrackHierarchy {
+    private let parents: [UUID: UUID]
+    let folders: Set<UUID>
+    init(_ tracks: [DAWRemoteState.Track]) {
+        parents = Dictionary(tracks.compactMap { track in track.parentTrack.map { (track.id, $0) } },
+                             uniquingKeysWith: { first, _ in first })
+        folders = Set(parents.values)
+    }
+    func ancestors(of id: UUID) -> [UUID] {
+        var result: [UUID] = [], visited: Set<UUID> = [id], next = parents[id]
+        while let parent = next, visited.insert(parent).inserted {
+            result.append(parent); next = parents[parent]
+        }
+        return Array(result.reversed())
     }
 }

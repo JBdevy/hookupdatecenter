@@ -1,5 +1,18 @@
 import XCTest
 final class TrackTouchTests:XCTestCase {
+ func testCompactRowsKeepPatchAndFXUntilTheirControlsActuallyNeedTheSpace() {
+  let app=XCUIApplication();app.launch()
+  XCTAssertTrue(app.buttons["Compact 270"].waitForExistence(timeout:10))
+  app.buttons["Compact 270"].tap()
+  XCTAssertTrue(app.buttons["Patch"].exists);XCTAssertTrue(app.buttons["FX"].exists)
+  app.buttons["Patch"].tap();XCTAssertEqual(app.staticTexts["event"].label,"patch")
+  app.buttons["Compact 220"].tap()
+  XCTAssertFalse(app.buttons["Patch"].exists);XCTAssertTrue(app.buttons["FX"].exists)
+  app.buttons["FX"].tap();XCTAssertEqual(app.staticTexts["event"].label,"fx")
+  app.buttons["Compact 190"].tap()
+  XCTAssertFalse(app.buttons["Patch"].exists);XCTAssertFalse(app.buttons["FX"].exists)
+  XCTAssertTrue(app.buttons["REC"].exists);XCTAssertTrue(app.buttons["M"].firstMatch.exists);XCTAssertTrue(app.buttons["S"].firstMatch.exists)
+ }
  func testLongPressOffersPatchAndAddStems() {
   let app=XCUIApplication();app.launch();let name=app.staticTexts["01  Normal track"]
   XCTAssertTrue(name.waitForExistence(timeout:10));name.press(forDuration:0.8)

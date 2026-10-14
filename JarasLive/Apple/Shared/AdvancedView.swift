@@ -26,6 +26,7 @@ struct AdvancedView: View {
     @State private var unit: String
     @State private var settings: ProjectTimeSettings
     @State private var invalidField: Int?
+    @State private var applyError = ""
     @State private var shake = 0.0
     @FocusState private var focus: Int?
 
@@ -54,7 +55,7 @@ struct AdvancedView: View {
             HStack(spacing: 0) {
                 VStack(spacing: 6) {
                     ForEach(availableTabs, id: \.self) { item in
-                        Button { tab = item } label: {
+                        Button { tab = item; invalidField = nil; applyError = "" } label: {
                             Label { Text(LocalizedStringKey(item.rawValue)).lineLimit(2).minimumScaleFactor(0.8) } icon: { Image(systemName: item.icon) }
                                 .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 10).frame(height: 36)
@@ -83,7 +84,7 @@ struct AdvancedView: View {
                 if let invalidField {
                     Text(LocalizedStringKey(invalidField == 0 ? "Enter a BPM between 60 and 300." : "Invalid time signature."))
                         .font(.caption).foregroundStyle(.red)
-                } else if !show.message.isEmpty { Text(LocalizedStringKey(show.message)).font(.caption).foregroundStyle(.red) }
+                } else if !applyError.isEmpty { Text(LocalizedStringKey(applyError)).font(.caption).foregroundStyle(.red) }
                 Spacer()
                 Button("Cancel") { finish() }.keyboardShortcut(.cancelAction)
                 if tab == .timeProject { Button("Apply", action: apply).keyboardShortcut(.defaultAction) }
@@ -138,9 +139,12 @@ struct AdvancedView: View {
         guard let numerator = Int(beats), (1...32).contains(numerator) else { reject(1); return }
         guard let denominator = Int(unit), TimelineTempo.beatUnits.contains(denominator) else { reject(2); return }
         invalidField = nil
+        applyError = ""
         if show.configureProjectTime(bpm: tempo, beats: numerator, unit: denominator, settings: settings) {
             GlobalProjectTiming(bpm: tempo, beats: numerator, unit: denominator, settings: settings).save()
             finish()
+        } else {
+            applyError = show.message
         }
     }
 }
@@ -206,9 +210,13 @@ private struct AdvancedTimelineSettings: View {
     @AppStorage("jaras.timeline.gridlines") private var gridlines = GlobalProjectTiming.load()?.settings.divisions != 0
     var body: some View {
         VStack(spacing: 18) {
-            Picker("Gridline", selection: $gridlines) {
-                Text("Enabled").tag(true)
-                Text("Disabled").tag(false)
+            HStack {
+                Text("Gridline")
+                Spacer()
+                Picker("Gridline", selection: $gridlines) {
+                    Text("Enabled").tag(true)
+                    Text("Disabled").tag(false)
+                }.labelsHidden()
             }
             SetlistTextColorRow(title: "Timeline background", key: "jaras.timeline.background", defaultColor: TimelineAppearanceDefaults.background, showsReset: true)
             SetlistTextColorRow(title: "Primary grid color", key: "jaras.timeline.primaryGrid", defaultColor: TimelineAppearanceDefaults.primaryGrid, showsReset: true)

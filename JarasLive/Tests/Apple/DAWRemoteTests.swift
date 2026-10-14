@@ -36,6 +36,23 @@ if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(linke
             "reciprocal stereo fader link identifiers roundtrip unchanged")
 } else { fatalError("linked track state packet") }
 print("REMOTE_STEREO_FADER_LINK_METADATA_AND_LEGACY_COMPATIBILITY_OK")
+require(fixture.tracks[0].parentTrack == nil, "older hosts omit optional folder metadata")
+var nestedFixture = fixture
+let folders = (0..<3).map { _ in UUID() }
+nestedFixture.tracks = folders.enumerated().map { index, id in
+    DAWRemoteState.Track(id: id, name: "Folder \(index)", color: 0x828282, volume: 1, pan: 0,
+        mute: false, solo: false, clips: [], parentTrack: index == 0 ? nil : folders[index - 1])
+} + fixture.tracks
+nestedFixture.tracks[3].parentTrack = folders[2]
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(nestedFixture)) {
+    let hierarchy = DAWRemoteTrackHierarchy(decoded.tracks)
+    require(hierarchy.ancestors(of: trackID) == folders, "three nested remote folders preserve the complete root-to-parent chain")
+    require(hierarchy.folders == Set(folders), "every ancestor is shown as a group")
+    require(hierarchy.ancestors(of: folders[0]).isEmpty, "the root group is not indented")
+    require(hierarchy.ancestors(of: folders[1]) == [folders[0]], "a group can also be a member of another group")
+    require(!decoded.tracks[3].hasSameMixerControls(as: fixture.tracks[0]), "reparenting invalidates mixer presentation")
+} else { fatalError("nested folder packet") }
+print("REMOTE_THREE_LEVEL_FOLDER_PARENT_METADATA_CHAIN_AND_LEGACY_COMPATIBILITY_OK")
 require(DAWRemoteFaderScale.gain(-60) == 0, "desktop fader lower endpoint is silent")
 require(DAWRemoteFaderScale.gain(0) == 1 && DAWRemoteFaderScale.decibels(1) == 0, "desktop fader unity")
 require(DAWRemoteFaderScale.decibels(4) == 12 && DAWRemoteFaderScale.gain(12) < 4, "desktop fader upper bound")

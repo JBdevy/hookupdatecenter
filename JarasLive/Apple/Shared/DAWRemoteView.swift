@@ -434,7 +434,7 @@ struct DAWRemoteClientView: View {
                           nameColor: JarasTheme.trackNameHex(track, emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute),
                           emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute, laneCount: items?.lanes ?? 1, linkedTrack: track.stereoLink?.partner, heightScale: track.heightScale,
                           peakDB: sendsPeaks && !track.kind.isText && track.kind != .timecode ? StemAudioPlayback.shared.meter(for: track.id).peakHold.decibels : nil,
-                          canMeter: !track.kind.isText && track.kind != .timecode)
+                          canMeter: !track.kind.isText && track.kind != .timecode, parentTrack: track.parentTrackID)
                 }, regions: cachedRegions, timelineRegions: cachedTimelineRegions,
                 currentRegion: transport.regionId, queuedRegion: transport.queuedRegionId, focusedRegion: show.focusedRegion,
                 position: transport.position, duration: cachedDuration,
@@ -1987,9 +1987,9 @@ private struct RemoteSidebarRail<Content: View>: View {
             .buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: active, fontSize: local ? 10 : 12, width: local ? 60 : 72, height: 28))
     }
     private var trackMixer: some View {
-        let hierarchy = TrackHierarchy(localShow?.current?.tracks ?? [])
-        let ancestors = Dictionary(uniqueKeysWithValues: visibleTracks.map { ($0.id, Array(hierarchy.ancestors(of: $0.id).reversed())) })
-        let folders = Set(localShow?.current?.tracks.compactMap(\.parentTrackID) ?? [])
+        let hierarchy = DAWRemoteTrackHierarchy(state.tracks)
+        let ancestors = Dictionary(uniqueKeysWithValues: visibleTracks.map { ($0.id, hierarchy.ancestors(of: $0.id)) })
+        let folders = hierarchy.folders
         let patchableTracks = Set(localShow?.current?.tracks.filter { $0.kind == .standard }.map(\.id) ?? [])
         return VStack(spacing: 1) {
             // Match the grid's region, marker and time lanes so both lists
@@ -2324,7 +2324,7 @@ private struct RemoteNativeTimeline: View {
     let seek: (Double) -> Void
     private var start: Double { local ? viewport.start : region?.start ?? 0 }
     private var end: Double { local ? viewport.end : region?.end ?? start }
-    private var span: Double { max(0.001, end - start) }
+    private var span: Double { local ? viewport.span : max(0.001, end - start) }
     private var zoomCursor: Double {
         if let transport = localShow?.snapshot.transport {
             if followsPlayback && transport.subPlay.playing { return transport.subPlay.position }
@@ -2638,7 +2638,7 @@ private struct RemoteNativeTimeline: View {
     }
     private func timelineRow(_ track: DAWRemoteState.Track, width: CGFloat, marks: [TimelineTimeRuler.Tick], nativeSong: Song?) -> some View {
         RemoteTimelineTrackRow(track: track, width: width, marks: marks, displayScale: displayScale,
-            start: start, end: end, hasRegion: local || region != nil, heightScale: scrolling.heightScale,
+            start: start, end: end, span: span, hasRegion: local || region != nil, heightScale: scrolling.heightScale,
             backgroundColor: state.gridBackgroundColor ?? UInt32(TimelineAppearanceDefaults.background),
             primaryColor: state.gridPrimaryColor ?? UInt32(TimelineAppearanceDefaults.primaryGrid),
             secondaryColor: state.gridSecondaryColor ?? UInt32(TimelineAppearanceDefaults.secondaryGrid),
@@ -2662,6 +2662,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     let displayScale: CGFloat
     let start: Double
     let end: Double
+    let span: Double
     let hasRegion: Bool
     let heightScale: Double
     let backgroundColor: UInt32
@@ -2684,7 +2685,6 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     var openItemMenu: ((UUID) -> Void)? = nil
     var openItemFX: ((UUID) -> Void)? = nil
     let control: (DAWRemoteCommand.Action, UUID, Double) -> Void
-    private var span: Double { max(0.001, end - start) }
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.project == rhs.project && lhs.song == rhs.song && lhs.scrolling === rhs.scrolling &&
             lhs.track.id == rhs.track.id && lhs.track.name == rhs.track.name && lhs.track.color == rhs.track.color &&
@@ -2692,7 +2692,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
             lhs.track.silenced == rhs.track.silenced &&
             lhs.track.laneCount == rhs.track.laneCount && lhs.track.heightScale == rhs.track.heightScale && lhs.track.emphasized == rhs.track.emphasized &&
             lhs.width == rhs.width && lhs.displayScale == rhs.displayScale && lhs.heightScale == rhs.heightScale &&
-            lhs.selectedItem == rhs.selectedItem && lhs.start == rhs.start && lhs.end == rhs.end && lhs.nativeRevision == rhs.nativeRevision && lhs.nativeDirectory == rhs.nativeDirectory && lhs.hasRegion == rhs.hasRegion && lhs.local == rhs.local &&
+            lhs.selectedItem == rhs.selectedItem && lhs.start == rhs.start && lhs.end == rhs.end && lhs.span == rhs.span && lhs.nativeRevision == rhs.nativeRevision && lhs.nativeDirectory == rhs.nativeDirectory && lhs.hasRegion == rhs.hasRegion && lhs.local == rhs.local &&
             lhs.backgroundColor == rhs.backgroundColor && lhs.primaryColor == rhs.primaryColor &&
             lhs.secondaryColor == rhs.secondaryColor && lhs.gridLines == rhs.gridLines &&
             lhs.marks.elementsEqual(rhs.marks) { $0.time == $1.time && $0.primary == $1.primary }
@@ -2773,7 +2773,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
             }
             if local, let nativeTrack = previewTrack, let nativeSong, let nativeDirectory {
                 IpadNativeWaveformRow(track: nativeTrack, song: nativeSong, remoteTrack: track, directory: nativeDirectory,
-                    start: start, end: end, width: width, heightScale: heightScale, revision: nativeRevision)
+                    start: start, end: end, span: span, width: width, heightScale: heightScale, revision: nativeRevision)
                     .allowsHitTesting(false)
             }
             if local, let selectedItem, let clip = previewClips.first(where: { $0.id == selectedItem }) {
@@ -2803,6 +2803,7 @@ private struct IpadNativeWaveformRow: View {
     let directory: URL
     let start: Double
     let end: Double
+    let span: Double
     let width: CGFloat
     let heightScale: Double
     let revision: UInt64
@@ -2810,7 +2811,7 @@ private struct IpadNativeWaveformRow: View {
     @State private var owner = TimelineWaveformVertexOwner()
     @State private var sources = IpadWaveformRowSources()
     var body: some View {
-        let scale = width / max(0.001, end - start)
+        let scale = width / max(0.001, span)
         let laneHeight = DAWRemoteItemLayout.laneHeight(remoteTrack, scale: heightScale)
         let viewport = CGRect(x: start * scale, y: 0, width: width, height: DAWRemoteItemLayout.rowHeight(remoteTrack, scale: heightScale))
         let lanes = Dictionary(uniqueKeysWithValues: remoteTrack.clips.map { ($0.id, $0.lane ?? 0) })
@@ -3147,6 +3148,28 @@ private struct RemoteNativeTrackButtonStyle: ButtonStyle {
             .frame(width: width + touchPadding, height: max(28, height)).contentShape(Rectangle())
     }
 }
+
+/// Fit the actual control strip, including touch widths, row padding, edit
+/// grip and folder gutter. Compact rows have no pan, so they can retain Patch
+/// and FX at a narrower width than the full-height row.
+private struct RemoteNativeTrackControlLayout {
+    let patch: Bool
+    let fx: Bool
+    let pan: Bool
+    init(width: CGFloat, compact: Bool, editing: Bool, hierarchyWidth: CGFloat,
+         isGroup: Bool, hasVolume: Bool, hasRecord: Bool, hasPatch: Bool, hasFX: Bool) {
+        let available = width - hierarchyWidth - (editing ? 36 : 6) - (hasVolume && !compact ? 19 : 6)
+            - (compact || !hasVolume ? 70 : 0) - (isGroup ? 14 : 0)
+        // M/S are always present. Each extra control contributes its real
+        // touch width and one 3-point gap.
+        let base: CGFloat = 32 + 3 + 32 + (hasRecord ? 28 + 3 : 0)
+        let panWidth: CGFloat = compact ? 0 : 52.5 + 3
+        let fxWidth: CGFloat = hasFX ? 32 + 3 : 0
+        pan = !compact && available >= base + panWidth
+        fx = hasFX && available >= base + panWidth + fxWidth
+        patch = hasPatch && available >= base + panWidth + fxWidth + 50 + 3
+    }
+}
 /// Keep the presented scroll view independent of transport/position snapshots.
 /// Stable playlist IDs retain its scroll position while the bridge updates.
 private struct RemoteNativePlaylistPicker: View, Equatable {
@@ -3363,15 +3386,15 @@ private struct RemoteNativeMixerRow: View, Equatable {
         let nativeTrack = localShow?.current?.tracks.first { $0.id == track.id }
         let kind = nativeTrack?.kind ?? .standard
         let hasVolume = !local || !kind.isText
-        let nameReserve: CGFloat = compact ? 70 : 0
-        let hierarchyWidth: CGFloat = local && !groupGuides.isEmpty ? 16 + CGFloat(min(4, groupGuides.count - 1)) * 8 : 0
-        let availableWidth = geometry.size.width - (editing ? 36 : 0) - hierarchyWidth
-        let panGrowth: CGFloat = compact ? 0 : 10.5
-        let patchVisible = !local || availableWidth >= 260 + nameReserve + panGrowth
-        let fxVisible = !local || availableWidth >= 205 + nameReserve + panGrowth
+        let hierarchyWidth: CGFloat = !groupGuides.isEmpty ? 16 + CGFloat(min(4, groupGuides.count - 1)) * 8 : 0
+        let controlLayout = RemoteNativeTrackControlLayout(width: geometry.size.width, compact: compact,
+            editing: editing, hierarchyWidth: hierarchyWidth, isGroup: isGroup, hasVolume: hasVolume,
+            hasRecord: localShow != nil && kind == .standard, hasPatch: openPatch != nil, hasFX: openFX != nil)
+        let patchVisible = !local || controlLayout.patch
+        let fxVisible = !local || controlLayout.fx
         // Compact rows keep only the button strip beside the name. Removing
         // the whole pan stack also removes its width and inter-control gap.
-        let panVisible = !compact && (!local || availableWidth >= 170 + nameReserve + panGrowth)
+        let panVisible = !compact && (!local || controlLayout.pan)
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 3) {
                 if compact || !hasVolume {
