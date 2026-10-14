@@ -1427,6 +1427,7 @@
 "Open Native mode to record audio." = "Abra o modo Nativo para gravar áudio.";
 "Audio services restarted. Close and reopen CatLive to restore audio." = "Os serviços de áudio foram reiniciados. Feche e reabra o CatLive para restaurar o áudio.";
 "Audio device disconnected. Playback stopped." = "Dispositivo de áudio desconectado. A reprodução foi parada.";
+"%ld REAPER markers before the first item or region were omitted." = "%ld marcadores do REAPER anteriores ao primeiro item ou região não foram importados.";
 
 "Some output channels are unavailable on this iPad." = "Alguns canais de saída não estão disponíveis neste iPad.";
 

@@ -408,6 +408,9 @@ public enum ReaperProjectImporter {
         let data = try Data(contentsOf: source, options: .mappedIfSafe)
         guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1252) else { throw invalid("Invalid text encoding.") }
         let root = try parse(text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{feff}")))
+        // CatLive starts at zero. Only projects with negative arrangement
+        // content move; every source interval keeps the same displacement.
+        let origin = try timelineOrigin(root)
         var hookState: [String: [String: String]] = [:]
         for section in root.child("EXTSTATE")?.children ?? [] where ["CHATGPT_REGION_PLAYLIST", "VS_HOOK_MULTILOOPS"].contains(section.header.first ?? "") {
             var values: [String: String] = [:]
@@ -446,7 +449,7 @@ public enum ReaperProjectImporter {
         project.masterMute = try root.integer("MASTERMUTESOLO") & 1 != 0
         let masterFX = try importFX(root.child("MASTERFXLIST") ?? root.child("MASTERFXCHAIN"), scope: "Master", resolve: resolveVST3, warnings: &warnings)
         project.masterFX = masterFX.settings
-        project.masterAutomation = try importAutomation(root, fx: masterFX.envelopes, scope: "Master", warnings: &warnings)
+        project.masterAutomation = try importAutomation(root, fx: masterFX.envelopes, offset: -origin, scope: "Master", warnings: &warnings)
         if try root.number("PLAYRATE", default: 1) != 1 { warnings.insert(unsupported) }
         let base = source.deletingLastPathComponent()
         let mediaRoot = "Stems/REAPER-" + UUID().uuidString
@@ -505,7 +508,7 @@ public enum ReaperProjectImporter {
             if node.value("FX") == "0", let plugins = track.fx?.externalPlugins {
                 track.fx?.externalPlugins = plugins.map { var plugin = $0; plugin.bypassed = true; return plugin }
             }
-            track.automation = try importAutomation(node, fx: importedFX.envelopes, scope: track.name, warnings: &warnings)
+            track.automation = try importAutomation(node, fx: importedFX.envelopes, offset: -origin, scope: track.name, warnings: &warnings)
             if !node.line("AUXRECV").isEmpty { warnings.insert(unsupported) }
             for item in node.children where item.header.first == "ITEM" {
                 // Each take is an independent item in CatLive. Keep inactive
@@ -516,7 +519,7 @@ public enum ReaperProjectImporter {
                 let activeTake = takes.first { $0 !== item && ($0.header.contains("SEL") || $0.value("SEL") == "1") } ?? takes.first
                 let playAllTakes = try item.integer("ALLTAKES") != 0
                 let start = try item.number("POSITION"), duration = try item.number("LENGTH")
-                guard start >= 0, duration > 0 else { throw invalid("Invalid item position or length.") }
+                guard duration > 0, (start + duration).isFinite else { throw invalid("Invalid item position or length.") }
                 for take in takes {
                 var clip = AudioClip(id: UUID(), name: take.value("NAME") ?? item.value("NAME") ?? "Item", startTime: start, duration: duration)
                 if let special {
@@ -660,7 +663,6 @@ public enum ReaperProjectImporter {
         for row in root.lines where row.first == "MARKER" {
             guard row.count >= 5, let flags = Int(row[4]) else { throw invalid("Invalid marker.") }
             let position = try number(row[2]), title = row[3].isEmpty ? "Marker " + row[1] : row[3]
-            guard position >= 0 else { throw invalid("Invalid marker position.") }
             let tint = color(row.count > 5 ? row[5] : nil)
             if flags & 1 != 0 {
                 if let begin = regionStarts.removeValue(forKey: row[1]) {
@@ -729,7 +731,7 @@ public enum ReaperProjectImporter {
             for row in tempo.lines where row.first == "PT" {
                 guard row.count >= 3 else { throw invalid("Invalid tempo point.") }
                 let position = try number(row[1]), bpm = try number(row[2])
-                if TimelineTempo.bpmRange.contains(bpm), position >= 0 {
+                if TimelineTempo.bpmRange.contains(bpm), position >= 0 || origin < 0 {
                     let signature = row.count > 4 ? Int(row[4]) ?? 0 : 0
                     if signature != 0 { song.beatsPerBar = signature & 0xffff; song.beatUnit = signature >> 16 }
                     let meterBeats = song.meterBeats, meterUnit = song.meterUnit
@@ -740,15 +742,63 @@ public enum ReaperProjectImporter {
         }
         // The initial meter is independent from later tempo/time-signature changes.
         song.beatsPerBar = try root.integer("TEMPO", 2, default: 4); song.beatUnit = try root.integer("TEMPO", 3, default: 4)
-        song.duration = max(1, song.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0, song.parts.map(\.endTime).max() ?? 0, song.markers?.map(\.position).max() ?? 0)
-        if song.parts.isEmpty { song.parts = [Part(id: UUID(), name: song.name, startTime: 0, endTime: song.duration)] }
+        let contentEnd = max(song.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? origin,
+                             song.parts.map(\.endTime).max() ?? origin, song.markers?.map(\.position).max() ?? origin)
+        song.duration = max(1, contentEnd)
+        if song.parts.isEmpty { song.parts = [Part(id: UUID(), name: song.name, startTime: origin, endTime: max(origin + 1, contentEnd))] }
         project.songs = [song]
         var hookWarnings = Set<String>()
         hook.apply(to: &project, warnings: &hookWarnings)
         for warning in hookWarnings { warnings.insert(warning) }
+        if origin < 0 { normalizeTimeline(in: &project, origin: origin, warnings: &warnings) }
         project.orderSpecialTracks()
         try project.validate()
         return ProjectMigration.Result(project: project, media: media.values.sorted { $0.relativePath < $1.relativePath }, warnings: warnings.values.sorted())
+    }
+    private static func timelineOrigin(_ root: Chunk) throws -> Double {
+        var origin = 0.0
+        for track in root.children where track.header.first == "TRACK" {
+            for item in track.children where item.header.first == "ITEM" {
+                origin = min(origin, try item.number("POSITION"))
+            }
+        }
+        for row in root.lines where row.first == "MARKER" {
+            guard row.count >= 5, let flags = Int(row[4]) else { throw invalid("Invalid marker.") }
+            if flags & 1 != 0 { origin = min(origin, try number(row[2])) }
+        }
+        return origin
+    }
+    private static func normalizeTimeline(in project: inout Project, origin: Double, warnings: inout Warnings) {
+        for index in project.songs.indices {
+            var song = project.songs[index]
+            for track in song.tracks.indices {
+                for clip in song.tracks[track].clips.indices { song.tracks[track].clips[clip].startTime -= origin }
+            }
+            for region in song.parts.indices {
+                song.parts[region].startTime -= origin
+                song.parts[region].endTime -= origin
+            }
+            let markers = song.markers ?? []
+            // Earlier tempo points define the state at the new beginning;
+            // they must not become negative markers in the native timeline.
+            let initialTempo = markers.filter { $0.isTempo && $0.position <= origin }.max { $0.position < $1.position }
+            let preceding = markers.filter { !$0.isTempo && $0.position < origin }
+            if !preceding.isEmpty { warnings.insert("%ld REAPER markers before the first item or region were omitted.", preceding.count) }
+            song.markers = markers.filter { $0.position >= origin }.map { source in
+                var marker = source; marker.position -= origin; return marker
+            }
+            if song.markers?.contains(where: { $0.isTempo && $0.position == 0 }) != true {
+                var marker = initialTempo ?? TimelineMarker(id: UUID(), name: String(format: "%g", song.bpm), position: 0,
+                    color: 0xAAAAAA, tempoBPM: song.bpm, tempoBeats: song.meterBeats, tempoUnit: song.meterUnit,
+                    tempoTimebase: .global, tempoReferenceBPM: song.bpm)
+                marker.position = 0
+                song.markers?.append(marker)
+            }
+            song.markers?.sort { $0.position < $1.position }
+            song.duration = max(1, song.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0,
+                                song.parts.map(\.endTime).max() ?? 0, song.markers?.map(\.position).max() ?? 0)
+            project.songs[index] = song
+        }
     }
     /// RPP MIDI uses source quarter notes. Integrate the original tempo map
     /// before flattening into the imported free timeline, including linear ramps.
@@ -758,13 +808,14 @@ public enum ReaperProjectImporter {
         init(_ root: Chunk) throws {
             let initial = try root.number("TEMPO", default: 120)
             guard initial > 0 else { throw invalid("Invalid MIDI project tempo.") }
-            var values = [Point(time: 0, bpm: initial, linear: false)]
+            var values: [Point] = []
             for row in root.child("TEMPOENVEX")?.lines ?? [] where row.first == "PT" {
                 guard row.count >= 3 else { throw invalid("Invalid tempo point.") }
                 let time = try number(row[1]), bpm = try number(row[2])
-                guard time >= 0, bpm > 0 else { throw invalid("Invalid MIDI tempo point.") }
+                guard bpm > 0 else { throw invalid("Invalid MIDI tempo point.") }
                 values.append(Point(time: time, bpm: bpm, linear: row.count > 3 && row[3] == "0"))
             }
+            values.insert(Point(time: min(0, values.map(\.time).min() ?? 0), bpm: initial, linear: false), at: 0)
             let sorted = values.enumerated().sorted { $0.element.time == $1.element.time ? $0.offset < $1.offset : $0.element.time < $1.element.time }
             var result: [Point] = []
             for entry in sorted {
