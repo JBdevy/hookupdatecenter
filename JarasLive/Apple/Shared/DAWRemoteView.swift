@@ -1915,6 +1915,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         let hierarchy = TrackHierarchy(localShow?.current?.tracks ?? [])
         let ancestors = Dictionary(uniqueKeysWithValues: visibleTracks.map { ($0.id, Array(hierarchy.ancestors(of: $0.id).reversed())) })
         let folders = Set(localShow?.current?.tracks.compactMap(\.parentTrackID) ?? [])
+        let patchableTracks = Set(localShow?.current?.tracks.filter { $0.kind == .standard }.map(\.id) ?? [])
         return VStack(spacing: 1) {
             // Match the grid's region, marker and time lanes so both lists
             // start at the same screen Y and have identical scroll limits.
@@ -1958,8 +1959,9 @@ private struct RemoteSidebarRail<Content: View>: View {
                             }.equatable().frame(height: DAWRemoteItemLayout.rowHeight(track, scale: trackScrolling.heightScale))
                                 .modifier(IpadTrackReorderModifier(show: localShow, track: track.id,
                                     enabled: local && editingTracks, controller: trackReordering))
-                                .modifier(IpadTrackAudioContextMenu(enabled: !editingTracks && groupableTracks.contains(track.id),
-                                    addAudio: addTrackAudio.map { callback in { callback(track.id) } }))
+                                .modifier(IpadTrackAudioContextMenu(enabled: local && !editingTracks,
+                                    openPatch: patchableTracks.contains(track.id) ? openPatch.map { callback in { callback(track.id) } } : nil,
+                                    addAudio: groupableTracks.contains(track.id) ? addTrackAudio.map { callback in { callback(track.id) } } : nil))
                         }
                     }
                     #if os(iOS)
@@ -3214,9 +3216,15 @@ private struct RemotePeakReadout: View, Equatable {
 
 private struct IpadTrackAudioContextMenu: ViewModifier {
     let enabled: Bool
+    let openPatch: (() -> Void)?
     let addAudio: (() -> Void)?
     @ViewBuilder func body(content: Content) -> some View {
-        if enabled, let addAudio { content.contextMenu { Button("Add Stems", action: addAudio) } }
+        if enabled, openPatch != nil || addAudio != nil {
+            content.contextMenu {
+                if let openPatch { Button("Patch", action: openPatch) }
+                if let addAudio { Button("Add Stems", action: addAudio) }
+            }
+        }
         else { content }
     }
 }

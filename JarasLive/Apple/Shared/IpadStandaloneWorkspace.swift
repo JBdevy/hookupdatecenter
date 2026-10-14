@@ -699,7 +699,11 @@ struct IpadTrackReorderModifier: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         if enabled, let show, show.current?.tracks.contains(where: { $0.id == track && $0.kind == .standard }) == true {
             content.overlay {
-                IpadTrackReorderSurface(show: show, track: track, controller: controller)
+                GeometryReader { geometry in
+                    IpadTrackReorderSurface(show: show, track: track, controller: controller, rowWidth: geometry.size.width)
+                        .frame(width: 36)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                }
             }
         } else { content }
     }
@@ -798,9 +802,11 @@ private struct IpadTrackReorderSurface: UIViewRepresentable {
     let show: ShowController
     let track: UUID
     let controller: IpadTrackReorderController
+    let rowWidth: CGFloat
     func makeUIView(context: Context) -> IpadTrackReorderView { IpadTrackReorderView() }
     func updateUIView(_ view: IpadTrackReorderView, context: Context) {
         view.show = show; view.track = track; view.controller = controller
+        view.rowWidth = rowWidth
         controller.register(view)
     }
     static func dismantleUIView(_ view: IpadTrackReorderView, coordinator: ()) { view.controller?.unregister(view) }
@@ -809,6 +815,7 @@ private final class IpadTrackReorderView: UIControl, UIGestureRecognizerDelegate
     weak var show: ShowController?
     var track: UUID?
     weak var controller: IpadTrackReorderController?
+    var rowWidth: CGFloat = 0 { didSet { if oldValue != rowWidth { setNeedsLayout() } } }
     let grip = UIImageView(image: UIImage(systemName: "line.3.horizontal"))
     private let insertion = CALayer()
     private var insertionAfter: Bool?
@@ -853,7 +860,7 @@ private final class IpadTrackReorderView: UIControl, UIGestureRecognizerDelegate
     private func layoutInsertion() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         insertion.isHidden = insertionAfter == nil
-        insertion.frame = CGRect(x: 0, y: insertionAfter == true ? max(0, bounds.height - 2) : 0, width: bounds.width, height: 2)
+        insertion.frame = CGRect(x: bounds.width - rowWidth, y: insertionAfter == true ? max(0, bounds.height - 2) : 0, width: rowWidth, height: 2)
         CATransaction.commit()
     }
     @objc private func dragged(_ gesture: UIPanGestureRecognizer) {

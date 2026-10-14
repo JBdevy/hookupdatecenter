@@ -12,7 +12,7 @@ enum DAWRemoteCommand { enum Action:String { case pan,volume,mute,solo,resetMete
 enum TrackKind { case standard,click,chords;var isText:Bool{self == .chords};var isTeleprompter:Bool{false} }
 struct Track {let id:UUID;var kind:TrackKind = .standard}
 struct Song {var tracks:[Track]}
-@MainActor final class ShowController {var current:Song?;init(_ tracks:[Track]){current=Song(tracks:tracks)};func insertClickItems(track:UUID){TouchProbe.shared.log("insert")}}
+@MainActor final class ShowController {var current:Song?;init(_ tracks:[Track]){current=Song(tracks:tracks)};func insertClickItems(track:UUID){TouchProbe.shared.log("insert")};var canDrop:Bool{true};func canDropTrack(_ source:UUID,on target:UUID,after:Bool)->Bool{source != target};func dropTrack(_ source:UUID,on target:UUID,before:UUID?){TouchProbe.shared.log("reorder")}}
 @MainActor final class TouchProbe:ObservableObject {
  static let shared=TouchProbe();@Published var event="none";@Published var selection=0;@Published var editing=false
  @Published var muted=false;@Published var solo=false
@@ -32,6 +32,7 @@ enum JarasLocalization {static func string(_ key:String)->String{key}}
 @main struct TouchFixtureApp:App {var body:some Scene{WindowGroup{TouchFixtureView()}}}
 struct TouchFixtureView:View {
  @ObservedObject var probe=TouchProbe.shared
+ @StateObject private var reordering=IpadTrackReorderController()
  let id=UUID(uuidString:"00000000-0000-0000-0000-000000000001")!
  let click=UUID(uuidString:"00000000-0000-0000-0000-000000000002")!
  let text=UUID(uuidString:"00000000-0000-0000-0000-000000000003")!
@@ -48,7 +49,7 @@ struct TouchFixtureView:View {
      number:1,local:true,localShow:show,editing:probe.editing,selected:probe.selection>0,
      select:{probe.selection+=1},selectionMenu:{probe.log("menu")},openPatch:{probe.log("patch")},openFX:{probe.log("fx")}){action,value in
       probe.log(action.rawValue);if action == .mute{probe.muted.toggle()};if action == .solo{probe.solo.toggle()}
-    }.frame(width:450,height:90).accessibilityIdentifier("normal-row")
+    }.frame(width:450,height:90).modifier(IpadTrackReorderModifier(show:show,track:id,enabled:probe.editing,controller:reordering)).modifier(IpadTrackAudioContextMenu(enabled:!probe.editing,openPatch:{probe.log("context-patch")},addAudio:{probe.log("add-audio")})).accessibilityIdentifier("normal-row")
     RemoteNativeMixerRow(track:.init(id:click,name:"Click track"),project:id,song:nil,number:2,local:true,localShow:show,select:{probe.selection+=1}){action,_ in probe.log(action.rawValue)}.frame(width:450,height:90).accessibilityIdentifier("click-row")
     RemoteNativeMixerRow(track:.init(id:text,name:"Text track"),project:id,song:nil,number:3,local:true,localShow:show,select:{probe.selection+=1},addText:{probe.log("text")}){action,_ in probe.log(action.rawValue)}.frame(width:450,height:60)
     ForEach(0..<12){n in Text("Track \(n)").frame(width:450,height:90).background(Color.gray)}
