@@ -14,5 +14,5 @@ source = source.replace('private weak var show:', 'weak var show:').replace('pri
 source = source.replace('guard NSApp.isActive, transferRequest == nil', 'guard mappingTestApplicationActive, transferRequest == nil')
 Path(sys.argv[1]).write_text(source)
 PY
-swiftc -parse-as-library Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift "$test_dir/ControlMappings.swift" Application/Controls/ControlInput.swift Application/Controls/DAWActions.swift Application/Controls/NativeFXParameter.swift Application/Project/NativeFXSettings.swift Application/Project/MIDIFaderValue.swift Tests/Apple/MIDIMappingTests.swift -o "$test_dir/mapping-tests"
+swiftc -enable-actor-data-race-checks -parse-as-library Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift "$test_dir/ControlMappings.swift" Application/Controls/ControlInput.swift Application/Controls/DAWActions.swift Application/Controls/NativeFXParameter.swift Application/Project/NativeFXSettings.swift Application/Project/MIDIFaderValue.swift Tests/Apple/MIDIMappingTests.swift -o "$test_dir/mapping-tests"
 "$test_dir/mapping-tests"

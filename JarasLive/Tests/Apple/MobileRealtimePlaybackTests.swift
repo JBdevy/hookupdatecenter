@@ -30,10 +30,14 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
     var project = Project.empty(name: "iPad shared Patch PCM")
     let folder = Track(id: UUID(), name: "Folder", role: .other, volume: 0.5)
     var child = Track(id: UUID(), name: "Stereo source", role: .other)
-    child.parentTrackID = folder.id
+    var middle = Track(id: UUID(), name: "Middle folder", role: .other, volume: 0.5)
+    middle.parentTrackID = folder.id
+    var inner = Track(id: UUID(), name: "Inner folder", role: .other, volume: 0.5)
+    inner.parentTrackID = middle.id
+    child.parentTrackID = inner.id
     child.outputs = [.masterGroup]
     child.clips = [AudioClip(id: UUID(), name: "Stereo", startTime: 0, duration: 15, audioFile: AudioFile(path: "stereo.wav"))]
-    project.songs[0].tracks = [folder, child]
+    project.songs[0].tracks = [folder, middle, inner, child]
     try project.validate()
     let snapshot = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
         position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
@@ -61,11 +65,21 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
         precondition(zip(actual, expected).allSatisfy { abs($0 - $1) < 0.00005 }, "\(label): \(actual), expected \(expected)")
         print("MOBILE_REALTIME_GRAPH_PCM rate=\(rate) \(label): \(actual)")
     }
-    try check([0.04, 0.06, 0, 0, 0, 0], "first Play group to Master")
+    try check([0.01, 0.015, 0, 0, 0, 0], "first Play through three nested folders to Master")
+    audio.previewMute(middle.id, muted: true)
+    try check([0, 0, 0, 0, 0, 0], "middle folder Mute gates the full nested path")
+    audio.previewMute(middle.id, muted: false)
+    try check([0.01, 0.015, 0, 0, 0, 0], "middle folder unmute restores nested audio")
+    audio.previewSolo(child.id, solo: true)
+    try check([0.01, 0.015, 0, 0, 0, 0], "leaf Solo keeps all three ancestors audible")
+    audio.previewSolo(child.id, solo: false)
+    audio.previewSolo(middle.id, solo: true)
+    try check([0.01, 0.015, 0, 0, 0, 0], "middle folder Solo keeps its descendants and ancestors")
+    audio.previewSolo(middle.id, solo: false)
     audio.previewPatches(child.id, patches: [OutputPatch(firstChannel: 3, channelCount: 2)])
     try check([0, 0, 0.08, 0.12, 0, 0], "direct 3+4")
     audio.previewPatches(child.id, patches: [.masterGroup, OutputPatch(firstChannel: 3, channelCount: 2)])
-    try check([0.04, 0.06, 0.08, 0.12, 0, 0], "four simultaneous outputs")
+    try check([0.01, 0.015, 0.08, 0.12, 0, 0], "four simultaneous outputs")
     driver.gate(); driver.stop()
     audio.suspendDeviceSession()
     var stopped = snapshot; stopped.transport.playing = false
@@ -74,6 +88,6 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
     try check([0, 0, 0, 0, 0, 0], "stopped route recreation")
     var resumed = stopped; resumed.transport.playing = true
     try audio.update(resumed, revision: 2)
-    try check([0.04, 0.06, 0, 0, 0, 0], "Play after reconnect")
+    try check([0.01, 0.015, 0, 0, 0, 0], "Play after reconnect")
 }
 try MainActor.assumeIsolated { try verifyRealtimeMobileDriver() }

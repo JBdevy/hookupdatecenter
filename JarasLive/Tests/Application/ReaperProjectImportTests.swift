@@ -9,6 +9,48 @@ final class ReaperProjectImportTests: XCTestCase {
         try text.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
+    func testThreeNestedFoldersKeepImmediateParentsAndCloseMultipleLevels() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          <TRACK
+            NAME Root
+            ISBUS 1 1
+          >
+          <TRACK
+            NAME Middle
+            ISBUS 1 1
+          >
+          <TRACK
+            NAME Inner
+            ISBUS 1 1
+          >
+          <TRACK
+            NAME Deepest
+            ISBUS 2 -2
+          >
+          <TRACK
+            NAME RootMember
+            ISBUS 2 -1
+          >
+          <TRACK
+            NAME Outside
+            ISBUS 0 0
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(source)
+        let song = result.project.songs[0], tracks = song.tracks
+        XCTAssertEqual(tracks.map(\.name), ["Root", "Middle", "Inner", "Deepest", "RootMember", "Outside"])
+        XCTAssertEqual(tracks.map(\.parentTrackID), [nil, tracks[0].id, tracks[1].id, tracks[2].id, tracks[0].id, nil])
+        XCTAssertEqual(TrackHierarchy(tracks).ancestors(of: tracks[3].id), [tracks[2].id, tracks[1].id, tracks[0].id])
+        XCTAssertEqual(tracks[3].outputPatches, [.masterGroup])
+        XCTAssertEqual(tracks[5].outputPatches, [.master])
+        XCTAssertEqual(song.trackGroupDepths[tracks[3].id], 3)
+        XCTAssertFalse(result.warnings.contains { $0.contains("Nested REAPER") })
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
+    }
     func testMalformedTakeNestingFailsWithoutCrashingOrChangingSource() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -126,7 +168,7 @@ final class ReaperProjectImportTests: XCTestCase {
         let song = result.project.songs[0]
         XCTAssertEqual(song.tracks.count, 3)
         XCTAssertEqual(song.tracks[1].parentTrackID, song.tracks[0].id)
-        XCTAssertEqual(song.tracks[2].parentTrackID, song.tracks[0].id)
+        XCTAssertEqual(song.tracks[2].parentTrackID, song.tracks[1].id)
         XCTAssertEqual(song.tracks[2].volume, 0.5)
         XCTAssertEqual(song.tracks[2].pan, -0.25)
         XCTAssertTrue(song.tracks[2].mute)

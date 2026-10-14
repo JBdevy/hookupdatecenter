@@ -1056,7 +1056,6 @@
 "Project migration" = "Migração de projeto";
 "REAPER effects, automation, sends, pitch processing and advanced playback settings are not converted. Review the migrated mix." = "Efeitos, automações, envios, processamento de afinação e ajustes avançados de reprodução do REAPER não são convertidos. Revise a mixagem importada.";
 "REAPER mixer volumes above +12 dB were limited to the CatLive mixer range." = "Volumes acima de +12 dB no mixer do REAPER foram limitados à faixa do mixer do CatLive.";
-"Nested REAPER folders were placed inside their top-level group." = "Pastas aninhadas do REAPER foram colocadas dentro do grupo principal.";
 "Only the active REAPER take is imported for each item." = "Somente o take ativo de cada item do REAPER é importado.";
 "Loop lengths for offline REAPER audio could not be determined. Review looped items after locating the files." = "Não foi possível determinar a duração dos loops de áudios ausentes do REAPER. Revise os itens em loop após localizar os arquivos.";
 "REAPER MIDI, video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound." = "MIDI, vídeo e fontes não suportadas do REAPER são mantidos como itens vazios. Renderize-os em áudio no REAPER para migrar o som.";
@@ -1424,7 +1423,6 @@
 "Audio is interrupted by another app. Try again when it finishes." = "O áudio foi interrompido por outro app. Tente novamente quando ele terminar.";
 "Open Native mode to record audio." = "Abra o modo Nativo para gravar áudio.";
 "Audio device disconnected. Playback stopped." = "Dispositivo de áudio desconectado. A reprodução foi parada.";
-"%ld REAPER markers before the first item or region were omitted." = "%ld marcadores do REAPER anteriores ao primeiro item ou região não foram importados.";
 
 "Some output channels are unavailable on this iPad." = "Alguns canais de saída não estão disponíveis neste iPad.";
 
@@ -1640,3 +1638,5 @@
 "Parts show/hide" = "Mostrar/ocultar Parts";
 
 "Loading waveforms…" = "Carregando waveforms…";
+
+"%ld REAPER items before the project start were ignored." = "%ld itens do REAPER anteriores ao início do projeto foram ignorados.";

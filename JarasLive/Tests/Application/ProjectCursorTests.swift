@@ -258,7 +258,10 @@ final class ProjectCursorTests: XCTestCase {
         show.send(.pause)
         let gridRequest = show.regionFocusRequest, listRequest = show.setlistFocusRequest
         show.stepRegion(1)
-        try await Task.sleep(nanoseconds: 300_000_000)
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while show.setlistFocusRequest == listRequest && ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(show.focusedRegion, second.id)
         XCTAssertEqual(show.regionFocusRequest, gridRequest)
         XCTAssertNotEqual(show.setlistFocusRequest, listRequest)

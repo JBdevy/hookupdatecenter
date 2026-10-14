@@ -1056,7 +1056,6 @@
 "Project migration" = "Project migration";
 "REAPER effects, automation, sends, pitch processing and advanced playback settings are not converted. Review the migrated mix." = "REAPER effects, automation, sends, pitch processing and advanced playback settings are not converted. Review the migrated mix.";
 "REAPER mixer volumes above +12 dB were limited to the CatLive mixer range." = "REAPER mixer volumes above +12 dB were limited to the CatLive mixer range.";
-"Nested REAPER folders were placed inside their top-level group." = "Nested REAPER folders were placed inside their top-level group.";
 "Only the active REAPER take is imported for each item." = "Only the active REAPER take is imported for each item.";
 "Loop lengths for offline REAPER audio could not be determined. Review looped items after locating the files." = "Loop lengths for offline REAPER audio could not be determined. Review looped items after locating the files.";
 "REAPER MIDI, video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound." = "REAPER MIDI, video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound.";
@@ -1388,7 +1387,6 @@
 "Audio is interrupted by another app. Try again when it finishes." = "Audio is interrupted by another app. Try again when it finishes.";
 "Open Native mode to record audio." = "Open Native mode to record audio.";
 "Audio device disconnected. Playback stopped." = "Audio device disconnected. Playback stopped.";
-"%ld REAPER markers before the first item or region were omitted." = "%ld REAPER markers before the first item or region were omitted.";
 
 "Some output channels are unavailable on this iPad." = "Some output channels are unavailable on this iPad.";
 
@@ -1604,3 +1602,5 @@
 "Parts show/hide" = "Parts show/hide";
 
 "Loading waveforms…" = "Loading waveforms…";
+
+"%ld REAPER items before the project start were ignored." = "%ld REAPER items before the project start were ignored.";

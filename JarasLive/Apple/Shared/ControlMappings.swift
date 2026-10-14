@@ -78,11 +78,11 @@ struct MappingTransferRequest: Identifiable {
         }
         #endif
         if client == 0 {
-            let result = MIDIClientCreateWithBlock("CatLive Controls" as CFString, &client) { [weak self] _ in
+            let result = MIDIClientCreateWithBlock("CatLive Controls" as CFString, &client) { @Sendable [weak self] _ in
                 Task { @MainActor [weak self] in self?.refreshSources() }
             }
             guard result == noErr else { error = "MIDI initialization failed (\(result))"; return }
-            let resultPort = MIDIInputPortCreateWithProtocol(client, "CatLive Input" as CFString, ._1_0, &port) { [weak self] list, context in
+            let resultPort = MIDIInputPortCreateWithProtocol(client, "CatLive Input" as CFString, ._1_0, &port) { @Sendable [weak self] list, context in
                 let endpoint = MIDIEndpointRef(UInt(bitPattern: context))
                 var packet = UnsafeRawPointer(list).advanced(by: MemoryLayout<MIDIEventList>.offset(of: \.packet)!).assumingMemoryBound(to: MIDIEventPacket.self)
                 var messages: [(UInt8, UInt8, UInt8, Double)] = []
@@ -101,7 +101,8 @@ struct MappingTransferRequest: Identifiable {
                     }
                     packet = UnsafePointer(MIDIEventPacketNext(packet))
                 }
-                if !messages.isEmpty { Task { @MainActor [weak self] in for message in messages { self?.receive(endpoint: endpoint, status: message.0, number: message.1, value: message.2, timestamp: message.3) } } }
+                let received = messages
+                if !received.isEmpty { Task { @MainActor [weak self] in for message in received { self?.receive(endpoint: endpoint, status: message.0, number: message.1, value: message.2, timestamp: message.3) } } }
             }
             if resultPort != noErr { error = "MIDI input failed (\(resultPort))" }
         }

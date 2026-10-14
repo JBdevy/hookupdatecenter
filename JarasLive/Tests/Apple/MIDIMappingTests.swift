@@ -337,5 +337,42 @@ enum ProjectError: Error { case invalid(String) }
         print("ENVELOPE_DELETE_ESCAPE_KEYS_BEFORE_GLOBAL_MAPPINGS_OK")
         parent.orderOut(nil)
         print("DIALOG_ENTER_ESCAPE_PRIORITY_AND_TRANSPORT_RESTORATION_OK")
+        // Exercise the real CoreMIDI receive thread, not only the injected
+        // learner calls above. Actor race checks stay enabled in this harness.
+        var virtualClient: MIDIClientRef = 0, virtualSource: MIDIEndpointRef = 0
+        precondition(MIDIClientCreateWithBlock("CatLive mapping test source" as CFString, &virtualClient, nil) == noErr)
+        precondition(MIDISourceCreateWithProtocol(virtualClient, "CatLive virtual controller" as CFString, ._1_0, &virtualSource) == noErr)
+        defer { MIDIEndpointDispose(virtualSource); MIDIClientDispose(virtualClient) }
+        var sourceID: Int32 = 0
+        precondition(MIDIObjectGetIntegerProperty(virtualSource, kMIDIPropertyUniqueID, &sourceID) == noErr)
+        AudioDeviceSettings.shared.midiSlots = [sourceID]
+        mappings.bind(show)
+        mappings.beginAction(.play, kind: "midi")
+        func transmit(_ words: UInt32...) {
+            var list = MIDIEventList()
+            withUnsafeMutablePointer(to: &list) { pointer in
+                let packet = MIDIEventListInit(pointer, ._1_0)
+                words.withUnsafeBufferPointer { buffer in
+                    _ = MIDIEventListAdd(pointer, MemoryLayout<MIDIEventList>.size, packet, 0, buffer.count, buffer.baseAddress!)
+                }
+                precondition(MIDIReceivedEventList(virtualSource, pointer) == noErr)
+            }
+        }
+        transmit(0x20936364) // Group 0, channel 4, note 99, velocity 100.
+        var deadline = ProcessInfo.processInfo.systemUptime + 3
+        while mappings.candidate == nil && ProcessInfo.processInfo.systemUptime < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        precondition(mappings.candidate?.device == sourceID && mappings.candidate?.channel == 3 && mappings.candidate?.number == 99, "real UMP messages reach the MIDI learner on MainActor")
+        mappings.save()
+        let beforePlay = show.actionsReceived.count
+        transmit(0x20836300, 0x20936364)
+        deadline = ProcessInfo.processInfo.systemUptime + 3
+        while show.actionsReceived.count == beforePlay && ProcessInfo.processInfo.systemUptime < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        precondition(show.actionsReceived.count == beforePlay + 1 && show.actionsReceived.last == .play)
+        print("REAL_COREMIDI_UMP_PORT_LEARNING_AND_MAPPED_PLAY_ON_MAIN_ACTOR_OK")
+
     }
 }
