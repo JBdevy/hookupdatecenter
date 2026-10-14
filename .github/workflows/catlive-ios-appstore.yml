@@ -76,7 +76,9 @@ jobs:
           done
 
       - name: Testar modelo de projetos e importação
-        run: swift test --package-path JarasLive --jobs 2
+        run: |
+          swift test --package-path JarasLive --jobs 2
+          bash JarasLive/scripts/test-ipad-transport-layout.sh
 
       - name: Preparar assinatura e chave de envio
         env:
