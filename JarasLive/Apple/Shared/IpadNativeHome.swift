@@ -157,9 +157,18 @@ private struct NativeProjectPicker: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
         let owner: NativeProjectPicker
+        private var completed = false
         init(_ owner: NativeProjectPicker) { self.owner = owner }
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { owner.picked(urls) }
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { owner.cancelled() }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard !completed else { return }
+            completed = true
+            owner.picked(urls)
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            guard !completed else { return }
+            completed = true
+            owner.cancelled()
+        }
     }
 }
 
@@ -184,9 +193,10 @@ struct NativeProjectPresentation: ViewModifier {
         content
             .sheet(item: $documents.nativePicker, onDismiss: pickerDismissed) { kind in
                 NativeProjectPicker(kind: kind, picked: { urls in
+                    guard documents.nativePicker == kind, pickerSelection == nil else { return }
                     pickerSelection = NativeProjectPickerSelection(urls: urls, kind: kind)
                     documents.nativePicker = nil
-                }, cancelled: { documents.nativePicker = nil })
+                }, cancelled: { if documents.nativePicker == kind { documents.nativePicker = nil } })
                     // UIKit's Files controller handles its own keyboard and
                     // rename popovers; a second SwiftUI resize can steal focus.
                     .ignoresSafeArea(.keyboard, edges: .bottom)

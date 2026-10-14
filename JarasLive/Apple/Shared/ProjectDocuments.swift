@@ -28,6 +28,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     private var nativePackageScope: URL?
     private var nativePendingPackage: URL?
     func continueNativePackageImport(_ prompt: PortableProjectImportPrompt) {
+        guard nativePackagePrompt == prompt else { return }
         nativePackagePrompt = nil
         guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
             cancelNativePackageImport(); return
@@ -48,20 +49,25 @@ enum PortableProjectImportPrompt: String, Identifiable {
         // changing the default project folder or moving any existing projects.
         for data in UserDefaults.standard.array(forKey: "jaras.nativeImportedProjectBookmarks") as? [Data] ?? [] {
             if let root = try? Self.resolveNativeImportBookmark(data), root.startAccessingSecurityScopedResource() {
-                nativeStorageScopes.append(root)
+                if (try? NativeProjectFolderStorage.externalRoot(root, container: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))) != nil {
+                    nativeStorageScopes.append(root)
+                } else { root.stopAccessingSecurityScopedResource() }
             }
         }
         let bookmarks = UserDefaults.standard.array(forKey: "jaras.nativeStorageBookmarks") as? [Data] ?? []
         for (index, data) in bookmarks.enumerated() {
             do {
                 var stale = false
-                let root = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
-                guard root.startAccessingSecurityScopedResource() else { continue }
-                nativeStorageScopes.append(root)
-                if index == 0 {
-                    nativeStorageDirectory = root.lastPathComponent == "CatLive" ? root.appendingPathComponent("Projects", isDirectory: true)
-                        : root.appendingPathComponent("CatLive/Projects", isDirectory: true)
-                }
+                let selected = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+                guard selected.startAccessingSecurityScopedResource() else { continue }
+                do {
+                    let root = try NativeProjectFolderStorage.externalRoot(selected, container: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
+                    nativeStorageScopes.append(selected)
+                    if index == 0 {
+                        nativeStorageDirectory = root.lastPathComponent == "CatLive" ? root.appendingPathComponent("Projects", isDirectory: true)
+                            : root.appendingPathComponent("CatLive/Projects", isDirectory: true)
+                    }
+                } catch { selected.stopAccessingSecurityScopedResource(); throw error }
             } catch { self.error = "Choose the external project folder again to restore access." }
         }
     }
@@ -229,6 +235,9 @@ enum PortableProjectImportPrompt: String, Identifiable {
         guard panel.runModal() == .OK, let selected = panel.url else { return }
         importPortablePackage(url, into: selected.resolvingSymlinksInPath())
         #else
+        // The selected archive owns this import until destination or cancel.
+        // A late Files/Open URL callback must not restart its destination step.
+        guard nativePendingPackage == nil, nativePackagePrompt == nil else { return }
         cancelNativePackageImport()
         nativePendingPackage = url
         if url.startAccessingSecurityScopedResource() { nativePackageScope = url }
@@ -866,6 +875,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         panel.title = JarasLocalization.string("Choose a CatLive project")
         if panel.runModal() == .OK, let url = panel.url { importPortablePackage(url) }
         #else
+        guard nativePicker == nil, nativePackagePrompt == nil, nativePendingPackage == nil else { return }
         cancelNativePackageImport()
         nativePackagePrompt = .file
         #endif

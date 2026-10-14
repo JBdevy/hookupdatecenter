@@ -2,6 +2,30 @@ import XCTest
 @testable import JarasApplication
 
 final class NativeProjectFolderTests: XCTestCase {
+    func testExtractedPortableProjectSurvivesAppContainerDeletion() async throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: base) }
+        let container = base.appendingPathComponent("app", isDirectory: true)
+        let source = container.appendingPathComponent("Documents/Original", isDirectory: true)
+        try fm.createDirectory(at: source.appendingPathComponent("Stems"), withIntermediateDirectories: true)
+        let audio = Data(repeating: 77, count: 40000)
+        try audio.write(to: source.appendingPathComponent("Stems/audio.wav"))
+        var project = Project.empty(name: "External import")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        track.clips = [AudioClip(id: UUID(), name: "Audio", startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/audio.wav"))]
+        project.songs[0].tracks = [track]
+        let archive = base.appendingPathComponent("Show.ziplive")
+        _ = try await PortableProjectPackage.export(project: project, directory: source, to: archive)
+        let external = try NativeProjectFolderStorage.externalRoot(base.appendingPathComponent("User projects"), container: container)
+        let imported = try await PortableProjectPackage.importPackage(archive, into: external)
+        try fm.removeItem(at: container)
+        XCTAssertEqual(try ProjectDocumentCodec.decode(Data(contentsOf: imported.document)), project)
+        let media = try XCTUnwrap(imported.project.mediaPaths.first)
+        XCTAssertEqual(try Data(contentsOf: imported.document.deletingLastPathComponent().appendingPathComponent(media)), audio)
+        let restored = try NativeProjectFolderStorage.prepare(root: external, legacy: container.appendingPathComponent("Documents/CatLive/Projects"), container: container)
+        XCTAssertTrue(restored.documents.map { $0.resolvingSymlinksInPath() }.contains(imported.document.resolvingSymlinksInPath()))
+    }
     func testExternalCopySurvivesContainerDeletionAndRediscoversProjects() throws {
         let fm = FileManager.default
         let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
