@@ -3,7 +3,7 @@ set -euo pipefail
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-REPO='JBdevy/hookupdatecenter'
+REPO='JBdevy/vshookapploja'
 WORKFLOW='catlive-ios-appstore.yml'
 
 finish() {
@@ -34,7 +34,7 @@ fi
 VERSION="${VERSION#v}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]{2}$ ]] || { echo 'Use a versão no formato X.XX (ex.: 1.00).' >&2; exit 1; }
 
-REQUIRED_SECRETS=(IOS_TEAM_ID IOS_CERT_P12_BASE64 IOS_CERT_PASSWORD IOS_PROVISION_PROFILE_BASE64 APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_API_KEY_P8_BASE64)
+REQUIRED_SECRETS=(IOS_TEAM_ID IOS_CERT_P12_BASE64 IOS_CERT_PASSWORD CATLIVE_IOS_PROVISION_PROFILE_BASE64 CATLIVE_APP_STORE_CONNECT_KEY_ID CATLIVE_APP_STORE_CONNECT_ISSUER_ID CATLIVE_APP_STORE_CONNECT_API_KEY_P8_BASE64)
 AVAILABLE_SECRETS="$(gh secret list --repo "$REPO" --json name --jq '.[].name')"
 MISSING=0
 for name in "${REQUIRED_SECRETS[@]}"; do
@@ -64,12 +64,12 @@ fi
 
 git push origin "$BRANCH"
 HEAD_SHA="$(git rev-parse HEAD)"
-BEFORE_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --event workflow_dispatch --branch "$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
-gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$BRANCH" -f "version=$VERSION"
+BEFORE_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --event workflow_dispatch --branch main --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+gh workflow run "$WORKFLOW" --repo "$REPO" --ref main -f "version=$VERSION" -f "source_ref=$HEAD_SHA"
 
 RUN_ID=''
 for attempt in $(seq 1 30); do
-  RUN_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --event workflow_dispatch --branch "$BRANCH" --limit 20 --json databaseId,headSha --jq ".[] | select(.headSha == \"$HEAD_SHA\" and .databaseId > $BEFORE_ID) | .databaseId" | head -n 1)"
+  RUN_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --event workflow_dispatch --branch main --limit 20 --json databaseId,displayTitle --jq ".[] | select(.displayTitle == \"CatLive iOS $VERSION - $HEAD_SHA\" and .databaseId > $BEFORE_ID) | .databaseId" | head -n 1)"
   [[ -n "$RUN_ID" ]] && break
   sleep 2
 done

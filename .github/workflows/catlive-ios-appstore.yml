@@ -1,16 +1,34 @@
 name: CatLive iOS - App Store Connect
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       version:
-        description: 'Versão pública X.XX (mantém a mesma versão do Mac)'
         required: true
-        default: '1.01'
+        type: string
       build_number:
-        description: 'Build inteiro; vazio usa 1000 + número desta execução'
         required: false
+        type: string
         default: ''
+      source_ref:
+        description: 'Commit exato do CatLive no repositório hookupdatecenter'
+        required: true
+        type: string
+    secrets:
+      IOS_TEAM_ID:
+        required: true
+      IOS_CERT_P12_BASE64:
+        required: true
+      IOS_CERT_PASSWORD:
+        required: true
+      IOS_PROVISION_PROFILE_BASE64:
+        required: true
+      APP_STORE_CONNECT_KEY_ID:
+        required: true
+      APP_STORE_CONNECT_ISSUER_ID:
+        required: true
+      APP_STORE_CONNECT_API_KEY_P8_BASE64:
+        required: true
 
 permissions:
   contents: read
@@ -32,6 +50,10 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          repository: JBdevy/hookupdatecenter
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
 
       - name: Conferir versão e credenciais
         env:
