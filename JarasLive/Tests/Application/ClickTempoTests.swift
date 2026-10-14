@@ -132,7 +132,12 @@ final class ClickTempoTests: XCTestCase {
             for count in [8, 48, 600] {
                 for accent in [3, 4, 8] {
                     let delay = accent == 3 ? 0.015 : 0.025
-                    let onsets = (0..<count).map { 0.123 + Double($0) * 60 / bpm + ($0 % accent == 0 ? delay : 0) }
+                    let beatDuration: Double = 60.0 / bpm
+                    let onsets: [Double] = (0..<count).map { index in
+                        let beat: Double = 0.123 + Double(index) * beatDuration
+                        let attack: Double = index % accent == 0 ? delay : 0.0
+                        return beat + attack
+                    }
                     let result = ClickTempoDetector.sections(onsets: onsets)
                     XCTAssertEqual(result, [.init(position: onsets[0], bpm: bpm)], "\(bpm) BPM, \(count) clicks, accent \(accent)")
                 }
@@ -141,7 +146,12 @@ final class ClickTempoTests: XCTestCase {
     }
     func testFractionalClockWithRepeatingAttackOffsetsIsNotForcedToAnInteger() {
         let bpm = 130.6
-        let onsets = (0..<600).map { 0.123 + Double($0) * 60 / bpm + ($0 % 4 == 0 ? 0.009 : 0) }
+        let beatDuration: Double = 60.0 / bpm
+        let onsets: [Double] = (0..<600).map { index in
+            let beat: Double = 0.123 + Double(index) * beatDuration
+            let attack: Double = index % 4 == 0 ? 0.009 : 0.0
+            return beat + attack
+        }
         let sections = ClickTempoDetector.sections(onsets: onsets)
         XCTAssertTrue(sections.allSatisfy { abs($0.bpm - 131) > 0.01 })
         assertPhase(sections, follows: onsets, accuracy: 0.0201)
