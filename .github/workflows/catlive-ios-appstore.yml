@@ -80,6 +80,7 @@ jobs:
           swift test --package-path JarasLive --jobs 2
           bash JarasLive/scripts/test-ipad-transport-layout.sh
           bash JarasLive/scripts/test-control-mappings.sh
+          bash JarasLive/scripts/test-daw-remote.sh
 
       - name: Preparar assinatura e chave de envio
         env:

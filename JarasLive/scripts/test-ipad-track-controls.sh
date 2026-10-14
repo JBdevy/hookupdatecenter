@@ -7,4 +7,4 @@ trap 'rm -rf "$test_dir"' EXIT
 python3 scripts/ipad-track-controls-fixture.py "$test_dir"
 xcodebuild -project "$test_dir/Fixture.xcodeproj" -scheme Fixture \
     -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath "$test_dir/derived" \
-    -jobs 2 ONLY_ACTIVE_ARCH=YES test
+    -jobs 2 -collect-test-diagnostics never ONLY_ACTIVE_ARCH=YES test
