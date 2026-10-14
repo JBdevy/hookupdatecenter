@@ -395,7 +395,7 @@ struct MainView: View {
                    let item = track.clips.first(where: { $0.id == id }) {
                     ZStack {
                         Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { textItemTarget = nil }
-                        TextItemEditor(text: item.text ?? "", maximumLength: track.kind.maximumTextLength ?? AudioClip.maximumTextLength, apply: { show.updateTextItem(id, text: $0) }, close: { textItemTarget = nil })
+                        TextItemEditor(text: item.text ?? "", apply: { show.updateTextItem(id, text: $0) }, close: { textItemTarget = nil })
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                             .shadow(color: .black.opacity(0.4), radius: 18)
                             .id(id)

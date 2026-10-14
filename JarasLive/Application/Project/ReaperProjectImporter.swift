@@ -548,7 +548,6 @@ public enum ReaperProjectImporter {
                         clip.playbackRate = try take.number("PLAYRATE", default: 1)
                     } else if special.isText {
                         let text = item.child("NOTES")?.notes.joined(separator: "\n") ?? take.child("NOTES")?.notes.joined(separator: "\n") ?? take.value("NAME") ?? ""
-                        try AudioClip.validateText(text, maximum: special.maximumTextLength ?? 400)
                         clip.text = text
                         clip.name = text.components(separatedBy: "\n").first ?? ""
                     }

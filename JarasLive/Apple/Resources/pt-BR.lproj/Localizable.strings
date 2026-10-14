@@ -563,8 +563,6 @@
 "Teleprompter, Video and Chords items cannot overlap" = "Itens de Teleprompter, Vídeo e Cifras não podem se sobrepor";
 "Special items can only move horizontally on their own track" = "Itens especiais só podem se mover horizontalmente na própria pista";
 "Maximum %lld characters." = "Máximo de %lld caracteres.";
-"Chords text must contain at most 30 characters" = "O texto de cifras deve conter no máximo 30 caracteres";
-"Teleprompter text must contain at most 400 characters" = "O texto do teleprompter deve conter no máximo 400 caracteres";
 
 "Uppercase" = "Caixa alta";
 

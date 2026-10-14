@@ -563,8 +563,6 @@
 "Teleprompter, Video and Chords items cannot overlap" = "Teleprompter, Video and Chords items cannot overlap";
 "Special items can only move horizontally on their own track" = "Special items can only move horizontally on their own track";
 "Maximum %lld characters." = "Maximum %lld characters.";
-"Chords text must contain at most 30 characters" = "Chords text must contain at most 30 characters";
-"Teleprompter text must contain at most 400 characters" = "Teleprompter text must contain at most 400 characters";
 
 "Uppercase" = "Uppercase";
 

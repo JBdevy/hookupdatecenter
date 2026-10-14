@@ -490,12 +490,12 @@ int main() {
     textTracks.addRecordedClip("chords-one", textItem);
     textTracks.execute({CommandKind::play}); textTracks.advance(0.5);
     textTracks.execute({CommandKind::subSeek, "", 4}); textTracks.execute({CommandKind::subPlay});
-    std::string maximumEmoji; for (int n = 0; n < 30; ++n) maximumEmoji += u8"🎤";
+    std::string maximumEmoji; for (int n = 0; n < 10000; ++n) maximumEmoji += u8"🎤";
     textTracks.setClipText("text-item", maximumEmoji);
-    expect(textTracks.project().songs[0].tracks[0].clips[0].text == maximumEmoji, "Chords text permits 30 Unicode emoji rather than counting UTF-8 bytes");
-    for (const auto& invalidText : {maximumEmoji + "A", std::string("\xc0\xaf"), std::string("\xed\xa0\x80"), std::string("\xf4\x90\x80\x80")}) {
+    expect(textTracks.project().songs[0].tracks[0].clips[0].text == maximumEmoji, "Chords text permits long Unicode content without a character limit");
+    for (const auto& invalidText : {std::string("\xc0\xaf"), std::string("\xed\xa0\x80"), std::string("\xf4\x90\x80\x80")}) {
         bool rejectedText = false; try { textTracks.setClipText("text-item", invalidText); } catch (...) { rejectedText = true; }
-        expect(rejectedText && textTracks.project().songs[0].tracks[0].clips[0].text == maximumEmoji, "overlength or malformed Unicode text edits are atomic");
+        expect(rejectedText && textTracks.project().songs[0].tracks[0].clips[0].text == maximumEmoji, "malformed Unicode text edits are atomic");
     }
     for (const auto* id : {"missing", "clip"}) {
         bool rejectedText = false; try { textTracks.setClipText(id, "invalid"); } catch (...) { rejectedText = true; }
@@ -512,13 +512,12 @@ int main() {
     auto textAudio = textItem; textAudio.id = "text-audio"; textAudio.audioFile = AudioFile{"Steams/invalid.wav", {}};
     textMediaRejected = false; try { textTracks.addRecordedClip("lyrics", textAudio); } catch (...) { textMediaRejected = true; }
     expect(textMediaRejected && textTracks.project().songs[0].tracks[2].clips.empty(), "text insertion rejects audio metadata before committing");
-    std::string lyricsMaximum; for (int n=0; n<400; ++n) lyricsMaximum += u8"🎵";
+    std::string lyricsMaximum; for (int n=0; n<10000; ++n) lyricsMaximum += u8"🎵";
     AudioClip lyricsItem{"lyrics-item", {}, "Teleprompter",2,10}; lyricsItem.text=lyricsMaximum;
     textTracks.addRecordedClip("lyrics",lyricsItem);
-    expect(textTracks.project().songs[0].tracks[2].clips[0].text==lyricsMaximum,"Teleprompter permits 400 Unicode characters");
-    bool lyricsTooLong=false;
-    try { textTracks.setClipText("lyrics-item",lyricsMaximum+"A"); } catch(...) { lyricsTooLong=true; }
-    expect(lyricsTooLong && textTracks.project().songs[0].tracks[2].clips[0].text==lyricsMaximum,"Teleprompter rejects character 401 without changing existing text");
+    expect(textTracks.project().songs[0].tracks[2].clips[0].text==lyricsMaximum,"Teleprompter permits long Unicode content without a character limit");
+    textTracks.setClipText("lyrics-item", lyricsMaximum + "A");
+    expect(textTracks.project().songs[0].tracks[2].clips[0].text == lyricsMaximum + "A", "Teleprompter edits retain the entire long text");
     for (const auto kind : {CommandKind::mute, CommandKind::solo, CommandKind::volume, CommandKind::pan}) {
         bool rejectedControl = false; try { textTracks.execute({kind, "chords-one", 0.5}); } catch (...) { rejectedControl = true; }
         expect(rejectedControl, "audio controls are unavailable on Chords tracks");

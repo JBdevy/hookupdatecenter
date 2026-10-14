@@ -53,14 +53,14 @@ final class TextTrackTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(Project.self, from: data), withoutText)
     }
     private func fixtureChordsID(_ project: Project) -> UUID { project.songs[0].tracks.first { $0.kind == .chords && !$0.clips.isEmpty }!.id }
-    func testTextMaximumCountsUnicodeRatherThanBytesAndRejectsAudioMetadata() throws {
+    func testLongUnicodeTextPersistsAndRejectsAudioMetadata() throws {
         var project = fixture()
-        for text in [String(repeating: "é", count: 30), String(repeating: "🎵", count: 30)] {
-            project.songs[0].tracks[1].clips[0].text = text
-            try project.validate()
-            XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)
-            project.songs[0].tracks[1].clips[0].text = text + "A"
-            XCTAssertThrowsError(try project.validate())
+        for track in [1, 2] {
+            for text in [String(repeating: "é", count: 10000), String(repeating: "🎵\nC#m / G♭", count: 2000)] {
+                project.songs[0].tracks[track].clips[0].text = text
+                try project.validate()
+                XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)
+            }
         }
         project = fixture()
         project.songs[0].tracks[0].clips = project.songs[0].tracks[1].clips

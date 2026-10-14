@@ -2093,13 +2093,9 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     @discardableResult public func updateTextItem(_ id: UUID, text: String) -> Bool {
         guard canExecute(), !finishing else { return false }
-        do { try AudioClip.validateText(text) }
-        catch { message = error.localizedDescription; return false }
         for song in snapshot.project.songs.indices {
             for track in snapshot.project.songs[song].tracks.indices where snapshot.project.songs[song].tracks[track].kind.isText {
                 guard let item = snapshot.project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == id }) else { continue }
-                do { try AudioClip.validateText(text, maximum: snapshot.project.songs[song].tracks[track].kind.maximumTextLength ?? AudioClip.maximumTextLength) }
-                catch { message = error.localizedDescription; return false }
                 guard snapshot.project.songs[song].tracks[track].clips[item].text != text else { return true }
                 do {
                     try executor.setClipText(id, text: text)

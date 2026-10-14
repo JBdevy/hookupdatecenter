@@ -531,7 +531,6 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     }
                     guard track.kind != .click || clip.audioFile == nil || clip.isProjectionMedia else { throw ProjectError.invalid("Click items use the built-in sound") }
                     guard clip.text == nil || track.kind.isText else { throw ProjectError.invalid("Text items require a Teleprompter or Chords track") }
-                    if let text = clip.text { try AudioClip.validateText(text, maximum: track.kind.maximumTextLength ?? AudioClip.maximumTextLength) }
                     // Source timing also locates the visual repeat seams of stretched text.
                     if track.kind.isText && !clip.isProjectionMedia { guard clip.audioFile == nil, clip.gain == nil, clip.muted != true, clip.waveform.isEmpty, (clip.waveformChannels ?? []).isEmpty, clip.loopLength != nil || (clip.sourceOffset == 0 && clip.loopStart == nil) else { throw ProjectError.invalid("Text items cannot contain audio") } }
                     guard clip.fx == nil || track.kind == .standard || clip.isProjectionMedia else { throw ProjectError.invalid("Item FX requires an audio item") }
@@ -749,15 +748,6 @@ public enum TrackKind: String, CaseIterable, Sendable {
     public var isTeleprompter: Bool { self == .teleprompt || self == .teleprompt2 }
     public var isText: Bool { isTeleprompter || self == .chords }
     public var isSingleLane: Bool { isText || self == .video }
-    public var maximumTextLength: Int? { isTeleprompter ? 400 : self == .chords ? 30 : nil }
-}
-public extension AudioClip {
-    static let maximumTextLength = 400
-    static func validateText(_ text: String, maximum: Int = maximumTextLength) throws {
-        guard text.unicodeScalars.count <= maximum else {
-            throw ProjectError.invalid(maximum == 30 ? "Chords text must contain at most 30 characters" : "Teleprompter text must contain at most 400 characters")
-        }
-    }
 }
 public struct TimecodeSettings: Codable, Equatable, Sendable {
     public var mode = "mtc"

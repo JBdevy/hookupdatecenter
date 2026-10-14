@@ -27,7 +27,7 @@ struct Project {
 // Control-thread validation; never called from an audio callback.
 void validateRegionSetlist(const Project& project, const RegionSetlist& state);
 void validateClipFXJSON(const std::string& json);
-void validateClipText(const std::string& text, size_t maximum = 400);
+void validateClipText(const std::string& text);
 void orderSpecialTracks(Project& project);
 void validateRouting(const Song&);
 void validate(const Project& project);

@@ -42,7 +42,7 @@ import Foundation
     func setFX(_ track: UUID?, settings: NativeFXSettings) throws { try core.setFX(track?.uuidString ?? "", data: JSONEncoder().encode(settings)) }
     func setClipFX(_ clip: UUID, settings: NativeFXSettings) throws { try settings.validateForClip(); try core.setClipFX(clip.uuidString, data: JSONEncoder().encode(settings)) }
     func setClipFXBypass(_ clip: UUID, bypassed: Bool) throws { try core.setClipFXBypass(clip.uuidString, bypassed: bypassed) }
-    func setClipText(_ clip: UUID, text: String) throws { try AudioClip.validateText(text); try core.setClipText(clip.uuidString, text: text) }
+    func setClipText(_ clip: UUID, text: String) throws { try core.setClipText(clip.uuidString, text: text) }
     func setMIDIInput(_ track: UUID, slot: Int) throws { try core.setMIDIInput(track.uuidString, slot: Int32(slot)) }
     func setMIDIChannel(_ track: UUID, channel: Int) throws { try core.setMIDIChannel(track.uuidString, channel: Int32(channel)) }
     func setInputMonitoring(_ track: UUID, enabled: Bool) throws { try core.setInputMonitoring(track.uuidString, enabled: enabled) }

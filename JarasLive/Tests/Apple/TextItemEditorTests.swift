@@ -1,11 +1,11 @@
 import AppKit
 
 let app = NSApplication.shared
-for maximumLength in [400, 30] {
+for textLength in [10000, 20000] {
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 466, height: 360), styleMask: [.titled], backing: .buffered, defer: false)
 window.isReleasedWhenClosed = false
 var committed: [String] = [], closes = 0
-let host = NSHostingView(rootView: TextItemEditor(text: "", maximumLength: maximumLength, apply: { committed.append($0); return true }, close: { closes += 1 }))
+let host = NSHostingView(rootView: TextItemEditor(text: "", apply: { committed.append($0); return true }, close: { closes += 1 }))
 window.contentView = host
 host.layoutSubtreeIfNeeded()
 func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
@@ -17,13 +17,13 @@ settle()
 guard let editor = textView(in: host) else { fatalError("The floating editor must contain a real notepad") }
 precondition(window.firstResponder === editor, "the notepad receives focus immediately")
 precondition(editor.bounds.width > 100, "the text container follows the available editor width")
-let maximum = String(repeating: "🎵", count: maximumLength)
+let maximum = String(repeating: "🎵", count: textLength)
 editor.insertText(maximum, replacementRange: NSRange(location: 0, length: 0)); settle()
 precondition(editor.string == maximum && committed.isEmpty, "Unicode text remains a local draft until Apply")
 editor.insertText("é", replacementRange: NSRange(location: (maximum as NSString).length, length: 0)); settle()
-precondition(editor.string == maximum, "the first character above this track's limit cannot enter the draft")
-editor.insertText(String(repeating: "x", count: maximumLength + 1), replacementRange: NSRange(location: 0, length: (editor.string as NSString).length)); settle()
-precondition(editor.string == maximum, "a paste beyond the limit is rejected without deleting existing text")
+precondition(editor.string == maximum + "é", "text above the former limit stays editable")
+editor.insertText(String(repeating: "x", count: textLength + 1), replacementRange: NSRange(location: 0, length: (editor.string as NSString).length)); settle()
+precondition(editor.string == String(repeating: "x", count: textLength + 1), "long pasted text is preserved without truncation")
 editor.insertText("Am", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length)); settle()
 func key(_ code: UInt16, flags: NSEvent.ModifierFlags = []) {
     let value = code == 53 ? "\u{1b}" : "\r"
@@ -40,4 +40,4 @@ key(53)
 precondition(committed == ["Am\nG"] && closes == 2, "Escape cancels without another project edit")
 window.close()
 }
-print("TEXT_NOTEPAD_TP400_CHORDS30_LIMIT_PASTE_FOCUS_MULTILINE_APPLY_AND_CANCEL_OK")
+print("TEXT_NOTEPAD_UNLIMITED_PASTE_FOCUS_MULTILINE_APPLY_AND_CANCEL_OK")

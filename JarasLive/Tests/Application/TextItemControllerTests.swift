@@ -19,7 +19,6 @@ import XCTest
     }
     func setClipText(_ id: UUID, text: String) throws {
         if reject { throw ProjectError.invalid("Rejected") }
-        try AudioClip.validateText(text)
         for song in project.songs.indices {
             for track in project.songs[song].tracks.indices {
                 if let item = project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == id }) {
@@ -90,17 +89,16 @@ final class TextItemControllerTests: XCTestCase {
         show.undo(); XCTAssertEqual(show.current?.tracks.first?.clips.first?.text, "")
         show.redo(); XCTAssertEqual(show.current?.tracks.first?.clips.first?.text, text)
     }
-    @MainActor func testLengthAndTypeGuardsCannotPartiallyMutateOrDirtyProject() throws {
+    @MainActor func testLongTextAndTypeGuardsCannotPartiallyMutateOrDirtyProject() throws {
         let executor = TextItemExecutor(), show = try ShowController(executor: TextItemExecutor(), persistence: MemoryProjectStore(), initialProject: fixture())
         let unrelated = try XCTUnwrap(show.current?.tracks.last)
         XCTAssertNil(show.addTextItem(track: unrelated.id)); XCTAssertNil(show.addTextItem(track: UUID()))
         XCTAssertFalse(show.hasUnsavedChanges)
         let bounded = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: fixture())
         let id = try XCTUnwrap(bounded.addTextItem(track: try XCTUnwrap(bounded.current?.tracks.first?.id)))
-        let maximum = String(repeating: "🎵", count: 400)
+        let maximum = String(repeating: "🎵", count: 10000)
         XCTAssertTrue(bounded.updateTextItem(id, text: maximum))
         let saved = bounded.snapshot.project, revision = bounded.projectRevision
-        XCTAssertFalse(bounded.updateTextItem(id, text: maximum + "é"))
         XCTAssertFalse(bounded.updateTextItem(UUID(), text: "Valid"))
         XCTAssertEqual(bounded.snapshot.project, saved); XCTAssertEqual(bounded.projectRevision, revision)
         executor.reject = true

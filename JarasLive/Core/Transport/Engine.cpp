@@ -543,7 +543,6 @@ void Engine::setClipText(const ID& id, std::string text) {
     validateClipText(text);
     for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips) if (clip.id == id) {
         if (!isTeleprompterRole(track.role) && track.role.id != "chords") throw std::invalid_argument("Text items require a Teleprompter or Chords track");
-        validateClipText(text, track.role.id == "chords" ? 30 : 400);
         if (clip.audioFile) throw std::invalid_argument("Media items do not contain editable text");
         clip.text = std::move(text); return;
     }

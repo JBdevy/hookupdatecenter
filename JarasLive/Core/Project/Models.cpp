@@ -103,9 +103,8 @@ void orderSpecialTracks(Project& project) {
             std::stable_sort(song.tracks.begin(), song.tracks.end(), earlier);
     }
 }
-void validateClipText(const std::string& text, size_t maximum) {
-    // Count Unicode scalars rather than UTF-8 bytes; portable on macOS and Windows.
-    size_t characters = 0;
+void validateClipText(const std::string& text) {
+    // Reject malformed UTF-8 without imposing a character limit.
     for (size_t index = 0; index < text.size();) {
         const auto first = static_cast<unsigned char>(text[index++]);
         unsigned value = first, continuation = 0, minimum = 0;
@@ -121,7 +120,6 @@ void validateClipText(const std::string& text, size_t maximum) {
             value = (value << 6) | (next & 0x3f);
         }
         if (value < minimum || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) throw std::invalid_argument("Invalid text encoding");
-        if (++characters > maximum) throw std::invalid_argument(maximum == 30 ? "Chords text must contain at most 30 characters" : "Teleprompter text must contain at most 400 characters");
     }
 }
 void validateClipFXJSON(const std::string& json) {
@@ -321,7 +319,7 @@ void validate(const Project& p) {
                 }
                 require(t.role.id != "generatedClick" || !clip.audioFile || clip.audioFile->path.rfind("Videos/", 0) == 0, "Click items use the built-in sound");
                 require(!clip.text || textTrack, "Text items require a Teleprompter or Chords track");
-                if (clip.text) validateClipText(*clip.text, t.role.id == "chords" ? 30 : 400);
+                if (clip.text) validateClipText(*clip.text);
                 const bool media = clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
                 // Text can retain source timing for its visual repeat seams, without audio.
                 require(!textTrack || media || (!clip.audioFile && !clip.gain && !clip.muted && clip.waveform.empty() && clip.waveformChannels.empty() && (clip.loopLength || (clip.sourceOffset == 0 && !clip.loopStart))), "Text items cannot contain audio");

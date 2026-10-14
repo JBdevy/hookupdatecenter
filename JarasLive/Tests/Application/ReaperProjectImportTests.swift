@@ -265,6 +265,34 @@ final class ReaperProjectImportTests: XCTestCase {
         _ = try disunified.disunifyRegion(roots[0].id)
         XCTAssertTrue(disunified.songs[0].parts.contains { $0.name == "First full song name" && $0.parentRegionID == nil })
     }
+    func testLongTeleprompterAndChordsNotesImportWithoutTruncation() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let text = String(repeating: "Canção 🎵 C#m / G♭\n", count: 1000) + "Fim"
+        let notes = text.components(separatedBy: "\n").map { "|" + $0 }.joined(separator: "\n")
+        let tracks = ["Teleprompt 1", "TELEPROMPT2", "CIFRAS"].map { name in
+            """
+            <TRACK
+              NAME "\(name)"
+              <ITEM
+                POSITION 2
+                LENGTH 10
+                <NOTES
+            \(notes)
+                >
+              >
+            >
+            """
+        }.joined(separator: "\n")
+        let source = try fixture("<REAPER_PROJECT 0.1\n\(tracks)\n>", in: directory)
+        let original = try Data(contentsOf: source)
+        let result = try ReaperProjectImporter.read(source)
+        let imported = result.project.songs[0].tracks
+        XCTAssertEqual(imported.map(\.kind), [.chords, .teleprompt, .teleprompt2])
+        XCTAssertEqual(imported.compactMap { $0.clips.first?.text }, [text, text, text])
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
     func testSpecialTracksNotesMediaAndRegeneratedTimecode() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

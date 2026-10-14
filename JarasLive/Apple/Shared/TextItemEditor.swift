@@ -19,18 +19,14 @@ extension EnvironmentValues {
 
 /// The draft stays in the editor until Apply; transport updates never write it.
 struct TextItemEditor: View {
-    let maximumLength: Int
     let apply: (String) -> Bool
     let close: () -> Void
     @State private var draft: String
-    @State private var limitReached = false
-    init(text: String, maximumLength: Int = AudioClip.maximumTextLength, apply: @escaping (String) -> Bool, close: @escaping () -> Void) {
-        self.maximumLength = maximumLength
+    init(text: String, apply: @escaping (String) -> Bool, close: @escaping () -> Void) {
         self.apply = apply; self.close = close
         _draft = State(initialValue: text)
     }
     private func confirm() {
-        guard draft.unicodeScalars.count <= maximumLength else { limitReached = true; return }
         if apply(draft) { close() }
     }
     var body: some View {
@@ -42,22 +38,15 @@ struct TextItemEditor: View {
                     .buttonStyle(.plain).accessibilityLabel("Cancel")
             }
             #if os(macOS)
-            TextItemNotepad(text: $draft, maximumLength: maximumLength, exceeded: { limitReached = true }, apply: confirm, cancel: close)
+            TextItemNotepad(text: $draft, apply: confirm, cancel: close)
                 .frame(height: 180)
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(limitReached ? Color.red : JarasTheme.line, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(JarasTheme.line, lineWidth: 1))
             #else
             TextEditor(text: $draft).frame(height: 180)
-                .onChange(of: draft) { value in
-                    if value.unicodeScalars.count > maximumLength {
-                        draft = String(String.UnicodeScalarView(value.unicodeScalars.prefix(maximumLength)))
-                        limitReached = true
-                    }
-                }
             #endif
             HStack {
-                if limitReached { Text("Maximum \(maximumLength) characters.").foregroundStyle(.red) }
                 Spacer()
-                Text("\(draft.unicodeScalars.count)/\(maximumLength)")
+                Text("\(draft.unicodeScalars.count)")
                     .monospacedDigit()
                 Text("characters")
             }.font(.caption).foregroundStyle(JarasTheme.secondary)
@@ -69,7 +58,6 @@ struct TextItemEditor: View {
             }.buttonStyle(.bordered)
         }.padding(18).frame(width: 430)
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
-            .onChange(of: draft) { _ in limitReached = false }
     }
 }
 
@@ -78,8 +66,6 @@ import AppKit
 
 private struct TextItemNotepad: NSViewRepresentable {
     @Binding var text: String
-    let maximumLength: Int
-    let exceeded: () -> Void
     let apply: () -> Void
     let cancel: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -114,13 +100,6 @@ private struct TextItemNotepad: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: TextItemNotepad
         init(_ parent: TextItemNotepad) { self.parent = parent }
-        func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
-            guard let replacementString else { return true }
-            guard let range = Range(affectedCharRange, in: textView.string) else { return false }
-            let candidate = textView.string.replacingCharacters(in: range, with: replacementString)
-            guard candidate.unicodeScalars.count <= parent.maximumLength else { parent.exceeded(); return false }
-            return true
-        }
         func textDidChange(_ notification: Notification) {
             guard let editor = notification.object as? NSTextView else { return }
             parent.text = editor.string
