@@ -5,6 +5,28 @@ NS_ASSUME_NONNULL_BEGIN
 @interface JarasAudioOutputConnection : NSObject
 + (nullable AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error NS_SWIFT_NAME(connect(_:));
 @end
+/// Native iPad hardware is deliberately separate from the AVAudioEngine graph.
+/// The driver can be stopped/recreated after a USB format change without the
+/// engine's hardware-format listener holding the old RemoteIO lock.
+@interface JarasMobileAudioOutput : NSObject
+- (instancetype)initWithEngine:(AVAudioEngine *)engine;
+- (nullable AVAudioFormat *)configureWithSampleRate:(double)rate channels:(AVAudioChannelCount)channels error:(NSError **)error;
+- (BOOL)startAndReturnError:(NSError **)error;
+- (void)gate;
+- (void)stop;
+@property(nonatomic, readonly, nullable) AVAudioTime *renderTime;
+// Also used by the PCM harness with the same timestamp/buffer path as RemoteIO.
+- (OSStatus)renderFrames:(UInt32)frames time:(const AudioTimeStamp *)time flags:(AudioUnitRenderActionFlags *)flags buffers:(AudioBufferList *)data;
+@end
+@interface JarasMobileAudioInput : NSObject
+@property(nonatomic, readonly, nullable) AVAudioFormat *format;
+@property(nonatomic, readonly) BOOL running;
+- (BOOL)prepareWithSampleRate:(double)rate channels:(AVAudioChannelCount)channels error:(NSError **)error;
+- (void)setCapture:(nullable void (^)(AVAudioPCMBuffer *))capture;
+- (void)pause;
+- (BOOL)startAndReturnError:(NSError **)error;
+- (void)stop;
+@end
 /// A bounded analysis tap, installed only while an effect editor is observing.
 @interface JarasAudioAnalysisProbe : NSObject
 - (void)attachToNode:(AVAudioNode *)node;

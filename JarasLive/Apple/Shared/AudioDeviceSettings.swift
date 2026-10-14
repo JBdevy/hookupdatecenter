@@ -18,14 +18,14 @@ struct MIDIInputDevice: Identifiable, Equatable {
     let name: String
 }
 #if os(iOS)
-/// HAL can deadlock internally while a USB route disappears on iOS 16.
-/// A blocked stop must never own the main actor or be followed by graph edits.
+/// Serialize hardware teardown away from the main actor. The native iPad
+/// driver owns RemoteIO separately from the manually rendered DSP graph.
 final class MobileAudioHardwareStop: @unchecked Sendable {
     enum Failure: Error { case timedOut }
     private let lock = NSLock()
     private var finished = false
     private let began = ProcessInfo.processInfo.systemUptime
-    init(settlingTime: Double = 0.25, stop: @escaping @Sendable () -> Void) {
+    init(settlingTime: Double = 0, stop: @escaping @Sendable () -> Void) {
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + settlingTime) { [self] in
             stop()
             lock.lock(); finished = true; lock.unlock()
@@ -315,6 +315,10 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
             }
         }
         try configureMobileOutputChannels(session)
+        let inputMaximum = session.maximumInputNumberOfChannels
+        if inputMaximum > 0, session.preferredInputNumberOfChannels != inputMaximum {
+            try session.setPreferredInputNumberOfChannels(inputMaximum)
+        }
     }
     private func configureMobileOutputChannels(_ session: AVAudioSession) throws {
         // USB interfaces may start with only a stereo session. Request their

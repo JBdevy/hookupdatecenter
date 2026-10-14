@@ -1423,7 +1423,6 @@
 "System audio input" = "Entrada de áudio do sistema";
 "Audio is interrupted by another app. Try again when it finishes." = "O áudio foi interrompido por outro app. Tente novamente quando ele terminar.";
 "Open Native mode to record audio." = "Abra o modo Nativo para gravar áudio.";
-"Audio services restarted. Close and reopen CatLive to restore audio." = "Os serviços de áudio foram reiniciados. Feche e reabra o CatLive para restaurar o áudio.";
 "Audio device disconnected. Playback stopped." = "Dispositivo de áudio desconectado. A reprodução foi parada.";
 "%ld REAPER markers before the first item or region were omitted." = "%ld marcadores do REAPER anteriores ao primeiro item ou região não foram importados.";
 
@@ -1617,6 +1616,7 @@
 "Select the .ziplive file to open. Next, you will choose where to save the extracted project." = "Selecione o arquivo .ziplive que deseja abrir. Em seguida, você escolherá onde salvar o projeto descompactado.";
 "Select a folder where CatLive will extract and save the project and its media. It will open as a normal project, independent of the .ziplive file." = "Escolha uma pasta para o CatLive descompactar e salvar o projeto e suas mídias. Ele será aberto como um projeto normal, independente do arquivo .ziplive.";
 
-"Audio device did not respond. Reopen CatLive to restore audio." = "O dispositivo de áudio não respondeu. Reabra o CatLive para restaurar o áudio.";
 
 "Unable to configure audio output channels." = "Não foi possível configurar os canais de saída de áudio.";
+
+"Audio device is unavailable. Reconnect it or choose an output in Settings." = "Dispositivo de áudio indisponível. Reconecte-o ou escolha uma saída nas Configurações.";

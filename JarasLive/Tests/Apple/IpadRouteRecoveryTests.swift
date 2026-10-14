@@ -101,8 +101,17 @@ enum Command { case stopAll }
     settings.failActivation = true
     probe.event(.routeChanged(outputRemoved: true))
     await probe.mobileRouteRecovery?.value
-    precondition(audio.starts == 3 && !recorder.available && settings.localSessionReconfiguring && !probe.show.message.isEmpty,
-                 "A failed device must stay gated instead of entering its hardware lock again")
+    precondition(audio.starts == 3 && !recorder.available && !settings.localSessionReconfiguring && !probe.show.message.isEmpty,
+                 "A failed rebuild must leave Settings usable without starting playback")
+    settings.failActivation = false
+    probe.event(.routeChanged(outputRemoved: false))
+    await probe.mobileRouteRecovery?.value
+    precondition(audio.starts == 4 && recorder.available && !settings.localSessionReconfiguring,
+                 "Reconnecting must retry recovery without reopening Native or the app")
+    probe.event(.mediaServicesReset)
+    await probe.mobileRouteRecovery?.value
+    precondition(audio.starts == 5 && probe.localPlaybackEnabled && recorder.available,
+                 "Media services reset must rebuild the adapter without leaving Native")
     print("IPAD_USB_ROUTE_STOP_ORDER_ASYNC_RECORDING_WORKERS_COALESCING_INTERRUPTION_EXIT_AND_ERROR_OK")
 }
 Task { @MainActor in

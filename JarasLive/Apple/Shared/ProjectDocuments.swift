@@ -1078,40 +1078,10 @@ struct MissingAudioRecoveryView: View {
     @State private var choosingFolder = false
     var body: some View {
         if let prompt = documents.missingAudioPrompt {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Missing audio files").font(.title2.bold())
-                Text(String(format: JarasLocalization.string(prompt.paths.count == 1 ? "%d audio file is missing" : "%d audio files are missing"), prompt.paths.count))
-                    .foregroundStyle(JarasTheme.secondary)
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
-                        ForEach(prompt.paths, id: \.self) { path in
-                            Text(path).font(.system(.caption, design: .monospaced))
-                                .lineLimit(1).truncationMode(.middle)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(8).background(JarasTheme.panel)
-                                .jarasHelp(path)
-                        }
-                    }
-                }.frame(minHeight: 100, maxHeight: 300)
-                if !documents.warnings.isEmpty {
-                    Text(documents.warnings.joined(separator: "\n"))
-                        .font(.caption).foregroundStyle(JarasTheme.yellow).fixedSize(horizontal: false, vertical: true)
-                }
-                if !prompt.errors.isEmpty {
-                    Text(prompt.errors.joined(separator: "\n")).font(.caption).foregroundStyle(.red)
-                        .lineLimit(3)
-                }
-                if documents.busy { HStack { ProgressView(); Text(LocalizedStringKey(documents.status)) }.font(.caption) }
-                HStack {
-                    Button("Cancel") { documents.cancelMissingAudioOpen() }.keyboardShortcut(.cancelAction).disabled(documents.busy && !documents.canCancelOpening)
-                    Spacer()
-                    Button("Open anyway") { documents.openWithMissingAudio() }.disabled(documents.busy)
-                    Button("Search") { choosingFolder = true }.disabled(documents.busy)
-                        .buttonStyle(StageButtonStyle(color: JarasTheme.green))
-                }
-            }
-            .padding(22).frame(minWidth: 500, minHeight: 310)
-            .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
+            MissingAudioRecoveryPanel(paths: prompt.paths, warnings: documents.warnings, errors: prompt.errors,
+                busy: documents.busy, status: documents.status, canCancel: !documents.busy || documents.canCancelOpening,
+                cancel: { documents.cancelMissingAudioOpen() },
+                open: { documents.openWithMissingAudio() }, search: { choosingFolder = true })
             .interactiveDismissDisabled()
             .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
                 switch result {
@@ -1120,6 +1090,68 @@ struct MissingAudioRecoveryView: View {
                 }
             }
         }
+    }
+}
+
+
+/// File names and import warnings share one bounded viewport. Neither long
+/// reports nor file-search errors may push the actions below the screen.
+struct MissingAudioRecoveryPanel: View {
+    let paths: [String], warnings: [String], errors: [String]
+    let busy: Bool
+    let status: String
+    let canCancel: Bool
+    let cancel: () -> Void, open: () -> Void, search: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Missing audio files").font(.headline)
+                Text(String(format: JarasLocalization.string(paths.count == 1 ? "%d audio file is missing" : "%d audio files are missing"), paths.count))
+                    .font(.callout).foregroundStyle(JarasTheme.secondary)
+            }.accessibilityIdentifier("missing-audio-header")
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(paths.enumerated()), id: \.offset) { _, path in
+                        Text(verbatim: path).font(.system(.caption, design: .monospaced))
+                            .lineLimit(1).truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6).background(JarasTheme.panel).jarasHelp(path)
+                    }
+                    ForEach(Array(warnings.enumerated()), id: \.offset) { _, warning in
+                        Text(verbatim: warning).font(.system(size: 12)).foregroundStyle(JarasTheme.yellow)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    }
+                    ForEach(Array(errors.enumerated()), id: \.offset) { _, error in
+                        Text(verbatim: error).font(.caption).foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }.padding(10)
+            }
+            .modifier(ImportReportScrollIndicators())
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(JarasTheme.background)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .accessibilityIdentifier("missing-audio-details")
+            if busy { HStack { ProgressView().controlSize(.small); Text(LocalizedStringKey(status)) }.font(.caption).lineLimit(1) }
+            HStack(spacing: 10) {
+                Button("Cancel", action: cancel).keyboardShortcut(.cancelAction).disabled(!canCancel)
+                Spacer(minLength: 0)
+                Button("Open anyway", action: open).keyboardShortcut(.defaultAction).disabled(busy)
+                Button("Search", action: search).disabled(busy)
+                    .buttonStyle(StageButtonStyle(color: JarasTheme.green))
+            }.font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("missing-audio-actions")
+        }
+        .padding(20).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+        .frame(minWidth: 320, idealWidth: 560, maxWidth: 560,
+               minHeight: 240, idealHeight: 440, maxHeight: 440)
+    }
+}
+private struct ImportReportScrollIndicators: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 13, iOS 16, *) { content.scrollIndicators(.visible) }
+        else { content }
     }
 }
 

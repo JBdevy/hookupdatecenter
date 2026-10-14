@@ -200,7 +200,10 @@ public enum ReaperProjectImporter {
             if let kind {
                 if let envelope = try importEnvelope(child, target: AutomationTarget(kind), name: kind.rawValue.capitalized, warnings: &warnings, scope: scope) { result.envelopes.append(envelope) }
             } else if key.contains("ENV"), key != "PARMENV", key != "TEMPOENVEX" {
-                warnings.insert("%@: REAPER %@ automation is not supported and was not applied (%ld points).", scope, key, child.lines.filter { $0.first == "PT" }.count)
+                let points = child.lines.filter { $0.first == "PT" }.count
+                if points > 0 {
+                    warnings.insert("%@: REAPER %@ automation is not supported and was not applied (%ld points).", scope, key, points)
+                }
             }
         }
         guard !result.envelopes.isEmpty else { return nil }

@@ -289,23 +289,7 @@ enum AppStartupPresentation {
         case let .routeChanged(outputRemoved):
             recoverMobileRoute(outputRemoved: outputRemoved)
         case .mediaServicesReset:
-            mobileRouteRevision &+= 1
-            mobileRouteRecovery?.cancel(); mobileRouteRecovery = nil
-            settings.beginLocalRouteChange()
-            audio.suspendDeviceSession()
-            TrackRecording.shared.setLocalAudioAvailable(false)
-            show.send(.stopAll)
-            localPlaybackEnabled = false
-            let transition = localPlaybackTransition
-            Task { @MainActor in
-                do {
-                    try await audio.waitForSuspendedProcessors()
-                    try await TrackRecording.shared.waitForLocalHardwareSuspension()
-                    guard transition == localPlaybackTransition, !localPlaybackEnabled else { return }
-                    try settings.deactivateLocalSession()
-                } catch { show.message = error.localizedDescription }
-            }
-            show.message = JarasLocalization.string("Audio services restarted. Close and reopen CatLive to restore audio.")
+            recoverMobileRoute(outputRemoved: true)
         }
     }
     private func recoverMobileRoute(outputRemoved: Bool) {
@@ -344,9 +328,12 @@ enum AppStartupPresentation {
             } catch is CancellationError { }
             catch {
                 guard let self, revision == mobileRouteRevision else { return }
-                // A failed HAL stop may still be holding its internal lock.
-                // Keep the graph gated; the error must not reopen that lock
-                // through a meter, preview or another recovery attempt.
+                // Keep configuration available when rebuilding a disconnected
+                // route fails. Reconnecting USB or choosing an output schedules
+                // another recovery; neither action requires relaunching the app.
+                audio.suspendDeviceSession()
+                TrackRecording.shared.setLocalAudioAvailable(false)
+                settings.finishLocalRouteChange()
                 settings.error = error.localizedDescription
                 show.message = error.localizedDescription
                 mobileRouteRecovery = nil

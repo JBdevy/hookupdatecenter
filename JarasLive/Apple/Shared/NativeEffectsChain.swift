@@ -108,7 +108,7 @@ final class NativeEffectsChain {
         if stemSeparatorNode == nil {
             let node = JarasStemSeparator.makeNode()
             stemSeparatorNode = node; engine?.attach(node)
-            JarasStemSeparator.setOfflineRendering(node, enabled: engine?.isInManualRenderingMode == true)
+            JarasStemSeparator.setOfflineRendering(node, enabled: engine?.isInManualRenderingMode == true && engine?.manualRenderingMode == .offline)
         }
         guard let node = stemSeparatorNode else { return }
         if next.isEnabled(NativeFXSettings.stemSeparator), settings?.isEnabled(NativeFXSettings.stemSeparator) != true,

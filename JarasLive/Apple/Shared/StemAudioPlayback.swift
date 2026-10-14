@@ -211,14 +211,19 @@ struct TimecodePlaybackSpan {
 @MainActor final class StemAudioPlayback {
     static let shared = StemAudioPlayback(engine: AudioDeviceSettings.shared.engine)
     private let engine: AVAudioEngine
+    private var mobileOutput: JarasMobileAudioOutput?
     private var licenseAllowed = true
     private var usesSelectedHardware: Bool {
+        #if os(iOS)
+        realtime && engine === AudioDeviceSettings.shared.engine
+        #else
         realtime && !engine.isInManualRenderingMode && engine === AudioDeviceSettings.shared.engine
+        #endif
     }
     private var outputAllowed: Bool {
         guard usesSelectedHardware else { return true }
         #if os(iOS)
-        guard AudioDeviceSettings.shared.localSessionEnabled,
+        guard deviceSessionActive, mobileHardwareStop == nil, AudioDeviceSettings.shared.localSessionEnabled,
               !AudioDeviceSettings.shared.localSessionInterrupted,
               !AudioDeviceSettings.shared.localSessionReconfiguring else { return false }
         #endif
@@ -650,7 +655,12 @@ struct TimecodePlaybackSpan {
         return delta >= 0 ? anchor.host + ticks : anchor.host - min(anchor.host, ticks)
     }
     private func nodeSampleTime(host: UInt64, anchor: AVAudioTime?) -> AVAudioFramePosition? {
-        guard let anchor, anchor.isSampleTimeValid, anchor.isHostTimeValid, anchor.sampleRate > 0 else { return nil }
+        guard let anchor, anchor.isSampleTimeValid, anchor.sampleRate > 0 else { return nil }
+        if let clock = mobileOutput?.renderTime, !anchor.isHostTimeValid {
+            let elapsed = host >= clock.hostTime ? AVAudioTime.seconds(forHostTime: host - clock.hostTime) : -AVAudioTime.seconds(forHostTime: clock.hostTime - host)
+            return AVAudioFramePosition(((Double(clock.sampleTime) / clock.sampleRate + elapsed) * anchor.sampleRate).rounded())
+        }
+        guard anchor.isHostTimeValid else { return nil }
         let elapsed = host >= anchor.hostTime ? AVAudioTime.seconds(forHostTime: host - anchor.hostTime) : -AVAudioTime.seconds(forHostTime: anchor.hostTime - host)
         return anchor.sampleTime + AVAudioFramePosition((elapsed * anchor.sampleRate / (anchor.audioTimeStamp.mRateScalar > 0 ? anchor.audioTimeStamp.mRateScalar : 1)).rounded())
     }
@@ -715,8 +725,14 @@ struct TimecodePlaybackSpan {
         guard clock.sampleTime + lead >= first else { return nil }
         return Double(voice.scheduledSourceStart + max(0, clock.sampleTime - first)) / voice.file.processingFormat.sampleRate
     }
-    init(engine: AVAudioEngine, realtime: Bool = true) {
+    init(engine: AVAudioEngine, realtime: Bool = true, mobileOutput: JarasMobileAudioOutput? = nil) {
         self.engine = engine; self.realtime = realtime
+        self.mobileOutput = mobileOutput
+        #if os(iOS)
+        if mobileOutput == nil, realtime, engine === AudioDeviceSettings.shared.engine {
+            self.mobileOutput = JarasMobileAudioOutput(engine: engine)
+        }
+        #endif
         if realtime {
             configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.scheduleDeviceRecovery() }
@@ -730,11 +746,20 @@ struct TimecodePlaybackSpan {
     }
     private var outputFormatChanged: Bool {
         guard let previous = preparedOutputFormat else { return true }
+        #if os(iOS)
+        if mobileOutput != nil {
+            let session = AVAudioSession.sharedInstance()
+            return previous.sampleRate != session.sampleRate || previous.channelCount != session.outputNumberOfChannels
+        }
+        #endif
         let current = engine.isInManualRenderingMode ? engine.manualRenderingFormat : engine.outputNode.outputFormat(forBus: 0)
         return previous.sampleRate != current.sampleRate || previous.channelCount != current.channelCount
     }
     private func scheduleDeviceRecovery() {
         #if os(iOS)
+        // This graph is driven by our hardware adapter. Manual graph changes
+        // aren't hardware changes; AVAudioSession owns the single recovery path.
+        if mobileOutput != nil { return }
         // Session recovery owns a gated engine. A second engine notification
         // must not stop it synchronously while its HAL worker is suspended.
         guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
@@ -745,7 +770,7 @@ struct TimecodePlaybackSpan {
             engine.stop()
         }
         #endif
-        guard deviceSessionActive, !engine.isInManualRenderingMode else { return }
+        guard deviceSessionActive, realtime else { return }
         deviceRecovery?.cancel()
         guard outputAllowed else { deviceRecovery = nil; stop(); engine.stop(); return }
         // Core Audio may finish the output format change after CurrentDevice is
@@ -796,7 +821,7 @@ struct TimecodePlaybackSpan {
     func open(directory: URL) {
         #if os(iOS)
         guard mobileHardwareStop == nil else {
-            onError(ProjectError.invalid(JarasLocalization.string("Audio device did not respond. Reopen CatLive to restore audio.")))
+            onError(ProjectError.invalid(JarasLocalization.string("Audio device is unavailable. Reconnect it or choose an output in Settings.")))
             return
         }
         #endif
@@ -983,7 +1008,14 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     private func configureMaster() throws {
         guard !masterConfigured else { return }
         engine.mainMixerNode.outputVolume = 0
-        let output = try JarasAudioOutputConnection.connect(engine)
+        let output: AVAudioFormat
+        #if os(iOS)
+        if let mobileOutput {
+            let session = AVAudioSession.sharedInstance()
+            _ = try mobileOutput.configure(withSampleRate: session.sampleRate, channels: AVAudioChannelCount(session.outputNumberOfChannels))
+        }
+        #endif
+        output = try JarasAudioOutputConnection.connect(engine)
         preparedOutputFormat = output
         engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0
         if realtime {
@@ -1030,7 +1062,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             do { try await pending.wait() }
             catch is CancellationError { throw CancellationError() }
             catch {
-                throw ProjectError.invalid(JarasLocalization.string("Audio device did not respond. Reopen CatLive to restore audio."))
+                throw ProjectError.invalid(JarasLocalization.string("Audio device is unavailable. Reconnect it or choose an output in Settings."))
             }
             if mobileHardwareStop === pending {
                 mobileHardwareStop = nil
@@ -1049,7 +1081,17 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     func startDeviceSession() throws {
         guard realtime else { return }
         deviceSessionActive = true
+        #if os(iOS)
+        if mobileOutput != nil {
+            AudioDeviceSettings.shared.deviceChanged = {
+                AudioDeviceSettings.shared.mobileSessionEvent?(.routeChanged(outputRemoved: false))
+            }
+        } else {
+            AudioDeviceSettings.shared.deviceChanged = { [weak self] in self?.scheduleDeviceRecovery() }
+        }
+        #else
         AudioDeviceSettings.shared.deviceChanged = { [weak self] in self?.scheduleDeviceRecovery() }
+        #endif
         // Retain the device-health clock even if a route is temporarily absent
         // at launch. It can recover the saved output when HAL finishes binding.
         defer { startMeterClock() }
@@ -1078,9 +1120,11 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         #if os(iOS)
         if usesSelectedHardware {
             setGraphRenderEnabled(false)
+            mobileOutput?.gate()
             if mobileHardwareStop == nil {
                 let hardware = engine
-                mobileHardwareStop = MobileAudioHardwareStop { hardware.stop() }
+                let output = mobileOutput
+                mobileHardwareStop = MobileAudioHardwareStop { output?.stop(); hardware.stop() }
             }
             return
         }
@@ -1112,6 +1156,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     private func startEngineIfNeeded() throws {
         guard outputAllowed else { return }
         if engine.isRunning {
+            try mobileOutput?.start()
             #if os(macOS)
             if usesSelectedHardware { try AudioDeviceSettings.shared.validateOutputBinding() }
             #endif
@@ -1129,6 +1174,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             if usesSelectedHardware { try AudioDeviceSettings.shared.validateOutputBinding() }
             #endif
             try engine.start()
+            try mobileOutput?.start()
             #if os(macOS)
             if usesSelectedHardware { try AudioDeviceSettings.shared.validateOutputBinding() }
             #endif
@@ -1174,7 +1220,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         RunLoop.main.add(timer, forMode: .common)
     }
     private func maintainDeviceSession() {
-        guard deviceSessionActive, !engine.isInManualRenderingMode else { return }
+        guard deviceSessionActive, realtime else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastDeviceHealthCheck >= 1 else { return }
         lastDeviceHealthCheck = now
@@ -3368,7 +3414,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
             if realtime && headAudioClock[head] == nil {
                 let preroll = preparedDelays.max() ?? 0
                 // Rendering can already be ahead of wall time by an I/O buffer.
-                let renderHost = engine.outputNode.lastRenderTime?.hostTime ?? 0
+                let renderHost = mobileOutput?.renderTime?.hostTime ?? engine.outputNode.lastRenderTime?.hostTime ?? 0
                 let base = max(mach_absolute_time(), renderHost)
                 headAudioClock[head] = (position, base + AVAudioTime.hostTime(forSeconds: 0.05 + preroll))
             }
@@ -3389,6 +3435,13 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
                        let player = voice.player.playerTime(forNodeTime: node) { voiceClockAnchors[key] = (node, player) }
                     if let anchor = voiceClockAnchors[key], let sample = nodeSampleTime(host: hostTime.hostTime, anchor: anchor.node) {
                         playbackTime = AVAudioTime(sampleTime: anchor.player.sampleTime + sample - anchor.node.sampleTime, atRate: anchor.player.sampleRate)
+                    }
+                    if mobileOutput != nil, playbackTime?.isHostTimeValid == true {
+                        // A just-created player may not have rendered its warm
+                        // buffer yet. Its player timeline starts at zero now.
+                        let now = mach_absolute_time()
+                        let elapsed = hostTime.hostTime >= now ? AVAudioTime.seconds(forHostTime: hostTime.hostTime - now) : -AVAudioTime.seconds(forHostTime: now - hostTime.hostTime)
+                        playbackTime = AVAudioTime(sampleTime: AVAudioFramePosition(max(0, elapsed * voice.file.processingFormat.sampleRate).rounded()), atRate: voice.file.processingFormat.sampleRate)
                     }
                 }
                 voice.scheduledOnset = playbackTime ?? AVAudioTime(sampleTime: 0, atRate: voice.file.processingFormat.sampleRate)

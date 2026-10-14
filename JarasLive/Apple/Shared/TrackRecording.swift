@@ -200,7 +200,7 @@ private final class CaptureWriter: @unchecked Sendable {
         guard let pending = mobileCaptureStop else { return }
         do { try await pending.wait() }
         catch is CancellationError { throw CancellationError() }
-        catch { throw ProjectError.invalid(JarasLocalization.string("Audio device did not respond. Reopen CatLive to restore audio.")) }
+        catch { throw ProjectError.invalid(JarasLocalization.string("Audio device is unavailable. Reconnect it or choose an output in Settings.")) }
         if mobileCaptureStop === pending {
             mobileCaptureStop = nil
             finishInputRelease()
@@ -235,7 +235,23 @@ private final class CaptureWriter: @unchecked Sendable {
     @Published private(set) var recording = false
     @Published private(set) var busy = false
     @Published var error = ""
+    #if os(iOS)
+    private let mobileInput = JarasMobileAudioInput()
+    private var inputEngineRunning: Bool { mobileInput.running }
+    #else
     private let captureEngine = AVAudioEngine()
+    private var inputEngineRunning: Bool { captureEngine.isRunning }
+    #endif
+    private func captureFormat() throws -> AVAudioFormat {
+        #if os(iOS)
+        guard let format = mobileInput.format else {
+            throw ProjectError.invalid(JarasLocalization.string("No audio inputs available."))
+        }
+        return format
+        #else
+        return captureEngine.inputNode.outputFormat(forBus: 0)
+        #endif
+    }
     private var captureRing: JarasCaptureRing?
     private struct MonitorConfig: Equatable { let track: UUID; let patch: OutputPatch; let channels: Int }
     private var monitorConfig: [MonitorConfig] = []
@@ -260,7 +276,7 @@ private final class CaptureWriter: @unchecked Sendable {
         guard !desired.isEmpty else { rebuildInputTap(); releaseInputIfIdle(); return }
         do { try configureInput() }
         catch { self.error = error.localizedDescription; releaseInput(); return }
-        let format = captureEngine.inputNode.outputFormat(forBus: 0)
+        guard let format = try? captureFormat() else { releaseInput(); return }
         guard format.channelCount > 0, format.sampleRate > 0 else { releaseInput(); return }
         for config in desired where config.patch.firstChannel >= 1 && config.patch.firstChannel + config.patch.channelCount - 1 <= Int(format.channelCount) {
             let ring = JarasCaptureRing(channels: UInt(format.channelCount), capacity: UInt(max(8192, format.sampleRate / 4)))
@@ -279,6 +295,22 @@ private final class CaptureWriter: @unchecked Sendable {
     }
     private func rebuildInputTap() {
         guard tapInstalled || captureRing != nil else { return }
+        #if os(iOS)
+        let wasRunning = mobileInput.running
+        mobileInput.pause()
+        mobileInput.setCapture(nil); tapInstalled = false
+        guard let ring = captureRing else { return }
+        let rings = monitorRings
+        let capture: @Sendable (AVAudioPCMBuffer) -> Void = { buffer in
+            ring.push(buffer)
+            for monitor in rings { monitor.push(buffer) }
+        }
+        mobileInput.setCapture(capture)
+        tapInstalled = true
+        if wasRunning {
+            do { try mobileInput.start() } catch { self.error = error.localizedDescription }
+        }
+        #else
         let input = captureEngine.inputNode
         if tapInstalled { input.removeTap(onBus: 0); tapInstalled = false }
         guard let ring = captureRing else { return }
@@ -288,6 +320,7 @@ private final class CaptureWriter: @unchecked Sendable {
             for monitor in rings { monitor.push(buffer) }
         }
         tapInstalled = true
+        #endif
     }
     private var configuredInput: UInt32 = 0
     private var directory: URL?
@@ -342,6 +375,8 @@ private final class CaptureWriter: @unchecked Sendable {
             throw ProjectError.invalid(JarasLocalization.string("Open Native mode to record audio."))
         }
         try AudioDeviceSettings.shared.requireLocalInput()
+        let session = AVAudioSession.sharedInstance()
+        try mobileInput.prepare(withSampleRate: session.sampleRate, channels: AVAudioChannelCount(session.inputNumberOfChannels))
         #endif
     }
     #if os(macOS)
@@ -381,7 +416,11 @@ private final class CaptureWriter: @unchecked Sendable {
     }
     private func startInputEngine() throws {
         try requireConfiguredInput()
+        #if os(iOS)
+        try mobileInput.start()
+        #else
         if !captureEngine.isRunning { captureEngine.prepare(); try captureEngine.start() }
+        #endif
     }
     func open(directory: URL, project: UUID) {
         if recording { finish() }
@@ -555,7 +594,7 @@ private final class CaptureWriter: @unchecked Sendable {
         try configureInput(allowCaptureSetup: true)
         let requestedInputUID = AudioDeviceSettings.shared.inputUID
         let requestedInputDevice = configuredInput
-        let input = captureEngine.inputNode, format = input.outputFormat(forBus: 0)
+        let format = try captureFormat()
         guard format.channelCount > 0 && format.sampleRate > 0 else { throw ProjectError.invalid("No audio input is available.") }
         let position = show.snapshot.transport.playing ? show.snapshot.transport.position : show.snapshot.transport.editPosition ?? show.snapshot.transport.position
         let targets = tracks.map { target(for: $0, position: position) }
@@ -570,7 +609,7 @@ private final class CaptureWriter: @unchecked Sendable {
                 // Creating files yields to the main actor. The selected input or
                 // its format may have changed before the writer is ready.
                 try requireConfiguredInput(expectedUID: requestedInputUID, expectedDevice: requestedInputDevice)
-                guard format.isEqual(captureEngine.inputNode.outputFormat(forBus: 0)) else {
+                guard format.isEqual(try captureFormat()) else {
                     throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
                 }
             } catch {
@@ -619,7 +658,7 @@ private final class CaptureWriter: @unchecked Sendable {
         // tracks or capture resources, there is nothing to reconcile or stop.
         // Automatic REC still takes the normal path while it is deselected.
         if !recording, !busy, !armState.hasConfiguredTracks, armed.isEmpty,
-           captureRing == nil, monitorConfig.isEmpty, !tapInstalled, !captureEngine.isRunning {
+           captureRing == nil, monitorConfig.isEmpty, !tapInstalled, !inputEngineRunning {
             if !StemAudioPlayback.shared.armedMIDIRecordingTracks.isEmpty {
                 StemAudioPlayback.shared.armedMIDIRecordingTracks = []
             }
@@ -689,21 +728,29 @@ private final class CaptureWriter: @unchecked Sendable {
             // engine either. Preserve the tap/rings until its stop finishes.
             captureRing?.endCapture()
             if mobileCaptureStop == nil, captureRing != nil || tapInstalled || !monitorConfig.isEmpty {
-                let hardware = captureEngine
+                let hardware = mobileInput
                 mobileCaptureStop = MobileAudioHardwareStop { hardware.stop() }
             }
             return
         }
         #endif
-        guard captureRing != nil || tapInstalled || !monitorConfig.isEmpty || captureEngine.isRunning else { return }
+        guard captureRing != nil || tapInstalled || !monitorConfig.isEmpty || inputEngineRunning else { return }
+        #if os(iOS)
+        mobileInput.stop()
+        #else
         captureEngine.stop()
+        #endif
         finishInputRelease()
     }
     private func finishInputRelease() {
         for config in monitorConfig { StemAudioPlayback.shared.setInputMonitor(config.track, source: nil) }
         monitorConfig = []; monitorRings = []
         captureRing?.endCapture()
+        #if os(iOS)
+        mobileInput.setCapture(nil); tapInstalled = false
+        #else
         if tapInstalled { captureEngine.inputNode.removeTap(onBus: 0); tapInstalled = false }
+        #endif
         captureRing = nil
     }
 }

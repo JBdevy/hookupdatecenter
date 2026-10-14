@@ -6,9 +6,10 @@
 static UInt32 expectedChannels = 0;
 static OSStatus mapStatus = noErr;
 static unsigned mapWrites = 0;
+static bool inputMapping = false;
 static OSStatus verifyOutputMap(AudioUnit unit, AudioUnitPropertyID property, AudioUnitScope scope,
                                AudioUnitElement bus, const void *data, UInt32 bytes) {
-    assert(unit && property == kAudioOutputUnitProperty_ChannelMap && scope == kAudioUnitScope_Global && bus == 0);
+    assert(unit && property == kAudioOutputUnitProperty_ChannelMap && scope == (inputMapping ? kAudioUnitScope_Input : kAudioUnitScope_Global) && bus == (inputMapping ? 1u : 0u));
     assert(bytes == expectedChannels * sizeof(SInt32));
     const auto *mapping = static_cast<const SInt32 *>(data);
     for (UInt32 channel = 0; channel < expectedChannels; ++channel) assert(mapping[channel] == channel);
@@ -82,6 +83,18 @@ int main() {
         assert(mapWrites == writes);
         mapStatus = kAudioUnitErr_InvalidPropertyValue;
         assert(jaras::configureDiscreteOutputMap(reinterpret_cast<AudioUnit>(1), expectedChannels, verifyOutputMap) == mapStatus);
+        mapStatus = noErr; inputMapping = true;
+        for (UInt32 channels : {1u, 2u, 6u, 8u, 18u, 32u}) {
+            expectedChannels = channels;
+            assert(jaras::configureDiscreteInputMap(reinterpret_cast<AudioUnit>(1), channels, verifyOutputMap) == noErr);
+        }
+        assert(jaras::configureDiscreteInputMap(nullptr, 2, verifyOutputMap) != noErr);
+        assert(jaras::configureDiscreteInputMap(reinterpret_cast<AudioUnit>(1), 0, verifyOutputMap) != noErr);
+        assert(jaras::configureDiscreteInputMap(reinterpret_cast<AudioUnit>(1), 1025, verifyOutputMap) != noErr);
+        mapStatus = kAudioUnitErr_InvalidPropertyValue;
+        assert(jaras::configureDiscreteInputMap(reinterpret_cast<AudioUnit>(1), expectedChannels, verifyOutputMap) == mapStatus);
+        inputMapping = false;
+        puts("REMOTEIO_INPUT_MAP_PRESERVES_EVERY_DISCRETE_CHANNEL_AND_REPORTS_FAILURE_OK");
         puts("REMOTEIO_OUTPUT_MAP_PRESERVES_EVERY_DISCRETE_CHANNEL_AND_REPORTS_FAILURE_OK");
         for (double rate : {44100.0, 48000.0, 96000.0}) {
             for (AVAudioChannelCount channels : {1u, 2u, 8u}) {

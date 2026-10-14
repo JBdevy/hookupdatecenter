@@ -1,3 +1,4 @@
+#include "JarasRealtimeClock.hpp"
 #import "JarasTimecode.h"
 #import <CoreMIDI/CoreMIDI.h>
 #include "../../Core/Timecode/Timecode.hpp"
@@ -23,6 +24,7 @@ struct TimecodeSignal {
     explicit TimecodeSignal(double rate):sampleRate(rate) { mach_timebase_info_data_t info; mach_timebase_info(&info); ticksPerSecond=1e9*info.denom/info.numer; }
     double clock(uint64_t now) const { return position.load()+double(int64_t(now-host.load()))/ticksPerSecond; }
     void render(const AudioTimeStamp* time, AVAudioFrameCount count, AudioBufferList* list) {
+        const auto physical = jaras::physicalRenderTime(*time, sampleRate); time = &physical;
         const bool enabled=active.load(std::memory_order_acquire);
         const double rate=fps.load(), actualRate=rate==29.97 ? 30000.0/1001 : rate;
         const auto version=generation.load(std::memory_order_acquire);
@@ -263,6 +265,7 @@ struct MetronomeSignal {
         running.store(nextRunning);
     }
     void render(const AudioTimeStamp* time, AVAudioFrameCount count, AudioBufferList* list) {
+        const auto physical = jaras::physicalRenderTime(*time, sampleRate); time = &physical;
         MetronomeProgram* p;
         do { p=program.load(); reading.store(p); } while(p!=program.load());
         const auto version=generation.load(std::memory_order_acquire);

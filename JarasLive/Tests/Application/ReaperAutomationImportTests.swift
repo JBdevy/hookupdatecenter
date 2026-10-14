@@ -118,6 +118,14 @@ final class ReaperAutomationImportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: file), original)
         XCTAssertEqual(try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(result.project)), result.project)
     }
+    func testEmptyUnsupportedEnvelopeDoesNotGenerateWarning() throws {
+        for (points, expectedWarnings) in [("", 0), ("PT 0 1 0", 1)] {
+            let (folder, file) = try fixture("<MASTERPLAYSPEEDENV\nACT 1 -1\n\(points)\n>")
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let result = try ReaperProjectImporter.read(file)
+            XCTAssertEqual(result.warnings.count, expectedWarnings)
+        }
+    }
     func testWarningTemplatesUseSelectedLanguageWithoutChangingNamesOrPercentSigns() throws {
         let trackName = "Pista \"principal\" 100%"
         let pluginName = "JS: Compressor \"Master\" 50% %@"

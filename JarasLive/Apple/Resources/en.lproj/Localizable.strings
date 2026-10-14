@@ -1387,7 +1387,6 @@
 "System audio input" = "System audio input";
 "Audio is interrupted by another app. Try again when it finishes." = "Audio is interrupted by another app. Try again when it finishes.";
 "Open Native mode to record audio." = "Open Native mode to record audio.";
-"Audio services restarted. Close and reopen CatLive to restore audio." = "Audio services restarted. Close and reopen CatLive to restore audio.";
 "Audio device disconnected. Playback stopped." = "Audio device disconnected. Playback stopped.";
 "%ld REAPER markers before the first item or region were omitted." = "%ld REAPER markers before the first item or region were omitted.";
 
@@ -1581,6 +1580,7 @@
 "Select the .ziplive file to open. Next, you will choose where to save the extracted project." = "Select the .ziplive file to open. Next, you will choose where to save the extracted project.";
 "Select a folder where CatLive will extract and save the project and its media. It will open as a normal project, independent of the .ziplive file." = "Select a folder where CatLive will extract and save the project and its media. It will open as a normal project, independent of the .ziplive file.";
 
-"Audio device did not respond. Reopen CatLive to restore audio." = "Audio device did not respond. Reopen CatLive to restore audio.";
 
 "Unable to configure audio output channels." = "Unable to configure audio output channels.";
+
+"Audio device is unavailable. Reconnect it or choose an output in Settings." = "Audio device is unavailable. Reconnect it or choose an output in Settings.";

@@ -1,5 +1,6 @@
 #import "JarasEffects.h"
 #include "JarasOutputChannelMap.hpp"
+#include "JarasRealtimeClock.hpp"
 #include <TargetConditionals.h>
 #import <Accelerate/Accelerate.h>
 #if defined(__x86_64__)
@@ -13,6 +14,7 @@
 #include <set>
 #include <vector>
 #include <mach/mach_time.h>
+#include "JarasMobileAudioIO.inc"
 
 @implementation JarasAudioOutputConnection
 + (AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error {
@@ -277,6 +279,7 @@ struct VoiceGainKernel {
 struct ItemFadeKernel {
     std::atomic<uint64_t> boundaryHost{0};
     void gate(AudioBufferList* buffers,unsigned frames,const AudioTimeStamp* time) {
+        const auto physical = jaras::physicalRenderTime(*time, rate); time = &physical;
         const auto end=boundaryHost.load(std::memory_order_relaxed);
         if(!end || !(time->mFlags&kAudioTimeStampHostTimeValid)) return;
         const double remaining=(double(end)-double(time->mHostTime))*hostSecondsPerTick;
@@ -307,6 +310,7 @@ struct ItemFadeKernel {
     }
     static double curve(double t) { t=std::clamp(t,0.0,1.0); return t*t*(3-2*t); }
     void process(AudioBufferList* buffers,unsigned frames,const AudioTimeStamp* time) {
+        const auto physical = jaras::physicalRenderTime(*time, rate); time = &physical;
         const auto before=generation.load(std::memory_order_acquire);
         if(!(before&1) && before!=consumedGeneration) {
             double values[6];
