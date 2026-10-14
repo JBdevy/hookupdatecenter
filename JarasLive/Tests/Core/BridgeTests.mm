@@ -322,11 +322,11 @@ int main(int argc,char**argv){@autoreleasepool{
     NSMutableDictionary* ownedTextItem = [textItem mutableCopy];
     ownedTextItem[@"regionOwnerID"] = regionID;
     expect(equalJSON(chordsTrack[@"clips"][0], ownedTextItem), "text content persists with the region owning this newly inserted item");
-    NSString* maximumEmoji = [@"" stringByPaddingToLength:60 withString:@"🎵" startingAtIndex:0];
-    expect([core setClipText:textItemID text:maximumEmoji error:&error], "30 non-ASCII emoji are accepted through native scalar setter");
+    NSString* longText = [[@"" stringByPaddingToLength:40000 withString:@"🎵" startingAtIndex:0] stringByAppendingString:@"\nC#m / G♭ — Fim"];
+    expect([core setClipText:textItemID text:longText error:&error], "long Unicode Chords text is accepted through native scalar setter");
     NSDictionary* textEditedSnapshot = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
+    for (NSDictionary* track in textEditedSnapshot[@"project"][@"songs"][0][@"tracks"]) if ([track[@"id"] isEqual:chordsTrackID]) expect([track[@"clips"][0][@"text"] isEqual:longText], "long Chords text is preserved without truncation");
     expect(equalJSON(textSnapshot[@"transport"], textEditedSnapshot[@"transport"]), "text edits preserve both active transport heads");
-    expect(![core setClipText:textItemID text:[maximumEmoji stringByAppendingString:@"A"] error:&error], "Chords text above 30 Unicode scalars is rejected");
     expect(![core setClipText:gainClipID text:@"Invalid" error:&error] && ![core setClipText:@"missing" text:@"Invalid" error:&error], "text setter rejects wrong kind and missing target");
     NSDictionary* textRejectedSnapshot = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect(equalJSON(textEditedSnapshot, textRejectedSnapshot), "rejected text edits leave complete native state unchanged");
@@ -343,7 +343,7 @@ int main(int argc,char**argv){@autoreleasepool{
     }
     const unichar textCharacters[] = {'A', 0, 'B'};
     NSString* embeddedNullText = [[NSString alloc] initWithCharacters:textCharacters length:3];
-    expect([core setClipText:textItemID text:embeddedNullText error:&error], "bounded Unicode text setter retains embedded NUL without C-string truncation");
+    expect([core setClipText:textItemID text:embeddedNullText error:&error], "Unicode text setter retains embedded NUL without C-string truncation");
     NSDictionary* nullTextSnapshot = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     for (NSDictionary* track in nullTextSnapshot[@"project"][@"songs"][0][@"tracks"]) if ([track[@"id"] isEqual:chordsTrackID]) expect([track[@"clips"][0][@"text"] isEqual:embeddedNullText], "text snapshot preserves every Unicode scalar including NUL");
     expect([reloadedText loadProjectData:[NSJSONSerialization dataWithJSONObject:nullTextSnapshot[@"project"] options:0 error:&error] error:&error], "full project load retains embedded NUL text");
@@ -430,5 +430,22 @@ int main(int argc,char**argv){@autoreleasepool{
     expect([tcResult[@"importedTimecodeItems"] boolValue] && [tcResult[@"clips"] count]==1,"imported generator edges are not replaced by automatic region items");
     expect(equalJSON(tcResult[@"clips"][0][@"timecode"],tcSettings),"per-item Timecode settings survive metadata bridge");
     expect([tcResult[@"clips"][0][@"startTime"] doubleValue]==5 && [tcResult[@"clips"][0][@"duration"] doubleValue]==7,"generator position/duration survive native load");
+    for (NSString* role in @[@"teleprompt", @"teleprompt2", @"chords"]) {
+        JarasCoreBridge* textCore = [JarasCoreBridge new];
+        expect([textCore loadProjectData:input error:&error], "load independent text fixture");
+        NSString* trackID = NSUUID.UUID.UUIDString;
+        NSString* clipID = NSUUID.UUID.UUIDString;
+        expect([textCore addTrackWithId:trackID name:@"Text" role:role error:&error], "create text track for long-content bridge regression");
+        NSDictionary* clip = @{@"id":clipID, @"name":@"Text", @"startTime":@4, @"duration":@10, @"sourceOffset":@0, @"playbackRate":@1, @"waveform":@[], @"text":longText};
+        expect([textCore addRecordedClip:[NSJSONSerialization dataWithJSONObject:clip options:0 error:&error] track:trackID error:&error], "insert long text without limiting characters");
+        NSString* edited = [longText stringByAppendingString:@"\nÚltima linha"];
+        expect([textCore setClipText:clipID text:edited error:&error], "edit entire long text on either teleprompter or Chords");
+        NSDictionary* saved = [NSJSONSerialization JSONObjectWithData:[textCore snapshotWithError:&error] options:0 error:&error];
+        JarasCoreBridge* reopened = [JarasCoreBridge new];
+        expect([reopened loadProjectData:[NSJSONSerialization dataWithJSONObject:saved[@"project"] options:0 error:&error] error:&error], "reopen long text project through native validation");
+        NSDictionary* restored = [NSJSONSerialization JSONObjectWithData:[reopened snapshotWithError:&error] options:0 error:&error];
+        expect(equalJSON(saved[@"project"], restored[@"project"]), "long text survives full native project round trip");
+        for (NSDictionary* track in restored[@"project"][@"songs"][0][@"tracks"]) if ([track[@"id"] isEqual:trackID]) expect([track[@"clips"][0][@"text"] isEqual:edited], "round trip preserves every long-text character");
+    }
     std::cout<<"JARAS_BRIDGE_OK\n";
 }}
