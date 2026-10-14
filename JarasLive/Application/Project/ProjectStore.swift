@@ -28,9 +28,33 @@ public actor MemoryProjectStore: ProjectPersistence {
 public actor DocumentProjectStore: ProjectPersistence {
     private var url: URL?
     private var projectID: UUID?
+    private struct DocumentVersion: Equatable {
+        let device: UInt64, inode: UInt64, size: UInt64
+        let modified: Date
+        static func read(_ url: URL) throws -> Self? {
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard let device = attributes[.systemNumber] as? NSNumber,
+                  let inode = attributes[.systemFileNumber] as? NSNumber,
+                  let size = attributes[.size] as? NSNumber,
+                  let modified = attributes[.modificationDate] as? Date else { return nil }
+            return Self(device: device.uint64Value, inode: inode.uint64Value, size: size.uint64Value, modified: modified)
+        }
+    }
+    private var savedVersion: DocumentVersion?
+    private var savedMediaPaths: Set<String>?
     public init() {}
-    public func select(url: URL, id: UUID) { self.url = url; projectID = id }
-    public func deselect() { url = nil; projectID = nil }
+    public func select(url: URL, id: UUID) {
+        self.url = url; projectID = id; savedVersion = nil; savedMediaPaths = nil
+    }
+    /// The caller has already read this document while opening it. Keep only
+    /// its media references so the first Save need not decode it a second time.
+    public func select(url: URL, savedProject project: Project) {
+        select(url: url, id: project.id)
+        savedVersion = try? DocumentVersion.read(url)
+        savedMediaPaths = project.mediaPaths
+    }
+    public func deselect() { url = nil; projectID = nil; savedVersion = nil; savedMediaPaths = nil }
     public func load() async throws -> Project? {
         guard let url else { return nil }
         return try await ProjectStore(url: url).load()
@@ -38,7 +62,13 @@ public actor DocumentProjectStore: ProjectPersistence {
     public func save(_ project: Project) async throws {
         guard let url else { throw ProjectError.invalid("No project is open for saving.") }
         guard project.id == projectID else { throw ProjectError.invalid("The open project changed before saving. The project was not saved.") }
-        try ProjectBackups.save(project, to: url)
+        let currentVersion = try DocumentVersion.read(url)
+        let previousPaths = currentVersion != nil && currentVersion == savedVersion ? savedMediaPaths : nil
+        try ProjectBackups.save(project, to: url, previousMediaPaths: previousPaths)
+        // The actor serializes saves. Reuse only the media references from our
+        // last committed file; a replacement or external edit invalidates them.
+        savedVersion = try DocumentVersion.read(url)
+        savedMediaPaths = project.mediaPaths
     }
 }
 
@@ -100,13 +130,15 @@ public enum ProjectBackups {
             try FileManager.default.setAttributes([.creationDate: savedDate, .modificationDate: savedDate], ofItemAtPath: destination.path)
         }
     }
-    public static func save(_ project: Project, to document: URL) throws {
+    public static func save(_ project: Project, to document: URL, previousMediaPaths: Set<String>? = nil) throws {
         try ProjectDirectoryPolicy.validate(document)
         let data = try ProjectDocumentCodec.encode(project)
         let folder = document.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var known = project.mediaPaths
-        if FileManager.default.fileExists(atPath: document.path) {
+        if let previousMediaPaths {
+            known.formUnion(previousMediaPaths)
+        } else if FileManager.default.fileExists(atPath: document.path) {
             known.formUnion(try ProjectDocumentCodec.decode(Data(contentsOf: document)).mediaPaths)
         }
         try ProjectMediaCleanup.remember(project: project, document: document, knownPaths: known)

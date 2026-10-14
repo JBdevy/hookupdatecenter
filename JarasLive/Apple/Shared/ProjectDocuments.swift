@@ -691,7 +691,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         // saves attached to the previous document until replacement succeeds.
         try show.replaceProject(project)
         resetProjectSelections()
-        await store.select(url: url, id: project.id)
+        await store.select(url: url, savedProject: project)
         let missing = Set(ProjectAudioRecovery.missingPaths(in: project, directory: url.deletingLastPathComponent()))
         StemAudioPlayback.shared.open(directory: url.deletingLastPathComponent())
         StemAudioPlayback.shared.setMissingAudioPaths(missing)
@@ -1045,7 +1045,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
                 await preloadTimelineWaveforms(result.0, at: url)
                 try show.replaceProject(result.0)
                 resetProjectSelections()
-                await store.select(url: url, id: result.0.id)
+                await store.select(url: url, savedProject: result.0)
                 StemAudioPlayback.shared.open(directory: url.deletingLastPathComponent())
                 VideoPlayback.shared.open(directory: url.deletingLastPathComponent())
                 VideoPlayback.teleprompter.open(directory: url.deletingLastPathComponent())

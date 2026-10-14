@@ -852,6 +852,8 @@ private struct RemoteSidebarRail<Content: View>: View {
     var groupableTracks: Set<UUID> = []
     @State private var regionMovePreview: IpadRegionMovePreview?
     @State private var editingTracks = false
+    @State private var tempoStepPending = false
+    @State private var pitchStepPending = false
     @State private var selectedTracks: Set<UUID> = []
     @State private var trackActionsOpen = false
     @StateObject private var trackReordering = IpadTrackReorderController()
@@ -1067,7 +1069,10 @@ private struct RemoteSidebarRail<Content: View>: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .onChange(of: state.project) { _ in editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil }
+        .onChange(of: state.project) { _ in editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; tempoStepPending = false; pitchStepPending = false }
+        .onChange(of: state.bpm) { _ in tempoStepPending = false }
+        .onChange(of: state.pitchSemitones) { _ in pitchStepPending = false }
+        .onChange(of: state.pitchRegion) { _ in tempoStepPending = false; pitchStepPending = false }
         .onChange(of: state.tracks.map(\.id)) { ids in selectedTracks.formIntersection(ids) }
         .onChange(of: state.tracks.filter { $0.emphasized == true }.map(\.id)) { ids in
             if local { selectedTracks = Set(ids) }
@@ -1856,33 +1861,51 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private var tunerControl: some View {
                 HStack(spacing: local ? 4 : 6) {
-                    Button { action(.pitch, target: state.pitchRegion, value: Double((state.pitchSemitones ?? 0) - 1)) } label: { Image(systemName: "minus").frame(width: 28, height: 32) }
+                    Button { stepPitch(-1) } label: { Image(systemName: "minus").frame(width: 28, height: 32) }
                         .disabled(state.pitchRegion == nil || (state.pitchSemitones ?? 0) <= -12)
+                        .accessibilityLabel("Diminuir afinação")
                     VStack(spacing: 0) {
                         Text(verbatim: "Tuner").font(.system(size: 10))
                         Text(String(format: "%+dst", state.pitchSemitones ?? 0)).monospacedDigit()
                     }.frame(minWidth: local ? 48 : 70, maxWidth: .infinity)
-                    Button { action(.pitch, target: state.pitchRegion, value: Double((state.pitchSemitones ?? 0) + 1)) } label: { Image(systemName: "plus").frame(width: 28, height: 32) }
+                    Button { stepPitch(1) } label: { Image(systemName: "plus").frame(width: 28, height: 32) }
                         .disabled(state.pitchRegion == nil || (state.pitchSemitones ?? 0) >= 12)
-                }.font(.system(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green)
+                        .accessibilityLabel("Aumentar afinação")
+                }.disabled(pitchStepPending)
+                .font(.system(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green)
                 .padding(.horizontal, 4).frame(minWidth: local ? 120 : 134, maxWidth: local ? 120 : UIDevice.current.userInterfaceIdiom == .pad ? 134 : .infinity, minHeight: 32).background(RemoteSurface.display).cornerRadius(5)
     }
     private var bpmControl: some View {
         HStack(spacing: 2) {
-            Button { action(.tempo, value: max(60, state.bpm - 1)) } label: {
+            Button { stepTempo(-1) } label: {
                 Image(systemName: "minus").frame(width: 28, height: 32)
             }.accessibilityLabel("Diminuir BPM")
             Text(String(format: "%.0f BPM", state.bpm)).monospacedDigit().frame(minWidth: local ? 48 : 70, maxWidth: .infinity)
-            Button { action(.tempo, value: min(300, state.bpm + 1)) } label: {
+            Button { stepTempo(1) } label: {
                 Image(systemName: "plus").frame(width: 28, height: 32)
             }.accessibilityLabel("Aumentar BPM")
-        }.font(.system(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle())
+        }.disabled(tempoStepPending)
+            .font(.system(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle())
             .frame(minWidth: local ? 120 : 134, maxWidth: local ? 120 : UIDevice.current.userInterfaceIdiom == .pad ? 134 : .infinity, minHeight: 32)
             .foregroundStyle(JarasTheme.green).background(RemoteSurface.display).cornerRadius(5)
     }
     private var timeText: String {
         let seconds = max(0, Int(displayedPosition))
         return String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
+    private func stepTempo(_ delta: Double) {
+        guard !tempoStepPending else { return }
+        let next = min(300, max(60, state.bpm + delta))
+        guard next != state.bpm else { return }
+        tempoStepPending = true
+        action(.tempo, value: next)
+    }
+    private func stepPitch(_ delta: Int) {
+        guard !pitchStepPending, let region = state.pitchRegion else { return }
+        let current = state.pitchSemitones ?? 0, next = min(12, max(-12, current + delta))
+        guard next != current else { return }
+        pitchStepPending = true
+        action(.pitch, target: region, value: Double(next))
     }
     private func smallButton(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(verbatim: title) }
@@ -3312,7 +3335,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
                 Color(red: components.red, green: components.green, blue: components.blue)
                     .opacity(track.emphasized == true ? 0.65 : 0.50).saturation(track.silenced == true ? 0 : 1)
             }.background(JarasTheme.mixer)
-            .overlayPreferenceValue(IpadTrackControlsBoundsKey.self) { anchors in
+            .backgroundPreferenceValue(IpadTrackControlsBoundsKey.self) { anchors in
                 if local {
                     GeometryReader { proxy in
                         IpadTrackSelectionSurface(excluded: anchors.map { proxy[$0] }, name: track.name,

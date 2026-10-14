@@ -1,7 +1,75 @@
 import XCTest
 @testable import JarasApplication
 
+@MainActor private final class SaveResponsivenessProbe {
+    var heartbeats = 0
+}
+
 final class ProjectBackupTests: XCTestCase {
+    @MainActor func testLargeDocumentSaveKeepsMainActorAvailableAndRemembersOpenedMedia() async throws {
+        let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let document = root.appendingPathComponent("Show.jl"), store = DocumentProjectStore()
+        var project = Project.empty(name: "Large show")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        var track = Track(id: UUID(), name: "Audio", role: .keys)
+        let waveform = (0..<4096).map { Double($0 % 99) / 100 }
+        track.clips = (0..<96).map { i in AudioClip(id: UUID(), name: "Take", startTime: 0, duration: 1,
+            waveform: waveform, audioFile: AudioFile(path: "Stems/take-\(i).wav")) }
+        project.songs[0].tracks = [track]
+        try ProjectDocumentCodec.write(project, to: document)
+        await store.select(url: document, savedProject: project)
+        project.songs[0].tracks[0].clips.removeFirst()
+        let probe = SaveResponsivenessProbe()
+        let heartbeat = Task { @MainActor in
+            while !Task.isCancelled { probe.heartbeats += 1; try await Task.sleep(nanoseconds: 1_000_000) }
+        }
+        defer { heartbeat.cancel() }
+        let start = Date()
+        try await store.save(project)
+        XCTAssertGreaterThan(probe.heartbeats, 1, "Encoding and file writes must yield the UI and playback control clock")
+        let inventory = root.appendingPathComponent(".catlive-media-\(project.id.uuidString).json")
+        XCTAssertTrue(try JSONDecoder().decode(Set<String>.self, from: Data(contentsOf: inventory)).contains("Stems/take-0.wav"))
+        XCTAssertEqual(try ProjectDocumentCodec.decode(Data(contentsOf: document)), project)
+        print("LARGE_PROJECT_BACKGROUND_SAVE_SECONDS=\(Date().timeIntervalSince(start)) UI_HEARTBEATS=\(probe.heartbeats)")
+    }
+
+    func testRepeatedDocumentSavesKeepMediaOwnershipAndDetectExternalReplacement() async throws {
+        let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let document = root.appendingPathComponent("Show.jl"), store = DocumentProjectStore()
+        var project = Project.empty(name: "Show")
+        func withMedia(_ path: String, in project: Project) -> Project {
+            var next = project, track = Track(id: UUID(), name: "Audio", role: .keys)
+            track.clips = [AudioClip(id: UUID(), name: "Take", startTime: 0, duration: 1, audioFile: AudioFile(path: path))]
+            next.songs[0].tracks = [track]; return next
+        }
+        project = withMedia("Stems/original.wav", in: project)
+        await store.select(url: document, id: project.id)
+        try await store.save(project)
+        project = withMedia("Stems/current.wav", in: project)
+        try await store.save(project)
+        let oldDate = try XCTUnwrap(try fm.attributesOfItem(atPath: document.path)[.modificationDate] as? Date)
+        let savedSize = try Data(contentsOf: document).count
+        let external = withMedia("Stems/outside.wav", in: project)
+        try ProjectDocumentCodec.write(external, to: document)
+        XCTAssertEqual(try Data(contentsOf: document).count, savedSize)
+        // An atomic replacement must be detected even with a reused timestamp.
+        try fm.setAttributes([.modificationDate: oldDate], ofItemAtPath: document.path)
+        try await store.save(project)
+        let inventory = root.appendingPathComponent(".catlive-media-\(project.id.uuidString).json")
+        let paths = try JSONDecoder().decode(Set<String>.self, from: Data(contentsOf: inventory))
+        XCTAssertEqual(paths, ["Stems/original.wav", "Stems/current.wav", "Stems/outside.wav"])
+        XCTAssertEqual(try ProjectDocumentCodec.decode(Data(contentsOf: document)), project)
+        XCTAssertEqual(try ProjectBackups.files(for: document).count, 3)
+        let backups = try ProjectBackups.files(for: document)
+        try Data("damaged external replacement".utf8).write(to: document, options: .atomic)
+        do { try await store.save(project); XCTFail("An externally damaged file must not be silently overwritten") } catch {}
+        XCTAssertEqual(try ProjectBackups.files(for: document), backups)
+        await store.deselect()
+        do { try await store.save(project); XCTFail("A closed document cannot be saved") } catch {}
+    }
+
     func testKeepsTenLatestEncryptedSavesAndPreservesOtherProjects() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

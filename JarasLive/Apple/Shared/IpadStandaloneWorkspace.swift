@@ -926,6 +926,7 @@ final class IpadItemResizeControl: UIControl, UIGestureRecognizerDelegate {
 }
 
 struct IpadTrackSelectionSurface: UIViewRepresentable {
+    @Environment(\.isEnabled) private var enabled
     let excluded: [CGRect]
     let name: String
     let selected: Bool
@@ -935,27 +936,65 @@ struct IpadTrackSelectionSurface: UIViewRepresentable {
     func makeUIView(context: Context) -> IpadTrackSelectionTouchView { IpadTrackSelectionTouchView() }
     func updateUIView(_ view: IpadTrackSelectionTouchView, context: Context) {
         view.excluded = excluded; view.tap = tap; view.hold = hold
-        view.gestureRecognizers?.first(where: { $0 is UILongPressGestureRecognizer })?.isEnabled = holdEnabled
+        view.selectionEnabled = enabled
+        view.holdEnabled = holdEnabled
         view.accessibilityLabel = name
         view.accessibilityTraits = selected ? [.button, .selected] : [.button]
     }
 }
-final class IpadTrackSelectionTouchView: UIView {
+final class IpadTrackSelectionTouchView: UIView, UIGestureRecognizerDelegate {
     var excluded: [CGRect] = []
     var tap: (() -> Void)?
     var hold: (() -> Void)?
+    private lazy var tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(tapped))
+    private lazy var holdRecognizer = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+    var selectionEnabled = true { didSet { updateEnabled() } }
+    var holdEnabled = true { didSet { updateEnabled() } }
+    private func updateEnabled() {
+        tapRecognizer.isEnabled = selectionEnabled
+        holdRecognizer.isEnabled = selectionEnabled && holdEnabled
+    }
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear; isAccessibilityElement = true
-        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped))
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
-        hold.minimumPressDuration = 0.5; hold.allowableMovement = 12
-        tap.require(toFail: hold)
-        addGestureRecognizer(tap); addGestureRecognizer(hold)
+        holdRecognizer.minimumPressDuration = 0.5; holdRecognizer.allowableMovement = 12
+        for recognizer in [tapRecognizer, holdRecognizer] {
+            recognizer.delegate = self
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+        }
+        tapRecognizer.require(toFail: holdRecognizer)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        for recognizer in [tapRecognizer, holdRecognizer] where recognizer.view !== window {
+            recognizer.view?.removeGestureRecognizer(recognizer)
+            window?.addGestureRecognizer(recognizer)
+        }
+    }
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        super.point(inside: point, with: event) && !excluded.contains { $0.contains(point) }
+        // A representable over SwiftUI controls can consume their hit on iOS 16
+        // even when its own view rejects it. Observe the window from behind the
+        // row instead; this surface must never be a touch target itself.
+        false
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard selectionEnabled, window != nil, !isHidden, alpha > 0 else { return false }
+        let point = touch.location(in: self)
+        guard bounds.contains(point), !excluded.contains(where: { $0.contains(point) }) else { return false }
+        var ancestor = superview
+        while let view = ancestor {
+            if view.isHidden || view.alpha == 0 { return false }
+            if view.clipsToBounds && !view.bounds.contains(touch.location(in: view)) { return false }
+            ancestor = view.superview
+        }
+        return true
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        !(otherGestureRecognizer is UIPanGestureRecognizer) && !(otherGestureRecognizer is UILongPressGestureRecognizer)
     }
     override func accessibilityActivate() -> Bool { tap?(); return true }
     @objc private func tapped() { tap?() }
