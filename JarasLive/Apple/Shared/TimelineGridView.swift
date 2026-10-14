@@ -839,7 +839,7 @@ private struct TimelineGridContent: View, Equatable {
             if let id = show.addMIDIItem(track: song.tracks[index].id, start: start, duration: duration) { MIDIEditorWindows.shared.open(show: show, item: id) }
         }, editText: { editTextItem($0) }, reRender: { reRenderItems($0) }, convert: { ids, mode in show.convertItems(ids, mode: mode) }, freezeMIDI: { ids, channels in reRenderItems(ids, midiChannels: channels) }, glue: { glueItems($0) }, tuner: { tuningItems = $0; showingItemTuner = true }, normalize: { ids in
             beginNormalize(ids)
-        }, split: { confirmSplit($0) }, export: { ids in
+        }, export: { ids in
             if let current = show.current {
                 itemExport = ItemAudioExportRequest(project: show.snapshot.project, song: current, items: ids, mediaDirectory: documents.currentURL?.deletingLastPathComponent())
             }
@@ -1403,7 +1403,7 @@ private struct TimelineGridContent: View, Equatable {
         #else
         let free = freePositioning ?? false
         #endif
-        return TimelineTempo.snap(time, song: song, pixelsPerSecond: pixelsPerSecond, enabled: !free)
+        return TimelineTempo.snap(time, song: song, pixelsPerSecond: pixelsPerSecond, enabled: !free, includeHiddenDivisions: true)
     }
 
     @ViewBuilder

@@ -1,0 +1,176 @@
+#if os(iOS)
+import SwiftUI
+import StoreKit
+
+@MainActor final class NativeStoreKitClient: NativePurchaseClient {
+    let updates: AsyncStream<Void>
+    private var listener: Task<Void, Never>?
+    private var storeProduct: StoreKit.Product?
+
+    init() {
+        var continuation: AsyncStream<Void>.Continuation!
+        updates = AsyncStream { continuation = $0 }
+        listener = Task {
+            for await result in StoreKit.Transaction.updates {
+                guard !Task.isCancelled else { break }
+                guard case .verified(let transaction) = result,
+                      transaction.productID == NativePurchaseStore.productID else { continue }
+                // Includes revocations/refunds and purchases approved on another device.
+                continuation.yield(())
+                await transaction.finish()
+            }
+            continuation.finish()
+        }
+    }
+    deinit { listener?.cancel() }
+    func hasEntitlement() async -> Bool {
+        for await result in StoreKit.Transaction.currentEntitlements {
+            if case .verified(let transaction) = result,
+               transaction.productID == NativePurchaseStore.productID,
+               transaction.productType == .nonConsumable,
+               transaction.revocationDate == nil, !transaction.isUpgraded { return true }
+        }
+        return false
+    }
+    func product() async throws -> NativePurchaseProduct {
+        guard let product = try await StoreKit.Product.products(for: [NativePurchaseStore.productID]).first,
+              product.type == .nonConsumable else { throw PurchaseError.unavailable }
+        storeProduct = product
+        return NativePurchaseProduct(displayPrice: product.displayPrice)
+    }
+    func purchase() async throws -> NativePurchaseResult {
+        guard let storeProduct else { throw PurchaseError.unavailable }
+        switch try await storeProduct.purchase() {
+        case .success(let result):
+            guard case .verified(let transaction) = result,
+                  transaction.productID == NativePurchaseStore.productID,
+                  transaction.productType == .nonConsumable,
+                  transaction.revocationDate == nil, !transaction.isUpgraded else { throw PurchaseError.unverified }
+            await transaction.finish()
+            return .purchased
+        case .pending: return .pending
+        case .userCancelled: return .cancelled
+        @unknown default: throw PurchaseError.unavailable
+        }
+    }
+    func restore() async throws { try await AppStore.sync() }
+    private enum PurchaseError: Error { case unavailable, unverified }
+}
+
+extension NativePurchaseStore {
+    static let shared = NativePurchaseStore(client: NativeStoreKitClient())
+}
+
+@MainActor struct IpadNativePurchaseView: View {
+    @ObservedObject var store: NativePurchaseStore
+    let close: () -> Void
+    let openNative: () -> Void
+    private let green = Color(red: 0.32, green: 0.93, blue: 0.54)
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    HStack {
+                        HStack(spacing: 9) {
+                            Image(systemName: "waveform").foregroundStyle(green)
+                            Text(verbatim: "CatLive").font(.title2.bold())
+                        }
+                        Spacer()
+                        Button(action: close) {
+                            Image(systemName: "xmark").font(.system(size: 17, weight: .semibold))
+                                .frame(width: 48, height: 48).background(.white.opacity(0.07), in: Circle())
+                                .contentShape(Circle())
+                        }.buttonStyle(.plain).accessibilityLabel("Close").disabled(store.busy)
+                    }
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .center, spacing: 38) {
+                            features.frame(width: 360)
+                            purchaseCard.frame(width: 330)
+                        }
+                        VStack(alignment: .leading, spacing: 24) { features; purchaseCard }
+                    }.frame(maxWidth: .infinity)
+                    HStack(spacing: 20) {
+                        Label("Remote mode stays free on iPad and iPhone.", systemImage: "network")
+                            .foregroundStyle(.white.opacity(0.65))
+                        Spacer(minLength: 0)
+                        Link("Privacy", destination: URL(string: "https://www.privacidade.vshook.app/catlive/")!)
+                        Link("Support", destination: URL(string: "https://www.privacidade.vshook.app/catlive/suporte/")!)
+                    }.font(.footnote).tint(green)
+                }
+                .padding(36).frame(maxWidth: 950)
+                .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+            }.background(LinearGradient(colors: [Color(white: 0.19), Color(white: 0.065)], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea())
+        }.foregroundStyle(.white).preferredColorScheme(.dark)
+            .task { await store.load() }
+            .interactiveDismissDisabled(store.busy)
+    }
+    private var features: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Text("NATIVE ON IPAD").font(.system(size: 12, weight: .bold, design: .rounded)).tracking(2)
+                .foregroundStyle(green).padding(.horizontal, 12).padding(.vertical, 8)
+                .background(green.opacity(0.1), in: Capsule())
+            Text("Your show.\nOn your iPad.").font(.system(size: 38, weight: .bold, design: .rounded)).fixedSize(horizontal: false, vertical: true)
+            Text("Create and play your projects directly on iPad, without a computer.")
+                .font(.system(size: 17)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 16) {
+                feature("waveform", "Multitrack playback and audio recording")
+                feature("slider.horizontal.3", "Mixer, routing and native effects")
+                feature("list.bullet.rectangle", "Setlists, loops and teleprompters")
+                feature("arrow.left.arrow.right", "Exchange .ziplive projects with your Mac")
+            }.padding(.top, 6)
+        }
+    }
+    private func feature(_ icon: String, _ title: LocalizedStringKey) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon).font(.system(size: 17)).foregroundStyle(green).frame(width: 24)
+            Text(title).font(.system(size: 14)).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    private var purchaseCard: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "ipad.landscape").font(.system(size: 40, weight: .light)).foregroundStyle(green)
+            Text("CatLive Native iPad").font(.title2.bold())
+            Text("One-time purchase. No subscription.").font(.subheadline).foregroundStyle(.white.opacity(0.65))
+            Group {
+                if store.unlocked {
+                    Label("Purchased", systemImage: "checkmark.seal.fill").foregroundStyle(green)
+                } else if let product = store.product {
+                    Text(verbatim: product.displayPrice).font(.system(size: 38, weight: .bold, design: .rounded))
+                        .accessibilityIdentifier("native-purchase-price")
+                } else if store.loading { ProgressView().tint(green) }
+                else { Text("Price unavailable").foregroundStyle(.white.opacity(0.65)) }
+            }.frame(minHeight: 48)
+            Button {
+                if store.unlocked { openNative() }
+                else { Task { await store.buy() } }
+            } label: {
+                HStack {
+                    Spacer()
+                    if store.busy { ProgressView().tint(.black) }
+                    Text(store.unlocked ? "Open Native mode" : "Unlock Native mode").font(.system(size: 16, weight: .bold))
+                    Spacer()
+                }.frame(height: 52).foregroundStyle(.black)
+                    .background(LinearGradient(colors: [green, Color(red: 0.22, green: 0.77, blue: 0.42)], startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: 12))
+                    .contentShape(RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).disabled(store.busy || (!store.unlocked && store.product == nil))
+                .opacity(store.product == nil && !store.unlocked ? 0.45 : 1)
+                .accessibilityIdentifier("native-purchase-buy")
+            Button("Restore purchases") { Task { await store.restore() } }
+                .buttonStyle(.plain).foregroundStyle(green).frame(minHeight: 44).disabled(store.busy)
+                .accessibilityIdentifier("native-purchase-restore")
+            if !store.notice.isEmpty {
+                Text(LocalizedStringKey(store.notice)).font(.footnote).foregroundStyle(.white.opacity(0.85))
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
+            if store.product == nil && !store.loading && !store.unlocked {
+                Button("Try again") { Task { await store.load() } }.disabled(store.busy)
+            }
+            Text("Payment is handled by the App Store. Restore your purchase using the same Apple Account.")
+                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }.padding(26).frame(maxWidth: .infinity)
+            .background(LinearGradient(colors: [Color(white: 0.23), Color(white: 0.13)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 22))
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(green.opacity(0.3)))
+    }
+}
+#endif

@@ -292,8 +292,7 @@ import Combine
     }
 }
 
-/// Item actions reuse the desktop editing and rendering paths. Unify/export
-/// are intentionally absent from the iPad playback workspace.
+/// Native iPad item actions share the desktop editing and effects paths.
 @MainActor private struct IpadItemActions: View {
     @ObservedObject var show: ShowController
     let documents: ProjectDocuments
@@ -302,9 +301,6 @@ import Combine
     @State private var normalize = false
     @State private var editingText = false
     @State private var fx = false
-    @State private var rendering = false
-    @State private var cancellation: AudioExportCancellation?
-    @StateObject private var progress = ItemReRenderProgress()
     private var track: Track? { show.current?.tracks.first { $0.clips.contains { $0.id == item } } }
     private var clip: AudioClip? { track?.clips.first { $0.id == item } }
     var body: some View {
@@ -330,26 +326,12 @@ import Combine
                     action(clip.muted == true ? "Unmute items" : "Mute items") { show.send(.clipMute, target: item) }
                     action("Criar região do item") { show.regionsFromSelection([item]); close() }
                     if clip.midi == nil && !clip.isImage && (clip.audioFile ?? track?.audioFile) != nil {
-                        action("Re-render") { render() }
                         action("Normalize…") { normalize = true }
-                        Menu("Convert") {
-                            ForEach([("Convert Mono - L", 1), ("Convert Mono - R", 2), ("Convert Mono L-R", 3), ("Convert Stereo", 0)], id: \.1) { title, mode in
-                                Button(LocalizedStringKey(title)) { show.convertItems([item], mode: mode) }
-                            }
-                        }.padding(12).frame(maxWidth: .infinity).background(JarasTheme.panel, in: RoundedRectangle(cornerRadius: 7))
-                    }
-                    action("Split at edit cursor…") {
-                        show.splitItems([item], at: show.snapshot.transport.editPosition ?? show.snapshot.transport.position); close()
-                    }.disabled((show.snapshot.transport.editPosition ?? show.snapshot.transport.position) <= clip.startTime || (show.snapshot.transport.editPosition ?? show.snapshot.transport.position) >= clip.startTime + clip.duration)
-                    HStack {
-                        action("Copy") { show.copyItems([item]); close() }
-                        action("Cut") { show.copyItems([item], moving: true); close() }
-                        action("Paste") { show.pasteItems(); close() }
                     }
                     Button("Delete", role: .destructive) { show.deleteItems([item]); close() }
                         .frame(maxWidth: .infinity, minHeight: 44).buttonStyle(.bordered)
                 }
-            }.padding(22).disabled(rendering)
+            }.padding(22)
         }.background(JarasTheme.background)
             .overlay {
                 if editingText { IpadCompactModal {
@@ -360,48 +342,14 @@ import Combine
                     IpadStandaloneFXManager(show: show, track: nil, clip: item, targets: [], close: { fx = false })
                 } }
             }
-            .overlay {
-                if rendering {
-                    IpadCompactModal {
-                        ItemReRenderProgressView(progress: progress, cancel: { cancellation?.cancel() }, close: { rendering = false })
-                    }
-                }
-            }.interactiveDismissDisabled(rendering)
+
     }
     private func action(_ title: String, perform: @escaping () -> Void) -> some View {
         Button(action: perform) {
             Text(LocalizedStringKey(title)).frame(maxWidth: .infinity, minHeight: 40).contentShape(Rectangle())
         }.buttonStyle(StageButtonStyle(color: JarasTheme.panel))
     }
-    private func render(channels: Int? = nil) {
-        guard !documents.busy, let track, let clip, let song = show.current,
-              let directory = documents.currentURL?.deletingLastPathComponent() else { return }
-        let project = show.snapshot.project, settings = MediaProcessingFormat.load("rerender")
-        let token = AudioExportCancellation()
-        cancellation = token; rendering = true; documents.busy = true
-        progress.total = 1; progress.index = 0; progress.fileName = clip.name; progress.fraction = 0; progress.error = nil
-        let instruments = channels.map { _ in ItemReRender.midiInstruments(for: track, projectDirectory: directory) }
-        Task {
-            defer { documents.busy = false; cancellation = nil }
-            do {
-                let model = progress
-                let rendered = try await Task.detached(priority: .utility) {
-                    let report: (AudioExportProgress) -> Void = { update in Task { @MainActor in model.fraction = update.fraction } }
-                    if let channels, let instruments {
-                        return try ItemReRender.renderMIDI(project: project, song: song, track: track, clip: clip,
-                            directory: directory, channels: channels, instruments: instruments, cancellation: token, progress: report)
-                    }
-                    return try ItemReRender.render(project: project, song: song, track: track, clip: clip,
-                        directory: directory, settings: settings, cancellation: token, progress: report)
-                }.value
-                if token.cancelled || !show.replaceRenderedItem(rendered, original: clip, track: track.id, project: project.id) {
-                    if let path = rendered.audioFile?.path { try? FileManager.default.removeItem(at: directory.appendingPathComponent(path)) }
-                }
-                rendering = false
-            } catch is CancellationError { rendering = false }
-            catch { progress.error = error.localizedDescription }
-        }
-    }
+
 }
 
 /// Track, master and item effects share the same Add / bypass / Remove manager.
@@ -740,17 +688,254 @@ struct IpadTrackControlsBoundsKey: PreferenceKey {
     static func reduce(value: inout [Anchor<CGRect>], nextValue: () -> [Anchor<CGRect>]) { value += nextValue() }
 }
 
-/// A transparent selection layer leaves the existing buttons untouched. UIKit
-/// recognizes taps on release and lets vertical drags remain with the scroll view.
+/// Dragging the grip is a direct gesture, not a system drag-and-drop session.
+/// The scroll view yields only touches starting on the grip. All destination
+/// validation and the single undoable subtree move use the desktop controller.
+struct IpadTrackReorderModifier: ViewModifier {
+    let show: ShowController?
+    let track: UUID
+    let enabled: Bool
+    let controller: IpadTrackReorderController
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled, let show, show.current?.tracks.contains(where: { $0.id == track && $0.kind == .standard }) == true {
+            content.overlay {
+                IpadTrackReorderSurface(show: show, track: track, controller: controller)
+            }
+        } else { content }
+    }
+}
+
+@MainActor final class IpadTrackReorderController: ObservableObject {
+    private final class Row {
+        weak var view: IpadTrackReorderView?
+        init(_ view: IpadTrackReorderView) { self.view = view }
+    }
+    private var rows: [ObjectIdentifier: Row] = [:]
+    private weak var source: IpadTrackReorderView?
+    private weak var destination: IpadTrackReorderView?
+    private weak var scroll: UIScrollView?
+    private var point = CGPoint.zero
+    private var below = false
+    private var clock: CADisplayLink?
+    private var previousTime: CFTimeInterval = 0
+    @MainActor private final class TickTarget {
+        weak var owner: IpadTrackReorderController?
+        init(_ owner: IpadTrackReorderController) { self.owner = owner }
+        @objc func tick(_ link: CADisplayLink) { owner?.scrollTick(link) }
+    }
+    fileprivate func register(_ view: IpadTrackReorderView) { rows[ObjectIdentifier(view)] = Row(view) }
+    fileprivate func unregister(_ view: IpadTrackReorderView) {
+        rows.removeValue(forKey: ObjectIdentifier(view))
+        if source === view { cancel() }
+        if destination === view { destination = nil }
+    }
+    fileprivate func begin(_ view: IpadTrackReorderView, point: CGPoint) {
+        cancel()
+        source = view; scroll = view.enclosingScrollView
+        scroll?.setContentOffset(scroll?.contentOffset ?? .zero, animated: false)
+        view.grip.tintColor = .systemGreen
+        self.point = point; updateDestination()
+        previousTime = 0
+        let link = CADisplayLink(target: TickTarget(self), selector: #selector(TickTarget.tick(_:)))
+        link.preferredFramesPerSecond = 30
+        clock = link; link.add(to: .main, forMode: .common)
+    }
+    fileprivate func move(to point: CGPoint) { self.point = point; updateDestination() }
+    fileprivate func end(at point: CGPoint) {
+        self.point = point; updateDestination()
+        let sourceID = source?.track, targetID = destination?.track, show = source?.show, after = below
+        cancel()
+        guard let sourceID, let targetID, let show, let tracks = show.current?.tracks,
+              show.canDropTrack(sourceID, on: targetID, after: after),
+              let index = tracks.firstIndex(where: { $0.id == targetID }) else { return }
+        let before = after ? (index + 1 < tracks.count ? tracks[index + 1].id : nil) : targetID
+        show.dropTrack(sourceID, on: targetID, before: before)
+    }
+    func cancel() {
+        clock?.invalidate(); clock = nil
+        source?.grip.tintColor = .white
+        destination?.showInsertion(after: nil)
+        source = nil; destination = nil; scroll = nil
+    }
+    private func updateDestination() {
+        destination?.showInsertion(after: nil); destination = nil
+        guard let source, let window = source.window, let scroll, let sourceID = source.track, let show = source.show else { return }
+        let viewport = scroll.convert(scroll.bounds, to: window)
+        guard point.x >= viewport.minX - 40, point.x <= viewport.maxX + 40 else { return }
+        let y = min(viewport.maxY - 1, max(viewport.minY + 1, point.y))
+        for row in rows.values {
+            guard let view = row.view, view.window === window, let target = view.track else { continue }
+            let frame = view.convert(view.bounds, to: window)
+            guard y >= frame.minY, y < frame.maxY else { continue }
+            let after = y >= frame.midY
+            guard show.canDropTrack(sourceID, on: target, after: after) else { return }
+            destination = view; below = after; view.showInsertion(after: after)
+            return
+        }
+    }
+    private func scrollTick(_ link: CADisplayLink) {
+        guard let source, let window = source.window, let scroll else { cancel(); return }
+        let dt = min(0.05, previousTime == 0 ? link.duration : link.timestamp - previousTime)
+        previousTime = link.timestamp
+        let viewport = scroll.convert(scroll.bounds, to: window)
+        let margin: CGFloat = min(44, viewport.height / 4)
+        let speed: CGFloat
+        if point.y < viewport.minY + margin { speed = -min(1, (viewport.minY + margin - point.y) / margin) * 260 }
+        else if point.y > viewport.maxY - margin { speed = min(1, (point.y - viewport.maxY + margin) / margin) * 260 }
+        else { return }
+        let lower = -scroll.adjustedContentInset.top
+        let upper = max(lower, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
+        let offset = min(upper, max(lower, scroll.contentOffset.y + speed * dt))
+        if offset != scroll.contentOffset.y {
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: offset), animated: false)
+            updateDestination()
+        }
+    }
+    deinit { clock?.invalidate() }
+}
+
+private struct IpadTrackReorderSurface: UIViewRepresentable {
+    let show: ShowController
+    let track: UUID
+    let controller: IpadTrackReorderController
+    func makeUIView(context: Context) -> IpadTrackReorderView { IpadTrackReorderView() }
+    func updateUIView(_ view: IpadTrackReorderView, context: Context) {
+        view.show = show; view.track = track; view.controller = controller
+        controller.register(view)
+    }
+    static func dismantleUIView(_ view: IpadTrackReorderView, coordinator: ()) { view.controller?.unregister(view) }
+}
+private final class IpadTrackReorderView: UIControl, UIGestureRecognizerDelegate {
+    weak var show: ShowController?
+    var track: UUID?
+    weak var controller: IpadTrackReorderController?
+    let grip = UIImageView(image: UIImage(systemName: "line.3.horizontal"))
+    private let insertion = CALayer()
+    private var insertionAfter: Bool?
+    private lazy var pan = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
+    var enclosingScrollView: UIScrollView? {
+        var parent = superview
+        while let view = parent {
+            if let scroll = view as? UIScrollView { return scroll }
+            parent = view.superview
+        }
+        return nil
+    }
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        grip.contentMode = .center; grip.tintColor = .white; addSubview(grip)
+        insertion.backgroundColor = UIColor.systemGreen.cgColor; insertion.isHidden = true
+        layer.addSublayer(insertion)
+        pan.maximumNumberOfTouches = 1; pan.delegate = self; addGestureRecognizer(pan)
+        isAccessibilityElement = true; accessibilityLabel = JarasLocalization.string("Move track")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { controller?.unregister(self) }
+        else { controller?.register(self); enclosingScrollView?.panGestureRecognizer.require(toFail: pan) }
+    }
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.contains(point) && point.x >= bounds.maxX - 36
+    }
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === pan else { return true }
+        let velocity = pan.velocity(in: self)
+        return abs(velocity.y) > abs(velocity.x)
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        grip.frame = CGRect(x: bounds.maxX - 32, y: 0, width: 30, height: bounds.height)
+        layoutInsertion()
+    }
+    func showInsertion(after: Bool?) { insertionAfter = after; layoutInsertion() }
+    private func layoutInsertion() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        insertion.isHidden = insertionAfter == nil
+        insertion.frame = CGRect(x: 0, y: insertionAfter == true ? max(0, bounds.height - 2) : 0, width: bounds.width, height: 2)
+        CATransaction.commit()
+    }
+    @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
+        let point = gesture.location(in: window)
+        switch gesture.state {
+        case .began: controller?.begin(self, point: point)
+        case .changed: controller?.move(to: point)
+        case .ended: controller?.end(at: point)
+        case .cancelled, .failed: controller?.cancel()
+        default: break
+        }
+    }
+}
+
+struct IpadItemResizePreview {
+    let original: AudioClip
+    var candidate: AudioClip
+    let secondsPerPoint: Double
+}
+/// A control excludes resizing from the grid pan/pinch and item-menu recognizers.
+struct IpadItemResizeHandle: UIViewRepresentable {
+    let left: Bool
+    let changed: (Double, Bool, Bool) -> Void
+    func makeUIView(context: Context) -> IpadItemResizeControl { IpadItemResizeControl() }
+    func updateUIView(_ view: IpadItemResizeControl, context: Context) {
+        view.changed = changed
+        view.accessibilityLabel = JarasLocalization.string(left ? "Item start" : "Item end")
+    }
+}
+final class IpadItemResizeControl: UIControl, UIGestureRecognizerDelegate {
+    var changed: ((Double, Bool, Bool) -> Void)?
+    private let grip = CALayer()
+    private lazy var drag = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        grip.backgroundColor = UIColor.white.cgColor
+        grip.cornerRadius = 2; layer.addSublayer(grip)
+        drag.delegate = self
+        addGestureRecognizer(drag)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === drag else { return true }
+        let velocity = drag.velocity(in: window ?? self)
+        return abs(velocity.x) > abs(velocity.y)
+    }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        var parent = superview
+        while let view = parent {
+            if let scroll = view as? UIScrollView { scroll.panGestureRecognizer.require(toFail: drag); break }
+            parent = view.superview
+        }
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        grip.frame = CGRect(x: bounds.midX - 2, y: 3, width: 4, height: max(0, bounds.height - 6))
+        CATransaction.commit()
+    }
+    @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began, .changed: changed?(Double(gesture.translation(in: window).x), false, false)
+        case .ended: changed?(Double(gesture.translation(in: window).x), true, false)
+        case .cancelled, .failed: changed?(0, true, true)
+        default: break
+        }
+    }
+}
+
 struct IpadTrackSelectionSurface: UIViewRepresentable {
     let excluded: [CGRect]
     let name: String
     let selected: Bool
+    var holdEnabled = true
     let tap: () -> Void
     let hold: () -> Void
     func makeUIView(context: Context) -> IpadTrackSelectionTouchView { IpadTrackSelectionTouchView() }
     func updateUIView(_ view: IpadTrackSelectionTouchView, context: Context) {
         view.excluded = excluded; view.tap = tap; view.hold = hold
+        view.gestureRecognizers?.first(where: { $0 is UILongPressGestureRecognizer })?.isEnabled = holdEnabled
         view.accessibilityLabel = name
         view.accessibilityTraits = selected ? [.button, .selected] : [.button]
     }
@@ -930,7 +1115,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
                         .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } else {
                     Button("Edit song") { editing = true }
-                    if canUnify { Button("Unify regions") { unifying = true; name = region.name } }
+                    if canUnify { Button("Unify regions") { name = ""; unifying = true } }
                     Button("Delete region", role: .destructive) { deleting = true }
                 }
             }

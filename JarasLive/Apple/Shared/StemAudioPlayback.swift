@@ -1435,6 +1435,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                         let voice = try self.makeVoice(track: track, clip: clip, file: file)
                         JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
                         self.idleVoices[track, default: []].append(voice)
+                        #if os(iOS)
+                        try self.warmIdleVoice(voice)
+                        #endif
                     }
                 } catch { self.onError(error); return }
             }
@@ -1443,6 +1446,35 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             // starts and rebases only the players actually needed for playback.
         }
     }
+    #if os(iOS)
+    /// Exercise cold decoder/stretch/FX paths while stopped, before the first
+    /// audible deadline. A finite silent buffer bounds CPU work and never touches
+    /// the source file, transport position or the user's first transient.
+    private func warmIdleVoice(_ voice: Voice) throws {
+        guard realtime, deviceSessionActive, outputAllowed, !transportWasRunning else { return }
+        // Opening a document rebuilds and stops the engine. Do not postpone its
+        // first render until Play or the one-second device-health timer.
+        try startEngineIfNeeded()
+        guard let silence = AVAudioPCMBuffer(pcmFormat: voice.file.processingFormat, frameCapacity: 4096) else { return }
+        silence.frameLength = silence.frameCapacity
+        for buffer in UnsafeMutableAudioBufferListPointer(silence.mutableAudioBufferList) {
+            if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+        }
+        voice.player.volume = 0
+        JarasVoiceGain.setRenderEnabled(voice.gain, enabled: true)
+        voice.player.scheduleBuffer(silence)
+        voice.player.play()
+        let player = voice.player, track = voice.track
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard let self,
+                  let idle = self.idleVoices[track]?.first(where: { $0.player === player }) else { return }
+            // A Play may already have taken this voice. Only pooled sources can
+            // be silenced here; never change an active player's render gate.
+            JarasVoiceGain.setRenderEnabled(idle.gain, enabled: false)
+        }
+    }
+    #endif
     private func warmPlayer(_ voice: Voice) {
         JarasVoiceGain.setRenderEnabled(voice.gain, enabled: true)
         guard let silence = AVAudioPCMBuffer(pcmFormat: voice.file.processingFormat, frameCapacity: 256) else { return }

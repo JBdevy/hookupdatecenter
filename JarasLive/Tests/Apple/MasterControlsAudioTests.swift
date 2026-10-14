@@ -21,7 +21,7 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
     }
     // Use the application's realtime voice path with a manually pulled device:
     // these tests never open or change the user's audio interface.
-    for grouped in [false, true] { for hardware in [false, true] {
+    for depth in 0...3 { for hardware in [false, true] {
         let engine = AVAudioEngine()
         try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
         let audio = StemAudioPlayback(engine: engine, realtime: true)
@@ -32,12 +32,17 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
         track.outputs = [hardware ? .stereo : .master]
         track.clips = [AudioClip(id: UUID(), name: "Stereo", startTime: 0, duration: 12,
                                 audioFile: AudioFile(path: "stereo.wav"))]
-        if grouped {
-            var parent = Track(id: UUID(), name: "Parent", role: .other)
-            parent.outputs = track.outputs
-            track.parentTrackID = parent.id; track.outputs = [.masterGroup]
-            project.songs[0].tracks = [parent, track]
-        } else { project.songs[0].tracks = [track] }
+        var folders: [Track] = []
+        for level in 0..<depth {
+            var parent = Track(id: UUID(), name: "Group \(level)", role: .other, volume: 0.8)
+            parent.parentTrackID = folders.last?.id
+            parent.outputs = level == 0 ? track.outputs : [.masterGroup]
+            folders.append(parent)
+        }
+        if let parent = folders.last { track.parentTrackID = parent.id; track.outputs = [.masterGroup] }
+        project.songs[0].tracks = folders + [track]
+        try project.validate()
+        let groupGain = pow(0.8, Double(depth))
         project.masterVolume = 0.5; project.masterPan = -0.5
         var timing = project.songs[0].projectTime; timing.timebase = .free
         project.songs[0].timeSettings = timing
@@ -58,10 +63,10 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
                     } }
                 }
             }
-            let expected = hardware ? SIMD2(0.08, 0.12) : muted ? .zero :
-                SIMD2(0.08 * gain * (1 - max(0, pan)), 0.12 * gain * (1 + min(0, pan)))
+            let expected = groupGain * (hardware ? SIMD2(0.08, 0.12) : muted ? .zero :
+                SIMD2(0.08 * gain * (1 - max(0, pan)), 0.12 * gain * (1 + min(0, pan))))
             precondition(abs(actual.x - expected.x) < 0.00003 && abs(actual.y - expected.y) < 0.00003,
-                         "\(label): grouped=\(grouped), hardware=\(hardware), PCM=\(actual), expected=\(expected)")
+                         "\(label): grouped=\(depth), hardware=\(hardware), PCM=\(actual), expected=\(expected)")
             precondition(engine.isRunning && engine.attachedNodes == nodes, "Scalar Master edits must retain the graph")
         }
         try check(0.5, -0.5, "Saved Master volume/pan")
@@ -88,7 +93,7 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
         try check(0.2, 0.5, "Master insert chain plus saved controls")
         audio.previewVolume(nil, gain: 0.4); audio.previewMasterPan(-1)
         try check(0.4, -1, "Master controls after FX chain rebuild")
-        print("MASTER_FADER_PAN_MUTE_SAVED_LIVE_AND_POST_FX_PCM_OK rate=\(rate) group=\(grouped) hardwareBypass=\(hardware)")
+        print("MASTER_FADER_PAN_MUTE_SAVED_LIVE_AND_POST_FX_PCM_OK rate=\(rate) group=\(depth) hardwareBypass=\(hardware)")
     } }
 }
 try MainActor.assumeIsolated { try verifyMasterControls() }

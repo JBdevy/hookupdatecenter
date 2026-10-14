@@ -820,6 +820,10 @@ public struct ShowTimelinePresentationState: Equatable {
             onProjectEdited(); audioUpdate(snapshot, audioProjectRevision)
         } catch { message = error.localizedDescription }
     }
+    public func setResolume(_ settings: ResolumeSettings) {
+        do { try settings.validate(); editProject { $0.resolume = settings } }
+        catch { message = error.localizedDescription }
+    }
     private func editProject(_ edit: (inout Project) -> Void) {
         guard canExecute(), !finishing else { return }
         var project = snapshot.project; edit(&project)
@@ -1068,6 +1072,13 @@ public struct ShowTimelinePresentationState: Equatable {
     public func deleteTracks(_ ids: Set<UUID>) { editProject { $0.deleteTracks(ids) } }
     public func removeTrackFromGroup(_ id: UUID) { editProject { $0.removeTrackFromGroup(id) } }
     public func ungroupTrack(_ id: UUID) { editProject { $0.ungroupTrack(id) } }
+    public func ungroupTracks(_ ids: Set<UUID>) {
+        guard let song = current else { return }
+        let groups = song.groupsForTrackSelection(ids)
+        guard !groups.isEmpty else { return }
+        // One edit/undo for the whole selection, including nested folders.
+        editProject { project in for id in groups { project.ungroupTrack(id) } }
+    }
     public func deleteRegion(_ id: UUID, playlist: UUID?) {
         if let playlist { editProject { $0.removeRegion(id, from: playlist) } }
         else { editProject { $0.deleteRegion(id) }; if focusedRegion == id { focusedRegion = nil } }

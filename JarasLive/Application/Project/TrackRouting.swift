@@ -97,6 +97,15 @@ public struct TrackHierarchy {
     }
 }
 public extension Song {
+    /// A selected folder targets itself; a selected member targets its immediate
+    /// folder. Resolve before editing so dissolving a parent cannot retarget a child.
+    func groupsForTrackSelection(_ selection: Set<UUID>) -> [UUID] {
+        let folders = Set(tracks.compactMap(\.parentTrackID))
+        let groups = Set(tracks.filter { selection.contains($0.id) }.compactMap { track in
+            folders.contains(track.id) ? track.id : track.parentTrackID
+        })
+        return tracks.filter { groups.contains($0.id) }.map(\.id)
+    }
     var trackGroupDepths: [UUID: Int] {
         let hierarchy = TrackHierarchy(tracks)
         return Dictionary(tracks.map { ($0.id, hierarchy.ancestors(of: $0.id).count) }, uniquingKeysWith: { first, _ in first })

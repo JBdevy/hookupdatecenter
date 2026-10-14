@@ -24,6 +24,22 @@ final class TimelineSnapTests: XCTestCase {
             XCTAssertEqual(snapped / step, (snapped / step).rounded(), accuracy: 0.000001)
         }
     }
+    func testCursorUsesHiddenDivisionsAtEveryZoomAndTempo() {
+        var song = Project.empty(name: "Hidden subdivisions").songs[0]
+        song.bpm = 120; song.duration = 100; song.parts = []
+        var settings = ProjectTimeSettings(); settings.divisions = 8; song.timeSettings = settings
+        song.markers = [TimelineMarker(id: UUID(), name: "Tempo", position: 10.13, color: 0xffffff,
+            tempoBPM: 150, tempoBeats: 3, tempoUnit: 8)]
+        for scale in [0.05, 0.3, 1, 10, 100, 1000] {
+            XCTAssertEqual(TimelineTempo.snap(3.29, song: song, pixelsPerSecond: scale, includeHiddenDivisions: true), 3.25, accuracy: 1e-9)
+            XCTAssertEqual(TimelineTempo.snap(10.76, song: song, pixelsPerSecond: scale, includeHiddenDivisions: true), 10.73, accuracy: 1e-9)
+            XCTAssertEqual(TimelineTempo.snap(10.76, song: song, pixelsPerSecond: scale, enabled: false, includeHiddenDivisions: true), 10.76)
+            XCTAssertEqual(TimelineTempo.snap(10.14, song: song, pixelsPerSecond: scale, includeHiddenDivisions: true), 10.13, accuracy: 1e-9)
+        }
+        settings.divisions = 0; song.timeSettings = settings
+        XCTAssertEqual(TimelineTempo.snap(3.29, song: song, pixelsPerSecond: 1, includeHiddenDivisions: true), 0,
+            "Disabling grid divisions retains only explicit anchors")
+    }
     private func snap(_ time: Double, starts: [Double] = [30.15], ends: [Double]? = nil,
                       cursor: Double? = nil, scale: Double = 100) -> Double {
         TimelineTempo.snap(time, bar: 2, beats: 4, pixelsPerSecond: scale, anchors: starts,

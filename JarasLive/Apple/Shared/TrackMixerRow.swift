@@ -979,7 +979,7 @@ private struct TrackGroupButton: View {
             }
     }
 }
-private struct GroupTrackConnector: Shape {
+struct GroupTrackConnector: Shape {
     let last: Bool
     func path(in rect: CGRect) -> Path {
         var path = Path()

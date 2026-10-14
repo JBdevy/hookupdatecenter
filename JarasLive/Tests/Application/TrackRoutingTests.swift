@@ -227,6 +227,35 @@ final class TrackRoutingTests: XCTestCase {
         XCTAssertThrowsError(try invalid.validate())
     }
 
+    @MainActor func testSelectedGroupsDissolveTogetherWithSingleUndo() throws {
+        var project = Project.empty(name: "Selected folders")
+        var tracks = (0..<6).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        tracks[1].parentTrackID = tracks[0].id
+        tracks[2].parentTrackID = tracks[1].id
+        tracks[3].parentTrackID = tracks[1].id
+        tracks[5].parentTrackID = tracks[4].id
+        for index in [1, 2, 3, 5] { tracks[index].outputs = [.masterGroup] }
+        project.songs[0].tracks = tracks
+        let song = project.songs[0]
+        XCTAssertEqual(song.groupsForTrackSelection([tracks[2].id, tracks[3].id]), [tracks[1].id])
+        XCTAssertEqual(song.groupsForTrackSelection([tracks[0].id, tracks[1].id, tracks[5].id]), [tracks[0].id, tracks[1].id, tracks[4].id])
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.ungroupTracks([tracks[1].id, tracks[2].id, tracks[5].id])
+        let result = try XCTUnwrap(show.current?.tracks)
+        XCTAssertEqual(executor.fullEdits, 1)
+        XCTAssertEqual(result.map(\.id), tracks.map(\.id))
+        XCTAssertEqual(result[2].parentTrackID, tracks[0].id)
+        XCTAssertEqual(result[3].parentTrackID, tracks[0].id)
+        XCTAssertEqual(result[2].outputPatches, [.masterGroup])
+        XCTAssertNil(result[5].parentTrackID)
+        XCTAssertEqual(result[5].outputPatches, [.master])
+        try show.snapshot.project.validate()
+        show.undo(); XCTAssertEqual(show.current?.tracks, tracks)
+        show.redo(); XCTAssertEqual(show.current?.tracks, result)
+        XCTAssertFalse(show.canDropTrack(tracks[0].id, on: tracks[2].id, after: true))
+    }
+
     @MainActor func testSharedMixerSelectionKeepsAnchorAndDoesNotReloadAudio() throws {
         var p = Project.empty(name: "Mixer selection")
         let first = Track(id: UUID(), name: "Left", role: .keys)

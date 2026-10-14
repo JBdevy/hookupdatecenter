@@ -1499,3 +1499,62 @@
 "Audio continues on the Mac. Nearby Apple devices can connect directly over peer-to-peer Wi-Fi." = "Audio continues on the Mac. Nearby Apple devices can connect directly over peer-to-peer Wi-Fi.";
 
 "Audio continues on this iPad. Use the same local network or a direct connection between nearby Apple devices." = "Audio continues on this iPad. Use the same local network or a direct connection between nearby Apple devices.";
+
+"Move track" = "Move track";
+
+"Item start" = "Item start";
+
+"Item end" = "Item end";
+
+/* Native iPad one-time purchase */
+"NATIVE ON IPAD" = "NATIVE ON IPAD";
+"Your show.\nOn your iPad." = "Your show.\nOn your iPad.";
+"Create and play your projects directly on iPad, without a computer." = "Create and play your projects directly on iPad, without a computer.";
+"Multitrack playback and audio recording" = "Multitrack playback and audio recording";
+"Mixer, routing and native effects" = "Mixer, routing and native effects";
+"Setlists, loops and teleprompters" = "Setlists, loops and teleprompters";
+"Exchange .ziplive projects with your Mac" = "Exchange .ziplive projects with your Mac";
+"CatLive Native iPad" = "CatLive Native iPad";
+"One-time purchase. No subscription." = "One-time purchase. No subscription.";
+"Purchased" = "Purchased";
+"Price unavailable" = "Price unavailable";
+"Open Native mode" = "Open Native mode";
+"Unlock Native mode" = "Unlock Native mode";
+"Restore purchases" = "Restore purchases";
+"Try again" = "Try again";
+"Payment is handled by the App Store. Restore your purchase using the same Apple Account." = "Payment is handled by the App Store. Restore your purchase using the same Apple Account.";
+"Remote mode stays free on iPad and iPhone." = "Remote mode stays free on iPad and iPhone.";
+"Privacy" = "Privacy";
+"Support" = "Support";
+"The purchase is unavailable right now. Check your connection and try again." = "The purchase is unavailable right now. Check your connection and try again.";
+"Purchase awaiting approval. Access will unlock when Apple confirms it." = "Purchase awaiting approval. Access will unlock when Apple confirms it.";
+"The purchase could not be completed. Please try again." = "The purchase could not be completed. Please try again.";
+"Purchase restored." = "Purchase restored.";
+"No purchase was found for this Apple Account." = "No purchase was found for this Apple Account.";
+"Purchases could not be restored. Check your connection and try again." = "Purchases could not be restored. Check your connection and try again.";
+"Unlock Native mode to play projects on this iPad." = "Unlock Native mode to play projects on this iPad.";
+
+"Host" = "Host";
+"Webserver" = "Webserver";
+"Include markers in the Resolume map" = "Include markers in the Resolume map";
+"Follow CatLive transport" = "Follow CatLive transport";
+"Enable OSC Input in Resolume Preferences (port 7000). For automatic composition creation, enable the Webserver (port 8080) in Resolume Arena 7.22 or later." = "Enable OSC Input in Resolume Preferences (port 7000). For automatic composition creation, enable the Webserver (port 8080) in Resolume Arena 7.22 or later.";
+"Before creating the composition, save your work in Resolume and open a new empty composition. CatLive creates one deck per song and one column per marker. Place your videos in these columns afterward." = "Before creating the composition, save your work in Resolume and open a new empty composition. CatLive creates one deck per song and one column per marker. Place your videos in these columns afterward.";
+"Create / update map" = "Create / update map";
+"Create Resolume project…" = "Create Resolume project…";
+"The map and connection settings are saved with this CatLive project." = "The map and connection settings are saved with this CatLive project.";
+"Create a new Resolume composition?" = "Create a new Resolume composition?";
+"Open a new empty composition in Resolume first. Existing compositions containing media will not be replaced." = "Open a new empty composition in Resolume first. Existing compositions containing media will not be replaced.";
+"Resolume map saved. Save the CatLive project to keep these changes." = "Resolume map saved. Save the CatLive project to keep these changes.";
+"Creating Resolume composition…" = "Creating Resolume composition…";
+"Resolume composition created. Place your videos in the generated columns." = "Resolume composition created. Place your videos in the generated columns.";
+"Invalid Resolume settings" = "Invalid Resolume settings";
+"Invalid Resolume address" = "Invalid Resolume address";
+"Invalid Resolume response" = "Invalid Resolume response";
+"Resolume did not confirm the operation. Check the composition before trying again." = "Resolume did not confirm the operation. Check the composition before trying again.";
+"Resolume is busy. Try again after the current operation finishes." = "Resolume is busy. Try again after the current operation finishes.";
+"Create a Resolume map with song regions first (maximum 1000 decks)." = "Create a Resolume map with song regions first (maximum 1000 decks).";
+"Automatic composition creation requires Resolume Arena 7.22 or later." = "Automatic composition creation requires Resolume Arena 7.22 or later.";
+"Open a new empty composition in Resolume before creating the project." = "Open a new empty composition in Resolume before creating the project.";
+"The Resolume composition contains media. Open a new empty composition first." = "The Resolume composition contains media. Open a new empty composition first.";
+"Resolume did not confirm saving the .avc file. Check its Webserver and save the composition in Resolume." = "Resolume did not confirm saving the .avc file. Check its Webserver and save the composition in Resolume.";

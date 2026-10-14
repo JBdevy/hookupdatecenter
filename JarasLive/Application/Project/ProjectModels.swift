@@ -399,7 +399,32 @@ public struct SavedProjectCursor: Codable, Equatable, Sendable {
     public let position: Double
     public init(songID: UUID, position: Double) { self.songID = songID; self.position = position }
 }
+public struct ResolumeSettings: Codable, Equatable, Sendable {
+    public var enabled = false
+    public var host = "127.0.0.1"
+    public var oscPort = 7000
+    public var webPort = 8080
+    public var includeMarkers = true
+    public var withMarkers: [String: String] = [:]
+    public var regionsOnly: [String: String] = [:]
+    public init() {}
+    public static func assignment(_ text: String) -> (deck: Int, column: Int)? {
+        let pair = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard pair.count == 2, let deck = Int(pair[0]), let column = Int(pair[1]),
+              (0..<99999).contains(deck), (0..<99999).contains(column) else { return nil }
+        return (deck, column)
+    }
+
+    public func validate() throws {
+        guard !host.isEmpty, host.count <= 253, !host.contains(where: { $0.isWhitespace || $0 == "/" }),
+              (1...65535).contains(oscPort), (1...65535).contains(webPort),
+              withMarkers.count <= 100_000, regionsOnly.count <= 100_000 else {
+            throw ProjectError.invalid("Invalid Resolume settings")
+        }
+    }
+}
 public struct Project: Codable, Identifiable, Equatable, Sendable {
+    public var resolume: ResolumeSettings? = nil
     /// Editing position captured by Save, portable with the document and backups.
     public var savedCursor: SavedProjectCursor? = nil
     /// Migrated arrangements retain their own timing when opening the document.
@@ -435,6 +460,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
         guard (masterVolume ?? 1).isFinite, (0...pow(10.0, 12.0 / 20.0)).contains(masterVolume ?? 1) else { throw ProjectError.invalid("Invalid master volume") }
         guard (masterPan ?? 0).isFinite, (-1...1).contains(masterPan ?? 0) else { throw ProjectError.invalid("Invalid master pan") }
         guard masterColor == nil || masterColor! <= 0xffffff else { throw ProjectError.invalid("Invalid master color") }
+        try resolume?.validate()
         try masterFX?.validate()
         try masterAutomation?.validate()
         try masterPatch?.validate(allowMaster: false, allowNone: true)

@@ -4,6 +4,7 @@ import Combine
 struct TransportView: View {
     @State private var showingPortableExport = false
     @State private var showingExport = false
+    @State private var showingResolume = false
     @State private var showingAdvanced = false
     let show: ShowController
     @StateObject private var updates: ShowPresentationObserver
@@ -43,6 +44,7 @@ struct TransportView: View {
             .sheet(isPresented: $showingExport) { AudioExportView(project: show.snapshot.project, song: show.current, mediaDirectory: mediaDirectory) }
             .sheet(isPresented: $showingAdvanced) { AdvancedView(show: show, documents: documents) }
             #if os(macOS)
+            .sheet(isPresented: $showingResolume) { ResolumeSettingsView(show: show) }
             .sheet(isPresented: $showingPortableExport) {
                 if let documents { PortableProjectExportView(documents: documents) }
             }
@@ -82,7 +84,7 @@ struct TransportView: View {
                         #if os(macOS)
                         if !remotePresentation {
                         ForEach(["Resolume"], id: \.self) { title in
-                            Button {} label: {
+                            Button { showingResolume = true } label: {
                                 Text(verbatim: title).font(.system(size: 10, weight: .semibold)).frame(width: 64, height: 25).contentShape(Rectangle())
                                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
                             }.buttonStyle(.plain).accessibilityLabel(title)

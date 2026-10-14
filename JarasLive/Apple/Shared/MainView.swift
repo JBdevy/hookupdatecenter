@@ -353,6 +353,7 @@ struct MainView: View {
                 presentedSessionID = show.projectSessionID
                 #if os(macOS)
                 DAWRemoteHostBridge.bind(show)
+                ResolumeController.shared.bind(show)
                 #endif
                 mappings.bind(show)
                 show.toggleTracksPanel = { [width = $mixerWidth, restore = $mixerRestoreWidth] in
@@ -377,6 +378,7 @@ struct MainView: View {
                 guard presentedSessionID == show.projectSessionID else { return }
                 show.toggleTracksPanel = {}; show.toggleSetlistPanel = {}
                 #if os(macOS)
+                ResolumeController.shared.stop()
                 FXWindows.shared.closeAll()
                 RightClickRouter.shared.interactionBlocked = false
                 #endif

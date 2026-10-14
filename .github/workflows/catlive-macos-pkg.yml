@@ -43,6 +43,12 @@ jobs:
             fi
           done
 
+      - name: Validate project and transport regressions
+        working-directory: JarasLive
+        run: |
+          swift test --jobs 2
+          bash scripts/test-bridge.sh
+
       - name: Prepare CatStemSeparation runtime
         working-directory: JarasLive
         run: |

@@ -518,7 +518,6 @@ struct GridSelectionInput: NSViewRepresentable {
     var glue: (Set<UUID>) -> Void = { _ in }
     var tuner: (Set<UUID>) -> Void = { _ in }
     var normalize: (Set<UUID>) -> Void = { _ in }
-    var split: (Set<UUID>) -> Void = { _ in }
     var export: (Set<UUID>) -> Void = { _ in }
     var selectRow: (CGFloat) -> Void = { _ in }
     var pointerDown: (NSEvent) -> Void = { _ in }
@@ -546,7 +545,7 @@ struct GridSelectionInput: NSViewRepresentable {
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
-        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.split = split; view.export = export; view.resize = resize; view.fade = fade; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
+        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
@@ -660,7 +659,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     var glue: ((Set<UUID>) -> Void)?
     var tuner: ((Set<UUID>) -> Void)?
     var normalize: ((Set<UUID>) -> Void)?
-    var split: ((Set<UUID>) -> Void)?
     var export: ((Set<UUID>) -> Void)?
     var mute: ((UUID) -> Void)?
     var move: ((UUID, CGSize, CGFloat, Bool) -> Void)?
@@ -1154,8 +1152,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 tuner.target = self; menu.addItem(tuner)
                 let normalize = NSMenuItem(title: JarasLocalization.string("Normalize…"), action: #selector(normalizeSelection), keyEquivalent: "")
                 normalize.target = self; menu.addItem(normalize)
-                let split = NSMenuItem(title: JarasLocalization.string("Split at edit cursor…"), action: #selector(splitSelection), keyEquivalent: "")
-                split.target = self; menu.addItem(split)
                 if self.item(id: contextItem)?.editable == true {
                     menu.addItem(.separator())
                     for (mode, title) in [(1,"Convert Mono - L"), (2,"Convert Mono - R"), (3,"Convert Mono L-R"), (0,"Convert Stereo")] {
@@ -1213,7 +1209,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     @objc private func convertSelection(_ sender: NSMenuItem) { convert?(selected, sender.tag) }
     @objc private func normalizeSelection() { normalize?(selected) }
-    @objc private func splitSelection() { split?(selected) }
     @objc private func createContextRegion() { if let contextItem { createRegion?(contextItem) } }
     override func draw(_ dirtyRect: NSRect) {
         let space = coordinates

@@ -355,13 +355,19 @@ public extension Song {
 public extension TimelineTempo {
     static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool = true,
                      cursor: Double? = nil, enabled: Bool = true,
-                     otherCursors: [Double] = [], excludingRegion: UUID? = nil, excludingMarker: UUID? = nil) -> Double {
+                     otherCursors: [Double] = [], excludingRegion: UUID? = nil, excludingMarker: UUID? = nil,
+                     includeHiddenDivisions: Bool = false) -> Double {
         guard time.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 0 }
         let position = max(0, time)
         guard enabled else { return position }
         let section = song.tempoSection(at: position)
-        let step = gridStep(bar: section.barSeconds, beats: section.beats, pixelsPerSecond: pixelsPerSecond,
-                            divisions: song.projectTime.divisions, unit: section.unit)
+        // Cursor precision follows the configured musical division, independently
+        // of the drawing density. This computes one candidate, not hidden grid lines.
+        let divisions = song.projectTime.divisions
+        let step = includeHiddenDivisions
+            ? (divisions > 0 ? section.barSeconds / Double(section.beats) * Double(section.unit) / Double(divisions) : 0)
+            : gridStep(bar: section.barSeconds, beats: section.beats, pixelsPerSecond: pixelsPerSecond,
+                       divisions: divisions, unit: section.unit)
         var nearest: Double = 0
         var distance = position
         func consider(_ anchor: Double) {

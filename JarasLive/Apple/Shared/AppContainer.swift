@@ -212,6 +212,10 @@ enum AppStartupPresentation {
     @discardableResult
     func setLocalPlaybackEnabled(_ enabled: Bool) async -> Bool {
         guard !preview else { localPlaybackEnabled = enabled; return true }
+        if enabled && !localPlaybackEnabled && !NativePurchaseStore.shared.unlocked {
+            show.message = "Unlock Native mode to play projects on this iPad."
+            return false
+        }
         localPlaybackTransition &+= 1
         let transition = localPlaybackTransition
         let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared

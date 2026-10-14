@@ -1535,3 +1535,62 @@
 "Audio continues on the Mac. Nearby Apple devices can connect directly over peer-to-peer Wi-Fi." = "O áudio continua no Mac. Dispositivos Apple próximos podem conectar diretamente por Wi-Fi.";
 
 "Audio continues on this iPad. Use the same local network or a direct connection between nearby Apple devices." = "O áudio continua neste iPad. Use a mesma rede local ou a conexão direta entre dispositivos Apple próximos.";
+
+"Move track" = "Mover pista";
+
+"Item start" = "Início do item";
+
+"Item end" = "Fim do item";
+
+/* Native iPad one-time purchase */
+"NATIVE ON IPAD" = "NATIVO NO IPAD";
+"Your show.\nOn your iPad." = "Seu show.\nNo seu iPad.";
+"Create and play your projects directly on iPad, without a computer." = "Crie e reproduza seus projetos direto no iPad, sem computador.";
+"Multitrack playback and audio recording" = "Reprodução multipista e gravação de áudio";
+"Mixer, routing and native effects" = "Mixer, roteamento e efeitos nativos";
+"Setlists, loops and teleprompters" = "Repertórios, loops e teleprompters";
+"Exchange .ziplive projects with your Mac" = "Troque projetos .ziplive com seu Mac";
+"CatLive Native iPad" = "CatLive Nativo iPad";
+"One-time purchase. No subscription." = "Compra única. Sem assinatura.";
+"Purchased" = "Comprado";
+"Price unavailable" = "Preço indisponível";
+"Open Native mode" = "Abrir modo Nativo";
+"Unlock Native mode" = "Liberar modo Nativo";
+"Restore purchases" = "Restaurar compras";
+"Try again" = "Tentar novamente";
+"Payment is handled by the App Store. Restore your purchase using the same Apple Account." = "Pagamento pela App Store. Restaure a compra usando a mesma Conta Apple.";
+"Remote mode stays free on iPad and iPhone." = "O modo Remoto continua gratuito no iPad e iPhone.";
+"Privacy" = "Privacidade";
+"Support" = "Suporte";
+"The purchase is unavailable right now. Check your connection and try again." = "A compra está indisponível no momento. Confira sua conexão e tente novamente.";
+"Purchase awaiting approval. Access will unlock when Apple confirms it." = "Compra aguardando aprovação. O acesso será liberado quando a Apple confirmar.";
+"The purchase could not be completed. Please try again." = "Não foi possível concluir a compra. Tente novamente.";
+"Purchase restored." = "Compra restaurada.";
+"No purchase was found for this Apple Account." = "Nenhuma compra foi encontrada para esta Conta Apple.";
+"Purchases could not be restored. Check your connection and try again." = "Não foi possível restaurar as compras. Confira sua conexão e tente novamente.";
+"Unlock Native mode to play projects on this iPad." = "Libere o modo Nativo para reproduzir projetos neste iPad.";
+
+"Host" = "Endereço";
+"Webserver" = "Webserver";
+"Include markers in the Resolume map" = "Incluir marcadores no mapa do Resolume";
+"Follow CatLive transport" = "Acompanhar o transporte do CatLive";
+"Enable OSC Input in Resolume Preferences (port 7000). For automatic composition creation, enable the Webserver (port 8080) in Resolume Arena 7.22 or later." = "Ative OSC Input nas preferências do Resolume (porta 7000). Para criar a composição automaticamente, ative o Webserver (porta 8080) no Resolume Arena 7.22 ou mais recente.";
+"Before creating the composition, save your work in Resolume and open a new empty composition. CatLive creates one deck per song and one column per marker. Place your videos in these columns afterward." = "Antes de criar a composição, salve seu trabalho no Resolume e abra uma composição nova e vazia. O CatLive cria um deck por música e uma coluna por marcador. Depois, coloque seus vídeos nessas colunas.";
+"Create / update map" = "Criar / atualizar mapa";
+"Create Resolume project…" = "Criar projeto do Resolume…";
+"The map and connection settings are saved with this CatLive project." = "O mapa e as configurações da conexão ficam salvos neste projeto do CatLive.";
+"Create a new Resolume composition?" = "Criar uma composição nova no Resolume?";
+"Open a new empty composition in Resolume first. Existing compositions containing media will not be replaced." = "Primeiro abra uma composição nova e vazia no Resolume. Composições que contêm mídias não serão substituídas.";
+"Resolume map saved. Save the CatLive project to keep these changes." = "Mapa atualizado. Salve o projeto do CatLive para manter essas alterações.";
+"Creating Resolume composition…" = "Criando composição do Resolume…";
+"Resolume composition created. Place your videos in the generated columns." = "Composição do Resolume criada. Coloque seus vídeos nas colunas geradas.";
+"Invalid Resolume settings" = "Configurações do Resolume inválidas";
+"Invalid Resolume address" = "Endereço do Resolume inválido";
+"Invalid Resolume response" = "Resposta do Resolume inválida";
+"Resolume did not confirm the operation. Check the composition before trying again." = "O Resolume não confirmou a operação. Confira a composição antes de tentar novamente.";
+"Resolume is busy. Try again after the current operation finishes." = "O Resolume está ocupado. Tente novamente depois que a operação atual terminar.";
+"Create a Resolume map with song regions first (maximum 1000 decks)." = "Crie primeiro um mapa com regiões de música (máximo de 1000 decks).";
+"Automatic composition creation requires Resolume Arena 7.22 or later." = "A criação automática exige Resolume Arena 7.22 ou mais recente.";
+"Open a new empty composition in Resolume before creating the project." = "Abra uma composição nova e vazia no Resolume antes de criar o projeto.";
+"The Resolume composition contains media. Open a new empty composition first." = "A composição do Resolume contém mídias. Abra uma composição nova e vazia primeiro.";
+"Resolume did not confirm saving the .avc file. Check its Webserver and save the composition in Resolume." = "O Resolume não confirmou o salvamento do arquivo .avc. Confira o Webserver e salve a composição no Resolume.";

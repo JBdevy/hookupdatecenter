@@ -173,6 +173,31 @@ struct VSHookProjectMigration {
             project.regionSetlist = setlist
         }
         project.songs[0] = song
+        let resolume = state["VS_HOOK_LOADER"] ?? [:]
+        func assignments(_ key: String) -> [String: String] {
+            guard let text = resolume[key], let data = text.data(using: .utf8),
+                  let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+            var mapped: [String: String] = [:]
+            for (source, value) in raw {
+                guard let value = value as? String, ResolumeSettings.assignment(value) != nil else { continue }
+                if source.hasPrefix("region:"), let id = regionIDs[String(source.dropFirst(7))] {
+                    mapped["region:\(id.uuidString)"] = value
+                } else if source.hasPrefix("marker:"), let marker = sourceMarkers.first(where: { $0.number == String(source.dropFirst(7)) }) {
+                    if let part = markerPart(marker, in: song) {
+                        // A REAPER marker promoted to an internal song retains its deck.
+                        if ResolumeSettings.assignment(value)?.column == 0 { mapped["region:\(part.id.uuidString)"] = value }
+                    } else if song.markers?.contains(where: { $0.id == marker.marker.id }) == true {
+                        mapped["marker:\(marker.marker.id.uuidString)"] = value
+                    }
+                }
+            }
+            return mapped
+        }
+        var connection = ResolumeSettings()
+        connection.withMarkers = assignments("RESOLUME_MAP_ASSIGNMENTS_WITH_MARKERS_V1")
+        connection.regionsOnly = assignments("RESOLUME_MAP_ASSIGNMENTS_REGIONS_ONLY_V1")
+        if !connection.withMarkers.isEmpty || !connection.regionsOnly.isEmpty { project.resolume = connection }
+
     }
 
     private static func blockColor(_ key: String, number: Int) -> UInt32 {

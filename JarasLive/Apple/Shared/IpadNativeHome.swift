@@ -10,12 +10,16 @@ extension UTType {
 /// iPhone never constructs this view or a local audio container.
 @MainActor struct IpadNativeHome: View {
     @ObservedObject var bootstrap: Bootstrap
+    @StateObject private var purchases = NativePurchaseStore.shared
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("jaras.language") private var language = "en"
     @State private var native = false
     @State private var remote = false
     @State private var entering = false
     @State private var starting = true
     @State private var error = ""
+    @State private var showingPurchase = false
+    @State private var pendingPackage: URL?
     var body: some View {
         Group {
             if native, let container = bootstrap.container {
@@ -41,7 +45,18 @@ extension UTType {
         }
         .preferredColorScheme(.dark).environment(\.locale, Locale(identifier: language))
         .fullScreenCover(isPresented: $remote) { DAWRemoteClientView().environment(\.locale, Locale(identifier: language)) }
+        .fullScreenCover(isPresented: $showingPurchase) {
+            IpadNativePurchaseView(store: purchases, close: { showingPurchase = false; pendingPackage = nil }, openNative: {
+                showingPurchase = false
+                let package = pendingPackage; pendingPackage = nil
+                enter(package: package)
+            }).environment(\.locale, Locale(identifier: language))
+        }
         .task { do { try await Task.sleep(nanoseconds: 3_000_000_000); starting = false } catch {} }
+        .task { await purchases.refresh() }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { Task { await purchases.refresh() } }
+        }
         .onOpenURL { url in
             guard ["ziplive", "zip"].contains(url.pathExtension.lowercased()) else { return }
             if !native { enter(package: url) }
@@ -66,6 +81,11 @@ extension UTType {
         entering = true; error = ""
         Task {
             defer { entering = false }
+            await purchases.refresh()
+            guard purchases.unlocked else {
+                pendingPackage = package; showingPurchase = true; starting = false
+                return
+            }
             if bootstrap.container == nil { bootstrap.retry() }
             guard let container = bootstrap.container else { error = bootstrap.error ?? "Could not open Native mode."; return }
             guard await container.setLocalPlaybackEnabled(true) else { error = container.show.message; return }
