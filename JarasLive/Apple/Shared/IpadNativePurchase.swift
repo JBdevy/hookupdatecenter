@@ -46,7 +46,7 @@ import StoreKit
     }
     func trialProduct() async throws -> NativePurchaseProduct {
         guard let product = try await StoreKit.Product.products(for: [NativePurchaseStore.trialProductID]).first,
-              product.type == .nonConsumable, product.price == 0 else { throw PurchaseError.unavailable }
+              product.type == .nonConsumable, product.price == 0 else { throw NativePurchaseFailure.productsUnavailable }
         freeTrialProduct = product
         return NativePurchaseProduct(displayPrice: product.displayPrice)
     }
@@ -56,7 +56,7 @@ import StoreKit
     }
     func product() async throws -> NativePurchaseProduct {
         guard let product = try await StoreKit.Product.products(for: [NativePurchaseStore.productID]).first,
-              product.type == .nonConsumable else { throw PurchaseError.unavailable }
+              product.type == .nonConsumable else { throw NativePurchaseFailure.productsUnavailable }
         storeProduct = product
         return NativePurchaseProduct(displayPrice: product.displayPrice)
     }

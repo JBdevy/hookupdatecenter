@@ -1605,3 +1605,9 @@
 "Trial awaiting approval. Access will unlock when Apple confirms it." = "Teste aguardando aprovação. O acesso será liberado quando a Apple confirmar.";
 "The free trial could not be started. Please try again." = "Não foi possível iniciar o teste grátis. Tente novamente.";
 "Free trial restored." = "Teste grátis restaurado.";
+
+"The App Store has not made this purchase available yet. Try again shortly." = "A App Store ainda não disponibilizou esta compra. Tente novamente em instantes.";
+
+"Unable to reach the App Store. Check your connection and try again." = "Não foi possível acessar a App Store. Confira sua conexão e tente novamente.";
+
+"The App Store could not load this purchase. Please try again." = "A App Store não conseguiu carregar esta compra. Tente novamente.";

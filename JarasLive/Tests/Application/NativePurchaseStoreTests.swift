@@ -7,6 +7,7 @@ import XCTest
     var entitled = false
     var result = NativePurchaseResult.cancelled
     var failure = false, restored = false
+    var missingProduct = false
     var buys = 0, restores = 0
     var trial: NativeTrialEntitlement?
     var trialResult = NativePurchaseResult.cancelled
@@ -20,6 +21,7 @@ import XCTest
     }
     func hasEntitlement() async -> Bool { entitled }
     func product() async throws -> NativePurchaseProduct {
+        if missingProduct { throw NativePurchaseFailure.productsUnavailable }
         if failure { throw URLError(.notConnectedToInternet) }
         return NativePurchaseProduct(displayPrice: "R$ 79,90")
     }
@@ -36,6 +38,23 @@ import XCTest
 }
 
 @MainActor final class NativePurchaseStoreTests: XCTestCase {
+    func testCatalogUnavailableIsNotReportedAsNetworkFailure() async {
+        let client = PurchaseClient(), store: NativePurchaseStore
+        store = NativePurchaseStore(client: client)
+        client.missingProduct = true
+        await store.load()
+        XCTAssertNil(store.product)
+        XCTAssertEqual(store.notice, "The App Store has not made this purchase available yet. Try again shortly.")
+        await store.startTrial()
+        XCTAssertEqual(client.trialBegins, 0)
+        client.missingProduct = false; client.failure = true
+        await store.load()
+        XCTAssertEqual(store.notice, "Unable to reach the App Store. Check your connection and try again.")
+        client.failure = false
+        await store.load()
+        XCTAssertNotNil(store.product)
+        XCTAssertTrue(store.notice.isEmpty)
+    }
     func testNoPurchaseOrPriceCannotUnlock() async {
         let client = PurchaseClient(), store = NativePurchaseStore(client: PurchaseClient())
         await store.buy()

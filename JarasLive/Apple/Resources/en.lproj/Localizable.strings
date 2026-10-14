@@ -1569,3 +1569,9 @@
 "Trial awaiting approval. Access will unlock when Apple confirms it." = "Trial awaiting approval. Access will unlock when Apple confirms it.";
 "The free trial could not be started. Please try again." = "The free trial could not be started. Please try again.";
 "Free trial restored." = "Free trial restored.";
+
+"The App Store has not made this purchase available yet. Try again shortly." = "The App Store has not made this purchase available yet. Try again shortly.";
+
+"Unable to reach the App Store. Check your connection and try again." = "Unable to reach the App Store. Check your connection and try again.";
+
+"The App Store could not load this purchase. Please try again." = "The App Store could not load this purchase. Please try again.";

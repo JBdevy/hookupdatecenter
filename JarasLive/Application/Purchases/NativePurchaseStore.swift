@@ -6,6 +6,7 @@ public struct NativePurchaseProduct: Equatable, Sendable {
     public init(displayPrice: String) { self.displayPrice = displayPrice }
 }
 public enum NativePurchaseResult: Sendable { case purchased, pending, cancelled }
+public enum NativePurchaseFailure: Error { case productsUnavailable }
 public struct NativeTrialEntitlement: Sendable {
     public let originalPurchaseDate: Date
     public let signedDate: Date
@@ -111,7 +112,13 @@ public struct NativeTrialEntitlement: Sendable {
         defer { loading = false }
         await refresh()
         do { product = try await client.product() }
-        catch { product = nil; notice = "The purchase is unavailable right now. Check your connection and try again." }
+        catch NativePurchaseFailure.productsUnavailable {
+            product = nil; notice = "The App Store has not made this purchase available yet. Try again shortly."
+        } catch let error as URLError where [.notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .timedOut].contains(error.code) {
+            product = nil; notice = "Unable to reach the App Store. Check your connection and try again."
+        } catch {
+            product = nil; notice = "The App Store could not load this purchase. Please try again."
+        }
         do { trialProduct = try await client.trialProduct() }
         catch { trialProduct = nil }
     }
