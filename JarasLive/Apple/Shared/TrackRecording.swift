@@ -233,7 +233,7 @@ private final class CaptureWriter: @unchecked Sendable {
     private var updatingMonitoring = false
     private func refreshMonitoring() {
         #if os(iOS)
-        guard localAudioAvailable else { return }
+        guard localAudioAvailable, !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
         #endif
         guard !updatingMonitoring else { return }
         updatingMonitoring = true; defer { updatingMonitoring = false }
@@ -633,9 +633,16 @@ private final class CaptureWriter: @unchecked Sendable {
         }
     }
     func finishAndWait() async {
-        while busy { try? await Task.sleep(nanoseconds: 20_000_000) }
+        while busy {
+            do { try await Task.sleep(nanoseconds: 20_000_000) }
+            catch { return }
+        }
+        guard !Task.isCancelled else { return }
         finish()
-        while busy { try? await Task.sleep(nanoseconds: 20_000_000) }
+        while busy {
+            do { try await Task.sleep(nanoseconds: 20_000_000) }
+            catch { return }
+        }
     }
     func finish() {
         guard recording else { return }

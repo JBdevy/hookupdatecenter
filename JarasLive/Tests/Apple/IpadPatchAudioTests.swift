@@ -71,5 +71,62 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
     audio.previewMute(nil, muted: false)
     audio.previewPatches(child.id, patches: [.masterGroup])
     try check([0, 0, 0, 0, 0.04, 0.06], "group route restores during playback")
+    var restored = snapshot
+    restored.transport.playing = false
+    audio.prepareAfterDeviceChange = { try audio.update(restored, revision: 2) }
+    for (nextRate, channels) in [(48000.0, 2), (44100.0, 6)] {
+        audio.suspendDeviceSession()
+        precondition(!engine.isRunning, "Suspend must release hardware before route rebuilding")
+        engine.disableManualRenderingMode()
+        let nextLayout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channels))!
+        let nextFormat = AVAudioFormat(standardFormatWithSampleRate: nextRate, channelLayout: nextLayout)
+        try engine.enableManualRenderingMode(.offline, format: nextFormat, maximumFrameCount: 512)
+        try audio.startDeviceSession()
+        let connected = engine.mainMixerNode.outputFormat(forBus: 0)
+        precondition(connected.sampleRate == nextRate && connected.channelCount == channels,
+                     "Session restart must reconnect the changed hardware format")
+        let nextBuffer = AVAudioPCMBuffer(pcmFormat: nextFormat, frameCapacity: 512)!
+        for _ in 0..<8 {
+            let status = try engine.renderOffline(512, to: nextBuffer)
+            precondition(status == .success)
+            for channel in 0..<channels { for frame in 0..<Int(nextBuffer.frameLength) {
+                precondition(abs(nextBuffer.floatChannelData![channel][frame]) < 0.000001, "Route recovery must not resume the stopped transport")
+            } }
+        }
+        print("IPAD_ROUTE_SUSPEND_SESSION_RECONNECT_FORMAT_AND_IDLE_SILENCE_OK rate=\(nextRate) channels=\(channels)")
+    }
+    // Host-time scheduling requires an actual realtime render clock. Pull PCM
+    // after device format changes with the engine's sample-clock renderer.
+    let offlineEngine = AVAudioEngine()
+    try offlineEngine.enableManualRenderingMode(.offline, format: stereo, maximumFrameCount: 512)
+    let offline = StemAudioPlayback(engine: offlineEngine, realtime: false)
+    offline.open(directory: directory)
+    defer { offline.prepareForClosing() }
+    var playback = snapshot
+    try offline.update(playback, revision: 1)
+    for (nextRate, channels) in [(48000.0, 6), (44100.0, 2)] {
+        offline.suspendDeviceSession()
+        offlineEngine.disableManualRenderingMode()
+        let nextLayout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channels))!
+        let nextFormat = AVAudioFormat(standardFormatWithSampleRate: nextRate, channelLayout: nextLayout)
+        try offlineEngine.enableManualRenderingMode(.offline, format: nextFormat, maximumFrameCount: 512)
+        playback.transport.playing = false
+        offline.prepareAfterDeviceChange = { try offline.update(playback, revision: 2) }
+        try offline.reconfigureDevice()
+        playback.transport.playing = true
+        try offline.update(playback, revision: 2)
+        let nextBuffer = AVAudioPCMBuffer(pcmFormat: nextFormat, frameCapacity: 512)!
+        var levels = Array(repeating: Float(0), count: channels)
+        for block in 0..<24 {
+            let status = try offlineEngine.renderOffline(512, to: nextBuffer)
+            precondition(status == .success)
+            if block >= 16 { for channel in 0..<channels { for frame in 0..<Int(nextBuffer.frameLength) {
+                levels[channel] = max(levels[channel], abs(nextBuffer.floatChannelData![channel][frame]))
+            } } }
+        }
+        let expected: [Float] = [0.04, 0.06] + Array(repeating: 0, count: channels - 2)
+        precondition(zip(levels, expected).allSatisfy { abs($0 - $1) < 0.00003 }, "Play after route rebuild: \(levels)")
+        print("IPAD_REBUILT_ROUTE_NEXT_PLAY_SAMPLE_CLOCK_PCM_OK rate=\(nextRate) channels=\(channels)")
+    }
 }
 try MainActor.assumeIsolated { try verifyPatchChannels() }

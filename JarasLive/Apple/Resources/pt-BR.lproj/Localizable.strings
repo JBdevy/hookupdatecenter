@@ -1426,6 +1426,7 @@
 "Audio is interrupted by another app. Try again when it finishes." = "O áudio foi interrompido por outro app. Tente novamente quando ele terminar.";
 "Open Native mode to record audio." = "Abra o modo Nativo para gravar áudio.";
 "Audio services restarted. Close and reopen CatLive to restore audio." = "Os serviços de áudio foram reiniciados. Feche e reabra o CatLive para restaurar o áudio.";
+"Audio device disconnected. Playback stopped." = "Dispositivo de áudio desconectado. A reprodução foi parada.";
 
 "Some output channels are unavailable on this iPad." = "Alguns canais de saída não estão disponíveis neste iPad.";
 

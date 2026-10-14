@@ -66,6 +66,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     static let defaultMobileInput = "catlive.mobile.default-input"
     private(set) var localSessionEnabled = false
     private(set) var localSessionInterrupted = false
+    @Published private(set) var localSessionReconfiguring = false
+    func beginLocalRouteChange() { localSessionReconfiguring = true }
+    func finishLocalRouteChange() { localSessionReconfiguring = false }
     var mobileSessionEvent: ((MobileAudioSessionEvent) -> Void)?
     private var mobileObservers: [NSObjectProtocol] = []
     #endif
@@ -202,9 +205,8 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         devices = session.currentRoute.outputs.map { OutputDevice(id: $0.uid, name: $0.portName, channels: session.outputNumberOfChannels, hardwareID: 0) }
         if selectedUID != "none" { selectedUID = devices.first?.id ?? "" }
         channels = selectedUID == "none" ? 0 : devices.first?.channels ?? 0
-        // iOS does not enumerate availableInputs until a recording category is
-        // active. This explicit choice lets the user request that category;
-        // opening the local player alone never requests microphone permission.
+        // Keep the input catalog available even when the recording input is
+        // None. Capture and microphone permission remain owned by recording.
         inputDevices = [OutputDevice(id: Self.defaultMobileInput,
                                      name: JarasLocalization.string("System audio input"),
                                      channels: max(1, session.inputNumberOfChannels), hardwareID: 0)]
@@ -215,6 +217,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     }
     private var configuredInputHardwareID: UInt32?
     private func permitConfigurationChange() -> Bool {
+        #if os(iOS)
+        guard !localSessionReconfiguring else { return false }
+        #endif
         guard canChangeConfiguration() else {
             error = JarasLocalization.string("Stop the transport before changing the audio device.")
             return false
@@ -261,23 +266,27 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     }
     func deactivateLocalSession() throws {
         localSessionEnabled = false
+        finishLocalRouteChange()
         try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
     private func configureMobileSession(input: String) throws {
         let session = AVAudioSession.sharedInstance()
-        if input.isEmpty {
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-        } else {
+        if session.category != .playAndRecord || session.mode != .default ||
+            session.categoryOptions != [.defaultToSpeaker, .allowBluetooth, .mixWithOthers] {
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
         }
         try session.setActive(true)
-        if !input.isEmpty {
-            if input == Self.defaultMobileInput { try session.setPreferredInput(nil) }
-            else {
-                guard let port = session.availableInputs?.first(where: { $0.uid == input }) else {
-                    throw ProjectError.invalid(JarasLocalization.string("The selected audio input is disconnected."))
+        if input.isEmpty || input == Self.defaultMobileInput {
+            if session.preferredInput != nil { try session.setPreferredInput(nil) }
+        } else {
+            if let port = session.availableInputs?.first(where: { $0.uid == input }) {
+                if session.preferredInput?.uid != port.uid {
+                    try session.setPreferredInput(port)
                 }
-                try session.setPreferredInput(port)
+            } else {
+                // Preserve the missing selection. Playback can recover, while
+                // requireLocalInput prevents capture from another microphone.
+                error = JarasLocalization.string("The selected audio input is disconnected.")
             }
         }
         try configureMobileOutputChannels(session)
@@ -291,7 +300,7 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         try session.setPreferredOutputNumberOfChannels(maximum)
     }
     func requireLocalInput(expectedUID: String? = nil) throws {
-        guard localSessionEnabled, !localSessionInterrupted, !inputUID.isEmpty,
+        guard localSessionEnabled, !localSessionInterrupted, !localSessionReconfiguring, !inputUID.isEmpty,
               expectedUID == nil || expectedUID == inputUID else {
             throw ProjectError.invalid(JarasLocalization.string("Choose an audio input device in Settings."))
         }
@@ -316,10 +325,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
             let raw = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue
             Task { @MainActor [weak self] in
                 guard let self, self.localSessionEnabled else { return }
-                do { try self.configureMobileOutputChannels(AVAudioSession.sharedInstance()) }
-                catch { self.error = error.localizedDescription }
-                self.refresh(); self.refreshSampleRate(); self.refreshBuffer()
+                self.beginLocalRouteChange()
                 self.mobileSessionEvent?(.routeChanged(outputRemoved: raw == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue))
+                self.refresh(); self.refreshSampleRate(); self.refreshBuffer()
             }
         })
         mobileObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in

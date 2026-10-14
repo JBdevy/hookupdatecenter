@@ -219,7 +219,8 @@ struct TimecodePlaybackSpan {
         guard usesSelectedHardware else { return true }
         #if os(iOS)
         guard AudioDeviceSettings.shared.localSessionEnabled,
-              !AudioDeviceSettings.shared.localSessionInterrupted else { return false }
+              !AudioDeviceSettings.shared.localSessionInterrupted,
+              !AudioDeviceSettings.shared.localSessionReconfiguring else { return false }
         #endif
         return AudioDeviceSettings.shared.selectedUID != "none"
     }
@@ -745,7 +746,12 @@ struct TimecodePlaybackSpan {
         // Core Audio may finish the output format change after CurrentDevice is
         // set. Coalesce that notification and the settings callback into one rebuild.
         deviceRecovery = Task { @MainActor [weak self] in
-            do { try await Task.sleep(nanoseconds: 30_000_000) } catch { return }
+            #if os(iOS)
+            let settlingTime: UInt64 = 150_000_000
+            #else
+            let settlingTime: UInt64 = 30_000_000
+            #endif
+            do { try await Task.sleep(nanoseconds: settlingTime) } catch { return }
             guard let self, self.deviceSessionActive else { return }
             self.deviceRecovery = nil
             do {
@@ -1028,6 +1034,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         #if os(macOS)
         if usesSelectedHardware { try AudioDeviceSettings.shared.requireSelectedOutput() }
         #endif
+        if masterConfigured && outputFormatChanged {
+            // These processors belong to the graph being replaced. Their
+            // workers have drained; only the rebuilt chains should resume.
+            suspendedEffectChains.removeAll()
+            try reconfigureDevice()
+        }
         try configureMaster()
         for effects in suspendedEffectChains { effects.resumeStemSeparator() }
         suspendedEffectChains.removeAll()
@@ -1040,6 +1052,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         deviceSessionActive = false
         deviceRecovery?.cancel(); deviceRecovery = nil
         meterTimer?.invalidate(); meterTimer = nil
+        // The hardware may already have lost its render format. Stop pulls
+        // before resetting players, detaching monitoring or stopping workers.
+        engine.stop()
         var chains = [masterEffects] + trackBuses.values.map(\.effects)
         chains += voices.values.compactMap(\.effects)
         chains += idleVoices.values.flatMap { $0 }.compactMap(\.effects)
