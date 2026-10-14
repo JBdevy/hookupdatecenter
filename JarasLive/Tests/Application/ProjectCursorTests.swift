@@ -6,6 +6,7 @@ import XCTest
     var loadCount = 0
     var snapshotCount = 0
     var regionCommands: [ShowCommand] = []
+    var commands: [(ShowCommand, UUID?)] = []
     var regionCommandResult: TransportState?
     var transport = TransportState(playing: false, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
     func load(_ project: Project) throws {
@@ -15,6 +16,7 @@ import XCTest
         transport.songId = project.songs.first?.id; transport.position = 0; transport.editPosition = 0
     }
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
+        commands.append((command, target))
         switch command {
         case .editSeek: transport.editPosition = value; if !transport.playing { transport.position = value }
         case .select: transport.songId = target
@@ -31,6 +33,7 @@ import XCTest
                 transport.position = part.startTime; transport.editPosition = part.startTime
                 transport.regionId = part.id; transport.paused = false
             }
+        case .queueSection: transport.queuedSectionMarkerId = target
         case .subPlay: transport.subPlay.playing = transport.playing
         case .stop, .stopAll: transport.playing = false
         default: break
@@ -759,5 +762,39 @@ extension ProjectCursorTests {
         XCTAssertFalse(show.hasUnsavedChanges)
         XCTAssertFalse(show.needsSave)
         XCTAssertFalse(show.canUndo, "Transport and a region-band selection must not add undo entries")
+    }
+}
+
+extension ProjectCursorTests {
+    @MainActor func testExplicitTransportAndPartsActionsUsePlaybackPositionWithoutReloading() throws {
+        var project = Project.empty(name: "MIDI performance")
+        project.songs[0].duration = 60
+        project.songs[0].parts = [Part(id: UUID(), name: "Song", startTime: 0, endTime: 60)]
+        let markers = [0.0, 10, 20].map { TimelineMarker(id: UUID(), name: "Part", position: $0, color: 0xffffff, section: true) }
+        project.songs[0].markers = markers
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.send(.editSeek, value: 15)
+        let loads = executor.loadCount
+        show.performAction(.play)
+        XCTAssertTrue(show.snapshot.transport.playing)
+        show.send(.editSeek, value: 0)
+        show.performAction(.partsDown)
+        XCTAssertEqual(executor.commands.last?.0, .queueSection)
+        XCTAssertEqual(executor.commands.last?.1, markers[2].id, "next part follows audible position, independently of edit cursor")
+        let atLast = executor.commands.count
+        show.performAction(.partsDown)
+        XCTAssertEqual(executor.commands.count, atLast, "navigation at the last part must not toggle its queue off")
+        show.performAction(.partsUp)
+        XCTAssertEqual(executor.commands.last?.1, markers[1].id)
+        show.performAction(.subPlay)
+        XCTAssertTrue(show.snapshot.transport.subPlay.playing)
+        show.performAction(.stop)
+        XCTAssertFalse(show.snapshot.transport.playing)
+        var partsOpen = false
+        show.togglePartsPanel = { partsOpen.toggle() }
+        show.performAction(.toggleParts); XCTAssertTrue(partsOpen)
+        show.performAction(.toggleParts); XCTAssertFalse(partsOpen)
+        XCTAssertEqual(executor.loadCount, loads)
     }
 }

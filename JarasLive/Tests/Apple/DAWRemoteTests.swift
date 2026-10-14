@@ -1137,3 +1137,16 @@ if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(r
     require(decoded.playlist == removeFromList.playlist, "remove preserves explicit playlist even after selection changes")
 } else { fatalError("playlist removal packet") }
 print("REMOTE_PARTS_WIDTH_AND_EDIT_MENUS_OK")
+
+var loopRangeFixture = fixture
+loopRangeFixture.loop = true; loopRangeFixture.loopStart = 2; loopRangeFixture.loopEnd = 8
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(loopRangeFixture)) {
+    require(decoded.loop && decoded.loopStart == 2 && decoded.loopEnd == 8, "loop highlight uses authoritative bounds after zoom and reconnect")
+} else { fatalError("loop bounds packet") }
+loopRangeFixture.loopStart = -1
+require(!loopRangeFixture.valid, "negative loop range is rejected")
+loopRangeFixture.loopStart = 9
+require(!loopRangeFixture.valid, "reversed loop range is rejected")
+loopRangeFixture.loopStart = 2; loopRangeFixture.loopEnd = .infinity
+require(!loopRangeFixture.valid, "nonfinite loop range is rejected")
+print("REMOTE_LOOP_BOUNDS_BACKWARD_COMPATIBLE_ROUNDTRIP_OK")

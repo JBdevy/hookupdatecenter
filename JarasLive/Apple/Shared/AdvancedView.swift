@@ -6,14 +6,14 @@ struct AdvancedView: View {
     var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
-        case timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
-        var icon: String { switch self { case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet" } }
+        case transport = "Transport", timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
+        var icon: String { switch self { case .transport: return "playpause"; case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet" } }
     }
     private var availableTabs: [Tab] {
         #if os(iOS)
-        [.timeline, .setlist]
+        [.timeline, .setlist, .transport]
         #else
-        Tab.allCases
+        Tab.allCases.filter { $0 != .transport }
         #endif
     }
     #if os(iOS)
@@ -70,6 +70,7 @@ struct AdvancedView: View {
                     Text(LocalizedStringKey(tab.rawValue)).font(.title3.bold())
                     if tab == .timeProject { timingControls }
                     if tab == .timeline { AdvancedTimelineSettings(documents: documents) }
+                    if tab == .transport { AdvancedTransportSettings() }
                     if tab == .video { AdvancedVideoSettings() }
                     if tab == .setlist { AdvancedSetlistColors() }
                     if tab == .record || tab == .reRender { MediaProcessingFormatEditor(scope: tab == .record ? "record" : "rerender").id(tab.rawValue) }
@@ -329,6 +330,61 @@ private struct TimelineMediaCleanupConfirmation: View {
             do { try await documents.cleanTimelineMedia(); dismiss() }
             catch { self.error = error.localizedDescription }
             working = false
+        }
+    }
+}
+
+/// Stored per device: hiding a transport control never disables its action.
+enum IpadTransportControl: String, CaseIterable, Identifiable {
+    case play, pause, subPlay, repeatPlayback, record, metronome, bpm, tuner
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .play: return "Play / Stop"
+        case .pause: return "Pause"
+        case .subPlay: return "Sub Play"
+        case .repeatPlayback: return "Repeat"
+        case .record: return "Record"
+        case .metronome: return "Metronome"
+        case .bpm: return "BPM"
+        case .tuner: return "Tuner"
+        }
+    }
+    var weight: Double {
+        switch self {
+        case .play, .pause: return 60
+        case .subPlay: return 66
+        case .repeatPlayback: return 52
+        case .record: return 47
+        case .metronome: return 34
+        case .bpm, .tuner: return 120
+        }
+    }
+    static func visible(hidden: String) -> [Self] {
+        let values = Set(hidden.split(separator: ",").map(String.init))
+        return allCases.filter { !values.contains($0.rawValue) }
+    }
+    static func width(_ control: Self, available: Double, hidden: String) -> Double {
+        let controls = visible(hidden: hidden)
+        guard controls.contains(control) else { return 0 }
+        let total = controls.reduce(0) { $0 + $1.weight }
+        return max(0, available - Double(max(0, controls.count - 1)) * 4) * control.weight / total
+    }
+}
+private struct AdvancedTransportSettings: View {
+    @AppStorage("jaras.ipad.transport.hidden") private var hidden = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(IpadTransportControl.allCases) { control in
+                Toggle(LocalizedStringKey(control.title), isOn: Binding(get: {
+                    IpadTransportControl.visible(hidden: hidden).contains(control)
+                }, set: { visible in
+                    var values = Set(hidden.split(separator: ",").map(String.init))
+                    if visible { values.remove(control.rawValue) } else { values.insert(control.rawValue) }
+                    hidden = values.sorted().joined(separator: ",")
+                })).toggleStyle(.switch)
+            }
+            Button("Reset") { hidden = "" }
         }
     }
 }

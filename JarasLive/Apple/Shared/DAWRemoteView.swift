@@ -444,6 +444,8 @@ struct DAWRemoteClientView: View {
                 masterVolume: snapshot.project.masterVolume ?? 1, masterMute: snapshot.project.masterMute ?? false,
                 masterSolo: snapshot.project.masterSolo ?? false, masterMono: snapshot.project.masterMono ?? false,
                 pendingSave: show.hasUnsavedChanges, saving: show.saving, message: show.message,
+                loopStart: transport.loop.start ?? song?.parts.first(where: { $0.id == transport.regionId })?.startTime,
+                loopEnd: transport.loop.end ?? song?.parts.first(where: { $0.id == transport.regionId })?.endTime,
                 multiLoopsBypassed: transport.multiLoopsBypassed == true,
                 setlistLiveEnabled: show.setlistLiveEnabled,
                 playedLiveRegionIDs: cachedPlayedIDs,
@@ -852,6 +854,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     var groupableTracks: Set<UUID> = []
     @State private var regionMovePreview: IpadRegionMovePreview?
     @State private var editingTracks = false
+    @AppStorage("jaras.ipad.transport.hidden") private var hiddenTransport = ""
     @State private var tempoStepPending = false
     @State private var pitchStepPending = false
     @State private var selectedTracks: Set<UUID> = []
@@ -1070,6 +1073,24 @@ private struct RemoteSidebarRail<Content: View>: View {
             Button("Cancel", role: .cancel) {}
         }
         .onChange(of: state.project) { _ in editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; tempoStepPending = false; pitchStepPending = false }
+        .onAppear {
+            if local, let localShow {
+                localShow.togglePartsPanel = { [open = $sectionsOpen, list = $sectionsInList] in
+                    let wasOpen = open.wrappedValue && list.wrappedValue
+                    list.wrappedValue = true; open.wrappedValue = !wasOpen
+                }
+                localShow.toggleSetlistPanel = { toggleMainSetlist() }
+            }
+        }
+        .onReceive(localShow?.$setlistNavigationRequest.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { request in
+            guard local, let request, let localShow, let song = localShow.current else { return }
+            let parts = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
+            let entries: [SetlistEntry] = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search).compactMap { entry in
+                guard case .region(let row) = entry, let part = parts[row.region.id] else { return nil }
+                return .region(part, number: row.number ?? 0)
+            }
+            localShow.stepRegion(request.direction, entries: entries)
+        }
         .onChange(of: state.bpm) { _ in tempoStepPending = false }
         .onChange(of: state.pitchSemitones) { _ in pitchStepPending = false }
         .onChange(of: state.pitchRegion) { _ in tempoStepPending = false; pitchStepPending = false }
@@ -1791,26 +1812,10 @@ private struct RemoteSidebarRail<Content: View>: View {
                         .background(RemoteSurface.display).cornerRadius(5).accessibilityLabel("Tempo da agulha")
                 }.font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 GeometryReader { geometry in
-                let width = max(30, (geometry.size.width - (local ? 375 : 288)) / (local ? 3 : 4))
-                HStack(spacing: 4) {
-                    Button { action(state.playing || state.paused ? .stop : .play) } label: {
-                        Label { Text(verbatim: state.playing || state.paused ? JarasLocalization.string("Stop") : "Play") } icon: {
-                            Image(systemName: state.playing || state.paused ? "stop.fill" : "play.fill")
-                        }
-                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: state.playing, fontSize: local ? 10 : 12, width: width, height: 28))
-                    Button { action(state.paused ? .play : .pause) } label: {
-                        Label(state.paused ? "Play" : "Pause", systemImage: state.paused ? "play.fill" : "pause.fill")
-                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: state.paused, fontSize: local ? 10 : 12, width: width, height: 28))
-                        .disabled(!state.playing && !state.paused)
-                    Button("Sub Play") { action(state.subPlaying ? .subStop : .subPlay) }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: state.subPlaying, fontSize: 11, width: width, height: 28)).disabled(!state.playing)
-                    Button { action(.toggleLoop) } label: {
-                        if local { Image(systemName: "repeat") } else { Label("Repeat", systemImage: "repeat") }
-                    }.buttonStyle(TransportButtonStyle(color: state.loop ? JarasTheme.yellow : .red, active: state.loop, fontSize: local ? 10 : 12, width: local ? 30 : width, height: 28))
-                        .accessibilityLabel("Repeat")
-                        .modifier(JarasBlink(active: state.loop, interval: 0.55, lowOpacity: 0.45))
-                    if let localShow { IpadAudioTransportButtons(show: localShow, configureMetronome: openMetronome) }
-                    bpmControl
-                    tunerControl
+                if local {
+                    nativeTransportControls(width: geometry.size.width)
+                } else {
+                    remoteTransportControls(width: geometry.size.width)
                 }
                 }.frame(height: 32)
             }.frame(maxWidth: .infinity)
@@ -1818,12 +1823,12 @@ private struct RemoteSidebarRail<Content: View>: View {
                 HStack(spacing: 4) {
             if let openAdvanced {
                 Button("Advanced", action: openAdvanced)
-                    .buttonStyle(TransportButtonStyle(color: JarasTheme.panel, fontSize: 11, width: 68, height: 28))
+                    .buttonStyle(TransportButtonStyle(color: JarasTheme.panel, fontSize: 11, width: local ? 60 : 68, height: 28))
             }
             Button { confirmSave = true } label: {
                 Label(state.saving ? "Salvando…" : state.pendingSave ? "Save" : "Salvo", systemImage: state.pendingSave ? "square.and.arrow.down" : "checkmark")
                     .font(.system(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
-                    .frame(width: local ? 62 : 72, height: 28)
+                    .frame(width: local ? 56 : 72, height: 28)
                     .foregroundStyle(state.pendingSave ? JarasTheme.green : JarasTheme.secondary)
                     .modifier(RemoteControlSurface(color: state.pendingSave ? JarasTheme.green.opacity(0.16) : nil))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(state.pendingSave ? JarasTheme.green.opacity(0.7) : JarasTheme.line))
@@ -1836,7 +1841,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     toggleDrawer(parent)
                 } label: {
                     Image(systemName: drawerExpanded ? "chevron.up" : "chevron.down")
-                }.buttonStyle(TransportButtonStyle(color: JarasTheme.panel, fontSize: 13, width: local ? 62 : 72, height: 28))
+                }.buttonStyle(TransportButtonStyle(color: JarasTheme.panel, fontSize: 13, width: local ? 32 : 72, height: 28))
                     .foregroundStyle(JarasTheme.green).disabled(drawerRegion == nil)
                     .opacity(drawerRegion == nil ? 0.45 : 1)
                     .accessibilityLabel(drawerExpanded ? "Fechar gaveta da região selecionada" : "Abrir gaveta da região selecionada")
@@ -1850,6 +1855,76 @@ private struct RemoteSidebarRail<Content: View>: View {
 
             }
         }.padding(6).frame(height: 82, alignment: .top).background(RemoteSurface.panel)
+    }
+    private func remoteTransportControls(width: CGFloat) -> some View {
+        let buttonWidth = max(30, (width - 288) / 4)
+        return HStack(spacing: 4) {
+            Button { action(state.playing || state.paused ? .stop : .play) } label: {
+                Label { Text(verbatim: state.playing || state.paused ? JarasLocalization.string("Stop") : "Play") }
+                    icon: { Image(systemName: state.playing || state.paused ? "stop.fill" : "play.fill") }
+            }.buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: state.playing, fontSize: 12, width: buttonWidth, height: 28))
+            Button { action(state.paused ? .play : .pause) } label: {
+                Label(state.paused ? "Play" : "Pause", systemImage: state.paused ? "play.fill" : "pause.fill")
+            }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: state.paused, fontSize: 12, width: buttonWidth, height: 28)).disabled(!state.playing && !state.paused)
+            Button("Sub Play") { action(state.subPlaying ? .subStop : .subPlay) }
+                .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: state.subPlaying, fontSize: 11, width: buttonWidth, height: 28)).disabled(!state.playing)
+            Button { action(.toggleLoop) } label: { Label("Repeat", systemImage: "repeat") }
+                .buttonStyle(TransportButtonStyle(color: state.loop ? JarasTheme.yellow : .red, active: state.loop, fontSize: 12, width: buttonWidth, height: 28))
+                .modifier(JarasBlink(active: state.loop, interval: 0.55, lowOpacity: 0.45))
+            bpmControl
+            tunerControl
+        }
+    }
+    private func nativeTransportControls(width: CGFloat) -> some View {
+        HStack(spacing: 4) {
+            ForEach(IpadTransportControl.visible(hidden: hiddenTransport)) { control in
+                let controlWidth = IpadTransportControl.width(control, available: width, hidden: hiddenTransport)
+                Group {
+                    switch control {
+                    case .play:
+                        Button { action(state.playing || state.paused ? .stop : .play) } label: {
+                            Label { Text(verbatim: state.playing || state.paused ? JarasLocalization.string("Stop") : "Play") }
+                                icon: { Image(systemName: state.playing || state.paused ? "stop.fill" : "play.fill") }
+                        }.buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: state.playing, fontSize: 10, width: controlWidth, height: 28))
+                    case .pause:
+                        Button { action(state.paused ? .play : .pause) } label: {
+                            Label(state.paused ? "Play" : "Pause", systemImage: state.paused ? "play.fill" : "pause.fill")
+                        }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: state.paused, fontSize: 10, width: controlWidth, height: 28)).disabled(!state.playing && !state.paused)
+                    case .subPlay:
+                        Button("Sub Play") { action(state.subPlaying ? .subStop : .subPlay) }
+                            .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: state.subPlaying, fontSize: 10, width: controlWidth, height: 28)).disabled(!state.playing)
+                    case .repeatPlayback:
+                        Button { action(.toggleLoop) } label: { Image(systemName: "repeat") }
+                            .buttonStyle(TransportButtonStyle(color: state.loop ? JarasTheme.yellow : .red, active: state.loop, fontSize: 12, width: controlWidth, height: 28))
+                            .accessibilityLabel("Repeat").modifier(JarasBlink(active: state.loop, interval: 0.55, lowOpacity: 0.45))
+                    case .record, .metronome:
+                        if let localShow { IpadAudioTransportButtons(show: localShow, configureMetronome: openMetronome, only: control, controlWidth: controlWidth) }
+                    case .bpm: nativeTransportStepper(width: controlWidth, pitch: false)
+                    case .tuner: nativeTransportStepper(width: controlWidth, pitch: true)
+                    }
+                }.frame(width: controlWidth, height: 32)
+            }
+        }.frame(width: width, alignment: .leading)
+    }
+    private func nativeTransportStepper(width: Double, pitch: Bool) -> some View {
+        let buttonWidth = min(28, max(18, width * 0.24))
+        return HStack(spacing: 0) {
+            Button { if pitch { stepPitch(-1) } else { stepTempo(-1) } } label: {
+                Image(systemName: "minus").frame(width: buttonWidth, height: 32).contentShape(Rectangle())
+            }.disabled(pitch ? state.pitchRegion == nil || (state.pitchSemitones ?? 0) <= -12 : state.bpm <= 60)
+                .accessibilityLabel(pitch ? "Diminuir afinação" : "Diminuir BPM")
+            VStack(spacing: 0) {
+                Text(verbatim: pitch ? "Tuner" : "BPM").font(.system(size: 8))
+                Text(verbatim: pitch ? String(format: "%+dst", state.pitchSemitones ?? 0) : String(format: "%.0f", state.bpm))
+                    .monospacedDigit().font(.system(size: 12, weight: .semibold))
+            }.lineLimit(1).minimumScaleFactor(0.6).frame(maxWidth: .infinity)
+            Button { if pitch { stepPitch(1) } else { stepTempo(1) } } label: {
+                Image(systemName: "plus").frame(width: buttonWidth, height: 32).contentShape(Rectangle())
+            }.disabled(pitch ? state.pitchRegion == nil || (state.pitchSemitones ?? 0) >= 12 : state.bpm >= 300)
+                .accessibilityLabel(pitch ? "Aumentar afinação" : "Aumentar BPM")
+        }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green)
+            .frame(width: width, height: 32).background(RemoteSurface.display).cornerRadius(5)
+            .disabled(pitch ? pitchStepPending : tempoStepPending)
     }
     private func topPrompterButton(_ panel: PrompterPanel, title: String, minimumHeight: CGFloat = 25) -> some View {
         Button { showPrompter(prompterPanel == panel ? nil : panel) } label: {
@@ -1873,7 +1948,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                         .accessibilityLabel("Aumentar afinação")
                 }.disabled(pitchStepPending)
                 .font(.system(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green)
-                .padding(.horizontal, 4).frame(minWidth: local ? 120 : 134, maxWidth: local ? 120 : UIDevice.current.userInterfaceIdiom == .pad ? 134 : .infinity, minHeight: 32).background(RemoteSurface.display).cornerRadius(5)
+                .padding(.horizontal, 4).frame(minWidth: local ? 0 : 134, maxWidth: local ? .infinity : UIDevice.current.userInterfaceIdiom == .pad ? 134 : .infinity, minHeight: 32).background(RemoteSurface.display).cornerRadius(5)
     }
     private var bpmControl: some View {
         HStack(spacing: 2) {
@@ -1886,7 +1961,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             }.accessibilityLabel("Aumentar BPM")
         }.disabled(tempoStepPending)
             .font(.system(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle())
-            .frame(minWidth: local ? 120 : 134, maxWidth: local ? 120 : UIDevice.current.userInterfaceIdiom == .pad ? 134 : .infinity, minHeight: 32)
+            .frame(minWidth: local ? 0 : 134, maxWidth: local ? .infinity : UIDevice.current.userInterfaceIdiom == .pad ? 134 : .infinity, minHeight: 32)
             .foregroundStyle(JarasTheme.green).background(RemoteSurface.display).cornerRadius(5)
     }
     private var timeText: String {
@@ -2079,6 +2154,8 @@ private struct RemoteSidebarRail<Content: View>: View {
                             }
                         }
                     }
+                }.onChange(of: state.focusedRegion) { id in
+                    if let id { scroll.scrollTo(id, anchor: .center) }
                 }.onChange(of: expandedRegions) { expanded in
                     if let parent = drawerRegion?.id, expanded.contains(parent) {
                         withAnimation(.easeOut(duration: 0.16)) { scroll.scrollTo(parent, anchor: .top) }
@@ -2313,6 +2390,21 @@ private struct RemoteNativeTimeline: View {
             }.overlay(alignment: .topLeading) {
                 ZStack(alignment: .topLeading) {
                     Canvas { context, size in
+                        if state.loop, let lower = state.loopStart, let upper = state.loopEnd, upper > lower {
+                            let left = max(start, lower), right = min(end, upper)
+                            if right > left {
+                                let top = RemoteNativeGridMetrics.regionAreaHeight(local: local)
+                                let area = CGRect(x: (left - start) / span * size.width, y: top,
+                                    width: (right - left) / span * size.width, height: max(0, size.height - top))
+                                context.fill(Path(area), with: .color(JarasTheme.yellow.opacity(0.14)))
+                                var borders = Path()
+                                for time in [lower, upper] where time >= start && time <= end {
+                                    let x = (time - start) / span * size.width
+                                    borders.move(to: CGPoint(x: x, y: top)); borders.addLine(to: CGPoint(x: x, y: size.height))
+                                }
+                                context.stroke(borders, with: .color(JarasTheme.yellow.opacity(0.8)), lineWidth: 1 / displayScale)
+                            }
+                        }
                         if local, let song {
                             let lanes = RegionLanes(parts: song.parts)
                             for region in song.parts where region.parentRegionID == nil {
@@ -2735,7 +2827,13 @@ private struct IpadNativeWaveformRow: View {
             }
         MetalWaveformView(frame: TimelineMetalWaveformFrameBuilder.make(items: items, viewport: viewport,
             scale: scale, cache: cache, owner: owner, contentRevision: Int(truncatingIfNeeded: revision)))
-            .frame(width: width, height: viewport.height).clipped().allowsHitTesting(false)
+            .frame(width: width, height: viewport.height).clipped()
+            .overlay(alignment: .bottomTrailing) {
+                if !cache.preparingSourcePaths.isEmpty, items.contains(where: { cache.preparingSourcePaths.contains($0.sourcePath ?? $0.url.path) }) {
+                    Text("Loading waveforms…").font(.system(size: 9)).foregroundStyle(.white.opacity(0.8))
+                        .padding(3).background(JarasTheme.panel.opacity(0.85)).cornerRadius(3).padding(2)
+                }
+            }.allowsHitTesting(false)
     }
 }
 private final class IpadWaveformRowSources {

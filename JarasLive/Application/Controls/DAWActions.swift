@@ -3,7 +3,8 @@ import Foundation
 public enum DAWAction: String, Codable, CaseIterable, Sendable {
     case selectTrack, muteTrack, soloTrack, volumeTrack, panTrack
     case muteMaster, soloMaster, volumeMaster
-    case tempoDown, tempoUp, tapTempo, playStop, pause, repeatPlayback, subPlayStop, addTrack
+    case tempoDown, tempoUp, tapTempo, playStop, play, stop, pause, repeatPlayback, subPlayStop, subPlay, addTrack
+    case tunerDown, tunerUp, partsUp, partsDown, toggleParts
     case setlistUp, setlistDown, toggleAuto, splitItems, ignoreNext
     case projectStart, projectEnd, nextRegion, previousRegion, nextTimelinePoint, previousTimelinePoint
     case toggleVideo, toggleTeleprompter, normalizeItems, createTempoMarker
@@ -28,6 +29,14 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .tempoDown: return "BPM −"
         case .tempoUp: return "BPM +"
         case .tapTempo: return "Tap Tempo"
+        case .play: return "Play"
+        case .stop: return "Stop"
+        case .subPlay: return "Sub Play"
+        case .tunerDown: return "Tuner −"
+        case .tunerUp: return "Tuner +"
+        case .partsUp: return "Parts Up"
+        case .partsDown: return "Parts Down"
+        case .toggleParts: return "Parts show/hide"
         case .playStop: return "Play/Stop"
         case .pause: return "Pause"
         case .repeatPlayback: return "Repeat"
@@ -57,7 +66,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         let command: UInt = 1 << 20, shift: UInt = 1 << 17, option: UInt = 1 << 19
         let key: UInt16, modifiers: UInt, label: String
         switch self {
-        case .selectTrack, .toggleMultiLoopBypass: return nil
+        case .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts: return nil
         case .muteTrack: (key, modifiers, label) = (46, 0, "M")
         case .soloTrack: (key, modifiers, label) = (1, shift, "⇧S")
         case .tempoDown: (key, modifiers, label) = (27, 0, "−")
@@ -193,5 +202,25 @@ public enum DAWActionValue {
     public static func pan(_ value: UInt8) -> Double {
         let clamped = min(127, value)
         return clamped < 64 ? Double(Int(clamped) - 64) / 64 : Double(Int(clamped) - 64) / 63
+    }
+}
+
+/// Shared action organization; iPad exposes performance controls, desktop also
+/// exposes the editing shortcuts used with a keyboard.
+public enum DAWActionCategory: String, CaseIterable, Identifiable {
+    case transport = "Transport", volume = "Volume", mute = "Mute", solo = "Solo", setlist = "Setlist", shortcuts = "Shortcuts"
+    public var id: String { rawValue }
+    public var actions: [DAWAction] { DAWAction.visible.filter { $0.category == self } }
+}
+extension DAWAction {
+    public var category: DAWActionCategory {
+        switch self {
+        case .playStop, .play, .stop, .pause, .subPlay, .subPlayStop, .repeatPlayback, .tempoDown, .tempoUp, .tapTempo, .tunerDown, .tunerUp: return .transport
+        case .volumeMaster, .volumeTrack, .panTrack: return .volume
+        case .muteMaster, .muteTrack: return .mute
+        case .soloMaster, .soloTrack: return .solo
+        case .setlistUp, .setlistDown, .toggleAuto, .ignoreNext, .toggleSetlist, .toggleMultiLoopBypass, .partsUp, .partsDown, .toggleParts: return .setlist
+        default: return .shortcuts
+        }
     }
 }

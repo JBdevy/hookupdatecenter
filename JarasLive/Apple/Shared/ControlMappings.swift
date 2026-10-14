@@ -43,6 +43,7 @@ struct MappingTransferRequest: Identifiable {
     @Published var candidate: ControlInput?
     @Published var error = ""
     private weak var show: ShowController?
+    private var bindingSession: UUID?
     var onMIDIReceived: ((Int32, UInt8, UInt8, UInt8, Double) -> Void)?
     private var client: MIDIClientRef = 0
     private var port: MIDIPortRef = 0
@@ -61,8 +62,8 @@ struct MappingTransferRequest: Identifiable {
         if let data = UserDefaults.standard.data(forKey: "jaras.actions"), let stored = try? JSONDecoder().decode([DAWActionBinding].self, from: data) { actions = DAWActionBindings(stored: stored) }
     }
     var current: [MappedControl] { mappings.filter { $0.project == show?.snapshot.project.id } }
-    func bind(_ show: ShowController) {
-        self.show = show
+    func bind(_ show: ShowController, session: UUID? = nil) {
+        self.show = show; bindingSession = session
         migrateActionMappings()
         projectSelection = show.$snapshot.map { $0.project.id }.removeDuplicates().dropFirst().sink { [weak self] _ in
             // The published snapshot is assigned after its subscribers run.
@@ -76,7 +77,6 @@ struct MappingTransferRequest: Identifiable {
             }
         }
         #endif
-        #if os(macOS)
         if client == 0 {
             let result = MIDIClientCreateWithBlock("CatLive Controls" as CFString, &client) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.refreshSources() }
@@ -111,10 +111,18 @@ struct MappingTransferRequest: Identifiable {
             }
         }
         refreshSources()
-        #endif
     }
+    #if os(iOS)
+    @discardableResult func endNativeSession(_ session: UUID) -> Bool {
+        guard bindingSession == session else { return false }
+        for source in sources.keys { MIDIPortDisconnectSource(port, source) }
+        sources.removeAll(); pressedMIDI.removeAll(); pendingVolumes.removeAll(); pendingFX.removeAll()
+        editing = nil; candidate = nil; show = nil; projectSelection = nil; bindingSession = nil
+        return true
+    }
+    #endif
     func refreshSources() {
-        guard port != 0 else { return }
+        guard port != 0, show != nil else { return }
         let selected = Set(AudioDeviceSettings.shared.midiSlots.filter { $0 != 0 })
         let available = Set((0..<MIDIGetNumberOfSources()).map { MIDIGetSource($0) }.filter { endpoint in
             var id: Int32 = 0, offline: Int32 = 0

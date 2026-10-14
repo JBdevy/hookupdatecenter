@@ -15,6 +15,7 @@ import Combine
     private var subscriptions = Set<AnyCancellable>()
     private var refreshPending = false
     private var running = false
+    private let mappingSession = UUID()
     private weak var show: ShowController?
     private weak var documents: ProjectDocuments?
     init(show: ShowController, documents: ProjectDocuments) {
@@ -23,6 +24,7 @@ import Combine
     func start() {
         guard !running, let show, let documents else { return }
         running = true
+        ControlMappings.shared.bind(show, session: mappingSession)
         DAWRemoteHostBridge.documents = documents
         DAWRemoteHostBridge.bind(show, session: session)
         session.startLocalWorkspace()
@@ -105,6 +107,9 @@ import Combine
     func stop() {
         guard running else { return }
         running = false; subscriptions.removeAll()
+        if ControlMappings.shared.endNativeSession(mappingSession) {
+            show?.togglePartsPanel = {}; show?.toggleSetlistPanel = {}
+        }
         DAWRemoteSession.nativeHost.stop()
         for index in 1...2 { TeleprompterRemote.panel(index).setEnabled(false) }
         TPNoticeController.shared.clear()
@@ -151,7 +156,6 @@ import Combine
     @State private var fx: FXTarget?
     @State private var patch: PatchTarget?
     @State private var missingOutput: PatchTarget?
-    @State private var routingCheckedProject: UUID?
     init(show: ShowController, documents: ProjectDocuments, auth: AuthService,
          backend: any BackendClient, onExit: @escaping () -> Void) {
         self.show = show; self.documents = documents; self.auth = auth
@@ -293,10 +297,6 @@ import Combine
         } else if let track = show.current?.tracks.first(where: { unavailable($0.outputPatches) }) {
             missingOutput = .init(track: track.id)
         } else { missingOutput = nil }
-        if routingCheckedProject != show.snapshot.project.id {
-            routingCheckedProject = show.snapshot.project.id
-            if let missingOutput { patch = missingOutput }
-        }
     }
 }
 
@@ -1125,19 +1125,25 @@ struct IpadDialogButtonStyle: ButtonStyle {
 @MainActor struct IpadAudioTransportButtons: View {
     let show: ShowController
     var configureMetronome: (() -> Void)?
+    var only: IpadTransportControl? = nil
+    var controlWidth: CGFloat? = nil
     @ObservedObject private var recorder = TrackRecording.shared
     @ObservedObject private var metronome = MetronomeSettings.shared
     var body: some View {
         HStack(spacing: 4) {
+            if only == nil || only == .record {
             Button { recorder.toggle(show: show) } label: {
                 Label("REC", systemImage: recorder.recording ? "stop.circle.fill" : "record.circle")
-            }.buttonStyle(TransportButtonStyle(color: .red, active: recorder.recording, fontSize: 10, width: 47, height: 28))
+            }.buttonStyle(TransportButtonStyle(color: .red, active: recorder.recording, fontSize: 10, width: controlWidth ?? 47, height: 28))
                 .modifier(JarasBlink(active: recorder.recording, interval: 0.4, lowOpacity: 0.05))
                 .disabled(recorder.busy).accessibilityLabel("Record")
+            }
+            if only == nil || only == .metronome {
             Button { metronome.enabled.toggle() } label: { Image(systemName: "metronome") }
-                .buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : .red, active: true, fontSize: 12, width: 30, height: 28))
+                .buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : .red, active: true, fontSize: 12, width: controlWidth ?? 30, height: 28))
                 .accessibilityLabel("Metronome").accessibilityValue(metronome.enabled ? "On" : "Off")
                 .contextMenu { Button("Settings") { configureMetronome?() } }
+            }
         }
     }
 }

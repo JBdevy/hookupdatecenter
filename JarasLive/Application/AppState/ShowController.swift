@@ -584,6 +584,24 @@ public struct ShowTimelinePresentationState: Equatable {
         case .tempoDown: adjustTempo(-1)
         case .tempoUp: adjustTempo(1)
         case .tapTempo: tapTempo()
+        case .play: send(.play)
+        case .stop: send(.stop)
+        case .subPlay: send(.subPlay)
+        case .tunerDown, .tunerUp:
+            guard let song = current, let region = pitchRegion else { return }
+            let targets = song.pitchTargets(region)
+            setRegionPitch(region.id, semitones: min(12, max(-12, region.semitones + (action == .tunerUp ? 1 : -1))), tracks: targets.tracks, groups: targets.groups)
+        case .partsUp, .partsDown:
+            guard let song = current, let region = song.sectionPlaybackRegion(for: snapshot.transport) else { return }
+            let markers = song.sectionMarkers(in: region)
+            guard !markers.isEmpty else { return }
+            let position = snapshot.transport.playing ? snapshot.transport.position : snapshot.transport.editPosition ?? snapshot.transport.position
+            let anchor = snapshot.transport.queuedSectionMarkerId.flatMap { id in markers.firstIndex { $0.id == id } }
+                ?? markers.lastIndex { $0.position <= position }
+            let index = (anchor ?? (action == .partsDown ? -1 : 0)) + (action == .partsDown ? 1 : -1)
+            guard markers.indices.contains(index) else { return }
+            send(.queueSection, target: markers[index].id)
+        case .toggleParts: togglePartsPanel()
         case .playStop: send(snapshot.transport.playing ? .stop : .play)
         case .pause: send(.pause)
         case .repeatPlayback: send(.toggleLoop)
@@ -620,6 +638,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var toggleTeleprompterWindow: () -> Void = {}
     public var toggleTracksPanel: () -> Void = {}
     public var toggleSetlistPanel: () -> Void = {}
+    public var togglePartsPanel: () -> Void = {}
     public var onSetlistEdited: () -> Void = {}
     public var audioUpdate: (ShowSnapshot, UInt64) -> Void = { _, _ in }
     public var audioAutomationOverride: (UUID?, UUID, Double?) -> Void = { _, _, _ in }

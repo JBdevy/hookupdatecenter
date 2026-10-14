@@ -356,6 +356,7 @@ struct MainView: View {
                 ResolumeController.shared.bind(show)
                 #endif
                 mappings.bind(show)
+                show.togglePartsPanel = { toggleSections(.list) }
                 show.toggleTracksPanel = { [width = $mixerWidth, restore = $mixerRestoreWidth] in
                     Self.togglePanel(width: width, restore: restore, minimum: SidebarWidthLimits.trackMixer)
                 }
@@ -376,7 +377,7 @@ struct MainView: View {
                 // SwiftUI presents the replacement .id before removing the old
                 // workspace. The old view must not erase the new callbacks.
                 guard presentedSessionID == show.projectSessionID else { return }
-                show.toggleTracksPanel = {}; show.toggleSetlistPanel = {}
+                show.toggleTracksPanel = {}; show.toggleSetlistPanel = {}; show.togglePartsPanel = {}
                 #if os(macOS)
                 ResolumeController.shared.stop()
                 FXWindows.shared.closeAll()

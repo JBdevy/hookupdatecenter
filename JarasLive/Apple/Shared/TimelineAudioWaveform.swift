@@ -69,6 +69,8 @@ final class TimelineAudioWaveform: ObservableObject {
     static let peakFramesPerInterval = 256
     static func diskCacheURL(_ url: URL) -> URL { WaveformSource.cacheURL(url) }
     @Published private(set) var revision: UInt64 = 0
+    @Published private(set) var preparingSourcePaths = Set<String>()
+    private var failedSourceKeys = Set<String>()
 
     /// Hash the (often long, Unicode) source path/version once per header.
     /// Project source/overview lookups share this identity, so they avoid
@@ -598,6 +600,7 @@ final class TimelineAudioWaveform: ObservableObject {
     /// Detailed pages remain reclaimable file-backed memory; only visible GPU
     /// blocks occupy the bounded drawing cache.
     @MainActor func preload(_ urls: [URL], cachedOnly: Bool = false, cancelled: @escaping @Sendable () -> Bool = { false }, progress: @escaping @MainActor (Int, Int) -> Void = { _, _ in }) async {
+        resetSourceFailures()
         let files = Array(Set(urls.map { $0.standardizedFileURL })).sorted { $0.path < $1.path }
         // A complete fallback for every file fits a project-wide 32 MiB target.
         // It remains available when detailed vertex blocks are evicted.
@@ -1470,15 +1473,23 @@ final class TimelineAudioWaveform: ObservableObject {
         return fileVersions[url.path] ?? 0
     }
 
+    private func resetSourceFailures() {
+        lock.lock(); failedSourceKeys.removeAll(); lock.unlock()
+    }
     private func prepareSource(_ url: URL, header: Header) {
         let sourceKey = (header.cachePrefix ?? "\(url.path):\(header.frames)") as NSString
-        enqueue("source:\(sourceKey)", url: url, queue: sourceWorker) { [self] in
+        lock.lock(); let failed = failedSourceKeys.contains(sourceKey as String); lock.unlock()
+        guard !failed else { return }
+        enqueue("source:\(sourceKey)", url: url, queue: sourceWorker, preparingSource: true) { [self] in
             do {
                 let source = try WaveformSource.loadOrBuild(url, header: header)
                 _ = prepareZoomOutVertices(source, header: header, prefix: sourceKey as String)
                 sources.setObject(source, forKey: sourceKey, cost: source.cost)
                 return true
-            } catch { return false }
+            } catch {
+                lock.lock(); failedSourceKeys.insert(sourceKey as String); lock.unlock()
+                return false
+            }
         }
     }
 
@@ -1499,25 +1510,27 @@ final class TimelineAudioWaveform: ObservableObject {
         return audio
     }
 
-    private func enqueue(_ key: String, url: URL, queue: DispatchQueue? = nil, maximumPending: Int = 64,
+    private func enqueue(_ key: String, url: URL, queue: DispatchQueue? = nil, maximumPending: Int = 64, preparingSource: Bool = false,
                          work: @escaping () -> Bool) {
-        enqueue(.named(key), url: url, queue: queue, maximumPending: maximumPending, work: work)
+        enqueue(.named(key), url: url, queue: queue, maximumPending: maximumPending, preparingSource: preparingSource, work: work)
     }
 
     /// Vertex lookups already own a source/version key with a cached hash.
     /// Reuse it while queued instead of normalizing its Unicode label again
     /// on every duplicate request and on completion. All jobs share one limit.
-    private func enqueue(_ key: PendingKey, url: URL, queue: DispatchQueue? = nil, maximumPending: Int = 64,
+    private func enqueue(_ key: PendingKey, url: URL, queue: DispatchQueue? = nil, maximumPending: Int = 64, preparingSource: Bool = false,
                          work: @escaping () -> Bool) {
         lock.lock()
         guard pending.count < maximumPending, pending.insert(key).inserted else { lock.unlock(); return }
         lock.unlock()
+        if preparingSource { DispatchQueue.main.async { [self] in preparingSourcePaths.insert(url.path) } }
         (queue ?? worker).async { [self] in
             let changed = autoreleasepool { work() }
             lock.lock()
             pending.remove(key)
             if changed { fileVersions[url.path, default: 0] &+= 1 }
             lock.unlock()
+            if preparingSource { DispatchQueue.main.async { [self] in preparingSourcePaths.remove(url.path) } }
             guard changed else { return }
             DispatchQueue.main.async { [self] in
                 guard !notificationPending else { return }

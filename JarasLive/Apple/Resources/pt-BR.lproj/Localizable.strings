@@ -1620,3 +1620,23 @@
 "Unable to configure audio output channels." = "Não foi possível configurar os canais de saída de áudio.";
 
 "Audio device is unavailable. Reconnect it or choose an output in Settings." = "Dispositivo de áudio indisponível. Reconecte-o ou escolha uma saída nas Configurações.";
+
+"Transport" = "Transporte";
+
+"Category" = "Categoria";
+
+"Shortcuts" = "Atalhos";
+
+"Play / Stop" = "Play / Stop";
+
+"Tuner −" = "Tuner −";
+
+"Tuner +" = "Tuner +";
+
+"Parts Up" = "Parts acima";
+
+"Parts Down" = "Parts abaixo";
+
+"Parts show/hide" = "Mostrar/ocultar Parts";
+
+"Loading waveforms…" = "Carregando waveforms…";

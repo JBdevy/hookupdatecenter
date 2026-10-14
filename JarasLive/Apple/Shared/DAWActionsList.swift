@@ -3,18 +3,39 @@ import SwiftUI
 struct DAWActionsList: View {
     @ObservedObject var show: ShowController
     @ObservedObject private var mappings = ControlMappings.shared
+    #if os(iOS)
+    @State private var inputKind = "midi"
+    #else
     @State private var inputKind = "keyboard"
+    #endif
+    @State private var category = DAWActionCategory.transport
+    private var categories: [DAWActionCategory] {
+        #if os(iOS)
+        [.transport, .volume, .mute, .solo, .setlist]
+        #else
+        DAWActionCategory.allCases
+        #endif
+    }
     private struct ResetRequest { let action: DAWAction; let kind: String }
     @State private var resetRequest: ResetRequest?
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Picker("Category", selection: $category) {
+                ForEach(categories) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
+            }.pickerStyle(.segmented)
+                .onChange(of: category) { value in
+                    if value == .volume { inputKind = "midi" }
+                    if value == .shortcuts { inputKind = "keyboard" }
+                }
+            #if os(macOS)
             Picker("Input", selection: $inputKind) {
                 Text("Keyboard").tag("keyboard")
                 Text("MIDI").tag("midi")
             }.pickerStyle(.segmented)
+            #endif
             Text("Actions are saved for all projects.").font(.caption).foregroundStyle(JarasTheme.secondary)
             if !mappings.error.isEmpty { Text(mappings.error).font(.caption).foregroundStyle(.red) }
-            ForEach(DAWAction.visible.filter { inputKind == "midi" ? $0.supportsMIDI : !$0.continuous }, id: \.self) { action in
+            ForEach(category.actions.filter { inputKind == "midi" ? $0.supportsMIDI : !$0.continuous }, id: \.self) { action in
                 let binding = mappings.actions.binding(action)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {

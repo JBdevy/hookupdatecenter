@@ -12,7 +12,7 @@ struct SettingsView: View {
     }
     private var availableSections: [Section] {
         #if os(iOS)
-        [.general, .audio]
+        [.general, .audio, .midi, .actions]
         #else
         Section.allCases
         #endif
@@ -91,6 +91,7 @@ struct SettingsView: View {
                                 ForEach(audio.midiDevices.filter { device in !audio.midiSlots.enumerated().contains { $0.offset != slot && $0.element == device.id } }) { device in Text(device.name).tag(device.id) }
                             }.padding(10).background(JarasTheme.panel).cornerRadius(6)
                         }
+                        #if os(macOS)
                         Text("MIDI output").font(.headline)
                         Picker("MIDI output", selection: Binding(get: { audio.midiOutput }, set: { audio.selectMIDIOutput($0) })) {
                             Text("None").tag(Int32(0))
@@ -100,6 +101,7 @@ struct SettingsView: View {
                             ForEach(audio.midiOutputs) { device in Text(device.name).tag(device.id) }
                         }.padding(10).background(JarasTheme.panel).cornerRadius(6)
                         if audio.midiOutputs.isEmpty { Text("No MIDI outputs").foregroundStyle(JarasTheme.secondary) }
+                        #endif
                         Button("Refresh devices") { audio.refreshMIDI() }
                     case .actions:
                         DAWActionsList(show: show)
@@ -132,6 +134,7 @@ struct SettingsView: View {
         .sheet(isPresented: $signingIn) {
             LoginView(auth: auth, backend: backend, offersTrial: false, onAuthorized: { signingIn = false }).frame(width: 550, height: 620)
         }
+        .onDisappear { mappings.editing = nil }
         .task(id: section) { if section == .account { await auth.refreshDevices() } }
         .alert("Remover dispositivo?", isPresented: Binding(get: { pendingDevice != nil }, set: { if !$0 { pendingDevice = nil } }), presenting: pendingDevice) { device in
             Button("Cancelar", role: .cancel) { pendingDevice = nil }

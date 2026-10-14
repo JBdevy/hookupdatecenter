@@ -258,3 +258,27 @@ final class DAWActionTests: XCTestCase {
         XCTAssertEqual(DAWActionValue.pan(127), 1)
     }
 }
+
+extension DAWActionTests {
+    func testPerformanceCategoriesAndNewMIDIActionsKeepIndependentBindings() throws {
+        XCTAssertEqual(DAWActionCategory.allCases.map(\.rawValue), ["Transport", "Volume", "Mute", "Solo", "Setlist", "Shortcuts"])
+        XCTAssertEqual(Set(DAWActionCategory.allCases.flatMap(\.actions)), Set(DAWAction.visible))
+        XCTAssertEqual(DAWAction.splitItems.category, .shortcuts)
+        XCTAssertEqual(DAWAction.normalizeItems.category, .shortcuts)
+        XCTAssertEqual(DAWAction.volumeMaster.category, .volume)
+        XCTAssertEqual(DAWAction.muteTrack.category, .mute)
+        XCTAssertEqual(DAWAction.soloTrack.category, .solo)
+        var bindings = DAWActionBindings()
+        let newActions: [DAWAction] = [.play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts]
+        for (index, action) in newActions.enumerated() {
+            XCTAssertNil(action.defaultKeyboard, "new MIDI controls must not steal existing editing shortcuts")
+            let input = ControlInput(kind: "midi", label: "Pad \(index)", device: 7, channel: 2, status: 0x90, number: UInt8(60 + index))
+            XCTAssertTrue(bindings.setInput(input, action: action, kind: "midi"))
+            XCTAssertEqual(bindings.matching(input), action)
+        }
+        let restored = DAWActionBindings(stored: try JSONDecoder().decode([DAWActionBinding].self, from: JSONEncoder().encode(bindings.entries)))
+        XCTAssertEqual(restored, bindings)
+        XCTAssertEqual(restored.binding(.splitItems).keyboard, DAWAction.splitItems.defaultKeyboard)
+        XCTAssertEqual(restored.binding(.normalizeItems).keyboard, DAWAction.normalizeItems.defaultKeyboard)
+    }
+}

@@ -104,12 +104,10 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     #endif
     var deviceName: String { devices.first { $0.id == selectedUID }?.name ?? JarasLocalization.string("No output device") }
     private init() {
-        #if os(macOS)
         MIDIClientCreateWithBlock("CatLive Devices" as CFString, &midiClient) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshMIDI() }
         }
         refreshMIDI()
-        #endif
         refresh()
         #if os(iOS)
         observeMobileSession()

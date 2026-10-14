@@ -302,6 +302,8 @@ struct DAWRemoteState: Codable, Equatable {
     var pendingSave: Bool
     var saving: Bool
     var message: String
+    var loopStart: Double? = nil
+    var loopEnd: Double? = nil
     var multiLoopsBypassed: Bool? = nil
     var setlistLiveEnabled: Bool? = nil
     var playedLiveRegionIDs: [UUID]? = nil
@@ -349,6 +351,8 @@ struct DAWRemoteState: Codable, Equatable {
     static func validPeak(_ value: Double?) -> Bool { value.map { $0.isFinite && $0 >= -24 } ?? true }
     var valid: Bool {
         position.isFinite && duration.isFinite && bpm.isFinite && masterVolume.isFinite && Self.validPeak(masterPeakDB) &&
+        (loopStart == nil || (loopStart!.isFinite && loopStart! >= 0)) &&
+        (loopEnd == nil || (loopEnd!.isFinite && loopEnd! >= (loopStart ?? 0))) &&
         (editPosition == nil || (editPosition!.isFinite && editPosition! >= 0)) &&
         (subPlayPosition == nil || (subPlayPosition!.isFinite && subPlayPosition! >= 0)) &&
         [gridBackgroundColor, gridPrimaryColor, gridSecondaryColor, playCursorColor, editCursorColor, subPlayCursorColor].allSatisfy { $0 == nil || $0! <= 0xffffff } &&
