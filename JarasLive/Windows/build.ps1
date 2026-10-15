@@ -34,7 +34,8 @@ New-Item -ItemType Directory -Force $packageDirectory | Out-Null
 Copy-Item -LiteralPath $binary -Destination (Join-Path $packageDirectory 'CatLive.exe') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'README.txt') -Destination $packageDirectory -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'THIRD-PARTY-NOTICES.txt') -Destination $packageDirectory -Force
-Copy-Item -LiteralPath (Join-Path $sourceDirectory 'Assets/Fonts/Figtree-LICENSE.txt') -Destination (Join-Path $packageDirectory 'Figtree-LICENSE.txt') -Force
+Remove-Item -LiteralPath (Join-Path $packageDirectory 'Figtree-LICENSE.txt') -ErrorAction SilentlyContinue
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'Assets/Fonts/LICENSE.txt') -Destination (Join-Path $packageDirectory 'Inter-LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'ThirdParty/Signalsmith/LICENSE-stretch.txt') -Destination (Join-Path $packageDirectory 'Signalsmith-Stretch-LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'ThirdParty/Signalsmith/LICENSE-linear.txt') -Destination (Join-Path $packageDirectory 'Signalsmith-Linear-LICENSE.txt') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'ThirdParty/Monocypher/LICENCE.md') -Destination (Join-Path $packageDirectory 'Monocypher-LICENSE.md') -Force

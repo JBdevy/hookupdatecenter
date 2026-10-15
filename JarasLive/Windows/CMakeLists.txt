@@ -33,8 +33,8 @@ juce_add_binary_data(CatLiveAssets SOURCES
     Assets/Localization/StageDefaults.json Assets/Localization/StageFields.json
     Assets/Localization/InstrumentCatalog.json
     "${CATLIVEROOT}/Apple/Resources/Click.mp3"
-    Assets/Fonts/Figtree-Regular.ttf Assets/Fonts/Figtree-Medium.ttf Assets/Fonts/Figtree-SemiBold.ttf
-    Assets/Fonts/Figtree-Bold.ttf Assets/Fonts/Figtree-BoldItalic.ttf
+    Assets/Fonts/Inter-Regular.ttf Assets/Fonts/Inter-Medium.ttf Assets/Fonts/Inter-SemiBold.ttf
+    Assets/Fonts/Inter-Bold.ttf Assets/Fonts/Inter-BoldItalic.ttf
     "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveSplash.imageset/CatLiveSplash.png"
     "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveIcon.appiconset/icon-256@1x.png")
 juce_add_gui_app(CatLive PRODUCT_NAME "CatLive" COMPANY_NAME "Hook Developer"

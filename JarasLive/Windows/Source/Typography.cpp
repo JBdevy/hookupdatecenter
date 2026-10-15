@@ -1,22 +1,26 @@
 #include "Common.h"
 #include <BinaryData.h>
 namespace catlive::theme {
+namespace {
+// Calibrated against NSFont.systemFont at 13 pt using the real project labels.
+// Inter is redistributable with the app; the Mac still uses its native system font.
+constexpr float capScale = .9684564f;
+Font calibrated(Typeface::Ptr face, float points, float width) {
+    return Font(FontOptions(face).withPointHeight(points * capScale)).withHorizontalScale(width);
+}
+}
 Font mediumFont(float size) {
-    static auto face = Typeface::createSystemTypefaceFor(BinaryData::FigtreeMedium_ttf, BinaryData::FigtreeMedium_ttfSize);
-    return Font(FontOptions(face).withPointHeight(size));
+    static auto face = Typeface::createSystemTypefaceFor(BinaryData::InterMedium_ttf, BinaryData::InterMedium_ttfSize);
+    return calibrated(face, size, 1.031f);
 }
 Font semiboldFont(float size) {
-    static auto face = Typeface::createSystemTypefaceFor(BinaryData::FigtreeSemiBold_ttf, BinaryData::FigtreeSemiBold_ttfSize);
-    return Font(FontOptions(face).withPointHeight(size));
+    static auto face = Typeface::createSystemTypefaceFor(BinaryData::InterSemiBold_ttf, BinaryData::InterSemiBold_ttfSize);
+    return calibrated(face, size, 1.040f);
 }
 Font font(float size, bool bold, bool italic) {
-    // Read the actual faces from the executable. No installed font or network is needed.
-    static auto regular = Typeface::createSystemTypefaceFor(BinaryData::FigtreeRegular_ttf, BinaryData::FigtreeRegular_ttfSize);
-    static auto boldFace = Typeface::createSystemTypefaceFor(BinaryData::FigtreeBold_ttf, BinaryData::FigtreeBold_ttfSize);
-    static auto boldItalic = Typeface::createSystemTypefaceFor(BinaryData::FigtreeBoldItalic_ttf, BinaryData::FigtreeBoldItalic_ttfSize);
-    auto face = italic ? boldItalic : bold ? boldFace : regular;
-    // Use the same logical point sizes as the Mac views. JUCE applies display DPI;
-    // shrinking the font here makes every screen smaller than its reference.
-    return Font(FontOptions(face).withPointHeight(size));
+    static auto regular = Typeface::createSystemTypefaceFor(BinaryData::InterRegular_ttf, BinaryData::InterRegular_ttfSize);
+    static auto boldFace = Typeface::createSystemTypefaceFor(BinaryData::InterBold_ttf, BinaryData::InterBold_ttfSize);
+    static auto boldItalic = Typeface::createSystemTypefaceFor(BinaryData::InterBoldItalic_ttf, BinaryData::InterBoldItalic_ttfSize);
+    return calibrated(italic ? boldItalic : bold ? boldFace : regular, size, bold || italic ? 1.054f : 1.017f);
 }
 }

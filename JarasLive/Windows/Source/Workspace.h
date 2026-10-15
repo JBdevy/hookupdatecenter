@@ -13,6 +13,7 @@
 #include "NavigationPanel.h"
 #include "ResourceUsage.h"
 #include "DragDivider.h"
+#include "FooterKeyboard.h"
 namespace catlive {
 namespace remote { class Host; class Presentation; }
 class MacLook final : public LookAndFeel_V4 {
@@ -64,6 +65,8 @@ class Workspace final : public Component,
     void chooseExport();
     void chooseSoundFont();
     void openVideo();
+    void editRegion(ID);
+    void editMarker(ID, double);
     void runUIRegression();
     void showLoginPreview();
     void showImportNoticePreview();
@@ -101,7 +104,7 @@ class Workspace final : public Component,
     std::unique_ptr<NavigationPanel> navigation;
     bool browserVisible = false, projectReady = false;
     juce::Rectangle<int> editorWindowBounds;
-    std::unique_ptr<MidiKeyboardComponent> keyboard;
+    std::unique_ptr<FooterKeyboard> keyboard;
     Viewport tracksViewport, dockViewport;
     Component tracksContent, dockContent;
     OwnedArray<TrackRow> rows;

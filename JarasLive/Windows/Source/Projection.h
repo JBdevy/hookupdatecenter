@@ -11,6 +11,7 @@ class Projection final : public Component, private Timer {
     void paintOverChildren(Graphics &) override;
     void mouseDown(const MouseEvent &) override;
     void mouseDoubleClick(const MouseEvent &) override;
+    bool keyPressed(const KeyPress &) override;
     std::function<void(String)> error;
     std::function<void()> configure;
 
@@ -34,5 +35,9 @@ class Projection final : public Component, private Timer {
     bool loaded = false;
     void timerCallback() override;
     void chooseMedia();
+    void toggleFullScreen();
+    juce::Rectangle<int> windowedBounds;
+    int windowedTitleHeight = 32;
+    bool presenting = false, windowedOnTop = false, windowedMaximised = false;
 };
 } // namespace catlive

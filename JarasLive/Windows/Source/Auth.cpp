@@ -4,6 +4,10 @@
 #include <windows.h>
 namespace catlive {
 namespace {
+struct BackendFailure final : std::runtime_error {
+    String code;
+    BackendFailure(String value, String message) : std::runtime_error(utf8(message)), code(std::move(value)) {}
+};
 String hardwareID(const String& fallback) {
     auto machine=WindowsRegistry::getValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\\MachineGuid").trim();
     if(machine.isEmpty())machine=fallback;
@@ -94,7 +98,7 @@ var Auth::device() const {
     put(v, "deviceName", deviceName);
     put(v, "platform", "Windows");
     put(v, "platformVersion", SystemStats::getOperatingSystemName());
-    put(v, "appVersion", "1.01");
+    put(v, "appVersion", JUCE_APPLICATION_VERSION_STRING);
     return v;
 }
 var Auth::request(const String &route, const var &body, const String &token) {
@@ -118,7 +122,7 @@ var Auth::request(const String &route, const var &body, const String &token) {
     if (JSON::parse(bytes.toString(), response).failed())
         throw std::runtime_error("Resposta inválida do serviço.");
     if (status < 200 || status >= 300)
-        throw std::runtime_error(utf8(failure(str(response, "error"))));
+        throw BackendFailure(str(response, "error"), failure(str(response, "error")));
     return response;
 }
 bool Auth::verifyEntitlement(const var &entitlement, const String &account, const String &installation) {
@@ -256,6 +260,7 @@ void Auth::validate() {
     if (busy || !loginData.isObject())
         return;
     busy = true;
+    if (changed) changed();
     auto saved = loginData.clone();
     auto weak = std::weak_ptr<int>(alive);
     worker.addJob([this, weak, saved] {
@@ -301,7 +306,10 @@ void Auth::validate() {
 void Auth::logout() {
     if (busy || (isPlaying && isPlaying()))
         return;
+    if (!loginData.isObject()) { message = "Entre na sua conta primeiro."; if (changed) changed(); return; }
     busy = true;
+    message = String::fromUTF8("Liberando este dispositivo…");
+    if (changed) changed();
     auto saved = loginData;
     auto weak = std::weak_ptr<int>(alive);
     worker.addJob([this, weak, saved] {
@@ -310,6 +318,8 @@ void Auth::logout() {
             auto b = object();
             put(b, "refreshToken", str(get(saved, "session"), "refreshToken"));
             request("logout", b);
+        } catch (const BackendFailure &e) {
+            if (e.code != "invalidSession") error = String::fromUTF8(e.what());
         } catch (const std::exception &e) {
             error = String::fromUTF8(e.what());
         }
@@ -320,6 +330,8 @@ void Auth::logout() {
             if (error.isEmpty()) {
                 authorised = false;
                 loginData = var();
+                pendingRevocation = false;
+                message.clear();
                 title = "Sem acesso";
                 dataDirectory().getChildFile("session.dat").deleteFile();
             } else

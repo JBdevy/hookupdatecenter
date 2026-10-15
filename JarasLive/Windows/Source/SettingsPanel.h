@@ -3,7 +3,7 @@
 #include "Auth.h"
 #include "Lighting.h"
 namespace catlive {
-class SettingsPanel final : public Component {
+class SettingsPanel final : public Component, private Timer {
   public:
     SettingsPanel(Session &s, Auth &a, Lighting &l, Appearance &p, ActionBindings &bindings,
                   int initial, std::function<void(String)> fail, std::function<void()> signIn)
@@ -31,7 +31,9 @@ class SettingsPanel final : public Component {
         viewport.setViewedComponent(&page, false);
         viewport.setScrollBarsShown(true, true);
         select(initial);
+        startTimerHz(4);
     }
+    ~SettingsPanel() override { stopTimer(); }
     bool keyPressed(const KeyPress &key) override { return actions.captureKey(key); }
     void paint(Graphics &g) override {
         g.setColour(theme::background);
@@ -72,6 +74,18 @@ class SettingsPanel final : public Component {
     Component page;
     OwnedArray<Component> fields;
     ActionsPage *actionPage = nullptr;
+    SafePointer<TextButton> accountLogin, accountLogout, accountValidate;
+    SafePointer<Label> accountTitle, accountEmail, accountMessage;
+    void timerCallback() override {
+        if (selected != 6 || !accountLogin) return;
+        accountLogin->setEnabled(!auth.busy && !locked());
+        accountLogout->setEnabled(!auth.busy && !locked() && auth.loginData.isObject());
+        accountValidate->setEnabled(!auth.busy && auth.loginData.isObject());
+        accountLogout->setButtonText(auth.busy ? String::fromUTF8("Aguarde…") : "Sair e liberar dispositivo");
+        accountTitle->setText(auth.title, dontSendNotification);
+        accountEmail->setText(str(get(auth.loginData, "account"), "email"), dontSendNotification);
+        accountMessage->setText(auth.message, dontSendNotification);
+    }
     bool locked() const {
         return session.transport().playing || session.transport().subPlay.playing ||
                session.audio.isRecording();
@@ -194,17 +208,21 @@ class SettingsPanel final : public Component {
                       "O carregamento de VST3 externo ainda não está disponível neste build."),
                   252, 56, false, theme::yellow);
         } else {
-            label(auth.title, 66, 26, true);
-            label(str(get(auth.loginData, "account"), "email"), 104, 26, false, theme::secondary);
+            accountTitle = &label(auth.title, 66, 26, true);
+            accountEmail = &label(str(get(auth.loginData, "account"), "email"), 104, 26, false, theme::secondary);
             auto &signin = button("Login / Trocar conta", 24, 146, 190, login);
+            accountLogin = &signin;
+            signin.setComponentID("settingsLogin");
             signin.setEnabled(!auth.busy && !locked());
             label("Dispositivo: " + auth.deviceName, 194);
-            button("Validar agora", 24, 242, 150, [this] { auth.validate(); });
+            accountValidate = &button("Validar agora", 24, 242, 150, [this] { auth.validate(); });
             auto &logout =
                 button("Sair e liberar dispositivo", 24, 304, 210, [this] { auth.logout(); });
+            accountLogout = &logout; logout.setComponentID("settingsLogout");
             logout.setColour(TextButton::buttonColourId, Colour(0xff8d3033));
             logout.setEnabled(!auth.busy && !locked());
-            label(auth.message, 354, 80, false, theme::yellow);
+            accountMessage = &label(auth.message, 354, 80, false, theme::yellow);
+            timerCallback();
         }
         viewport.setViewPosition(0, 0);
         localization::panel(*this);

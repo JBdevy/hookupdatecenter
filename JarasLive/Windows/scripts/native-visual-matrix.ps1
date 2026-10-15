@@ -49,7 +49,7 @@ function Check-Layout([string]$Name) {
     if(-not $d.uiRegressionPassed){throw "Editing regression did not complete: $Name"}
     if($d.overlappingTransport -or $d.transportOutsideWindow){throw "Transport overlaps or leaves window: $Name"}
     if(@($d.clippedButtonLabels).Count -gt 0){throw "Transport label clipped: $Name / $($d.clippedButtonLabels -join ', ')"}
-    if([Math]::Abs($d.fontPointHeight - 13) -gt .01){throw "Reference font metrics lost: $Name"}
+    if([Math]::Abs($d.fontPointHeight - (13*.9684564)) -gt .01){throw "Reference font metrics lost: $Name"}
     if(-not $d.grandMA2BeforeResolume){throw "Transport order changed: $Name"}
     $rect = Rect $process.MainWindowHandle
     $screen = [System.Windows.Forms.Screen]::FromHandle($process.MainWindowHandle).WorkingArea

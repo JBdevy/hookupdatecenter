@@ -753,7 +753,7 @@ class Workspace::Setlist final : public Component,
         ModalSheet::open(w, entry.block ? "Editar bloco" : String::fromUTF8("Editar música"),
                          std::make_unique<RegionEditor>(name, entry.colour.getARGB() & 0xffffff,
                                                         uppercase, save, close),
-                         300, 356);
+                         300, 404);
     }
     void removeRegion(Entry entry) {
         const auto self = SafePointer<Setlist>(this);

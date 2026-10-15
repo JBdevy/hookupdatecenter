@@ -91,6 +91,13 @@ MacLook::MacLook() {
 }
 void MacLook::drawButtonBackground(Graphics &g, Button &b, const Colour &colour, bool over,
                                    bool down) {
+    if ((bool)b.getProperties()["colourSwatch"]) {
+        auto r=b.getLocalBounds().toFloat().reduced(.5f);
+        g.setColour(b.findColour(TextButton::buttonColourId)); g.fillRoundedRectangle(r,3);
+        g.setColour(Colours::white.withAlpha(.2f)); g.drawRoundedRectangle(r,3,1);
+        if ((bool)b.getProperties()["selectedColour"]) { g.setColour(Colours::white); g.drawRoundedRectangle(r.reduced(1),3,2); g.setColour(Colours::black); g.drawRoundedRectangle(r.reduced(3),2,1); }
+        return;
+    }
     const bool plain = (bool)b.getProperties().getWithDefault("plain", false);
     if (plain && !over && !down && !b.getToggleState())
         return;
@@ -583,26 +590,30 @@ class MAPanel final : public Panel, private TableListBoxModel {
 };
 class LoginPanel final : public Panel {
   public:
-    LoginPanel(Auth &a)
+    LoginPanel(Auth &a, bool offersTrial = true)
         : Panel("Bem-vindo ao CatLive", "Use o e-mail e o CPF da sua compra."), auth(a) {
+        entering = !offersTrial;
+        getProperties().set("selfContainedSheet", true);
         logo = ImageCache::getFromMemory(BinaryData::CatLiveSplash_png,
                                          BinaryData::CatLiveSplash_pngSize);
         title.setJustificationType(Justification::centred);
-        title.setFont(theme::font(22, true));
+        title.setFont(theme::font(17, true));
         subtitle.setJustificationType(Justification::centred);
         subtitle.setText(String::fromUTF8("Use o e-mail e o CPF da sua compra.\nO trial começa no "
                                           "primeiro acesso neste dispositivo."),
                          dontSendNotification);
         email = &editor({}, 30, 317, 380, 30);
+        email->setComponentID("loginEmail");
         email->setTextToShowWhenEmpty("E-mail cadastrado", theme::secondary);
         cpf = &editor({}, 30, 359, 380, 30);
         cpf->setTextToShowWhenEmpty("CPF", theme::secondary);
         cpf->setPasswordCharacter(0x2022);
+        cpf->setComponentID("loginCPF");
         login = &button(
             "Entrar", 30, 401, 380,
             [this] {
+                submitted = true;
                 auth.login(email->getText(), cpf->getText(), auth.deviceName);
-                cpf->clear();
             },
             Colour(0xff32593e));
         stage = &button("Login", 30, 261, 184, [this] {
@@ -613,19 +624,22 @@ class LoginPanel final : public Panel {
             email->grabKeyboardFocus();
         });
         trial = &button(String::fromUTF8("Trial teste · 7 dias"), 226, 261, 184,
-                        [this] { auth.trial(auth.deviceName); });
+                        [this, offersTrial] { if (offersTrial) auth.trial(auth.deviceName); else ModalSheet::dismiss(*this); });
+        if (!offersTrial) trial->setButtonText("Fechar");
         manage = &button("Gerenciar dispositivos", 30, 443, 380, [this] { devices(); });
         for (auto *b : {stage, trial, login}) {
-            b->getProperties().set("fontSize", 18.f);
+            b->getProperties().set("fontSize", 13.f);
             b->setColour(TextButton::buttonColourId, Colour(0xff4b845c));
             b->setColour(TextButton::buttonOnColourId, theme::accent);
             b->setColour(TextButton::textColourOnId, Colours::black);
         }
+        login->setComponentID("loginSubmit"); stage->setComponentID("loginShowFields");
         login->setToggleState(true, dontSendNotification);
-        manage->getProperties().set("fontSize", 16.f);
+        manage->getProperties().set("fontSize", 13.f);
         manage->getProperties().set("flat", true);
-        for (auto *field : {email, cpf}) field->setFont(theme::font(18));
-        subtitle.setFont(theme::font(14));
+        for (auto *field : {email, cpf}) field->setFont(theme::font(13));
+        subtitle.setFont(theme::font(11));
+        if (!offersTrial) subtitle.setText(String::fromUTF8("Use o e-mail e o CPF da sua compra."), dontSendNotification);
         email->onTextChange = cpf->onTextChange = [this] { update(); };
         addAndMakeVisible(message);
         message.setColour(Label::textColourId, theme::yellow);
@@ -658,11 +672,13 @@ class LoginPanel final : public Panel {
         message.setBounds(30, entering ? 572 : 378, getWidth() - 60, 50);
     }
     void update() {
+        if (submitted && !auth.busy && auth.allowed()) { submitted = false; cpf->clear(); ModalSheet::dismiss(*this); }
         const bool credentials = email->getText().isNotEmpty() && cpf->getText().isNotEmpty();
         login->setEnabled(!auth.busy && credentials);
         manage->setEnabled(!auth.busy && credentials);
         trial->setEnabled(!auth.busy);
         stage->setEnabled(!auth.busy);
+        login->setButtonText(auth.busy ? String::fromUTF8("Aguarde…") : "Entrar");
         message.setText(auth.busy ? String::fromUTF8("Validando acesso…") : auth.message,
                         dontSendNotification);
     }
@@ -672,7 +688,7 @@ class LoginPanel final : public Panel {
     Image logo;
     TextEditor *email = nullptr, *cpf = nullptr;
     TextButton *login = nullptr, *trial = nullptr, *stage = nullptr, *manage = nullptr;
-    bool entering = false;
+    bool entering = false, submitted = false;
     Label message;
     void devices() {
         auto mail = email->getText(), password = cpf->getText();
@@ -911,7 +927,7 @@ class Workspace::TrackRow final : public Component {
             b->getProperties().set("fontSize", 10);
             b->setColour(TextButton::buttonColourId, Colours::white.withAlpha(.18f));
         }
-        phase.setColour(TextButton::buttonOnColourId, Colour(0xffaab8e8));
+        phase.setColour(TextButton::buttonOnColourId, theme::yellow);
         mute.onClick = [this] {
             w.perform([&] { w.session.command(jaras::CommandKind::mute, id); });
         };
@@ -992,7 +1008,9 @@ class Workspace::TrackRow final : public Component {
             record.setButtonText(arm == 2 ? "A" : String::fromUTF8("◎"));
             record.getProperties().set("fontSize", arm == 2 ? 11 : 15);
             record.setToggleState(w.session.recordingArmed(id), dontSendNotification);
-            record.setColour(TextButton::buttonOnColourId, Colour(0xffec4848));
+            record.setColour(TextButton::buttonOnColourId, Colour(0xffff1f1f));
+            const auto settings = t->fxJSON ? JSON::parse(text(*t->fxJSON)) : var();
+            fx.setColour(TextButton::textColourOffId, list(get(settings, "inserted")).isEmpty() ? Colours::white : theme::green);
             record.setColour(TextButton::textColourOffId, Colour(0xffec4848));
             folder.setVisible(isFolder());
             folder.setButtonText({});
@@ -1127,6 +1145,7 @@ class Workspace::TrackRow final : public Component {
         }
         w.selectedTrack = id;
         w.selectedClip.clear();
+        w.updateState();
         repaint();
         if (e.mods.isPopupMenu()) {
             ++w.contextCount;
@@ -1425,26 +1444,24 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 }
             };
             drawGrid((float)ruler, (float)getHeight());
-            if (song->markers)
-                for (const auto &m : *song->markers) {
-                    float x = t.xAt(m.position);
-                    if (x < -150 || x > getWidth())
-                        continue;
-                    auto colour = Colour(0xff000000 | m.color);
-                    g.setColour(colour.withAlpha(.75f));
-                    const int markerY = m.tempoBPM ? 32 : 16;
-                    g.fillRoundedRectangle(x, (float)markerY + 1, 110, 14, 2);
-                    g.setColour(Colours::white);
-                    g.setFont(theme::font(10));
-                    auto label =
-                        m.tempoBPM
-                            ? String(*m.tempoBPM, *m.tempoBPM == std::floor(*m.tempoBPM) ? 0 : 1) +
-                                  "  " + String(m.tempoBeats.value_or(4)) + "/" +
-                                  String(m.tempoUnit.value_or(4))
-                            : text(m.name);
-                    g.drawFittedText(label, (int)x + 5, markerY, 100, 16,
-                                     Justification::centredLeft, 1);
-                }
+            if (song->markers) for (const auto &m : *song->markers) {
+                const float x = t.xAt(m.position);
+                auto label = m.tempoBPM ? String(*m.tempoBPM, *m.tempoBPM == std::floor(*m.tempoBPM) ? 0 : 1) +
+                    "  " + String(m.tempoBeats.value_or(4)) + "/" + String(m.tempoUnit.value_or(4)) : text(m.name);
+                const auto font = theme::mediumFont(9);
+                float width = std::ceil(GlyphArrangement::getStringWidth(font, label)) + 10;
+                for (const auto &next : *song->markers) if (bool(next.tempoBPM) == bool(m.tempoBPM) && next.position > m.position)
+                    width = std::min(width, t.xAt(next.position) - x - 3);
+                if (width < 18 || x + width < 0 || x > getWidth()) continue;
+                const int top = m.tempoBPM ? 32 : 16;
+                const juce::Rectangle<float> flag(x, (float)top + 1, width, 14);
+                if (m.tempoBPM) {
+                    g.setColour(theme::display); g.fillRoundedRectangle(flag.reduced(.5f), 4);
+                    g.setColour(theme::line); g.drawRoundedRectangle(flag.reduced(.5f), 4, 1);
+                } else { g.setColour(Colour(0xff000000 | m.color)); g.fillRect(flag); }
+                g.setColour(m.tempoBPM ? Colours::white : Colours::black); g.setFont(font);
+                g.drawText(label, flag.reduced(4, 0), m.tempoBPM ? Justification::centred : Justification::centredLeft, true);
+            }
             for (const auto &p : song->parts) {
                 float a = t.xAt(p.startTime), b = t.xAt(p.endTime);
                 if (b < 0 || a > getWidth())
@@ -1472,6 +1489,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 auto background = t.w.appearance.colour("jaras.timeline.background", 0x1e1e1e);
                 g.setColour(row % 2 ? background.brighter(.02f) : background);
                 g.fillRect(0, y, getWidth(), height);
+                if (t.w.selectedTrack == track.id) { g.setColour(theme::track(track).withAlpha(.12f)); g.fillRect(0, y, getWidth(), height); }
                 g.setColour(theme::line.withAlpha(.5f));
                 g.drawHorizontalLine(y + height - 1, 0, (float)getWidth());
                 drawGrid((float)y, (float)(y + height));
@@ -1559,24 +1577,30 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     }
                 }
             }
+            g.restoreState();
             for (const auto &region : song->parts) {
-                g.setColour(Colour(0xff000000 | region.color.value_or(0x665566)).withAlpha(.9f));
-                for (double time : {region.startTime, region.endTime}) {
-                    const float x = lineX(time);
-                    if (x >= 0 && x <= getWidth()) g.fillRect(x, (float)ruler, pixel, (float)getHeight() - ruler);
+                if (region.parentRegionID) continue;
+                const auto colour = Colour(0xff000000 | region.color.value_or(0x705264));
+                const float left = lineX(region.startTime), right = lineX(region.endTime), top = 16;
+                g.saveState();
+                g.reduceClipRegion(juce::Rectangle<float>(left, top, std::max(0.f, right-left), std::max(0.f, getHeight()-top)).getSmallestIntegerContainer());
+                for (const auto spec : {std::pair<float,float>{6,.14f}, {3,.30f}, {2,1.f}}) {
+                    g.setColour(colour.withAlpha(spec.second));
+                    for (float x : {left, right}) if (x >= -6 && x <= getWidth()+6)
+                        g.fillRect(x-spec.first/2, top, spec.first, getHeight()-top);
                 }
+                g.restoreState();
             }
             if (song->markers) for (const auto &marker : *song->markers) {
-                const float x = lineX(marker.position);
+                const float x = lineX(marker.position), top = marker.tempoBPM ? 48.f : 32.f;
                 if (x < 0 || x > getWidth()) continue;
                 auto colour = Colour(0xff000000 | (marker.tempoBPM ? 0x999999 : marker.color));
                 g.setColour(colour.withAlpha(marker.unifiedRegionID || marker.sourceRegionID ? 1.f : .45f));
                 if (marker.tempoBPM) {
                     const float dash[]{2.f, 3.f};
-                    g.drawDashedLine(Line<float>(x + pixel / 2, (float)ruler, x + pixel / 2, (float)getHeight()), dash, 2, pixel);
-                } else g.fillRect(x, (float)ruler, pixel, (float)getHeight() - ruler);
+                    g.drawDashedLine(Line<float>(x + pixel / 2, top, x + pixel / 2, (float)getHeight()), dash, 2, pixel);
+                } else g.fillRect(x, top, pixel, getHeight()-top);
             }
-            g.restoreState();
             if (song->tracks.empty()) {
                 g.setColour(theme::secondary);
                 g.setFont(theme::font(15));
@@ -1624,17 +1648,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             if (!safe)
                                 return;
                             auto &w = safe->t.w;
-                            if (result == 1 || result == 2)
-                                w.prompt(
-                                    result == 1 ? "Novo marcador" : String::fromUTF8("Nova seção"),
-                                    "Nome", result == 1 ? "Marcador" : String::fromUTF8("Seção"),
-                                    [safe, time, result](String name) {
-                                        if (safe)
-                                            safe->t.w.perform([&] {
-                                                safe->t.w.session.addMarker(name, time,
-                                                                            result == 2);
-                                            });
-                                    });
+                            if (result == 1) w.editMarker({}, time);
+                            if (result == 2)
+                                w.prompt(String::fromUTF8("Nova seção"), "Nome", String::fromUTF8("Seção"),
+                                    [safe, time](String name) { if (safe) safe->t.w.perform([&] {safe->t.w.session.addMarker(name, time, true);}); });
                             if (result == 3 || result == 4)
                                 w.perform([&] {
                                     w.session.command(result == 3 ? jaras::CommandKind::loopStart
@@ -1659,20 +1676,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         if (startTime >= p.startTime && startTime < p.endTime) {
                             if (e.mods.isPopupMenu()) {
                                 ++t.w.contextCount;
-                                t.w.prompt(
-                                    String::fromUTF8("Renomear região"), "Nome", text(p.name),
-                                    [safe = Component::SafePointer<Canvas>(this),
-                                     id = p.id](String name) {
-                                        if (safe)
-                                            safe->t.w.perform([&] {
-                                                safe->t.w.session.edit([&](jaras::Project &p) {
-                                                    for (auto &s : p.songs)
-                                                        for (auto &part : s.parts)
-                                                            if (part.id == id)
-                                                                part.name = utf8(name);
-                                                });
-                                            });
-                                    });
+                                t.w.editRegion(p.id);
                             } else
                                 t.w.perform([&] {
                                     t.w.session.command(t.w.session.transport().playing
@@ -1684,11 +1688,14 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         }
                 return;
             }
+            if (!e.mods.isPopupMenu() && !e.mods.isCtrlDown() && !e.mods.isShiftDown())
+                t.w.perform([&] { t.w.session.command(e.mods.isAltDown() ? jaras::CommandKind::subSeek : jaras::CommandKind::editSeek, {}, startTime); });
             int row = t.w.rowAt(e.y - ruler + t.w.verticalOffset);
             if (auto *s = t.w.session.song())
                 if (row >= 0 && row < (int)s->tracks.size()) {
                     auto &track = s->tracks[(size_t)row];
                     t.w.selectedTrack = track.id;
+                    t.invalidate();
                     for (const auto &c : track.clips)
                         if (startTime >= c.startTime && startTime < c.startTime + c.duration) {
                             t.w.selectedClip = c.id;
@@ -2023,10 +2030,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         });
     addAndMakeVisible(*tuner);
     addAndMakeVisible(tracksViewport);
-    keyboard = std::make_unique<MidiKeyboardComponent>(session.audio.keyboardState,
-                                                       MidiKeyboardComponent::horizontalKeyboard);
-    keyboard->setAvailableRange(24, 108);
-    keyboard->setKeyWidth(22);
+    keyboard = std::make_unique<FooterKeyboard>(session.audio.keyboardState, appearance);
     dockContent.addAndMakeVisible(*keyboard);
     keyboard->setVisible(false);
     tracksViewport.setViewedComponent(&tracksContent, false);
@@ -2062,7 +2066,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         .setTooltip("Diminuir zoom (-)");
     button("zoomIn", "+", [this] { timeline->zoomOnCursor(pixelsPerSecond * 1.3); })
         .setTooltip("Aumentar zoom (+)");
-    button("zoomFit", "Ajustar", [this] { timeline->fit(); }).setTooltip("Mostrar o projeto inteiro (F)");
+    button("zoomFit", "Ajustar", [this] { timeline->fit(); }).setTooltip("Mostrar o projeto inteiro");
     for (auto *label : std::initializer_list<Label *>{&songDisplay, &transportTime, &transportInfo, &footer, &tempo}) {
         addAndMakeVisible(*label);
         label->setFont(theme::font(11));
@@ -2233,6 +2237,13 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["video"]->setColour(TextButton::buttonColourId, Colour(0xffc44848));
     controls["loop"]->setColour(TextButton::buttonColourId, Colours::red.withAlpha(.45f));
     controls["loop"]->setColour(TextButton::buttonOnColourId, theme::yellow);
+    controls["subplay"]->setColour(TextButton::buttonOnColourId, theme::yellow);
+    controls["masterMute"]->setColour(TextButton::buttonOnColourId, Colour(0xffff4444));
+    controls["masterSolo"]->setColour(TextButton::buttonOnColourId, theme::yellow);
+    controls["metronome"]->setColour(TextButton::buttonOnColourId, theme::yellow);
+    controls["metronome"]->setColour(TextButton::textColourOffId, Colours::black);
+    controls["remote"]->setColour(TextButton::textColourOffId, Colours::black);
+    controls["record"]->setColour(TextButton::textColourOffId, theme::secondary);
     controls["record"]->setColour(TextButton::buttonColourId, Colours::red.withAlpha(.45f));
     controls["record"]->setButtonText("REC");
     for (auto spec : std::initializer_list<std::pair<const char *, const char *>>{
@@ -2380,6 +2391,12 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
             setResizable(true, false);
         }
         std::function<void()> onClose;
+        BorderSize<int> getBorderThickness() const override {
+            return getTitleBarHeight() == 0 ? BorderSize<int>(0) : DocumentWindow::getBorderThickness();
+        }
+        BorderSize<int> getContentComponentBorder() const override {
+            return getTitleBarHeight() == 0 ? BorderSize<int>(0) : DocumentWindow::getContentComponentBorder();
+        }
         bool keyPressed(const KeyPress &key) override {
             if (key.getKeyCode() == KeyPress::F4Key && key.getModifiers().isAltDown()) {
                 closeButtonPressed();
@@ -2396,13 +2413,15 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
         }
     };
     auto window = std::make_unique<PanelWindow>(name);
-    if (name == "Recados")
-        window->onClose = [this] { stage.clearNotice(); };
     panel->setSize(width, height);
     window->setContentOwned(panel.release(), true);
     window->setResizeLimits(name.startsWith("Piano Roll") ? 760 : 360,
                             name.startsWith("Piano Roll") ? 440 : 240, 3840, 2160);
     window->centreAroundComponent(this, width, height + 32);
+    window->onClose = [safe = SafePointer<Workspace>(this), name] {
+        if (safe && name == "Recados") safe->stage.clearNotice();
+        Timer::callAfterDelay(1, [safe] { if (safe) safe->updateState(); });
+    };
     window->setVisible(true);
     window->toFront(true);
     floatingWindows[name] = std::move(window);
@@ -2502,7 +2521,7 @@ void Workspace::resized() {
     const bool compactTransport = getWidth() < 1270, narrowTransport = getWidth() < 900;
     const int rail = 32, title = 32, transport = narrowTransport ? 166 : compactTransport ? 126 : 86;
     const int footerHeight = jlimit(narrowTransport ? 54 : 27, 161, footerHeightSetting);
-    const int dockHeight = (keyboardVisible ? 100 : 0) + mixerHeight + (partsVisible ? 180 : 0);
+    const int dockHeight = (keyboardVisible ? 108 : 0) + mixerHeight + (partsVisible ? 180 : 0);
     // Keep the timeline usable; scroll the lower panels at their original sizes
     // when the monitor cannot display all of them together.
     const int visibleDockHeight = std::min(dockHeight, std::max(0, getHeight() - title - transport - footerHeight - 128));
@@ -2665,13 +2684,17 @@ void Workspace::resized() {
     if (footerMixerVisible)
         footerMixer->refresh();
     controls["railMixer"]->setColour(TextButton::textColourOffId,
-                                     footerMixerVisible ? theme::green : Colours::white);
+                                     footerMixerVisible || (mixerDetached && floatingWindows.count("Mixer") && floatingWindows["Mixer"]->isVisible()) ? theme::green : Colours::white);
+    controls["railKeyboard"]->setColour(TextButton::textColourOffId, keyboardVisible ? theme::green : Colours::white);
+    controls["setlist"]->setColour(TextButton::buttonColourId, setlistVisible ? theme::green : theme::panel);
+    controls["setlist"]->setColour(TextButton::textColourOffId, setlistVisible ? Colours::black : Colours::white);
+    controls["mixer"]->setColour(TextButton::textColourOffId, mixerVisible ? theme::green : Colour(0xffc44545));
     partsPanel->setVisible(partsVisible);
     partsPanel->setBounds(0, mixerHeight, dockWidth, 180);
     controls["railSections"]->setColour(TextButton::textColourOffId,
                                         partsVisible ? theme::green : Colours::white);
     if (keyboardVisible)
-        keyboard->setBounds(0, mixerHeight + (partsVisible ? 180 : 0), dockWidth, 100);
+        keyboard->setBounds(0, mixerHeight + (partsVisible ? 180 : 0), dockWidth, 108);
     mixerDivider.setVisible(mixerVisible); setlistDivider.setVisible(setlistVisible);
     mixerDivider.setBounds(rail + left - 3, workspaceBounds.getY(), 6, workspaceBounds.getHeight());
     setlistDivider.setBounds(setlist->getX() - 3, workspaceBounds.getY(), 6, workspaceBounds.getHeight());
@@ -2769,7 +2792,11 @@ void Workspace::updateState() {
     const auto &t = session.transport();
     stage.observe(t);
     controls["preview"]->setToggleState(stage.preview, dontSendNotification);
-    controls["notices"]->setToggleState(stage.noticeActive(), dontSendNotification);
+    controls["notices"]->setToggleState(false, dontSendNotification);
+    const auto video = floatingWindows.find("Video");
+    controls["video"]->setToggleState(video != floatingWindows.end() && video->second->isVisible(), dontSendNotification);
+    const auto masterFX = session.project().masterFXJSON ? JSON::parse(text(*session.project().masterFXJSON)) : var();
+    controls["masterFX"]->setColour(TextButton::textColourOffId, list(get(masterFX, "inserted")).isEmpty() ? Colours::white : theme::green);
     for (int i = 1; i <= 2; ++i) {
         const auto found = floatingWindows.find("Teleprompter " + String(i));
         const bool visible = found != floatingWindows.end() && found->second->isVisible();
@@ -2788,7 +2815,7 @@ void Workspace::updateState() {
     controls["record"]->setToggleState(session.audio.isRecording(), dontSendNotification);
     controls["metronome"]->setToggleState(session.audio.metronomeEnabled.load(),
                                           dontSendNotification);
-    controls["record"]->setColour(TextButton::buttonOnColourId, Colour(0xffd95b5b));
+    controls["record"]->setColour(TextButton::buttonOnColourId, Colour(0xffff1f1f));
     controls["save"]->setButtonText(session.dirty ? "Salvar" : "Salvo");
     controls["save"]->getProperties().set("leadingIcon", session.dirty ? "save" : "check");
     controls["save"]->setColour(TextButton::buttonColourId,
@@ -2802,8 +2829,10 @@ void Workspace::updateState() {
     controls["masterMute"]->setToggleState(session.project().masterMute, dontSendNotification);
     controls["masterSolo"]->setToggleState(session.project().masterSolo, dontSendNotification);
     controls["masterMono"]->setToggleState(session.project().masterMono, dontSendNotification);
-    controls["masterMono"]->setButtonText(
-        session.project().masterMono ? "Mono" : String::fromUTF8("Estéreo"));
+    controls["masterMono"]->setButtonText(session.project().masterMono ? "" : String::fromUTF8("Estéreo"));
+    controls["masterMono"]->getProperties().set("icon", session.project().masterMono ? "mono" : "");
+    controls["masterMono"]->setColour(TextButton::textColourOnId, theme::green);
+    controls["masterMono"]->setColour(TextButton::buttonOnColourId, theme::display);
     if (auto *s = session.song()) {
         String selectedName = text(s->name);
         if (t.regionId)
@@ -2872,6 +2901,13 @@ void Workspace::updateLogin() {
     session.audio.instrumentAllowed = auth.allowed();
     bool show = !auth.allowed() && !session.inspection;
     if (show && !loginPanel) {
+        // Logging out returns ownership of keyboard/mouse input to the login view.
+        // Keep an in-flight account-switch form so it can display its server error.
+        for (auto *child : getChildren()) if (auto *sheet = dynamic_cast<ModalSheet *>(child)) {
+            bool loginSheet = false;
+            for (auto *content : sheet->getChildren()) loginSheet |= dynamic_cast<LoginPanel *>(content) != nullptr;
+            if (!loginSheet) sheet->exitModalState(0);
+        }
         loginPanel = std::make_unique<LoginBackdrop>(auth);
         addAndMakeVisible(*loginPanel);
         if (auto *window = findParentComponentOfClass<DocumentWindow>()) {
@@ -2886,8 +2922,11 @@ void Workspace::updateLogin() {
             showProjectBrowser();
         grabKeyboardFocus();
     }
-    if (auto *backdrop = dynamic_cast<LoginBackdrop *>(loginPanel.get()))
-        backdrop->panel.update();
+    if (auto *backdrop = dynamic_cast<LoginBackdrop *>(loginPanel.get())) backdrop->panel.update();
+    for (auto *child : getChildren()) if (auto *sheet = dynamic_cast<ModalSheet *>(child))
+        for (auto *content : sheet->getChildren()) if (auto *panel = dynamic_cast<LoginPanel *>(content)) {
+            panel->update();
+        }
     resized();
 }
 void Workspace::timerCallback() {
@@ -2918,7 +2957,7 @@ bool Workspace::keyPressed(const KeyPress &key) {
     if (session.inspection && logger)
         logger->logMessage("QA key=" + String(key.getKeyCode()) +
                            " mods=" + String(key.getModifiers().getRawFlags()));
-    if (key.getKeyCode() == KeyPress::F12Key) {
+    if (session.inspection && key.getKeyCode() == KeyPress::F12Key) {
         capture(File::getSpecialLocation(File::userApplicationDataDirectory)
                     .getChildFile("Hook Developer/CatLive/qa/current.png"));
         return true;
@@ -2930,6 +2969,7 @@ bool Workspace::keyPressed(const KeyPress &key) {
     auto *focused = Component::getCurrentlyFocusedComponent();
     if (dynamic_cast<TextEditor *>(focused))
         return retryEditorShortcut(key);
+    if (Component::getCurrentlyModalComponent() != nullptr) return false;
     const auto mods = key.getModifiers();
     int code = key.getKeyCode();
     // Windows may deliver Ctrl+A..Z through WM_CHAR as C0 characters (1..26).
@@ -2939,35 +2979,35 @@ bool Workspace::keyPressed(const KeyPress &key) {
     if (code >= 'a' && code <= 'z')
         code -= ('a' - 'A');
     const bool ctrl = mods.isCtrlDown(), shift = mods.isShiftDown(), alt = mods.isAltDown();
-    if (ctrl && code == 'Q') {
+    if (ctrl && !alt && !shift && code == 'Q') {
         JUCEApplication::getInstance()->systemRequestedQuit();
         return true;
     }
-    if (ctrl && code == 'N') {
+    if (ctrl && !alt && !shift && code == 'N') {
         ++shortcutCount;
         newProject();
         return true;
     }
-    if (ctrl && code == 'O') {
+    if (ctrl && !alt && !shift && code == 'O') {
         ++shortcutCount;
         chooseOpen();
         return true;
     }
-    if (ctrl && code == 'S') {
+    if (ctrl && !alt && code == 'S') {
         if (!projectReady || loginPanel)
             return false;
         ++shortcutCount;
         chooseSave(shift);
         return true;
     }
-    if (ctrl && code == 'I') {
+    if (ctrl && !alt && !shift && code == 'I') {
         if (!projectReady || loginPanel || browserVisible)
             return false;
         ++shortcutCount;
         chooseImport();
         return true;
     }
-    if (ctrl && code == ',') {
+    if (ctrl && !alt && !shift && code == ',') {
         ++shortcutCount;
         openSettings();
         return true;
@@ -2979,16 +3019,9 @@ bool Workspace::keyPressed(const KeyPress &key) {
         ++shortcutCount;
         return true;
     }
-    if (code == KeyPress::spaceKey) {
+    if (code == 'M' && !ctrl && !alt && shift) {
         ++shortcutCount;
-        perform([&] {
-            session.command(shift ? jaras::CommandKind::stopAll
-                            : alt ? (session.transport().subPlay.playing
-                                         ? jaras::CommandKind::subStop
-                                         : jaras::CommandKind::subPlay)
-                                  : (session.transport().playing ? jaras::CommandKind::stop
-                                                                 : jaras::CommandKind::play));
-        });
+        editMarker({}, session.transport().editPosition);
         return true;
     }
     if (code == KeyPress::escapeKey) {
@@ -2996,12 +3029,7 @@ bool Workspace::keyPressed(const KeyPress &key) {
         perform([&] { session.command(jaras::CommandKind::escape); });
         return true;
     }
-    if (ctrl && code == 'T') {
-        ++shortcutCount;
-        createTrack();
-        return true;
-    }
-    if (ctrl && code == 'Z') {
+    if (ctrl && !alt && code == 'Z') {
         ++shortcutCount;
         perform([&] {
             if (shift)
@@ -3009,49 +3037,6 @@ bool Workspace::keyPressed(const KeyPress &key) {
             else
                 session.undo();
         });
-        return true;
-    }
-    if (ctrl && code == 'Y') {
-        ++shortcutCount;
-        perform([&] { session.redo(); });
-        return true;
-    }
-    if (ctrl && (code == KeyPress::leftKey || code == KeyPress::rightKey)) {
-        ++shortcutCount;
-        perform([&] {
-            session.command(code == KeyPress::leftKey ? jaras::CommandKind::previous
-                                                      : jaras::CommandKind::next);
-        });
-        return true;
-    }
-    if (code == KeyPress::homeKey || code == KeyPress::endKey) {
-        ++shortcutCount;
-        perform([&] {
-            session.command(jaras::CommandKind::editSeek, {},
-                            code == KeyPress::homeKey ? 0
-                            : session.song()          ? session.song()->duration
-                                                      : 0);
-        });
-        return true;
-    }
-    if (code == 'L' && !ctrl) {
-        ++shortcutCount;
-        perform([&] { session.command(jaras::CommandKind::toggleLoop); });
-        return true;
-    }
-    if (code == 'P' && !ctrl) {
-        ++shortcutCount;
-        perform([&] { session.command(jaras::CommandKind::pause); });
-        return true;
-    }
-    if (code == 'M' && !ctrl && !selectedTrack.empty()) {
-        ++shortcutCount;
-        perform([&] { session.command(jaras::CommandKind::mute, selectedTrack); });
-        return true;
-    }
-    if (code == 'S' && !ctrl && !selectedTrack.empty()) {
-        ++shortcutCount;
-        perform([&] { session.command(jaras::CommandKind::solo, selectedTrack); });
         return true;
     }
     if (code == KeyPress::deleteKey || code == KeyPress::backspaceKey) {
@@ -3070,25 +3055,6 @@ bool Workspace::keyPressed(const KeyPress &key) {
                                 safe->selectedTrack.clear();
                             });
                     });
-        return true;
-    }
-    if (code == '+' || code == '=') {
-        ++shortcutCount;
-        timeline->zoomOnCursor(pixelsPerSecond * 1.2);
-        return true;
-    }
-    if (code == '-') {
-        ++shortcutCount;
-        timeline->zoomOnCursor(pixelsPerSecond / 1.2);
-        return true;
-    }
-    if (code == 'F' && !ctrl) {
-        ++shortcutCount;
-        timeline->fit();
-        return true;
-    }
-    if (code == KeyPress::F1Key) {
-        showShortcuts();
         return true;
     }
     return false;
@@ -3505,7 +3471,7 @@ void Workspace::openAudioSettings() {
                   },
                   [safe] {
                       if (safe)
-                          safe->showPanel("Login", std::make_unique<LoginPanel>(safe->auth), 440,
+                          safe->showPanel("Login", std::make_unique<LoginPanel>(safe->auth, false), 440,
                                           620);
                   }),
               940, 464);
@@ -3531,7 +3497,7 @@ void Workspace::openSettings() {
                   },
                   [safe] {
                       if (safe)
-                          safe->showPanel("Login", std::make_unique<LoginPanel>(safe->auth), 440,
+                          safe->showPanel("Login", std::make_unique<LoginPanel>(safe->auth, false), 440,
                                           620);
                   }),
               940, 464);
@@ -3543,7 +3509,7 @@ void Workspace::showShortcuts() {
     auto &editor = panel->editor(
         String::fromUTF8(
             "Espaço — Play / Stop\nShift+Espaço — Sub Play / Stop\n"
-            "Ctrl+Shift+Espaço — Parar tudo\nR — Repetição\n"
+            "R — Repetição\nShift+M — Criar marcador\n"
             "+ / − — Aumentar / diminuir BPM\nM / Shift+S — Mute / Solo da pista\n"
             "S — Dividir itens no cursor\nN — Normalizar item selecionado\n"
             "Q / [ — Início / fim do projeto\nA / D — Região anterior / próxima\n"
@@ -3552,9 +3518,9 @@ void Workspace::showShortcuts() {
             "Ctrl+N / O / S — Projetos / abrir / salvar\nCtrl+Shift+S — Salvar como\n"
             "Ctrl+I / Ctrl+T — Importar áudio / nova pista\n"
             "Ctrl+Z / Ctrl+Shift+Z — Desfazer / refazer\nDelete — Excluir item selecionado\n"
-            "F — Ajustar timeline\nCtrl+roda — Zoom horizontal\n"
-            "Shift+roda — Rolagem horizontal\nRoda — Rolagem vertical\n"
-            "Alt+clique na régua — Posicionar Sub Play\n"
+            "Roda sobre o grid — Zoom horizontal\n"
+            "Shift+roda — Rolagem horizontal\nRoda sobre as pistas — Rolagem vertical\n"
+            "Clique no grid — Posicionar cursor de edição\nAlt+clique — Posicionar Sub Play\n"
             "Ctrl+Enter — Aplicar texto / enviar recado\n"
             "Duplo clique no fader — Restaurar 0 dB / pan central\nAlt+F4 — Fechar"),
         24, 92, 650, 480);
@@ -3573,6 +3539,41 @@ void Workspace::createTrack() {
                                                    safe->showError(error);
                                            }),
         370, 246);
+}
+void Workspace::editRegion(ID id) {
+    if (!session.song()) return;
+    for (const auto &part : session.song()->parts) if (part.id == id) {
+        auto safe = SafePointer<Workspace>(this);
+        auto close = [safe] { if (safe) ModalSheet::dismiss(*safe); };
+        auto save = [safe, id, close](String name, unsigned colour, bool upper) {
+            if (safe) safe->perform([&] { safe->session.edit([&](jaras::Project &p) {
+                for (auto &song : p.songs) for (auto &part : song.parts) if (part.id == id) {
+                    part.name = utf8(name); part.color = colour; part.uppercaseName = upper;
+                }
+            }, false); close(); });
+        };
+        ModalSheet::open(*this, String::fromUTF8("Editar região"), std::make_unique<RegionEditor>(text(part.name), part.color.value_or(0x705264), part.uppercaseName.value_or(true), save, close), 300, 404);
+        return;
+    }
+}
+void Workspace::editMarker(ID id, double position) {
+    if (!session.song()) return;
+    jaras::TimelineMarker marker; marker.id = id.empty() ? uuid() : id;
+    marker.position = position; marker.color = 0x51ef93;
+    if (!id.empty() && session.song()->markers) for (const auto &m : *session.song()->markers) if (m.id == id) marker = m;
+    auto safe = SafePointer<Workspace>(this);
+    auto close = [safe] { if (safe) ModalSheet::dismiss(*safe); };
+    auto save = [safe, marker, songID = session.song()->id, close](String name, unsigned colour, bool) mutable {
+        marker.name = utf8(name); marker.color = colour;
+        if (safe) safe->perform([&] { safe->session.edit([&](jaras::Project &p) {
+            for (auto &song : p.songs) if (song.id == songID) {
+                if (!song.markers) song.markers.emplace();
+                auto it = std::find_if(song.markers->begin(), song.markers->end(), [&](const auto &m) { return m.id == marker.id; });
+                if (it == song.markers->end()) song.markers->push_back(marker); else *it = marker;
+            }
+        }); close(); });
+    };
+    ModalSheet::open(*this, String::fromUTF8("Editar marcador"), std::make_unique<RegionEditor>(text(marker.name), marker.color, false, save, close, false), 300, 370);
 }
 void Workspace::editTrack(ID id) {
     const auto *song = session.song();
@@ -3614,7 +3615,7 @@ void Workspace::editTrack(ID id) {
                      std::make_unique<RegionEditor>(text(track.name),
                                                     theme::track(track).getARGB() & 0xffffff, false,
                                                     save, close, false),
-                     300, 326);
+                     300, 370);
 }
 void Workspace::showTrackMenu(ID id, Point<int> point) {
     PopupMenu menu;
@@ -4183,6 +4184,7 @@ void Workspace::requestClose(std::function<void()> done) {
 }
 void Workspace::capture(const File &path) {
     path.getParentDirectory().createDirectory();
+    if (SystemStats::getEnvironmentVariable("CATLIVE_QA_NO_IMAGES", {}) != "1") {
     auto image = createComponentSnapshot(getLocalBounds(), true, 1);
     FileOutputStream stream(path);
     if (stream.openedOk()) {
@@ -4191,11 +4193,15 @@ void Workspace::capture(const File &path) {
         PNGImageFormat png;
         png.writeImageToStream(image, stream);
     }
+    }
     path.withFileExtension("json").replaceWithText(JSON::toString(diagnostics()));
 }
 var Workspace::diagnostics() const {
     auto value = object();
     put(value, "project", text(session.project().name));
+    put(value, "authAllowed", auth.allowed());
+    put(value, "authBusy", auth.busy);
+    put(value, "authMessage", auth.message);
     put(value, "missingMedia", var(session.audio.missingFiles));
     put(value, "audioUnderruns", (int64)session.audio.getUnderruns());
     put(value, "residentStreams", session.audio.residentStreams());
@@ -4203,6 +4209,9 @@ var Workspace::diagnostics() const {
     put(value, "audioPeak", session.audio.peak());
     put(value, "playing", session.transport().playing);
     put(value, "position", session.transport().position);
+    put(value, "selectedTrack", text(selectedTrack));
+    put(value, "keyboardVisible", keyboardVisible);
+    if (session.song()) put(value, "markerCount", session.song()->markers ? (int)session.song()->markers->size() : 0);
     put(value, "noticeActive", stage.noticeActive());
     put(value, "noticeText",
         stage.noticeText(stage.preferences.value("jaras.notices.appearance", object())));
@@ -4216,6 +4225,7 @@ var Workspace::diagnostics() const {
             auto item = object();
             put(item, "x", r.getX()); put(item, "y", r.getY());
             put(item, "width", r.getWidth()); put(item, "height", r.getHeight());
+            put(item, "enabled", component->isEnabled());
             if (auto *button = dynamic_cast<Button *>(component)) {
                 put(item, "label", button->getButtonText());
                 put(item, "selected", button->getToggleState());
@@ -4449,8 +4459,8 @@ void Workspace::runUIRegression() {
             w.timeline->scroll(300, 500);
             w.timeline->zoomAt(35, 300);
             w.setlist->scroll(6);
-            w.keyPressed(KeyPress(KeyPress::homeKey));
-            w.keyPressed(KeyPress('L'));
+            w.keyPressed(KeyPress('Q'));
+            w.keyPressed(KeyPress('R'));
             w.keyPressed(KeyPress(KeyPress::escapeKey));
             w.timeline->scroll(-100000, -100000);
             w.setlist->scroll(-10000);

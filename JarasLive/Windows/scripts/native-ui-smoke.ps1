@@ -496,9 +496,10 @@ try {
   if($stem.export.source -ne 4 -or $stem.export.jobs -ne 1){throw 'Item Export did not select the clicked stem.'}
   Key 0x1b
  }
+ $beforeUnmapped=Capture 'before-unmapped-f'
  Key 0x46
- $fit=Capture 'timeline-fit'
- if($fit.timeline.horizontal -ne 0 -or $fit.timeline.zoom -ge 2 -or $fit.timeline.zoom*1680 -gt $fit.timeline.width){throw 'Fit did not display the full 28-minute inspection timeline.'}
+ $afterUnmapped=Capture 'after-unmapped-f'
+ if($afterUnmapped.timeline.zoom -ne $beforeUnmapped.timeline.zoom){throw 'Unmapped F unexpectedly changed timeline zoom.'}
  [void][CatNativeUI]::SetForegroundWindow($handle)
  Click ($rect.Right-69) ($rect.Top+17)
  if(-not [CatNativeUI]::IsZoomed($handle)){throw 'Custom maximize button failed.'}
@@ -517,9 +518,13 @@ try {
  Start-Sleep -Milliseconds 250;$process.Refresh()
  if(-not $process.HasExited){
   $dialog=[Windows.Automation.AutomationElement]::FromHandle([CatNativeUI]::GetForegroundWindow())
-  $condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Descartar')
+  $condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Fechar sem salvar')
   $discard=$dialog.FindFirst([Windows.Automation.TreeScope]::Descendants,$condition)
   if($null -ne $discard){$discard.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()}
+  if($null -eq $discard){
+   $closeBounds=Rect $handle
+   Click ([int](($closeBounds.Left+$closeBounds.Right)/2)) ([int](($closeBounds.Top+$closeBounds.Bottom)/2+58))
+  }
   if(-not $process.WaitForExit(5000)){throw 'Custom close button did not finish the closing logo sequence.'}
  }
  @{success=$true;textOnly=[bool]$TextOnly;initial=$initial;small=$small;scroll=$scroll;keys=$keys} | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $OutputDirectory 'results.json') -Encoding utf8

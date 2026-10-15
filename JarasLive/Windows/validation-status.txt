@@ -1,3 +1,46 @@
+Current Mac-driven Windows validation — 2026-10-15, visual batch 4
+
+- Release 1.02 built on the user's Windows 11 PC: all 14 CTest suites passed,
+  45 integration scenarios passed, zero skipped, including the real SF2 fixture.
+- Interactive validation uses copies of GUILHERME CAMARGO 2026 v2 and existing
+  Stems for reading. Original SHA-256 remained unchanged. No synthetic project
+  was opened on the user's desktop during this batch.
+- Grid clicks move the edit cursor; selected tracks highlight their timeline
+  rows. Region boundaries cross the marker/tempo/ruler lanes below the region band.
+- Shift+M opens the marker editor. Name/color editors use the Mac palette,
+  compact dimensions, RGB controls and keyboard save/cancel. Marker creation,
+  undo, region editing/cancellation and track-selection highlights were checked.
+- Footer keyboard matches the 88-note A-1..C7 layout with 52 white keys,
+  proportional black keys, octave labels, Mac colors and mouse release handling.
+  Automated geometry checks cover multiple widths. Physical MIDI was not tested.
+- Fullscreen video and teleprompters fill the selected monitor without window
+  chrome or taskbar. Double-click enters/exits and Escape restores window bounds.
+  Removed the Import button from the video output; configuration stays in its menu.
+- Master Mono uses the overlapping-circle icon. Active/inactive transport,
+  mixer and panel button colors were aligned with the Mac source and inspected.
+- Removed unsupported legacy shortcuts; exact modifiers avoid accidental actions.
+  F12 diagnostics are restricted to inspection sessions.
+- Inter replaces Figtree. Font heights and widths are calibrated against the
+  Mac system font; Inter is an approximation, not Apple's exact San Francisco font.
+- Account buttons refresh during asynchronous operations. Login sheets receive
+  the result, preserve entered fields on failure and close after successful login.
+  Logout handles expired sessions and releases the device through the backend.
+- Private interactive account test passed login -> logout -> relogin, then two
+  normal launches restored the saved session. Renewed entitlement/device status
+  was active and the refreshed session persisted. Credentials were not captured
+  or included in source, packages or reports. An initial failed startup check was
+  investigated and is not counted as a passing result.
+- Normal-mode controls checked with the master muted: Mute/Solo/Mono, metronome,
+  Preview, keyboard, Play/Sub Play and Repeat. Test copies were discarded.
+- Fixed the CI close-dialog test to use the current Mac-equivalent button text.
+- Evidence: Documents/CatLive-Mac-Validation/evidence/batch4 on Windows.
+- Still a test candidate, not complete Mac parity or launch approval. Remaining
+  work includes nested/dense region-header details, global tempo behavior,
+  conditional/context states, external plugin hosting, CatStemSeparation 5 and
+  physical equipment validation. OS DPI remains unverified (monitor DPI was 96).
+
+Historical batch 3 record:
+
 Current Mac-driven Windows validation — 2026-10-15, visual batch 3
 
 - Release 1.02 built on the user's Windows 11 PC: all 14 CTest suites passed,

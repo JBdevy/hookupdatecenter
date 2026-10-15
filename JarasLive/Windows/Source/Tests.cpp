@@ -73,6 +73,21 @@ int runTests(const File &directory) {
             failed += name + ": " + String::fromUTF8(e.what()) + "\n";
         }
     };
+    test("Footer keyboard preserves the Mac 88-note range across window sizes", [&] {
+        MidiKeyboardState state;
+        Appearance appearance(directory.getChildFile("keyboard-appearance.json"));
+        FooterKeyboard keyboard(state, appearance);
+        for (int width : {600, 1200, 1920}) {
+            keyboard.setSize(width, 108);
+            expect(std::abs(keyboard.keyRect(21).getX() - 6) < .001f, "First note starts at padding");
+            expect(std::abs(keyboard.keyRect(108).getRight() - (width - 6)) < .001f, "C7 remains visible without scrolling");
+            const auto white = keyboard.keyRect(21), black = keyboard.keyRect(22);
+            expect(std::abs(white.getWidth() * 52 - (width - 12)) < .001f, "All 52 white keys fit");
+            expect(std::abs(black.getWidth() / white.getWidth() - .6f) < .001f, "Black key width matches Mac");
+            expect(std::abs(black.getHeight() / white.getHeight() - .63f) < .001f, "Black key height matches Mac");
+            expect(std::abs(black.getCentreX() - white.getRight()) < .001f, "Black key straddles white keys");
+        }
+    });
     test("Gain faders match the Mac decibel scale and preserve actual gain", [&] {
         GainFader fader;
         expect(std::abs(fader.valueToProportionOfLength(1) - 5. / 6.) < 1e-8, "0 dB at 83.33 percent");
@@ -196,10 +211,10 @@ int runTests(const File &directory) {
                "Independent drawer colour");
         auto regular = theme::font(13), bold = theme::font(13, true),
              italic = restored.setlistFont();
-        expect(regular.getTypefaceName() == "Figtree", "Embedded Figtree family loaded");
+        expect(regular.getTypefaceName() == "Inter", "Embedded Inter family loaded");
         expect(bold.getTypefaceStyle().containsIgnoreCase("Bold"), "Real embedded bold face");
         expect(italic.getTypefaceStyle().containsIgnoreCase("Italic"), "Real embedded italic face");
-        expect(std::abs(regular.getHeightInPoints() - 13.f) < .01f, "Reference font size is preserved before display DPI");
+        expect(std::abs(regular.getHeightInPoints() - 13.f * .9684564f) < .01f, "Font cap height is calibrated to the Mac reference before display DPI");
     });
     test("Timecode LTC physical route, Master bypass, spans and main-only playback", [&] {
         auto project = projectFixture();

@@ -9,7 +9,9 @@ class ModalSheet final : public Component {
         : heading(std::move(title)), content(std::move(contents)), preferredWidth(width),
           preferredHeight(height) {
         setName(heading);
-        headerHeight = heading == String::fromUTF8("Configurações") || heading == "Projetos" ? 76
+        const bool selfContained = (bool)content->getProperties()["selfContainedSheet"];
+        if (selfContained) content->setName(heading);
+        headerHeight = selfContained ? 0 : heading == String::fromUTF8("Configurações") || heading == "Projetos" ? 76
                        : heading == "Resolume"                                               ? 66
                                                                                              : 44;
         close.getProperties().set("textClose", heading == "Resolume");
@@ -17,6 +19,7 @@ class ModalSheet final : public Component {
         addAndMakeVisible(*content);
         content->setComponentEffect(&roundedBottom);
         addAndMakeVisible(close);
+        close.setVisible(!selfContained);
         close.onClick = [this] {
             if (!blocked)
                 exitModalState(0);
@@ -30,6 +33,7 @@ class ModalSheet final : public Component {
         DropShadow(Colours::black.withAlpha(.3f), 20, {0, 8}).drawForRectangle(g, frame);
         g.setColour(theme::background);
         g.fillRoundedRectangle(frame.toFloat(), 16);
+        if (headerHeight == 0) return;
         g.setColour(theme::line);
         g.drawHorizontalLine(frame.getY() + headerHeight - 1,
                              (float)frame.getX() + (heading == "Resolume" ? 24 : 0),

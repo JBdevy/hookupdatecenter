@@ -72,11 +72,13 @@ class MixerPanel final : public Component, private Timer {
             }
             mute.setColour(TextButton::buttonOnColourId, Colour(0xffff4444));
             solo.setColour(TextButton::buttonOnColourId, theme::yellow);
+            phase.setColour(TextButton::buttonOnColourId, theme::yellow);
+            record.setColour(TextButton::textColourOffId, Colour(0xffff4444));
             fx.onClick = [this] { mixer.openEffects(id); };
             mute.onClick = [this] { command(jaras::CommandKind::mute); };
             solo.onClick = [this] { command(jaras::CommandKind::solo); };
             phase.onClick = [this] { command(jaras::CommandKind::phase); };
-            record.setColour(TextButton::buttonOnColourId, Colour(0xffec4848));
+            record.setColour(TextButton::buttonOnColourId, Colour(0xffff1f1f));
             record.onClick = [this] {
                 try {
                     mixer.session.cycleRecordArm(id);
@@ -122,6 +124,8 @@ class MixerPanel final : public Component, private Timer {
                 record.setVisible(jaras::fixedTrackName(t->role).empty());
                 record.setButtonText(mixer.session.recordArm(id) == 2 ? "A" : "REC");
                 record.setToggleState(mixer.session.recordingArmed(id), dontSendNotification);
+                const auto settings = t->fxJSON ? JSON::parse(text(*t->fxJSON)) : var();
+                fx.setColour(TextButton::textColourOffId, list(get(settings, "inserted")).isEmpty() ? Colours::white : theme::green);
                 repaint();
             }
         }

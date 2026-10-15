@@ -9,6 +9,12 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.startNewSubPath(x1, y1);
         p.lineTo(x2, y2);
     };
+    if (name == "mono") {
+        const auto cx = bounds.getCentreX(), cy = bounds.getCentreY();
+        g.drawEllipse(cx - 9, cy - 5.5f, 11, 11, 1.3f);
+        g.drawEllipse(cx - 2, cy - 5.5f, 11, 11, 1.3f);
+        return true;
+    }
     if (name == "folder" || name == "folderOpen") {
         p.startNewSubPath(2, 7);
         p.lineTo(2, 4);

@@ -140,6 +140,8 @@ class RegionEditor final : public Component {
                  std::function<void(String, unsigned, bool)> save, std::function<void()> close,
                  bool allowUppercase = true)
         : commit(std::move(save)), cancel(std::move(close)), showsUppercase(allowUppercase) {
+        getProperties().set("selfContainedSheet", true);
+        name.setComponentID("nameColourName");
         addAndMakeVisible(name);
         name.setFont(theme::font(13));
         name.setText(value);
@@ -148,24 +150,27 @@ class RegionEditor final : public Component {
             addAndMakeVisible(rgb[i]);
             rgb[i].setRange(0, 255, 1);
             rgb[i].setSliderStyle(Slider::LinearHorizontal);
-            rgb[i].setTextBoxStyle(Slider::TextBoxRight, false, 36, 22);
+            rgb[i].setTextBoxStyle(Slider::NoTextBox, true, 0, 0);
+            rgb[i].setComponentID("nameColourRGB" + String(i));
             rgb[i].setColour(Slider::trackColourId, i == 0   ? Colour(0xffff5757)
                                                     : i == 1 ? Colour(0xff54dc79)
                                                              : Colour(0xff2796ff));
-            rgb[i].onValueChange = [this] { repaint(); };
+            rgb[i].onValueChange = [this] { setColourValue(colourValue()); };
         }
         setColourValue(colour);
-        const uint32 palette[]{0x000000, 0x404040, 0x808080, 0xbfbfbf, 0xffffff, 0xf44336,
-                               0xff7800, 0xffc300, 0xffed44, 0xc2df21, 0x70c83e, 0x00a967,
-                               0x00c59b, 0x00c1c2, 0x00a3d7, 0x2979ff, 0x5345d5, 0x7e42dd,
-                               0xb13cd3, 0xdc36b1, 0xff669c, 0xb24b5c, 0x996037, 0xc39563};
+        const uint32 palette[]{0x000000,0x414141,0x828282,0xbdbdbd,0xffffff,0xf44336,0xff6f00,0xffc107,
+            0xffeb3b,0xb9e229,0x70d14d,0x00a65a,0x00cfa0,0x00c9c9,0x00a3e0,0x287bff,
+            0x4a4ddb,0x7548dd,0xae40d6,0xe13db5,0xff6993,0xb84a56,0x9a613b,0xc7915e};
         for (auto c : palette) {
             auto *b = swatches.add(new TextButton());
             addAndMakeVisible(b);
             b->setColour(TextButton::buttonColourId, Colour(0xff000000u | c));
             b->getProperties().set("flat", true);
+            b->setComponentID("nameColourSwatch" + String(swatches.size()-1));
+            b->getProperties().set("colourSwatch", true);
             b->onClick = [this, c] { setColourValue(c); };
         }
+        setColourValue(colour);
         addAndMakeVisible(upper);
         upper.setVisible(showsUppercase);
         upper.setButtonText("Caixa alta");
@@ -176,6 +181,10 @@ class RegionEditor final : public Component {
         }
         saveButton.setColour(TextButton::buttonColourId, Colour(0xff63b641));
         cancelButton.setColour(TextButton::buttonColourId, Colour(0xff505050));
+        saveButton.setComponentID("nameColourSave"); cancelButton.setComponentID("nameColourCancel");
+        upper.setComponentID("nameColourUppercase");
+        name.onTextChange = [this] { saveButton.setEnabled(name.getText().trim().isNotEmpty()); };
+        saveButton.setEnabled(value.trim().isNotEmpty());
         cancelButton.onClick = cancel;
         saveButton.onClick = [this] {
             auto value = name.getText().trim();
@@ -184,30 +193,25 @@ class RegionEditor final : public Component {
         };
         name.onReturnKey = [this] { saveButton.triggerClick(); };
     }
+    void visibilityChanged() override { if (isShowing()) name.grabKeyboardFocus(); }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
+        g.setColour(Colours::white); g.setFont(theme::font(13,true));
+        g.drawText(getName(),18,18,getWidth()-36,18,Justification::centredLeft);
         g.setColour(Colour(0xff000000u | colourValue()));
-        g.fillRoundedRectangle(16, 46, getWidth() - 32.f, 28, 5);
-        g.setColour(Colours::white);
-        g.setFont(theme::font(13));
-        for (int i = 0; i < 3; ++i)
-            g.drawText(String::charToString("RGB"[i]), 18, 84 + i * 30, 16, 24,
-                       Justification::centredLeft);
+        g.fillRoundedRectangle(18,86,getWidth()-36.f,28,5);
+        g.setFont(theme::font(13)); g.setColour(Colours::white);
+        for(int i=0;i<3;++i) { g.drawText(String::charToString("RGB"[i]),18,128+i*30,14,20,Justification::centredLeft);
+            g.drawText(String((int)rgb[i].getValue()),getWidth()-48,128+i*30,30,20,Justification::centredRight); }
     }
-    bool keyPressed(const KeyPress &key) override {
-        if(key==KeyPress::returnKey){saveButton.triggerClick();return true;}
-        return false;
-    }
+    bool keyPressed(const KeyPress &key) override { if(key==KeyPress::returnKey){saveButton.triggerClick();return true;} return false; }
     void resized() override {
-        name.setBounds(16, 8, getWidth() - 32, 26);
-        for (int i = 0; i < 3; ++i)
-            rgb[i].setBounds(34, 84 + i * 30, getWidth() - 50, 24);
-        const int cell = (getWidth() - 32) / 8;
-        for (int i = 0; i < swatches.size(); ++i)
-            swatches[i]->setBounds(16 + i % 8 * cell, 178 + i / 8 * 34, cell - 5, 28);
-        upper.setBounds(14, 286, getWidth() - 28, 26);
-        cancelButton.setBounds(16, getHeight() - 38, 80, 25);
-        saveButton.setBounds(getWidth() - 80, getHeight() - 38, 64, 25);
+        name.setBounds(18,50,getWidth()-36,22);
+        for(int i=0;i<3;++i) rgb[i].setBounds(38,128+i*30,getWidth()-90,20);
+        const float cell=(getWidth()-36-42)/8.f;
+        for(int i=0;i<swatches.size();++i) swatches[i]->setBounds(roundToInt(18+(i%8)*(cell+6)),roundToInt(220+(i/8)*(cell+6)),roundToInt(cell),roundToInt(cell));
+        upper.setBounds(18,330,getWidth()-36,20);
+        cancelButton.setBounds(18,getHeight()-42,78,24); saveButton.setBounds(getWidth()-80,getHeight()-42,62,24);
     }
 
   private:
@@ -226,6 +230,7 @@ class RegionEditor final : public Component {
     void setColourValue(unsigned c) {
         for (int i = 0; i < 3; ++i)
             rgb[i].setValue((c >> (16 - i * 8)) & 255, dontSendNotification);
+        for(auto *swatch:swatches) swatch->getProperties().set("selectedColour", (swatch->findColour(TextButton::buttonColourId).getARGB() & 0xffffff)==c);
         repaint();
     }
 };

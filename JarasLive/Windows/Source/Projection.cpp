@@ -6,7 +6,7 @@ Projection::Projection(Session &value, String target, StageState *state)
     addAndMakeVisible(video);
     addAndMakeVisible(textView);
     addAndMakeVisible(status);
-    addAndMakeVisible(import);
+
     addAndMakeVisible(fontUp);
     addAndMakeVisible(fontDown);
     textView.setReadOnly(true);
@@ -15,10 +15,12 @@ Projection::Projection(Session &value, String target, StageState *state)
     textView.setFont(theme::font(textSize, true));
     textView.setColour(TextEditor::backgroundColourId, Colours::black);
     textView.setColour(TextEditor::outlineColourId, Colours::transparentBlack);
-    import.setVisible(role == "video");
+    setWantsKeyboardFocus(true);
+    video.addMouseListener(this, true);
+    textView.addMouseListener(this, true);
     fontUp.setVisible(role != "video" && !stage);
     fontDown.setVisible(role != "video" && !stage);
-    status.setVisible(!stage);
+    status.setVisible(!stage && role != "video");
     textView.setVisible(!stage);
     import.onClick = [this] { chooseMedia(); };
     fontUp.onClick = [this] {
@@ -57,6 +59,7 @@ void Projection::paint(Graphics &g) {
     }
 }
 juce::Rectangle<int> Projection::mediaBounds() const {
+    if (role == "video") return getLocalBounds();
     if (!stage)
         return getLocalBounds().withTrimmedTop(34);
     return getLocalBounds().reduced(8).withTrimmedTop(
@@ -66,31 +69,67 @@ void Projection::paintOverChildren(Graphics &g) {
     if (stage)
         paintStage(g);
 }
+void Projection::toggleFullScreen() {
+    if (auto *window = findParentComponentOfClass<DocumentWindow>()) {
+        if (presenting) {
+            presenting = false;
+            window->setAlwaysOnTop(windowedOnTop);
+            window->setResizable(true, false);
+            window->setDropShadowEnabled(true);
+            window->setTitleBarHeight(windowedTitleHeight);
+            window->setTitleBarButtonsRequired(DocumentWindow::allButtons, false);
+            window->setBounds(windowedBounds);
+            if (windowedMaximised) window->setFullScreen(true);
+        } else {
+            const auto *display = Desktop::getInstance().getDisplays().getDisplayForRect(window->getBounds());
+            if (!display) return;
+            const auto screen = display->totalArea;
+            windowedBounds = window->getBounds();
+            windowedTitleHeight = window->getTitleBarHeight();
+            windowedOnTop = window->isAlwaysOnTop();
+            windowedMaximised = window->isFullScreen();
+            if (windowedMaximised) window->setFullScreen(false);
+            presenting = true;
+            window->setResizable(false, false);
+            window->setDropShadowEnabled(false);
+            window->setTitleBarButtonsRequired(0, false);
+            window->setTitleBarHeight(0);
+            window->setAlwaysOnTop(true);
+            window->setBounds(screen);
+        }
+        window->toFront(true);
+        grabKeyboardFocus();
+    }
+}
+bool Projection::keyPressed(const KeyPress &key) {
+    if (key == KeyPress::escapeKey && presenting) {
+        toggleFullScreen(); return true;
+    }
+    return false;
+}
 void Projection::mouseDown(const MouseEvent &e) {
-    if (!stage || !e.mods.isPopupMenu())
-        return;
+    grabKeyboardFocus();
+    if (!e.mods.isPopupMenu()) return;
     PopupMenu menu;
-    menu.addItem(1, String::fromUTF8("Configurações"));
-    menu.addItem(2, "Tela cheia");
-    menu.addItem(3, "Retirar recado", stage->noticeActive());
+    if (stage) menu.addItem(1, String::fromUTF8("Configurações"));
+    else if (role == "video") {
+        PopupMenu settings;
+        settings.addItem(4, String::fromUTF8("Importar vídeo ou imagem…"));
+        menu.addSubMenu(String::fromUTF8("Configurações"), settings);
+    }
+    menu.addItem(2, presenting ? "Sair da tela cheia" : "Tela cheia");
+    if (stage) menu.addItem(3, "Retirar recado", stage->noticeActive());
     menu.showMenuAsync(PopupMenu::Options().withTargetComponent(this),
-                       [safe = SafePointer<Projection>(this)](int id) {
-                           if (!safe)
-                               return;
-                           if (id == 1 && safe->configure)
-                               safe->configure();
-                           if (id == 2)
-                               if (auto *window =
-                                       safe->findParentComponentOfClass<DocumentWindow>())
-                                   window->setFullScreen(!window->isFullScreen());
-                           if (id == 3)
-                               safe->stage->clearNotice();
-                       });
+        [safe = SafePointer<Projection>(this)](int id) {
+            if (!safe) return;
+            if (id == 1 && safe->configure) safe->configure();
+            if (id == 2) safe->toggleFullScreen();
+            if (id == 3 && safe->stage) safe->stage->clearNotice();
+            if (id == 4) safe->chooseMedia();
+        });
 }
 void Projection::mouseDoubleClick(const MouseEvent &e) {
-    if (stage && !e.mods.isPopupMenu())
-        if (auto *window = findParentComponentOfClass<DocumentWindow>())
-            window->setFullScreen(!window->isFullScreen());
+    if (!e.mods.isPopupMenu()) toggleFullScreen();
 }
 void Projection::timerCallback() {
     if (stage) {
