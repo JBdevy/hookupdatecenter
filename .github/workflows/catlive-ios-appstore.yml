@@ -11,7 +11,7 @@ on:
         type: string
         default: ''
       source_ref:
-        description: 'Commit exato do CatLive no repositório hookupdatecenter'
+        description: 'Commit exato do CatLive neste repositório'
         required: true
         type: string
     secrets:
@@ -51,7 +51,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: JBdevy/hookupdatecenter
           ref: ${{ inputs.source_ref }}
           persist-credentials: false
 
