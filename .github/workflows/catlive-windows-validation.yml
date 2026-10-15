@@ -1,0 +1,60 @@
+name: CatLive Windows - release validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/catlive-windows-release']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catlive-windows-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/CatLiveBuild/JUCE-8.0.15
+          key: catlive-juce-8.0.15-windows
+      - name: Prepare pinned JUCE
+        shell: pwsh
+        run: |
+          $juce = Join-Path $env:LOCALAPPDATA 'CatLiveBuild/JUCE-8.0.15'
+          if (-not (Test-Path (Join-Path $juce 'CMakeLists.txt'))) {
+            git clone --depth 1 --branch 8.0.15 https://github.com/juce-framework/JUCE.git $juce
+            if ($LASTEXITCODE) { throw 'JUCE checkout failed.' }
+          }
+      - name: Build and test candidate
+        shell: pwsh
+        run: ./JarasLive/Windows/build.ps1 -Version 1.02 -BuildDirectory "$env:RUNNER_TEMP/catlive-windows" -Installer
+      - name: Capture and exercise native interface
+        shell: pwsh
+        run: |
+          ./JarasLive/Windows/scripts/native-ui-smoke.ps1 -Executable "$env:RUNNER_TEMP/catlive-windows/CatLive_artefacts/Release/CatLive.exe" -OutputDirectory "$env:RUNNER_TEMP/catlive-windows/qa"
+      - name: Retain diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-validation-evidence
+          path: |
+            ${{ runner.temp }}/catlive-windows/test-results/
+            ${{ runner.temp }}/catlive-windows/qa/
+            ${{ runner.temp }}/catlive-windows/Testing/Temporary/
+          if-no-files-found: warn
+      - name: Retain candidate for Windows testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-1.02-Windows-candidate
+          path: |
+            ${{ runner.temp }}/catlive-windows/package/CatLive-*-Windows-x64.zip
+            ${{ runner.temp }}/catlive-windows/installer/Catlive-*.exe
+          if-no-files-found: error

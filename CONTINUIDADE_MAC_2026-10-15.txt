@@ -1,0 +1,128 @@
+CATLIVE — PRIMEIRA VALIDAÇÃO LOCAL NO MAC
+15/10/2026
+
+Este registro complementa RESUMO_CATLIVE_PARA_CODEX_MAC.txt.
+As alterações abaixo estão locais. Não houve push, publicação, instalação
+sobre o CatLive distribuído nem nova execução do workflow remoto.
+
+ERRO MAIS RECENTE DO GITHUB ACTIONS
+
+Execução conferida:
+https://github.com/JBdevy/hookupdatecenter/actions/runs/38753932077
+Commit: 8a374d9b6dc13e619112ec440fa9448abcfac579
+Windows aprovado; Mac interrompido em AudioRenderTests.swift:1299:
+"Timecode track meter reads real stereo LTC independently of Master".
+
+Causa reproduzida localmente: um atraso superior ao limiar de 80 ms provoca
+o reajuste do relógio do gerador. configurePosition limpa seu pico nativo
+antes de updateTimecode transferi-lo ao medidor. O PCM LTC existe, mas a
+leitura pode desaparecer. A suíte original passou neste Mac; introduzir um
+atraso de 120 ms no mesmo ponto reproduziu exatamente a falha do Actions.
+
+Correção em JarasLive/Apple/Shared/StemAudioPlayback.swift:
+- Consumir o pico já renderizado antes de reajustar o relógio.
+- Descartar também picos pendentes no banco ao sair de LTC ativo, evitando
+  que um valor antigo reapareça após mudar para MTC, pausar ou silenciar.
+- Mantidos o limiar original do teste e a geração do sinal.
+
+REGIÕES UNIFICADAS
+
+A suíte de áudio passou em 44,1 e 48 kHz, incluindo:
+- Entrada pela agulha dentro de B: B toca e a cauda de A é excluída.
+- Entrada contínua por A: a cauda de A continua ao chegar a B.
+- Pausa/retomada preserva a origem; seek manual redefine a origem.
+- Arredondamento do início de B não elimina seus áudios.
+- Ignore Next cancela/restaura as vozes previamente agendadas.
+- Sub Play e sua promoção preservam a origem correspondente.
+
+Também passaram as suítes C++ PlaybackScope, RegionBoundaryOwnership e
+RegionOnsetOwnership. Isso não resolve por si só a pendência, já citada no
+resumo do Windows, de filtrar as sequências MIDI gerais das pistas no Mac:
+updateMIDISequenceClocks ainda usa os planos completos. Os testes de PCM
+acima validam os arquivos de áudio; não apresentar como aprovação de todos
+os caminhos de instrumentos MIDI ou plugins externos.
+
+TIMECODE VALIDADO NO MAC
+
+TimecodeSignalTests.swift agora decodifica o PCM real, sem usar o codificador
+do produto para calcular os campos esperados. Passaram 48 combinações:
+24, 25, 29,97 DF e 30 fps; 44,1/48 kHz; seis posições iniciais/seek.
+Verificações: intervalos dos pulsos, palavras de 80 bits, BCD, horário
+absoluto, progressão quadro a quadro, flag DF, saltos de numeração DF,
+viradas de minuto/dez minutos/hora/dia, paridade e igualdade L/R.
+
+O teste também recebeu tráfego real em um destino CoreMIDI virtual nas
+quatro taxas: endereço Full Frame, conteúdo dos oito Quarter Frames,
+progressão entre dois ciclos, timestamps, parada e ausência de fallback
+para outro destino quando o selecionado está ausente.
+
+AudioRenderTests.swift cobre ainda início/fim e extensão do item, offset,
+ganho/fase, independência do Master, override por item, mute e exclusão.
+Foram acrescentadas regressões para o atraso do medidor, limpeza de picos
+pendentes na troca LTC/MTC e entrada numa filha de região unificada:
+o timecode mantém a origem da região pai e só acompanha o transporte
+principal; o Sub Play não duplica nem substitui esse sinal.
+
+Referências do protocolo usadas na verificação:
+https://pub.smpte.org/doc/st12-1/20140220-pub/st0012-1-2014.pdf
+https://midi.org/midi-time-code
+
+Isso valida geração e recepção em software. Interface física, cabeamento,
+nível analógico, latência de hardware e sincronismo com console externo
+ainda precisam de teste no equipamento de destino.
+
+DIFERENÇA IMPORTANTE NO WINDOWS
+
+O Windows tem envio MTC específico para grandMA2 em Source/Lighting.cpp.
+Porém, Source/AudioEngine.cpp ainda não integra um gerador de pista LTC/MTC
+equivalente ao JarasTimecodeGenerator do Mac. Preservar as configurações e
+os itens no documento não significa que essa pista gere sinal no Windows.
+Essa é uma pendência funcional, separada da aparência e do MTC do grandMA2.
+
+VALIDAÇÃO CONCLUÍDA
+
+- bash JarasLive/scripts/test-audio.sh: aprovado em 44,1 e 48 kHz.
+- bash JarasLive/scripts/test-timecode-signal.sh: aprovado.
+- bash JarasLive/scripts/test-timecode.sh: aprovado.
+- Suítes C++ PlaybackScope, RegionBoundaryOwnership, RegionOnsetOwnership:
+  aprovadas, compiladas diretamente com clang++.
+- swift test --jobs 4 --scratch-path /tmp/catlive-mac-validation-swift:
+  673 testes, cinco ignorados, zero falhas. Os ignorados exigem fixtures
+  externas: Logic real, intercâmbio Windows/CI, RPP de cliente, MP3 específico
+  e projeto VS Hook real.
+- node scripts/test-catlive-desktop-release.cjs: aprovado.
+- Git diff --check, considerando os CRLF trazidos do Windows: aprovado.
+
+O workflow local foi atualizado para executar também test-timecode.sh e
+test-timecode-signal.sh após test-audio.sh. O Actions remoto continua com
+o resultado antigo até que essas alterações sejam enviadas e executadas.
+
+Logs desta sessão em /tmp (temporários):
+catlive-actions-latest.log
+catlive-audio-delayed-before.log
+catlive-audio-final.log
+catlive-timecode-final.log
+catlive-swift-tests.log
+catlive-mac-core-validation/results.log
+
+CONTINUIDADE DA INTERFACE WINDOWS
+
+A interface Windows ainda não foi alterada nesta rodada, que priorizou
+o bloqueio do Actions e a verificação de áudio/timecode solicitada.
+A referência visual continua em Downloads/CatLive_Referencia_2026-10-15.zip.
+
+Primeiros pontos confirmados no código para a próxima rodada:
+- Workspace.cpp desenha o cabeçalho do item com M e nome; faltam controles
+  equivalentes a FX, fase, pan e ganho do Mac e a revisão das alturas.
+- A waveform atual é esticada pelo comprimento do item. Rever offset,
+  playbackRate e loop antes de implementar/cachear as ausentes dos imports.
+- Session.cpp prepara overview em importAudio e gravação, mas isso não
+  completa o caminho das importações REAPER/Logic descrito no resumo anterior.
+- Completar o gerador da pista Timecode Windows e sua configuração.
+- Manter a validação interativa e de build no Windows; o alvo atual exige
+  Windows x64/MSVC e não executa diretamente no Mac.
+
+Os arquivos que já apareciam modificados ao receber a pasta apresentavam
+diferenças de finais de linha, além de .DS_Store e do resumo não rastreado.
+Essas alterações preexistentes foram preservadas. Não usar git add -A para
+publicar este trabalho indiscriminadamente.

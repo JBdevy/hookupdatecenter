@@ -1,0 +1,42 @@
+CATLIVE WINDOWS — PREPARAÇÃO PARA 19/10/2026
+
+Requisito do usuário: concluir pendências funcionais e reproduzir fielmente
+o Mac, incluindo fonte/pesos/tamanhos, botões, espaçamentos, cores, menus,
+responsividade e escala. Não considerar mera presença de controles como
+paridade funcional ou visual.
+
+Estado inicial: versão funcional, ainda incompleta. Não liberada.
+O usuário pode testar no Windows, mas não terá equipamentos físicos para
+validar áudio/MIDI/OSC/grandMA2/Resolume antes da data prevista.
+
+CRITÉRIOS DE CONCLUSÃO
+[ ] Build Windows e CTest completos, com fixture SF2 real.
+[ ] Codec Mac/Windows preserva projetos, mídias e campos desconhecidos.
+[ ] Gerador de pista Timecode LTC/MTC, configurações e roteamento.
+[ ] Waveforms assíncronas de importações, cache, offsets, rate e loops.
+[ ] Cabeçalhos e menus dos itens: M, FX, fase, pan, ganho, rerender/unificar.
+[ ] Plugins externos e preservação de estado/automação.
+[ ] CatStem funcional e modelo/runtime distribuível.
+[ ] Congelar/descongelar MIDI e edição de multiloops/presets de mixer.
+[ ] Automação Read/Write/Touch/Latch e parâmetros de efeitos.
+[ ] Tuner ao vivo, MIDI em mudanças de pitch e latência/compensação.
+[ ] Advanced rerender/vídeo e estilos TP/recados conectados.
+[ ] Remote: projeto recente, exclusão de região, peak reset e preview TP.
+[ ] Todas as 137 referências revistas, diferenças corrigidas e capturas salvas.
+[ ] Fontes/metrics/pesos conferidos; sem achatamento para caber no botão.
+[ ] Resoluções 1280x720, 1366x768, 1920x1080 e 2560x1440.
+[ ] Escalas 100%, 125%, 150% e 200%; painéis pequenos com scroll alcançável.
+[ ] Exportação longa, cancelamento, seleções e requisitos de mídia.
+[ ] Login/licença: trial, login, offline, revogação, gerenciamento de aparelhos.
+[ ] Instalação e atualização Windows 10 e 11; assinatura do instalador.
+[ ] Testes interativos do usuário no Windows.
+[ ] Publicação conjunta aprovada, Mac universal e troca real de fixtures.
+
+EVIDÊNCIA E LIMITES
+- Correção local do medidor LTC e regressões Mac documentadas em
+  ../../CONTINUIDADE_MAC_2026-10-15.txt.
+- Workflow catlive-windows-validation.yml gera um candidato e capturas
+  sem publicar release. Resultado válido somente após execução concluída.
+- Testes virtuais não aprovam equipamentos físicos. Essa cobertura permanece
+  explicitamente não realizada enquanto não houver evidência externa.
+- Registrar cada item concluído com testes/capturas; não marcar listas em lote.
