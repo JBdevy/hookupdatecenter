@@ -280,6 +280,7 @@ void Session::publishTransport() {
     const auto &t = transport();
     AudioEngine::State state;
     state.position = t.position;
+    state.timecodePreferred = audio.timecodePreferred(t.regionId);
     state.playing = t.playing;
     state.subPosition = t.subPlay.position;
     state.subPlaying = t.subPlay.playing;

@@ -133,8 +133,10 @@ class CreateTrackPanel final : public Component {
                                     track.inputPatch =
                                         jaras::OutputPatch{1, std::min(2, inputChannels)};
                             }
-                            if (kind == "timecode")
+                            if (kind == "timecode") {
                                 track.timecode = jaras::TimecodeSettings{};
+                                track.patch = jaras::OutputPatch{-1, 2};
+                            }
                             if (kind == "generatedClick") {
                                 track.color = 0xffff00;
                                 for (const auto &region : song.parts)

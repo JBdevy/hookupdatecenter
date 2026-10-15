@@ -954,7 +954,7 @@ class Workspace::TrackRow final : public Component {
         folder.onClick = [this] { w.toggleGroup(id); };
         output.onClick = [this] {
             Workspace::showPanel(
-                "Patch",
+                track() && track()->role.id == "timecode" ? "Timecode" : "Patch",
                 std::make_unique<PatchPanel>(w.session, id,
                                              [safe = SafePointer<Workspace>(&w)](String error) {
                                                  if (safe)

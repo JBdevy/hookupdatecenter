@@ -19,6 +19,7 @@ AudioEngine::AudioEngine() {
     readAhead.startThread(Thread::Priority::high);
 }
 AudioEngine::~AudioEngine() {
+    timecodeMIDI.stop();
     devices.removeMidiInputDeviceCallback({}, this);
     stopRecording();
     closeDevice();
@@ -123,6 +124,7 @@ String AudioEngine::openDevice() {
     return error;
 }
 void AudioEngine::closeDevice() {
+    timecodeMIDI.stop();
     if (attached)
         devices.removeAudioCallback(this);
     attached = false;
@@ -225,6 +227,9 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     unsupported.clear();
     duration = song.duration;
     metronome.prepare(song);
+    timecodeProgram = {};
+    timecodeMIDI.prepare({}, song.duration, false);
+    timecodeGain = 1;
     current = {};
     playing = false;
     subPlaying = false;
@@ -254,6 +259,11 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
         for (const auto &track : song.tracks) {
             auto bus = std::make_unique<Bus>();
             bus->id = track.id;
+            bus->timecode = track.role.id == "timecode";
+            if (bus->timecode) {
+                timecodeProgram = jaras::TimecodeProgram(song, track);
+                timecodeMIDI.prepare(timecodeProgram, song.duration, track.mute);
+            }
             bus->volume = (float)track.volume;
             bus->pan = (float)track.pan;
             bus->mute = track.mute;
@@ -450,6 +460,8 @@ void AudioEngine::transport(const State &state) {
     u.kind = Update::transport;
     u.state = state;
     enqueue(u);
+    timecodeMIDI.transport(state.position, state.playing, state.loop, state.loopStart,
+        state.loopEnd, state.end, state.timecodePreferred, attached && !exportCapture);
 }
 void AudioEngine::setMixer(const jaras::Project &project, const jaras::Song &song) {
     Update u;
@@ -465,6 +477,7 @@ void AudioEngine::setMixer(const jaras::Project &project, const jaras::Song &son
     for (size_t i = 0; i < buses.size(); ++i)
         for (const auto &t : song.tracks)
             if (t.id == buses[i]->id) {
+                if (buses[i]->timecode) timecodeMIDI.mute(t.mute);
                 u = {};
                 u.kind = Update::mixer;
                 u.index = (int)i;
@@ -707,6 +720,21 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                             out[channel][done + n] += sample;
                     }
                 }
+            if (head == 0 && !timecodeProgram.spans.empty()) {
+                const auto* span = timecodeProgram.at(cursor, current.timecodePreferred, 2);
+                for (auto& bus : buses) if (bus->timecode && !bus->mute) {
+                    const float target = bus->volume * (bus->phase ? -1.f : 1.f);
+                    const float smoothing = float(1 - std::exp(-1.0 / (sr * .01)));
+                    for (int n = 0; n < count; ++n) {
+                        const double at = cursor + n / sr;
+                        if (!span || at >= span->end) span = timecodeProgram.at(at, current.timecodePreferred, 2);
+                        if (!span || at < span->start || span->muted || span->settings.mode != "ltc") continue;
+                        timecodeGain += (target - timecodeGain) * smoothing;
+                        const auto value = timecodeWaveform.sample(span->time(at), span->settings.frameRate) * timecodeGain;
+                        for (int ch = 0; ch < 2; ++ch) bus->buffer.addSample(ch, done + n, value);
+                    }
+                }
+            }
             for (int n = 0; n < count; ++n)
                 timelinePositions[(size_t)head][(size_t)(done + n)] = cursor + n / sr;
             cursor += (double)count / sr;
@@ -739,6 +767,14 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     };
     for (int index : busOrder) {
         auto &bus = *buses[(size_t)index];
+        if (bus.timecode) {
+            // LTC is a direct physical route, independent of Master gain,
+            // track solo, pan, FX, sends and the secondary playback head.
+            const float peak = bus.mute ? 0.f : bus.buffer.getMagnitude(0, samples);
+            bus.peak.store(peak, std::memory_order_relaxed);
+            if (!bus.mute && !masterSolo) for (const auto& patch : bus.outputs) routeHardware(bus.buffer, patch);
+            continue;
+        }
         bus.midiMessages.clear();
         if (bus.midiSlot >= 1 && bus.midiSlot <= 3)
             bus.midiMessages.addEvents(slotMessages[bus.midiSlot - 1], 0, samples, 0);

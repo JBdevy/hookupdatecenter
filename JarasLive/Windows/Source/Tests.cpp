@@ -116,6 +116,47 @@ int runTests(const File &directory) {
         expect(italic.getTypefaceStyle().containsIgnoreCase("Italic"), "Real embedded italic face");
         expect(std::abs(regular.getHeightInPoints() - 11.7f) < .01f, "Compact font size uses point metrics");
     });
+    test("Timecode LTC physical route, Master bypass, spans and main-only playback", [&] {
+        auto project = projectFixture();
+        auto& song = project.songs[0]; song.duration = 10;
+        song.parts = {{uuid(), "Clock", 1, 2}};
+        jaras::Track track; track.id = uuid(); track.name = "Timecode"; track.role.id = "timecode";
+        track.timecode = jaras::TimecodeSettings{}; track.timecode->mode = "ltc"; track.timecode->offset = 3600;
+        track.outputs = std::vector<jaras::OutputPatch>{{3, 2}};
+        song.tracks = {track}; jaras::synchronizeTimecode(project);
+        auto& item = song.tracks[0].clips[0]; item.startTime = .5; item.duration = 2;
+        project.masterMute = true; project.masterVolume = 0;
+        for (double rate : {44100., 48000.}) {
+            AudioEngine engine; engine.prepareOffline(rate); engine.prepareSong(song, directory, {}, &project);
+            AudioEngine::State state; state.playing = true;
+            state.scope[0].minimum = 100; // A child's stem ownership cannot mask generated LTC.
+            AudioBuffer<float> pcm(4, 512);
+            auto render = [&](double position) {
+                state.position = position; engine.transport(state);
+                engine.render(pcm.getArrayOfWritePointers(), 4, 512);
+                return pcm.getMagnitude(2, 0, 512);
+            };
+            expect(render(.3) == 0, "LTC starts at its item, not at its positive offset");
+            expect(render(.75) > .2f, "Extended LTC item emits before original region");
+            expect(pcm.getMagnitude(0,0,512) == 0 && pcm.getMagnitude(1,0,512) == 0, "LTC uses the selected physical pair");
+            for (int n=0;n<512;++n) expect(pcm.getSample(2,n) == pcm.getSample(3,n), "Stereo LTC matches on both channels");
+            expect(render(2.25) > .2f, "LTC continues through extended right edge");
+            expect(render(2.6) == 0, "LTC ends at item boundary");
+            state.subPlaying = true; state.subPosition = .75;
+            expect(render(.75) <= .251f, "Sub Play does not double timecode");
+            state.playing = false;
+            expect(render(.75) == 0, "Sub Play alone never emits timecode");
+            state.playing = true; song.tracks[0].mute = true; engine.setMixer(project,song);
+            expect(render(.75) == 0 && engine.trackPeak(track.id) == 0, "Mute stops LTC and resets its meter");
+            song.tracks[0].mute = false; engine.setMixer(project,song);
+            expect(render(.75) > .2f, "Unmute restores LTC");
+        }
+        song.tracks[0].timecode->mode = "mtc";
+        AudioEngine midiOnly; midiOnly.prepareOffline(48000); midiOnly.prepareSong(song,directory,{},&project);
+        AudioEngine::State state; state.playing = true; state.position = .75; midiOnly.transport(state);
+        AudioBuffer<float> pcm(4,512); midiOnly.render(pcm.getArrayOfWritePointers(),4,512);
+        expect(pcm.getMagnitude(0,512) == 0, "MTC generates no audio");
+    });
     test("Encrypted project round trip and authenticated tamper rejection", [&] {
         auto p = projectFixture();
         auto root = ProjectCodec::encode(p);

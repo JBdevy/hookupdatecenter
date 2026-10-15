@@ -8,6 +8,7 @@
 #include "ClickProgram.h"
 #include "MIDIPlayback.h"
 #include "TrackCapture.h"
+#include "TimecodeMIDI.h"
 namespace catlive {
 class ClipAudio;
 // Prepared readers, buffers and routing live outside the device callback.
@@ -18,6 +19,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         bool playing = false, subPlaying = false, loop = false;
         double loopStart = 0, loopEnd = 0;
         jaras::PlaybackScope scope[2];
+        int timecodePreferred = -1;
         double end = std::numeric_limits<double>::infinity();
     };
     AudioEngine();
@@ -46,6 +48,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void prepareSong(const jaras::Song &, const File &directory, const var &masterSettings = {},
                      const jaras::Project *project = nullptr);
     void transport(const State &);
+    int timecodePreferred(const std::optional<ID>& region) const { return timecodeProgram.preferred(region); }
     void setMixer(const jaras::Project &, const jaras::Song &);
     void setOffline(bool enabled);
     void prepareOffline(double sampleRate) {
@@ -156,6 +159,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         AutomationProgram automation;
         var settings;
         std::unique_ptr<ClickProgram> click;
+        bool timecode = false;
         std::vector<PlaybackNote> midiNotes;
         std::unique_ptr<MIDIPlayback> midi;
         MidiBuffer midiMessages;
@@ -175,6 +179,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     AudioBuffer<float> readScratch[2]{{2, 131080}, {2, 131080}};
     AudioBuffer<float> liveRecordBuffer{2, 4096};
     std::array<std::array<double, 4096>, 2> timelinePositions{};
+    jaras::TimecodeProgram timecodeProgram;
+    jaras::LTCWaveform timecodeWaveform;
+    TimecodeMIDI timecodeMIDI;
+    float timecodeGain = 1;
     ClickProgram metronome;
     var metronomeSettings;
     int metronomeMode = 0, metronomeOutput = 1, metronomeChannels = 2;

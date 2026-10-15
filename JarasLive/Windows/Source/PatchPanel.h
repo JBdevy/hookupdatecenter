@@ -81,11 +81,90 @@ class PatchPanel final : public Component {
         b->getProperties().set("flat", true);
         b->onClick = std::move(clicked);
     }
+    void buildTimecode(const jaras::Track& t) {
+        const auto settings = t.timecode.value_or(jaras::TimecodeSettings{});
+        for (int i = 0; i < 2; ++i) {
+            auto* mode = new TextButton(i == 0 ? "MTC" : "LTC");
+            fields.add(mode); content.addAndMakeVisible(mode);
+            mode->setBounds(i * 150, 8, 148, 28);
+            mode->setToggleState(settings.mode == (i == 0 ? "mtc" : "ltc"), dontSendNotification);
+            mode->onClick = [this, i] { edit([&](auto& track) {
+                auto next = track.timecode.value_or(jaras::TimecodeSettings{});
+                next.mode = i == 0 ? "mtc" : "ltc"; track.timecode = next;
+            }); };
+        }
+        label("Taxa de quadros", 0, 48, 140);
+        const std::array<double, 4> rates{24, 25, 29.97, 30};
+        int selected = 4;
+        for (int i = 0; i < 4; ++i) if (rates[(size_t)i] == settings.frameRate) selected = i + 1;
+        choice(152, 48, 148, {"24 fps", "25 fps", "29.97 DF", "30 fps"}, selected,
+            [this, rates](int index) { edit([&](auto& track) {
+                auto next = track.timecode.value_or(jaras::TimecodeSettings{});
+                next.frameRate = rates[(size_t)jlimit(0, 3, index - 1)]; track.timecode = next;
+            }); });
+        auto* relative = new ToggleButton(String::fromUTF8("Iniciar do zero em cada região"));
+        fields.add(relative); content.addAndMakeVisible(relative);
+        relative->setBounds(0, 88, 300, 26);
+        relative->setToggleState(settings.regionRelative, dontSendNotification);
+        relative->onClick = [this, relative] { const bool value = relative->getToggleState(); edit([&](auto& track) {
+            auto next = track.timecode.value_or(jaras::TimecodeSettings{}); next.regionRelative = value; track.timecode = next;
+        }); };
+        label("Offset (s)", 0, 126, 140);
+        auto* offset = new TextEditor(); fields.add(offset); content.addAndMakeVisible(offset);
+        offset->setBounds(220, 126, 80, 26); offset->setFont(theme::font(12));
+        offset->setText(String(settings.offset, 3)); offset->setInputRestrictions(18, "0123456789-.,");
+        auto saveOffset = [this, offset] {
+            const auto value = offset->getText().replaceCharacter(',', '.').trim();
+            const double seconds = value.getDoubleValue();
+            if (value.isEmpty() || !std::isfinite(seconds)) return;
+            edit([&](auto& track) { auto next = track.timecode.value_or(jaras::TimecodeSettings{});
+                next.offset = seconds; track.timecode = next; });
+        };
+        offset->onReturnKey = saveOffset;
+        // Rebuilding on focus loss would delete the control being clicked.
+        button("Aplicar", 220, 160, 80, saveOffset);
+        if (settings.mode == "mtc") {
+            label("Saída MIDI", 0, 198, 300);
+            StringArray names{"Nenhuma"}; std::vector<int> ids{0};
+            for (const auto& port : MidiOutput::getAvailableDevices()) {
+                names.add(port.name); ids.push_back(TimecodeMIDI::destinationID(port.identifier));
+            }
+            int selectedPort = 1;
+            for (size_t i = 0; i < ids.size(); ++i) if (ids[i] == settings.midiDestination) selectedPort = (int)i + 1;
+            if (settings.midiDestination != 0 && selectedPort == 1) {
+                names.add(String::fromUTF8("Indisponível")); ids.push_back(settings.midiDestination); selectedPort = (int)ids.size();
+            }
+            choice(0, 228, 300, names, selectedPort, [this, ids](int n) { edit([&](auto& track) {
+                auto next = track.timecode.value_or(jaras::TimecodeSettings{});
+                next.midiDestination = ids[(size_t)jlimit(0, (int)ids.size()-1, n-1)]; track.timecode = next;
+            }); });
+        } else {
+            label("Saída de áudio", 0, 198, 300);
+            StringArray names{"Nenhuma"}; std::vector<jaras::OutputPatch> patches{{-1, 2}};
+            auto* device = session.audio.devices.getCurrentAudioDevice();
+            const int channels = std::max(2, device ? device->getOutputChannelNames().size() : 2);
+            for (int i = 1; i <= channels; ++i) { names.add("Out " + String(i)); patches.push_back({i, 1}); }
+            for (int i = 1; i < channels; i += 2) { names.add("Out " + String(i) + " / " + String(i+1)); patches.push_back({i, 2}); }
+            const auto outputs = t.outputPatches();
+            const auto current = outputs.empty() ? jaras::OutputPatch{-1, 2} : outputs.front();
+            int selectedOutput = 1;
+            for (size_t i = 0; i < patches.size(); ++i)
+                if (patches[i].firstChannel == current.firstChannel && patches[i].channelCount == current.channelCount) selectedOutput = (int)i + 1;
+            if (current.firstChannel > channels) { names.add(String::fromUTF8("Indisponível · Out ") + String(current.firstChannel));
+                patches.push_back(current); selectedOutput = (int)patches.size(); }
+            choice(0, 228, 300, names, selectedOutput, [this, patches](int n) { edit([&](auto& track) {
+                track.outputs = std::vector<jaras::OutputPatch>{patches[(size_t)jlimit(0, (int)patches.size()-1, n-1)]};
+                track.patch.reset(); track.secondaryPatch.reset();
+            }); });
+        }
+        height = 280; resized();
+    }
     void build() {
         fields.clear();
         const auto *t = track();
         if (!t)
             return;
+        if (t->role.id == "timecode") { buildTimecode(*t); return; }
         auto *device = session.audio.devices.getCurrentAudioDevice();
         label(device ? device->getName() : String::fromUTF8("Áudio não iniciado"), 0, 8, 300);
         StringArray inputs{"Nenhum"};
