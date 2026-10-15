@@ -98,8 +98,8 @@ class Workspace final : public Component,
     bool browserVisible = false, projectReady = false;
     juce::Rectangle<int> editorWindowBounds;
     std::unique_ptr<MidiKeyboardComponent> keyboard;
-    Viewport tracksViewport;
-    Component tracksContent;
+    Viewport tracksViewport, dockViewport;
+    Component tracksContent, dockContent;
     OwnedArray<TrackRow> rows;
     OwnedArray<TextButton> buttons;
     std::map<String, std::unique_ptr<DocumentWindow>> floatingWindows;

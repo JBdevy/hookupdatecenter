@@ -40,3 +40,15 @@ EVIDÊNCIA E LIMITES
 - Testes virtuais não aprovam equipamentos físicos. Essa cobertura permanece
   explicitamente não realizada enquanto não houver evidência externa.
 - Registrar cada item concluído com testes/capturas; não marcar listas em lote.
+
+ATUALIZAÇÃO — LOTE VISUAL 1, 15/10/2026
+Acesso remoto Windows operacional. Build 1.02 isolado e 14 CTest aprovados no
+Windows 11; smoke completo da interface aprovado. Corrigidos tamanho lógico
+das fontes, ícones/cores dos botões, distribuição responsiva do transporte,
+rodapé estreito, limites da janela e rolagem dos painéis inferiores.
+Matriz visual: 5 tamanhos de janela, escalas internas 125/150/200%, 13 abas.
+Monitor físico 1440x900 / 96 DPI. Escala interna não substitui teste do DPI do SO.
+O lote não encerra a comparação das 137 referências. Ainda revisar menus e
+estados condicionais, além de Mixer/Setlist/Parts simultâneos abaixo de 900 px
+lógicos. Testes de equipamentos e assinatura/publicação continuam pendentes.
+Correção do desktop virtual do Actions preparada; aguardar execução do commit.

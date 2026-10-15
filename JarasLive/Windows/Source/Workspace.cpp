@@ -24,6 +24,7 @@
 #include "MIDIEditorPanel.h"
 #include "RemotePanel.h"
 #include "RemotePresentation.h"
+#include "DesktopLayout.h"
 #include <BinaryData.h>
 #include <fstream>
 #include <windows.h>
@@ -138,11 +139,12 @@ void MacLook::drawButtonBackground(Graphics &g, Button &b, const Colour &colour,
         g.drawRoundedRectangle(r.reduced(2.5f), (r.getHeight() - 5) * .5f, 1);
         return;
     }
+    const float radius = (float)b.getProperties().getWithDefault("cornerRadius", 4.f);
     g.setColour(tint);
-    g.fillRoundedRectangle(r, 4);
+    g.fillRoundedRectangle(r, radius);
     if (!plain && !(bool)b.getProperties().getWithDefault("flat", false)) {
         g.setColour(b.getToggleState() ? tint.brighter(.25f) : Colours::white.withAlpha(.45f));
-        g.drawRoundedRectangle(r, 4, .8f);
+        g.drawRoundedRectangle(r, radius, .8f);
     }
 }
 void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
@@ -152,6 +154,24 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
             .withMultipliedAlpha(b.isEnabled() ? 1.0f : .35f));
     const auto icon = b.getProperties().getWithDefault("icon", {}).toString();
     const auto leading = b.getProperties().getWithDefault("leadingIcon", {}).toString();
+    if (leading.isNotEmpty() && (bool)b.getProperties()["centredIconLabel"]) {
+        const auto label = b.getButtonText();
+        const auto font = g.getCurrentFont();
+        const float textWidth = GlyphArrangement::getStringWidth(font, label);
+        const bool compact = b.getWidth() < 56;
+        const float padding = compact ? 2.f : 6.f, gapSize = compact ? 2.f : 4.f;
+        const float available = std::max(0.f, b.getWidth() - padding);
+        const float scale = jlimit(.75f, 1.f, available / std::max(1.f, textWidth + 12.f + gapSize));
+        const float iconSize = 12.f * scale, gap = gapSize * scale;
+        const float labelWidth = std::max(0.f, std::min(textWidth * scale,
+                                                      available - iconSize - gap));
+        const float x = (b.getWidth() - iconSize - gap - labelWidth) * .5f;
+        drawInterfaceIcon(g, leading, {x, (b.getHeight() - iconSize) * .5f, iconSize, iconSize});
+        g.setFont(font.withPointHeight(font.getHeightInPoints() * scale));
+        g.drawText(label, juce::Rectangle<float>(x + iconSize + gap, 0, labelWidth,
+                                           (float)b.getHeight()), Justification::centredLeft, false);
+        return;
+    }
     if (leading.isNotEmpty()) {
         drawInterfaceIcon(g, leading, {10, (b.getHeight() - 16) * .5f, 16, 16});
         auto label = b.getButtonText();
@@ -174,7 +194,7 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
         drawInterfaceIcon(g, icon, b.getLocalBounds().toFloat().withSizeKeepingCentre(17, 17)))
         return;
     g.drawFittedText(b.getButtonText(), b.getLocalBounds().reduced(3, 0), Justification::centred,
-                     1);
+                     1, .75f);
 }
 void MacLook::drawToggleButton(Graphics &g, ToggleButton &button, bool over, bool down) {
     const float alpha = button.isEnabled() ? 1.f : .35f;
@@ -809,14 +829,15 @@ class Workspace::Caption final : public Component {
         auto project = text(w.session.project().name) + (w.session.dirty ? " *" : "");
         g.setColour(Colours::white.withAlpha(.9f));
         g.setFont(theme::semiboldFont(11));
+        const int accessWidth = std::min(440, std::max(80, getWidth() - 504));
         g.drawFittedText(project + String::fromUTF8(" - ") +
                              (w.session.document == File() ? String(String::fromUTF8("Não salvo"))
                                                            : saved.formatted("%d/%m/%Y %H:%M")),
-                         14, 0, std::max(180, getWidth() / 2 - 230), getHeight(),
-                         Justification::centredLeft, 1);
+                         14, 0, std::max(0, (getWidth() - accessWidth) / 2 - 28), getHeight(),
+                         Justification::centredLeft, 1, .75f);
         g.setColour(theme::green);
-        g.drawFittedText(w.auth.title, getWidth() / 2 - 220, 0, 440, getHeight(),
-                         Justification::centred, 1);
+        g.drawFittedText(w.auth.title, (getWidth() - accessWidth) / 2, 0, accessWidth, getHeight(),
+                         Justification::centred, 1, .75f);
     }
     void resized() override {
         auto x = getWidth() - 88;
@@ -1906,6 +1927,7 @@ TextButton &Workspace::button(String id, const String &title, std::function<void
     controls[id] = b;
     b->setComponentID(id);
     b->getProperties().set("fontSize", 10);
+    b->getProperties().set("cornerRadius", 6.f);
     b->setWantsKeyboardFocus(false);
     b->setColour(TextButton::buttonColourId, colour.isTransparent() ? theme::panel : colour);
     b->onClick = [this, action] { perform(action); };
@@ -1964,10 +1986,15 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
             repaint();
         },
         [this](String error) { showError(error); });
-    addChildComponent(*footerMixer);
+    addAndMakeVisible(dockViewport);
+    dockViewport.setViewedComponent(&dockContent, false);
+    dockViewport.setScrollBarsShown(true, false);
+    dockViewport.setScrollBarThickness(10);
+    dockViewport.setScrollOnDragMode(Viewport::ScrollOnDragMode::never);
+    dockContent.addChildComponent(*footerMixer);
     partsPanel =
         std::make_unique<PartsPanel>(session, [this](String message) { showError(message); });
-    addChildComponent(*partsPanel);
+    dockContent.addChildComponent(*partsPanel);
     partsSidebar =
         std::make_unique<PartsPanel>(session, [this](String message) { showError(message); }, true);
     addChildComponent(*partsSidebar);
@@ -1999,7 +2026,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
                                                        MidiKeyboardComponent::horizontalKeyboard);
     keyboard->setAvailableRange(24, 108);
     keyboard->setKeyWidth(22);
-    addAndMakeVisible(*keyboard);
+    dockContent.addAndMakeVisible(*keyboard);
     keyboard->setVisible(false);
     tracksViewport.setViewedComponent(&tracksContent, false);
     tracksViewport.setScrollBarsShown(false, false);
@@ -2049,23 +2076,23 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     footer.setColour(Label::textColourId, theme::secondary);
     tempo.setJustificationType(Justification::centred);
     button(
-        "play", String::fromUTF8("▶  Play"),
+        "play", "Play",
         [this] {
             session.command(session.transport().playing ? jaras::CommandKind::stop
                                                         : jaras::CommandKind::play);
         },
-        Colour(0xff294f36))
+        theme::green.withAlpha(.45f))
         .setTooltip(String::fromUTF8("Play / Stop · Espaço"));
     button("pause", String::fromUTF8("Ⅱ"), [this] {
         session.command(jaras::CommandKind::pause);
     }).setTooltip(String::fromUTF8("Pause · P"));
     button(
-        "subplay", String::fromUTF8("▶  Sub Play"),
+        "subplay", "Sub Play",
         [this] {
             session.command(session.transport().subPlay.playing ? jaras::CommandKind::subStop
                                                                 : jaras::CommandKind::subPlay);
         },
-        Colour(0xff5e542a))
+        theme::yellow.withAlpha(.45f))
         .setTooltip(
             String::fromUTF8("Sub Play · Shift+Espaço | Alt+clique posiciona o cursor amarelo"));
     button("stopall", String::fromUTF8("■"), [this] {
@@ -2219,7 +2246,17 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["setlist"]->setColour(TextButton::buttonColourId, theme::green);
     controls["setlist"]->setColour(TextButton::textColourOffId, Colours::black);
     controls["video"]->setColour(TextButton::buttonColourId, Colour(0xffc44848));
-    controls["record"]->setButtonText(String::fromUTF8("◎  REC"));
+    controls["loop"]->setColour(TextButton::buttonColourId, Colours::red.withAlpha(.45f));
+    controls["loop"]->setColour(TextButton::buttonOnColourId, theme::yellow);
+    controls["record"]->setColour(TextButton::buttonColourId, Colours::red.withAlpha(.45f));
+    controls["record"]->setButtonText("REC");
+    for (auto spec : std::initializer_list<std::pair<const char *, const char *>>{
+             {"play", "play"}, {"subplay", "play"}, {"record", "record"},
+             {"tp1", "teleprompter"}, {"tp2", "teleprompter"}, {"notices", "notice"},
+             {"video", "video"}, {"remote", "remote"}, {"save", "save"}}) {
+        controls[spec.first]->getProperties().set("leadingIcon", spec.second);
+        controls[spec.first]->getProperties().set("centredIconLabel", true);
+    }
     addTrack.setButtonText("Add");
     addTrack.getProperties().set("flat", true);
     addTrack.setColour(TextButton::textColourOffId, theme::green);
@@ -2280,6 +2317,7 @@ Workspace::~Workspace() {
     auth.changed = {};
     tracksViewport.removeMouseListener(this);
     tracksViewport.setViewedComponent(nullptr, false);
+    dockViewport.setViewedComponent(nullptr, false);
     setLookAndFeel(nullptr);
     LookAndFeel::setDefaultLookAndFeel(nullptr);
 }
@@ -2379,10 +2417,14 @@ void Workspace::paint(Graphics &g) {
     g.fillRect(footerBounds);
     {
         auto area = footerBounds;
+        const bool stacked = footerBounds.getHeight() > 27;
+        auto statusArea = stacked ? area.removeFromTop(27) : area;
         const auto &state = session.transport();
-        auto cpu = area.removeFromLeft(155),
-             device = area.removeFromRight(getWidth() < 1400 ? 230 : 300);
-        area.removeFromLeft(210);
+        auto cpu = statusArea.removeFromLeft(155),
+             device = statusArea.removeFromRight(getWidth() < 1400 ? 230 : 300);
+        statusArea.removeFromLeft(210);
+        if (!stacked)
+            area = statusArea;
         auto total = area.removeFromRight(120), queued = area.removeFromRight(area.getWidth() / 2);
         auto next = area;
         g.setColour(theme::line);
@@ -2460,8 +2502,14 @@ void Workspace::paint(Graphics &g) {
 }
 void Workspace::resized() {
     const int mixerHeight = footerMixerVisible ? jlimit(240, 410, (int)(getHeight() * .4)) : 0;
-    const int rail = 32, title = 32, transport = 86,
-              bottom = 27 + (keyboardVisible ? 100 : 0) + mixerHeight + (partsVisible ? 180 : 0);
+    const bool compactTransport = getWidth() < 1270, narrowTransport = getWidth() < 900;
+    const int rail = 32, title = 32, transport = narrowTransport ? 166 : compactTransport ? 126 : 86;
+    const int footerHeight = narrowTransport ? 54 : 27;
+    const int dockHeight = (keyboardVisible ? 100 : 0) + mixerHeight + (partsVisible ? 180 : 0);
+    // Keep the timeline usable; scroll the lower panels at their original sizes
+    // when the monitor cannot display all of them together.
+    const int visibleDockHeight = std::min(dockHeight, std::max(0, getHeight() - title - transport - footerHeight - 128));
+    const int bottom = footerHeight + visibleDockHeight;
     caption->setBounds(0, 0, getWidth(), title);
     const bool editorVisible = !browserVisible && !loginPanel;
     for (auto *child : getChildren()) {
@@ -2487,12 +2535,13 @@ void Workspace::resized() {
     if (!editorVisible)
         return;
     transportBounds = {rail, title, getWidth() - rail, transport};
-    footerBounds = {rail, getHeight() - 27, getWidth() - rail, 27};
+    footerBounds = {rail, getHeight() - footerHeight, getWidth() - rail, footerHeight};
     workspaceBounds = {rail, title + transport, getWidth() - rail,
                        std::max(1, getHeight() - title - transport - bottom)};
-    const int right = setlistVisible ? setlistWidth : 0, left = mixerVisible ? mixerWidth : 0;
+    const int right = setlistVisible ? std::min(setlistWidth, std::max(270, getWidth() / 3)) : 0;
+    const int left = mixerVisible ? mixerWidth : 0;
     const int sectionsWidth =
-        partsListVisible ? jlimit(200, 360, (int)(workspaceBounds.getWidth() * .22)) : 0;
+        partsListVisible ? jlimit(160, 360, (int)(workspaceBounds.getWidth() * .22)) : 0;
     // The master is independent of track mixer visibility, as in the Mac transport.
     masterVolume.setBounds(64, 86, 196, 20);
     masterPan.setBounds(136, 45, 42, 25);
@@ -2508,9 +2557,12 @@ void Workspace::resized() {
                                                                          {"grandma2", 72},
                                                                          {"advanced", 68}}) {
         topRight -= spec.second;
-        controls[spec.first]->setBounds(topRight, 39, spec.second, 26);
+        controls[spec.first]->setBounds(topRight, narrowTransport ? 119 : 39, spec.second, 26);
         topRight -= 5;
     }
+    const int toolsLeft = topRight + 5;
+    if (narrowTransport)
+        topRight = edge;
     topRight -= 124;
     tuner->setBounds(topRight, 39, 120, 26);
     topRight -= 5;
@@ -2532,24 +2584,36 @@ void Workspace::resized() {
         {"notices", buttonWidth, 1}, {"preview", buttonWidth, 1},
         {"video", buttonWidth, 1}, {"remote", buttonWidth, 1},
         {"save", buttonWidth, 1}, {"setlist", buttonWidth, 1}};
-    float naturalWidth = 0;
-    for (const auto &item : items) naturalWidth += item.width;
-    const float available = (float)(edge - start - 15 * 5);
-    const float fit = std::min(1.f, available / naturalWidth);
-    const float extra = std::max(0.f, available - naturalWidth) / 13.f;
-    float x = (float)start;
-    for (const auto &item : items) {
-        const int leftEdge = roundToInt(x);
-        x += item.width * fit + item.stretch * extra;
-        const int width = roundToInt(x) - leftEdge;
-        if (String(item.id) == "tempo")
-            tempoControl->setBounds(leftEdge, 71, width, 43);
-        else if (String(item.id) == "timer")
-            stageTimer->setBounds(leftEdge, 71, width, 43);
-        else
-            controls[item.id]->setBounds(leftEdge, String(item.id) == "metronome" ? 75 : 80,
-                                          width, String(item.id) == "metronome" ? 35 : 26);
-        x += 5;
+    const auto layoutRow = [&](int begin, int end, int rowStart, int y) {
+        float natural = 0, stretch = 0;
+        for (int i = begin; i < end; ++i) { natural += items[i].width; stretch += items[i].stretch; }
+        const float available = (float)(edge - rowStart - (end - begin - 1) * 5);
+        const float fit = std::min(1.f, available / natural);
+        const float extra = std::max(0.f, available - natural) / std::max(1.f, stretch);
+        float x = (float)rowStart;
+        for (int i = begin; i < end; ++i) {
+            const auto &item = items[i];
+            const int leftEdge = roundToInt(x);
+            x += item.width * fit + item.stretch * extra;
+            const int width = roundToInt(x) - leftEdge;
+            if (String(item.id) == "tempo")
+                tempoControl->setBounds(leftEdge, y - 9, width, 43);
+            else if (String(item.id) == "timer")
+                stageTimer->setBounds(leftEdge, y - 9, width, 43);
+            else
+                controls[item.id]->setBounds(leftEdge, String(item.id) == "metronome" ? y - 5 : y,
+                                              width, String(item.id) == "metronome" ? 35 : 26);
+            x += 5;
+        }
+    };
+    layoutRow(0, narrowTransport ? 6 : compactTransport ? 8 : 16, start, 80);
+    if (compactTransport)
+        layoutRow(8, 16, narrowTransport ? 40 : start, narrowTransport ? 160 : 120);
+    if (narrowTransport) {
+        const int available = std::max(1, toolsLeft - 40 - 13);
+        const int tempoWidth = roundToInt(available * 171.f / 328.f);
+        tempoControl->setBounds(40, 111, tempoWidth, 43);
+        stageTimer->setBounds(45 + tempoWidth, 111, available - tempoWidth, 43);
     }
     tempo.setVisible(false);
     // Commands not present in the Mac transport remain available through menus/shortcuts.
@@ -2595,19 +2659,21 @@ void Workspace::resized() {
     footer.setVisible(false);
     keyboard->setVisible(keyboardVisible);
     footerMixer->setVisible(footerMixerVisible);
-    footerMixer->setBounds(rail, getHeight() - bottom, getWidth() - rail, mixerHeight);
+    dockViewport.setVisible(dockHeight > 0);
+    dockViewport.setBounds(rail, getHeight() - bottom, getWidth() - rail, visibleDockHeight);
+    const int dockWidth = getWidth() - rail - (dockHeight > visibleDockHeight ? 10 : 0);
+    dockContent.setSize(dockWidth, dockHeight);
+    footerMixer->setBounds(0, 0, dockWidth, mixerHeight);
     if (footerMixerVisible)
         footerMixer->refresh();
     controls["railMixer"]->setColour(TextButton::textColourOffId,
                                      footerMixerVisible ? theme::green : Colours::white);
     partsPanel->setVisible(partsVisible);
-    partsPanel->setBounds(rail,
-                          getHeight() - 27 - (keyboardVisible ? 100 : 0) - (partsVisible ? 180 : 0),
-                          getWidth() - rail, 180);
+    partsPanel->setBounds(0, mixerHeight, dockWidth, 180);
     controls["railSections"]->setColour(TextButton::textColourOffId,
                                         partsVisible ? theme::green : Colours::white);
     if (keyboardVisible)
-        keyboard->setBounds(rail, getHeight() - 127, getWidth() - rail, 100);
+        keyboard->setBounds(0, mixerHeight + (partsVisible ? 180 : 0), dockWidth, 100);
     for (auto *child : getChildren())
         if (dynamic_cast<ModalSheet *>(child))
             child->toFront(false);
@@ -2704,8 +2770,9 @@ void Workspace::updateState() {
         controls[i == 1 ? "railTeleprompt" : "railTeleprompt2"]->setColour(
             TextButton::textColourOffId, visible ? theme::green : Colour(0xffff5555));
     }
-    controls["play"]->setButtonText(t.playing ? String::fromUTF8("■  Stop")
-                                              : String::fromUTF8("▶  Play"));
+    controls["play"]->setButtonText(t.playing ? "Stop" : "Play");
+    controls["play"]->getProperties().set("leadingIcon", t.playing ? "stopall" : "play");
+    controls["subplay"]->getProperties().set("leadingIcon", t.subPlay.playing ? "pause" : "play");
     controls["play"]->setToggleState(t.playing, dontSendNotification);
     controls["subplay"]->setToggleState(t.subPlay.playing, dontSendNotification);
     controls["subplay"]->setEnabled(t.playing);
@@ -2715,7 +2782,12 @@ void Workspace::updateState() {
     controls["metronome"]->setToggleState(session.audio.metronomeEnabled.load(),
                                           dontSendNotification);
     controls["record"]->setColour(TextButton::buttonOnColourId, Colour(0xffd95b5b));
-    controls["save"]->setButtonText(session.dirty ? "Salvar *" : String::fromUTF8("✓  Salvo"));
+    controls["save"]->setButtonText(session.dirty ? "Salvar" : "Salvo");
+    controls["save"]->getProperties().set("leadingIcon", session.dirty ? "save" : "check");
+    controls["save"]->setColour(TextButton::buttonColourId,
+                                session.dirty ? theme::green.withAlpha(.16f) : theme::panel);
+    controls["save"]->setColour(TextButton::textColourOffId,
+                                session.dirty ? theme::green : theme::secondary);
     controls["railUndo"]->setEnabled(session.canUndo());
     controls["railRedo"]->setEnabled(session.canRedo());
     masterVolume.setValue(session.project().masterVolume, dontSendNotification);
@@ -3095,8 +3167,7 @@ void Workspace::showProjectBrowser() {
     browserVisible = true;
     projectBrowser->refresh();
     if (auto *window = findParentComponentOfClass<DocumentWindow>()) {
-        window->setResizeLimits(600, 492, 7680, 4320);
-        window->centreWithSize(600, 492);
+        fitProjectBrowserWindow(*window);
     }
     resized();
     repaint();
@@ -3111,14 +3182,7 @@ void Workspace::projectOpened(bool fitTimeline) {
     if (session.document.existsAsFile())
         RecentProjects::remember(session.document);
     if (auto *window = findParentComponentOfClass<DocumentWindow>()) {
-        window->setResizeLimits(1280, 720, 7680, 4320);
-        if (!editorWindowBounds.isEmpty())
-            window->setBounds(editorWindowBounds);
-        else {
-            auto area = Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
-            window->centreWithSize(std::max(1280, std::min(1680, area.getWidth() - 16)),
-                                   std::max(720, std::min(1020, area.getHeight() - 16)));
-        }
+        fitEditorWindow(*window, editorWindowBounds);
     }
     resized();
     if (fitTimeline)
@@ -4113,9 +4177,30 @@ var Workspace::diagnostics() const {
     put(value, "noticeText",
         stage.noticeText(stage.preferences.value("jaras.notices.appearance", object())));
     Array<var> modalNames;
+    auto modalControls = object();
+    const auto collectModalControls = [&](const auto &self, Component *component) -> void {
+        if (!component->isVisible())
+            return;
+        if (component->getComponentID().isNotEmpty()) {
+            const auto r = getLocalArea(component, component->getLocalBounds());
+            auto item = object();
+            put(item, "x", r.getX()); put(item, "y", r.getY());
+            put(item, "width", r.getWidth()); put(item, "height", r.getHeight());
+            if (auto *button = dynamic_cast<Button *>(component)) {
+                put(item, "label", button->getButtonText());
+                put(item, "selected", button->getToggleState());
+            }
+            put(modalControls, Identifier(component->getComponentID()), item);
+        }
+        for (auto *child : component->getChildren())
+            self(self, child);
+    };
     for (auto *child : getChildren())
-        if (auto *sheet = dynamic_cast<ModalSheet *>(child))
+        if (auto *sheet = dynamic_cast<ModalSheet *>(child)) {
             modalNames.add(sheet->getName());
+            collectModalControls(collectModalControls, sheet);
+        }
+    put(value, "modalControls", modalControls);
     put(value, "modals", modalNames);
     auto resolumeState = object();
     put(resolumeState, "host", lighting.host);
@@ -4239,6 +4324,7 @@ var Workspace::diagnostics() const {
     put(value, "nativeTitleBar", false);
     put(value, "uiRegressionPassed", uiRegressionPassed);
     auto layout = object();
+    Array<var> clippedButtonLabels;
     for (const auto &entry : controls) {
         auto bounds = object();
         put(bounds, "x", entry.second->getX());
@@ -4246,20 +4332,39 @@ var Workspace::diagnostics() const {
         put(bounds, "width", entry.second->getWidth());
         put(bounds, "height", entry.second->getHeight());
         put(layout, Identifier(entry.first), bounds);
+        if (entry.second->isVisible() && (bool)entry.second->getProperties()["centredIconLabel"]) {
+            const auto font = theme::semiboldFont((float)entry.second->getProperties().getWithDefault("fontSize", 12.f));
+            const auto width = entry.second->getWidth();
+            const float padding = width < 56 ? 2.f : 6.f, gap = width < 56 ? 2.f : 4.f;
+            if ((GlyphArrangement::getStringWidth(font, entry.second->getButtonText()) + 12.f + gap) * .75f > width - padding + .5f)
+                clippedButtonLabels.add(entry.first);
+        }
     }
     put(value, "controls", layout);
+    put(value, "clippedButtonLabels", clippedButtonLabels);
     put(value, "grandMA2BeforeResolume",
         controls.at("grandma2")->getX() < controls.at("resolume")->getX());
-    bool overlaps = false;
-    for (auto a = controls.begin(); a != controls.end(); ++a) {
-        if (!a->second->isVisible() || a->second->getY() < 32 || a->second->getBottom() > 118 ||
-            a->second->getX() < 276)
-            continue;
-        for (auto b = std::next(a); b != controls.end(); ++b)
-            if (b->second->isVisible() && a->second->getBounds().intersects(b->second->getBounds()))
-                overlaps = true;
+    bool overlaps = false, outside = false;
+    std::vector<const Component *> transportItems{tempoControl.get(), stageTimer.get(),
+                                                  tuner.get(), &songDisplay, &transportTime};
+    for (const auto &entry : controls)
+        if (entry.second->isVisible() && entry.second->getY() >= 32 &&
+            entry.second->getBottom() <= transportBounds.getBottom() && entry.second->getX() >= 40)
+            transportItems.push_back(entry.second);
+    for (size_t a = 0; a < transportItems.size(); ++a) {
+        outside = outside || !transportBounds.contains(transportItems[a]->getBounds());
+        for (size_t b = a + 1; b < transportItems.size(); ++b)
+            overlaps = overlaps || transportItems[a]->getBounds().intersects(transportItems[b]->getBounds());
     }
     put(value, "overlappingTransport", overlaps);
+    put(value, "transportOutsideWindow", outside);
+    put(value, "logicalWidth", getWidth());
+    put(value, "logicalHeight", getHeight());
+    put(value, "transportHeight", transportBounds.getHeight());
+    put(value, "footerHeight", footerBounds.getHeight());
+    put(value, "dockScrollable", dockContent.getHeight() > dockViewport.getHeight());
+    put(value, "dockScrollY", dockViewport.getViewPositionY());
+    put(value, "dockVisibleHeight", dockViewport.getHeight());
     if (auto *peer = getTopLevelComponent()->getPeer()) {
         auto engines = peer->getAvailableRenderingEngines();
         put(value, "renderer", engines[peer->getCurrentRenderingEngine()]);

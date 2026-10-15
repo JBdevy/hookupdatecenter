@@ -1,3 +1,27 @@
+Current Mac-driven Windows validation — 2026-10-15, visual batch 1
+
+- Isolated Release 1.02 built on the user's Windows 11 PC over direct Ethernet.
+- All 14 CTest suites passed, including timecode decode/playback and region
+  ownership regressions. This count does not imply physical-device validation.
+- Full native-ui-smoke passed on the interactive 1440x900 desktop: mouse,
+  keyboard, effects, instruments catalog, Settings/Advanced, transport, context
+  menus, projection windows and custom window buttons.
+- native-visual-matrix passed at window sizes 1424x836, 1280x740, 1100x700,
+  960x540 and 900x500, plus JUCE application scales 125%, 150% and 200%.
+  Physical monitor DPI was 96 throughout; OS DPI changes remain unverified.
+- All 13 Settings/Advanced tabs selected, no transport overlap/out-of-bounds
+  controls or clipped transport labels, and short-window lower-panel scrolling
+  verified. This is partial visual coverage, not approval of all 137 references.
+- Restored logical font sizes, transport icons/radii/colors, responsive rows,
+  monitor-bounded launch size and two-row footer at narrow logical widths.
+- CI now prepares a larger virtual desktop before native clicks and retains a
+  built candidate even if later UI checks fail. Await that workflow's result.
+- Evidence: Documents/CatLive-Mac-Validation/evidence on the Windows test PC.
+- Remaining visual work includes all conditional/context states and the
+  simultaneous track mixer + Setlist + Parts layout below 900 logical pixels.
+
+Earlier handoff record (historical counts below are not the latest run):
+
 CatLive Windows development validation — 2026-10-15
 
 This file records verified work and remaining release requirements. It is not a

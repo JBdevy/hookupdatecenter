@@ -114,7 +114,7 @@ int runTests(const File &directory) {
         expect(regular.getTypefaceName() == "Figtree", "Embedded Figtree family loaded");
         expect(bold.getTypefaceStyle().containsIgnoreCase("Bold"), "Real embedded bold face");
         expect(italic.getTypefaceStyle().containsIgnoreCase("Italic"), "Real embedded italic face");
-        expect(std::abs(regular.getHeightInPoints() - 11.7f) < .01f, "Compact font size uses point metrics");
+        expect(std::abs(regular.getHeightInPoints() - 13.f) < .01f, "Reference font size is preserved before display DPI");
     });
     test("Timecode LTC physical route, Master bypass, spans and main-only playback", [&] {
         auto project = projectFixture();

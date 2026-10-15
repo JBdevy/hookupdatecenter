@@ -147,6 +147,30 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
     } else if (name == "close") {
         line(5, 5, 19, 19);
         line(19, 5, 5, 19);
+    } else if (name == "play") {
+        p.addTriangle(6, 3, 21, 12, 6, 21);
+        fill = true;
+    } else if (name == "teleprompter") {
+        line(3, 4, 21, 4);
+        line(3, 9, 21, 9);
+        line(3, 14, 16, 14);
+        line(3, 19, 12, 19);
+    } else if (name == "remote") {
+        p.addEllipse(2, 2, 20, 20);
+        p.addEllipse(7, 2, 10, 20);
+        line(2, 12, 22, 12);
+        line(4, 6, 20, 6);
+        line(4, 18, 20, 18);
+    } else if (name == "check") {
+        line(4, 12, 10, 18);
+        line(10, 18, 20, 5);
+    } else if (name == "save") {
+        line(3, 10, 3, 21);
+        line(3, 21, 21, 21);
+        line(21, 21, 21, 10);
+        line(12, 2, 12, 15);
+        line(7, 10, 12, 15);
+        line(12, 15, 17, 10);
     } else if (name == "pause") {
         p.addRectangle(6, 5, 4, 14);
         p.addRectangle(14, 5, 4, 14);

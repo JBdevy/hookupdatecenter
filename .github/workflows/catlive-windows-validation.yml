@@ -34,12 +34,17 @@ jobs:
             if ($LASTEXITCODE) { throw 'JUCE checkout failed.' }
           }
       - name: Build and test candidate
+        id: build
         shell: pwsh
         run: ./JarasLive/Windows/build.ps1 -Version 1.02 -BuildDirectory "$env:RUNNER_TEMP/catlive-windows" -Installer
       - name: Capture and exercise native interface
         shell: pwsh
         run: |
+          ./JarasLive/Windows/scripts/prepare-ci-desktop.ps1
           ./JarasLive/Windows/scripts/native-ui-smoke.ps1 -Executable "$env:RUNNER_TEMP/catlive-windows/CatLive_artefacts/Release/CatLive.exe" -OutputDirectory "$env:RUNNER_TEMP/catlive-windows/qa"
+      - name: Validate responsive layouts and application scales
+        shell: pwsh
+        run: ./JarasLive/Windows/scripts/native-visual-matrix.ps1 -Executable "$env:RUNNER_TEMP/catlive-windows/CatLive_artefacts/Release/CatLive.exe" -OutputDirectory "$env:RUNNER_TEMP/catlive-windows/qa/visual-matrix"
       - name: Retain diagnostics even on failure
         if: always()
         uses: actions/upload-artifact@v4
@@ -51,6 +56,7 @@ jobs:
             ${{ runner.temp }}/catlive-windows/Testing/Temporary/
           if-no-files-found: warn
       - name: Retain candidate for Windows testing
+        if: always() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: CatLive-1.02-Windows-candidate

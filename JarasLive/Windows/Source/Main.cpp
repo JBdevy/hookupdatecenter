@@ -1,6 +1,7 @@
 #include "Workspace.h"
 #include "StartupSplash.h"
 #include "ProjectMigration.h"
+#include "DesktopLayout.h"
 #include <BinaryData.h>
 namespace catlive {
 class CatLiveApplication final : public JUCEApplication {
@@ -21,18 +22,15 @@ class CatLiveApplication final : public JUCEApplication {
             setTitleBarHeight(0);
             setContentOwned(content, true);
             setResizable(true, false);
-            setResizeLimits(content->isProjectBrowserShowing() ? 600 : 1280,
-                            content->isProjectBrowserShowing() ? 492 : 720, 7680, 4320);
             setDropShadowEnabled(true);
             setBackgroundColour(theme::background);
             setIcon(ImageCache::getFromMemory(BinaryData::icon2561x_png,
                                               BinaryData::icon2561x_pngSize));
-            const auto area = Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
-            if (content->isProjectBrowserShowing())
-                centreWithSize(600, std::min(760, area.getHeight()));
-            else
-                centreWithSize(std::max(1280, std::min(1680, area.getWidth() - 16)),
-                               std::max(720, std::min(1020, area.getHeight() - 16)));
+            if (content->isProjectBrowserShowing()) {
+                fitProjectBrowserWindow(*this);
+            } else {
+                fitEditorWindow(*this);
+            }
             setVisible(showImmediately);
             if (auto *peer = getPeer()) {
                 auto engines = peer->getAvailableRenderingEngines();
@@ -104,6 +102,11 @@ class CatLiveApplication final : public JUCEApplication {
         try {
             const bool previewHome = args.contains("--home-preview");
             const bool visualTest = args.contains("--visual-test");
+            if (visualTest || previewHome) {
+                const int scaleArg = args.indexOf("--ui-scale");
+                if (scaleArg >= 0 && scaleArg + 1 < args.size())
+                    Desktop::getInstance().setGlobalScaleFactor(jlimit(1.f, 2.f, args[scaleArg + 1].getFloatValue()));
+            }
             if (!visualTest)
                 splash = std::make_unique<StartupSplash>();
             session = std::make_unique<Session>();

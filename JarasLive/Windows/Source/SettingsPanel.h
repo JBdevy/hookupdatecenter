@@ -18,6 +18,7 @@ class SettingsPanel final : public Component {
         for (int i = 0; i < names.size(); ++i) {
             auto *tab = tabs.add(new TextButton(names[i]));
             addAndMakeVisible(tab);
+            tab->setComponentID("settingsTab" + String(i));
             tab->getProperties().set("plain", true);
             tab->getProperties().set("flat", true);
             tab->getProperties().set("leadingIcon", icons[i]);
@@ -28,7 +29,7 @@ class SettingsPanel final : public Component {
         }
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&page, false);
-        viewport.setScrollBarsShown(true, false);
+        viewport.setScrollBarsShown(true, true);
         select(initial);
     }
     bool keyPressed(const KeyPress &key) override { return actions.captureKey(key); }
@@ -41,10 +42,18 @@ class SettingsPanel final : public Component {
         g.drawVerticalLine(144, 0, (float)getHeight());
     }
     void resized() override {
+        const int tabStep = jlimit(32, 46, (getHeight() - 20) / tabs.size());
         for (int i = 0; i < tabs.size(); ++i)
-            tabs[i]->setBounds(10, 10 + i * 46, 124, 40);
+            tabs[i]->setBounds(10, 10 + i * tabStep, 124, tabStep - 6);
         viewport.setBounds(145, 0, getWidth() - 145, getHeight());
-        page.setSize(std::max(620, viewport.getWidth() - 10), contentHeight);
+        int contentWidth = selected == 0 ? 240 : 620;
+        if (selected == 0)
+            for (auto *field : fields)
+                if (dynamic_cast<Label *>(field))
+                    field->setSize(std::max(240, viewport.getWidth() - 48), field->getHeight());
+        for (auto *field : fields)
+            contentWidth = std::max(contentWidth, field->getRight() + 12);
+        page.setSize(std::max(contentWidth, viewport.getWidth() - 10), contentHeight);
         if (actionPage)
             actionPage->setBounds(24, 70, page.getWidth() - 48, getHeight() - 82);
     }
@@ -138,6 +147,7 @@ class SettingsPanel final : public Component {
         auto &title = label(tabs[index]->getButtonText(), 20, 30, true);
         title.setFont(theme::font(18, true));
         if (index == 0) {
+            contentHeight = 150;
             label("Idioma", 66, 26, true);
             for (int language = 0; language < 2; ++language) {
                 auto &b = button(language == 0 ? "English" : String::fromUTF8("Português"),

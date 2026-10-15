@@ -54,17 +54,18 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
         tab->getProperties().set("fontSize", 13);
         tab->setColour(TextButton::buttonOnColourId, theme::green.withAlpha(.15f));
         tab->setColour(TextButton::textColourOnId, Colours::white);
-        const char *icons[]{"clock", "grid", "record", "waveform", "video", "setlist"};
+        const char *icons[]{"metronome", "grid", "record", "waveform", "video", "setlist"};
         tab->getProperties().set("leadingIcon", icons[i]);
         tab->onClick = [this, i] { select(i); };
     }
     addAndMakeVisible(viewport);
     viewport.setViewedComponent(&page, false);
-    viewport.setScrollBarsShown(true, false);
+    viewport.setScrollBarsShown(true, true);
     viewport.setScrollBarThickness(8);
     for (auto *button : {&close, &apply}) {
         addAndMakeVisible(button);
         button->getProperties().set("flat", true);
+        button->getProperties().set("fontSize", 13.f);
     }
     apply.setColour(TextButton::buttonColourId, Colour(0xff60b746));
     close.setColour(TextButton::buttonColourId, Colour(0xff505050));
@@ -309,8 +310,9 @@ void AdvancedPanel::paint(Graphics &g) {
     g.drawHorizontalLine(getHeight() - 52, 0, (float)getWidth());
 }
 void AdvancedPanel::resized() {
+    const int tabStep = jlimit(32, 42, (getHeight() - 72) / tabs.size());
     for (int i = 0; i < tabs.size(); ++i)
-        tabs[i]->setBounds(10, 10 + i * 42, 116, 36);
+        tabs[i]->setBounds(10, 10 + i * tabStep, 116, tabStep - 6);
     viewport.setBounds(137, 0, getWidth() - 137, getHeight() - 52);
     page.setSize(std::max(610, viewport.getWidth() - 8), contentHeight);
     close.setBounds(getWidth() - (selected == 0 ? 166 : 92), getHeight() - 38, 78, 24);
