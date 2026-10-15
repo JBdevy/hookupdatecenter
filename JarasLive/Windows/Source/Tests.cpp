@@ -13,6 +13,7 @@
 #include "RemotePresentation.h"
 #include "LicenseProof.h"
 #include "TimelineGrid.h"
+#include "WaveformCache.h"
 namespace catlive {
 namespace {
 void expect(bool condition, const String &message) {
@@ -111,6 +112,49 @@ int runTests(const File &directory) {
         expect(std::abs(preferences.interfaceScale() - .9f) < 1e-6, "Compact default");
         expect(preferences.set("jaras.interface.scale", 1.25).wasOk(), "Scale saved");
         expect(std::abs(Appearance(file).interfaceScale() - 1.25f) < 1e-6, "Scale restored");
+    });
+    test("Waveforms analyse real stereo media asynchronously and map offsets, rates and loops", [&] {
+        const auto file = directory.getNonexistentChildFile("waveform-source", ".wav");
+        AudioBuffer<float> samples(2, 96000);
+        for (int i = 0; i < samples.getNumSamples(); ++i) {
+            const float wave = std::sin((float)(i * 2 * MathConstants<double>::pi * 440 / 48000));
+            samples.setSample(0, i, wave * (i < 48000 ? .1f : .7f));
+            samples.setSample(1, i, wave * (i < 48000 ? .3f : .05f));
+        }
+        WavAudioFormat wav;
+        auto stream = file.createOutputStream();
+        std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(), 48000, 2, 24, {}, 0));
+        expect(writer != nullptr, "Waveform fixture writer"); stream.release();
+        expect(writer->writeFromAudioSampleBuffer(samples, 0, samples.getNumSamples()), "Waveform fixture write");
+        writer.reset();
+        WaveformCache cache;
+        std::shared_ptr<const WaveformCache::Data> data = cache.request(file);
+        const auto deadline = Time::getMillisecondCounterHiRes() + 5000;
+        while (!data && Time::getMillisecondCounterHiRes() < deadline) { Thread::sleep(10); data = cache.request(file); }
+        expect(data != nullptr && data->channels.size() == 2, "Source produces two cached channels without embedded waveform");
+        expect(data->range(0, .2, .3).second < .11f && data->range(0, 1.2, 1.3).second > .69f, "Real source amplitude retained");
+        expect(data->range(1, .2, .3).second > .29f && data->range(1, 1.2, 1.3).second < .06f, "Stereo channels remain independent");
+        expect(data->range(0, 3, 4).second == 0, "No fabricated waveform beyond the source");
+        jaras::AudioClip clip; clip.sourceOffset = .5; clip.playbackRate = 2;
+        expect(std::abs(WaveformCache::sourcePosition(clip, .3) - 1.1) < 1e-8, "Offset and playback rate map source time");
+        clip.loopStart = .25; clip.loopLength = .5;
+        expect(std::abs(WaveformCache::sourcePosition(clip, .3) - .6) < 1e-8, "Loop maps wrapped source time");
+        expect(cache.request(file) == data, "Repeated paint reuses analysis");
+    });
+    test("Resource metrics use process CPU normalized by cores and sample once per second", [&] {
+        expect(std::abs(ResourceUsage::cpuPercent(1, 2, 8) - 6.25) < 1e-8, "CPU is normalized by active processors");
+        expect(ResourceUsage::cpuPercent(99, 1, 1) == 100, "CPU is bounded");
+        ResourceUsage usage;
+        expect(usage.sample() && usage.samples == 1, "Initial sample");
+        expect(!usage.cpu && usage.ram && *usage.ram > 0 && *usage.ram < 100, "Initial CPU awaits an interval; RAM belongs to the process");
+        expect(!usage.sample() && usage.samples == 1, "Paint/timer frequency cannot resample within a second");
+    });
+    test("Song display tempo belongs to its own region", [&] {
+        auto song = projectFixture().songs.front();
+        jaras::TimelineMarker tempo; tempo.id = uuid(); tempo.position = 10; tempo.tempoBPM = 123;
+        song.markers->push_back(tempo);
+        expect(regionCaption(song, &song.parts.front()).endsWith("123 bpm"), "Region tempo shown");
+        expect(!regionCaption(song, &song.parts.back()).contains("bpm"), "Previous song tempo does not leak into next display");
     });
     test("Closing panel renders the embedded original logo", [&] {
         auto logo = ImageCache::getFromMemory(BinaryData::CatLiveSplash_png,

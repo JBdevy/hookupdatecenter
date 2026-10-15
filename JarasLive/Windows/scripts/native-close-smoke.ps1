@@ -103,7 +103,7 @@ foreach($gesture in @('close-button','alt-f4','ctrl-q')) {
 }
 # Exercise the actual dirty-project guard with a disposable inspection project.
 $test=StartApp '--visual-test';$app=$test.Process;$handle=$test.Handle
-Key 0x54 @(0x11);Start-Sleep -Milliseconds 150
+Key 0x54 @(0x11);Start-Sleep -Milliseconds 150;Key 0x0d;Start-Sleep -Milliseconds 150
 $r=Rect $handle;Click ($r.Right-26) ($r.Top+17);Start-Sleep -Milliseconds 200
 Capture ([CatCloseUI]::GetForegroundWindow()) 'unsaved-confirmation'
 if([CatCloseUI]::Find($app.Id,'CatLiveClosingSplash') -ne [IntPtr]::Zero){throw 'Logo appeared before the save decision.'}
@@ -128,7 +128,7 @@ if(-not [CatCloseUI]::IsWindowVisible($handle)){throw 'Cancelling Save As closed
 $results+=@{scenario='cancel-save-as-keeps-editor';passed=$true}
 [void][CatCloseUI]::SetForegroundWindow($handle)
 Click ($r.Right-26) ($r.Top+17);Start-Sleep -Milliseconds 180
-InvokeButton 'Descartar'
+InvokeButton 'Fechar sem salvar'
 WaitLogo $app $handle 'discard-close'
 $results+=@{scenario='discard-before-logo';passed=$true}
 # Save-and-close on a previously saved disposable document, without the native Save As dialog.
@@ -138,7 +138,7 @@ if(-not (Test-Path -LiteralPath $seed)){throw "Run WindowsIntegration first to g
 Copy-Item -LiteralPath $seed -Destination $fixture -Force
 $before=(Get-FileHash -LiteralPath $fixture -Algorithm SHA256).Hash
 $test=StartApp ('--home-preview "'+$fixture+'"');$app=$test.Process;$handle=$test.Handle
-Key 0x54 @(0x11);Start-Sleep -Milliseconds 180
+Key 0x54 @(0x11);Start-Sleep -Milliseconds 180;Key 0x0d;Start-Sleep -Milliseconds 180
 $r=Rect $handle;Click ($r.Right-26) ($r.Top+17);Start-Sleep -Milliseconds 180
 InvokeButton 'Salvar'
 WaitLogo $app $handle 'save-close'

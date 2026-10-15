@@ -47,7 +47,7 @@ target_sources(CatLive PRIVATE Source/Main.cpp Source/Session.cpp Source/Project
     ThirdParty/Monocypher/monocypher.c ThirdParty/Monocypher/monocypher-ed25519.c)
 target_include_directories(CatLive PRIVATE ThirdParty/Monocypher)
 target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveAssets juce::juce_audio_utils
-    juce::juce_dsp juce::juce_osc juce::juce_video juce::juce_cryptography bcrypt crypt32 normaliz dnsapi comctl32 mfplat mfreadwrite mfuuid mf
+    juce::juce_dsp juce::juce_osc juce::juce_video juce::juce_cryptography bcrypt crypt32 normaliz dnsapi comctl32 psapi mfplat mfreadwrite mfuuid mf
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="CatLive" JUCE_APPLICATION_VERSION_STRING="${CATLIVE_VERSION}"

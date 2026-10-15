@@ -11,6 +11,8 @@
 #include "PartsPanel.h"
 #include "TunerControl.h"
 #include "NavigationPanel.h"
+#include "ResourceUsage.h"
+#include "DragDivider.h"
 namespace catlive {
 namespace remote { class Host; class Presentation; }
 class MacLook final : public LookAndFeel_V4 {
@@ -108,7 +110,17 @@ class Workspace final : public Component,
     std::map<String, TextButton *> controls;
     GainFader masterVolume;
     Slider masterPan, zoom;
-    Label songDisplay, transportTime, footer, tempo;
+    SongDisplayLabel songDisplay;
+    Label transportTime, transportInfo, footer, tempo;
+    DragDivider mixerDivider, setlistDivider;
+    DragDivider footerHeightDivider{false}, mixerHeightDivider{false};
+    int resizeStart = 0, footerHeightSetting = 27, mixerHeightSetting = 300;
+    int footerLeftWidth = 155, footerRightWidth = 230;
+    juce::Rectangle<int> footerSongBounds;
+    bool mixerDetached = false;
+    void showDetachedMixer();
+    void mixerMenu(Point<int>);
+    ResourceUsage resourceUsage;
     TextButton addTrack{"+"};
     std::unique_ptr<FileChooser> chooser;
     std::unique_ptr<FileLogger> logger;

@@ -1,3 +1,40 @@
+Current Mac-driven Windows validation — 2026-10-15, visual batch 3
+
+- Release 1.02 built on the user's Windows 11 PC: all 14 CTest suites passed,
+  44 integration scenarios passed, zero skipped, real SF2 fixture enabled.
+- Real GUILHERME CAMARGO 2026 v2 project validated in an isolated .jl copy,
+  sharing existing Stems for reading. SHA-256 of the original stayed unchanged.
+- Asynchronous bounded waveform cache reads actual stereo audio. Four real MP3
+  sources decoded and displayed; tests cover offsets, playback rate and loops.
+  The first visible seconds of these opening stems are silent; wider timeline
+  view exposes the click, guide and guitar waveforms. No document rewrite needed.
+- Timeline horizontal scrollbar removed. Wheel zoom and Shift+wheel navigation
+  remain available. Track Mixer and Setlist have their own vertical scrollbars.
+- Track Mixer / Setlist width dividers, footer / lower Mixer height dividers,
+  Mixer detach/redock and group indentation/connectors checked on the real project.
+- Footer song columns remain fixed at 45% / 45% / 10%, matching Mac; no manual
+  resizing between Next and Queued. Removed extra footer zoom controls.
+- Top display uses separate song/status/clock areas and per-region BPM captions.
+- CPU uses process kernel+user time / monotonic elapsed / active processors;
+  RAM uses process physical working set / total physical RAM. Both sample once
+  per second, verified on the real project. Darwin phys_footprint and Windows
+  working sets differ in shared/compressed-memory accounting.
+- Close decision uses app icon, Mac question and vertically stacked Save /
+  Close without saving / Cancel buttons. Escape cancellation and discard verified
+  on a dirty copy of the real project; original and discarded copy hashes match.
+- Evidence: Documents/CatLive-Mac-Validation/evidence/batch3/real on Windows.
+  General synthetic UI smoke completed before the user requested real-project
+  validation only; remaining synthetic matrix was interrupted, not counted passed.
+- Not a complete visual-parity or release approval. Earlier equipment/plugin/
+  CatStemSeparation limitations remain. Global tempo editing/control behavior
+  still needs comparison with Mac's current tempo section; the song caption alone
+  does not complete tempo-control parity. Native monitor DPI remains 96.
+- Mac hotfix workflow 38792390575 completed successfully, including native audio,
+  timecode, universal build, signing, notarization and document compatibility.
+  Release publishing was disabled. Windows batch-2 workflow 38794168979 passed.
+
+Historical batch 2 record:
+
 Current Mac-driven Windows validation — 2026-10-15, visual batch 2
 
 - Release 1.02 built on the user's Windows 11 PC. All 14 CTest suites passed;

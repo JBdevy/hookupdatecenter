@@ -64,3 +64,18 @@ Maximização respeita WorkingArea a 90/100/125/150/200% de escala interna.
 13 abas e 5 tamanhos de janela testados; DPI físico permaneceu 96.
 Capturas em evidence/batch2; CatStemSeparation 5 ainda NÃO implementado.
 Este lote não encerra o restante da lista funcional nem a revisão das 137 referências.
+
+ATUALIZAÇÃO — LOTE VISUAL 3, 15/10/2026
+14 CTest e 44 cenários de integração aprovados, SF2 real, nenhum pulado.
+Waveforms estéreo dos MP3 reais, cache assíncrono, offsets/rate/loops, divisórias
+do Track Mixer/Setlist, altura do rodapé/Mixer, Mixer destacável e recuos dos grupos.
+Rodapé sem zoom extra e com proporções internas fixas; display superior com BPM
+próprio da região e área de estado. CPU/RAM do processo atualizadas a cada segundo.
+Confirmação de fechamento com pergunta, ícone e botões verticais do Mac; cancelar
+ou fechar sem salvar conferidos em cópia do projeto Guilherme Camargo, sem alterar
+original. Evidência atual em evidence/batch3/real. Matriz sintética interrompida
+por pedido do usuário, que quer os testes visuais no projeto real.
+Não encerra toda a paridade: revisar controle de tempo ativo, estados condicionais,
+137 referências completas e pendências funcionais anteriores.
+Mac: workflow 38792390575 aprovado, instalador universal assinado/notarizado;
+publicação de release desativada nessa execução. Windows lote 2 CI aprovado.

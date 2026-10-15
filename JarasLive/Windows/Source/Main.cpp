@@ -12,7 +12,7 @@ class CatLiveApplication final : public JUCEApplication {
     bool moreThanOneInstanceAllowed() override {
         auto args = getCommandLineParameters();
         return args.contains("--self-test") || args.contains("--visual-test") ||
-               args.contains("--home-preview") || args.contains("--roundtrip-project") ||
+               args.contains("--home-preview") || args.contains("--project-preview") || args.contains("--roundtrip-project") ||
                args.contains("--migrate-project");
     }
     class Window final : public DocumentWindow {
@@ -104,7 +104,8 @@ class CatLiveApplication final : public JUCEApplication {
         }
         try {
             const bool previewHome = args.contains("--home-preview");
-            const bool visualTest = args.contains("--visual-test");
+            const bool projectPreview = args.contains("--project-preview");
+            const bool visualTest = args.contains("--visual-test") || projectPreview;
             File appearanceFile;
             const int appearanceArgument = args.indexOf("--appearance-file");
             if ((visualTest || previewHome) && appearanceArgument >= 0 && appearanceArgument + 1 < args.size())
@@ -131,6 +132,11 @@ class CatLiveApplication final : public JUCEApplication {
             if (args.contains("--visual-test")) {
                 session->makeInspectionProject(args.contains("--audio-fixture"));
                 lighting->loadSettings();
+            } else if (projectPreview) {
+                const int index = args.indexOf("--project-preview");
+                if (index + 1 >= args.size()) throw std::runtime_error("Expected preview project path");
+                session->inspection = true;
+                session->load(File(args[index + 1]));
             } else if (previewHome) {
                 // Visual inspection never grants an audio entitlement.
                 session->inspection = true;
@@ -172,7 +178,7 @@ class CatLiveApplication final : public JUCEApplication {
                 }
             }
             for (auto &arg : args)
-                if (arg.endsWithIgnoreCase(".jl") && File::isAbsolutePath(arg)) {
+                if (!projectPreview && arg.endsWithIgnoreCase(".jl") && File::isAbsolutePath(arg)) {
                     session->load(File(arg));
                     lighting->loadSettings();
                     content->projectOpened();
