@@ -12,6 +12,7 @@
 #include "RemoteHost.h"
 #include "RemotePresentation.h"
 #include "LicenseProof.h"
+#include "TimelineGrid.h"
 namespace catlive {
 namespace {
 void expect(bool condition, const String &message) {
@@ -71,6 +72,46 @@ int runTests(const File &directory) {
             failed += name + ": " + String::fromUTF8(e.what()) + "\n";
         }
     };
+    test("Gain faders match the Mac decibel scale and preserve actual gain", [&] {
+        GainFader fader;
+        expect(std::abs(fader.valueToProportionOfLength(1) - 5. / 6.) < 1e-8, "0 dB at 83.33 percent");
+        expect(std::abs(fader.proportionOfLengthToValue(.5) - std::pow(10., -24. / 20.)) < 1e-8, "Midpoint is -24 dB");
+        expect(fader.proportionOfLengthToValue(0) == 0, "Bottom is silence");
+        expect(std::abs(fader.getMaximum() - std::pow(10., 12. / 20.)) < 1e-8, "Top is +12 dB");
+        for (double db : {-60., -48., -24., -6., 0., 6., 12.}) {
+            const auto gain = std::pow(10., db / 20.);
+            if (db > -60) expect(std::abs(fader.proportionOfLengthToValue(fader.valueToProportionOfLength(gain)) - gain) < 1e-8, "Gain round trip");
+            fader.setValue(gain, dontSendNotification);
+            expect(std::abs(fader.getValue() - gain) < 1e-8, "Actual gain is not remapped in the audio model");
+        }
+    });
+    test("Timeline grid follows tempo markers, meter and visible subdivisions", [&] {
+        jaras::Song song; song.duration = 60; song.bpm = 120;
+        jaras::TimelineMarker marker; marker.id = "tempo"; marker.position = 5.25;
+        marker.tempoBPM = 60; marker.tempoBeats = 3; marker.tempoUnit = 4;
+        song.markers = std::vector<jaras::TimelineMarker>{marker};
+        const auto ticks = timelineGrid::ticks(song, 0, 12, 100);
+        const auto has = [&](double time, bool primary) {
+            return std::any_of(ticks.begin(), ticks.end(), [&](const auto &t) { return std::abs(t.time - time) < 1e-8 && t.primary == primary; });
+        };
+        expect(has(0, true) && has(2, true) && has(.5, false), "120 BPM grid has half-second beats and two-second bars");
+        expect(has(5.25, true) && has(8.25, true) && has(6.25, false), "60 BPM 3/4 marker restarts bar and beat phase");
+        expect(!has(6, true), "Old bar phase ends at tempo marker");
+        const auto cropped = timelineGrid::ticks(song, 6, 10, 100);
+        for (const auto &tick : cropped) {
+            expect(tick.time >= 6 && tick.time <= 10, "Grid clipped to viewport");
+            expect(has(tick.time, tick.primary), "Scrolling keeps grid phase");
+        }
+        expect(timelineGrid::label(5.25) == "00:00:05.250", "Fractional ruler label");
+        expect(timelineGrid::ticks(song, 0, 10, 0).empty(), "Invalid zoom rejected");
+    });
+    test("Interface scale defaults to 90 percent and persists separately from projects", [&] {
+        auto file = directory.getNonexistentChildFile("interface-scale", ".json");
+        Appearance preferences(file);
+        expect(std::abs(preferences.interfaceScale() - .9f) < 1e-6, "Compact default");
+        expect(preferences.set("jaras.interface.scale", 1.25).wasOk(), "Scale saved");
+        expect(std::abs(Appearance(file).interfaceScale() - 1.25f) < 1e-6, "Scale restored");
+    });
     test("Closing panel renders the embedded original logo", [&] {
         auto logo = ImageCache::getFromMemory(BinaryData::CatLiveSplash_png,
                                               BinaryData::CatLiveSplash_pngSize);
@@ -1630,7 +1671,7 @@ int runTests(const File &directory) {
         try {
             ResolumeComposition(request).create(plan, destination);
         } catch (const std::exception &e) {
-            protectedMedia = String::fromUTF8(e.what()).contains("mídia");
+            protectedMedia = String::fromUTF8(e.what()).contains(String::fromUTF8("mídia"));
         }
         expect(protectedMedia && posts == 0 && destructive == 0 && saves == 0,
                "Existing media in an inactive deck was modified");

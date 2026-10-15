@@ -493,7 +493,7 @@ class Workspace::Setlist final : public Component,
                 if (action == 3)
                     self->w.confirm(
                         "Excluir playlist",
-                        "Excluir esta playlist? As músicas continuam no projeto.",
+                        String::fromUTF8("Excluir esta playlist? As músicas continuam no projeto."),
                         [self, selected] {
                             if (!self)
                                 return;
@@ -641,7 +641,7 @@ class Workspace::Setlist final : public Component,
             menu.addItem(2, "Queue song");
             menu.addSeparator();
         }
-        menu.addItem(3, entry.block ? "Editar bloco" : "Editar música");
+        menu.addItem(3, entry.block ? "Editar bloco" : String::fromUTF8("Editar música"));
         if (selectedPlaylist()) {
             if (!entry.block) {
                 menu.addItem(4, "Move up");
@@ -649,7 +649,7 @@ class Workspace::Setlist final : public Component,
             }
             menu.addItem(6, entry.block ? "Delete block" : "Remove from playlist");
         } else if (!entry.block && !entry.child)
-            menu.addItem(7, "Excluir região");
+            menu.addItem(7, String::fromUTF8("Excluir região"));
         menu.showMenuAsync(
             PopupMenu::Options().withTargetComponent(&list),
             [self = SafePointer<Setlist>(this), entry](int action) {
@@ -714,7 +714,7 @@ class Workspace::Setlist final : public Component,
             if (self)
                 for (auto *child : self->w.getChildren())
                     if (auto *sheet = dynamic_cast<ModalSheet *>(child))
-                        if (sheet->getName() == "Editar música" ||
+                        if (sheet->getName() == String::fromUTF8("Editar música") ||
                             sheet->getName() == "Editar bloco") {
                             sheet->exitModalState(0);
                             break;
@@ -750,7 +750,7 @@ class Workspace::Setlist final : public Component,
                 self->w.showError(String::fromUTF8(e.what()));
             }
         };
-        ModalSheet::open(w, entry.block ? "Editar bloco" : "Editar música",
+        ModalSheet::open(w, entry.block ? "Editar bloco" : String::fromUTF8("Editar música"),
                          std::make_unique<RegionEditor>(name, entry.colour.getARGB() & 0xffffff,
                                                         uppercase, save, close),
                          300, 356);
@@ -758,7 +758,7 @@ class Workspace::Setlist final : public Component,
     void removeRegion(Entry entry) {
         const auto self = SafePointer<Setlist>(this);
         w.confirm(
-            "Excluir região",
+            String::fromUTF8("Excluir região"),
             String::fromUTF8("Excluir esta região e suas partes? As mídias permanecem nas pistas."),
             [self, entry] {
                 if (!self)

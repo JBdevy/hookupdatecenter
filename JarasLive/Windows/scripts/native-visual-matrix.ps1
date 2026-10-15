@@ -14,6 +14,7 @@ public static class CatVisualDpi {
 [void][CatVisualDpi]::SetProcessDPIAware()
 Add-Type -AssemblyName System.Windows.Forms
 . "$PSScriptRoot/native-ui-common.ps1"
+$testArea = ([System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.WorkingArea.Width * $_.WorkingArea.Height } -Descending | Select-Object -First 1).WorkingArea
 $process = $null
 $script:current = $null
 $results = [System.Collections.Generic.List[object]]::new()
@@ -77,7 +78,7 @@ try {
     Start-Fixture
     [void](Check-Layout 'main-native')
     foreach($size in @(@(1280,740),@(1100,700),@(960,540),@(900,500))) {
-        [void][CatNativeUI]::SetWindowPos($process.MainWindowHandle,[IntPtr]::Zero,8,8,$size[0],$size[1],0x0040)
+        [void][CatNativeUI]::SetWindowPos($process.MainWindowHandle,[IntPtr]::Zero,($testArea.Left+8),($testArea.Top+8),$size[0],$size[1],0x0040)
         Start-Sleep -Milliseconds 300
         [void](Check-Layout ("main-{0}x{1}" -f $size[0],$size[1]))
     }
@@ -97,9 +98,33 @@ try {
         Click-Control $id
         [void](Snapshot ('dock-close-' + $id))
     }
-    [void][CatNativeUI]::SetWindowPos($process.MainWindowHandle,[IntPtr]::Zero,8,8,1280,740,0x0040)
+    [void][CatNativeUI]::SetWindowPos($process.MainWindowHandle,[IntPtr]::Zero,($testArea.Left+8),($testArea.Top+8),1280,740,0x0040)
     Start-Sleep -Milliseconds 250
     [void](Snapshot 'panels-base')
+    Click-Control 'menu'
+    $d = Snapshot 'navigation-open'
+    if(-not $d.navigationVisible){throw 'Hamburger did not open the navigation drawer.'}
+    Click-Logical 100 109
+    $d = Snapshot 'navigation-live'
+    if($d.navigationVisible -or @($d.modals).Count -ne 0){throw 'Live Session did not return to the editor.'}
+    Click-Control 'menu'
+    [void](Snapshot 'navigation-projects-before')
+    Click-Logical 100 63
+    $d = Snapshot 'navigation-projects'
+    if($d.navigationVisible -or $d.modals -notcontains 'Projetos'){throw 'Navigation Projects did not open its sheet.'}
+    Key 0x1b
+    $d = Snapshot 'navigation-projects-closed'
+    Click-Logical ($d.timeline.x + 200) ($d.timeline.y + 55)
+    $before = Snapshot 'zoom-cursor-before'
+    $anchor = $before.editPosition * $before.timeline.zoom - $before.timeline.horizontal
+    $rect = Rect $process.MainWindowHandle
+    $nativeScale = ($rect.Right - $rect.Left) / ($before.logicalWidth + 2.0)
+    Wheel ([int]($rect.Left + ($before.timeline.x + 450) * $nativeScale)) ([int]($rect.Top + ($before.timeline.y + 100) * $nativeScale)) 120
+    Start-Sleep -Milliseconds 700
+    $after = Snapshot 'zoom-cursor-after'
+    $newAnchor = $after.editPosition * $after.timeline.zoom - $after.timeline.horizontal
+    if($after.timeline.zoom -le $before.timeline.zoom -or [Math]::Abs($newAnchor - $anchor) -gt 1){throw 'Mouse-wheel zoom did not stay on the edit cursor.'}
+
     foreach($panel in @(@{button='advanced';prefix='advancedTab';count=6},@{button='settings';prefix='settingsTab';count=7})) {
         Click-Control $panel.button
         [void](Snapshot ($panel.button + '-opened'))
@@ -118,10 +143,21 @@ try {
     ScreenCapture 'track-context'
     Key 0x1b
     Stop-Fixture
-    foreach($scale in @('1.25','1.5','2')) {
+    foreach($scale in @('0.9','1.25','1.5','2')) {
         Start-Fixture $scale
         [void](Check-Layout ('scale-' + $scale))
         ScreenCapture ('scale-' + $scale + '-screen')
+        $rect = Rect $process.MainWindowHandle
+        $nativeScale = ($rect.Right - $rect.Left) / ($script:current.logicalWidth + 2.0)
+        Click ([int]($rect.Right - 69 * $nativeScale)) ([int]($rect.Top + 17 * $nativeScale))
+        if(-not [CatNativeUI]::IsZoomed($process.MainWindowHandle)){throw "Maximize failed at scale $scale"}
+        [void](Check-Layout ('scale-' + $scale + '-maximized'))
+        ScreenCapture ('scale-' + $scale + '-maximized-screen')
+        $rect = Rect $process.MainWindowHandle
+        Click ([int]($rect.Right - 69 * $nativeScale)) ([int]($rect.Top + 17 * $nativeScale))
+        if([CatNativeUI]::IsZoomed($process.MainWindowHandle)){throw "Restore failed at scale $scale"}
+        [void](Snapshot ('scale-' + $scale + '-restored'))
+
         foreach($panel in @('settings','advanced')) {
             Click-Control $panel
             [void](Snapshot ('scale-' + $scale + '-' + $panel))

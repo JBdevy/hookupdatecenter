@@ -2,6 +2,7 @@
 #include "StartupSplash.h"
 #include "ProjectMigration.h"
 #include "DesktopLayout.h"
+#include "NativeWindowBounds.h"
 #include <BinaryData.h>
 namespace catlive {
 class CatLiveApplication final : public JUCEApplication {
@@ -33,12 +34,14 @@ class CatLiveApplication final : public JUCEApplication {
             }
             setVisible(showImmediately);
             if (auto *peer = getPeer()) {
+                workArea.attach((HWND)peer->getNativeHandle());
                 auto engines = peer->getAvailableRenderingEngines();
                 for (int i = 0; i < engines.size(); ++i)
                     if (engines[i].containsIgnoreCase("Direct2D"))
                         peer->setCurrentRenderingEngine(i);
             }
         }
+        NativeWindowBounds workArea;
         void closeButtonPressed() override {
             JUCEApplication::getInstance()->systemRequestedQuit();
         }
@@ -102,11 +105,17 @@ class CatLiveApplication final : public JUCEApplication {
         try {
             const bool previewHome = args.contains("--home-preview");
             const bool visualTest = args.contains("--visual-test");
-            if (visualTest || previewHome) {
-                const int scaleArg = args.indexOf("--ui-scale");
-                if (scaleArg >= 0 && scaleArg + 1 < args.size())
-                    Desktop::getInstance().setGlobalScaleFactor(jlimit(1.f, 2.f, args[scaleArg + 1].getFloatValue()));
+            File appearanceFile;
+            const int appearanceArgument = args.indexOf("--appearance-file");
+            if ((visualTest || previewHome) && appearanceArgument >= 0 && appearanceArgument + 1 < args.size())
+                appearanceFile = File(args[appearanceArgument + 1]);
+            float scale = Appearance(appearanceFile).interfaceScale();
+            const int scaleArg = args.indexOf("--ui-scale");
+            if (scaleArg >= 0 && scaleArg + 1 < args.size()) {
+                const auto requested = args[scaleArg + 1].getFloatValue();
+                if (std::isfinite(requested) && requested > 0) scale = jlimit(.75f, 2.f, requested);
             }
+            Desktop::getInstance().setGlobalScaleFactor(scale);
             if (!visualTest)
                 splash = std::make_unique<StartupSplash>();
             session = std::make_unique<Session>();
@@ -131,10 +140,6 @@ class CatLiveApplication final : public JUCEApplication {
                     session->message = error;
                 auth->restore();
             }
-            File appearanceFile;
-            const int appearanceArgument = args.indexOf("--appearance-file");
-            if (visualTest && appearanceArgument >= 0 && appearanceArgument + 1 < args.size())
-                appearanceFile = File(args[appearanceArgument + 1]);
             auto *content = new Workspace(*session, *auth, *lighting, previewHome, appearanceFile);
             window = std::make_unique<Window>(content, visualTest);
             if (previewHome)

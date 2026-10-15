@@ -11,6 +11,10 @@ class Appearance final : public ChangeBroadcaster {
         auto loaded = JSON::parse(location);
         values = loaded.isObject() ? loaded : object();
     }
+    float interfaceScale() const {
+        const auto scale = (double)get(values, "jaras.interface.scale", .9);
+        return std::isfinite(scale) ? (float)jlimit(.75, 2., scale) : .9f;
+    }
     int fontStyle() const { return jlimit(0, 2, (int)get(values, "jaras.setlist.fontStyle", 0)); }
     bool regionIDs() const { return str(values, "jaras.setlist.idMode", "playlist") == "region"; }
     Font setlistFont() const { return theme::font(13, fontStyle() != 0, fontStyle() == 2); }

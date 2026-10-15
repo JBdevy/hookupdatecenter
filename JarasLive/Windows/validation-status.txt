@@ -1,3 +1,30 @@
+Current Mac-driven Windows validation — 2026-10-15, visual batch 2
+
+- Release 1.02 built on the user's Windows 11 PC. All 14 CTest suites passed;
+  41 integration scenarios passed, zero skipped, including the real SF2 fixture.
+- Full native-ui-smoke and Home/Create/Add/Recent passed. Native maximization,
+  restore, minimize and close passed; maximized bounds stay inside WorkingArea.
+- Visual matrix passed: five window sizes; application scales 90/125/150/200%,
+  including maximization at each scale; all 13 Settings/Advanced tabs; lower
+  panel scrolling; no transport overlap, out-of-window controls or clipped labels.
+- Navigation drawer opens Projects as a sheet and returns to Live Session.
+  Mouse-wheel zoom preserves the edit cursor position even with the mouse elsewhere.
+- Fixed UTF-8 conversion in Patch, region menus, actions, timer, tuner and FX.
+  Restored tempo-section grid/subdivisions and vertical region/marker guides.
+  Cursor needles start below their triangle. Compact track meters and dB faders
+  use the Mac -60 to +12 dB mapping (0 dB at 83.33% of travel).
+- Default application scale is 90%; dark Windows-style caption buttons replace
+  traffic-light circles. Project gain values and media files are not converted.
+- Evidence: Documents/CatLive-Mac-Validation/evidence/batch2 on Windows.
+  Only this successful run is current; initial navigation failures are retained
+  separately. A resize visibility rule was corrected before the successful run.
+- Physical monitor DPI remained 96. Application scale tests do not validate OS
+  DPI changes. Synthetic inspection projects do not replace real-show validation.
+- CatStemSeparation 5, external plugin hosting, other incomplete features and
+  physical equipment verification below remain pending. This is a test candidate.
+
+Historical batch 1 record:
+
 Current Mac-driven Windows validation — 2026-10-15, visual batch 1
 
 - Isolated Release 1.02 built on the user's Windows 11 PC over direct Ethernet.

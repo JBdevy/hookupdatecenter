@@ -13,8 +13,8 @@ class TunerControl final : public Component, private Timer {
         }
         down.onClick = [step] { step(-1); };
         up.onClick = [step] { step(1); };
-        down.setTooltip("Abaixar tom da música");
-        up.setTooltip("Subir tom da música");
+        down.setTooltip(String::fromUTF8("Abaixar tom da música"));
+        up.setTooltip(String::fromUTF8("Subir tom da música"));
         startTimerHz(8);
     }
     void resized() override {

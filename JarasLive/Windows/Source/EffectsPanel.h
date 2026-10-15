@@ -487,7 +487,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             g.drawText("Adicionar efeito", r, Justification::centred);
             return;
         }
-        g.drawText("CatLive " + kind() + " · " + trackName, r.getX(), headerY, r.getWidth() - 36,
+        g.drawText("CatLive " + kind() + String::fromUTF8(" · ") + trackName, r.getX(), headerY, r.getWidth() - 36,
                    24, Justification::centredLeft);
         g.setFont(theme::semiboldFont(9));
         g.setColour(theme::secondary);

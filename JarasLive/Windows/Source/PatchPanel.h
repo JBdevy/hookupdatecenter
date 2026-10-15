@@ -124,7 +124,7 @@ class PatchPanel final : public Component {
         // Rebuilding on focus loss would delete the control being clicked.
         button("Aplicar", 220, 160, 80, saveOffset);
         if (settings.mode == "mtc") {
-            label("Saída MIDI", 0, 198, 300);
+            label(String::fromUTF8("Saída MIDI"), 0, 198, 300);
             StringArray names{"Nenhuma"}; std::vector<int> ids{0};
             for (const auto& port : MidiOutput::getAvailableDevices()) {
                 names.add(port.name); ids.push_back(TimecodeMIDI::destinationID(port.identifier));
@@ -139,7 +139,7 @@ class PatchPanel final : public Component {
                 next.midiDestination = ids[(size_t)jlimit(0, (int)ids.size()-1, n-1)]; track.timecode = next;
             }); });
         } else {
-            label("Saída de áudio", 0, 198, 300);
+            label(String::fromUTF8("Saída de áudio"), 0, 198, 300);
             StringArray names{"Nenhuma"}; std::vector<jaras::OutputPatch> patches{{-1, 2}};
             auto* device = session.audio.devices.getCurrentAudioDevice();
             const int channels = std::max(2, device ? device->getOutputChannelNames().size() : 2);
@@ -171,11 +171,11 @@ class PatchPanel final : public Component {
         std::vector<jaras::OutputPatch> inputPatches{{-1, 1}};
         const auto inputNames = device ? device->getInputChannelNames() : StringArray();
         for (int i = 0; i < inputNames.size(); ++i) {
-            inputs.add(String(i + 1) + " — " + inputNames[i]);
+            inputs.add(String(i + 1) + String::fromUTF8(" — ") + inputNames[i]);
             inputPatches.push_back({i + 1, 1});
         }
         for (int i = 0; i + 1 < inputNames.size(); i += 2) {
-            inputs.add(String(i + 1) + " / " + String(i + 2) + " — Stereo");
+            inputs.add(String(i + 1) + " / " + String(i + 2) + String::fromUTF8(" — Stereo"));
             inputPatches.push_back({i + 1, 2});
         }
         int selected = 1;
@@ -210,7 +210,7 @@ class PatchPanel final : public Component {
         choice(208, 108, 92, channels, t->midiChannel.value_or(0) + 1,
                [this](int n) { edit([&](auto &t) { if(n>1)t.midiChannel=n-1;else t.midiChannel.reset(); }); });
         auto outputs = t->outputPatches();
-        label("Saída", 0, 148, 200, true);
+        label(String::fromUTF8("Saída"), 0, 148, 200, true);
         button("+", 264, 148, 36, [this] {
             edit([](auto &t) {
                 auto outputs = t.outputPatches();

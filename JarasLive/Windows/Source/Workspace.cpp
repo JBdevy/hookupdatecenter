@@ -25,6 +25,8 @@
 #include "RemotePanel.h"
 #include "RemotePresentation.h"
 #include "DesktopLayout.h"
+#include "TimelineGrid.h"
+#include "WindowControlButton.h"
 #include <BinaryData.h>
 #include <fstream>
 #include <windows.h>
@@ -41,39 +43,9 @@ void MacLook::drawTextEditorOutline(Graphics &g, int width, int height, TextEdit
                            5, focused ? 3.f : 1.f);
 }
 Button *MacLook::createDocumentWindowButton(int type) {
-    class TrafficButton final : public Button {
-      public:
-        TrafficButton(int value)
-            : Button(value == DocumentWindow::closeButton      ? "Fechar"
-                     : value == DocumentWindow::minimiseButton ? "Minimizar"
-                                                               : "Maximizar"),
-              kind(value) {}
-        void paintButton(Graphics &g, bool hover, bool down) override {
-            const Colour color = kind == DocumentWindow::closeButton      ? Colour(0xffff5f57)
-                                 : kind == DocumentWindow::minimiseButton ? Colour(0xffffbd2e)
-                                                                          : Colour(0xff28c840);
-            const auto circle = getLocalBounds().toFloat().withSizeKeepingCentre(13, 13);
-            g.setColour(down ? color.darker(.2f) : color);
-            g.fillEllipse(circle);
-            if (hover) {
-                g.setColour(Colours::black.withAlpha(.65f));
-                auto r = circle.reduced(4);
-                if (kind == DocumentWindow::closeButton) {
-                    g.drawLine(r.getX(), r.getY(), r.getRight(), r.getBottom(), 1);
-                    g.drawLine(r.getRight(), r.getY(), r.getX(), r.getBottom(), 1);
-                } else {
-                    g.drawLine(r.getX(), r.getCentreY(), r.getRight(), r.getCentreY(), 1);
-                    if (kind == DocumentWindow::maximiseButton)
-                        g.drawLine(r.getCentreX(), r.getY(), r.getCentreX(), r.getBottom(), 1);
-                }
-            }
-        }
-
-      private:
-        int kind;
-    };
-    return new TrafficButton(type);
+    return new WindowControlButton(type);
 }
+
 void MacLook::drawDocumentWindowTitleBar(DocumentWindow &window, Graphics &g, int width, int height,
                                          int, int, const Image *, bool active) {
     g.fillAll(theme::titlebar);
@@ -148,7 +120,8 @@ void MacLook::drawButtonBackground(Graphics &g, Button &b, const Colour &colour,
     }
 }
 void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
-    g.setFont(theme::semiboldFont((float)b.getProperties().getWithDefault("fontSize", 12.0f)));
+    const float size = (float)b.getProperties().getWithDefault("fontSize", 12.0f);
+    g.setFont((bool)b.getProperties()["mediumWeight"] ? theme::mediumFont(size) : theme::semiboldFont(size));
     g.setColour(
         b.findColour(b.getToggleState() ? TextButton::textColourOnId : TextButton::textColourOffId)
             .withMultipliedAlpha(b.isEnabled() ? 1.0f : .35f));
@@ -779,26 +752,6 @@ class LoginBackdrop final : public Component {
 } // namespace
 
 class Workspace::Caption final : public Component {
-    class Light final : public Button {
-      public:
-        Light(String name, Colour colour, String glyph)
-            : Button(name), colour(colour), glyph(std::move(glyph)) {}
-        void paintButton(Graphics &g, bool over, bool down) override {
-            auto circle = getLocalBounds().toFloat().reduced(3);
-            g.setColour(down ? colour.darker(.2f) : colour);
-            g.fillEllipse(circle);
-            if (over || down) {
-                g.setColour(Colours::black.withAlpha(.7f));
-                g.setFont(theme::font(10, true));
-                g.drawText(glyph, getLocalBounds(), Justification::centred);
-            }
-        }
-
-      private:
-        Colour colour;
-        String glyph;
-    };
-
   public:
     explicit Caption(Workspace &owner) : w(owner) {
         for (auto *button : {&minimise, &maximise, &close}) {
@@ -822,14 +775,14 @@ class Workspace::Caption final : public Component {
         g.setFont(theme::font(11));
         g.setColour(Colours::white.withAlpha(.9f));
         g.drawText(String("CatLive Version ") + JUCE_APPLICATION_VERSION_STRING,
-                   getWidth() - 252, 0, 154, getHeight(), Justification::centredRight);
+                   getWidth() - 302, 0, 154, getHeight(), Justification::centredRight);
         if (w.browserVisible || w.loginPanel)
             return;
         auto saved = Time::fromISO8601(text(w.session.project().updatedAt));
         auto project = text(w.session.project().name) + (w.session.dirty ? " *" : "");
         g.setColour(Colours::white.withAlpha(.9f));
         g.setFont(theme::semiboldFont(11));
-        const int accessWidth = std::min(440, std::max(80, getWidth() - 504));
+        const int accessWidth = std::min(440, std::max(80, getWidth() - 604));
         g.drawFittedText(project + String::fromUTF8(" - ") +
                              (w.session.document == File() ? String(String::fromUTF8("Não salvo"))
                                                            : saved.formatted("%d/%m/%Y %H:%M")),
@@ -840,10 +793,10 @@ class Workspace::Caption final : public Component {
                          Justification::centred, 1, .75f);
     }
     void resized() override {
-        auto x = getWidth() - 88;
-        minimise.setBounds(x, 7, 20, 20);
-        maximise.setBounds(x + 26, 7, 20, 20);
-        close.setBounds(x + 52, 7, 20, 20);
+        auto x = getWidth() - 138;
+        minimise.setBounds(x, 0, 46, getHeight());
+        maximise.setBounds(x + 46, 0, 46, getHeight());
+        close.setBounds(x + 92, 0, 46, getHeight());
     }
     void mouseDown(const MouseEvent &e) override {
         if (e.mods.isLeftButtonDown())
@@ -857,9 +810,8 @@ class Workspace::Caption final : public Component {
 
   private:
     Workspace &w;
-    Light minimise{"Minimizar", Colour(0xffffbd2e), String::fromUTF8("−")},
-        maximise{"Maximizar", Colour(0xff28c840), "+"},
-        close{"Fechar", Colour(0xffff5f57), String::fromUTF8("×")};
+    WindowControlButton minimise{DocumentWindow::minimiseButton},
+        maximise{DocumentWindow::maximiseButton}, close{DocumentWindow::closeButton};
     ComponentDragger dragger;
     void toggleMaximise() {
         if (auto *peer = getTopLevelComponent()->getPeer()) {
@@ -985,7 +937,6 @@ class Workspace::TrackRow final : public Component {
         };
         addAndMakeVisible(volume);
         volume.setComponentID("trackVolume");
-        volume.setRange(0, 2, .001);
         volume.setSliderStyle(Slider::LinearHorizontal);
         volume.setTextBoxStyle(Slider::NoTextBox, false, 0, 0);
         volume.setDoubleClickReturnValue(true, 1);
@@ -1069,9 +1020,9 @@ class Workspace::TrackRow final : public Component {
             const int body = getHeight() - lanes.size() * 32;
             g.fillRect(0, 0, getWidth(), body - 1);
             g.setColour(Colours::black.withAlpha(.38f));
-            g.fillRect(3, 4, 4, body - 8);
-            g.fillRect(10, 4, 4, body - 8);
-            g.fillRect(18, 4, 3, body - 8);
+            g.fillRect(0, 4, 5, body - 8);
+            g.fillRect(7, 4, 5, body - 8);
+            g.fillRect(14, 4, 4, body - 8);
             if (const auto *song = w.session.song()) {
                 auto parent = t->parentTrackID;
                 int depth = 0;
@@ -1093,8 +1044,8 @@ class Workspace::TrackRow final : public Component {
                     (int)((body - 8) *
                           jlimit(0.f, 1.f, (Decibels::gainToDecibels(peak) + 60) / 60));
                 g.setColour(peak > 1 ? Colour(0xffff4444) : theme::green);
-                g.fillRect(3, body - 4 - height, 4, height);
-                g.fillRect(10, body - 4 - height, 4, height);
+                g.fillRect(0, body - 4 - height, 5, height);
+                g.fillRect(7, body - 4 - height, 5, height);
             }
             g.setFont(theme::semiboldFont(12));
             g.setColour(colour.getPerceivedBrightness() > .45f ? Colours::black : Colours::white);
@@ -1199,7 +1150,8 @@ class Workspace::TrackRow final : public Component {
     ID id;
     QuietButton mute, solo, phase, fx, output, env, record;
     TextButton folder;
-    Slider volume, pan;
+    GainFader volume;
+    Slider pan;
     bool updating = false, dragging = false;
 };
 
@@ -1305,6 +1257,19 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         stopGesture();
         applyZoom(scale, anchor);
     }
+    void zoomOnCursor(double scale) {
+        stopGesture();
+        applyCursorZoom(scale);
+    }
+    void applyCursorZoom(double scale) {
+        const double cursor = w.session.transport().editPosition;
+        const float anchor = jlimit(0.f, (float)canvas.getWidth(), xAt(cursor));
+        w.pixelsPerSecond = jlimit(.005, 500.0, scale);
+        w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
+        updateRanges();
+        horizontal.setCurrentRangeStart(cursor * w.pixelsPerSecond - anchor);
+        invalidate();
+    }
     void applyZoom(double scale, float anchor) {
         auto old = timeAt(anchor);
         w.pixelsPerSecond = jlimit(.005, 500.0, scale);
@@ -1371,7 +1336,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             gestureTarget = pan ? horizontal.getCurrentRangeStart() : std::log(w.pixelsPerSecond);
         }
         gestureDirection = direction;
-        gestureAnchor = e.getEventRelativeTo(this).position.x;
+
         gestureTarget = pan
             ? jlimit(0., std::max(0., horizontal.getMaximumRangeLimit() - horizontal.getCurrentRangeSize()), gestureTarget + delta)
             : jlimit(std::log(.005), std::log(500.), gestureTarget + delta);
@@ -1384,7 +1349,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     Workspace &w;
     int gestureMode = 0, gestureDirection = 0;
     double gestureTarget = 0, lastGestureInput = 0, lastGestureFrame = 0;
-    float gestureAnchor = 0;
+
     void stopGesture() { stopTimer(); gestureMode = 0; gestureDirection = 0; }
     void timerCallback() override {
         if (!gestureMode) return;
@@ -1395,7 +1360,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         const double distance = gestureTarget - current;
         const bool settled = std::abs(distance) < (gestureMode == 1 ? .0005 : .2);
         const double next = settled ? gestureTarget : current + distance * (1 - std::exp(-dt / .065));
-        if (gestureMode == 1) applyZoom(std::exp(next), gestureAnchor);
+        if (gestureMode == 1) applyCursorZoom(std::exp(next));
         else horizontal.setCurrentRangeStart(next);
         if (settled) stopGesture();
     }
@@ -1420,33 +1385,29 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             g.setColour(theme::display);
             g.fillRect(0, 0, getWidth(), ruler);
             g.setFont(theme::font(10));
-            const double beat = 60.0 / song->bpm * 4 / std::max(1, song->beatUnit);
-            double bar = beat * song->beatsPerBar;
-            int barStep = 1;
-            while (bar * t.w.pixelsPerSecond * barStep < 42)
-                barStep *= 2;
-            int labelStep = barStep;
-            const double labelSpacing = 130 + 50 * jlimit(0., 1., -std::log10(t.w.pixelsPerSecond));
-            while (bar * t.w.pixelsPerSecond * labelStep < labelSpacing)
-                labelStep *= 2;
-            auto first = (int)std::floor(viewStart / (bar * barStep));
-            for (int i = std::max(0, first); i * bar * barStep < viewEnd + bar * barStep; ++i) {
-                double time = i * bar * barStep;
-                float x = t.xAt(time);
-                g.setColour(theme::line.withAlpha(.45f));
-                g.drawVerticalLine((int)x, 48, (float)getHeight());
+            const auto grid = timelineGrid::ticks(*song, viewStart, viewEnd, t.w.pixelsPerSecond);
+            const float pixel = 1.f / std::max(1.f, g.getInternalContext().getPhysicalPixelScaleFactor());
+            const auto lineX = [&](double time) { return std::floor(t.xAt(time) / pixel) * pixel; };
+            for (const auto &tick : grid) {
+                const float x = lineX(tick.time);
                 g.setColour(theme::green.withAlpha(.65f));
-                g.drawVerticalLine((int)x, 48, 53);
-                if ((i * barStep) % labelStep == 0) {
-                    const auto milliseconds = (int64)std::llround(time * 1000);
-                    auto label = clockText(milliseconds / 1000., true);
-                    if (milliseconds % 1000 != 0)
-                        label += "." + String(milliseconds % 1000).paddedLeft('0', 3);
-                    g.setFont(
-                        Font(FontOptions(Font::getDefaultMonospacedFontName(), 9.f, Font::plain)));
-                    g.drawText(label, (int)x + 3, 48, 120, 16, Justification::centredLeft);
+                g.fillRect(x, 48.f, pixel, tick.primary ? 5.f : 3.f);
+                if (tick.label.isNotEmpty()) {
+                    g.setFont(Font(FontOptions(Font::getDefaultMonospacedFontName(), 9.f, Font::plain)));
+                    g.drawText(tick.label, (int)x + 3, 48, 124, 16, Justification::centredLeft);
                 }
             }
+            const bool showGrid = t.w.appearance.gridlines() &&
+                (!song->timeSettings || song->timeSettings->divisions != 0);
+            const auto drawGrid = [&](float top, float bottom) {
+                if (!showGrid || bottom <= top) return;
+                for (const auto &tick : grid) {
+                    g.setColour(tick.primary ? t.w.appearance.colour("jaras.timeline.primaryGrid", 0x535250)
+                        : t.w.appearance.colour("jaras.timeline.secondaryGrid", 0x333235).withAlpha(.85f));
+                    g.fillRect(lineX(tick.time), top, pixel, bottom - top);
+                }
+            };
+            drawGrid((float)ruler, (float)getHeight());
             if (song->markers)
                 for (const auto &m : *song->markers) {
                     float x = t.xAt(m.position);
@@ -1496,21 +1457,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 g.fillRect(0, y, getWidth(), height);
                 g.setColour(theme::line.withAlpha(.5f));
                 g.drawHorizontalLine(y + height - 1, 0, (float)getWidth());
-                if (t.w.appearance.gridlines()) {
-                    for (int i = std::max(0, first); i * bar * barStep < viewEnd + bar * barStep;
-                         ++i) {
-                        const auto at = i * bar * barStep;
-                        g.setColour(t.w.appearance.colour("jaras.timeline.primaryGrid", 0x535250));
-                        g.drawVerticalLine((int)t.xAt(at), (float)y, (float)(y + height));
-                        if (bar * barStep * t.w.pixelsPerSecond > 64) {
-                            g.setColour(
-                                t.w.appearance.colour("jaras.timeline.secondaryGrid", 0x333235));
-                            for (int sub = 1; sub < 4; ++sub)
-                                g.drawVerticalLine((int)t.xAt(at + bar * barStep * sub / 4.),
-                                                   (float)y, (float)(y + height));
-                        }
-                    }
-                }
+                drawGrid((float)y, (float)(y + height));
                 for (const auto &clip : track.clips) {
                     float left = t.xAt(clip.startTime),
                           right = t.xAt(clip.startTime + clip.duration);
@@ -1574,6 +1521,23 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         }
                     }
                 }
+            }
+            for (const auto &region : song->parts) {
+                g.setColour(Colour(0xff000000 | region.color.value_or(0x665566)).withAlpha(.9f));
+                for (double time : {region.startTime, region.endTime}) {
+                    const float x = lineX(time);
+                    if (x >= 0 && x <= getWidth()) g.fillRect(x, (float)ruler, pixel, (float)getHeight() - ruler);
+                }
+            }
+            if (song->markers) for (const auto &marker : *song->markers) {
+                const float x = lineX(marker.position);
+                if (x < 0 || x > getWidth()) continue;
+                auto colour = Colour(0xff000000 | (marker.tempoBPM ? 0x999999 : marker.color));
+                g.setColour(colour.withAlpha(marker.unifiedRegionID || marker.sourceRegionID ? 1.f : .45f));
+                if (marker.tempoBPM) {
+                    const float dash[]{2.f, 3.f};
+                    g.drawDashedLine(Line<float>(x + pixel / 2, (float)ruler, x + pixel / 2, (float)getHeight()), dash, 2, pixel);
+                } else g.fillRect(x, (float)ruler, pixel, (float)getHeight() - ruler);
             }
             g.restoreState();
             if (song->tracks.empty()) {
@@ -1883,9 +1847,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 if (x < 0 || x > getWidth())
                     return;
                 g.setColour(colour.withAlpha(.12f));
-                g.fillRect(x - 3, 0.f, 6.f, (float)getHeight());
+                g.fillRect(x - 3, y + 9.f, 6.f, std::max(0.f, getHeight() - y - 9.f));
                 g.setColour(colour);
-                g.fillRect(x - .7f, 0.f, 1.4f, (float)getHeight());
+                g.fillRect(x - .7f, y + 9.f, 1.4f, std::max(0.f, getHeight() - y - 9.f));
                 Path p;
                 p.addTriangle(x - 5, (float)y, x + 5, (float)y, x, y + 9.f);
                 g.fillPath(p);
@@ -2032,12 +1996,11 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     tracksViewport.setScrollBarsShown(false, false);
     tracksViewport.setScrollOnDragMode(Viewport::ScrollOnDragMode::never);
     tracksViewport.addMouseListener(this, true);
-    for (auto *slider : {&masterVolume, &masterPan, &zoom}) {
+    for (auto *slider : std::initializer_list<Slider *>{&masterVolume, &masterPan, &zoom}) {
         addAndMakeVisible(*slider);
         slider->setSliderStyle(Slider::LinearHorizontal);
         slider->setTextBoxStyle(Slider::NoTextBox, false, 0, 0);
     }
-    masterVolume.setRange(0, 2, .001);
     masterVolume.setComponentID("masterVolume");
     masterPan.setComponentID("masterPan");
     masterVolume.setDoubleClickReturnValue(true, 1);
@@ -2056,10 +2019,10 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     zoom.setSkewFactorFromMidPoint(5);
     zoom.setValue(pixelsPerSecond, dontSendNotification);
     zoom.setTooltip(String::fromUTF8("Zoom: rolagem · Altura das pistas: Ctrl+rolagem · Deslocar: Shift+rolagem"));
-    zoom.onValueChange = [this] { timeline->zoomAt(zoom.getValue(), timeline->getWidth() * .5f); };
-    button("zoomOut", String::fromUTF8("−"), [this] { timeline->zoomAt(pixelsPerSecond / 1.3, timeline->getWidth() * .5f); })
+    zoom.onValueChange = [this] { timeline->zoomOnCursor(zoom.getValue()); };
+    button("zoomOut", String::fromUTF8("−"), [this] { timeline->zoomOnCursor(pixelsPerSecond / 1.3); })
         .setTooltip("Diminuir zoom (-)");
-    button("zoomIn", "+", [this] { timeline->zoomAt(pixelsPerSecond * 1.3, timeline->getWidth() * .5f); })
+    button("zoomIn", "+", [this] { timeline->zoomOnCursor(pixelsPerSecond * 1.3); })
         .setTooltip("Aumentar zoom (+)");
     button("zoomFit", "Ajustar", [this] { timeline->fit(); }).setTooltip("Mostrar o projeto inteiro (F)");
     for (auto *label : {&songDisplay, &transportTime, &footer, &tempo}) {
@@ -2150,41 +2113,15 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     button(
         "record", String::fromUTF8("● REC"), [this] { session.toggleRecording(); },
         Colour(0xff5f3030));
-    button("menu", String::fromUTF8("☰"), [self = Component::SafePointer<Workspace>(this)] {
-        if (!self)
-            return;
-        PopupMenu m;
-        m.addItem(1, String::fromUTF8("Novo projeto…   Ctrl+N"));
-        m.addItem(2, String::fromUTF8("Abrir projeto…   Ctrl+O"));
-        m.addItem(3, "Salvar   Ctrl+S");
-        m.addItem(4, String::fromUTF8("Salvar como…   Ctrl+Shift+S"));
-        m.addSeparator();
-        m.addItem(5, String::fromUTF8("Importar áudio…   Ctrl+I"));
-        m.addItem(6, String::fromUTF8("Nova música…"));
-        m.addSeparator();
-        m.addItem(7, "Atalhos de teclado");
-        m.showMenuAsync(PopupMenu::Options().withTargetComponent(self->controls["menu"]),
-                        [self](int result) {
-                            if (!self)
-                                return;
-                            self->perform([self, result] {
-                                if (result == 1)
-                                    self->newProject();
-                                if (result == 2)
-                                    self->chooseOpen();
-                                if (result == 3)
-                                    self->chooseSave();
-                                if (result == 4)
-                                    self->chooseSave(true);
-                                if (result == 5)
-                                    self->chooseImport();
-                                if (result == 6)
-                                    self->newSong();
-                                if (result == 7)
-                                    self->showShortcuts();
-                            });
-                        });
+    navigation = std::make_unique<NavigationPanel>([this] { showProjectBrowser(); }, [this] {
+        navigation->setVisible(false);
+        grabKeyboardFocus();
     });
+    addChildComponent(*navigation);
+    button("menu", String::fromUTF8("☰"), [this] {
+        navigation->setVisible(!navigation->isVisible());
+        if (navigation->isVisible()) navigation->toFront(false);
+    }).setTooltip("Menu");
     button("railProjects", String::fromUTF8("▤"), [this] {
         showProjectBrowser();
     }).setTooltip("Projetos");
@@ -2515,7 +2452,7 @@ void Workspace::resized() {
     for (auto *child : getChildren()) {
         if (dynamic_cast<ModalSheet *>(child))
             child->setBounds(getLocalBounds());
-        else if (child != caption.get() && child != projectBrowser.get() &&
+        else if (child != navigation.get() && child != caption.get() && child != projectBrowser.get() &&
                  child != loginPanel.get())
             child->setVisible(editorVisible);
     }
@@ -2528,6 +2465,8 @@ void Workspace::resized() {
         loginPanel->setBounds(0, title, getWidth(), getHeight() - title);
         loginPanel->toFront(false);
     }
+    navigation->setBounds(0, title, getWidth(), std::max(1, getHeight() - title));
+    if (navigation->isVisible()) navigation->toFront(false);
     caption->toFront(false);
     for (auto *child : getChildren())
         if (dynamic_cast<ModalSheet *>(child))
@@ -2908,6 +2847,10 @@ bool Workspace::keyPressed(const KeyPress &key) {
                     .getChildFile("Hook Developer/CatLive/qa/current.png"));
         return true;
     }
+    if (navigation->isVisible()) {
+        if (key.getKeyCode() == KeyPress::escapeKey) navigation->setVisible(false);
+        return true;
+    }
     auto *focused = Component::getCurrentlyFocusedComponent();
     if (dynamic_cast<TextEditor *>(focused))
         return retryEditorShortcut(key);
@@ -3055,12 +2998,12 @@ bool Workspace::keyPressed(const KeyPress &key) {
     }
     if (code == '+' || code == '=') {
         ++shortcutCount;
-        timeline->zoomAt(pixelsPerSecond * 1.2, 0);
+        timeline->zoomOnCursor(pixelsPerSecond * 1.2);
         return true;
     }
     if (code == '-') {
         ++shortcutCount;
-        timeline->zoomAt(pixelsPerSecond / 1.2, 0);
+        timeline->zoomOnCursor(pixelsPerSecond / 1.2);
         return true;
     }
     if (code == 'F' && !ctrl) {
@@ -4221,6 +4164,7 @@ var Workspace::diagnostics() const {
                     put(value, "export", panel->diagnostics());
                 else if (auto *panel = dynamic_cast<ImportNoticePanel *>(content))
                     put(value, "importNotice", panel->diagnostics());
+    put(value, "navigationVisible", navigation->isVisible());
     put(value, "projectBrowser", browserVisible);
     put(value, "document", session.document.getFullPathName());
     put(value, "fontFamily", theme::font(13).getTypefaceName());

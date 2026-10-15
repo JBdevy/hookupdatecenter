@@ -10,6 +10,7 @@
 #include "MixerPanel.h"
 #include "PartsPanel.h"
 #include "TunerControl.h"
+#include "NavigationPanel.h"
 namespace catlive {
 namespace remote { class Host; class Presentation; }
 class MacLook final : public LookAndFeel_V4 {
@@ -95,6 +96,7 @@ class Workspace final : public Component,
     std::unique_ptr<Setlist> setlist;
     std::unique_ptr<Component> loginPanel;
     std::unique_ptr<ProjectBrowser> projectBrowser;
+    std::unique_ptr<NavigationPanel> navigation;
     bool browserVisible = false, projectReady = false;
     juce::Rectangle<int> editorWindowBounds;
     std::unique_ptr<MidiKeyboardComponent> keyboard;
@@ -104,7 +106,8 @@ class Workspace final : public Component,
     OwnedArray<TextButton> buttons;
     std::map<String, std::unique_ptr<DocumentWindow>> floatingWindows;
     std::map<String, TextButton *> controls;
-    Slider masterVolume, masterPan, zoom;
+    GainFader masterVolume;
+    Slider masterPan, zoom;
     Label songDisplay, transportTime, footer, tempo;
     TextButton addTrack{"+"};
     std::unique_ptr<FileChooser> chooser;

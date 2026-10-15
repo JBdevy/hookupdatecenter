@@ -1,8 +1,9 @@
 param([Parameter(Mandatory=$true)][string]$Executable,[string]$OutputDirectory=(Join-Path $env:LOCALAPPDATA 'CatLiveBuild/qa/native'),[switch]$DownloadInstrument,[switch]$HomePreview,[switch]$TextOnly)
 . "$PSScriptRoot/native-ui-common.ps1"
+Add-Type -AssemblyName System.Windows.Forms
 if(Get-Process CatLive -ErrorAction SilentlyContinue | Where-Object Path -EQ ([IO.Path]::GetFullPath($Executable))){throw 'The test executable is already running.'}
 $appearanceFile=Join-Path $OutputDirectory 'appearance.json'
-$launchMode=if($HomePreview){'--home-preview'}else{'--visual-test'}
+$launchMode=if($HomePreview){'--home-preview --ui-scale 1'}else{'--visual-test --ui-scale 1'}
 if($TextOnly){$launchMode+=' --audio-fixture'}
 $process=Start-Process -FilePath $Executable -ArgumentList ($launchMode+' --appearance-file "'+$appearanceFile+'"') -WindowStyle Hidden -PassThru
 try {
@@ -24,14 +25,15 @@ try {
   [void][CatNativeUI]::SetForegroundWindow($handle)
   Click ($rect.Left+300) ($rect.Top+117);ScreenCapture 'home-add'
   Click ($rect.Left+490) ($rect.Top+117);ScreenCapture 'home-recent'
-  Click ($rect.Right-26) ($rect.Top+17)
+  Click ($rect.Right-23) ($rect.Top+17)
   if(-not $process.WaitForExit(5000)){throw 'Home preview did not close.'}
   @{success=$true;initial=$initial;home=$true}|ConvertTo-Json -Depth 8|Set-Content (Join-Path $OutputDirectory 'results.json') -Encoding utf8
   Write-Host "Home, Create/Add/Recent, REAPER/Logic selectors and close passed: $OutputDirectory"
   return
  }
  if(-not $initial.uiRegressionPassed){throw 'Embedded editing regression did not complete.'}
- [void][CatNativeUI]::SetWindowPos($handle,[IntPtr]::Zero,12,12,1280,740,0x0040)
+ $testArea=([System.Windows.Forms.Screen]::AllScreens | Sort-Object { $_.WorkingArea.Width * $_.WorkingArea.Height } -Descending | Select-Object -First 1).WorkingArea
+ [void][CatNativeUI]::SetWindowPos($handle,[IntPtr]::Zero,($testArea.Left+8),($testArea.Top+8),1280,740,0x0040)
  Start-Sleep -Milliseconds 250;$rect=Rect $handle
  [void][CatNativeUI]::SetForegroundWindow($handle)
  Click ($rect.Left+450) ($rect.Top+17)
@@ -498,18 +500,20 @@ try {
  $fit=Capture 'timeline-fit'
  if($fit.timeline.horizontal -ne 0 -or $fit.timeline.zoom -ge 2 -or $fit.timeline.zoom*1680 -gt $fit.timeline.width){throw 'Fit did not display the full 28-minute inspection timeline.'}
  [void][CatNativeUI]::SetForegroundWindow($handle)
- Click ($rect.Right-52) ($rect.Top+17)
+ Click ($rect.Right-69) ($rect.Top+17)
  if(-not [CatNativeUI]::IsZoomed($handle)){throw 'Custom maximize button failed.'}
  $maximized=Rect $handle;ScreenCapture 'maximized'
- Click ($maximized.Right-52) ($maximized.Top+17)
+ $workArea=[System.Windows.Forms.Screen]::FromHandle($handle).WorkingArea
+ if($maximized.Left -lt $workArea.Left -or $maximized.Top -lt $workArea.Top -or $maximized.Right -gt $workArea.Right -or $maximized.Bottom -gt $workArea.Bottom){throw 'Maximized window covers the Windows taskbar.'}
+ Click ($maximized.Right-69) ($maximized.Top+17)
  if([CatNativeUI]::IsZoomed($handle)){throw 'Custom restore button failed.'}
  $restored=Rect $handle
- Click ($restored.Right-78) ($restored.Top+17)
+ Click ($restored.Right-115) ($restored.Top+17)
  if(-not [CatNativeUI]::IsIconic($handle)){throw 'Custom minimize button failed.'}
  [void][CatNativeUI]::ShowWindow($handle,9);[void][CatNativeUI]::SetForegroundWindow($handle)
  Start-Sleep -Milliseconds 180
  $restored=Rect $handle
- Click ($restored.Right-26) ($restored.Top+17)
+ Click ($restored.Right-23) ($restored.Top+17)
  Start-Sleep -Milliseconds 250;$process.Refresh()
  if(-not $process.HasExited){
   $dialog=[Windows.Automation.AutomationElement]::FromHandle([CatNativeUI]::GetForegroundWindow())

@@ -95,7 +95,7 @@ class ActionsPage final : public Component, private ChangeListener {
             for (auto *component : std::initializer_list<Component *>{&name, &reset, &input,
                                                                       &remove, &track, &target})
                 addAndMakeVisible(component);
-            name.setText(action.title, dontSendNotification);
+            name.setText(String::fromUTF8(action.title), dontSendNotification);
             name.setFont(theme::semiboldFont(13));
             reset.getProperties().set("flat", true);
             reset.getProperties().set("fontSize", 12);
@@ -110,7 +110,7 @@ class ActionsPage final : public Component, private ChangeListener {
             input.kind = kind;
             input.listening = listening;
             input.locked = kind == "keyboard" && action.fixedKeyboard();
-            input.setTooltip(String(action.title) + " " + kind);
+            input.setTooltip(String::fromUTF8(action.title) + " " + kind);
             input.onClick = [this] {
                 page.actions.begin(action.id, kind);
                 page.grabKeyboardFocus();

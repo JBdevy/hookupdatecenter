@@ -307,7 +307,7 @@ class SettingsPanel final : public Component {
         label(String::fromUTF8("Buffers menores reduzem a latência e usam mais CPU."), 534, 26,
               false, theme::secondary);
         button("Atualizar dispositivos", 24, 574, 190, [this] { refreshLater(); });
-        button("Canais de entrada e saída", 230, 574, 230, [this] {
+        button(String::fromUTF8("Canais de entrada e saída"), 230, 574, 230, [this] {
             auto selector = std::make_unique<AudioDeviceSelectorComponent>(
                 session.audio.devices, 0, 32, 0, 32, false, false, true, false);
             selector->setSize(600, 420);

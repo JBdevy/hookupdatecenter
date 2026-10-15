@@ -52,3 +52,15 @@ O lote não encerra a comparação das 137 referências. Ainda revisar menus e
 estados condicionais, além de Mixer/Setlist/Parts simultâneos abaixo de 900 px
 lógicos. Testes de equipamentos e assinatura/publicação continuam pendentes.
 Correção do desktop virtual do Actions preparada; aguardar execução do commit.
+
+ATUALIZAÇÃO — LOTE VISUAL 2, 15/10/2026
+Concluído build Release 1.02: 14 CTest, 41 cenários de integração, nenhum pulado,
+SF2 real incluído. Smoke completo, Home e matriz visual aprovados no Windows.
+Menu lateral Projetos/Live Session, UTF-8, grade por andamento/compasso, limites
+de regiões/marcadores, zoom no cursor de edição, medidores compactos, fader em
+dB (-60..+12), cursor da ponta da seta para baixo e escala padrão 90% corrigidos.
+Controles de janela seguem o Windows, por pedido explícito do usuário.
+Maximização respeita WorkingArea a 90/100/125/150/200% de escala interna.
+13 abas e 5 tamanhos de janela testados; DPI físico permaneceu 96.
+Capturas em evidence/batch2; CatStemSeparation 5 ainda NÃO implementado.
+Este lote não encerra o restante da lista funcional nem a revisão das 137 referências.

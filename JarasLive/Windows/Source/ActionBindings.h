@@ -190,7 +190,7 @@ class ActionBindings final : public ChangeBroadcaster,
             const auto key = KeyPress::createFromDescription(input.toString());
             if (key.getModifiers().isCtrlDown() &&
                 String("QONSIYZ,").containsChar((juce_wchar)key.getKeyCode())) {
-                error = "Este atalho pertence ao menu de projetos e edição.";
+                error = String::fromUTF8("Este atalho pertence ao menu de projetos e edição.");
                 sendChangeMessage();
                 return false;
             }

@@ -1,5 +1,6 @@
 #pragma once
 #include "Session.h"
+#include "GainFader.h"
 namespace catlive {
 class MixerPanel final : public Component, private Timer {
   public:
@@ -85,7 +86,6 @@ class MixerPanel final : public Component, private Timer {
             };
             addAndMakeVisible(fader);
             fader.setComponentID("mixerFader");
-            fader.setRange(0, 2, .001);
             fader.setSliderStyle(Slider::LinearVertical);
             fader.setTextBoxStyle(Slider::NoTextBox, false, 0, 0);
             fader.setDoubleClickReturnValue(true, 1);
@@ -187,7 +187,8 @@ class MixerPanel final : public Component, private Timer {
         MixerPanel &mixer;
         ID id;
         TextButton fx{"FX"}, mute{"M"}, solo{"S"}, phase{String::fromUTF8("Ø")}, record{"REC"};
-        Slider fader, pan;
+        GainFader fader;
+        Slider pan;
         void command(jaras::CommandKind kind, double value = 0) {
             try {
                 mixer.session.command(kind, id, value);
