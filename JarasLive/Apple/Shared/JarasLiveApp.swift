@@ -151,7 +151,8 @@ struct RootView: View {
         #if os(macOS)
         .frame(minWidth: documents.ready ? 1408 : 600, minHeight: documents.ready ? 650 : 460)
         .background(TrialTitlebar(auth: auth))
-        .background(ProjectWindowSizing(editor: documents.ready, documents: documents))
+        .background(ProjectWindowSizing(editor: documents.ready && auth.workspaceAllowed,
+                                        login: !auth.workspaceAllowed, documents: documents))
         .overlay {
             GeometryReader { geometry in
                 JarasTheme.titlebar

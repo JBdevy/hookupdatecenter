@@ -12,6 +12,15 @@ struct LoginView: View {
     var onAuthorized: () -> Void = {}
     @FocusState private var field: Int?
     var body: some View {
+        GeometryReader { geometry in
+            ScrollView(.vertical) {
+                card
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: geometry.size.height)
+            }
+        }.background(JarasTheme.background)
+    }
+    private var card: some View {
         VStack(spacing: 22) {
             Image("CatLiveSplash").resizable().scaledToFit().frame(width: 160, height: 160)
             if auth.requiresDeviceName {
@@ -56,9 +65,8 @@ struct LoginView: View {
             if !auth.message.isEmpty { Text(auth.message).font(.footnote).foregroundStyle(JarasTheme.yellow).fixedSize(horizontal: false, vertical: true) }
             if !auth.requiresDeviceName { Text(offersTrial ? "Use o e-mail e o CPF da sua compra.\nO trial começa no primeiro acesso neste dispositivo." : "Use o e-mail e o CPF da sua compra.")
                 .font(.caption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center) }
-        }.padding(30).frame(width: 440).background(JarasTheme.panel)
+        }.padding(30).frame(maxWidth: 440).background(JarasTheme.panel)
             .clipShape(RoundedRectangle(cornerRadius: 16)).padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity).background(JarasTheme.background)
             .onChange(of: auth.requiresDeviceName) { naming in
                 if naming { cpf = ""; field = 3 }
             }
@@ -187,7 +195,7 @@ struct LicenseNotice: View {
             }
         }
         .sheet(isPresented: $signingIn) {
-            LoginView(auth: auth, backend: backend, offersTrial: false, onAuthorized: { signingIn = false }).frame(width: 550, height: 620)
+            LoginView(auth: auth, backend: backend, offersTrial: false, onAuthorized: { signingIn = false }).frame(width: 550, height: 700)
         }
         .task(id: auth.graceNotice) {
             showingGrace = !auth.graceNotice.isEmpty; graceSeconds = 5

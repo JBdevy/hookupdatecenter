@@ -683,9 +683,9 @@ precondition(!engine.isRunning, "stop suspends the audio engine")
 snapshot.project.songs[0].tracks[0].mute = false
 snapshot.transport.subPlay.playing = true
 snapshot.transport.subPlay.position = 0
-snapshot.project.songs[0].timeSettings = ProjectTimeSettings()
-snapshot.project.songs[0].timeSettings?.timebase = .relative
-snapshot.project.songs[0].followTempo(180)
+// This DC fixture measures absolute mixer gain and a gapless promotion.
+// TimePitch's treatment of DC at non-unit rates is not an amplitude reference;
+// exercise changed-tempo dual playback separately with musical PCM below.
 try renderer.update(snapshot, revision: 3)
 let dual = try peak()
 precondition(dual > 0.16 && dual < 0.24, "main and subplay mix independent streams: \(dual)")
@@ -708,6 +708,42 @@ precondition(handoffMinimum > 0.07, "promoted subplay must keep its existing str
 let handoffMaximum = (64..<Int(output.frameLength)).map { abs(output.floatChannelData![0][$0]) }.max() ?? 0
 precondition(handoffMaximum < 0.13, "promotion stops only the former main stream, without doubling the promoted audio")
 print("SUBPLAY_HANDOFF_PCM_OK")
+do {
+    func headPCM(main: Bool, sub: Bool, bpm: Double) throws -> [Float] {
+        let testEngine = AVAudioEngine()
+        try testEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+        let audio = StemAudioPlayback(engine: testEngine, realtime: false)
+        audio.open(directory: directory); defer { audio.prepareForClosing() }
+        var fixture = project
+        fixture.songs[0].tracks[0].clips[0].audioFile = AudioFile(path: "tempo-tone.wav")
+        fixture.songs[0].timeSettings = ProjectTimeSettings()
+        fixture.songs[0].timeSettings?.timebase = .relative
+        fixture.songs[0].followTempo(bpm)
+        let state = ShowSnapshot(project: fixture, transport: TransportState(playing: main,
+            songId: fixture.songs[0].id, position: 0.2, queue: QueueState(), loop: LoopState(enabled: false),
+            subPlay: SubPlayState(playing: sub, position: 0.7)))
+        try audio.update(state, revision: 1)
+        let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
+        var samples: [Float] = []
+        for block in 0..<48 {
+            let status = try testEngine.renderOffline(512, to: buffer)
+            precondition(status == .success, "independent-head reference renders")
+            if block >= 24 { samples += Array(UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength))) }
+        }
+        return samples
+    }
+    for bpm in [90.0, 120.0, 180.0] {
+        let main = try headPCM(main: true, sub: false, bpm: bpm)
+        let sub = try headPCM(main: false, sub: true, bpm: bpm)
+        let both = try headPCM(main: true, sub: true, bpm: bpm)
+        precondition(main.count == sub.count && main.count == both.count && !main.isEmpty)
+        precondition(main.map { abs($0) }.max()! > 0.05 && sub.map { abs($0) }.max()! > 0.05,
+                     "each transport head must produce audible PCM at \(bpm) BPM")
+        let difference = zip(zip(main, sub), both).map { abs($0.0.0 + $0.0.1 - $0.1) }.max()!
+        precondition(difference < 0.001, "dual PCM equals the sum of independent cursors at \(bpm) BPM: \(difference)")
+    }
+    print("MAIN_SUBPLAY_CHANGED_TEMPO_INDEPENDENT_PCM_SUM_OK")
+}
 snapshot.project.songs[0].tracks[0].clips[0].muted = true
 try renderer.update(snapshot, revision: 4)
 renderer.previewItemGain(gainItemID, gain: 2)

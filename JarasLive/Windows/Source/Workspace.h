@@ -62,6 +62,8 @@ class Workspace final : public Component,
     void chooseSoundFont();
     void openVideo();
     void runUIRegression();
+    void showLoginPreview();
+    void showImportNoticePreview();
     void showError(const String &);
     void showProjectBrowser();
     void projectOpened(bool fitTimeline = true);

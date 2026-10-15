@@ -2293,6 +2293,53 @@ int runTests(const File &directory) {
         expect(std::abs(gain(-80, 12) - std::pow(10., 24. / 20)) < 1e-9 && gain(-200, -1) == 1,
                "Normalization gain limit or silence handling changed");
     });
+    test("Large timeline streams first and last files, independent heads and loop seeks with a bounded cache", [&] {
+        const auto media = directory.getChildFile("large-streams"); media.createDirectory();
+        const auto source = media.getChildFile("source.wav");
+        {
+            WavAudioFormat wav;
+            auto stream = std::make_unique<FileOutputStream>(source);
+            std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(), 48000, 2, 24, {}, 0));
+            expect(writer != nullptr, "Cannot write streaming fixture"); stream.release();
+            AudioBuffer<float> pcm(2, 48000);
+            for (int c = 0; c < 2; ++c) FloatVectorOperations::fill(pcm.getWritePointer(c), .1f, 48000);
+            expect(writer->writeFromAudioSampleBuffer(pcm, 0, 48000), "Cannot write fixture PCM");
+        }
+        jaras::Song song; song.id = uuid(); song.duration = 1500; song.bpm = 120;
+        jaras::Track track; track.id = uuid(); track.role.id = "other";
+        for (int i = 0; i < 300; ++i) {
+            const auto name = String(i) + ".wav";
+            expect(source.copyFileTo(media.getChildFile(name)), "Cannot copy fixture");
+            jaras::AudioClip clip; clip.id = uuid(); clip.startTime = i * 5.; clip.duration = 1;
+            clip.audioFile = jaras::AudioFile{utf8(name), {}};
+            if (i == 299) { clip.duration = 4; clip.loopStart = 0; clip.loopLength = 1; }
+            track.clips.push_back(clip);
+        }
+        song.tracks = {track};
+        AudioEngine audio; audio.prepareOffline(48000); audio.prepareSong(song, media);
+        expect(audio.missingFiles.isEmpty() && audio.residentStreams() == 0, "Idle timeline eagerly opened stream buffers");
+        AudioBuffer<float> output(2, 512);
+        auto verify = [&](double position, bool secondary, float expected) {
+            AudioEngine::State state; state.playing = true; state.position = position;
+            state.subPlaying = secondary; state.subPosition = .25;
+            audio.transport(state);
+            const auto before = audio.getUnderruns();
+            audio.render(output.getArrayOfWritePointers(), 2, 512);
+            expect(audio.getUnderruns() == before, "First block after seek was not ready");
+            for (int c = 0; c < 2; ++c) for (int n = 0; n < 512; ++n)
+                expect(std::abs(output.getSample(c, n) - expected) < .001f, "Large project lost or doubled PCM");
+        };
+        verify(.25, false, .1f);
+        verify(1495.25, true, .2f);
+        verify(1497.99, false, .1f);
+        expect(audio.residentStreams() <= 4, "Cache grew with total project files");
+        const auto deadline = Time::getMillisecondCounter() + 5000;
+        while (audio.residentStreams() > 0 && (int32)(Time::getMillisecondCounter() - deadline) < 0) Thread::sleep(20);
+        expect(audio.residentStreams() == 0, "Unused readers were not retired");
+        audio.setOffline(true);
+        verify(1498.1, true, .2f);
+        expect(audio.residentStreams() <= 2, "Export reopened unrelated timeline files");
+    });
     auto report = object();
     Array<var> names;
     for (auto &name : passed)

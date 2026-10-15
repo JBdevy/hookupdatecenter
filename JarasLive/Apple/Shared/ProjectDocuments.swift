@@ -1583,9 +1583,10 @@ final class ProjectTitlebarAnchor<Content: View>: NSView {
 
 struct ProjectWindowSizing: NSViewRepresentable {
     let editor: Bool
+    var login = false
     let documents: ProjectDocuments
     func makeNSView(context: Context) -> ProjectWindowAnchor { ProjectWindowAnchor() }
-    func updateNSView(_ view: ProjectWindowAnchor, context: Context) { view.editor = editor; view.documents = documents; view.update() }
+    func updateNSView(_ view: ProjectWindowAnchor, context: Context) { view.editor = editor; view.login = login; view.documents = documents; view.update() }
 }
 // The native window already has explicit editor/browser bounds. Do not ask
 // SwiftUI to measure its entire document again for minimum, ideal and maximum
@@ -1612,6 +1613,7 @@ final class ProjectWindowAnchor: NSView {
         window.setFrame(frame, display: false)
     }
     var editor = false
+    var login = false
     weak var documents: ProjectDocuments?
     private var applied: NSSize?
     private weak var configuredWindow: NSWindow?
@@ -1703,14 +1705,14 @@ final class ProjectWindowAnchor: NSView {
             observeTitlebar(window)
         }
         let reviewing = documents?.folderReview != nil
-        let size = editor ? Self.editorFrameSize : reviewing ? NSSize(width: 840, height: 540) : NSSize(width: 600, height: 460)
+        let size = editor ? Self.editorFrameSize : login ? NSSize(width: 600, height: 760) : reviewing ? NSSize(width: 840, height: 540) : NSSize(width: 600, height: 460)
         guard applied != size else { return }
         rememberPlacement()
         remembersPlacement = false
         applied = size
         let isEditor = editor
         DispatchQueue.main.async { [weak self, weak window] in
-            guard let self, let window, self.editor == isEditor else { return }
+            guard let self, let window, self.editor == isEditor, self.applied == size else { return }
             window.minSize = isEditor ? NSSize(width: 1408, height: 682) : reviewing ? NSSize(width: 760, height: 460) : NSSize(width: 600, height: 460)
             if isEditor {
                 let available = window.screen?.visibleFrame.size ?? size
@@ -1721,7 +1723,9 @@ final class ProjectWindowAnchor: NSView {
             } else {
                 // These sizes described the full window with the previous
                 // full-size content host; keep that same outer geometry.
-                window.setFrame(NSRect(origin: window.frame.origin, size: size), display: true)
+                let available = window.screen?.visibleFrame.size ?? size
+                let fitted = NSSize(width: min(size.width, available.width), height: min(size.height, available.height))
+                window.setFrame(NSRect(origin: window.frame.origin, size: fitted), display: true)
             }
             if !isEditor { window.center() }
         }

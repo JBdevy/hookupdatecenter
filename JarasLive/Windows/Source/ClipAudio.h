@@ -53,6 +53,11 @@ class ClipAudio {
             head.next = -1;
         }
     }
+    double sourcePosition(double local) const {
+        const double source = offset + std::max(0., local) * speed;
+        return loopLength > 0 && source >= loopStart
+            ? loopStart + std::fmod(source - loopStart, loopLength) : source;
+    }
     bool render(AudioFormatReader &reader, AudioBuffer<float> &scratch, AudioBuffer<float> &output,
                 int headIndex, double local, int count) {
         auto &head = heads[(size_t)headIndex];

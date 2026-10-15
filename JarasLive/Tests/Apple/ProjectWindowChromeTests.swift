@@ -95,6 +95,11 @@ MainActor.assumeIsolated {
     window.contentView!.addSubview(anchor)
     settle(window)
     precondition(window.frame.size == NSSize(width: 600, height: 460), "browser must not gain an extra titlebar height")
+    anchor.login = true; anchor.update(); settle(window)
+    let availableHeight = window.screen?.visibleFrame.height ?? 760
+    precondition(window.frame.height == min(760, availableHeight), "login opens tall enough for credentials, bounded by the display")
+    anchor.login = false; anchor.update(); settle(window)
+    precondition(window.frame.size == NSSize(width: 600, height: 460), "authorized browser restores its own size")
     documents.folderReview = true; anchor.update(); settle(window)
     precondition(window.frame.size == NSSize(width: 840, height: 540))
     anchor.editor = true; anchor.update(); settle(window)

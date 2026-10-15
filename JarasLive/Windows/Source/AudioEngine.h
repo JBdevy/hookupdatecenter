@@ -2,6 +2,7 @@
 #include "Common.h"
 #include "../../Core/Transport/PlaybackScope.hpp"
 #include "NativeFX.h"
+#include "StreamingReader.h"
 #include "Instrument.h"
 #include "Automation.h"
 #include "ClickProgram.h"
@@ -94,6 +95,12 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         return 0;
     }
     uint64 getUnderruns() const { return underruns.load(); }
+    int residentStreams() const {
+        std::set<const StreamingReader*> active;
+        for (const auto& voice : voices) for (const auto& reader : voice->source->readers)
+            if (reader->cached()) active.insert(reader.get());
+        return (int)active.size();
+    }
     double cpu() const { return devices.getCpuUsage(); }
     void render(float *const *output, int channels, int samples,
                 const float *const *input = nullptr, int inputChannels = 0);
@@ -102,8 +109,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
 
   private:
     struct Source {
-        std::unique_ptr<BufferingAudioReader> readers[2];
-        AudioBuffer<float> scratch[2];
+        std::unique_ptr<StreamingReader> readers[2];
     };
     struct Voice {
         ID track;
@@ -154,6 +160,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::atomic<int> keyboardTarget{-1};
     var masterFXSettings;
     AudioBuffer<float> masterBuffer{2, 4096};
+    AudioBuffer<float> readScratch[2]{{2, 131080}, {2, 131080}};
     AudioBuffer<float> liveRecordBuffer{2, 4096};
     std::array<std::array<double, 4096>, 2> timelinePositions{};
     ClickProgram metronome;

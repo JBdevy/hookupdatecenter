@@ -362,33 +362,22 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 if (found != sources.end())
                     voice->source = found->second;
                 else {
-                    if (sources.size() >= 256)
-                        throw std::runtime_error("Too many simultaneous streaming files.");
-                    voice->source = std::make_shared<Source>();
-                }
-                bool valid = true;
-                for (int h = 0; h < 2; ++h) {
-                    if (found == sources.end()) {
-                        std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
-                        if (!reader || reader->sampleRate <= 0 || reader->sampleRate > 384000 ||
-                            reader->numChannels == 0) {
-                            valid = false;
-                            break;
-                        }
-                        voice->source->readers[h] = std::make_unique<BufferingAudioReader>(
-                            reader.release(), readAhead, 131072);
-                        voice->source->readers[h]->setReadTimeout(0);
-                        voice->source->scratch[h].setSize(2, 131080, false, true);
+                    std::unique_ptr<AudioFormatReader> metadata(formats.createReaderFor(file));
+                    if (!metadata || metadata->sampleRate <= 0 || metadata->sampleRate > 384000 ||
+                        metadata->numChannels == 0) {
+                        missingFiles.addIfNotAlreadyThere(file.getFullPathName());
+                        continue;
                     }
+                    voice->source = std::make_shared<Source>();
+                    for (int h = 0; h < 2; ++h)
+                        voice->source->readers[h] = std::make_unique<StreamingReader>(file, *metadata, formats, readAhead);
+                }
+                for (int h = 0; h < 2; ++h) {
                     voice->processed[h].setSize(2, 4096);
                     voice->fxSettings = clip.fxJSON ? JSON::parse(text(*clip.fxJSON)) : var();
                     voice->fx[h].prepare(voice->fxSettings, rate.load());
                     for (auto value : voice->fx[h].unsupported)
                         unsupported.addIfNotAlreadyThere(text(clip.name) + ": " + value);
-                }
-                if (!valid) {
-                    missingFiles.addIfNotAlreadyThere(file.getFullPathName());
-                    continue;
                 }
                 sources[sourceKey] = voice->source;
                 voice->track = track.id;
@@ -431,6 +420,32 @@ void AudioEngine::enqueue(const Update &update) {
         throw std::runtime_error("Audio command queue is full. Stop and retry.");
 }
 void AudioEngine::transport(const State &state) {
+    // Prime all required sources together before publishing a new seek/start.
+    // The ongoing device callback continues with its current transport meanwhile.
+    std::vector<std::pair<StreamingReader*, int64>> pending;
+    for (int head = 0; head < 2; ++head) {
+        if (head == 1 && !state.subPlaying) continue;
+        const auto cursor = head == 0 ? state.position : state.subPosition;
+        for (auto& voice : voices) {
+            if (!state.scope[head].allows(voice->playbackStart) || voice->start > cursor + 2 ||
+                voice->start + voice->duration <= cursor) continue;
+            auto* reader = voice->source->readers[head].get();
+            const double local = std::max(0., cursor - voice->start);
+            const double source = voice->clipAudio ? voice->clipAudio->sourcePosition(local) : voice->offset + local * voice->speed;
+            const auto position = (int64)std::floor(source * reader->sampleRate);
+            reader->request(position);
+            if (voice->start <= cursor) pending.emplace_back(reader, position);
+        }
+    }
+    const auto deadline = Time::getMillisecondCounter() + 2000;
+    while (!pending.empty()) {
+        pending.erase(std::remove_if(pending.begin(), pending.end(), [](const auto& entry) {
+            return entry.first->ready(entry.second);
+        }), pending.end());
+        if (pending.empty() || (int32)(Time::getMillisecondCounter() - deadline) >= 0) break;
+        Thread::sleep(1);
+    }
+
     Update u;
     u.kind = Update::transport;
     u.state = state;
@@ -473,7 +488,7 @@ AudioEngine::State AudioEngine::state() const {
 void AudioEngine::setOffline(bool enabled) {
     for (auto &voice : voices)
         for (auto &reader : voice->source->readers)
-            reader->setReadTimeout(enabled ? 5000 : 0);
+            reader->setOffline(enabled);
 }
 double AudioEngine::takeElapsed() { return (double)elapsedSamples.exchange(0) / rate.load(); }
 void AudioEngine::applyUpdates() {
@@ -515,7 +530,7 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
     const double step = reader.sampleRate / sr * v.speed;
     if (step <= 0 || (!v.clipAudio && step > 32))
         return;
-    auto &scratch = v.source->scratch[head];
+    auto &scratch = readScratch[head];
     if (v.clipAudio) {
         if (!v.clipAudio->render(reader, scratch, v.processed[head], head,
                                  at + begin / sr - v.start, end - begin)) {
@@ -664,9 +679,11 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             int count = std::min(samples - done,
                                  std::max(1, (int)std::ceil((boundary - cursor) * sr - 1e-7)));
             for (auto &v : voices)
-                if (audible[v->bus] && current.scope[head].allows(v->playbackStart))
-                    mixVoice(*v, head, cursor, buses[v->bus]->head(head).getArrayOfWritePointers(),
-                             2, done, count);
+                if (audible[v->bus] && current.scope[head].allows(v->playbackStart)) {
+                    if (v->start > cursor && v->start <= cursor + 2)
+                        v->source->readers[head]->request((int64)std::floor((v->clipAudio ? v->clipAudio->sourcePosition(0) : v->offset) * v->source->readers[head]->sampleRate));
+                    mixVoice(*v, head, cursor, buses[v->bus]->head(head).getArrayOfWritePointers(), 2, done, count);
+                }
             for (size_t index = 0; index < buses.size(); ++index)
                 if (audible[index] && buses[index]->midi)
                     buses[index]->midi->render(head, cursor, buses[index]->head(head), done, count, current.scope[head]);

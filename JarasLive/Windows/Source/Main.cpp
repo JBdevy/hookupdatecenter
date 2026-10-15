@@ -29,7 +29,7 @@ class CatLiveApplication final : public JUCEApplication {
                                               BinaryData::icon2561x_pngSize));
             const auto area = Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
             if (content->isProjectBrowserShowing())
-                centreWithSize(600, 700);
+                centreWithSize(600, std::min(760, area.getHeight()));
             else
                 centreWithSize(std::max(1280, std::min(1680, area.getWidth() - 16)),
                                std::max(720, std::min(1020, area.getHeight() - 16)));
@@ -136,6 +136,10 @@ class CatLiveApplication final : public JUCEApplication {
             window = std::make_unique<Window>(content, visualTest);
             if (previewHome)
                 content->showProjectBrowser();
+            if (previewHome && args.contains("--login-preview"))
+                content->showLoginPreview();
+            if (previewHome && args.contains("--import-notice-preview"))
+                content->showImportNoticePreview();
             if (!visualTest)
                 Timer::callAfterDelay(1600, [this] {
                     if (closing) return;

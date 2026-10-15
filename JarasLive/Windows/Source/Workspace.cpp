@@ -2,6 +2,7 @@
 #include "Projection.h"
 #include "PortablePackage.h"
 #include "ProjectMigration.h"
+#include "ImportNoticePanel.h"
 #include "AdvancedPanel.h"
 #include "SettingsPanel.h"
 #include "StagePanels.h"
@@ -611,20 +612,33 @@ class LoginPanel final : public Panel {
             Colour(0xff32593e));
         stage = &button("Login", 30, 261, 184, [this] {
             entering = true;
-            if (auto *parent = getParentComponent())
-                parent->resized();
+            stage->setToggleState(true, dontSendNotification);
+            if (layoutChanged) layoutChanged();
             resized();
             email->grabKeyboardFocus();
         });
         trial = &button(String::fromUTF8("Trial teste · 7 dias"), 226, 261, 184,
                         [this] { auth.trial(auth.deviceName); });
         manage = &button("Gerenciar dispositivos", 30, 443, 380, [this] { devices(); });
+        for (auto *b : {stage, trial, login}) {
+            b->getProperties().set("fontSize", 18.f);
+            b->setColour(TextButton::buttonColourId, Colour(0xff4b845c));
+            b->setColour(TextButton::buttonOnColourId, theme::accent);
+            b->setColour(TextButton::textColourOnId, Colours::black);
+        }
+        login->setToggleState(true, dontSendNotification);
+        manage->getProperties().set("fontSize", 16.f);
+        manage->getProperties().set("flat", true);
+        for (auto *field : {email, cpf}) field->setFont(theme::font(18));
+        subtitle.setFont(theme::font(14));
+        email->onTextChange = cpf->onTextChange = [this] { update(); };
         addAndMakeVisible(message);
         message.setColour(Label::textColourId, theme::yellow);
         message.setFont(theme::font(12));
         message.setJustificationType(Justification::centred);
         cpf->onReturnKey = [this] { login->triggerClick(); };
         email->onReturnKey = [this] { cpf->grabKeyboardFocus(); };
+        update();
     }
     void paint(Graphics &g) override {
         g.setColour(theme::panel);
@@ -632,17 +646,26 @@ class LoginPanel final : public Panel {
         g.drawImageWithin(logo, (getWidth() - 160) / 2, 30, 160, 160, RectanglePlacement::centred);
     }
     int preferredHeight() const { return entering ? 630 : 440; }
+    std::function<void()> layoutChanged;
     void resized() override {
+        stage->setBounds((getWidth() - 238) / 2, 261, 70, 42);
+        trial->setBounds((getWidth() - 238) / 2 + 82, 261, 156, 42);
+        email->setBounds(30, 325, getWidth() - 60, 30);
+        cpf->setBounds(30, 367, getWidth() - 60, 30);
+        login->setBounds(30, 409, 80, 42);
+        manage->setBounds(30, 463, 200, 30);
         title.setBounds(30, 212, getWidth() - 60, 27);
         for (auto *component : {static_cast<Component *>(email), static_cast<Component *>(cpf),
                                 static_cast<Component *>(login), static_cast<Component *>(manage)})
             if (component)
                 component->setVisible(entering);
-        subtitle.setBounds(30, entering ? 493 : 317, getWidth() - 60, 42);
-        message.setBounds(30, entering ? 550 : 374, getWidth() - 60, 50);
+        subtitle.setBounds(30, entering ? 523 : 329, getWidth() - 60, 42);
+        message.setBounds(30, entering ? 572 : 378, getWidth() - 60, 50);
     }
     void update() {
-        login->setEnabled(!auth.busy);
+        const bool credentials = email->getText().isNotEmpty() && cpf->getText().isNotEmpty();
+        login->setEnabled(!auth.busy && credentials);
+        manage->setEnabled(!auth.busy && credentials);
         trial->setEnabled(!auth.busy);
         stage->setEnabled(!auth.busy);
         message.setText(auth.busy ? String::fromUTF8("Validando acesso…") : auth.message,
@@ -713,15 +736,25 @@ class LoginBackdrop final : public Component {
   public:
     explicit LoginBackdrop(Auth &auth) : panel(auth) {
         setOpaque(true);
-        addAndMakeVisible(panel);
+        addAndMakeVisible(viewport);
+        viewport.setViewedComponent(&content, false);
+        viewport.setScrollBarsShown(true, false);
+        viewport.setScrollBarThickness(8);
+        content.addAndMakeVisible(panel);
+        panel.layoutChanged = [this] { resized(); };
     }
     void paint(Graphics &g) override { g.fillAll(theme::background); }
     void resized() override {
-        panel.setBounds((getWidth() - 440) / 2,
-                        std::max(8, (getHeight() - panel.preferredHeight()) / 2), 440,
+        viewport.setBounds(getLocalBounds());
+        const int height = std::max(getHeight(), panel.preferredHeight() + 48);
+        content.setSize(std::max(1, getWidth() - 8), height);
+        panel.setBounds((content.getWidth() - 440) / 2,
+                        (height - panel.preferredHeight()) / 2, 440,
                         panel.preferredHeight());
     }
+    Component content;
     LoginPanel panel;
+    Viewport viewport;
 };
 } // namespace
 
@@ -2658,12 +2691,34 @@ void Workspace::updateState() {
             row->repaint(0, 0, 22, row->getHeight());
     setlist->repaint();
 }
+void Workspace::showLoginPreview() {
+    if (!session.inspection) return;
+    loginPanel = std::make_unique<LoginBackdrop>(auth);
+    addAndMakeVisible(*loginPanel);
+    if (auto *window = findParentComponentOfClass<DocumentWindow>()) {
+        const auto *display = Desktop::getInstance().getDisplays().getDisplayForRect(window->getBounds());
+        window->centreWithSize(600, std::min(760, display ? display->userArea.getHeight() : 760));
+    }
+    resized();
+}
+void Workspace::showImportNoticePreview() {
+    if (!session.inspection) return;
+    StringArray warnings;
+    for (int i = 0; i < 20; ++i)
+        warnings.add(String::fromUTF8("#GUITARRAS: VST: ReaPitch (Cockos) não foi importado; confira os efeitos desta pista antes de reproduzir."));
+    showPanel(String::fromUTF8("Migração de projeto"), std::make_unique<ImportNoticePanel>(warnings), 520, 316);
+}
 void Workspace::updateLogin() {
     session.audio.instrumentAllowed = auth.allowed();
     bool show = !auth.allowed() && !session.inspection;
     if (show && !loginPanel) {
         loginPanel = std::make_unique<LoginBackdrop>(auth);
         addAndMakeVisible(*loginPanel);
+        if (auto *window = findParentComponentOfClass<DocumentWindow>()) {
+            const auto *display = Desktop::getInstance().getDisplays().getDisplayForRect(window->getBounds());
+            if (display && window->getHeight() < 760)
+                window->centreWithSize(std::max(600, window->getWidth()), std::min(760, display->userArea.getHeight()));
+        }
     }
     if (!show && loginPanel) {
         loginPanel.reset();
@@ -3243,12 +3298,14 @@ void Workspace::chooseMigration(bool logic) {
                                         safe->showError(error);
                                         return;
                                     }
-                                    safe->openProject(document);
-                                    if (!warnings.isEmpty())
-                                        AlertWindow::showMessageBoxAsync(
-                                            MessageBoxIconType::InfoIcon, "Import completed",
-                                            warnings.joinIntoString("\n"), "OK",
-                                            safe.getComponent());
+                                    safe->perform([&] {
+                                        safe->session.load(document);
+                                        safe->lighting.loadSettings();
+                                        safe->projectOpened();
+                                        if (!warnings.isEmpty())
+                                            safe->showPanel(String::fromUTF8("Migração de projeto"),
+                                                std::make_unique<ImportNoticePanel>(warnings), 520, 316);
+                                    });
                                 });
                             });
                         });
@@ -3997,6 +4054,8 @@ var Workspace::diagnostics() const {
             for (auto *content : sheet->getChildren())
                 if (auto *panel = dynamic_cast<ExportPanel *>(content))
                     put(value, "export", panel->diagnostics());
+                else if (auto *panel = dynamic_cast<ImportNoticePanel *>(content))
+                    put(value, "importNotice", panel->diagnostics());
     put(value, "projectBrowser", browserVisible);
     put(value, "document", session.document.getFullPathName());
     put(value, "fontFamily", theme::font(13).getTypefaceName());
