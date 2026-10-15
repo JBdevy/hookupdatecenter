@@ -7,6 +7,11 @@ on:
         description: 'Versão pública do CatLive (ex.: 1.00)'
         required: true
         default: '1.01'
+      publish_release:
+        description: 'Publicar os instaladores na release; desative para gerar apenas artefatos de teste'
+        type: boolean
+        required: true
+        default: true
 
 permissions:
   contents: write
@@ -287,6 +292,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: ${{ inputs.publish_release }}
     needs: [windows, macos-pkg, compatibility]
     runs-on: ubuntu-latest
     steps:
