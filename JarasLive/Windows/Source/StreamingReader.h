@@ -11,7 +11,6 @@ class StreamingReader final : public AudioFormatReader, private TimeSliceClient 
         : AudioFormatReader(nullptr, metadata.getFormatName()), file(path), formats(manager), thread(worker) {
         sampleRate = metadata.sampleRate; lengthInSamples = metadata.lengthInSamples;
         numChannels = metadata.numChannels; bitsPerSample = 32; usesFloatingPointData = true;
-        probe.setSize(2, 1);
         thread.addTimeSliceClient(this);
     }
     ~StreamingReader() override { thread.removeTimeSliceClient(this); }
@@ -21,29 +20,31 @@ class StreamingReader final : public AudioFormatReader, private TimeSliceClient 
         lastDemand.store(Time::getMillisecondCounter());
     }
     bool ready(int64 position) {
-        const ScopedTryLock guard(lock);
-        return guard.isLocked() && reader && probeAt(position);
+        auto current = std::atomic_load(&reader);
+        return current && probeAt(*current, position);
     }
     bool cached() const noexcept { return resident.load(); }
+    std::atomic<uint64> cacheMisses{0}, inactiveMisses{0};
     bool readSamples(int* const* destination, int channels, int offset, int64 at, int count) override {
         request(at);
-        if (offline.load()) {
+        const bool exporting = offline.load();
+        if (exporting) {
             // Export may wait for disk; it must never lose a block merely
             // because the cache worker holds the metadata lock.
             const ScopedLock guard(lock);
             ensureReader();
-            if (reader) {
-                reader->setReadTimeout(5000);
-                return reader->readSamples(destination, channels, offset, at, count);
-            }
         }
-        const ScopedTryLock guard(lock);
-        if (guard.isLocked()) {
-            if (reader) {
-                reader->setReadTimeout(0);
-                return reader->readSamples(destination, channels, offset, at, count);
-            }
+        // File opening and retirement never hold a lock needed by this read.
+        // Retired delegates stay owned by the worker until every read finishes,
+        // so releasing this local reference cannot destroy a decoder here.
+        auto current = std::atomic_load(&reader);
+        if (current) {
+            current->setReadTimeout(exporting ? 5000 : 0);
+            const bool ok = current->readSamples(destination, channels, offset, at, count);
+            if (!ok) ++cacheMisses;
+            return ok;
         }
+        ++inactiveMisses;
         for (int c = 0; c < channels; ++c)
             if (destination[c]) FloatVectorOperations::clear(reinterpret_cast<float*>(destination[c]) + offset, count);
         return false;
@@ -53,36 +54,43 @@ class StreamingReader final : public AudioFormatReader, private TimeSliceClient 
     AudioFormatManager& formats;
     TimeSliceThread& thread;
     CriticalSection lock;
-    std::unique_ptr<BufferingAudioReader> reader;
-    AudioBuffer<float> probe;
+    std::shared_ptr<BufferingAudioReader> reader;
+    std::vector<std::shared_ptr<BufferingAudioReader>> retired;
     std::atomic<int64> requested{-1};
     std::atomic<uint32> lastDemand{0};
     std::atomic<bool> offline{false}, resident{false};
     void ensureReader() {
-        if (reader) return;
+        if (std::atomic_load(&reader)) return;
         std::unique_ptr<AudioFormatReader> source(formats.createReaderFor(file));
         if (source) {
-            reader = std::make_unique<BufferingAudioReader>(source.release(), thread, 131072);
-            reader->setReadTimeout(0);
+            auto created = std::make_shared<BufferingAudioReader>(source.release(), thread, 131072);
+            created->setReadTimeout(0);
+            std::atomic_store(&reader, std::move(created));
             resident.store(true);
         }
     }
-    bool probeAt(int64 at) {
+    bool probeAt(BufferingAudioReader& current, int64 at) {
         // Updating the delegate's read position also schedules its next block.
-        reader->setReadTimeout(0);
-        return reader->read(&probe, 0, 1, at, true, true);
+        AudioBuffer<float> probe(2, 1);
+        return current.read(&probe, 0, 1, at, true, true);
     }
     int useTimeSlice() override {
         const ScopedTryLock guard(lock);
         if (!guard.isLocked()) return 5;
+        retired.erase(std::remove_if(retired.begin(), retired.end(),
+            [](const auto& entry) { return entry.use_count() == 1; }), retired.end());
         const auto at = requested.load();
         if (at < 0 || uint32(Time::getMillisecondCounter() - lastDemand.load()) > 2000) {
-            reader.reset(); resident.store(false);
+            if (auto previous = std::atomic_exchange(&reader, std::shared_ptr<BufferingAudioReader>{}))
+                retired.push_back(std::move(previous));
+            resident.store(false);
             return 100;
         }
-        ensureReader();
-        if (reader) probeAt(at);
-        return 10;
+        if (!std::atomic_load(&reader)) {
+            ensureReader();
+            if (auto created = std::atomic_load(&reader)) probeAt(*created, at);
+        }
+        return 100;
     }
 };
 }

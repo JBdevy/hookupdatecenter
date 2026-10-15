@@ -1,4 +1,5 @@
 #include "ProjectMigration.h"
+#include "MediaPath.h"
 #include <deque>
 namespace catlive {
 namespace migration {
@@ -377,8 +378,8 @@ MigratedProject readReaperProject(const File &file) {
         auto found = references.find(path);
         if (found != references.end())
             return found->second;
-        auto candidate =
-            File::isAbsolutePath(path) ? File(path) : file.getParentDirectory().getChildFile(path);
+        auto candidate = existingMediaPath(
+            File::isAbsolutePath(path) ? File(path) : file.getParentDirectory().getChildFile(path));
         String name = path.fromLastOccurrenceOf("/", false, false);
         if (name.isEmpty())
             name = path;

@@ -101,6 +101,18 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
             if (reader->cached()) active.insert(reader.get());
         return (int)active.size();
     }
+    var streamDiagnostics() const {
+        std::set<const StreamingReader*> unique;
+        uint64 caches = 0, inactive = 0;
+        for (const auto& voice : voices) for (const auto& reader : voice->source->readers)
+            if (unique.insert(reader.get()).second) {
+                caches += reader->cacheMisses.load();
+                inactive += reader->inactiveMisses.load();
+            }
+        auto result = object();
+        put(result, "cacheMisses", (int64)caches); put(result, "inactiveMisses", (int64)inactive);
+        return result;
+    }
     double cpu() const { return devices.getCpuUsage(); }
     void render(float *const *output, int channels, int samples,
                 const float *const *input = nullptr, int inputChannels = 0);

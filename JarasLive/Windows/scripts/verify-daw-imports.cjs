@@ -106,6 +106,20 @@ assert.equal(rTrack.parentTrackID,rpp.project.songs[0].tracks[0].id);
 assert.equal(rClip.startTime,6);assert.equal(rClip.duration,10);assert.equal(rClip.sourceOffset,1);assert.equal(rClip.pitchSemitones,-4.75);assert.equal(rClip.muted,true);
 assert.equal(rTrack.clips[1].midi.notes.length,1);assert.equal(rTrack.clips[1].midi.notes[0].length,1);
 assert.deepEqual(fs.readFileSync(path.join(path.dirname(rpp.file),rClip.audioFile.path)),audio);
+// A Mac RPP often spells accents as combining characters while copied files
+// on Windows use composed names. Check both directions, including folders.
+for (const [diskForm, projectForm] of [['NFC','NFD'], ['NFD','NFC']]) {
+  const folder = `Mídia-${diskForm}`, name = 'Canção.wav';
+  const diskFolder = path.join(root, folder.normalize(diskForm));
+  fs.mkdirSync(diskFolder); fs.writeFileSync(path.join(diskFolder, name.normalize(diskForm)), audio);
+  const input = path.join(root, `Unicode-${diskForm}.rpp`);
+  fs.writeFileSync(input, fs.readFileSync(reaper,'utf8').replace('FILE "Guitar.wav"',
+    `FILE "${folder.normalize(projectForm)}/${name.normalize(projectForm)}"`));
+  const imported = migrate(input, `Unicode-${diskForm}`);
+  assert(!imported.warnings.some(w => w.includes('Missing media')), imported.warnings.join('\n'));
+  const clip = imported.project.songs[0].tracks[1].clips[0];
+  assert.deepEqual(fs.readFileSync(path.join(path.dirname(imported.file), clip.audioFile.path)), audio);
+}
 const logic=path.join(root,'Migration.logicx'), alternative=path.join(logic,'Alternatives/002');
 fs.mkdirSync(alternative,{recursive:true});fs.mkdirSync(path.join(logic,'Resources'),{recursive:true});fs.mkdirSync(path.join(logic,'Media/Audio Files'),{recursive:true});
 fs.writeFileSync(path.join(logic,'Media/Audio Files/Guitar.wav'),audio);

@@ -1,4 +1,5 @@
 #include "ProjectCodec.h"
+#include "MediaPath.h"
 #include <bcrypt.h>
 #include <stdexcept>
 #include <windows.h>
@@ -370,7 +371,7 @@ File ProjectCodec::resolveMedia(const File &directory, const std::string &relati
         require(part != "..", "Unsafe media path.");
     auto file = directory.getChildFile(path);
     require(file.isAChildOf(directory), "Audio path escapes project folder.");
-    return file;
+    return existingMediaPath(file);
 }
 jaras::Project ProjectCodec::decode(const var &input) {
     const auto root = canonicalIDs(input);

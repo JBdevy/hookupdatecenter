@@ -1182,7 +1182,7 @@ class Workspace::TrackRow final : public Component {
     bool updating = false, dragging = false;
 };
 
-class Workspace::Timeline final : public Component, private ScrollBar::Listener {
+class Workspace::Timeline final : public Component, private ScrollBar::Listener, private Timer {
   public:
     explicit Timeline(Workspace &owner)
         : w(owner), horizontal(false), vertical(true), canvas(*this), heads(*this) {
@@ -1192,6 +1192,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener 
         addAndMakeVisible(vertical);
         horizontal.addListener(this);
         vertical.addListener(this);
+        horizontal.addMouseListener(this, false);
+        vertical.addMouseListener(this, false);
         canvas.setBufferedToImage(true);
         canvas.addAndMakeVisible(envelopeContent);
         envelopeContent.setInterceptsMouseClicks(false, true);
@@ -1206,6 +1208,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener 
         heads.setBounds(area);
         updateRanges();
     }
+    void mouseDown(const MouseEvent&) override { stopGesture(); }
     void updateRanges() {
         auto *s = w.session.song();
         double length = s ? s->duration : 120;
@@ -1278,19 +1281,30 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener 
         return (float)(t * w.pixelsPerSecond - horizontal.getCurrentRangeStart());
     }
     void zoomAt(double scale, float anchor) {
+        stopGesture();
+        applyZoom(scale, anchor);
+    }
+    void applyZoom(double scale, float anchor) {
         auto old = timeAt(anchor);
         w.pixelsPerSecond = jlimit(.005, 500.0, scale);
+        w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
         updateRanges();
         horizontal.setCurrentRangeStart(old * w.pixelsPerSecond - anchor);
         invalidate();
     }
     void fit() {
+        stopGesture();
         if (auto *s = w.session.song()) {
             w.pixelsPerSecond = jlimit(
                 .005, 500.0, std::max(1, canvas.getWidth() - 40) / std::max(1., s->duration));
+            w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
             horizontal.setCurrentRangeStart(0);
             updateRanges();
         }
+    }
+    void initialView() {
+        zoomAt(std::max(1, canvas.getWidth() - 40) / 180.0, 0);
+        horizontal.setCurrentRangeStart(std::max(0., w.session.transport().editPosition - 10) * w.pixelsPerSecond);
     }
     void scroll(double x, double y) {
         if (x != 0)
@@ -1303,21 +1317,67 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener 
         put(v, "horizontal", horizontal.getCurrentRangeStart());
         put(v, "vertical", vertical.getCurrentRangeStart());
         put(v, "zoom", w.pixelsPerSecond);
+        put(v, "gestureActive", gestureMode != 0);
+        put(v, "trackHeight", w.trackHeight);
         put(v, "width", canvas.getWidth());
+        put(v, "x", getX());
+        put(v, "y", getY());
         return v;
+    }
+    void adjustTrackHeight(float delta) {
+        stopGesture();
+        if (delta == 0 || !std::isfinite(delta)) return;
+        w.trackHeight = jlimit(42, 240, (int)std::lround(w.trackHeight * std::exp(delta * .6)));
+        w.resized();
+        updateRanges();
     }
     void mouseWheelMove(const MouseEvent &e, const MouseWheelDetails &d) override {
         ++w.wheelCount;
-        if (e.mods.isCtrlDown())
-            zoomAt(w.pixelsPerSecond * std::pow(1.3, d.deltaY * 4), e.position.x);
-        else if (e.mods.isShiftDown())
-            scroll(-d.deltaY * 500 - d.deltaX * 500, 0);
-        else
-            scroll(-d.deltaX * 500, -d.deltaY * 300);
+        if (e.mods.isCtrlDown()) {
+            adjustTrackHeight(d.deltaY);
+            return;
+        }
+        const bool pan = e.mods.isShiftDown() || e.mods.isLeftButtonDown() || std::abs(d.deltaX) > std::abs(d.deltaY);
+        if (pan && e.mods.isLeftButtonDown()) canvas.cancelDrag();
+        const double delta = pan ? -500 * (std::abs(d.deltaX) > std::abs(d.deltaY) ? d.deltaX : d.deltaY)
+                                 : d.deltaY * std::log(1.3) * 4;
+        if (delta == 0 || !std::isfinite(delta)) return;
+        const int mode = pan ? 2 : 1, direction = delta > 0 ? 1 : -1;
+        const auto now = Time::getMillisecondCounterHiRes();
+        if (gestureMode != mode || direction != gestureDirection || now - lastGestureInput > 250) {
+            stopGesture();
+            gestureMode = mode;
+            gestureTarget = pan ? horizontal.getCurrentRangeStart() : std::log(w.pixelsPerSecond);
+        }
+        gestureDirection = direction;
+        gestureAnchor = e.getEventRelativeTo(this).position.x;
+        gestureTarget = pan
+            ? jlimit(0., std::max(0., horizontal.getMaximumRangeLimit() - horizontal.getCurrentRangeSize()), gestureTarget + delta)
+            : jlimit(std::log(.005), std::log(500.), gestureTarget + delta);
+        lastGestureInput = now;
+        if (!isTimerRunning()) { lastGestureFrame = now - 16; startTimerHz(60); }
+        timerCallback();
     }
 
   private:
     Workspace &w;
+    int gestureMode = 0, gestureDirection = 0;
+    double gestureTarget = 0, lastGestureInput = 0, lastGestureFrame = 0;
+    float gestureAnchor = 0;
+    void stopGesture() { stopTimer(); gestureMode = 0; gestureDirection = 0; }
+    void timerCallback() override {
+        if (!gestureMode) return;
+        const auto now = Time::getMillisecondCounterHiRes();
+        const double dt = jlimit(0., .1, (now - lastGestureFrame) / 1000.);
+        lastGestureFrame = now;
+        const double current = gestureMode == 1 ? std::log(w.pixelsPerSecond) : horizontal.getCurrentRangeStart();
+        const double distance = gestureTarget - current;
+        const bool settled = std::abs(distance) < (gestureMode == 1 ? .0005 : .2);
+        const double next = settled ? gestureTarget : current + distance * (1 - std::exp(-dt / .065));
+        if (gestureMode == 1) applyZoom(std::exp(next), gestureAnchor);
+        else horizontal.setCurrentRangeStart(next);
+        if (settled) stopGesture();
+    }
     static constexpr int ruler = 64;
     ScrollBar horizontal, vertical;
     Component envelopeContent;
@@ -1519,6 +1579,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener 
             g.drawRoundedRectangle(bounds, 3, 2);
         }
         void mouseDown(const MouseEvent &e) override {
+            t.stopGesture();
             startTime = t.timeAt(e.position.x);
             startPosition = e.position;
             dragClip.clear();
@@ -1755,6 +1816,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener 
         void mouseWheelMove(const MouseEvent &e, const MouseWheelDetails &d) override {
             t.mouseWheelMove(e, d);
         }
+        void cancelDrag() {
+            dragClip.clear(); dragPreview = false; mainDrag = subDrag = false; repaint();
+        }
 
       private:
         Timeline &t;
@@ -1962,10 +2026,15 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         perform([&] { session.command(jaras::CommandKind::pan, {}, masterPan.getValue()); });
     };
     zoom.setRange(.005, 500);
-    zoom.setSkewFactor(.5);
+    zoom.setSkewFactorFromMidPoint(5);
     zoom.setValue(pixelsPerSecond, dontSendNotification);
-    zoom.setTooltip(String::fromUTF8("Zoom horizontal · Ctrl+roda do mouse"));
-    zoom.onValueChange = [this] { timeline->zoomAt(zoom.getValue(), 0); };
+    zoom.setTooltip(String::fromUTF8("Zoom: rolagem · Altura das pistas: Ctrl+rolagem · Deslocar: Shift+rolagem"));
+    zoom.onValueChange = [this] { timeline->zoomAt(zoom.getValue(), timeline->getWidth() * .5f); };
+    button("zoomOut", String::fromUTF8("−"), [this] { timeline->zoomAt(pixelsPerSecond / 1.3, timeline->getWidth() * .5f); })
+        .setTooltip("Diminuir zoom (-)");
+    button("zoomIn", "+", [this] { timeline->zoomAt(pixelsPerSecond * 1.3, timeline->getWidth() * .5f); })
+        .setTooltip("Aumentar zoom (+)");
+    button("zoomFit", "Ajustar", [this] { timeline->fit(); }).setTooltip("Mostrar o projeto inteiro (F)");
     for (auto *label : {&songDisplay, &transportTime, &footer, &tempo}) {
         addAndMakeVisible(*label);
         label->setFont(theme::font(11));
@@ -2313,6 +2382,7 @@ void Workspace::paint(Graphics &g) {
         const auto &state = session.transport();
         auto cpu = area.removeFromLeft(155),
              device = area.removeFromRight(getWidth() < 1400 ? 230 : 300);
+        area.removeFromLeft(210);
         auto total = area.removeFromRight(120), queued = area.removeFromRight(area.getWidth() / 2);
         auto next = area;
         g.setColour(theme::line);
@@ -2495,7 +2565,12 @@ void Workspace::resized() {
     controls["railMixer"]->setBounds(2, getHeight() - 120, 28, 28);
     controls["railKeyboard"]->setBounds(2, getHeight() - 80, 28, 28);
     controls["railSections"]->setBounds(2, getHeight() - 40, 28, 28);
-    zoom.setVisible(false);
+    zoom.setVisible(true);
+    const int zoomX = rail + 155, zoomY = footerBounds.getY() + 3;
+    controls["zoomOut"]->setBounds(zoomX + 2, zoomY, 22, 21);
+    zoom.setBounds(zoomX + 27, zoomY, 90, 21);
+    controls["zoomIn"]->setBounds(zoomX + 120, zoomY, 22, 21);
+    controls["zoomFit"]->setBounds(zoomX + 148, zoomY, 56, 21);
     tracksViewport.setVisible(mixerVisible);
     tracksViewport.setBounds(rail, workspaceBounds.getY() + 64, left,
                              std::max(1, workspaceBounds.getHeight() - 64));
@@ -2956,9 +3031,7 @@ void Workspace::mouseWheelMove(const MouseEvent &event, const MouseWheelDetails 
     if (tracksViewport.getBounds().contains(relative.getPosition())) {
         ++wheelCount;
         if (event.mods.isCtrlDown()) {
-            trackHeight = jlimit(42, 160, trackHeight + (details.deltaY > 0 ? 4 : -4));
-            resized();
-            timeline->updateRanges();
+            timeline->adjustTrackHeight(details.deltaY);
         } else {
             verticalOffset =
                 jlimit(0, std::max(0, tracksContent.getHeight() - tracksViewport.getHeight()),
@@ -3049,7 +3122,7 @@ void Workspace::projectOpened(bool fitTimeline) {
     }
     resized();
     if (fitTimeline)
-        timeline->fit();
+        timeline->initialView();
     repaint();
     grabKeyboardFocus();
 }
@@ -4029,6 +4102,13 @@ void Workspace::capture(const File &path) {
 var Workspace::diagnostics() const {
     auto value = object();
     put(value, "project", text(session.project().name));
+    put(value, "missingMedia", var(session.audio.missingFiles));
+    put(value, "audioUnderruns", (int64)session.audio.getUnderruns());
+    put(value, "residentStreams", session.audio.residentStreams());
+    put(value, "streaming", session.audio.streamDiagnostics());
+    put(value, "audioPeak", session.audio.peak());
+    put(value, "playing", session.transport().playing);
+    put(value, "position", session.transport().position);
     put(value, "noticeActive", stage.noticeActive());
     put(value, "noticeText",
         stage.noticeText(stage.preferences.value("jaras.notices.appearance", object())));

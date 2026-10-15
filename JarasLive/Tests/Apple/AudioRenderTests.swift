@@ -709,19 +709,28 @@ let handoffMaximum = (64..<Int(output.frameLength)).map { abs(output.floatChanne
 precondition(handoffMaximum < 0.13, "promotion stops only the former main stream, without doubling the promoted audio")
 print("SUBPLAY_HANDOFF_PCM_OK")
 do {
+    do {
+    let file = try AVAudioFile(forWriting: directory.appendingPathComponent("two-heads.wav"), settings: format.settings)
+    let source = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 441000)!; source.frameLength = 441000
+    for channel in 0..<2 { for frame in 0..<441000 {
+        let frequency = frame < 110250 ? 331.0 : 977.0
+        source.floatChannelData![channel][frame] = Float(0.1 * sin(Double(frame) * 2 * .pi * frequency / 44100))
+    } }
+    try file.write(from: source)
+    }
     func headPCM(main: Bool, sub: Bool, bpm: Double) throws -> [Float] {
         let testEngine = AVAudioEngine()
         try testEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
         let audio = StemAudioPlayback(engine: testEngine, realtime: false)
         audio.open(directory: directory); defer { audio.prepareForClosing() }
         var fixture = project
-        fixture.songs[0].tracks[0].clips[0].audioFile = AudioFile(path: "tempo-tone.wav")
+        fixture.songs[0].tracks[0].clips[0].audioFile = AudioFile(path: "two-heads.wav")
         fixture.songs[0].timeSettings = ProjectTimeSettings()
         fixture.songs[0].timeSettings?.timebase = .relative
         fixture.songs[0].followTempo(bpm)
         let state = ShowSnapshot(project: fixture, transport: TransportState(playing: main,
             songId: fixture.songs[0].id, position: 0.2, queue: QueueState(), loop: LoopState(enabled: false),
-            subPlay: SubPlayState(playing: sub, position: 0.7)))
+            subPlay: SubPlayState(playing: sub, position: 4)))
         try audio.update(state, revision: 1)
         let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
         var samples: [Float] = []
@@ -739,10 +748,24 @@ do {
         precondition(main.count == sub.count && main.count == both.count && !main.isEmpty)
         precondition(main.map { abs($0) }.max()! > 0.05 && sub.map { abs($0) }.max()! > 0.05,
                      "each transport head must produce audible PCM at \(bpm) BPM")
-        let difference = zip(zip(main, sub), both).map { abs($0.0.0 + $0.0.1 - $0.1) }.max()!
-        precondition(difference < 0.001, "dual PCM equals the sum of independent cursors at \(bpm) BPM: \(difference)")
+        // The phase vocoder may choose different phases as graph inputs change.
+        // Distinct source frequencies identify both independent cursor positions
+        // without incorrectly requiring sample-identical phase after stretching.
+        func amplitude(_ pcm: [Float], _ frequency: Double) -> Double {
+            var real = 0.0, imaginary = 0.0
+            for (index, value) in pcm.enumerated() {
+                let phase = 2 * .pi * frequency * Double(index) / outputFormat.sampleRate
+                real += Double(value) * cos(phase); imaginary += Double(value) * sin(phase)
+            }
+            return 2 * hypot(real, imaginary) / Double(pcm.count)
+        }
+        for (reference, frequency) in [(main, 331.0), (sub, 977.0)] {
+            let expected = amplitude(reference, frequency), actual = amplitude(both, frequency)
+            precondition(expected > 0.05 && abs(actual - expected) < 0.01,
+                "both cursor frequencies retain their gain at \(bpm) BPM: \(frequency) Hz expected \(expected), got \(actual)")
+        }
     }
-    print("MAIN_SUBPLAY_CHANGED_TEMPO_INDEPENDENT_PCM_SUM_OK")
+    print("MAIN_SUBPLAY_CHANGED_TEMPO_INDEPENDENT_FREQUENCIES_OK")
 }
 snapshot.project.songs[0].tracks[0].clips[0].muted = true
 try renderer.update(snapshot, revision: 4)

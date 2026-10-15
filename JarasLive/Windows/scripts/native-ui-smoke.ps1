@@ -169,7 +169,8 @@ try {
  Key 0x5a @(0x11)
  $hiddenEnvelope=Capture 'envelope-hidden'
  if($hiddenEnvelope.envelopeLanes -ne 0){throw 'Undo did not restore hidden envelopes.'}
- Wheel ($rect.Left+650) ($rect.Top+400) -480
+ # The mixer scrolls tracks; the grid wheel zooms, as on macOS.
+ Wheel ($rect.Left+170) ($rect.Top+400) -480
  Wheel ($rect.Left+650) ($rect.Top+400) -240 0x10
  Wheel ($rect.Left+650) ($rect.Top+400) 120 0x11
  Wheel ($rect.Right-90) ($rect.Top+400) -720
