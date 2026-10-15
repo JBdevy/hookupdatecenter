@@ -6,6 +6,9 @@ class CreateTrackPanel final : public Component {
   public:
     CreateTrackPanel(Session &owner, std::function<void(String)> failure)
         : session(owner), error(std::move(failure)) {
+        type.setComponentID("createTrackType");
+        confirm.setComponentID("createTrackConfirm");
+        name.setComponentID("createTrackName");
         addAndMakeVisible(type);
         type.addItemList({String::fromUTF8("Padrão"), "Timecode", "Teleprompter 1",
                           "Teleprompter 2", "Cifras", "Click"},

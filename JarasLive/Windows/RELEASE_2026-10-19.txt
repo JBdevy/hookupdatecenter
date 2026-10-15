@@ -79,3 +79,14 @@ Não encerra toda a paridade: revisar controle de tempo ativo, estados condicion
 137 referências completas e pendências funcionais anteriores.
 Mac: workflow 38792390575 aprovado, instalador universal assinado/notarizado;
 publicação de release desativada nessa execução. Windows lote 2 CI aprovado.
+
+ATUALIZAÇÃO — LOTE VISUAL 5, 15/10/2026
+Inter sem alargamento artificial no Windows; fonte do Mac preservada. Botão extra
+Iniciar áudio removido. Cores/magnificação das waveforms seguem as regras do Mac.
+Criação de Click no projeto real com áudio ativo: preparação caiu de 4.246 ms
+para 72 ms ao reaproveitar fontes e processadores. Criar/desfazer testado com e
+sem dispositivo. Espaço segurado executa uma única ação, e rearma após soltar.
+14 CTest e 45 cenários de integração aprovados; zero pulados. Quatro larguras
+reais verificadas, incluindo a transição onde Sub Play estava cortado no CI.
+Evidências em evidence/batch5. Menus, auditoria integral de atalhos, controles
+completos dos itens e CatStemSeparation 5 continuam pendentes.

@@ -1502,9 +1502,18 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     auto rect = juce::Rectangle<float>(
                         left, y + 3.f, std::max(2.f, right - left - 1), height - 6.f);
                     const bool muted = track.mute || clip.muted;
+                    const bool selected = t.w.selectedClip == clip.id;
+                    if (selected) {
+                        const float peak = std::max({colour.getFloatRed(), colour.getFloatGreen(), colour.getFloatBlue()});
+                        const auto emphasize = [peak](float channel) { return jlimit(0.f, 1.f, (peak - (peak - channel) * 1.45f) * 1.15f); };
+                        colour = Colour::fromFloatRGBA(emphasize(colour.getFloatRed()), emphasize(colour.getFloatGreen()), emphasize(colour.getFloatBlue()), 1);
+                    }
+                    const float luminance = .2126f * colour.getFloatRed() + .7152f * colour.getFloatGreen() + .0722f * colour.getFloatBlue();
+                    const float waveGray = muted ? .78f : luminance > .68f ? .52f : luminance > .42f ? .9f : .8f;
+                    if (muted) colour = Colour::greyLevel(selected ? .7f : .55f);
                     g.setGradientFill(ColourGradient(
                         colour.withAlpha(muted ? .55f : 1.f), 0, rect.getY(),
-                        colour.withAlpha(muted ? .25f : .78f), 0, rect.getBottom(), false));
+                        colour.withAlpha(muted ? .25f : selected ? 1.f : .78f), 0, rect.getBottom(), false));
                     g.fillRoundedRectangle(rect, 3);
                     g.setColour(t.w.selectedClip == clip.id ? theme::green
                                                             : colour.withAlpha(.75f));
@@ -1545,10 +1554,13 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         const auto &source = clip.audioFile ? clip.audioFile : track.audioFile;
                         const auto data = source ? t.waveforms.request(ProjectCodec::resolveMedia(t.w.session.mediaDirectory, source->path)) : nullptr;
                         const int channels = data ? (int)data->channels.size() : std::max(1, (int)clip.waveformChannels.size());
-                        const float top = y + 22.f, laneHeight = std::max(1.f, height - 26.f) / channels;
-                        g.setColour(Colours::white.withAlpha(muted ? .45f : .75f));
+                        const float top = rect.getY() + 18.f, laneHeight = std::max(1.f, rect.getBottom() - top - 2.f) / channels;
+                        const float magnification = 2.f * (float)jlimit(0., std::pow(10., 24. / 20), clip.gain.value_or(1));
+                        g.setColour(Colour::greyLevel(waveGray));
                         for (int channel = 0; channel < channels; ++channel) {
-                            const float centre = top + laneHeight * (channel + .5f), amplitude = laneHeight * .46f;
+                            const float centre = top + laneHeight * (channel + .5f), amplitude = laneHeight * .49f * magnification;
+                            const float laneTop = top + laneHeight * channel + .5f;
+                            const float laneBottom = top + laneHeight * (channel + 1) - .5f;
                             for (int x = start; x < end; ++x) {
                                 float low = 0, high = 0;
                                 if (data) {
@@ -1570,8 +1582,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                     const auto index = std::min(embedded.size() - 1, (size_t)(fraction * embedded.size()));
                                     high = (float)std::abs(embedded[index]); low = -high;
                                 }
-                                g.drawVerticalLine(x, centre - jlimit(0.f, 1.f, high) * amplitude - .25f,
-                                                      centre - jlimit(-1.f, 0.f, low) * amplitude + .25f);
+                                g.drawVerticalLine(x, std::max(laneTop, centre - jlimit(0.f, 1.f, high) * amplitude - .25f),
+                                                      std::min(laneBottom, centre - jlimit(-1.f, 0.f, low) * amplitude + .25f));
                             }
                         }
                     }
@@ -1969,8 +1981,10 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
             slot, appearance.value("catlive.midi.slot" + String(slot + 1)).toString());
     localization::english = appearance.value("jaras.language", "pt-BR").toString() == "en";
     actions.invoke = [this](const String &id, float value, int track) {
-        if (projectReady && !loginPanel && !browserVisible)
+        if (projectReady && !loginPanel && !browserVisible) {
+            ++actionInvocations[id];
             perform([&] { performAction(id, value, track); });
+        }
     };
     setOpaque(true);
     setWantsKeyboardFocus(true);
@@ -2598,7 +2612,7 @@ void Workspace::resized() {
     struct TransportItem { const char *id; float width, stretch; };
     const TransportItem items[]{
         {"play", playbackWidth, 1}, {"pause", playbackWidth, 1},
-        {"subplay", playbackWidth, 1}, {"loop", iconWidth, .5f},
+        {"subplay", std::max(58.f, playbackWidth), 1}, {"loop", iconWidth, .5f},
         {"record", playbackWidth, 1}, {"metronome", iconWidth, .5f},
         {"tempo", 171, 0}, {"timer", 157, 0},
         {"tp1", buttonWidth, 1}, {"tp2", buttonWidth, 1},
@@ -2953,6 +2967,12 @@ void Workspace::changeListenerCallback(ChangeBroadcaster *) {
     setlist->repaint();
     repaint();
 }
+bool Workspace::keyStateChanged(bool) {
+    for (auto i = heldShortcutKeys.begin(); i != heldShortcutKeys.end();)
+        if (!KeyPress::isKeyCurrentlyDown(*i)) i = heldShortcutKeys.erase(i);
+        else ++i;
+    return false;
+}
 bool Workspace::keyPressed(const KeyPress &key) {
     if (session.inspection && logger)
         logger->logMessage("QA key=" + String(key.getKeyCode()) +
@@ -2978,6 +2998,7 @@ bool Workspace::keyPressed(const KeyPress &key) {
         code = 'A' + code - 1;
     if (code >= 'a' && code <= 'z')
         code -= ('a' - 'A');
+    const bool isRepeat = !heldShortcutKeys.insert(code).second;
     const bool ctrl = mods.isCtrlDown(), shift = mods.isShiftDown(), alt = mods.isAltDown();
     if (ctrl && !alt && !shift && code == 'Q') {
         JUCEApplication::getInstance()->systemRequestedQuit();
@@ -3015,11 +3036,12 @@ bool Workspace::keyPressed(const KeyPress &key) {
     if (loginPanel || browserVisible)
         return false;
     const KeyPress normalised(code, mods, key.getTextCharacter());
-    if (actions.key(normalised)) {
+    if (actions.key(normalised, isRepeat)) {
         ++shortcutCount;
         return true;
     }
     if (code == 'M' && !ctrl && !alt && shift) {
+        if (isRepeat) return true;
         ++shortcutCount;
         editMarker({}, session.transport().editPosition);
         return true;
@@ -4202,10 +4224,23 @@ var Workspace::diagnostics() const {
     put(value, "authAllowed", auth.allowed());
     put(value, "authBusy", auth.busy);
     put(value, "authMessage", auth.message);
+    if (auto *device = session.audio.devices.getCurrentAudioDevice()) {
+        auto audioDevice = object();
+        put(audioDevice, "driver", session.audio.devices.getCurrentAudioDeviceType());
+        Array<var> rates, buffers;
+        for (auto rate : device->getAvailableSampleRates()) rates.add(rate);
+        for (auto size : device->getAvailableBufferSizes()) buffers.add(size);
+        put(audioDevice, "sampleRates", rates);
+        put(audioDevice, "bufferSizes", buffers);
+        put(audioDevice, "sampleRate", device->getCurrentSampleRate());
+        put(audioDevice, "bufferSize", device->getCurrentBufferSizeSamples());
+        put(value, "audioDevice", audioDevice);
+    }
     put(value, "missingMedia", var(session.audio.missingFiles));
     put(value, "audioUnderruns", (int64)session.audio.getUnderruns());
     put(value, "residentStreams", session.audio.residentStreams());
     put(value, "streaming", session.audio.streamDiagnostics());
+    put(value, "audioPreparation", session.audio.preparationDiagnostics);
     put(value, "audioPeak", session.audio.peak());
     put(value, "playing", session.transport().playing);
     put(value, "position", session.transport().position);
@@ -4366,6 +4401,9 @@ var Workspace::diagnostics() const {
     put(value, "envelopeLanes", envelopeCount);
     put(value, "envelopePoints", envelopePoints);
     put(value, "shortcuts", shortcutCount);
+    auto invoked = object();
+    for (const auto &entry : actionInvocations) put(invoked, Identifier(entry.first), entry.second);
+    put(value, "actionInvocations", invoked);
     put(value, "contexts", contextCount);
     put(value, "wheelEvents", wheelCount);
     put(value, "timeline", timeline->state());

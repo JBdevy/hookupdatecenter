@@ -46,6 +46,8 @@ class Workspace final : public Component,
     void paint(Graphics &) override;
     void resized() override;
     bool keyPressed(const KeyPress &) override;
+    bool keyStateChanged(bool) override;
+    void focusLost(FocusChangeType) override { heldShortcutKeys.clear(); }
     bool isInterestedInFileDrag(const StringArray &) override;
     void filesDropped(const StringArray &, int, int) override;
     void mouseWheelMove(const MouseEvent &, const MouseWheelDetails &) override;
@@ -77,6 +79,8 @@ class Workspace final : public Component,
     static void showPanel(const String &, std::unique_ptr<Component>, int width, int height);
 
   private:
+    std::set<int> heldShortcutKeys;
+    std::map<String, int> actionInvocations;
     class Timeline;
     class TrackRow;
     class Setlist;

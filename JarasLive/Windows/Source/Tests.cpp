@@ -724,6 +724,11 @@ int runTests(const File &directory) {
         track.clips.push_back(clip);
         song.tracks.push_back(track);
         engine.prepareSong(song, folder);
+        AudioEngine::State stopped;
+        stopped.position = .1;
+        engine.transport(stopped);
+        expect((int)engine.streamDiagnostics()["primedSources"] == 0,
+               "Stopped project edits must not request or wait for audio readers");
         Thread::sleep(150);
         jaras::Project p;
         p.masterVolume = 1;
@@ -734,6 +739,8 @@ int runTests(const File &directory) {
         state.playing = true;
         state.position = .1;
         engine.transport(state);
+        expect((int)engine.streamDiagnostics()["primedSources"] > 0,
+               "Starting playback must still prime the active head");
         render();
         for (int retry = 0; retry < 20 && output.getMagnitude(0, 480) < .01f; ++retry) {
             Thread::sleep(20);
@@ -742,6 +749,26 @@ int runTests(const File &directory) {
         }
         expect(std::abs(output.getSample(0, 100) - .1f) < .002f, "Left channel incorrect");
         expect(std::abs(output.getSample(1, 100) - .2f) < .002f, "Stereo channels collapsed");
+        // Adding a generated track must retain unchanged readers and their audio.
+        auto clickTrack = track;
+        clickTrack.id = uuid(); clickTrack.role.id = "generatedClick";
+        clickTrack.name = "Click"; clickTrack.clips.clear();
+        song.tracks.push_back(clickTrack);
+        engine.prepareSong(song, folder);
+        expect((int)engine.preparationDiagnostics["reusedSources"] == 1,
+               "Adding Click reopened unchanged source metadata");
+        engine.setMixer(p, song); engine.transport(state); render();
+        expect(std::abs(output.getSample(0, 100) - .1f) < .002f &&
+                   std::abs(output.getSample(1, 100) - .2f) < .002f,
+               "Adding Click changed existing audio");
+        song.tracks.pop_back();
+        expect(file.setLastModificationTime(file.getLastModificationTime() + RelativeTime::seconds(2)),
+               "Could not update media revision");
+        engine.prepareSong(song, folder);
+        expect((int)engine.preparationDiagnostics["reusedSources"] == 0,
+               "Changed media reused a stale decoder");
+        engine.setMixer(p, song); engine.transport(state); render();
+
         // Thousands of edits without a device callback used to fill the queue
         // in visual inspection. The last mixer and transport values must survive.
         for (int edit = 0; edit < 1500; ++edit) {
@@ -1317,6 +1344,17 @@ int runTests(const File &directory) {
         bindings.invoke = [&](const String &id, float, int) { invoked = id; };
         expect(bindings.key(KeyPress(KeyPress::spaceKey)) && invoked == "playStop",
                "Space did not map to Play/Stop");
+        invoked.clear();
+        for (int repeat = 0; repeat < 30; ++repeat)
+            expect(bindings.key(KeyPress(KeyPress::spaceKey), true), "Held Space leaked to another control");
+        expect(invoked.isEmpty(), "Held Space toggled Play/Stop repeatedly");
+        expect(bindings.key(KeyPress(KeyPress::spaceKey)) && invoked == "playStop",
+               "Space did not trigger again after release");
+        invoked.clear();
+        expect(bindings.key(KeyPress(KeyPress::spaceKey, ModifierKeys::shiftModifier, 0), true) && invoked.isEmpty(),
+               "Held Shift+Space toggled Sub Play repeatedly");
+        expect(bindings.key(KeyPress('D'), true) && invoked == "nextRegion",
+               "Region navigation lost the Mac repeat behavior");
         expect(bindings.key(KeyPress(KeyPress::upKey)) && invoked == "setlistUp",
                "Up arrow did not map to Setlist Up");
         expect(bindings.key(KeyPress('E')) && invoked == "previousTimelinePoint",
@@ -1556,11 +1594,13 @@ int runTests(const File &directory) {
         clip.id = uuid();
         clip.duration = 2;
         clip.sourceOffset = .25;
+        ClipAudio processor(song, track, clip, 48000);
         for (auto [speed, pitch] :
              std::initializer_list<std::pair<double, int>>{{.5, 0}, {2, 0}, {1, 12}, {2, -12}}) {
             clip.playbackRate = speed;
             clip.pitchSemitones = pitch;
-            ClipAudio processor(song, track, clip, 48000);
+            processor.configure(song, track, clip, 48000);
+            processor.prepare(48000); // Same-rate device reattachment preserves prepared plans.
             int crossings[2]{};
             float previous[2]{};
             double energy = 0;

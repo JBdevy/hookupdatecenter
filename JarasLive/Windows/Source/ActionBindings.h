@@ -33,6 +33,12 @@ struct ActionDefinition {
         return String(id) != "normalizeItems" && String(id) != "createTempoMarker";
     }
     bool fixedKeyboard() const { return String(id) == "setlistUp" || String(id) == "setlistDown"; }
+    bool repeats() const {
+        const String action(id);
+        return action == "tempoDown" || action == "tempoUp" || action == "nextRegion" ||
+               action == "previousRegion" || action == "nextTimelinePoint" ||
+               action == "previousTimelinePoint" || fixedKeyboard();
+    }
 };
 inline const std::vector<ActionDefinition> &actionDefinitions() {
     static const std::vector<ActionDefinition> definitions{
@@ -153,7 +159,7 @@ class ActionBindings final : public ChangeBroadcaster,
         assign(learning, "keyboard", key.getTextDescription());
         return true;
     }
-    bool key(const KeyPress &pressed) {
+    bool key(const KeyPress &pressed, bool isRepeat = false) {
         if (captureKey(pressed))
             return true;
         for (const auto &definition : actionDefinitions()) {
@@ -161,7 +167,7 @@ class ActionBindings final : public ChangeBroadcaster,
             const auto description = str(b, "keyboard");
             if (description.isNotEmpty() &&
                 KeyPress::createFromDescription(description) == pressed) {
-                if (invoke)
+                if (invoke && (!isRepeat || definition.repeats()))
                     invoke(definition.id, 1.f, (int)num(b, "track"));
                 return true;
             }

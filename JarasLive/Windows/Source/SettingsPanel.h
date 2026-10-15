@@ -250,14 +250,10 @@ class SettingsPanel final : public Component, private Timer {
             label(String::fromUTF8("Pare o transporte antes de alterar o dispositivo de áudio."),
                   136, 28, false, theme::yellow);
         auto *type = manager.getCurrentDeviceTypeObject();
-        if (!type) {
-            button(String::fromUTF8("Iniciar áudio"), 24, 166, 160, [this] {
-                auto result = session.audio.openDevice();
-                if (result.isNotEmpty())
-                    error(result);
-                refreshLater();
-            });
-            return;
+        if (!type || !manager.getCurrentAudioDevice()) {
+            label(String::fromUTF8("Nenhum dispositivo de áudio disponível."), 166, 28,
+                  false, theme::secondary);
+            if (!type) return;
         }
         type->scanForDevices();
         auto inputNames = type->getDeviceNames(true), outputNames = type->getDeviceNames(false);
@@ -304,10 +300,12 @@ class SettingsPanel final : public Component, private Timer {
                     chosen = i + 1;
             }
             label("Taxa de amostragem", 374, 26, true);
-            choice("Taxa de amostragem", choices, chosen, 24, 412, 160, [this, rates](int id) {
+            auto &rateChoice = choice("Taxa de amostragem", choices, chosen, 24, 412, 160, [this, rates](int id) {
                 if (id > 0 && id <= rates.size())
                     applyAudio([rates, id](auto &s) { s.sampleRate = rates[id - 1]; });
-            }).setEnabled(!locked());
+            });
+            rateChoice.setEnabled(!locked());
+            rateChoice.setComponentID("audioSampleRate");
             auto sizes = device->getAvailableBufferSizes();
             choices.clear();
             chosen = 1;
@@ -317,10 +315,21 @@ class SettingsPanel final : public Component, private Timer {
                     chosen = i + 1;
             }
             label("Tamanho do buffer", 456, 26, true);
-            choice("Tamanho do buffer", choices, chosen, 24, 494, 180, [this, sizes](int id) {
+            auto &bufferChoice = choice("Tamanho do buffer", choices, chosen, 24, 494, 180, [this, sizes](int id) {
                 if (id > 0 && id <= sizes.size())
                     applyAudio([sizes, id](auto &s) { s.bufferSize = sizes[id - 1]; });
-            }).setEnabled(!locked());
+            });
+            bufferChoice.setEnabled(!locked());
+            bufferChoice.setComponentID("audioBufferSize");
+            if (manager.getCurrentAudioDeviceType() == "Windows Audio")
+                label(String::fromUTF8("Modo compartilhado: o Windows define o buffer.\nPara outras opções, selecione baixa latência, modo exclusivo ou ASIO em Driver."),
+                      620, 56, false, theme::secondary);
+            if (device->hasControlPanel())
+                button(String::fromUTF8("Painel do dispositivo"), 24, 686, 210, [this] {
+                    if (locked()) return;
+                    if (auto *current = session.audio.devices.getCurrentAudioDevice()) current->showControlPanel();
+                    refreshLater();
+                }).setEnabled(!locked());
         }
         label(String::fromUTF8("Buffers menores reduzem a latência e usam mais CPU."), 534, 26,
               false, theme::secondary);
@@ -332,7 +341,7 @@ class SettingsPanel final : public Component, private Timer {
             CallOutBox::launchAsynchronously(
                 std::move(selector), getScreenBounds().withSizeKeepingCentre(50, 20), nullptr);
         }).setEnabled(!locked());
-        contentHeight = 640;
+        contentHeight = 740;
     }
     void midiPage() {
         const auto inputs = MidiInput::getAvailableDevices(),

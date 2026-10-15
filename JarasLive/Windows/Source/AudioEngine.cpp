@@ -214,14 +214,33 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
 }
 void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                               const var &masterSettings, const jaras::Project *project) {
+    preparationDiagnostics = object();
+    const auto preparationStart = Time::getMillisecondCounterHiRes();
+    auto stageStart = preparationStart;
+    const auto stage = [&](const char *name) {
+        const auto now = Time::getMillisecondCounterHiRes();
+        put(preparationDiagnostics, Identifier(name), now - stageStart);
+        stageStart = now;
+    };
     const bool resume = attached;
     if (resume)
         devices.removeAudioCallback(this);
+    stage("detachMilliseconds");
     // The callback has finished before any reader or scratch buffer is replaced.
+    // Structural edits keep the same media. Retain its decoders/metadata while
+    // rebuilding voices; changed and unreferenced files are not kept in a cache.
+    std::map<std::string, std::shared_ptr<Source>> previousSources;
+    std::map<ID, std::unique_ptr<ClipAudio>> previousProcessors;
+    for (auto &voice : voices) {
+        previousSources.emplace(utf8(voice->source->file.getFullPathName()), voice->source);
+        if (voice->clipAudio)
+            previousProcessors.emplace(voice->clipID, std::move(voice->clipAudio));
+    }
     voices.clear();
     instrumentDirectory = directory;
     masterMIDI.reset();
     buses.clear();
+    stage("releaseMilliseconds");
     busOrder.clear();
     missingFiles.clear();
     unsupported.clear();
@@ -353,7 +372,9 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
         for (size_t i = 0; i < buses.size(); ++i)
             visit((int)i);
         std::reverse(busOrder.begin(), busOrder.end());
+        stage("busesMilliseconds");
         std::map<std::string, std::shared_ptr<Source>> sources;
+        int reusedSources = 0, reusedProcessors = 0;
         for (const auto &track : song.tracks) {
             if (track.role.id == "video" || jaras::isTeleprompterRole(track.role) ||
                 track.role.id == "chords")
@@ -372,15 +393,26 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 if (found != sources.end())
                     voice->source = found->second;
                 else {
-                    std::unique_ptr<AudioFormatReader> metadata(formats.createReaderFor(file));
-                    if (!metadata || metadata->sampleRate <= 0 || metadata->sampleRate > 384000 ||
-                        metadata->numChannels == 0) {
-                        missingFiles.addIfNotAlreadyThere(file.getFullPathName());
-                        continue;
+                    const auto previous = previousSources.find(sourceKey);
+                    if (previous != previousSources.end() && file.existsAsFile() &&
+                        file.getSize() == previous->second->fileSize &&
+                        file.getLastModificationTime() == previous->second->modified) {
+                        voice->source = previous->second;
+                        ++reusedSources;
+                    } else {
+                        std::unique_ptr<AudioFormatReader> metadata(formats.createReaderFor(file));
+                        if (!metadata || metadata->sampleRate <= 0 || metadata->sampleRate > 384000 ||
+                            metadata->numChannels == 0) {
+                            missingFiles.addIfNotAlreadyThere(file.getFullPathName());
+                            continue;
+                        }
+                        voice->source = std::make_shared<Source>();
+                        voice->source->file = file;
+                        voice->source->fileSize = file.getSize();
+                        voice->source->modified = file.getLastModificationTime();
+                        for (int h = 0; h < 2; ++h)
+                            voice->source->readers[h] = std::make_unique<StreamingReader>(file, *metadata, formats, readAhead);
                     }
-                    voice->source = std::make_shared<Source>();
-                    for (int h = 0; h < 2; ++h)
-                        voice->source->readers[h] = std::make_unique<StreamingReader>(file, *metadata, formats, readAhead);
                 }
                 for (int h = 0; h < 2; ++h) {
                     voice->processed[h].setSize(2, 4096);
@@ -391,6 +423,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 }
                 sources[sourceKey] = voice->source;
                 voice->track = track.id;
+                voice->clipID = clip.id;
                 voice->start = clip.startTime;
                 voice->playbackStart = jaras::playbackItemStart(song, clip);
                 voice->duration = clip.duration;
@@ -402,8 +435,15 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 voice->fadeIn = clip.fadeIn.value_or(0);
                 voice->fadeOut = clip.fadeOut.value_or(0);
                 voice->channelMode = clip.channelMode.value_or(0);
-                if (ClipAudio::needed(song, track, clip))
-                    voice->clipAudio = std::make_unique<ClipAudio>(song, track, clip, rate.load());
+                if (ClipAudio::needed(song, track, clip)) {
+                    const auto previous = previousProcessors.find(clip.id);
+                    if (previous != previousProcessors.end()) {
+                        voice->clipAudio = std::move(previous->second);
+                        voice->clipAudio->configure(song, track, clip, rate.load());
+                        ++reusedProcessors;
+                    } else
+                        voice->clipAudio = std::make_unique<ClipAudio>(song, track, clip, rate.load());
+                }
                 voice->automation.prepare(
                     clip.automationJSON ? JSON::parse(text(*clip.automationJSON)) : var(), true);
                 for (size_t i = 0; i < buses.size(); ++i)
@@ -412,6 +452,10 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 voices.push_back(std::move(voice));
             }
         }
+        put(preparationDiagnostics, "reusedSources", reusedSources);
+        put(preparationDiagnostics, "reusedProcessors", reusedProcessors);
+        put(preparationDiagnostics, "sources", (int)sources.size());
+        stage("voicesMilliseconds");
     } catch (...) {
         if (resume)
             devices.addAudioCallback(this);
@@ -419,6 +463,10 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     }
     if (resume)
         devices.addAudioCallback(this);
+    stage("reattachMilliseconds");
+    previousSources.clear();
+    previousProcessors.clear();
+    put(preparationDiagnostics, "totalMilliseconds", Time::getMillisecondCounterHiRes() - preparationStart);
 }
 void AudioEngine::enqueue(const Update &update) {
     int a, n, b, m;
@@ -437,11 +485,15 @@ void AudioEngine::enqueue(const Update &update) {
     fifo.finishedWrite(1);
 }
 void AudioEngine::transport(const State &state) {
-    // Prime all required sources together before publishing a new seek/start.
+    const auto primeStart = Time::getMillisecondCounterHiRes();
+    lastPrimedSources = 0;
+    // Prime only heads that will play. A stopped edit (including creating a
+    // Click track) must not wait for the two-second disk-read deadline, and a
+    // Stop must reach the callback without waiting for inactive media.
     // The ongoing device callback continues with its current transport meanwhile.
     std::vector<std::pair<StreamingReader*, int64>> pending;
     for (int head = 0; head < 2; ++head) {
-        if (head == 1 && !state.subPlaying) continue;
+        if (head == 0 ? !state.playing : !state.subPlaying) continue;
         const auto cursor = head == 0 ? state.position : state.subPosition;
         for (auto& voice : voices) {
             if (!state.scope[head].allows(voice->playbackStart) || voice->start > cursor + 2 ||
@@ -451,6 +503,7 @@ void AudioEngine::transport(const State &state) {
             const double source = voice->clipAudio ? voice->clipAudio->sourcePosition(local) : voice->offset + local * voice->speed;
             const auto position = (int64)std::floor(source * reader->sampleRate);
             reader->request(position);
+            ++lastPrimedSources;
             if (voice->start <= cursor) pending.emplace_back(reader, position);
         }
     }
@@ -463,6 +516,7 @@ void AudioEngine::transport(const State &state) {
         Thread::sleep(1);
     }
 
+    lastPrimeWaitMilliseconds = Time::getMillisecondCounterHiRes() - primeStart;
     Update u;
     u.kind = Update::transport;
     u.state = state;

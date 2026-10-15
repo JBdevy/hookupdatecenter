@@ -7,9 +7,12 @@ namespace catlive {
 class ClipAudio {
   public:
     ClipAudio(const jaras::Song &song, const jaras::Track &track, const jaras::AudioClip &clip,
-              double rate)
-        : offset(clip.sourceOffset), speed(clip.playbackRate), duration(clip.duration),
-          loopStart(clip.loopStart.value_or(0)), loopLength(clip.loopLength.value_or(0)) {
+              double rate) { configure(song, track, clip, rate); }
+    void configure(const jaras::Song &song, const jaras::Track &track,
+                   const jaras::AudioClip &clip, double rate) {
+        offset = clip.sourceOffset; speed = clip.playbackRate; duration = clip.duration;
+        loopStart = clip.loopStart.value_or(0); loopLength = clip.loopLength.value_or(0);
+        segments.clear();
         std::vector<double> bounds{0, duration};
         for (const auto &part : song.parts) {
             for (double edge : {part.startTime, part.endTime})
@@ -31,7 +34,7 @@ class ClipAudio {
     }
     static bool needed(const jaras::Song &song, const jaras::Track &track,
                        const jaras::AudioClip &clip) {
-        if (clip.loopLength || std::abs(clip.playbackRate - 1) > 1e-9 ||
+        if (clip.loopLength.value_or(0) > 0 || std::abs(clip.playbackRate - 1) > 1e-9 ||
             clip.pitchSemitones.value_or(0) != 0)
             return true;
         if (!clip.frozenMIDI.value_or(false) && !clip.renderedTiming.value_or(false))
@@ -44,14 +47,21 @@ class ClipAudio {
     }
     void prepare(double rate) {
         sampleRate = rate;
+        for (auto &head : heads) head.next = -1;
+        // Rebuilding a track or reattaching the same device only invalidates
+        // playback history. FFT plans/buffers depend on rate, not the track list.
+        // Pure loops do not need a spectral processor at all.
+        const bool spectral = std::any_of(segments.begin(), segments.end(),
+                                         [](const auto &segment) { return std::abs(segment.pitch) >= 1e-8; });
+        if (!spectral || preparedPitchRate == rate) return;
         for (auto &head : heads) {
             head.pitch.presetDefault(2, (float)rate);
             head.input.setSize(2, std::max(4096, head.pitch.outputSeekLength(1.f)));
             head.input.clear();
-            head.pitch.outputSeek(head.input.getArrayOfReadPointers(),
-                                  head.pitch.outputSeekLength(1.f));
-            head.next = -1;
         }
+        // The first render primes history with the actual source, independently
+        // for each head; priming silent history here only did the work twice.
+        preparedPitchRate = rate;
     }
     double sourcePosition(double local) const {
         const double source = offset + std::max(0., local) * speed;
@@ -111,7 +121,8 @@ class ClipAudio {
     };
     std::array<Head, 2> heads;
     std::vector<Segment> segments;
-    double offset, speed, duration, loopStart, loopLength, sampleRate = 48000;
+    double offset = 0, speed = 1, duration = 0, loopStart = 0, loopLength = 0,
+           sampleRate = 48000, preparedPitchRate = 0;
     bool read(AudioFormatReader &reader, AudioBuffer<float> &scratch, AudioBuffer<float> &output,
               int target, double local, int count) {
         bool ok = true;

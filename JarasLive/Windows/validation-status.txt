@@ -1,3 +1,39 @@
+Current Mac-driven Windows validation — 2026-10-15, visual batch 5
+
+- Inter uses its natural glyph widths, with embedded Regular/Medium/SemiBold/
+  Bold faces. The Mac font was not changed. Removed the extra Start Audio button;
+  normal startup initializes audio automatically.
+- Fixed Click creation stalls on the real GUILHERME CAMARGO project (46 tracks,
+  552 media sources, 530 pitch/loop processors). Rebuilding after creation with
+  the Windows Audio device active fell from 4,246 ms to 72 ms. Native GUI click
+  through fresh diagnostics took 521 ms, including input/capture overhead.
+  Creating Click and undo passed both with and without the audio device.
+- Unchanged media readers and prepared spectral processors survive structural
+  edits. Changed media revisions invalidate readers, clip timing/pitch settings
+  are reapplied, and a sample-rate change rebuilds the spectral plans. Stopped
+  transport no longer waits for inactive media. Integration checks cover audio
+  continuity, changed media, pitch/rate/loop reuse and independent playback heads.
+- Holding Space with 20 repeated native key-down events invoked Play/Stop once.
+  Release plus a new press invoked it again. Configured actions allow repeat only
+  for navigation/tempo, with fixed setlist arrows retaining their current repeat.
+- Waveform ink now follows the Mac neutral-gray/luminance rules; selected colors,
+  muted gray, channel bounds and visual gain magnification follow the Mac source.
+- Device rate/buffer lists use actual driver capabilities. This PC's shared
+  Windows Audio reports 48 kHz and 480 samples. The page explains shared-mode
+  constraints and exposes a device control panel when provided by the driver.
+- Sub Play has enough width in the compact transition. Native real-project
+  layout checks passed at logical widths 1420, 1276, 1220 and 998 with no clipped
+  transport labels or overlaps. The prior CI failed on its Sub Play width check.
+- Release build passed all 14 CTest suites and 45 integration scenarios,
+  zero skipped, using the real SF2 fixture. Original project SHA-256 unchanged.
+- Evidence: Documents/CatLive-Mac-Validation/evidence/batch5 on Windows.
+- Still pending: complete context-menu/default-shortcut audit, item-header FX/
+  phase/pan/gain controls, CatStemSeparation 5, remaining visual references and
+  previously recorded equipment/plugin/release validation. This batch does not
+  certify complete Mac parity or release readiness.
+
+Historical batch 4 record:
+
 Current Mac-driven Windows validation — 2026-10-15, visual batch 4
 
 - Release 1.02 built on the user's Windows 11 PC: all 14 CTest suites passed,

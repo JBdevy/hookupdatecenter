@@ -136,6 +136,10 @@ class CatLiveApplication final : public JUCEApplication {
                 const int index = args.indexOf("--project-preview");
                 if (index + 1 >= args.size()) throw std::runtime_error("Expected preview project path");
                 session->inspection = true;
+                if (args.contains("--inspect-audio")) {
+                    const auto error = session->audio.openDevice();
+                    if (error.isNotEmpty()) throw std::runtime_error(utf8(error));
+                }
                 session->load(File(args[index + 1]));
             } else if (previewHome) {
                 // Visual inspection never grants an audio entitlement.

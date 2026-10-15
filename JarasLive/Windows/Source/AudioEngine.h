@@ -114,6 +114,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
             }
         auto result = object();
         put(result, "cacheMisses", (int64)caches); put(result, "inactiveMisses", (int64)inactive);
+        put(result, "primedSources", lastPrimedSources);
+        put(result, "primeWaitMilliseconds", lastPrimeWaitMilliseconds);
         return result;
     }
     double cpu() const { return devices.getCpuUsage(); }
@@ -121,13 +123,19 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
                 const float *const *input = nullptr, int inputChannels = 0);
     double sampleRate() const { return rate.load(); }
     StringArray missingFiles, unsupported;
+    var preparationDiagnostics;
 
   private:
+    int lastPrimedSources = 0;
+    double lastPrimeWaitMilliseconds = 0;
     struct Source {
+        File file;
+        int64 fileSize = 0;
+        Time modified;
         std::unique_ptr<StreamingReader> readers[2];
     };
     struct Voice {
-        ID track;
+        ID track, clipID;
         std::optional<double> playbackStart;
         double start = 0, duration = 0, offset = 0, speed = 1, clipGain = 1, clipPan = 0,
                fadeIn = 0, fadeOut = 0;
