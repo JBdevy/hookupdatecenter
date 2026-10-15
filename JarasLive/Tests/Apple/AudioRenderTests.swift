@@ -1294,9 +1294,12 @@ precondition(preSpanPCM < 0.000001, "positive timecode offset must not emit befo
 let leftSpanPCM = try timecodeSpanPeak(at: 0.75, revision: 1)
 precondition(leftSpanPCM > 0.2, "extended left timecode span emits LTC before original region starts: \(leftSpanPCM)")
 let timecodeMeter = spanAudio.meter(for: spanTrack.id)
-Thread.sleep(forTimeInterval: 0.04)
+// Exceed the 80 ms re-anchor threshold deliberately. A busy UI/CI runner
+// must not erase rendered LTC before publishing its stereo meter reading.
+Thread.sleep(forTimeInterval: 0.12)
 try spanAudio.update(spanState, revision: 1)
-precondition(timecodeMeter.levels.x > 0.2 && timecodeMeter.levels.y > 0.2, "Timecode track meter reads real stereo LTC independently of Master")
+precondition(timecodeMeter.levels.x > 0.2 && timecodeMeter.levels.y > 0.2, "Timecode track meter retains real stereo LTC across a delayed clock update independently of Master")
+print("TIMECODE_METER_DELAYED_REANCHOR_PRESERVES_RENDERED_PEAK_OK")
 let rightSpanPCM = try timecodeSpanPeak(at: 2.25, revision: 1)
 precondition(rightSpanPCM > 0.2, "extended right timecode span emits LTC after original region ends: \(rightSpanPCM)")
 var timecodeRule = MultiLoopTrack(id: spanTrack.id, gain: 0.2); timecodeRule.autoFader = true
@@ -1327,7 +1330,11 @@ let trimmedBeforePCM = try timecodeSpanPeak(at: 0.75, revision: 2)
 precondition(trimmedBeforePCM < 0.000001, "trimmed timecode span remains silent before its new start")
 let trimmedInsidePCM = try timecodeSpanPeak(at: 1.3, revision: 2)
 precondition(trimmedInsidePCM > 0.2, "trimmed item emits within its independent timecode span")
+// A transport refresh can bank a native peak before the meter timer runs.
+// Switching to MIDI must discard that pending audio peak as well as the bar.
+spanAudio.updateTimecode(spanState)
 spanState.project.songs[0].tracks[0].timecode?.mode = "mtc"
+Thread.sleep(forTimeInterval: 0.04)
 _ = try timecodeSpanPeak(at: 1.3, revision: 3)
 precondition(timecodeMeter.levels.x == 0 && timecodeMeter.levels.y == 0, "MTC immediately clears the LTC audio meter")
 spanState.project.songs[0].tracks[0].timecode?.mode = "ltc"
@@ -1346,6 +1353,41 @@ let deletedTimecodePeak = try timecodeSpanPeak(at: 1.3, revision: 5)
 precondition(deletedTimecodePeak < 0.000001, "deleting the Timecode track must stop the still-running LTC generator")
 spanAudio.stop()
 print("TIMECODE_ITEM_SPAN_EDGES_MONOTONIC_CLOCK_AND_FUTURE_START_GATING_PCM_OK")
+
+// Entry filtering applies to musical stems. A unified region keeps one
+// continuous timecode origin; selecting a child must not reset or gate it.
+do {
+    var project = Project.empty(name: "Unified timecode")
+    let parent = Part(id: UUID(), name: "Unified", startTime: 1, endTime: 5)
+    var first = Part(id: UUID(), name: "A", startTime: 1, endTime: 3.5)
+    var second = Part(id: UUID(), name: "B", startTime: 3, endTime: 5)
+    first.parentRegionID = parent.id; second.parentRegionID = parent.id
+    project.songs[0].parts = [parent, first, second]
+    var track = spanTrack
+    track.timecode?.offset = 3600
+    track.clips = [AudioClip(id: Project.timecodeItemID(parent.id), name: "Unified LTC", startTime: 1, duration: 4)]
+    project.songs[0].tracks = [track]
+    let timing = TimecodePlaybackSpan(song: project.songs[0], track: track, position: 3.25,
+        settings: track.timecode!, preferredRegion: second.id)!
+    precondition(timing.time == 3602.25 && timing.end == 3604,
+        "entering child B retains the unified parent's relative timecode origin")
+    spanState.project = project
+    spanState.transport.songId = project.songs[0].id
+    spanState.transport.regionId = parent.id
+    spanState.transport.playbackStartRegionId = second.id
+    spanState.transport.playing = true
+    let directChildLTC = try timecodeSpanPeak(at: 3.25, revision: 20)
+    precondition(directChildLTC > 0.2, "excluding previous musical stems must not gate unified LTC")
+    spanState.transport.subPlay = SubPlayState(playing: true, position: 1.5)
+    let withSubLTC = try timecodeSpanPeak(at: 3.25, revision: 20)
+    precondition(abs(withSubLTC - directChildLTC) < 0.00001, "Sub Play must not duplicate the main timecode output")
+    spanState.transport.playing = false
+    let onlySubLTC = try timecodeSpanPeak(at: 3.25, revision: 20)
+    precondition(onlySubLTC < 0.000001, "Sub Play alone must not replace the main timecode clock")
+    spanState.transport.subPlay.playing = false
+    spanAudio.stop()
+}
+print("TIMECODE_UNIFIED_PARENT_ORIGIN_CHILD_ENTRY_AND_MAIN_ONLY_SUBPLAY_PCM_OK")
 
 // Left extension starts at the source tail, runs forward to the front, then
 // repeats forward. Right extension continues from the front of the same source.

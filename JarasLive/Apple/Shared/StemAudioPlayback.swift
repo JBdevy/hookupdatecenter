@@ -2717,6 +2717,18 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
         let destination = AudioDeviceSettings.shared.resolvedMIDIDestination(settings.midiDestination)
         let key = "\(span?.clip.id.uuidString ?? "")-\(span?.clip.startTime ?? 0)-\(active)-\(mode)-\(settings.frameRate)-\(destination)-\(settings.regionRelative)-\(settings.offset)-\(end)"
         let changed = timecodeAnchor.map { $0.key != key || (!mode.isEmpty && abs(time - ($0.position + (active ? now + delay - $0.host : 0))) > (active ? 0.08 : 0.000001)) } ?? true
+        // Re-anchoring clears the generator's native peak. Consume the audio
+        // already rendered before a seek or delayed transport update resets it.
+        // Inactive/MTC states discard pending readings immediately instead.
+        if let bank = trackPeaks[track.id] {
+            let peak = timecodeGenerator?.takePeak() ?? 0
+            if active && mode == "ltc" {
+                bank.recordPeak(peak, slot: 0); bank.recordPeak(peak, slot: 1)
+            } else {
+                _ = bank.takePeak(0); _ = bank.takePeak(1)
+                meters[track.id]?.reset()
+            }
+        }
         if changed {
             timecodeGenerator?.configurePosition(time, end: end, hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: delay), rate: settings.frameRate, mode: mode, running: active, destination: destination)
             timecodeAnchor = (key,time,now + delay)
@@ -2726,11 +2738,6 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
         let manual = timecodePreviewGain?.value ?? track.volume
         timecodeGenerator?.setGain(Float(effectiveLoopGain(track.id, manual: manual)) * (timecodePhaseInverted ? -1 : 1))
         configureRoutes(timecodeRoutes, patches: mode == "ltc" && !masterSolo ? track.outputPatches : [])
-        if let bank = trackPeaks[track.id] {
-            let peak = active && mode == "ltc" ? timecodeGenerator?.takePeak() ?? 0 : 0
-            bank.recordPeak(peak, slot: 0); bank.recordPeak(peak, slot: 1)
-            if mode != "ltc" || !active { meters[track.id]?.reset() }
-        }
     }
     func refreshMetronome() {
         // Apply the user switch directly to the render thread, even without a

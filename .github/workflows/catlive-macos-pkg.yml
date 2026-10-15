@@ -113,9 +113,12 @@ jobs:
           python3 scripts/prepare-catstem.py
           python3 scripts/prepare-catstem-realtime.py
 
-      - name: Validate native audio playback and unified song entry
+      - name: Validate native audio playback, unified song entry and timecode
         working-directory: JarasLive
-        run: bash scripts/test-audio.sh
+        run: |
+          bash scripts/test-audio.sh
+          bash scripts/test-timecode.sh
+          bash scripts/test-timecode-signal.sh
 
       - name: Build universal CatLive app
         shell: bash
