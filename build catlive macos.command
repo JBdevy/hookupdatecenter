@@ -34,7 +34,7 @@ fi
 VERSION="${VERSION#v}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]{2}$ ]] || { echo 'Use a versão no formato X.XX (ex.: 1.00).' >&2; exit 1; }
 
-FILES=('JarasLive' '.github/workflows/catlive-macos-pkg.yml' 'build catlive macos.command')
+FILES=('JarasLive' '.github/workflows/catlive-macos-pkg.yml' 'build catlive macos.command' 'build catlive.bat' 'build catlive windows.bat' 'scripts/publish-catlive-desktop.ps1' 'scripts/test-catlive-desktop-release.cjs')
 echo 'Alterações do CatLive que serão enviadas:'
 git status --short -- "${FILES[@]}"
 
@@ -68,4 +68,5 @@ if [[ -n "$RUN_ID" ]]; then
 else
   echo "Build do CatLive $VERSION disparado. Consulte https://github.com/$REPO/actions/workflows/$WORKFLOW"
 fi
-echo "Depois da assinatura e notarização, o instalador Catlive-$VERSION.pkg será publicado na Release catlive-v$VERSION."
+echo "O workflow compila macOS + Windows e testa a troca de projetos .jl entre as plataformas."
+echo "Os instaladores Catlive-$VERSION.pkg e Catlive-$VERSION.exe serão publicados juntos na Release catlive-v$VERSION após os testes."

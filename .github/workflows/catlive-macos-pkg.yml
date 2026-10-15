@@ -1,4 +1,4 @@
-name: CatLive macOS PKG
+name: CatLive Desktop - macOS and Windows
 
 on:
   workflow_dispatch:
@@ -11,8 +11,50 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: catlive-desktop-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build and test Windows 10 / 11 x64
+        shell: pwsh
+        env:
+          CATLIVE_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          ./JarasLive/Windows/build.ps1 -Version $env:CATLIVE_RELEASE_VERSION -BuildDirectory "$env:RUNNER_TEMP/catlive-windows" -Installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-Windows-Binary
+          path: ${{ runner.temp }}/catlive-windows/package/CatLive-Windows-x64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-Windows-Fixtures
+          path: |
+            ${{ runner.temp }}/catlive-windows/test-results/fixture.jl
+            ${{ runner.temp }}/catlive-windows/test-results/fixture.json
+            ${{ runner.temp }}/catlive-windows/test-results/remote-state.json
+            ${{ runner.temp }}/catlive-windows/test-results/external-crypto.jl
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Catlive-${{ inputs.version }}-Windows
+          path: |
+            ${{ runner.temp }}/catlive-windows/installer/Catlive-*.exe
+            ${{ runner.temp }}/catlive-windows/installer/Catlive-*.exe.sha256
+            ${{ runner.temp }}/catlive-windows/package/CatLive-*-Windows-x64.zip
+          if-no-files-found: error
+
   macos-pkg:
+    needs: windows
     runs-on: macos-26
     timeout-minutes: 180
     env:
@@ -28,6 +70,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: CatLive-Windows-Fixtures
+          path: ${{ runner.temp }}/catlive-windows-fixtures
 
       - name: Validate version and signing credentials
         shell: bash
@@ -45,17 +92,30 @@ jobs:
 
       - name: Validate project and transport regressions
         working-directory: JarasLive
+        env:
+          CATLIVE_COMPATIBILITY_INPUT: ${{ runner.temp }}/catlive-windows-fixtures
+          CATLIVE_COMPATIBILITY_OUTPUT: ${{ runner.temp }}/catlive-mac-fixtures
         run: |
           swift test --jobs 2
           bash scripts/test-bridge.sh
           bash scripts/test-control-mappings.sh
           bash scripts/test-daw-remote.sh
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-Mac-Fixtures
+          path: ${{ runner.temp }}/catlive-mac-fixtures/
+          if-no-files-found: error
+
       - name: Prepare CatStemSeparation runtime
         working-directory: JarasLive
         run: |
           python3 scripts/prepare-catstem.py
           python3 scripts/prepare-catstem-realtime.py
+
+      - name: Validate native audio playback and unified song entry
+        working-directory: JarasLive
+        run: bash scripts/test-audio.sh
 
       - name: Build universal CatLive app
         shell: bash
@@ -194,13 +254,64 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish CatLive release
+  compatibility:
+    needs: [windows, macos-pkg]
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: CatLive-Windows-Binary
+          path: windows-binary
+      - uses: actions/download-artifact@v4
+        with:
+          name: CatLive-Windows-Fixtures
+          path: windows-fixtures
+      - uses: actions/download-artifact@v4
+        with:
+          name: CatLive-Mac-Fixtures
+          path: mac-fixtures
+      - name: Validate actual Mac and Windows document exchange
+        run: node JarasLive/Windows/scripts/verify-mac-roundtrip.cjs windows-binary/CatLive.exe windows-fixtures mac-fixtures compatibility-results
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-Compatibility-Results
+          path: compatibility-results/
+          if-no-files-found: error
+
+  release:
+    needs: [windows, macos-pkg, compatibility]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Catlive-${{ inputs.version }}-PKG
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: Catlive-${{ inputs.version }}-Windows
+          path: dist
+      - name: Publish both desktop installers together
         uses: softprops/action-gh-release@v2
         with:
           tag_name: catlive-v${{ inputs.version }}
-          name: CatLive ${{ inputs.version }} macOS
+          target_commitish: ${{ github.sha }}
+          name: CatLive ${{ inputs.version }} - macOS and Windows
           make_latest: false
           generate_release_notes: true
           fail_on_unmatched_files: true
+          body: |
+            CatLive ${{ inputs.version }} para macOS universal e Windows 10/11 x64.
+            Projeto .jl compartilhado entre as plataformas, com preservação do mapa grandMA2 ao salvar no Mac.
+            Publicação condicionada aos testes nativos e à troca de documentos Windows → Mac → Windows e Mac → Windows.
+            Instalador macOS assinado e notarizado. Instalador Windows sem assinatura Authenticode nesta configuração.
           files: |
             dist/Catlive-*.pkg
+            dist/Catlive-*.pkg.sha256
+            dist/Catlive-*.exe
+            dist/Catlive-*.exe.sha256
+            dist/CatLive-*-Windows-x64.zip

@@ -1,0 +1,43 @@
+CatLive Windows uses JUCE 8.0.15, copyright Raw Material Software Limited.
+JUCE is available under the JUCE commercial licence or AGPLv3.
+https://juce.com/legal/juce-8-licence/
+This local development build does not establish a commercial JUCE licence.
+Confirm the appropriate JUCE licence before distributing a proprietary product.
+
+Monocypher 4.0.3, by Loup Vaillant and contributors.
+Dual-licensed under CC0-1.0 or BSD-2-Clause; CatLive uses BSD-2-Clause.
+The complete licence accompanies the executable as Monocypher-LICENSE.md.
+https://monocypher.org/
+
+JUCE includes additional third-party components. Their notices and licences are
+in JUCE/modules and JUCE/LICENSE.md. These must accompany distribution as required.
+
+ASIO is a trademark and software of Steinberg Media Technologies GmbH.
+The bundled ASIO sources in JUCE are used under their accompanying licence.
+
+The original CatLive portable C++ core and product artwork remain part of CatLive.
+
+Figtree, copyright 2021 The Figtree Project Authors.
+Regular, Medium, SemiBold, Bold and Bold Italic static instances of the original
+variable fonts are embedded in CatLive. Licensed under the SIL Open Font License
+1.1. The complete licence is included as Figtree-LICENSE.txt beside the installed
+executable and in Windows/Assets/Fonts/Figtree-LICENSE.txt in the source tree.
+https://github.com/erikdkennedy/figtree
+
+Signalsmith Stretch 1.4.0 and Signalsmith Linear 0.6.4, by Signalsmith Audio.
+Licensed under MIT. Complete notices accompany the executable as
+Signalsmith-Stretch-LICENSE.txt and Signalsmith-Linear-LICENSE.txt.
+Source revisions and the vendored header list are recorded in
+Windows/ThirdParty/Signalsmith/PROVENANCE.txt.
+https://github.com/Signalsmith-Audio/signalsmith-stretch
+https://github.com/Signalsmith-Audio/linear
+
+TinySoundFont, copyright Bernhard Schelling and contributors.
+Licensed under MIT. The complete notice accompanies the executable as
+TinySoundFont-LICENSE.txt. CatLive includes its existing instrument extensions.
+https://github.com/schellingb/TinySoundFont
+
+libebur128 1.2.6, copyright Jan Kokemüller, and BSD queue macros.
+The same vendored source is used by the Mac build. Complete notices accompany
+the executable as EBUR128-LICENSE.txt and EBUR128-QUEUE-LICENSE.txt.
+https://github.com/jiixyj/libebur128

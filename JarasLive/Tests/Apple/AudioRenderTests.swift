@@ -1566,6 +1566,59 @@ precondition(abs(isolatedPromoted - 0.1) < 0.003, "promotion preserves incoming 
 scalarAudio.stop()
 print("UNIFIED_DRAWER_MAIN_SUBPLAY_OWNERSHIP_AND_PROMOTION_PCM_OK")
 
+// Exercise the real C++ -> Objective-C -> Swift transport path. The UI's region
+// is the parent after a grid seek, so a synthetic selected-child snapshot alone
+// cannot reproduce the reported leak. Rounded onsets reproduce the silent B.
+do {
+    var project = drawerProject
+    project.songs[0].regionOwnershipInitialized = true
+    project.songs[0].regionOwnershipVersion = 2
+    project.songs[0].tracks[0].clips[0].regionOwnerID = previousID
+    project.songs[0].tracks[1].clips[0].regionOwnerID = incomingID
+    project.songs[0].tracks[1].clips[0].startTime = 2 - 0.0000004
+    let core = JarasCoreBridge()
+    try core.load(projectData: JSONEncoder().encode(project))
+    let engine = AVAudioEngine()
+    try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+    let audio = StemAudioPlayback(engine: engine, realtime: false)
+    audio.open(directory: directory)
+    defer { audio.prepareForClosing() }
+    let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
+    func checkPCM(_ expected: Float, _ message: String) throws {
+        let snapshot = try JSONDecoder().decode(ShowSnapshot.self, from: core.snapshot())
+        try audio.update(snapshot, revision: 1)
+        var peak: Float = 0
+        for block in 0..<16 {
+            let status = try engine.renderOffline(512, to: buffer)
+            precondition(status == .success)
+            if block >= 10 {
+                for frame in 0..<Int(buffer.frameLength) { peak = max(peak, abs(buffer.floatChannelData![0][frame])) }
+            }
+        }
+        precondition(abs(peak - expected) < 0.003, "\(message): \(peak), expected \(expected)")
+    }
+    try core.execute(command: "editSeek", target: nil, value: 3)
+    try core.execute(command: "play", target: nil, value: 0)
+    try checkPCM(0.1, "grid start keeps rounded B and excludes previous tail")
+    try core.execute(command: "pause", target: nil, value: 0)
+    try audio.update(JSONDecoder().decode(ShowSnapshot.self, from: core.snapshot()), revision: 1)
+    try core.execute(command: "play", target: nil, value: 0)
+    try checkPCM(0.1, "pause/resume preserves B entry")
+    try core.execute(command: "stopAll", target: nil, value: 0)
+    try audio.update(JSONDecoder().decode(ShowSnapshot.self, from: core.snapshot()), revision: 1)
+    try core.execute(command: "selectRegion", target: previousID.uuidString, value: 0)
+    try core.execute(command: "play", target: nil, value: 0)
+    core.advance(3)
+    try checkPCM(0.15, "continuous playback from A retains its tail in B")
+    try core.execute(command: "ignoreNext", target: nil, value: 0)
+    try checkPCM(0.05, "Ignore Next cancels rounded B already scheduled in lookahead")
+    try core.execute(command: "ignoreNext", target: nil, value: 0)
+    try checkPCM(0.15, "Ignore Next toggle restores B without a seek")
+    try core.execute(command: "seek", target: nil, value: 3)
+    try checkPCM(0.1, "manual live seek replaces A entry with B")
+}
+print("CORE_BRIDGE_GRID_ENTRY_ROUNDED_ONSET_AND_IGNORE_NEXT_PCM_OK")
+
 try scalarAudio.update(drawerState, revision: 1)
 precondition(scalarEngine.isRunning)
 scalarAudio.prepareForClosing()

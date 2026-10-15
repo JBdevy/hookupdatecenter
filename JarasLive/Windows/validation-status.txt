@@ -1,0 +1,165 @@
+CatLive Windows development validation — 2026-10-15
+
+This file records verified work and remaining release requirements. It is not a
+production-readiness certificate. Windows 10/11 x64 is the intended target.
+The 137 Mac PNG references and LEIA-ME remain the visual authority.
+
+Verified locally on Windows 11 x64:
+- Unified-region playback entry is preserved independently of the UI selection.
+  Direct grid/child starts exclude previous owned stems; continuous playback
+  retains tails, including pause/resume, Sub Play and promotion. Rounded item
+  onsets use persisted ownership. Ignore Next uses the same ownership rules.
+  Verified with rendered PCM and shared-core regressions: 13 CTest suites pass
+  with the real SF2 fixture enabled. Native Mac PCM regression is included in
+  the GitHub desktop workflow and still awaits a macOS run.
+- Release build, JUCE/Direct2D native interface, custom caption and right-side
+  window buttons; original transparent opening and closing logo.
+- Create/Add/Recent projects, Empty/Stems/REAPER/Logic entry points, embedded Figtree
+  Regular/Medium/Semibold/Bold/Bold Italic fonts and setlist appearance settings.
+- Native keyboard/mouse smoke: all independent scroll areas, mixer horizontal
+  scroll, context menus, minimum window width, maximize/minimize/restore/close,
+  playlist multi-selection and creation, region/track editors, groups expanding
+  and collapsing, undo/redo, track creation, BPM adjustment, settings categories,
+  Advanced tabs, metronome, envelopes, teleprompters and notices.
+- AES-256-GCM project codec independently tested against Mac codec constants;
+  preserved unknown JSON, safe media paths, Save As media and instrument banks.
+  UUIDs now use Swift-compatible dashed spelling; early Windows preview IDs and
+  their references migrate together, preserving extension fields and Timecode edits.
+- REAPER and Logic import fixtures, including audio and MIDI arrangement data.
+- DPAPI credentials and Ed25519 entitlement verification fail closed.
+- grandMA2 button before Resolume; stable ID mapping, tombstones, partial exports,
+  Hook Center-compatible macros/XML and installer macro.
+- Resolume panel follows the Mac layout; host/OSC/Webserver settings persist in
+  the shared project. Native Ctrl+A field editing, map and Apply are verified.
+  Leaf-region/marker mapping matches Mac ownership; REST creation validates all
+  decks are empty and verifies mutations without blindly retrying ambiguous adds.
+  Mock composition tests and real localhost GET/PUT HTTP tests pass. Actual Arena
+  composition creation and OSC transport still require end-to-end verification.
+- EQ (including band editing), Compressor, Pitch, Delay, Reverb and Limiter.
+  Live effect replacement preserves transport position. Pitch waveform tests
+  verify octave up/down in stereo.
+- Fifteen instrument catalog categories and 261 entries from the Mac catalog.
+  Actual Sin Bell download and insertion verified through the native app.
+  Real SF2 engine tests verify MIDI timing/loops/rate, seek note chase, independent
+  main/Sub Play voices, output routing and portable Save As bank hashes.
+- Track/take gain, pan and mute envelopes, shapes, point editing/undo and
+  independent main/Sub Play automation.
+- Track sends/receives, group routing, solo/mute, phase and output patches.
+  Folder movement/duplication/removal tests retain descendants and valid references.
+- Generated Click and independent metronome: bundled sample, tempo markers,
+  clip spans, overlapping spans, mute and dedicated output.
+- Stage clock, negative overtime, automatic start; independent day/night TP
+  profiles; timed/pinned notices and templates.
+- Recados appearance now uses the Mac form, font/scale, capsule color controls,
+  emoji and clean-display setting. Native stage-focused-3 verifies persistence,
+  Ctrl+A, Ctrl+Enter sending, actual projection and withdrawal on Alt+F4.
+  Accented uppercase conversion uses Windows Unicode mapping.
+- Action defaults and order follow Mac, including S/Shift+S, R, Shift+Space and N.
+  Keyboard-only/fixed actions reject invalid assignments; both keyboard and MIDI
+  appear in mappings. Invalid track numbers cannot redirect commands to another
+  track. MIDI volume uses the Mac -60 to +12 dB curve, including zero mute.
+- MIDI piano roll: creation, multiple-note move, edge resize, right-drag marquee,
+  channel filtering, velocity, straight/triplet/dotted/swing grids, partial/end
+  quantization, source-aware extension and undo/redo. Native midi-5 verifies
+  creation, chord drag, Shift snap bypass, quantization, velocity, delete/undo,
+  scrolling and close. Frozen MIDI editing is rejected until unfreezing is ported.
+- Timeline media cleanup tracks project-owned Stems/Videos with the Mac inventory
+  format, protects live and sibling references, archives backup-only sources and
+  updates encrypted recovery documents before deletion. Tests cover ownership,
+  case-insensitive shared references, backup integrity and unreadable siblings.
+  Unknown files and reparse paths are excluded. Cleanup clears editing undo.
+- Lower mixer with real track faders/meters, mute/solo/polarity and FX access.
+- Track REC off/armed/automatic selection, mono/stereo/MIDI recording, WAV/AIFF,
+  input monitoring, per-track format, sustained MIDI notes and final takes on the
+  armed tracks. Synthetic capture tests verify channels, duration and note timing;
+  physical recording hardware has not been exercised. Loop recording is rejected.
+- Pads match the Mac footer arrangement with current/queued banks, section
+  selection, independent scrolling and playback progress. Native clicks verified.
+- Setlist Parts opens the vertical section list with current/queued tabs, Cancel,
+  section selection and mutually exclusive footer/sidebar modes. Native clicks,
+  tab switching and close passed in reference-parts-sidebar.
+- Teleprompter/chord text items: add from track/timeline, multiline editor,
+  Ctrl+Enter, draft cancellation, double-click reopening and undo/redo. The
+  teleprompter refreshes edited text without requiring a change of item.
+  Native text regression passed in reference-text-3; references text and text-2
+  exposed focus/newline bugs and are superseded by that corrected run.
+- Timeline edge dragging trims/extends items with a visible preview and undo.
+  Source-loop timing and MIDI left-extension match the Mac editing rules.
+  Vertical moves transfer audio items between compatible tracks; special text
+  tracks reject overlaps and incompatible moves. Native drag/undo passed in
+  reference-item-drag; signal/model checks cover preserved offsets and source loops.
+- Tuner controls and per-track/group targets, including preserved Mac settings.
+  Audio item menus expose individual Tuner, mono L/R/L+R/stereo, mute and stem
+  export. Native interaction verifies pitch, channel mode, selected-item export
+  and undo. Re-render and unification are still missing from this menu.
+  Clip streaming applies pitch and speed compensation, source offsets and loops;
+  pitch/rate/seek/Sub Play signal tests and region pitch through the audio graph pass.
+  Region pitch also applies to MIDI notes. Tuner edits currently require stopped
+  playback. Extreme rates and transition quality still need listening tests.
+- Export engine tests: WAV, AIFF and native Windows MP3; 44.1/48 kHz, mono/stereo,
+  selected bounds and track capture independent of the hardware output patch.
+  Existing destination files are preserved; secondary filenames are unique.
+- Normalization uses the same libebur128 implementation as Mac for LUFS and
+  true peak; RMS and peak measure the source span including loops and rate.
+  Tests cover 44.1/48 kHz, intersample peaks, short-item LUFS, cancellation and
+  gain limits. Native reference-normalization-2 verifies all modes, target
+  persistence, measured gain, Apply and undo. Audio sources are not rewritten.
+- Timeline ruler now uses elapsed time, with regions above marker/tempo bands.
+  Long shows can fit the viewport; native reference-timeline verifies full-show
+  fit below 2 pixels/second and the complete interaction suite. Clip fills use
+  the Mac gradient and white waveforms. Tempo-section grid parity remains.
+- Twelve CTest suites pass, including 35 native integration scenarios. The real
+  SF2 test requires CATLIVE_TEST_SF2; an absent fixture is explicitly reported as
+  skipped. This machine's last complete integration run included the SF2 fixture.
+- Remote uses the Mac X25519/HKDF/ChaCha20-Poly1305 protocol. Independent Node
+  crypto vectors, real TCP loopback, fragmented frames, replay rejection, typed
+  command validation, Director/Observer/Notices permissions and PIN revocation
+  pass. Transport, mixer, playlist, text/notice and timer controls share the session.
+  Native Remote settings, PIN editing, Escape, enable/disable and minimum-width
+  layout passed in remote-4. Windows mDNS discovery registration is implemented;
+  iPad/LAN end-to-end access and remaining Remote context operations are pending.
+  The Mac CI test now decodes a Windows-generated state with production Swift.
+- The Inno installer was installed under LocalAppData/Programs/CatLive; executable
+  hash, Start menu shortcut and .jl Open With registration verified. Installed
+  Home/Create/Add/Recent/REAPER/Logic and normal launch were exercised on this PC
+  (build 26300.9457). Normal launch displays the access screen; no trial or account
+  activation was performed. This does not replace clean Windows 10/11 testing.
+
+Mac/release pipeline:
+- Mac Project retains windowsLighting, including unknown nested data.
+- Desktop CI builds Mac universal and Windows x64 and exchanges encrypted fixtures
+  between the actual Windows executable and CryptoKit before publishing.
+- Swift tests, Mac build/signing/notarization and actual cross-runner exchange
+  have NOT run on this Windows machine. The GitHub workflow must pass.
+- Already-distributed older Mac binaries need updating to preserve windowsLighting.
+
+Remaining work and validation:
+- Complete visual comparison of all 137 screenshots, including conditional states,
+  exact typography/layout, context menus and controls. reference-coverage.csv
+  tracks capture/review separately; a screenshot is not a feature-parity guarantee.
+- External plugin hosting, CatStem, MIDI freeze/unfreeze, multiloop editing and
+  some Mac track/context operations remain incomplete. Multiloop mixer presets
+  are not applied by Windows audio. Remote recent-project opening, region deletion,
+  peak-hold reset and complete TP preview parity remain pending.
+- Clip pitch/time-stretch has signal tests but full Mac rendering equivalence and
+  live Tuner changes remain. Native Pitch FX introduces algorithmic latency
+  without full graph compensation. MIDI notes spanning pitch-region boundaries
+  currently retain their starting pitch.
+- Automation Write/Touch/Latch recording and Native/external FX parameter
+  envelopes are not implemented. Read automation and point editing are tested.
+- Some Advanced rerender/video and TP/notice style preferences are not fully
+  connected. Localization is incomplete outside the covered panels.
+- Song transitions rebuild the audio graph on the control thread. Long live-show
+  performance, physical audio/MIDI/OSC/grandMA2/Resolume devices, recording,
+  video, account activation and offline entitlement need end-to-end verification.
+- Export panel primary/secondary controls passed native UI verification.
+  Cancellation, long files, all selection combinations and Windows N
+  systems without Media Foundation require additional validation.
+- Clean-machine Windows 10 and Windows 11 installation tests and installer
+  signing remain. No public release has been published from this session.
+- JUCE commercial-distribution licensing must match the product's actual licence.
+
+Evidence is under %LOCALAPPDATA%/CatLiveBuild/windows/test-results and
+%LOCALAPPDATA%/CatLiveBuild/qa. reference-instruments (without -2) had an incorrect
+dropdown test and is not valid evidence of all effect/category selections.
+reference-instruments-2 and reference-mixer contain corrected successful runs.

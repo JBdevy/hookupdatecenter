@@ -1,4 +1,5 @@
 #include "Engine.hpp"
+#include "PlaybackScope.hpp"
 #include "../Songs/TempoEditMap.hpp"
 #include <algorithm>
 #include <cmath>
@@ -43,7 +44,7 @@ void Engine::select(const ID& id) {
     playStart_ = transport_.playing ? std::optional<double>(0) : std::nullopt; subPlayStart_.reset();
     clearIgnoreNext();
     transport_.regionId.reset(); transport_.queuedRegionId.reset(); autoRegionQueue_ = false;
-    transport_.songId = id; transport_.position = 0; transport_.editPosition = 0; transport_.queue.songId.reset(); transport_.subPlay = {}; automaticSubplayActive_ = false;
+    transport_.songId = id; transport_.playbackStartRegionId = playbackEntryRegion(*found, 0); transport_.subPlaybackStartRegionId.reset(); transport_.position = 0; transport_.editPosition = 0; transport_.queue.songId.reset(); transport_.subPlay = {}; automaticSubplayActive_ = false;
 }
 std::optional<ID> Engine::nextSongId() const {
     if (transport_.queue.songId) return transport_.queue.songId;
@@ -145,13 +146,14 @@ void Engine::toggleIgnoreNext() {
     // A fresh toggle must target that song until its actual audio has ended.
     for (const auto& child : song->parts) if (child.parentRegionID == root->id && child.startTime <= transport_.position) {
         if (!latest || child.startTime > latest->startTime) latest = &child;
-        if (playStart_ && child.startTime < *playStart_ - 1e-8) continue;
+        const auto scope = playbackScope(*song, transport_);
+        if (child.startTime < scope.minimum - 1e-6) continue;
         double boundary = root->endTime;
         for (const auto& following : song->parts) if (following.parentRegionID == root->id && following.startTime > child.startTime)
             boundary = std::min(boundary, following.startTime);
         double audioEnd = child.startTime;
         for (const auto& track : song->tracks) if (fixedTrackName(track.role).empty())
-            for (const auto& clip : track.clips) if ((clip.audioFile || track.audioFile) && clip.startTime >= child.startTime - 1e-8 && clip.startTime < boundary - 1e-8)
+            for (const auto& clip : track.clips) if ((clip.audioFile || track.audioFile) && PlaybackScope{child.startTime, boundary}.allows(playbackItemStart(*song, clip)) && playbackItemStart(*song, clip).has_value())
                 audioEnd = std::max(audioEnd, clip.startTime + clip.duration);
         if (audioEnd > transport_.position && (!current || child.startTime < current->startTime)) current = &child;
     }
@@ -162,7 +164,7 @@ void Engine::toggleIgnoreNext() {
     for (const auto& track : song->tracks) {
         if (!fixedTrackName(track.role).empty()) continue;
         for (const auto& clip : track.clips) if ((clip.audioFile || track.audioFile) &&
-            clip.startTime >= current->startTime - 1e-8 && clip.startTime < next->startTime - 1e-8) {
+            PlaybackScope{current->startTime, next->startTime}.allows(playbackItemStart(*song, clip)) && playbackItemStart(*song, clip).has_value()) {
             end = std::max(end, clip.startTime + clip.duration); hasAudio = true;
         }
     }
@@ -178,6 +180,8 @@ void Engine::promoteSubPlay(std::optional<ID> preferredRegion) {
     transport_.paused = false;
     transport_.regionId = std::move(preferredRegion);
     playStart_ = subPlayStart_.value_or(transport_.position);
+    transport_.playbackStartRegionId = transport_.subPlaybackStartRegionId;
+    transport_.subPlaybackStartRegionId.reset();
     transport_.subPlay.playing = false;
     automaticSubplayActive_ = false;
     subPlayStart_.reset(); resumeSub_ = false;
@@ -892,6 +896,7 @@ void Engine::execute(const Command& c) {
             clearIgnoreNext();
             transport_.paused = false; resumeSub_ = false;
             transport_.position = part->startTime; transport_.editPosition = part->startTime; transport_.regionId = part->id;
+            transport_.playbackStartRegionId = playbackEntryRegion(*currentSong(), part->startTime);
             transport_.queuedRegionId.reset(); autoRegionQueue_ = false; syncRegion();
         }
         break;
@@ -964,6 +969,7 @@ void Engine::execute(const Command& c) {
                 transport_.position = transport_.editPosition;
                 if (transport_.position >= currentSong()->duration) transport_.position = 0;
                 playStart_ = transport_.position;
+                transport_.playbackStartRegionId = playbackEntryRegion(*currentSong(), transport_.position);
             }
             if (transport_.paused && resumeSub_) transport_.subPlay.playing = true;
             transport_.paused = false; resumeSub_ = false;
@@ -978,11 +984,12 @@ void Engine::execute(const Command& c) {
                     transport_.subPlay.position = queued->startTime;
             } else if (transport_.subPlay.position >= currentSong()->duration) transport_.subPlay.position = 0;
             subPlayStart_ = transport_.subPlay.position;
+            transport_.subPlaybackStartRegionId = playbackEntryRegion(*currentSong(), transport_.subPlay.position);
             transport_.subPlay.playing = true;
         }
         break;
     case CommandKind::subStop: automaticSubplayActive_ = false; transport_.subPlay.playing = false; if (subPlayStart_) transport_.subPlay.position = *subPlayStart_; subPlayStart_.reset(); break;
-    case CommandKind::subSeek: automaticSubplayActive_ = false; if (currentSong()) transport_.subPlay.position = std::clamp(c.value, 0.0, currentSong()->duration); break;
+    case CommandKind::subSeek: automaticSubplayActive_ = false; if (currentSong()) { transport_.subPlay.position = std::clamp(c.value, 0.0, currentSong()->duration); transport_.subPlaybackStartRegionId = playbackEntryRegion(*currentSong(), transport_.subPlay.position); } break;
     case CommandKind::stopAll: execute({CommandKind::subStop}); execute({CommandKind::stop}); break;
     case CommandKind::stop:
         automaticSubplayQueue_.reset();
@@ -1009,11 +1016,12 @@ void Engine::execute(const Command& c) {
                 clearIgnoreNext();
                 transport_.paused = false; resumeSub_ = false;
                 transport_.position = transport_.editPosition;
+                transport_.playbackStartRegionId = playbackEntryRegion(*currentSong(), transport_.position);
                 transport_.regionId.reset(); transport_.queuedRegionId.reset(); autoRegionQueue_ = false; syncRegion();
             }
         }
         break;
-    case CommandKind::seek: clearIgnoreNext(); if (currentSong()) { transport_.position = std::clamp(c.value, 0.0, currentSong()->duration); transport_.editPosition = transport_.position; transport_.regionId.reset(); transport_.queuedRegionId.reset(); autoRegionQueue_ = false; syncRegion(); refreshMultiLoop(); } break;
+    case CommandKind::seek: clearIgnoreNext(); if (currentSong()) { transport_.position = std::clamp(c.value, 0.0, currentSong()->duration); transport_.editPosition = transport_.position; transport_.playbackStartRegionId = playbackEntryRegion(*currentSong(), transport_.position); transport_.regionId.reset(); transport_.queuedRegionId.reset(); autoRegionQueue_ = false; syncRegion(); refreshMultiLoop(); } break;
     case CommandKind::loopStart:
         if (!std::isfinite(c.value) || c.value < 0) throw std::invalid_argument("Invalid loop start");
         transport_.loop.start = c.value; break;
@@ -1208,6 +1216,7 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
             execute({CommandKind::subStop});
         }
         transport_.position = destination; transport_.editPosition = destination;
+        transport_.playbackStartRegionId = playbackEntryRegion(*currentSong(), destination);
         transport_.regionId.reset(); ++transport_.sectionJumpSerial;
         syncRegion(); return;
     }
@@ -1259,6 +1268,7 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
             const auto id = queued->id; const double start = queued->startTime;
             transport_.position = start; transport_.editPosition = start; transport_.regionId = id;
             playStart_ = start;
+            transport_.playbackStartRegionId = playbackEntryRegion(*song, start);
             transport_.queuedRegionId.reset(); autoRegionQueue_ = false;
             if (project_.regionSetlist && project_.regionSetlist->prepareWithoutPlayback.value_or(false)) {
                 transport_.playing = false; transport_.paused = false; playStart_.reset();

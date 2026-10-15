@@ -1167,3 +1167,17 @@ require(!loopRangeFixture.valid, "reversed loop range is rejected")
 loopRangeFixture.loopStart = 2; loopRangeFixture.loopEnd = .infinity
 require(!loopRangeFixture.valid, "nonfinite loop range is rejected")
 print("REMOTE_LOOP_BOUNDS_BACKWARD_COMPATIBLE_ROUNDTRIP_OK")
+
+if let directory = ProcessInfo.processInfo.environment["CATLIVE_COMPATIBILITY_INPUT"] {
+    let url = URL(fileURLWithPath: directory).appendingPathComponent("remote-state.json")
+    let json = try Data(contentsOf: url)
+    var packet = Data([0x4a, 0x4c, DAWRemoteWire.version, 2])
+    packet.append(json)
+    guard case .state(let windows) = try DAWRemoteWire.decode(packet) else {
+        fatalError("Windows did not produce a Remote state packet")
+    }
+    require(windows.valid && !windows.tracks.isEmpty, "Windows state must satisfy the production Swift protocol")
+    require(windows.teleprompters?.first?.index == 1 && windows.notices != nil && windows.timer != nil,
+            "Windows Remote must include native teleprompter, notices and timer state")
+    print("WINDOWS_REMOTE_SWIFT_PROTOCOL_COMPATIBILITY_OK")
+}

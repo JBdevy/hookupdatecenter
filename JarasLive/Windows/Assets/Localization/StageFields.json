@@ -1,0 +1,612 @@
+[
+  {
+    "kind": "color",
+    "id": "textColor",
+    "title": "Lyrics color"
+  },
+  {
+    "kind": "color",
+    "id": "textBoxColor",
+    "title": "Lyrics border color"
+  },
+  {
+    "kind": "color",
+    "id": "clockColor",
+    "title": "Timer color"
+  },
+  {
+    "kind": "color",
+    "id": "clockExpiredColor",
+    "title": "Expired countdown color"
+  },
+  {
+    "kind": "color",
+    "id": "clockBorderColor",
+    "title": "Timer border color"
+  },
+  {
+    "kind": "color",
+    "id": "localClockColor",
+    "title": "Local clock color"
+  },
+  {
+    "kind": "color",
+    "id": "localClockBorderColor",
+    "title": "Local clock border color"
+  },
+  {
+    "kind": "color",
+    "id": "borderColor",
+    "title": "Window border color"
+  },
+  {
+    "kind": "color",
+    "id": "songNameColor",
+    "title": "Song name color"
+  },
+  {
+    "kind": "color",
+    "id": "queueNameColor",
+    "title": "Queued song color"
+  },
+  {
+    "kind": "color",
+    "id": "progressColor",
+    "title": "Progress color"
+  },
+  {
+    "kind": "color",
+    "id": "chordColor",
+    "title": "Chords color"
+  },
+  {
+    "kind": "range",
+    "id": "textScale",
+    "title": "Lyrics scale",
+    "min": 35,
+    "max": 100
+  },
+  {
+    "kind": "range",
+    "id": "clockScale",
+    "title": "Timer scale",
+    "min": 35,
+    "max": 150
+  },
+  {
+    "kind": "range",
+    "id": "songNameScale",
+    "title": "Song name scale",
+    "min": 35,
+    "max": 200
+  },
+  {
+    "kind": "range",
+    "id": "queueNameScale",
+    "title": "Queued song scale",
+    "min": 35,
+    "max": 200
+  },
+  {
+    "kind": "toggle",
+    "id": "mediaStretch",
+    "title": "Stretch"
+  },
+  {
+    "kind": "range",
+    "id": "mediaScale",
+    "title": "Media scale",
+    "min": 25,
+    "max": 150
+  },
+  {
+    "kind": "range",
+    "id": "previewScale",
+    "title": "Preview depth",
+    "min": 35,
+    "max": 300
+  },
+  {
+    "kind": "range",
+    "id": "localClockScale",
+    "title": "Local clock scale",
+    "min": 50,
+    "max": 200
+  },
+  {
+    "kind": "range",
+    "id": "chordScale",
+    "title": "Chords scale",
+    "min": 10,
+    "max": 100
+  },
+  {
+    "kind": "choice",
+    "id": "textCase",
+    "title": "Text case",
+    "options": [
+      {
+        "value": "original",
+        "label": "Original text"
+      },
+      {
+        "value": "uppercase",
+        "label": "UPPERCASE"
+      },
+      {
+        "value": "lowercase",
+        "label": "lowercase"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "fontFamily",
+    "title": "Lyrics font",
+    "options": [
+      {
+        "value": "system",
+        "label": "Default"
+      },
+      {
+        "value": "arial",
+        "label": "ARIAL"
+      },
+      {
+        "value": "segoe",
+        "label": "SEGOE UI"
+      },
+      {
+        "value": "bahnschrift",
+        "label": "BAHNSCHRIFT"
+      },
+      {
+        "value": "verdana",
+        "label": "VERDANA"
+      },
+      {
+        "value": "tahoma",
+        "label": "TAHOMA"
+      },
+      {
+        "value": "georgia",
+        "label": "GEORGIA"
+      },
+      {
+        "value": "trebuchet",
+        "label": "TREBUCHET"
+      },
+      {
+        "value": "impact",
+        "label": "IMPACT"
+      },
+      {
+        "value": "mono",
+        "label": "MONO"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "previewFontFamily",
+    "title": "Preview font",
+    "options": [
+      {
+        "value": "system",
+        "label": "Default"
+      },
+      {
+        "value": "arial",
+        "label": "ARIAL"
+      },
+      {
+        "value": "segoe",
+        "label": "SEGOE UI"
+      },
+      {
+        "value": "bahnschrift",
+        "label": "BAHNSCHRIFT"
+      },
+      {
+        "value": "verdana",
+        "label": "VERDANA"
+      },
+      {
+        "value": "tahoma",
+        "label": "TAHOMA"
+      },
+      {
+        "value": "georgia",
+        "label": "GEORGIA"
+      },
+      {
+        "value": "trebuchet",
+        "label": "TREBUCHET"
+      },
+      {
+        "value": "impact",
+        "label": "IMPACT"
+      },
+      {
+        "value": "mono",
+        "label": "MONO"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "songNameFontFamily",
+    "title": "Song name font",
+    "options": [
+      {
+        "value": "system",
+        "label": "Default"
+      },
+      {
+        "value": "arial",
+        "label": "ARIAL"
+      },
+      {
+        "value": "segoe",
+        "label": "SEGOE UI"
+      },
+      {
+        "value": "bahnschrift",
+        "label": "BAHNSCHRIFT"
+      },
+      {
+        "value": "verdana",
+        "label": "VERDANA"
+      },
+      {
+        "value": "tahoma",
+        "label": "TAHOMA"
+      },
+      {
+        "value": "georgia",
+        "label": "GEORGIA"
+      },
+      {
+        "value": "trebuchet",
+        "label": "TREBUCHET"
+      },
+      {
+        "value": "impact",
+        "label": "IMPACT"
+      },
+      {
+        "value": "mono",
+        "label": "MONO"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "queueNameFontFamily",
+    "title": "Queued song font",
+    "options": [
+      {
+        "value": "system",
+        "label": "Default"
+      },
+      {
+        "value": "arial",
+        "label": "ARIAL"
+      },
+      {
+        "value": "segoe",
+        "label": "SEGOE UI"
+      },
+      {
+        "value": "bahnschrift",
+        "label": "BAHNSCHRIFT"
+      },
+      {
+        "value": "verdana",
+        "label": "VERDANA"
+      },
+      {
+        "value": "tahoma",
+        "label": "TAHOMA"
+      },
+      {
+        "value": "georgia",
+        "label": "GEORGIA"
+      },
+      {
+        "value": "trebuchet",
+        "label": "TREBUCHET"
+      },
+      {
+        "value": "impact",
+        "label": "IMPACT"
+      },
+      {
+        "value": "mono",
+        "label": "MONO"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "chordFontFamily",
+    "title": "Chords font",
+    "options": [
+      {
+        "value": "system",
+        "label": "Default"
+      },
+      {
+        "value": "arial",
+        "label": "ARIAL"
+      },
+      {
+        "value": "segoe",
+        "label": "SEGOE UI"
+      },
+      {
+        "value": "bahnschrift",
+        "label": "BAHNSCHRIFT"
+      },
+      {
+        "value": "verdana",
+        "label": "VERDANA"
+      },
+      {
+        "value": "tahoma",
+        "label": "TAHOMA"
+      },
+      {
+        "value": "georgia",
+        "label": "GEORGIA"
+      },
+      {
+        "value": "trebuchet",
+        "label": "TREBUCHET"
+      },
+      {
+        "value": "impact",
+        "label": "IMPACT"
+      },
+      {
+        "value": "mono",
+        "label": "MONO"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "textAlignment",
+    "title": "Lyrics alignment",
+    "options": [
+      {
+        "value": "left",
+        "label": "Left"
+      },
+      {
+        "value": "center",
+        "label": "Center"
+      },
+      {
+        "value": "right",
+        "label": "Right"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "clockPosition",
+    "title": "Timer position",
+    "options": [
+      {
+        "value": "left-top",
+        "label": "Top left"
+      },
+      {
+        "value": "left-bottom",
+        "label": "Bottom left"
+      },
+      {
+        "value": "right-top",
+        "label": "Top right"
+      },
+      {
+        "value": "right-bottom",
+        "label": "Bottom right"
+      },
+      {
+        "value": "center-top",
+        "label": "Top center"
+      },
+      {
+        "value": "center-bottom",
+        "label": "Bottom center"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "localClockPosition",
+    "title": "Local clock position",
+    "options": [
+      {
+        "value": "left",
+        "label": "Left"
+      },
+      {
+        "value": "right",
+        "label": "Right"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "songNamePosition",
+    "title": "Song name position",
+    "options": [
+      {
+        "value": "top",
+        "label": "Top"
+      },
+      {
+        "value": "bottom",
+        "label": "Bottom"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "queueNamePosition",
+    "title": "Queued song position",
+    "options": [
+      {
+        "value": "top",
+        "label": "Top"
+      },
+      {
+        "value": "bottom",
+        "label": "Bottom"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "progressPosition",
+    "title": "Progress position",
+    "options": [
+      {
+        "value": "top",
+        "label": "Top"
+      },
+      {
+        "value": "bottom",
+        "label": "Bottom"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "progressMode",
+    "title": "Progress mode",
+    "options": [
+      {
+        "value": "lyrics",
+        "label": "Lyrics"
+      },
+      {
+        "value": "chords",
+        "label": "Chords"
+      }
+    ]
+  },
+  {
+    "kind": "choice",
+    "id": "chordPosition",
+    "title": "Chords position",
+    "options": [
+      {
+        "value": "top",
+        "label": "Top"
+      },
+      {
+        "value": "bottom",
+        "label": "Bottom"
+      }
+    ]
+  },
+  {
+    "kind": "toggle",
+    "id": "windowBorderEnabled",
+    "title": "Show window border"
+  },
+  {
+    "kind": "toggle",
+    "id": "rgbWindowBorderEnabled",
+    "title": "RGB window border"
+  },
+  {
+    "kind": "toggle",
+    "id": "rgbClockBorderEnabled",
+    "title": "RGB timer and local clock borders"
+  },
+  {
+    "kind": "toggle",
+    "id": "rgbTextBoxBorderEnabled",
+    "title": "RGB lyrics border"
+  },
+  {
+    "kind": "toggle",
+    "id": "rgbChordBorderEnabled",
+    "title": "RGB chords border"
+  },
+  {
+    "kind": "toggle",
+    "id": "clockBorderEnabled",
+    "title": "Show timer border"
+  },
+  {
+    "kind": "toggle",
+    "id": "localClockBorderEnabled",
+    "title": "Show local clock border"
+  },
+  {
+    "kind": "toggle",
+    "id": "textBoxEnabled",
+    "title": "Show lyrics border"
+  },
+  {
+    "kind": "toggle",
+    "id": "clockEnabled",
+    "title": "Show timer"
+  },
+  {
+    "kind": "toggle",
+    "id": "localClockEnabled",
+    "title": "Show local clock"
+  },
+  {
+    "kind": "toggle",
+    "id": "songNameEnabled",
+    "title": "Show song name"
+  },
+  {
+    "kind": "toggle",
+    "id": "queueNameEnabled",
+    "title": "Show queued song"
+  },
+  {
+    "kind": "toggle",
+    "id": "chordsEnabled",
+    "title": "Show chords"
+  },
+  {
+    "kind": "toggle",
+    "id": "ignorePreview",
+    "title": "Ignore Preview"
+  },
+  {
+    "kind": "toggle",
+    "id": "previewSongDurationEnabled",
+    "title": "Show song durations in preview"
+  },
+  {
+    "kind": "toggle",
+    "id": "previewBlockDurationEnabled",
+    "title": "Show block durations in preview"
+  },
+  {
+    "kind": "toggle",
+    "id": "previewUnderlineEnabled",
+    "title": "Underline preview names"
+  },
+  {
+    "kind": "toggle",
+    "id": "progressEnabled",
+    "title": "Show progress bar"
+  },
+  {
+    "kind": "toggle",
+    "id": "clearMode",
+    "title": "Clear mode (media only)"
+  }
+]

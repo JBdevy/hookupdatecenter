@@ -444,7 +444,7 @@ struct TimecodePlaybackSpan {
     private var clips: [(UUID, AudioClip)] = []
     private var playbackClipIndex = AudioClipPlaybackIndex(clips: [])
     private var missingAudioPaths = Set<String>()
-    private var unifiedPlaybackStarts: [UUID: Double] = [:]
+    private var fragmentPlaybackStarts: [UUID: Double] = [:]
     private var clipIndices: [UUID: Int] = [:]
     private var clipFragments: [UUID: [UUID]] = [:]
     private var contiguousNext: [UUID: UUID] = [:]
@@ -884,7 +884,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     private func clearProjectState() {
         tracks.removeAll(); soloAudibleTracks = nil
         clips.removeAll(); playbackClipIndex = AudioClipPlaybackIndex(clips: [])
-        missingAudioPaths.removeAll(); unifiedPlaybackStarts.removeAll(); clipIndices.removeAll()
+        missingAudioPaths.removeAll(); fragmentPlaybackStarts.removeAll(); clipIndices.removeAll()
         contiguousNext.removeAll(); contiguousPrevious.removeAll(); contiguousSourceEnd.removeAll()
         analysisEffects.removeAll(); armedMIDIRecordingTracks.removeAll(); armedInstrumentTracks.removeAll()
         instrumentRenderPending = false; setGraphRenderEnabled(false)
@@ -2386,7 +2386,8 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
                 let clip = plan.clip, key = VoiceKey(clip: id, head: head)
                 // Prepare only nearby takes. Ended/idle instances keep their
                 // graph but the gate stops all upstream plugin render work.
-                guard clip.muted != true, clip.startTime < position + 2,
+                guard song.playbackScope(transport, head: head).allows(song.playbackItemStart(clip)),
+                      clip.muted != true, clip.startTime < position + 2,
                       clip.startTime + clip.duration > position - 1 else { continue }
                 let existed = midiTakeVoices[key] != nil
                 guard let voice = preparedMIDITakeVoice(for: key, track: plan.track) else { continue }
@@ -2906,7 +2907,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
             let previousFragmentOwners = Dictionary(uniqueKeysWithValues: clipFragments.flatMap { original, fragments in
                 fragments.map { ($0, original) }
             })
-            clipFragments.removeAll(keepingCapacity: true); fragmentStarts.removeAll(keepingCapacity: true)
+            clipFragments.removeAll(keepingCapacity: true); fragmentStarts.removeAll(keepingCapacity: true); fragmentPlaybackStarts.removeAll(keepingCapacity: true)
             contiguousNext.removeAll(keepingCapacity: true); contiguousPrevious.removeAll(keepingCapacity: true); contiguousSourceEnd.removeAll(keepingCapacity: true)
             clips = song.tracks.flatMap { track in
                 track.clips.filter { clip in
@@ -2926,11 +2927,13 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
                             for (a, b) in zip(fragments, fragments.dropFirst()) { contiguousNext[a.id] = b.id; contiguousPrevious[b.id] = a.id }
                         }
                     }
-                    for fragment in fragments { fragmentStarts[fragment.id] = clip.startTime }
+                    for fragment in fragments {
+                        fragmentStarts[fragment.id] = clip.startTime
+                        fragmentPlaybackStarts[fragment.id] = song.playbackItemStart(clip)
+                    }
                     return fragments.map { (track.id, $0) }
                 }
             }
-            unifiedPlaybackStarts = Dictionary(uniqueKeysWithValues: song.parts.filter { $0.parentRegionID != nil }.map { ($0.id, $0.startTime) })
             playbackClipIndex = AudioClipPlaybackIndex(clips: clips.map { $0.1 })
             clipIndices = Dictionary(uniqueKeysWithValues: clips.enumerated().map { ($0.element.1.id, $0.offset) })
             let metered = song.tracks.filter { $0.kind == .standard || $0.kind == .timecode || $0.kind == .click || $0.clips.contains(where: \.isProjectionMedia) }
@@ -3270,29 +3273,19 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
                 for key in Array(voices.keys) where key.head == head { remove(key) }
             }
             lastPosition[head] = position
-            let regionID = head == 0 ? transport.regionId : head == 1 ? transport.queuedRegionId : preparedJump?.region
-            let ignoredAfter = head == 0 ? transport.ignoreNextAfter : nil
-            if let ignoredAfter {
-                for key in Array(voices.keys) where key.head == head {
-                    if let voice = voices[key], (fragmentStarts[voice.clip.id] ?? voice.clip.startTime) >= ignoredAfter { remove(key) }
-                }
-                for key in Array(effectTails.keys) where key.head == head {
-                    if let tail = effectTails[key], (fragmentStarts[tail.voice.clip.id] ?? tail.voice.clip.startTime) >= ignoredAfter {
-                        effectTails[key] = nil; recycle(tail.voice)
-                    }
-                }
+            // A loop is continuous playback; queues and section jumps establish
+            // a new entry. Match the core before promoting the prepared head.
+            let preparingLoop = head == 2 && preparedJump?.section == nil && preparedJump?.region == nil
+            let scope = preparingLoop ? song.playbackScope(transport) : song.playbackScope(transport, head: head,
+                destination: head == 2 ? preparedJump?.destination : nil)
+            // Cancel already scheduled sources as well as rejecting new ones.
+            // Fragment onsets can differ from the original item's attachment.
+            for key in Array(voices.keys) where key.head == head {
+                if let voice = voices[key], !scope.allows(fragmentPlaybackStarts[voice.clip.id]) { remove(key) }
             }
-            let minimumStart = regionID.flatMap { unifiedPlaybackStarts[$0] }
-            // Skip stems before the selected drawer song on each head. Future
-            // songs still flow normally until the unified region's final edge.
-            if let minimumStart {
-                for key in Array(voices.keys) where key.head == head {
-                    if let voice = voices[key], (fragmentStarts[voice.clip.id] ?? voice.clip.startTime) < minimumStart { remove(key) }
-                }
-                for key in Array(effectTails.keys) where key.head == head {
-                    if let tail = effectTails[key], (fragmentStarts[tail.voice.clip.id] ?? tail.voice.clip.startTime) < minimumStart {
-                        effectTails[key] = nil; recycle(tail.voice)
-                    }
+            for key in Array(effectTails.keys) where key.head == head {
+                if let tail = effectTails[key], !scope.allows(fragmentPlaybackStarts[tail.voice.clip.id]) {
+                    effectTails[key] = nil; recycle(tail.voice)
                 }
             }
             let audiblePosition: Double
@@ -3336,9 +3329,8 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
             let lookahead = 2 + max(0, position - schedulingPosition)
             for index in playbackClipIndex.candidates(at: schedulingPosition, lookahead: lookahead) {
                 let (track, clip) = clips[index]
-                guard minimumStart == nil || (fragmentStarts[clip.id] ?? clip.startTime) >= minimumStart! else { continue }
+                guard scope.allows(fragmentPlaybackStarts[clip.id]) else { continue }
                 if let prepareEnd, clip.startTime >= prepareEnd { continue }
-                if let ignoredAfter, (fragmentStarts[clip.id] ?? clip.startTime) >= ignoredAfter { continue }
                 let key = VoiceKey(clip: clip.id, head: head)
                 if var voice = voices[key], clip.loopLength != nil {
                     let deadline = min(clip.startTime + clip.duration, schedulingPosition + 5)

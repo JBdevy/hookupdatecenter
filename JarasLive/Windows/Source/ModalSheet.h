@@ -1,0 +1,131 @@
+#pragma once
+#include "InterfaceIcons.h"
+#include "Localization.h"
+#include "EditorShortcuts.h"
+namespace catlive {
+class ModalSheet final : public Component {
+  public:
+    ModalSheet(String title, std::unique_ptr<Component> contents, int width, int height)
+        : heading(std::move(title)), content(std::move(contents)), preferredWidth(width),
+          preferredHeight(height) {
+        setName(heading);
+        headerHeight = heading == String::fromUTF8("Configurações") || heading == "Projetos" ? 76
+                       : heading == "Resolume"                                               ? 66
+                                                                                             : 44;
+        close.getProperties().set("textClose", heading == "Resolume");
+        setComponentID("modalSheet");
+        addAndMakeVisible(*content);
+        content->setComponentEffect(&roundedBottom);
+        addAndMakeVisible(close);
+        close.onClick = [this] {
+            if (!blocked)
+                exitModalState(0);
+        };
+        setWantsKeyboardFocus(true);
+        setFocusContainerType(FocusContainerType::focusContainer);
+    }
+    ~ModalSheet() override { content->setComponentEffect(nullptr); }
+    void paint(Graphics &g) override {
+        g.fillAll(Colours::black.withAlpha(.48f));
+        DropShadow(Colours::black.withAlpha(.3f), 20, {0, 8}).drawForRectangle(g, frame);
+        g.setColour(theme::background);
+        g.fillRoundedRectangle(frame.toFloat(), 16);
+        g.setColour(theme::line);
+        g.drawHorizontalLine(frame.getY() + headerHeight - 1,
+                             (float)frame.getX() + (heading == "Resolume" ? 24 : 0),
+                             (float)frame.getRight() - (heading == "Resolume" ? 24 : 0));
+        g.setColour(Colours::white);
+        g.setFont(theme::font(heading == "Resolume" ? 17 : 13, true));
+        g.drawText(localization::translate(heading),
+                   frame.getX() + (heading == "Resolume" ? 24 : 16), frame.getY(),
+                   frame.getWidth() - 70, headerHeight - 1, Justification::centredLeft);
+    }
+    void resized() override {
+        int width = std::min(preferredWidth, std::max(100, getWidth() - 40));
+        int height = std::min(preferredHeight + headerHeight, std::max(100, getHeight() - 48));
+        frame = {std::max(0, (getWidth() - width) / 2), std::max(0, (getHeight() - height) / 2),
+                 width, height};
+        content->setBounds(frame.withTrimmedTop(headerHeight));
+        close.setBounds(frame.getRight() - 46, frame.getY() + (headerHeight - 32) / 2, 32, 32);
+        if (heading == "Resolume")
+            close.setBounds(frame.getRight() - 90, frame.getY() + 24, 66, 24);
+    }
+    bool keyPressed(const KeyPress &key) override {
+        if (retryEditorShortcut(key))
+            return true;
+        if (key == KeyPress::escapeKey) {
+            if (!blocked)
+                exitModalState(0);
+            return true;
+        }
+        if (key == KeyPress::returnKey && content->keyPressed(key))
+            return true;
+        return false;
+    }
+    static void open(Component &parent, String name, std::unique_ptr<Component> panel, int width,
+                     int height) {
+        auto *sheet = new ModalSheet(std::move(name), std::move(panel), width, height);
+        parent.addAndMakeVisible(sheet);
+        sheet->setBounds(parent.getLocalBounds());
+        sheet->toFront(true);
+        sheet->enterModalState(
+            true, ModalCallbackFunction::create([safe = SafePointer<Component>(&parent)](int) {
+                if (safe && safe->isShowing() && !safe->isCurrentlyBlockedByAnotherModalComponent())
+                    safe->grabKeyboardFocus();
+            }),
+            true);
+    }
+    static void dismiss(Component &child) {
+        if (auto *sheet = child.findParentComponentOfClass<ModalSheet>()) {
+            if (!sheet->blocked)
+                sheet->exitModalState(0);
+        } else if (auto *sheet =
+                       dynamic_cast<ModalSheet *>(Component::getCurrentlyModalComponent());
+                   sheet && child.isParentOf(sheet)) {
+            if (!sheet->blocked)
+                sheet->exitModalState(0);
+        } else if (auto *dialog = child.findParentComponentOfClass<DialogWindow>())
+            dialog->exitModalState(0);
+    }
+    static void blockDismiss(Component &child, bool value) {
+        if (auto *sheet = child.findParentComponentOfClass<ModalSheet>()) {
+            sheet->blocked = value;
+            sheet->close.setEnabled(!value);
+        }
+    }
+
+  private:
+    class RoundedBottom final : public ImageEffectFilter {
+        void applyEffect(Image &source, Graphics &g, float scale, float alpha) override {
+            Path clip;
+            clip.addRoundedRectangle(0, 0, (float)source.getWidth(), (float)source.getHeight(),
+                                     16 * scale, 16 * scale, false, false, true, true);
+            Graphics::ScopedSaveState saved(g);
+            g.reduceClipRegion(clip);
+            g.setOpacity(alpha);
+            g.drawImageAt(source, 0, 0);
+        }
+    } roundedBottom;
+    class Close final : public Button {
+      public:
+        Close() : Button("Fechar") {}
+        void paintButton(Graphics &g, bool over, bool) override {
+            if ((bool)getProperties()["textClose"]) {
+                g.setColour(over ? Colour(0xff606060) : Colour(0xff484848));
+                g.fillRoundedRectangle(getLocalBounds().toFloat(), 5);
+                g.setColour(Colours::white);
+                g.setFont(theme::font(12));
+                g.drawText("Fechar", getLocalBounds(), Justification::centred);
+                return;
+            }
+            g.setColour(over ? Colours::white : theme::secondary);
+            drawInterfaceIcon(g, "close", getLocalBounds().toFloat().reduced(8));
+        }
+    } close;
+    String heading;
+    std::unique_ptr<Component> content;
+    int preferredWidth, preferredHeight, headerHeight = 44;
+    bool blocked = false;
+    juce::Rectangle<int> frame;
+};
+} // namespace catlive

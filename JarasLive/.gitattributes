@@ -1,0 +1,3 @@
+# Keep upstream dependency/license formatting intact when checking our patch.
+Windows/ThirdParty/** -whitespace
+Windows/Assets/Fonts/*LICENSE.txt -whitespace
