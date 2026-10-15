@@ -8,7 +8,10 @@ $process=Start-Process -FilePath $Executable -ArgumentList ($launchMode+' --appe
 try {
  Start-Sleep -Milliseconds 2200;$process.Refresh();$handle=$process.MainWindowHandle
  if($handle -eq [IntPtr]::Zero){throw 'The native CatLive window did not open.'}
+ Key 0x12
+ [void][CatNativeUI]::ShowWindow($handle,9)
  [void][CatNativeUI]::SetForegroundWindow($handle)
+ if([CatNativeUI]::GetForegroundWindow() -ne $handle){throw 'Could not focus the isolated test window.'}
  if($HomePreview){$rect=Rect $handle;Click ($rect.Left+420) ($rect.Top+17);Start-Sleep -Milliseconds 500;ScreenCapture 'home-window'}
  $initial=Capture 'initial'
  if($HomePreview){
@@ -102,7 +105,12 @@ try {
  $mixerScrolled=Capture 'mixer-scrolled'
  if($mixerScrolled.mixerScroll -le 0){throw 'Lower mixer did not scroll horizontally.'}
  Click ($rect.Left+$mixerButton.x+14) ($rect.Top+$mixerButton.y+14)
- Click ($rect.Left+636) ($rect.Top+80)
+ $root=[Windows.Automation.AutomationElement]::FromHandle($handle)
+ $tempoCondition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::HelpTextProperty,'Aumentar BPM')
+ $tempoUp=$root.FindFirst([Windows.Automation.TreeScope]::Descendants,$tempoCondition)
+ if($null -eq $tempoUp){throw 'Tempo + was not exposed to native accessibility.'}
+ $tempoBounds=$tempoUp.Current.BoundingRectangle
+ Click ([int]($tempoBounds.X+$tempoBounds.Width/2)) ([int]($tempoBounds.Y+$tempoBounds.Height/2))
  $tempoUp=Capture 'tempo-up'
  if($tempoUp.bpm -ne ($small.bpm+1)){throw 'Tempo + did not apply the timing change.'}
  Key 0x5a @(0x11)
