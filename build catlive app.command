@@ -36,10 +36,11 @@ RELEASE_BRANCH="$(git -C "$TEMP_RELEASE/repo" branch --show-current)"
 git -C "$TEMP_RELEASE/repo" config user.name "$(git config user.name)"
 git -C "$TEMP_RELEASE/repo" config user.email "$(git config user.email)"
 git -C "$TEMP_RELEASE/repo" ls-remote --tags --refs origin 'catlive-app-v*-build*' > "$TEMP_RELEASE/tags"
-BUILD_NUMBER="$(python3 - "$TEMP_RELEASE/tags" <<'PY'
+BUILD_NUMBER="$(python3 - "$TEMP_RELEASE/tags" "${CATLIVE_MIN_BUILD_NUMBER:-1001}" <<'PY'
 import re, sys
+assert re.fullmatch(r'[1-9][0-9]*', sys.argv[2]), 'Build mínimo deve ser um inteiro positivo'
 numbers = [int(m.group(1)) for m in re.finditer(r'refs/tags/catlive-app-v[0-9]+\.[0-9]{2}-build([1-9][0-9]*)', open(sys.argv[1]).read())]
-print(max([1000] + numbers) + 1)
+print(max(max([1000] + numbers) + 1, int(sys.argv[2])))
 PY
 )"
 TAG="catlive-app-v$VERSION-build$BUILD_NUMBER"

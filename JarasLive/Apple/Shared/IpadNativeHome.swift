@@ -106,14 +106,8 @@ extension UTType {
         entering = true
         Task {
             defer { entering = false }
-            guard await container.setLocalPlaybackEnabled(false) else { error = container.show.message; return }
-            do {
-                if container.documents.ready { try await container.show.saveForClosing() }
-                native = false
-            } catch {
-                container.documents.error = error.localizedDescription
-                _ = await container.setLocalPlaybackEnabled(true)
-            }
+            guard await container.closeNativeProject(resumeAudio: false) else { error = container.documents.error; return }
+            native = false
         }
     }
 }

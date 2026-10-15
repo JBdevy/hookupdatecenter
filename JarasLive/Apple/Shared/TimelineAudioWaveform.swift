@@ -600,6 +600,7 @@ final class TimelineAudioWaveform: ObservableObject {
     /// Detailed pages remain reclaimable file-backed memory; only visible GPU
     /// blocks occupy the bounded drawing cache.
     @MainActor func preload(_ urls: [URL], cachedOnly: Bool = false, cancelled: @escaping @Sendable () -> Bool = { false }, progress: @escaping @MainActor (Int, Int) -> Void = { _, _ in }) async {
+        resumeProjectWork()
         resetSourceFailures()
         let files = Array(Set(urls.map { $0.standardizedFileURL })).sorted { $0.path < $1.path }
         // A complete fallback for every file fits a project-wide 32 MiB target.
@@ -662,6 +663,8 @@ final class TimelineAudioWaveform: ObservableObject {
         case vertex(VertexKey)
     }
     private var pending = Set<PendingKey>()
+    private var acceptingWork = true
+    private var projectGeneration: UInt64 = 0
     private var notificationPending = false
     private var readyLevels: [String: Set<Int>] = [:]
     // Decoder handles, unlike sample pages, are cheap to retain. Evict only the
@@ -670,6 +673,46 @@ final class TimelineAudioWaveform: ObservableObject {
     private static let decoderLimit = 32
     private var decoderAccess: UInt64 = 0
     private var files: [String: (audio: AVAudioFile, version: String?, access: UInt64)] = [:] // Worker only.
+
+    private func resumeProjectWork() {
+        lock.lock(); acceptingWork = true; lock.unlock()
+    }
+    private func acceptsProjectWork(_ generation: UInt64? = nil) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return acceptingWork && (generation == nil || generation == projectGeneration)
+    }
+    private func suspendProjectWork() {
+        lock.lock(); acceptingWork = false; projectGeneration &+= 1; lock.unlock()
+    }
+    /// Drain existing workers off the UI thread before releasing their file
+    /// handles and caches. Hidden outgoing views cannot enqueue new work.
+    @MainActor func closeProject() async {
+        suspendProjectWork()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let drained = DispatchGroup()
+            for queue in [worker, drawingWorker, sourceWorker] {
+                drained.enter()
+                queue.async { drained.leave() }
+            }
+            drained.notify(queue: .main) { continuation.resume() }
+        }
+        releaseProjectCaches()
+        preparingSourcePaths.removeAll()
+        revision &+= 1
+    }
+    private func releaseProjectCaches() {
+        installProjectCache(headers: [:], overviews: [:], sources: [:])
+        headers.removeAllObjects(); headerAliases.removeAllObjects()
+        vertexBlocks.removeAllObjects(); pcm.removeAllObjects(); geometries.removeAllObjects()
+        joinedDrawings.removeAllObjects(); vertexOverviews.removeAllObjects(); sources.removeAllObjects()
+        presentations.removeAllObjects(); retained.removeAllObjects()
+        files.removeAll(); decoderAccess = 0
+        coverageLock.lock(); coverageDrawings.removeAll(); coverageLock.unlock()
+        presentationIndexLock.lock(); presentationIndex.removeAll(); presentationIndexLock.unlock()
+        lock.lock()
+        pending.removeAll(); fileVersions.removeAll(); readyLevels.removeAll(); failedSourceKeys.removeAll()
+        lock.unlock()
+    }
 
     init(worker: DispatchQueue = DispatchQueue(label: "jaras.waveform.decode", qos: .utility), drawingWorker: DispatchQueue = DispatchQueue(label: "jaras.waveform.curves", qos: .userInitiated), presentationCacheCostLimit: Int = 64 * 1024 * 1024) {
         self.worker = worker
@@ -1482,7 +1525,7 @@ final class TimelineAudioWaveform: ObservableObject {
         guard !failed else { return }
         enqueue("source:\(sourceKey)", url: url, queue: sourceWorker, preparingSource: true) { [self] in
             do {
-                let source = try WaveformSource.loadOrBuild(url, header: header)
+                let source = try WaveformSource.loadOrBuild(url, header: header, cancelled: { !self.acceptsProjectWork() })
                 _ = prepareZoomOutVertices(source, header: header, prefix: sourceKey as String)
                 sources.setObject(source, forKey: sourceKey, cost: source.cost)
                 return true
@@ -1521,11 +1564,12 @@ final class TimelineAudioWaveform: ObservableObject {
     private func enqueue(_ key: PendingKey, url: URL, queue: DispatchQueue? = nil, maximumPending: Int = 64, preparingSource: Bool = false,
                          work: @escaping () -> Bool) {
         lock.lock()
-        guard pending.count < maximumPending, pending.insert(key).inserted else { lock.unlock(); return }
+        guard acceptingWork, pending.count < maximumPending, pending.insert(key).inserted else { lock.unlock(); return }
+        let generation = projectGeneration
         lock.unlock()
         if preparingSource { DispatchQueue.main.async { [self] in preparingSourcePaths.insert(url.path) } }
         (queue ?? worker).async { [self] in
-            let changed = autoreleasepool { work() }
+            let changed = acceptsProjectWork(generation) && autoreleasepool { work() }
             lock.lock()
             pending.remove(key)
             if changed { fileVersions[url.path, default: 0] &+= 1 }

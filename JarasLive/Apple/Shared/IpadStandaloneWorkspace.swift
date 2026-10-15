@@ -153,6 +153,7 @@ import Combine
     @State private var regionLoops: FXTarget?
     @State private var itemMenu: FXTarget?
     @State private var editingTextItem: UUID?
+    @State private var trackEdit: TrackDetailsEditRequest?
     @State private var fx: FXTarget?
     @State private var patch: PatchTarget?
     @State private var missingOutput: PatchTarget?
@@ -163,7 +164,7 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || exportingProject || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fx != nil
+        remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || exportingProject || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || trackEdit != nil || fx != nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -182,6 +183,17 @@ import Combine
                     }, local: true, localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 }, openPatch: { patch = .init(track: $0) }, openTrackFX: { fx = .init(track: $0) },
                     openSelectedPatch: { patch = .init(track: $0.first, targets: $0.map { Optional($0) }) },
                     openSelectedFX: { fx = .init(track: $0.first, targets: $0.map { Optional($0) }) },
+                    openTrackDetails: { ids in
+                        let tracks = (show.current?.tracks ?? []).filter { ids.contains($0.id) }
+                        guard let first = tracks.first else { return }
+                        trackEdit = .init(project: show.snapshot.project.id, tracks: Set(tracks.map(\.id)),
+                            name: first.name, color: first.color ?? JarasTheme.roleHex(first.role),
+                            nameEditable: tracks.count == 1 && first.kind == .standard)
+                    },
+                    openMasterDetails: {
+                        trackEdit = .init(project: show.snapshot.project.id, tracks: [], name: "Master",
+                            color: show.snapshot.project.masterColor ?? 0xffdc52, nameEditable: false)
+                    },
                     openItemMenu: { itemMenu = .init(clip: $0) }, openItemFX: { fx = .init(clip: $0) }, addTrack: { addingTrack = true }, addTrackAudio: { documents.chooseNativeTrackAudio($0) },
                     addTrackText: { editingTextItem = show.addTextItem(track: $0) }, addTrackMedia: { documents.chooseNativeTrackMedia($0) },
                     createPlaylist: { show.createRegionPlaylist(name: $0, selected: $1) },
@@ -224,6 +236,20 @@ import Combine
                 ScrollView {
                     TeleprompterRemoteView(close: { remoteTeleprompter = nil }, remote: TeleprompterRemote.panel(index))
                 }
+            }
+        } else if let edit = trackEdit {
+            IpadCompactModal {
+                NameColorEditor(title: "Editar pista", initialName: edit.name, initialColor: edit.color, save: { name, color in
+                    guard edit.project == show.snapshot.project.id else { return }
+                    if edit.tracks.isEmpty {
+                        show.editMasterColor(color)
+                    } else if edit.nameEditable, let track = edit.tracks.first {
+                        show.editTrack(track, name: name, color: color)
+                    } else {
+                        show.editTrackColors(edit.tracks, color: color, project: edit.project)
+                    }
+                }, close: { trackEdit = nil }, nameEditable: edit.nameEditable, showsName: edit.nameEditable)
+                .id(edit.id)
             }
         } else if let item = editingTextItem {
             IpadCompactModal(preferredSize: CGSize(width: 560, height: 360)) {

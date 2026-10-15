@@ -838,6 +838,8 @@ private struct RemoteSidebarRail<Content: View>: View {
     var openTrackFX: ((UUID?) -> Void)? = nil
     var openSelectedPatch: (([UUID]) -> Void)? = nil
     var openSelectedFX: (([UUID]) -> Void)? = nil
+    var openTrackDetails: ((Set<UUID>) -> Void)? = nil
+    var openMasterDetails: (() -> Void)? = nil
     var openItemMenu: ((UUID) -> Void)? = nil
     var openItemFX: ((UUID) -> Void)? = nil
     var addTrack: (() -> Void)? = nil
@@ -1059,6 +1061,9 @@ private struct RemoteSidebarRail<Content: View>: View {
             } else { updatePanelSubscription() }
         }
         .confirmationDialog("Tracks", isPresented: $trackActionsOpen, titleVisibility: .visible) {
+            if !selectedTracks.isEmpty, let openTrackDetails {
+                Button("Editar pista") { openTrackDetails(selectedTracks) }
+            }
             if !selectedTracks.isEmpty, let openSelectedPatch {
                 Button("Patch") { openSelectedPatch(state.tracks.filter { selectedTracks.contains($0.id) }.map(\.id)) }
             }
@@ -1773,6 +1778,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 if local { IpadMixerMeter(meter: StemAudioPlayback.shared.masterMeter).frame(width: 10).padding(.vertical, 5).padding(.leading, 2) }
             }
             .contextMenu {
+                if local, let openMasterDetails { Button("Editar pista", action: openMasterDetails) }
                 if local, let openPatch { Button("Patch") { openPatch(nil) } }
             }
     }
@@ -2036,7 +2042,8 @@ private struct RemoteSidebarRail<Content: View>: View {
                                     enabled: local && editingTracks, controller: trackReordering))
                                 .modifier(IpadTrackAudioContextMenu(enabled: local && !editingTracks,
                                     openPatch: patchableTracks.contains(track.id) ? openPatch.map { callback in { callback(track.id) } } : nil,
-                                    addAudio: groupableTracks.contains(track.id) ? addTrackAudio.map { callback in { callback(track.id) } } : nil))
+                                    addAudio: groupableTracks.contains(track.id) ? addTrackAudio.map { callback in { callback(track.id) } } : nil,
+                                    edit: openTrackDetails.map { callback in { callback(Set(selectionTargets(track.id))) } }))
                         }
                     }
                     #if os(iOS)
@@ -3345,9 +3352,11 @@ private struct IpadTrackAudioContextMenu: ViewModifier {
     let enabled: Bool
     let openPatch: (() -> Void)?
     let addAudio: (() -> Void)?
+    var edit: (() -> Void)? = nil
     @ViewBuilder func body(content: Content) -> some View {
-        if enabled, openPatch != nil || addAudio != nil {
+        if enabled, edit != nil || openPatch != nil || addAudio != nil {
             content.contextMenu {
+                if let edit { Button("Editar pista", action: edit) }
                 if let openPatch { Button("Patch", action: openPatch) }
                 if let addAudio { Button("Add Stems", action: addAudio) }
             }

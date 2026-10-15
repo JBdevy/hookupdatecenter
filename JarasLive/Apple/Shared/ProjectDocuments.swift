@@ -677,6 +677,40 @@ enum PortableProjectImportPrompt: String, Identifiable {
         TPNoticeController.shared.clear()
         #endif
     }
+    #if os(iOS)
+    /// Leaving the workspace closes the document, rather than retaining a
+    /// hidden project behind the browser. Failed saves keep it open.
+    func closeNativeProject(suspendAudio: () async throws -> Void) async throws {
+        guard !busy, !importingAudio else { throw ProjectError.invalid("Finish the current operation before closing.") }
+        busy = true; error = ""; status = "Closing…"
+        show.send(.stopAll)
+        let canExecute = show.canExecute
+        show.canExecute = { false }
+        defer { show.canExecute = canExecute; busy = false; status = "" }
+        await TrackRecording.shared.finishAndWait()
+        if ready {
+            try await show.saveForClosing()
+            try await rememberProjectMedia()
+        }
+        // Do not detach nodes while a hardware stop still owns the engine.
+        try await suspendAudio()
+        try show.replaceProject(.empty(name: "Untitled"))
+        await store.deselect()
+        ready = false; currentURL = nil; opened = UUID()
+        VideoPlayback.shared.closeProject()
+        VideoPlayback.teleprompter.closeProject()
+        VideoPlayback.teleprompter2.closeProject()
+        TrackRecording.shared.closeProject()
+        StemAudioPlayback.shared.prepareForClosing()
+        resetProjectSelections()
+        clearImportSelection()
+        cancelNativePackageImport(); nativePicker = nil; nativeAudioTarget = nil
+        nativePendingCreation = nil; afterNativeStorage = nil
+        warnings = []; missingAudioPaths = []; missingAudioPrompt = nil
+        migrationNotice = ""; pendingDeletion = nil
+        await TimelineAudioWaveform.shared.closeProject()
+    }
+    #endif
     private func activate(_ project: Project, at url: URL) async throws {
         var project = project
         for song in project.songs.indices {

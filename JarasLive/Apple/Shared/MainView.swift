@@ -417,7 +417,7 @@ struct MainView: View {
                         ProjectBrowserView(documents: documents, completed: { panel = nil })
                     }
                 }
-                .frame(width: selected.isSettings ? 660 : documents.folderReview == nil ? 560 : 840, height: selected.isSettings ? 540 : 500)
+                .frame(width: selected.isSettings ? 940 : documents.folderReview == nil ? 560 : 840, height: selected.isSettings ? 540 : 500)
                 .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
                 .environment(\.locale, Locale(identifier: language))
             }

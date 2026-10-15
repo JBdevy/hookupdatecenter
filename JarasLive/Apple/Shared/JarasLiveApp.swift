@@ -117,7 +117,9 @@ struct RootView: View {
             } else if canEnter {
                 #if os(iOS)
                 if documents.ready && !browsingNative {
-                    IpadStandaloneWorkspace(show: container.show, documents: documents, auth: auth, backend: container.backend, onExit: { browsingNative = true })
+                    IpadStandaloneWorkspace(show: container.show, documents: documents, auth: auth, backend: container.backend, onExit: {
+                        Task { if await container.closeNativeProject() { browsingNative = true } }
+                    })
                         .id(documents.opened)
                 } else {
                     VStack(spacing: 0) {

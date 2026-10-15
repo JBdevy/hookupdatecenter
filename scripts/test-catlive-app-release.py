@@ -59,7 +59,10 @@ raise SystemExit('Unexpected gh command: ' + repr(args))
 ''')
     gh.chmod(0o755)
     env = dict(os.environ, PATH=str(fake) + ':' + os.environ['PATH'], CATLIVE_BUILD_NO_PAUSE='1', CATLIVE_TEST_RELEASE_ORIGIN=str(release_bare))
-    for build in [1001, 1002]:
+    env.pop('CATLIVE_MIN_BUILD_NUMBER', None)
+    for build, minimum in [(1001, None), (1002, None), (1020, '1020'), (1021, '1019')]:
+        if minimum is not None:
+            env['CATLIVE_MIN_BUILD_NUMBER'] = minimum
         result = run('bash', str(source / FILES[0]), '1.01', 'Test release', cwd=source, env=env, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         tag = f'catlive-app-v1.01-build{build}'

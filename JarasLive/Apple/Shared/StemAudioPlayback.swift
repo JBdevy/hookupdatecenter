@@ -1366,6 +1366,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         deviceRecovery?.cancel(); deviceRecovery = nil
         meterTimer?.invalidate(); meterTimer = nil
         configureGraph(directory: nil, resetProject: true, prepareMaster: false)
+        // Route recovery retains suspended chains for reuse. A closed project
+        // must release the drained chains instead of resuming its old effects.
+        suspendedEffectChains.removeAll { !$0.stemSeparatorWorkerRunning }
         if let deviceActivity { ProcessInfo.processInfo.endActivity(deviceActivity); self.deviceActivity = nil }
         if deviceSilenceAttached { engine.detach(deviceSilence); deviceSilenceAttached = false }
     }

@@ -40,6 +40,7 @@ struct SettingsView: View {
                 Spacer()
             }.padding(10).frame(width: 144).background(JarasTheme.panel)
             Divider()
+            GeometryReader { viewport in
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 20) {
                     Text(LocalizedStringKey(section.rawValue)).font(.title2.bold())
@@ -128,7 +129,8 @@ struct SettingsView: View {
                         Button("Sair e liberar dispositivo") { Task { await auth.logout() } }.buttonStyle(StageButtonStyle(color: .red)).disabled(show.isPlaying || auth.busy)
                         if !auth.message.isEmpty { Text(LocalizedStringKey(auth.message)).font(.caption).foregroundStyle(JarasTheme.yellow) }
                     }
-                }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(24).frame(width: viewport.size.width, alignment: .leading)
+            }
             }
         }.foregroundStyle(JarasTheme.text)
         .sheet(isPresented: $signingIn) {

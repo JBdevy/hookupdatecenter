@@ -218,6 +218,22 @@ enum AppStartupPresentation {
         show.onStop = { [weak auth] in auth?.transportDidStop() }
     }
     #if os(iOS)
+    func closeNativeProject(resumeAudio: Bool = true) async -> Bool {
+        guard !documents.busy else { return false }
+        do {
+            try await documents.closeNativeProject {
+                guard await self.setLocalPlaybackEnabled(false) else {
+                    throw ProjectError.invalid(self.show.message)
+                }
+            }
+            if resumeAudio { _ = await setLocalPlaybackEnabled(true) }
+            return true
+        } catch {
+            documents.error = error.localizedDescription
+            if !localPlaybackEnabled && documents.ready { _ = await setLocalPlaybackEnabled(true) }
+            return false
+        }
+    }
     @discardableResult
     func setLocalPlaybackEnabled(_ enabled: Bool) async -> Bool {
         guard !preview else { localPlaybackEnabled = enabled; return true }

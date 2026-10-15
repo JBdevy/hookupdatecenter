@@ -20,13 +20,7 @@ struct DAWActionsList: View {
     @State private var resetRequest: ResetRequest?
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker("Category", selection: $category) {
-                ForEach(categories) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
-            }.pickerStyle(.segmented)
-                .onChange(of: category) { value in
-                    if value == .volume { inputKind = "midi" }
-                    if value == .shortcuts { inputKind = "keyboard" }
-                }
+            categoryTabs
             #if os(macOS)
             Picker("Input", selection: $inputKind) {
                 Text("Keyboard").tag("keyboard")
@@ -63,12 +57,38 @@ struct DAWActionsList: View {
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.panel).cornerRadius(6)
             }
         }
+        .onChange(of: category) { value in
+            if value == .volume { inputKind = "midi" }
+            if value == .shortcuts { inputKind = "keyboard" }
+        }
         .alert("Restore this mapping?", isPresented: Binding(get: { resetRequest != nil }, set: { if !$0 { resetRequest = nil } }), presenting: resetRequest) { request in
             Button("Cancel", role: .cancel) { resetRequest = nil }
             Button("Restore") { mappings.resetAction(request.action, kind: request.kind); resetRequest = nil }
         } message: { request in
             Text(LocalizedStringKey(request.action.title))
         }
+    }
+    @ViewBuilder private var categoryTabs: some View {
+        #if os(macOS)
+        // A native segmented control keeps the intrinsic width of all six
+        // labels. Let tabs wrap instead of widening the entire scroll content.
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 106), spacing: 6)], alignment: .leading, spacing: 6) {
+            ForEach(categories) { item in
+                Button { category = item } label: {
+                    Text(LocalizedStringKey(item.rawValue))
+                        .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                        .background(category == item ? JarasTheme.accent.opacity(0.18) : JarasTheme.panel)
+                        .clipShape(RoundedRectangle(cornerRadius: 5)).contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(category == item ? JarasTheme.accent : JarasTheme.text)
+                    .accessibilityAddTraits(category == item ? .isSelected : [])
+            }
+        }
+        #else
+        Picker("Category", selection: $category) {
+            ForEach(categories) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
+        }.pickerStyle(.segmented)
+        #endif
     }
     private func targetName(_ number: Int?) -> String {
         guard let number else { return JarasLocalization.string("Selected track") }
