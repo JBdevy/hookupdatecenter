@@ -32,6 +32,9 @@ Current Mac-driven Windows validation — 2026-10-15, visual batch 4
   investigated and is not counted as a passing result.
 - Normal-mode controls checked with the master muted: Mute/Solo/Mono, metronome,
   Preview, keyboard, Play/Sub Play and Repeat. Test copies were discarded.
+- Audio commands now drain safely under callback ownership when the bounded
+  queue fills, including inspection without an audio device. A 1,500-edit
+  regression checks final gain/mute/seek and Stop without intervening rendering.
 - Fixed the CI close-dialog test to use the current Mac-equivalent button text.
 - Evidence: Documents/CatLive-Mac-Validation/evidence/batch4 on Windows.
 - Still a test candidate, not complete Mac parity or launch approval. Remaining

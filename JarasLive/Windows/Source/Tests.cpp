@@ -742,6 +742,29 @@ int runTests(const File &directory) {
         }
         expect(std::abs(output.getSample(0, 100) - .1f) < .002f, "Left channel incorrect");
         expect(std::abs(output.getSample(1, 100) - .2f) < .002f, "Stereo channels collapsed");
+        // Thousands of edits without a device callback used to fill the queue
+        // in visual inspection. The last mixer and transport values must survive.
+        for (int edit = 0; edit < 1500; ++edit) {
+            p.masterMute = edit % 2 == 0;
+            p.masterVolume = edit % 2 == 0 ? .25 : .5;
+            song.tracks[0].volume = .5;
+            state.position = .1;
+            engine.setMixer(p, song);
+            engine.transport(state);
+        }
+        render();
+        expect(std::abs(output.getSample(0, 100) - .025f) < .002f &&
+                   std::abs(output.getSample(1, 100) - .05f) < .002f,
+               "Command backlog lost the final mute or mixer update");
+        expect(std::abs(engine.state().position - .11) < .0001,
+               "Command backlog lost the final seek");
+        state.playing = false;
+        engine.transport(state);
+        render();
+        expect(output.getMagnitude(0, 480) == 0 && !engine.state().playing,
+               "Stop after a command backlog was lost");
+        state.playing = true;
+        song.tracks[0].volume = 1;
         p.masterVolume = .5;
         engine.setMixer(p, song);
         engine.transport(state);

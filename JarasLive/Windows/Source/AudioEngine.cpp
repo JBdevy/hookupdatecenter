@@ -423,11 +423,18 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
 void AudioEngine::enqueue(const Update &update) {
     int a, n, b, m;
     fifo.prepareToWrite(1, a, n, b, m);
-    if (n) {
-        updates[(size_t)a] = update;
-        fifo.finishedWrite(1);
-    } else
-        throw std::runtime_error("Audio command queue is full. Stop and retry.");
+    if (!n) {
+        // Inspection and a stopped device have no render callback to drain the
+        // queue. A large mixer update can also outpace an active callback.
+        // Take exclusive consumer ownership before applying pending commands;
+        // preserve their order instead of dropping a stop, mute or seek.
+        const ScopedLock lock(devices.getAudioCallbackLock());
+        applyUpdates();
+        fifo.prepareToWrite(1, a, n, b, m);
+    }
+    jassert(n == 1);
+    updates[(size_t)a] = update;
+    fifo.finishedWrite(1);
 }
 void AudioEngine::transport(const State &state) {
     // Prime all required sources together before publishing a new seek/start.
