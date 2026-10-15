@@ -130,7 +130,7 @@ extension NativePurchaseStore {
                 }
                 .padding(20).frame(maxWidth: 950)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(LinearGradient(colors: [Color(white: 0.19), Color(white: 0.065)], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea())
+                .background(RemoteSurface.background.ignoresSafeArea())
         }.foregroundStyle(.white).preferredColorScheme(.dark)
             .task { await store.load() }
             .interactiveDismissDisabled(store.busy)
@@ -227,7 +227,7 @@ extension NativePurchaseStore {
                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(maxWidth: .infinity)
-            .background(LinearGradient(colors: [Color(white: 0.23), Color(white: 0.13)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 22))
+            .background(RemoteSurface.panel, in: RoundedRectangle(cornerRadius: 22))
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(green.opacity(0.3)))
     }
 }

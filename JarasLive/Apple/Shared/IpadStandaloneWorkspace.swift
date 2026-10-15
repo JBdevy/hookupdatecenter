@@ -191,7 +191,7 @@ import Combine
                     groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, openSettings: { settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
             } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
-        .background(JarasTheme.background).preferredColorScheme(.dark)
+        .background(RemoteSurface.background).preferredColorScheme(.dark)
         .onAppear { local.start(); inspectOutputRoutes() }
         .onDisappear { local.stop() }
         .onChange(of: local.projectRevision) { _ in inspectOutputRoutes() }
@@ -340,7 +340,7 @@ import Combine
                         .frame(maxWidth: .infinity, minHeight: 44).buttonStyle(.bordered)
                 }
             }.padding(22)
-        }.background(JarasTheme.background)
+        }.background(RemoteSurface.background)
             .overlay {
                 if editingText { IpadCompactModal {
                     TextItemEditor(text: clip?.text ?? "", apply: { show.updateTextItem(item, text: $0) }, close: { editingText = false })
@@ -1086,7 +1086,7 @@ struct IpadCompactModal<Content: View>: View {
             .font(.system(size: 13)).tint(JarasTheme.green)
             .buttonStyle(IpadDialogButtonStyle())
             .foregroundStyle(JarasTheme.text).preferredColorScheme(.dark)
-            .background(LinearGradient(colors: [Color(white: 0.20), JarasTheme.background], startPoint: .top, endPoint: .bottom))
+            .background(RemoteSurface.panel)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.24)))
             .shadow(color: .black.opacity(0.65), radius: 24, y: 12)
@@ -1105,7 +1105,7 @@ struct IpadModalHeader: View {
             Button(action: close) { Image(systemName: "xmark").frame(width: 36, height: 36).contentShape(Rectangle()) }
                 .buttonStyle(.plain).accessibilityLabel("Close")
         }.padding(.horizontal, 16).padding(.vertical, 5)
-            .background(LinearGradient(colors: [Color(white: 0.24), JarasTheme.titlebar], startPoint: .top, endPoint: .bottom))
+            .background(RemoteSurface.panel)
             .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.line).frame(height: 1) }
     }
 }

@@ -4390,9 +4390,21 @@ struct NoticeSendFeedbackView: View {
 /// Static gradients are shared by the Remote controls. No blur, shadow,
 /// display-link or per-frame color work is needed for these surfaces.
 enum RemoteSurface {
-    static let background = LinearGradient(colors: [Color(white: 0.18), Color(white: 0.115)], startPoint: .top, endPoint: .bottom)
-    static let panel = LinearGradient(colors: [Color(white: 0.235), Color(white: 0.155)], startPoint: .top, endPoint: .bottom)
-    static let display = LinearGradient(colors: [Color(white: 0.115), Color(white: 0.075)], startPoint: .top, endPoint: .bottom)
+    // Both iPad workspaces share these surfaces, including their dialogs.
+    // Resolve once; the darker palette adds no rendering or animation work.
+    private static let brightness: Double = {
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad ? 0.72 : 1
+        #else
+        return 1
+        #endif
+    }()
+    private static func neutral(_ top: Double, _ bottom: Double) -> LinearGradient {
+        LinearGradient(colors: [Color(white: top * brightness), Color(white: bottom * brightness)], startPoint: .top, endPoint: .bottom)
+    }
+    static let background = neutral(0.18, 0.115)
+    static let panel = neutral(0.235, 0.155)
+    static let display = neutral(0.115, 0.075)
     static let edge = LinearGradient(colors: [Color.white.opacity(0.16), Color.black.opacity(0.18)], startPoint: .top, endPoint: .bottom)
     static let shading = LinearGradient(colors: [Color.white.opacity(0.10), .clear, Color.black.opacity(0.12)], startPoint: .top, endPoint: .bottom)
     static func fill(_ color: Color) -> some View {

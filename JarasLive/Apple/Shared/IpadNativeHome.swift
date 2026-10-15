@@ -47,7 +47,7 @@ extension UTType {
                         Text(verbatim: "Português").tag("pt-BR")
                     }.pickerStyle(.segmented).frame(maxWidth: 360)
                 }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(LinearGradient(colors: [Color(white: 0.19), Color(white: 0.08)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .background(RemoteSurface.background)
             }
         }
         .preferredColorScheme(.dark).environment(\.locale, Locale(identifier: language))
@@ -77,7 +77,7 @@ extension UTType {
                 Text(LocalizedStringKey(detail)).font(.body).foregroundStyle(JarasTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }.padding(26).frame(maxWidth: .infinity, minHeight: 195, alignment: .leading)
-                .background(LinearGradient(colors: [Color(white: 0.24), Color(white: 0.14)], startPoint: .top, endPoint: .bottom))
+                .background(RemoteSurface.panel)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(JarasTheme.green.opacity(0.35)))
                 .contentShape(RoundedRectangle(cornerRadius: 16))
