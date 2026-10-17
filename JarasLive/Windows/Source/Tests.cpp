@@ -3341,6 +3341,15 @@ int runTests(const File &directory) {
         expect(remote::validID(state["project"]) && get(state, "tracks").isArray() &&
                    get(state, "teleprompters").isArray(),
                "Remote state misses required presentation");
+        const auto teleprompters = list(get(state, "teleprompters"));
+        const auto blocks = list(get(teleprompters[0], "blocks"));
+        expect(!blocks.isEmpty() && remote::validID(get(blocks[0], "id")) &&
+                   get(blocks[0], "rows").isArray(),
+               "Remote teleprompter blocks must match the Mac protocol");
+        for (const auto &block : blocks)
+            for (const auto &row : list(get(block, "rows")))
+                expect(remote::validID(get(row, "id")),
+                       "Remote teleprompter rows need stable region IDs");
         expect(!JSON::toString(state).contains("Stems/") &&
                    !JSON::toString(state).contains(directory.getFullPathName()),
                "Remote exposed a local path");
