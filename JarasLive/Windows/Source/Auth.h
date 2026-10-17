@@ -7,7 +7,7 @@ class Auth final : private Timer {
     ~Auth() override;
     std::function<void()> changed;
     bool allowed() const { return authorised && (expiry > Time::getCurrentTime() || pendingRevocation); }
-    bool busy = false, pendingRevocation = false;
+    bool busy = false, pendingRevocation = false, trialFinished = false;
     String message, title = "Sem acesso", installationId, deviceName;
     var loginData;
     std::function<bool()> isPlaying;

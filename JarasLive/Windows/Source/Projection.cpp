@@ -2,29 +2,12 @@
 #include "Projection.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
-namespace {
-File videoStretchPreference() {
-    return File::getSpecialLocation(File::userApplicationDataDirectory)
-        .getChildFile("Hook Developer").getChildFile("CatLive").getChildFile("video-stretch.txt");
-}
-bool &videoStretchSetting() {
-    static bool enabled=videoStretchPreference().loadFileAsString().trim()=="1";
-    return enabled;
-}
-}
-bool Projection::videoStretchEnabled() { return videoStretchSetting(); }
-void Projection::setVideoStretchEnabled(bool enabled) {
-    videoStretchSetting()=enabled;
-    const auto file=videoStretchPreference();
-    file.getParentDirectory().createDirectory();
-    file.replaceWithText(enabled?"1":"0");
-}
 void Projection::refreshVideoAppearance() {
     if(videoSurface)InvalidateRect(videoSurface,nullptr,FALSE);
     repaint();
 }
-Projection::Projection(Session &value, String target, StageState *state)
-    : session(value), role(std::move(target)), stage(state),
+Projection::Projection(Session &value, Appearance &settings, String target, StageState *state)
+    : session(value), appearance(settings), role(std::move(target)), stage(state),
       profile(role == "teleprompt2" ? 2 : 1) {
     addAndMakeVisible(textView);
     addAndMakeVisible(status);
@@ -55,7 +38,7 @@ Projection::Projection(Session &value, String target, StageState *state)
 }
 Projection::~Projection() {
     stopTimer();
-    if(videoSurface)DestroyWindow(videoSurface);
+    if(videoSurface && IsWindow(videoSurface))DestroyWindow(videoSurface);
 }
 void Projection::resized() {
     auto content = mediaBounds();
@@ -122,7 +105,7 @@ void Projection::paintVideoSurface(HDC dc) {
     if(!videoFrame.pixels||width<=0||height<=0) {
         FillRect(dc,&area,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));return;
     }
-    const bool stretch=role=="video"?videoStretchEnabled():stage&&flag(stage->settings(profile),"mediaStretch");
+    const bool stretch=role=="video"?(bool)appearance.value("jaras.video.stretch", false):stage&&flag(stage->settings(profile),"mediaStretch");
     int x=0,y=0,w=width,h=height;
     if(!stretch) {
         const double fit=std::min(double(width)/videoFrame.width,double(height)/videoFrame.height);
@@ -141,9 +124,28 @@ void Projection::paintVideoSurface(HDC dc) {
     info.bmiHeader.biHeight=-videoFrame.height;
     info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
     info.bmiHeader.biCompression=BI_RGB;
+    const std::uint8_t *pixels=videoFrame.pixels;
+    if(role=="video" && (bool)appearance.value("jaras.video.grayscale", false)) {
+        const size_t bytes=(size_t)videoFrame.stride*(size_t)videoFrame.height;
+        if(grayscaleSequence!=videoFrame.sequence || grayscalePixels.size()!=bytes) {
+            grayscalePixels.resize(bytes);
+            for(int row=0;row<videoFrame.height;++row) {
+                const auto *source=videoFrame.pixels+(size_t)row*videoFrame.stride;
+                auto *target=grayscalePixels.data()+(size_t)row*videoFrame.stride;
+                for(int column=0;column<videoFrame.width;++column) {
+                    const auto *rgb=source+column*4;
+                    auto *gray=target+column*4;
+                    const auto brightness=(std::uint8_t)((29u*rgb[0]+150u*rgb[1]+77u*rgb[2]+128u)>>8);
+                    gray[0]=gray[1]=gray[2]=brightness;gray[3]=rgb[3];
+                }
+            }
+            grayscaleSequence=videoFrame.sequence;
+        }
+        pixels=grayscalePixels.data();
+    }
     const int mode=SetStretchBltMode(dc,COLORONCOLOR);
     StretchDIBits(dc,x,y,w,h,0,0,videoFrame.width,videoFrame.height,
-                  videoFrame.pixels,&info,DIB_RGB_COLORS,SRCCOPY);
+                  pixels,&info,DIB_RGB_COLORS,SRCCOPY);
     if(mode)SetStretchBltMode(dc,mode);
     if(mediaOpacity<.999f) {
         auto mask=CreateCompatibleDC(dc);
@@ -162,6 +164,10 @@ void Projection::updateVideoSurface() {
     }
     auto *peer=getPeer();if(!peer)return;
     HWND parent=static_cast<HWND>(peer->getNativeHandle());if(!parent)return;
+    if(videoSurface && (!IsWindow(videoSurface) || GetParent(videoSurface)!=parent)) {
+        if(IsWindow(videoSurface))DestroyWindow(videoSurface);
+        videoSurface=nullptr;
+    }
     if(!videoSurface) {
         static const bool registered=[] {
             WNDCLASSW type{};type.lpfnWndProc=&Projection::videoSurfaceProc;
@@ -257,7 +263,7 @@ void Projection::timerCallback() {
     if (auto *song = session.song()) clip = firstProjectionItem(*song,at,role);
     if (!clip) {
         if(videoFrame.pixels||videoFile.existsAsFile()) {
-            videoFrame={};videoFile={};videoSequence=0;videoDecoder.reset();updateVideoSurface();repaint();
+            videoFrame={};videoFile={};videoSequence=0;grayscaleSequence=0;grayscalePixels.clear();videoDecoder.reset();updateVideoSurface();repaint();
         }
         textView.setVisible(false);
         if (image.isValid()) {
@@ -278,7 +284,7 @@ void Projection::timerCallback() {
         itemStart = clip->startTime;
         itemDuration = clip->duration;
         loaded = false;
-        videoFrame={};videoFile={};videoSequence=0;videoDecoder.reset();updateVideoSurface();
+        videoFrame={};videoFile={};videoSequence=0;grayscaleSequence=0;grayscalePixels.clear();videoDecoder.reset();updateVideoSurface();
         image = {};
         if (clip->text) {
             lyrics = text(*clip->text);

@@ -1,11 +1,12 @@
 #pragma once
 #include "Session.h"
 #include "StageState.h"
+#include "Appearance.h"
 #include "native_video_decoder.h"
 namespace catlive {
 class Projection final : public Component, private Timer {
   public:
-    Projection(Session &, String role = "video", StageState *stage = nullptr);
+    Projection(Session &, Appearance &, String role = "video", StageState *stage = nullptr);
     ~Projection() override;
     void resized() override;
     void paint(Graphics &) override;
@@ -13,19 +14,20 @@ class Projection final : public Component, private Timer {
     void mouseDown(const MouseEvent &) override;
     void mouseDoubleClick(const MouseEvent &) override;
     bool keyPressed(const KeyPress &) override;
-    static bool videoStretchEnabled();
-    static void setVideoStretchEnabled(bool);
     void refreshVideoAppearance();
     std::function<void(String)> error;
     std::function<void()> configure;
 
   private:
     Session &session;
+    Appearance &appearance;
     String role;
     vshook_video::Decoder videoDecoder;
     TextEditor textView;
     Image image;
     vshook_video::DecodedFrame videoFrame;
+    std::vector<std::uint8_t> grayscalePixels;
+    uint64 grayscaleSequence = 0;
     HWND videoSurface = nullptr;
     File videoFile;
     uint64 videoSequence = 0;

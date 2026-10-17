@@ -797,7 +797,7 @@ class LoginPanel final : public Panel {
 };
 class LoginBackdrop final : public Component {
   public:
-    explicit LoginBackdrop(Auth &auth) : panel(auth) {
+    explicit LoginBackdrop(Auth &auth) : panel(auth, !auth.trialFinished) {
         setOpaque(true);
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
@@ -2747,14 +2747,11 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     button("video", "Video", [this] { openVideo(); });
     static_cast<QuietButton &>(*controls["video"]).context=[safe=SafePointer<Workspace>(this)](Point<int> point){
         PopupMenu menu;
-        menu.addItem(1,"Stretch",true,Projection::videoStretchEnabled());
+        menu.addItem(1,"Stretch",true,(bool)safe->appearance.value("jaras.video.stretch", false));
         menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x,point.y,1,1}),[safe](int choice){
             if(!safe||choice!=1)return;
-            Projection::setVideoStretchEnabled(!Projection::videoStretchEnabled());
-            auto found=safe->floatingWindows.find("Video");
-            if(found!=safe->floatingWindows.end())
-                if(auto *projection=dynamic_cast<Projection*>(found->second->getContentComponent()))
-                    projection->refreshVideoAppearance();
+            const bool stretched=(bool)safe->appearance.value("jaras.video.stretch", false);
+            safe->appearance.set("jaras.video.stretch", !stretched);
         });
     };
     button("railTeleprompt", "T", [this] { showTeleprompter(); }).setTooltip("Teleprompter");
@@ -3665,6 +3662,9 @@ void Workspace::changeListenerCallback(ChangeBroadcaster *) {
             sheet->repaint();
         }
     timeline->invalidate();
+    for(const auto &entry:floatingWindows)
+        if(auto *projection=dynamic_cast<Projection*>(entry.second->getContentComponent()))
+            projection->refreshVideoAppearance();
     setlist->repaint();
     repaint();
 }
@@ -4889,7 +4889,7 @@ void Workspace::showTeleprompter(int index) {
     const auto key="Teleprompter "+String(index);
     if(auto at=floatingWindows.find(key);at!=floatingWindows.end()) {at->second->setVisible(!at->second->isVisible());return;}
     auto panel =
-        std::make_unique<Projection>(session, index == 2 ? "teleprompt2" : "teleprompt", &stage);
+        std::make_unique<Projection>(session, appearance, index == 2 ? "teleprompt2" : "teleprompt", &stage);
     panel->configure = [safe = SafePointer<Workspace>(this), index] {
         if (safe)
             safe->openStageConfig(index);
@@ -5410,7 +5410,7 @@ void Workspace::chooseSoundFont() {
                          });
 }
 void Workspace::openVideo() {
-    auto panel = std::make_unique<Projection>(session);
+    auto panel = std::make_unique<Projection>(session, appearance);
     panel->error = [safe = Component::SafePointer<Workspace>(this)](String message) {
         if (safe)
             safe->showError(message);

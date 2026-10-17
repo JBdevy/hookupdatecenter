@@ -157,6 +157,7 @@ void Auth::accept(var data, bool online) {
     if (!online && now >= offlineUntil)
         throw std::runtime_error("Conecte à internet para revalidar sua licença.");
     loginData = data;
+    trialFinished = false;
     authorised = true;
     pendingRevocation = false;
     lastWall = now;
@@ -249,7 +250,13 @@ void Auth::restore() {
         auto wall = Time::fromISO8601(str(cache, "lastWall"));
         if (Time::getCurrentTime() < wall - RelativeTime::minutes(5))
             throw std::runtime_error("A data do Windows mudou. Corrija o relógio.");
-        accept(get(cache, "login"), false);
+        const auto saved = get(cache, "login");
+        const auto entitlement = get(saved, "entitlement");
+        trialFinished = verifyEntitlement(entitlement, str(get(saved, "account"), "id"), installationId) &&
+                        str(entitlement, "planId") == "trial" &&
+                        (str(entitlement, "status") != "active" ||
+                         Time::getCurrentTime() >= Time::fromISO8601(str(entitlement, "expiresAt")));
+        accept(saved, false);
         validate();
     } catch (const std::exception &e) {
         authorised = false;
@@ -390,6 +397,8 @@ void Auth::timerCallback() {
     }
     const auto now = Time::getCurrentTime();
     if (authorised && (now >= expiry || now < lastWall - RelativeTime::minutes(5))) {
+        if (now >= expiry && str(get(loginData, "entitlement"), "planId") == "trial")
+            trialFinished = true;
         if (isPlaying && isPlaying())
             pendingRevocation = true;
         else
