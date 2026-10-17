@@ -2001,6 +2001,41 @@ int runTests(const File &directory) {
             }
             expect(rejected, "Export silently replaced an existing file");
         }
+        {
+            auto nonAudio = clip;
+            nonAudio.id = uuid();
+            nonAudio.audioFile.reset();
+            track.clips.push_back(nonAudio);
+            ExportEncoding encoding;
+            const auto stems = audioExport::plan(p, song, 3, 0, "%stem", {},
+                                                 {clip.id, nonAudio.id}, {}, {}, encoding);
+            expect(stems.size() == 1 && stems[0].clip == clip.id,
+                   "Stem export included an item without an audio source");
+            track.clips.pop_back();
+        }
+        song.duration = .25;
+        track.patch = jaras::OutputPatch{0, 2};
+        {
+            ExportEncoding encoding;
+            const auto jobs = audioExport::plan(p, song, 0, 0, "%project", {}, {}, {}, {}, encoding);
+            expect(jobs.size() == 1 && std::abs(jobs[0].end - 1.0) < 1e-9,
+                   "Complete export stopped at the nominal song duration");
+            ExportRequest request;
+            request.directory = media.getChildFile("past-song-end-" + text(uuid()));
+            request.jobs = jobs;
+            std::atomic<bool> cancel{false};
+            audioExport::render(p, song, media, request, cancel, {});
+            AudioFormatManager formats;
+            registerAudioFormats(formats);
+            std::unique_ptr<AudioFormatReader> reader(
+                formats.createReaderFor(request.directory.getChildFile(jobs[0].name)));
+            expect(reader && reader->lengthInSamples == 48000,
+                   "Complete export did not render the full audio item");
+            AudioBuffer<float> tail(2, 1024);
+            expect(reader->read(&tail, 0, 1024, 36000, true, true) &&
+                       tail.getMagnitude(0, 1024) > .1f,
+                   "Audio after the nominal song duration was silenced");
+        }
     });
     test("Track folders preserve descendants, routing and undo across moves and removal", [&] {
         auto p = projectFixture();

@@ -465,7 +465,10 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
         publishTransport();
     startTimerHz(transport().playing || transport().subPlay.playing ? 60 : 8);
     if (fadeoutRequested && !completingFadeout && !transport().playing) cancelTransportFadeout();
-    notify();
+    if (kind == jaras::CommandKind::selectRegion && old == transport().songId && selectionChanged)
+        selectionChanged();
+    else
+        notify();
 }
 void Session::focusTimelineRegion(double position, bool force) {
     const auto *current = song();

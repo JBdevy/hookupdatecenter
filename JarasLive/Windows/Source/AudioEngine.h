@@ -56,6 +56,11 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void setItemControls(const jaras::AudioClip &);
     void setMixer(const jaras::Project &, const jaras::Song &);
     void setOffline(bool enabled);
+    void extendOfflineDuration(double end) {
+        if (attached || !std::isfinite(end) || end < 0)
+            throw std::runtime_error("Invalid offline export end.");
+        duration = std::max(duration, end);
+    }
     void prepareOffline(double sampleRate) {
         if (attached || !std::isfinite(sampleRate) || sampleRate < 32000 || sampleRate > 192000)
             throw std::runtime_error("Invalid offline sample rate.");

@@ -2863,6 +2863,11 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         rebuild();
         updateState();
     };
+    session.selectionChanged = [this] {
+        setlist->refresh();
+        timeline->repaint();
+        updateState();
+    };
     session.tick = [this] { updateState(); };
     auth.changed = [this] {
         updateLogin();
@@ -2916,6 +2921,7 @@ Workspace::~Workspace() {
     appearance.removeChangeListener(this);
     floatingWindows.clear();
     session.changed = {};
+    session.selectionChanged = {};
     session.tick = {};
     session.transportFadeoutWarning = {};
     auth.changed = {};

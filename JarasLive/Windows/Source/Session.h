@@ -23,7 +23,7 @@ class Session final : private Timer {
     uint64 setlistFocusRevision = 0;
     String message;
     uint64 revision = 0;
-    std::function<void()> changed, tick;
+    std::function<void()> changed, tick, selectionChanged;
     std::function<void(String)> transportFadeoutWarning;
     void toggleTransportFadeout(bool enabled, const std::set<ID> &tracks, double seconds);
     void cancelTransportFadeout();

@@ -88,7 +88,7 @@ inline std::vector<ExportJob> plan(const jaras::Project &project, const jaras::S
         for (const auto &track : song.tracks)
             if (jaras::fixedTrackName(track.role).empty())
                 for (const auto &clip : track.clips)
-                    if (clips.count(clip.id)) {
+                    if (clips.count(clip.id) && (clip.audioFile || track.audioFile)) {
                         const jaras::Part *region = nullptr;
                         for (const auto &part : song.parts)
                             if (clip.startTime >= part.startTime && clip.startTime < part.endTime) {
@@ -189,6 +189,7 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         engine.setOffline(true);
         engine.setMixer(project, song);
         engine.setExportCapture(job.track);
+        engine.extendOfflineDuration(job.end);
         if (!engine.missingFiles.isEmpty() || !engine.unsupported.isEmpty())
             throw std::runtime_error(
                 "Corrija as mídias ausentes e os efeitos incompatíveis antes de exportar.");
@@ -218,9 +219,17 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         }
         AudioEngine::State state;
         state.playing = true;
-        state.position = job.start;
+        const auto prerollStart = std::max(0.0, job.start - 4096.0 / encoding.rate);
+        state.position = prerollStart;
         engine.transport(state);
         AudioBuffer<float> buffer(2, 1024);
+        const int64 warmup = (int64)std::llround((job.start - prerollStart) * encoding.rate);
+        for (int64 at = 0; at < warmup; at += 1024) {
+            if (cancel.load())
+                throw std::runtime_error("Exportação cancelada.");
+            engine.render(buffer.getArrayOfWritePointers(), 2,
+                          (int)std::min<int64>(1024, warmup - at));
+        }
         const int64 frames = (int64)std::llround((job.end - job.start) * encoding.rate);
         for (int64 at = 0; at < frames; at += 1024) {
             if (cancel.load())
