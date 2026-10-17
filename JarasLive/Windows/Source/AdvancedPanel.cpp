@@ -1,6 +1,10 @@
 #include "AdvancedPanel.h"
 #include "MediaCleanupPanel.h"
 #include "ModalSheet.h"
+#include "RecordingEncoding.h"
+#include "TimelineBulkEditing.h"
+#include "MarkerRegionConversion.h"
+#include "ConversionReportPanel.h"
 namespace catlive {
 namespace {
 const char *colourKeys[]{"jaras.setlist.allRegionsTextColor", "jaras.setlist.playlistTextColor",
@@ -38,6 +42,7 @@ class ColourEditor final : public Component {
 AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function<void(String)> fail)
     : appearance(settings), session(value), error(std::move(fail)) {
     setName("Advanced");
+    setWantsKeyboardFocus(true);
     const StringArray names{String::fromUTF8("Tempo do projeto"),
                             "Timeline",
                             "Gravar",
@@ -190,6 +195,9 @@ void AdvancedPanel::select(int index) {
         label("Gridline", 18, 58, 300);
         choice("Gridline", {"Ativado", "Desativado"}, appearance.gridlines() ? 1 : 2, 436, 59, 148,
                [this](int id) { save("jaras.timeline.gridlines", id == 1); });
+        label(String::fromUTF8("Scroll contínuo"), 18, 98, 300);
+        choice(String::fromUTF8("Scroll contínuo"), {"true", "none"}, appearance.continuousScroll() ? 1 : 2, 436, 99, 148,
+               [this](int id) { save("jaras.timeline.continuousScroll", id == 1); });
         const StringArray names{String::fromUTF8("Fundo da timeline"),
                                 String::fromUTF8("Cor do grid primário"),
                                 String::fromUTF8("Cor do grid secundário"),
@@ -200,14 +208,14 @@ void AdvancedPanel::select(int index) {
                            "playCursor", "editCursor",  "subPlayCursor"};
         const uint32 defaults[]{0x1e1e1e, 0x535250, 0x333235, 0x7548dd, 0xb9e229, 0xff6f00};
         for (int i = 0; i < 6; ++i)
-            colourRow(names[i], String("jaras.timeline.") + keys[i], defaults[i], 102 + i * 40,
+            colourRow(names[i], String("jaras.timeline.") + keys[i], defaults[i], 142 + i * 40,
                       true);
-        label({}, 18, 344, 566, 1).setColour(Label::backgroundColourId, theme::line);
-        label(String::fromUTF8("Limpeza de arquivos deletados da timeline"), 18, 360, 470);
+        label({}, 18, 384, 566, 1).setColour(Label::backgroundColourId, theme::line);
+        label(String::fromUTF8("Limpeza de arquivos deletados da timeline"), 18, 574, 470);
         auto *cleanup = new TextButton("Excluir");
         fields.add(cleanup);
         page.addAndMakeVisible(cleanup);
-        cleanup->setBounds(504, 360, 80, 26);
+        cleanup->setBounds(504, 574, 80, 26);
         cleanup->getProperties().set("flat", true);
         cleanup->onClick = [this] {
             Component *host = this;
@@ -217,21 +225,79 @@ void AdvancedPanel::select(int index) {
             ModalSheet::open(*host, String::fromUTF8("Limpar arquivos removidos da timeline"),
                              std::make_unique<MediaCleanupPanel>(session), 480, 300);
         };
-        contentHeight = 410;
+        label(String::fromUTF8("Converter marcadores em regiões"),18,400,470);
+        auto *convert = new QuietButton("Converter");fields.add(convert);page.addAndMakeVisible(convert);
+        convert->setBounds(494,400,90,26);convert->setComponentID("timelineConvertMarkers");
+        convert->onClick=[this]{
+            if(!session.song())return;
+            try {
+                const auto songID=session.song()->id;
+                const auto result=markerRegions::plan(*session.song());
+                if(!result.plans.empty())session.edit([&](auto &project){markerRegions::apply(project,songID,result);});
+                grabKeyboardFocus();
+                Component *host=this;
+                if(auto *sheet=findParentComponentOfClass<ModalSheet>())if(sheet->getParentComponent())host=sheet->getParentComponent();
+                ModalSheet::open(*host,String::fromUTF8("Conversão de marcadores"),std::make_unique<ConversionReportPanel>(result.message()),580,380);
+            } catch(const std::exception &e){if(error)error(String::fromUTF8(e.what()));}
+        };
+        const StringArray deletionTitles{String::fromUTF8("Deletar todos os marcadores de tempo"),String::fromUTF8("Deletar todas as regiões"),String::fromUTF8("Deletar todos os marcadores")};
+        for(int i=0;i<3;++i) {
+            const auto kind=static_cast<timelineBulk::Kind>(i);
+            label(deletionTitles[i],18,450+i*40,470);
+            auto *button=new QuietButton("Deletar");fields.add(button);page.addAndMakeVisible(button);
+            button->setBounds(504,450+i*40,80,26);button->setComponentID("timelineDelete"+String(i));
+            button->setEnabled(session.song()!=nullptr && !session.busy && !session.audio.isRecording());
+            button->onClick=[this,kind,title=deletionTitles[i]] {
+                if(!session.song())return;
+                const auto projectID=session.project().id,songID=session.song()->id;
+                const auto message=kind==timelineBulk::Kind::regions
+                    ? String::fromUTF8("Deletar todas as regiões desta timeline, incluindo as unificadas? Os itens de áudio, MIDI e vídeo serão mantidos. Você pode desfazer com Ctrl+Z.")
+                    : kind==timelineBulk::Kind::tempo ? String::fromUTF8("Deletar todos os marcadores de tempo desta timeline? Você pode desfazer com Ctrl+Z.")
+                    : String::fromUTF8("Deletar todos os marcadores comuns desta timeline? Os marcadores de tempo e das regiões unificadas serão mantidos. Você pode desfazer com Ctrl+Z.");
+                const SafePointer<AdvancedPanel> safe(this);
+                AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon,title,message,"Deletar","Cancelar",this,
+                    ModalCallbackFunction::create([safe,kind,projectID,songID](int result) {
+                        if(safe)safe->grabKeyboardFocus();
+                        if(!safe || result!=1 || safe->session.project().id!=projectID || !safe->session.song() || safe->session.song()->id!=songID)return;
+                        try {safe->session.edit([&](auto &project){timelineBulk::erase(project,songID,kind);},true,kind==timelineBulk::Kind::tempo);}
+                        catch(const std::exception &e){if(safe->error)safe->error(String::fromUTF8(e.what()));}
+                    }));
+            };
+        }
+        contentHeight = 630;
     } else if (index == 2 || index == 3) {
         const String prefix = String("jaras.media.") + (index == 2 ? "record." : "rerender.");
+        const auto format = appearance.value(prefix + "format", "WAV").toString();
+        const bool mp3 = index == 2 && format == "MP3";
         label("Formato", 18, 58, 88);
-        choice("Formato", {"WAV", "AIFF"},
-               appearance.value(prefix + "format", "WAV").toString() == "AIFF" ? 2 : 1, 114, 59,
-               110, [this, prefix](int id) { save(prefix + "format", id == 2 ? "AIFF" : "WAV"); });
-        const int bits = (int)appearance.value(prefix + "bits", 24);
-        choice("Profundidade", {"PCM de 16 bits", "PCM de 24 bits", "PCM de 32 bits"},
-               bits == 16   ? 1
-               : bits == 32 ? 3
-                            : 2,
-               248, 59, 180, [this, prefix](int id) {
-                   save(prefix + "bits", id == 1 ? 16 : id == 3 ? 32 : 24);
+        choice("Formato", index == 2 ? StringArray{"WAV", "AIFF", "MP3"} : StringArray{"WAV", "AIFF"},
+               mp3 ? 3 : format == "AIFF" ? 2 : 1, 114, 59, 110,
+               [this, prefix, index](int id) {
+                   save(prefix + "format", id == 3 && index == 2 ? "MP3" : id == 2 ? "AIFF" : "WAV");
+                   const SafePointer<AdvancedPanel> safe(this);
+                   MessageManager::callAsync([safe, index] {
+                       if (safe && safe->selected == index) safe->select(index);
+                   });
                });
+        if (mp3) {
+            const int bitrate = recordingEncoding::normalizedBitrate((int)appearance.value(prefix + "bitrate", 320));
+            int selectedRate = 6;
+            StringArray rates;
+            for (size_t i = 0; i < recordingEncoding::mp3Bitrates.size(); ++i) {
+                rates.add(String(recordingEncoding::mp3Bitrates[i]) + " kbps");
+                if (recordingEncoding::mp3Bitrates[i] == bitrate) selectedRate = (int)i + 1;
+            }
+            choice("Taxa de bits", rates, selectedRate, 248, 59, 180, [this, prefix](int id) {
+                if (id >= 1 && id <= (int)recordingEncoding::mp3Bitrates.size())
+                    save(prefix + "bitrate", recordingEncoding::mp3Bitrates[(size_t)id - 1]);
+            });
+        } else {
+            const int bits = (int)appearance.value(prefix + "bits", 24);
+            choice("Profundidade", {"PCM de 16 bits", "PCM de 24 bits", "PCM de 32 bits"},
+                   bits == 16 ? 1 : bits == 32 ? 3 : 2, 248, 59, 180, [this, prefix](int id) {
+                       save(prefix + "bits", id == 1 ? 16 : id == 3 ? 32 : 24);
+                   });
+        }
     } else if (index == 4) {
         toggle("Stretch", "jaras.video.stretch", false, 56);
         label(String::fromUTF8("Resolução"), 18, 96, 104);

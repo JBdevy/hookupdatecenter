@@ -40,7 +40,7 @@ PY
 swiftc Apple/Shared/TimelineRenderDiagnostics.swift -O -swift-version 5 \
   Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
-  Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift \
+  Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift \
   Application/Project/ClipRepetition.swift Application/Project/AudioFileRead.swift "$test_dir/TimelineAudioWaveform.swift" \
   Apple/Shared/MetalWaveformRenderer.swift "$test_dir/TimelineMetalWaveforms.swift" \
   "$test_dir/GridSelectionGeometry.swift" "$test_dir/main.swift" -o "$test_dir/test"

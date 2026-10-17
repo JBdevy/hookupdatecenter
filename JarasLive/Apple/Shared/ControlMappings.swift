@@ -216,6 +216,12 @@ struct MappingTransferRequest: Identifiable {
             entry.input.matches(candidate) && (editing.action != nil || entry.track != editing.track || entry.command != editing.command ||
                 (entry.fxParameter?.sameControl(as: editing.fxParameter) ?? (editing.fxParameter == nil)) == false)
         }
+        if mode == "keyboard", editing.action == .transportFadeout,
+           DAWActionBindings.reservedForFadeout(candidate) || !actionConflicts.isEmpty || !controlConflicts.isEmpty {
+            transferRequest = nil
+            error = JarasLocalization.string("Choose an unused shortcut. Space and standard shortcuts cannot control Fadeout.")
+            return
+        }
         if mode == "keyboard", actionConflicts.contains(where: { $0.action.fixedKeyboard }) {
             error = JarasLocalization.string("The arrow keys are fixed to setlist navigation."); return
         }
@@ -418,7 +424,7 @@ struct ControlMappingEditor: View {
     var body: some View {
         if let edit = mappings.editing {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Map control").font(.headline)
+                Text("Map control").font(.jarasHeadline)
                 Text(mappings.editTitle(edit))
                 if !mappings.learningContinuous && (edit.action == nil || edit.chooseInputKind) {
                 Picker("Input", selection: $mappings.mode) { Text("Keyboard").tag("keyboard"); Text("MIDI").tag("midi") }.pickerStyle(.segmented)
@@ -430,12 +436,12 @@ struct ControlMappingEditor: View {
                         mappings.error = ""
                     }
                 }
-                Text(LocalizedStringKey(mappings.learningContinuous ? "Move a MIDI fader or knob." : mappings.mode == "keyboard" ? "Press a key or key combination." : "Press a MIDI note or controller button.")).font(.caption).foregroundStyle(JarasTheme.secondary)
-                Text(mappings.candidate?.label ?? "—").font(.system(.body, design: .monospaced)).frame(maxWidth: .infinity, minHeight: 36).background(JarasTheme.display).cornerRadius(6)
+                Text(LocalizedStringKey(mappings.learningContinuous ? "Move a MIDI fader or knob." : mappings.mode == "keyboard" ? "Press a key or key combination." : "Press a MIDI note or controller button.")).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                Text(mappings.candidate?.label ?? "—").font(.jarasSystem(.body, design: .monospaced)).frame(maxWidth: .infinity, minHeight: 36).background(JarasTheme.display).cornerRadius(6)
                 if mappings.mode == "keyboard" {
                     Button("Use Enter") { mappings.candidate = ControlInput(kind: "keyboard", label: "Enter", key: 36, modifiers: 0) }
                 }
-                if !mappings.error.isEmpty { Text(LocalizedStringKey(mappings.error)).foregroundStyle(.red).font(.caption) }
+                if !mappings.error.isEmpty { Text(LocalizedStringKey(mappings.error)).foregroundStyle(.red).font(.jarasCaption) }
                 HStack { Button("Cancel") { mappings.editing = nil }; Spacer(); Button("Save") { mappings.save() }.disabled(mappings.candidate == nil) }
             }.padding(22).frame(width: 360).background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 10)).shadow(radius: 16)
                 .alert("This control is already mapped.", isPresented: Binding(get: { mappings.transferRequest != nil }, set: { if !$0 { mappings.cancelTransfer() } }), presenting: mappings.transferRequest) { request in
@@ -454,8 +460,8 @@ struct ControlMappingsList: View {
         ForEach(mappings.current) { item in
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(item.fxParameter.map { $0.parameter.effect + " · " + JarasLocalization.string($0.parameter.name) } ?? mappings.title(track: item.track, command: item.command)).font(.headline)
-                    Text(item.input.label).font(.caption).foregroundStyle(JarasTheme.secondary)
+                    Text(item.fxParameter.map { $0.parameter.effect + " · " + JarasLocalization.string($0.parameter.name) } ?? mappings.title(track: item.track, command: item.command)).font(.jarasHeadline)
+                    Text(item.input.label).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 }
                 Spacer()
                 Button("Edit") { if let parameter = item.fxParameter { mappings.beginFX(track: item.track, parameter: parameter) } else { mappings.begin(track: item.track, command: item.command) } }

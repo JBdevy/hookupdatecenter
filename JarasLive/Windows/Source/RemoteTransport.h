@@ -151,7 +151,13 @@ class Transport final : private Thread {
         const int jsonSize = (int)plain.size() - 5;
         require(std::memchr(json, 0, (size_t)jsonSize) == nullptr &&
                 CharPointer_UTF8::isValidString(json, jsonSize));
-        require(JSON::parse(String::fromUTF8(json, jsonSize), value).wasOk());
+        // JUCE's document parser accepts objects/arrays, whereas an ACK is a
+        // JSON integer in the Mac protocol. Parse a single wrapped value so
+        // scalar acknowledgements retain strict syntax/trailing-data checks.
+        var wrapper;
+        require(JSON::parse("[" + String::fromUTF8(json, jsonSize) + "]", wrapper).wasOk() &&
+                wrapper.isArray() && wrapper.size() == 1);
+        value = wrapper[0];
         require(kind == 3 ? (value.isInt() || value.isInt64()) && (int64)value >= 0
                           : value.isObject());
         post({Event::packetReceived, client.id, {}, kind, value});

@@ -57,6 +57,12 @@ class ActionsPage final : public Component, private ChangeListener {
         actions.removeChangeListener(this);
         actions.cancel();
     }
+    void showAction(const String &id, String inputKind = "keyboard") {
+        selectedAction = id;
+        kind = std::move(inputKind);
+        category = 0;
+        rebuild();
+    }
     bool keyPressed(const KeyPress &key) override { return actions.captureKey(key); }
     void paint(Graphics &g) override {
         if (!onlyMappings) {
@@ -69,7 +75,7 @@ class ActionsPage final : public Component, private ChangeListener {
         const int column = (getWidth() - 30) / 6;
         for (int i = 0; i < tabs.size(); ++i) {
             tabs[i]->setBounds(i * (column + 6), 0, column, 30);
-            tabs[i]->setVisible(!onlyMappings);
+            tabs[i]->setVisible(!onlyMappings && selectedAction.isEmpty());
         }
         keyboard.setBounds(56, 44, 72, 24);
         midi.setBounds(128, 44, 72, 24);
@@ -88,6 +94,7 @@ class ActionsPage final : public Component, private ChangeListener {
     }
 
   private:
+    String selectedAction;
     class Card final : public Component {
       public:
         Card(ActionsPage &owner, const ActionDefinition &definition, String inputKind)
@@ -221,6 +228,7 @@ class ActionsPage final : public Component, private ChangeListener {
             contentHeight += card->height() + 14;
         };
         for (const auto &definition : actionDefinitions()) {
+            if (selectedAction.isNotEmpty() && selectedAction != definition.id) continue;
             if (onlyMappings) {
                 for (auto inputKind : {String("keyboard"), String("midi")})
                     if (actions.hasCustomInput(definition, inputKind))

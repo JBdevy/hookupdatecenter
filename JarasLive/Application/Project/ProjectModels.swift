@@ -9,7 +9,7 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var audioRate: Double { playbackRate ?? 1 } }
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeInCurve: Double? = nil; public var fadeInSCurve: Double? = nil; public var fadeOutCurve: Double? = nil; public var fadeOutSCurve: Double? = nil;  public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
     var isImage: Bool { isProjectionMedia && ["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "bmp", "webp", "avif"].contains(URL(fileURLWithPath: audioFile?.path ?? "").pathExtension.lowercased()) }
@@ -463,6 +463,8 @@ public indirect enum PortableProjectJSON: Codable, Equatable, Sendable {
 }
 
 public struct Project: Codable, Identifiable, Equatable, Sendable {
+    /// Protect timeline positions and boundaries; nil keeps older projects unlocked.
+    public var timelineMovementLocked: Bool? = nil
     /// Windows grandMA2 assignments and reserved destinations must survive a Mac save.
     public var windowsLighting: PortableProjectJSON? = nil
     public var resolume: ResolumeSettings? = nil
@@ -567,7 +569,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                         guard track.kind == .standard, clip.audioFile != nil, clip.midi == nil else { throw ProjectError.invalid("Frozen MIDI requires an audio item") }
                     }
                     if let midi = clip.midi {
-                        guard track.kind == .standard, clip.audioFile == nil, clip.text == nil, clip.loopLength == nil else { throw ProjectError.invalid("MIDI items require an instrument track and cannot contain audio") }
+                        guard track.kind == .standard, clip.audioFile == nil, clip.text == nil else { throw ProjectError.invalid("MIDI items require an instrument track and cannot contain audio") }
                         try midi.validate()
                     }
                     guard track.kind != .click || clip.audioFile == nil || clip.isProjectionMedia else { throw ProjectError.invalid("Click items use the built-in sound") }
@@ -594,6 +596,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard clip.channelMode == nil || (0...3).contains(clip.channelMode!) else { throw ProjectError.invalid("Invalid item channel mode") }
                 guard (clip.pitchSemitones ?? 0).isFinite, (-12...12).contains(clip.pitchSemitones ?? 0) else { throw ProjectError.invalid("Invalid item pitch") }
                 guard clip.normalizationGain == nil || (clip.normalizationGain!.isFinite && clip.normalizationGain! >= 0 && clip.normalizationGain! <= pow(10, 24.0 / 20)) else { throw ProjectError.invalid("Invalid normalization gain") }
+                    guard [clip.fadeInCurve, clip.fadeInSCurve, clip.fadeOutCurve, clip.fadeOutSCurve].allSatisfy({ $0 == nil || ($0!.isFinite && (-1...1).contains($0!)) }) else { throw ProjectError.invalid("Invalid fade curve") }
                     guard [clip.fadeIn, clip.fadeOut].allSatisfy({ $0 == nil || ($0!.isFinite && $0! >= 0) }) else { throw ProjectError.invalid("Invalid item fade") }
                     guard (clip.pan ?? 0).isFinite, (-1...1).contains(clip.pan ?? 0) else { throw ProjectError.invalid("Invalid item pan") }
                     guard clip.gain == nil || (clip.gain!.isFinite && clip.gain! >= 0) else { throw ProjectError.invalid("Invalid clip gain") }

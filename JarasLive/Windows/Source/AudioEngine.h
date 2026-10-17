@@ -1,4 +1,5 @@
 #pragma once
+#include "../../Core/Tracks/ItemFade.hpp"
 #include "Common.h"
 #include "../../Core/Transport/PlaybackScope.hpp"
 #include "NativeFX.h"
@@ -9,6 +10,7 @@
 #include "MIDIPlayback.h"
 #include "TrackCapture.h"
 #include "TimecodeMIDI.h"
+#include "TransportFadeout.h"
 namespace catlive {
 class ClipAudio;
 // Prepared readers, buffers and routing live outside the device callback.
@@ -45,10 +47,13 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     }
     std::atomic<bool> metronomeEnabled{false};
     void closeDevice();
+    void refreshTiming(const jaras::Song &song);
     void prepareSong(const jaras::Song &, const File &directory, const var &masterSettings = {},
                      const jaras::Project *project = nullptr);
     void transport(const State &);
     int timecodePreferred(const std::optional<ID>& region) const { return timecodeProgram.preferred(region); }
+    void previewMIDIItem(const jaras::Song &,const jaras::AudioClip &);
+    void setItemControls(const jaras::AudioClip &);
     void setMixer(const jaras::Project &, const jaras::Song &);
     void setOffline(bool enabled);
     void prepareOffline(double sampleRate) {
@@ -80,6 +85,12 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
                 bus->armed.store(enabled);
     }
     bool isRecording() const { return recording.load(); }
+    void startTrackFadeout(const std::set<ID> &, double seconds);
+    void cancelTrackFadeout() noexcept;
+    double trackFadeoutRemainingSeconds() const noexcept;
+    float trackFadeoutGain(const ID &) const;
+    bool trackFadeoutComplete() const noexcept;
+    bool trackFadeoutActive() const noexcept;
     State state() const;
     double takeElapsed();
     float peak() const { return meter.load(std::memory_order_relaxed); }
@@ -96,6 +107,12 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
             if (bus->id == id)
                 return bus->peak.load(std::memory_order_relaxed);
         return 0;
+    }
+    std::array<float, 2> meterLevels(const ID &id = {}) const {
+        if (id.empty()) return {masterLevels[0].load(), masterLevels[1].load()};
+        for (const auto &bus : buses) if (bus->id == id)
+            return {bus->levels[0].load(), bus->levels[1].load()};
+        return {};
     }
     uint64 getUnderruns() const { return underruns.load(); }
     int residentStreams() const {
@@ -139,6 +156,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::optional<double> playbackStart;
         double start = 0, duration = 0, offset = 0, speed = 1, clipGain = 1, clipPan = 0,
                fadeIn = 0, fadeOut = 0;
+        jaras::FadeCurve fadeInShape, fadeOutShape;
         int channelMode = 0;
         std::shared_ptr<Source> source;
         AudioBuffer<float> processed[2];
@@ -147,7 +165,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         var fxSettings;
         AutomationProgram automation;
         float volume = 1, pan = 0;
-        bool mute = false, solo = false;
+        bool mute = false, solo = false, itemMuted = false, fxBypassed = false, frozen = false;
         int firstOutput = 0, outputChannels = 2;
         size_t bus = 0;
     };
@@ -159,9 +177,11 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::vector<jaras::OutputPatch> outputs;
         std::vector<int> sends;
         std::atomic<float> peak{0};
+        std::array<std::atomic<float>, 2> levels{};
         std::atomic<float> fxInput{0}, fxOutput{0};
         AudioBuffer<float> buffer{2, 4096};
         AudioBuffer<float> subBuffer{2, 4096};
+        AudioBuffer<float> frozen[2]{{2,4096},{2,4096}};
         AudioBuffer<float> &head(int index) { return index == 0 ? buffer : subBuffer; }
         NativeFX fx[2];
         AutomationProgram automation;
@@ -175,10 +195,14 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         int inputFirst = 0, inputChannels = 2;
         bool inputMonitoring = true;
         std::atomic<bool> armed{false};
+        std::atomic<bool> fadeoutSelected{false};
     };
     std::vector<std::unique_ptr<Bus>> buses;
     std::vector<int> busOrder;
+    TransportFadeout transportFadeout;
+    std::array<float, 4096> trackFadeoutGains{};
     NativeFX masterFX;
+    AutomationProgram masterAutomation;
     std::unique_ptr<MIDIPlayback> masterMIDI;
     File instrumentDirectory;
     std::atomic<int> keyboardTarget{-1};
@@ -202,10 +226,14 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::atomic<bool> playing{false}, subPlaying{false};
     std::atomic<uint64> elapsedSamples{0}, underruns{0};
     std::atomic<float> meter{0};
+    std::array<std::atomic<float>, 2> masterLevels{};
     std::atomic<float> masterFXInput{0}, masterFXOutput{0};
     struct Update {
-        enum Kind { transport, mixer } kind = transport;
+        enum Kind { transport, mixer, item } kind = transport;
         State state;
+        double itemGain=1, itemPan=0, fadeIn=0, fadeOut=0;
+        jaras::FadeCurve fadeInShape, fadeOutShape;
+        bool fxBypassed=false;
         int index = -1;
         float volume = 1, pan = 0;
         bool mute = false, solo = false, mono = false, phase = false;

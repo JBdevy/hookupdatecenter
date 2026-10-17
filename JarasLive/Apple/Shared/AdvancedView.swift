@@ -45,7 +45,7 @@ struct AdvancedView: View {
             IpadModalHeader(title: "Advanced", close: finish)
             #else
             HStack {
-                Text("Advanced").font(.headline)
+                Text("Advanced").font(.jarasHeadline)
                 Spacer()
                 Button { finish() } label: { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).accessibilityLabel("Close")
@@ -57,7 +57,7 @@ struct AdvancedView: View {
                     ForEach(availableTabs, id: \.self) { item in
                         Button { tab = item; invalidField = nil; applyError = "" } label: {
                             Label { Text(LocalizedStringKey(item.rawValue)).lineLimit(2).minimumScaleFactor(0.8) } icon: { Image(systemName: item.icon) }
-                                .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                                .font(.jarasSystem(size: 12, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 10).frame(height: 36)
                                 .background(tab == item ? JarasTheme.green.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 6))
                                 .contentShape(Rectangle())
@@ -68,9 +68,9 @@ struct AdvancedView: View {
                 Divider()
                 ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text(LocalizedStringKey(tab.rawValue)).font(.title3.bold())
+                    Text(LocalizedStringKey(tab.rawValue)).font(.jarasTitle3.bold())
                     if tab == .timeProject { timingControls }
-                    if tab == .timeline { AdvancedTimelineSettings(documents: documents) }
+                    if tab == .timeline { AdvancedTimelineSettings(show: show, documents: documents) }
                     if tab == .transport { AdvancedTransportSettings() }
                     if tab == .video { AdvancedVideoSettings() }
                     if tab == .setlist { AdvancedSetlistColors() }
@@ -83,8 +83,8 @@ struct AdvancedView: View {
             HStack {
                 if let invalidField {
                     Text(LocalizedStringKey(invalidField == 0 ? "Enter a BPM between 60 and 300." : "Invalid time signature."))
-                        .font(.caption).foregroundStyle(.red)
-                } else if !applyError.isEmpty { Text(LocalizedStringKey(applyError)).font(.caption).foregroundStyle(.red) }
+                        .font(.jarasCaption).foregroundStyle(.red)
+                } else if !applyError.isEmpty { Text(LocalizedStringKey(applyError)).font(.jarasCaption).foregroundStyle(.red) }
                 Spacer()
                 Button("Cancel") { finish() }.keyboardShortcut(.cancelAction)
                 if tab == .timeProject { Button("Apply", action: apply).keyboardShortcut(.defaultAction) }
@@ -110,7 +110,7 @@ struct AdvancedView: View {
                     timingField($unit, index: 2, width: 34, label: "Beat unit")
                 }
 
-            }.font(.system(size: 12))
+            }.font(.jarasSystem(size: 12))
             HStack(spacing: 14) {
                 Text("Project timebase")
                 Picker("Project timebase", selection: $settings.timebase) {
@@ -167,7 +167,7 @@ struct TempoMarkerEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Tempo marker").font(.headline)
+            Text("Tempo marker").font(.jarasHeadline)
             HStack(spacing: 10) {
                 Text(verbatim: "BPM")
                 TextField("BPM", text: $bpm).frame(width: 72).accessibilityLabel("BPM")
@@ -178,7 +178,7 @@ struct TempoMarkerEditor: View {
             }.textFieldStyle(.roundedBorder)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(invalid ? .red : .clear))
                 .modifier(InputValidationShake(animatableData: shake))
-            if invalid { Text("Invalid tempo or time signature.").font(.caption).foregroundStyle(.red) }
+            if invalid { Text("Invalid tempo or time signature.").font(.jarasCaption).foregroundStyle(.red) }
             HStack {
                 Text("Timebase")
                 Picker("Timebase", selection: $timebase) {
@@ -205,8 +205,17 @@ struct TempoMarkerEditor: View {
 }
 
 private struct AdvancedTimelineSettings: View {
+    @ObservedObject var show: ShowController
+    @State private var conversionReport: String?
+    @State private var deletion: TimelineBulkDeletion?
+    @State private var deletionProject: UUID?
+    @State private var deletionSong: UUID?
+    private func title(_ kind: TimelineBulkDeletion) -> String {
+        switch kind { case .tempo: return "Deletar todos os marcadores de tempo"; case .regions: return "Deletar todas as regiões"; case .markers: return "Deletar todos os marcadores" }
+    }
     let documents: ProjectDocuments?
     @State private var confirmingCleanup = false
+    @AppStorage("jaras.timeline.continuousScroll") private var continuousScroll = false
     @AppStorage("jaras.timeline.gridlines") private var gridlines = GlobalProjectTiming.load()?.settings.divisions != 0
     var body: some View {
         VStack(spacing: 18) {
@@ -218,12 +227,41 @@ private struct AdvancedTimelineSettings: View {
                     Text("Disabled").tag(false)
                 }.labelsHidden()
             }
+            HStack {
+                Text("Continuous scroll")
+                Spacer()
+                Picker("Continuous scroll", selection: $continuousScroll) {
+                    Text(verbatim: "true").tag(true)
+                    Text(verbatim: "none").tag(false)
+                }.labelsHidden()
+            }
             SetlistTextColorRow(title: "Timeline background", key: "jaras.timeline.background", defaultColor: TimelineAppearanceDefaults.background, showsReset: true)
             SetlistTextColorRow(title: "Primary grid color", key: "jaras.timeline.primaryGrid", defaultColor: TimelineAppearanceDefaults.primaryGrid, showsReset: true)
             SetlistTextColorRow(title: "Secondary grid color", key: "jaras.timeline.secondaryGrid", defaultColor: TimelineAppearanceDefaults.secondaryGrid, showsReset: true)
             SetlistTextColorRow(title: "Playback cursor color", key: "jaras.timeline.playCursor", defaultColor: TimelineAppearanceDefaults.playCursor, showsReset: true)
             SetlistTextColorRow(title: "Edit cursor color", key: "jaras.timeline.editCursor", defaultColor: TimelineAppearanceDefaults.editCursor, showsReset: true)
             SetlistTextColorRow(title: "Sub Play cursor color", key: "jaras.timeline.subPlayCursor", defaultColor: TimelineAppearanceDefaults.subPlayCursor, showsReset: true)
+            Divider()
+            HStack {
+                Text("Converter marcadores em regiões"); Spacer()
+                Button("Converter") { conversionReport = show.convertMarkersToRegions() }
+                    .disabled(show.current == nil)
+                    .sheet(isPresented: Binding(get: { conversionReport != nil }, set: { if !$0 { conversionReport = nil } })) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("Conversão de marcadores").font(.headline)
+                            ScrollView { Text(conversionReport ?? "").frame(maxWidth: .infinity, alignment: .leading) }
+                            HStack { Spacer(); Button("OK") { conversionReport = nil }.keyboardShortcut(.defaultAction) }
+                        }.padding(20).frame(width: 540, height: 360)
+                    }
+            }
+            ForEach(TimelineBulkDeletion.allCases) { kind in
+                HStack {
+                    Text(verbatim: title(kind)); Spacer()
+                    Button("Deletar", role: .destructive) {
+                        deletionProject = show.snapshot.project.id; deletionSong = show.current?.id; deletion = kind
+                    }.disabled(show.current == nil)
+                }
+            }
             if let documents {
                 Divider()
                 HStack {
@@ -234,6 +272,15 @@ private struct AdvancedTimelineSettings: View {
                 }
                 .sheet(isPresented: $confirmingCleanup) { TimelineMediaCleanupConfirmation(documents: documents) }
             }
+        }
+        .alert(deletion.map(title) ?? "Deletar", isPresented: Binding(get: { deletion != nil }, set: { if !$0 { deletion = nil } }), presenting: deletion) { kind in
+            Button("Cancelar", role: .cancel) { deletion = nil }
+            Button("Deletar", role: .destructive) {
+                if let project = deletionProject, let song = deletionSong { show.deleteTimelineElements(kind, project: project, song: song) }
+                deletion = nil
+            }
+        } message: { kind in
+            Text(kind == .regions ? "Deletar todas as regiões desta timeline, incluindo as unificadas? Os itens de áudio, MIDI e vídeo serão mantidos. Você pode desfazer com Command+Z." : kind == .tempo ? "Deletar todos os marcadores de tempo desta timeline? Você pode desfazer com Command+Z." : "Deletar todos os marcadores comuns desta timeline? Os marcadores de tempo e das regiões unificadas serão mantidos. Você pode desfazer com Command+Z.")
         }
     }
 }
@@ -287,7 +334,7 @@ private struct SetlistTextColorRow: View {
                 }
             if showsReset {
                 Button("Reset") { color.save(defaultColor) }
-                    .font(.caption)
+                    .font(.jarasCaption)
                     .disabled(color.value == defaultColor)
                     .accessibilityLabel(Text("Reset") + Text(" ") + Text(LocalizedStringKey(title)))
             }
@@ -305,13 +352,13 @@ private struct TimelineMediaCleanupConfirmation: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Clean up files deleted from the timeline", systemImage: "trash")
-                .font(.headline).foregroundStyle(.red)
+                .font(.jarasHeadline).foregroundStyle(.red)
             Text("This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Recovery backups retain their media. The editing undo history will be cleared. This cleanup cannot be undone.")
             if let url = documents.currentURL {
-                Text(verbatim: url.deletingLastPathComponent().path).font(.caption)
-                    .textSelection(.enabled).foregroundStyle(JarasTheme.secondary)
+                Text(verbatim: url.deletingLastPathComponent().path).font(.jarasCaption)
+                    .textSelection(.disabled).foregroundStyle(JarasTheme.secondary)
             }
-            if !error.isEmpty { Text(LocalizedStringKey(error)).font(.caption).foregroundStyle(.red) }
+            if !error.isEmpty { Text(LocalizedStringKey(error)).font(.jarasCaption).foregroundStyle(.red) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(working)
                 Spacer()

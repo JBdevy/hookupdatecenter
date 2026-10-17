@@ -2,6 +2,7 @@
 #include "Session.h"
 #include "Localization.h"
 #include "EffectInsertPanel.h"
+#include "FXPresets.h"
 namespace catlive {
 namespace fxui {
 class EnableButton final : public ToggleButton {
@@ -82,6 +83,28 @@ inline void defaults(var &s) {
         put(s, "bands", bands);
     }
 }
+inline var instrumentParameters(const String &instrument) {
+    auto parameters = object(), controllers = object();
+    put(parameters, "gain", 0);
+    put(parameters, "attack", 0);
+    put(parameters, "hold", 10);
+    put(parameters, "decay", 10);
+    put(parameters, "sustain", 1);
+    put(parameters, "release", instrument.startsWith("drum-") ? 20. : .3);
+    String category;
+    for (auto item : instrumentAssets::catalog())
+        if (str(item, "id") == instrument)
+            category = str(item, "category");
+    put(controllers, "modulation", category == "synthPad" || category == "strings");
+    put(controllers, "pitchBend", category == "bass" || category == "lead");
+    put(controllers, "monophonic", category == "lead");
+    put(parameters, "controllers", controllers);
+    return parameters;
+}
+inline void reset(const String &kind, var &settings) {
+    for (const auto &key : fxpresets::fields(kind)) fxpresets::erase(settings, Identifier(key));
+    defaults(settings);
+}
 class KnobLook final : public LookAndFeel_V4 {
   public:
     Font getSliderPopupFont(Slider &) override { return theme::font(12); }
@@ -149,7 +172,7 @@ class Knob final : public Component {
         g.drawText(label, 0, 0, getWidth(), 20, Justification::centred);
     }
     void resized() override { slider.setBounds(0, 22, getWidth(), getHeight() - 22); }
-    Slider slider;
+    ParameterSlider slider;
 
   private:
     String label;
@@ -252,13 +275,21 @@ class EQGraph final : public Component {
                 break;
             }
         dragging = false;
-        if (e.mods.isPopupMenu())
-            menu(e.position);
+        wheelBandHeld = selected >= 0 && e.mods.isLeftButtonDown();
+        wheelRemainder = 0;
+        if (e.mods.isPopupMenu() && std::abs(e.position.y-getHeight()*.5f)<18) add({e.position.x,getHeight()*.5f});
         repaint();
     }
     void mouseDoubleClick(const MouseEvent &e) override {
-        if (!e.mods.isPopupMenu() && selected < 0)
-            add(e.position);
+        if (e.mods.isPopupMenu()) return;
+        auto bands = list(get(settings, "bands"));
+        if (selected >= 0 && selected < bands.size()) {
+            put(bands.getReference(selected), "gain", 0.);
+            put(settings, "bands", bands);
+            if (changed) changed();
+            if (commit) commit();
+            repaint();
+        } else add(e.position);
     }
     void mouseDrag(const MouseEvent &e) override {
         if (selected < 0 || e.mods.isPopupMenu())
@@ -278,21 +309,37 @@ class EQGraph final : public Component {
         repaint();
     }
     void mouseUp(const MouseEvent &) override {
+        wheelBandHeld = false;
+        wheelRemainder = 0;
         if (dragging && commit)
             commit();
         dragging = false;
     }
-    void mouseWheelMove(const MouseEvent &, const MouseWheelDetails &wheel) override {
-        auto bands = list(get(settings, "bands"));
-        if (selected < 0 || selected >= bands.size())
+    void mouseWheelMove(const MouseEvent &event, const MouseWheelDetails &wheel) override {
+        if (!wheelBandHeld || !event.mods.isLeftButtonDown()) {
+            Component::mouseWheelMove(event, wheel);
             return;
-        auto &b = bands.getReference(selected);
-        put(b, "q", jlimit(.1, 18., num(b, "q", .707) * std::pow(1.15, wheel.deltaY > 0 ? 1 : -1)));
+        }
+        if (wheel.isInertial || !std::isfinite(wheel.deltaY)) return;
+        wheelRemainder += wheel.isSmooth ? wheel.deltaY * 10. : (wheel.deltaY > 0 ? 1 : wheel.deltaY < 0 ? -1 : 0);
+        const int steps = (int)wheelRemainder;
+        if (!steps) return;
+        wheelRemainder -= steps;
+        auto bands = list(get(settings, "bands"));
+        if (selected < 0 || selected >= bands.size()) return;
+        auto &band = bands.getReference(selected);
+        const auto type = str(band, "type");
+        if (type == "lowCut" || type == "highCut") {
+            const std::array<int, 8> slopes{6,12,24,36,48,72,96,192};
+            const auto found = std::find(slopes.begin(), slopes.end(), (int)num(band, "slope", 12));
+            const int current = found == slopes.end() ? 1 : (int)(found - slopes.begin());
+            put(band, "slope", slopes[(size_t)jlimit(0, 7, current + steps)]);
+        } else {
+            put(band, "q", jlimit(.1, 18., num(band, "q", .707) * std::pow(1.12, steps)));
+        }
         put(settings, "bands", bands);
-        if (changed)
-            changed();
-        if (commit)
-            commit();
+        if (changed) changed();
+        if (commit) commit();
         repaint();
     }
     bool keyPressed(const KeyPress &key) override {
@@ -305,7 +352,8 @@ class EQGraph final : public Component {
 
   private:
     int selected = -1;
-    bool dragging = false;
+    bool dragging = false, wheelBandHeld = false;
+    double wheelRemainder = 0;
     juce::Rectangle<float> plot() const {
         return getLocalBounds().toFloat().withTrimmedBottom(20).reduced(8, 0);
     }
@@ -361,64 +409,13 @@ class EQGraph final : public Component {
         selected = -1;
         update();
     }
-    void menu(Point<float> p) {
-        PopupMenu menu;
-        auto bands = list(get(settings, "bands"));
-        if (selected < 0)
-            menu.addItem(1, "Adicionar banda", bands.size() < 10);
-        else {
-            auto band = bands[selected];
-            menu.addItem(2, "Excluir banda");
-            menu.addItem(3, "Ativada", true, flag(band, "enabled", true));
-            menu.addSeparator();
-            const StringArray types{"bell", "lowCut", "highCut", "lowShelf", "highShelf"},
-                names{"Bell", "Low Cut", "High Cut", "Low Shelf", "High Shelf"};
-            for (int i = 0; i < 5; ++i)
-                menu.addItem(10 + i, names[i], true, str(band, "type") == types[i]);
-            PopupMenu slopes;
-            const int values[]{6, 12, 24, 36, 48, 72, 96, 192};
-            for (int i = 0; i < 8; ++i)
-                slopes.addItem(20 + i, String(values[i]) + " dB/oct", true,
-                               (int)num(band, "slope", 12) == values[i]);
-            menu.addSubMenu("Slope", slopes);
-        }
-        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(this),
-                           [safe = SafePointer<EQGraph>(this), p](int action) {
-                               if (!safe || !action)
-                                   return;
-                               if (action == 1) {
-                                   safe->add(p);
-                                   return;
-                               }
-                               if (action == 2) {
-                                   safe->remove();
-                                   return;
-                               }
-                               auto bands = list(get(safe->settings, "bands"));
-                               if (safe->selected < 0 || safe->selected >= bands.size())
-                                   return;
-                               auto &b = bands.getReference(safe->selected);
-                               if (action == 3)
-                                   put(b, "enabled", !flag(b, "enabled", true));
-                               if (action >= 10 && action < 15) {
-                                   const char *types[]{"bell", "lowCut", "highCut", "lowShelf",
-                                                       "highShelf"};
-                                   put(b, "type", types[action - 10]);
-                               }
-                               if (action >= 20 && action < 28) {
-                                   const int values[]{6, 12, 24, 36, 48, 72, 96, 192};
-                                   put(b, "slope", values[action - 20]);
-                               }
-                               put(safe->settings, "bands", bands);
-                               safe->update();
-                           });
-    }
+
 };
 } // namespace fxui
 class EffectsPanel final : public Component, private ListBoxModel, private Timer {
   public:
-    EffectsPanel(Session &s, ID target, std::function<void(String)> report)
-        : session(s), track(std::move(target)), error(std::move(report)), chain("FX", this) {
+    EffectsPanel(Session &s, ID target, std::function<void(String)> report, bool itemTarget = false)
+        : session(s), track(std::move(target)), item(itemTarget), error(std::move(report)), chain("FX", this) {
         setComponentID("effectsPanel");
         load();
         fxui::defaults(settings);
@@ -472,6 +469,14 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             chain.selectRow(0);
         else
             show();
+        addAndMakeVisible(presets); addAndMakeVisible(savePreset); addAndMakeVisible(defaultPreset);
+        presets.setComponentID("fxPreset"); savePreset.setComponentID("saveFXPreset"); defaultPreset.setComponentID("defaultFXPreset");
+        savePreset.setButtonText(String::fromUTF8("Salvar preset…"));
+        defaultPreset.setButtonText(String::fromUTF8("Usar como padrão"));
+        presets.onChange = [this] { loadPreset(); };
+        savePreset.onClick = [this] { saveCurrentPreset(); };
+        defaultPreset.onClick = [this] { makePresetDefault(); };
+        refreshPresets(); resized();
         startTimerHz(20);
     }
     void paint(Graphics &g) override {
@@ -514,7 +519,10 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         const bool eq = kind() == "EQ",
                    compressor = kind() == "Compressor" || kind() == "Instruments";
         rackHeight = compressor ? 308 : 180;
-        headerY = eq ? 24 : std::max(24, (getHeight() - (rackHeight + 124)) / 2);
+        presets.setBounds(r.getX(), 8, std::max(100, r.getWidth() - 268), 24);
+        savePreset.setBounds(r.getRight() - 258, 8, 114, 24);
+        defaultPreset.setBounds(r.getRight() - 140, 8, 140, 24);
+        headerY = eq ? 60 : std::max(60, (getHeight() - (rackHeight + 124)) / 2);
         rackY = headerY + 118;
         removeEffect.setBounds(r.getRight() - 100, headerY + 42, 100, 22);
         enabled.setBounds(eq ? r.getX() : r.getCentreX() - 55, headerY + 76, 110, 24);
@@ -534,11 +542,19 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
   private:
     Session &session;
     ID track;
+    bool item = false;
     String trackName = "Master";
     std::function<void(String)> error;
     var settings;
+    uint64 loadedRevision = ~uint64(0);
     ListBox chain;
-    TextButton add, remove, removeEffect;
+    TextButton add, remove, removeEffect, savePreset, defaultPreset;
+    ComboBox presets;
+    Array<var> presetEntries;
+    var presetLibrary;
+    bool presetsLoaded = false;
+    int64 presetRevision = -1;
+    int presetPoll = 0;
     fxui::EnableButton enabled;
     OwnedArray<TextButton> rooms;
     OwnedArray<fxui::Knob> knobs;
@@ -548,8 +564,12 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         return {210, 0, std::max(200, getWidth() - 230), getHeight()};
     }
     void load() {
+        loadedRevision = session.revision;
         settings = var();
-        if (track.empty()) {
+        if (item) {
+            for(const auto &song:session.project().songs) for(const auto &t:song.tracks) for(const auto &clip:t.clips)
+                if(clip.id==track) { trackName=text(clip.name); if(clip.fxJSON) settings=JSON::parse(text(*clip.fxJSON)); }
+        } else if (track.empty()) {
             if (session.project().masterFXJSON)
                 settings = JSON::parse(text(*session.project().masterFXJSON));
         } else
@@ -610,7 +630,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     }
     void listBoxItemClicked(int row, const MouseEvent &e) override {
         chain.selectRow(row);
-        if (e.position.x < 30 && !e.mods.isPopupMenu()) {
+        if ((e.position.x < 30 || e.mods.isAltDown()) && !e.mods.isPopupMenu()) {
             auto s = current();
             auto k = fxui::enabledKey(kind());
             if (k.isNotEmpty()) {
@@ -619,34 +639,16 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
                 show();
             }
         }
-        if (e.mods.isPopupMenu()) {
-            PopupMenu m;
-            m.addItem(1, "Mover acima", row > 0);
-            m.addItem(2, "Mover abaixo", row + 1 < getNumRows());
-            m.addItem(3, "Excluir");
-            m.showMenuAsync(PopupMenu::Options().withTargetComponent(&chain),
-                            [safe = SafePointer<EffectsPanel>(this)](int a) {
-                                if (!safe || !a)
-                                    return;
-                                if (a == 3)
-                                    safe->erase();
-                                else {
-                                    auto items = list(get(safe->settings, "inserted"));
-                                    const int next = safe->selected + (a == 1 ? -1 : 1);
-                                    if (next < 0 || next >= items.size())
-                                        return;
-                                    items.move(safe->selected, next);
-                                    put(safe->settings, "inserted", items);
-                                    safe->commit();
-                                    safe->chain.updateContent();
-                                    safe->chain.selectRow(next);
-                                    safe->chain.repaint();
-                                }
-                            });
+        if(e.mods.isPopupMenu()) {
+            if(e.mods.isAltDown()){erase();return;}
+            PopupMenu menu;menu.addItem(1,"Remover");
+            menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&chain),[safe=SafePointer<EffectsPanel>(this)](int choice){if(safe && choice==1)safe->erase();});
         }
     }
+
     void show() {
         knobs.clear();
+        refreshPresets();
         const auto k = kind();
         const bool available = k.isNotEmpty() && fxui::enabledKey(k).isNotEmpty();
         enabled.setVisible(available);
@@ -758,7 +760,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             [safe] {
                 if (safe && safe->insertWindow)
                     safe->insertWindow->setVisible(false);
-            });
+            }, !item);
         panel->setSize(460, 214);
         insertWindow->setContentOwned(panel, true);
         panel->updateLayout();
@@ -779,30 +781,18 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
                     throw std::runtime_error("Could not copy the instrument to the project.");
             }
             auto initialize = [&](var &s) {
+                fxui::reset(kind, s);
                 fxui::defaults(s);
                 fxui::enable(kind, s, true);
                 if (kind == "Instruments") {
                     put(s, "instrumentID", instrument);
-                    auto parameters = object(), controllers = object();
-                    put(parameters, "gain", 0);
-                    put(parameters, "attack", 0);
-                    put(parameters, "hold", 10);
-                    put(parameters, "decay", 10);
-                    put(parameters, "sustain", 1);
-                    put(parameters, "release", instrument.startsWith("drum-") ? 20. : .3);
-                    String category;
-                    for (auto item : instrumentAssets::catalog())
-                        if (str(item, "id") == instrument)
-                            category = str(item, "category");
-                    put(controllers, "modulation", category == "synthPad" || category == "strings");
-                    put(controllers, "pitchBend", category == "bass" || category == "lead");
-                    put(controllers, "monophonic", category == "lead");
-                    put(parameters, "controllers", controllers);
-                    put(s, "instrumentParameters", parameters);
+                    put(s, "instrumentParameters", fxui::instrumentParameters(instrument));
                 }
+                fxpresets::Store().applyDefault(kind, s);
             };
             auto inserted = list(get(settings, "inserted"));
             String key = kind;
+            if (item && inserted.contains(var(kind))) {chain.selectRow(inserted.indexOf(var(kind))); return true;}
             if (inserted.contains(var(kind))) {
                 auto instance = object(), s = object();
                 initialize(s);
@@ -836,6 +826,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         const auto removed = key();
         inserted.remove(selected);
         put(settings, "inserted", inserted);
+        fxui::reset(removed, settings);
         auto instances = list(get(settings, "instances"));
         for (int i = instances.size(); --i >= 0;)
             if ("Native:" + str(instances[i], "id") == removed ||
@@ -858,7 +849,16 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         try {
             if (session.busy)
                 return false;
-            session.configureEffects(track, settings);
+            if (item) {
+                const auto json=utf8(JSON::toString(settings,true));
+                session.edit([&](jaras::Project &project) {
+                    bool found=false;
+                    for(auto &song:project.songs) for(auto &t:song.tracks) for(auto &clip:t.clips)
+                        if(clip.id==track) {clip.fxJSON=json;found=true;}
+                    if(!found) throw std::runtime_error("O item deste efeito não existe mais.");
+                });
+            } else session.configureEffects(track, settings);
+            refreshPresets();
             return true;
         } catch (const std::exception &e) {
             load();
@@ -873,7 +873,79 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             return false;
         }
     }
+    var factoryPreset() const {
+        auto value = object(); fxui::defaults(value);
+        if (kind() == "Instruments") {
+            put(value, "instrumentID", str(current(), "instrumentID"));
+            put(value, "instrumentParameters", fxui::instrumentParameters(str(current(), "instrumentID")));
+        }
+        return fxpresets::capture(kind(), value, "Factory");
+    }
+    void refreshPresets(bool reload = false) {
+        const bool available = fxpresets::fields(kind()).size() > 0;
+        presets.setVisible(available); savePreset.setVisible(available); defaultPreset.setVisible(available);
+        if (!available) return;
+        try {
+            if (reload || !presetsLoaded) { presetLibrary = fxpresets::Store().read(); presetRevision = fxpresets::Store().revision(); presetsLoaded = true; }
+            const auto identity = fxpresets::identity(kind(), current());
+            presetEntries = fxpresets::Store::entries(presetLibrary, identity);
+            const auto defaultID = str(get(presetLibrary, "defaults"), Identifier(identity));
+            presets.clear(dontSendNotification);
+            const auto star = String::fromUTF8(" ★");
+            presets.addItem("Default" + (defaultID.isEmpty() ? star : ""), 1);
+            int selection = fxpresets::matches(kind(), current(), factoryPreset()) ? 1 : 0;
+            for (int i = 0; i < presetEntries.size(); ++i) {
+                const auto &preset = presetEntries[i];
+                presets.addItem(str(preset,"name") + (str(preset,"id") == defaultID ? star : ""), i + 2);
+                if (fxpresets::matches(kind(), current(), preset)) selection = i + 2;
+            }
+            presets.setTextWhenNothingSelected("Personalizado"); presets.setSelectedId(selection, dontSendNotification);
+            defaultPreset.setEnabled(selection != 0);
+        } catch (const std::exception &e) { presets.setText(String::fromUTF8(e.what()), dontSendNotification); defaultPreset.setEnabled(false); }
+    }
+    void loadPreset() {
+        const int index = presets.getSelectedId(); if (index < 1) return;
+        try {
+            const auto preset = index == 1 ? factoryPreset() : presetEntries[index - 2];
+            auto value = current(); fxpresets::apply(kind(), value, preset);
+            commit(); show();
+        } catch (const std::exception &e) { error(String::fromUTF8(e.what())); }
+    }
+    void saveCurrentPreset() {
+        const auto effect = key();
+        auto *dialog = new AlertWindow("Salvar preset", String::fromUTF8("Nome da configuração deste plugin"), MessageBoxIconType::NoIcon);
+        dialog->addTextEditor("name", ""); dialog->addButton("Salvar", 1, KeyPress(KeyPress::returnKey)); dialog->addButton("Cancelar", 0, KeyPress(KeyPress::escapeKey));
+        dialog->enterModalState(true, ModalCallbackFunction::create([safe = SafePointer<EffectsPanel>(this), dialog, effect](int result) {
+            if (!safe || result != 1 || safe->key() != effect) return;
+            try {
+                fxpresets::Store store; auto library = store.read();
+                fxpresets::Store::save(library, fxpresets::capture(safe->kind(), safe->current(), dialog->getTextEditorContents("name")));
+                store.write(library); safe->refreshPresets(true);
+            } catch (const std::exception &e) { safe->error(String::fromUTF8(e.what())); }
+        }), true);
+    }
+    void makePresetDefault() {
+        const int index = presets.getSelectedId(); if (index < 1) return;
+        try {
+            fxpresets::Store store; auto library = store.read();
+            fxpresets::Store::setDefault(library, fxpresets::identity(kind(), current()), index == 1 ? String() : str(presetEntries[index - 2], "id"));
+            store.write(library); refreshPresets(true);
+        } catch (const std::exception &e) { error(String::fromUTF8(e.what())); }
+    }
     void timerCallback() override {
+        if (loadedRevision != session.revision) {
+            const auto previous = JSON::toString(settings, true), selectedKey = key();
+            load(); fxui::defaults(settings);
+            if (JSON::toString(settings, true) != previous) {
+                const auto keys = list(get(settings, "inserted"));
+                selected = keys.indexOf(var(selectedKey));
+                if (selected < 0 && !keys.isEmpty()) selected = 0;
+                chain.updateContent();
+                if (selected < 0) chain.deselectAllRows(); else chain.selectRow(selected);
+                show();
+            }
+        }
+        if (++presetPoll % 10 == 0 && isShowing() && fxpresets::Store().revision() != presetRevision) refreshPresets(true);
         if (isShowing())
             repaint();
     }

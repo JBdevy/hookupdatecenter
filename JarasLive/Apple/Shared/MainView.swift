@@ -201,7 +201,7 @@ struct MainView: View {
                                     changed: { _ in }, ended: { storedFooterHeight = $0 }))
                             AudioStatusView { navigationOpen = false; panel = .audioSettings }.fixedSize(horizontal: true, vertical: false)
                         }.buttonStyle(.plain).frame(height: geometry.size.height)
-                    }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).background(JarasTheme.panel)
+                    }.font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).background(JarasTheme.panel)
                 }
                 #else
                 GeometryReader { geometry in
@@ -229,7 +229,7 @@ struct MainView: View {
                         AudioStatusView { navigationOpen = false; panel = .audioSettings }.frame(width: sideWidth, alignment: .trailing)
                         #endif
                     }.frame(height: 27)
-                }.font(.system(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
+                }.font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
                 #endif
 
             }
@@ -253,7 +253,7 @@ struct MainView: View {
                 if documents.importingAudio {
                     VStack(spacing: 14) {
                         Text(LocalizedStringKey(documents.status))
-                            .font(.callout).multilineTextAlignment(.center).lineLimit(3)
+                            .font(.jarasCallout).multilineTextAlignment(.center).lineLimit(3)
                         ProgressView(value: documents.audioImportProgress).progressViewStyle(.linear).tint(JarasTheme.green)
                     }
                     .padding(24).frame(width: 360)
@@ -406,7 +406,7 @@ struct MainView: View {
             .sheet(item: $panel) { selected in
                 VStack(spacing: 0) {
                     HStack {
-                        Text(LocalizedStringKey(selected.isSettings ? "Configurações" : "Projetos")).font(.headline)
+                        Text(LocalizedStringKey(selected.isSettings ? "Configurações" : "Projetos")).font(.jarasHeadline)
                         Spacer()
                         Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Fechar").keyboardShortcut(.cancelAction)
                     }.padding(16)
@@ -417,7 +417,11 @@ struct MainView: View {
                         ProjectBrowserView(documents: documents, completed: { panel = nil })
                     }
                 }
+                #if os(macOS)
+                .interfaceScaledFrame(width: selected.isSettings ? 940 : documents.folderReview == nil ? 560 : 840, height: selected.isSettings ? 540 : 500)
+                #else
                 .frame(width: selected.isSettings ? 940 : documents.folderReview == nil ? 560 : 840, height: selected.isSettings ? 540 : 500)
+                #endif
                 .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
                 .environment(\.locale, Locale(identifier: language))
             }
@@ -429,7 +433,7 @@ struct MainView: View {
                 withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() }
             } label: {
                 Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 16))
+                    .font(.jarasSystem(size: 16))
                     .frame(width: 30, height: 32)
                     .contentShape(Rectangle())
             }
@@ -437,7 +441,7 @@ struct MainView: View {
             .jarasHelp("Menu")
             Button(action: toggleMixer) {
                 Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.jarasSystem(size: 15, weight: .semibold))
                     .foregroundStyle(mixerWidth <= 0 ? Color(hex: 0xc44545) : JarasTheme.green)
                     .frame(width: 30, height: 30)
                     .contentShape(Rectangle())
@@ -457,7 +461,7 @@ struct MainView: View {
                 }
             } label: {
                 Image(systemName: "slider.vertical.3")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.jarasSystem(size: 16, weight: .semibold))
                     .frame(width: 30, height: 32)
                     .contentShape(Rectangle())
             }
@@ -473,7 +477,7 @@ struct MainView: View {
             }
             Button { keyboardOpen.toggle() } label: {
                 Image(systemName: "pianokeys")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.jarasSystem(size: 16, weight: .semibold))
                     .frame(width: 30, height: 32)
                     .contentShape(Rectangle())
             }
@@ -486,7 +490,7 @@ struct MainView: View {
                 toggleSections(.footer)
             } label: {
                 SectionButtonsIcon()
-                    .font(.system(size: 16, weight: .semibold)).frame(width: 30, height: 32)
+                    .font(.jarasSystem(size: 16, weight: .semibold)).frame(width: 30, height: 32)
                     .contentShape(Rectangle())
             }.foregroundStyle(sectionsPresentation == .footer ? JarasTheme.green : JarasTheme.text)
                 .accessibilityLabel("Smooth Seek").jarasHelp("Smooth Seek")
@@ -573,7 +577,7 @@ private struct AudioDropOptions: View {
     @FocusState private var gapFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Import audio").font(.headline)
+            Text("Import audio").font(.jarasHeadline)
             Picker("Placement", selection: $layout) {
                 Text("One track per item").tag(AudioDropLayout.separateTracks)
                 Text("All items on the same track").tag(AudioDropLayout.sameTrack)
@@ -637,11 +641,11 @@ struct RegionTunerControl: View {
     }
     var body: some View {
         HStack(spacing: 3) {
-            Text(verbatim: "Tuner").font(.system(size: 9, weight: .semibold)).foregroundStyle(JarasTheme.text)
+            Text(verbatim: "Tuner").font(.jarasSystem(size: 9, weight: .semibold)).foregroundStyle(JarasTheme.text)
             Button { step(-1) } label: { Image(systemName: "minus").frame(width: 20, height: 25).contentShape(Rectangle()) }
                 .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) <= -12).jarasHelp("Lower song pitch")
             Text(String(format: "%dst", show.pitchRegion?.semitones ?? 0))
-                .font(.system(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
+                .font(.jarasSystem(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
                 .frame(width: 34, height: 23).background(JarasTheme.display).cornerRadius(4)
                 .immediateRightClick { editing = show.pitchRegion }
                 .accessibilityLabel("Song pitch").accessibilityValue(String(show.pitchRegion?.semitones ?? 0) + "st")
@@ -693,7 +697,7 @@ private struct RegionPitchTargets: View {
     }
     var body: some View {
         VStack(spacing: 14) {
-            HStack { Text("Pitch · " + region.displayName).font(.headline).lineLimit(1); Spacer(); Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain) }
+            HStack { Text("Pitch · " + region.displayName).font(.jarasHeadline).lineLimit(1); Spacer(); Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain) }
             Picker("", selection: $tab) { Text("Tracks").tag(0); Text("Groups").tag(1) }.pickerStyle(.segmented).labelsHidden()
             HStack {
                 Spacer()
@@ -749,7 +753,7 @@ private struct FooterPianoKeyboard: View {
                         context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(active ? Color(hex: UInt32(black ? blackColor : whiteColor)) : (black ? Color(white: 0.08) : Color(white: 0.89))))
                         if note == 21 || note % 12 == 0 {
                             let label = note == 21 ? "A-1" : "C\(note / 12 - 2)"
-                            context.draw(Text(verbatim: label).font(.system(size: 9, weight: .medium)).foregroundColor(.black), at: CGPoint(x: rect.midX, y: rect.maxY - 11))
+                            context.draw(Text(verbatim: label).font(.jarasSystem(size: 9, weight: .medium)).foregroundColor(.black), at: CGPoint(x: rect.midX, y: rect.maxY - 11))
                         }
                     }
                 }
@@ -789,14 +793,14 @@ private struct KeyboardSettingsView: View {
     }
     var body: some View {
         VStack(spacing: 18) {
-            Text("Keyboard").font(.headline)
+            Text("Keyboard").font(.jarasHeadline)
             ColorPicker("White key highlight", selection: color($whiteColor), supportsOpacity: false)
             ColorPicker("Black key highlight", selection: color($blackColor), supportsOpacity: false)
             Picker("MIDI channel", selection: $channel) {
                 ForEach(1...16, id: \.self) { Text(String($0)).tag($0) }
             }.onChange(of: channel) { KeyboardMIDIMonitor.shared.channel = $0 }
             Button("Close") { dismiss() }.keyboardShortcut(.defaultAction)
-        }.font(.body).padding(24).frame(width: 340).background(JarasTheme.panel)
+        }.font(.jarasBody).padding(24).frame(width: 340).background(JarasTheme.panel)
             #if os(macOS)
             .onExitCommand { dismiss() }
             #endif
@@ -866,7 +870,7 @@ private struct FooterProjectNameDisplay: View {
     }
     private var backupList: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent backups").font(.headline)
+            Text("Recent backups").font(.jarasHeadline)
             if loadingBackups { ProgressView() }
             else if !backupError.isEmpty { Text(verbatim: backupError).foregroundStyle(.red) }
             else if backups.isEmpty { Text("No backups found").foregroundStyle(.secondary) }
@@ -880,7 +884,7 @@ private struct FooterProjectNameDisplay: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(verbatim: backup.url.lastPathComponent).lineLimit(1).truncationMode(.middle)
-                                    Text(verbatim: Self.displayDate.string(from: backup.date)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                                    Text(verbatim: Self.displayDate.string(from: backup.date)).font(.jarasCaption).monospacedDigit().foregroundStyle(.secondary)
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                                     .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
                             }.buttonStyle(.plain).disabled(documents.busy || show.isPlaying || TrackRecording.shared.recording || TrackRecording.shared.busy)
@@ -897,7 +901,7 @@ private struct FooterProjectNameDisplay: View {
             Text(verbatim: "-").fixedSize()
             Text(verbatim: show.snapshot.project.name).lineLimit(1).truncationMode(.middle)
             Text(verbatim: "- \(savedDate)").fixedSize()
-        }.font(.system(size: titlebar ? 11 : 10, weight: titlebar ? .medium : .bold)).lineLimit(1)
+        }.font(.jarasSystem(size: titlebar ? 11 : 10, weight: titlebar ? .medium : .bold)).lineLimit(1)
             .padding(.horizontal, titlebar ? 0 : 7).frame(maxWidth: .infinity, alignment: .leading).frame(height: 21)
             .background(titlebar ? Color.clear : JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(titlebar ? Color.clear : JarasTheme.line))
@@ -1125,7 +1129,7 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
         guard let origin else { return nil }
         let upper = boundary?.heightMaximum ?? max(minimum, maximum)
         let lower = boundary?.heightMinimum ?? minimum
-        return min(upper, max(lower, origin.height + event.locationInWindow.y - origin.y))
+        return min(upper, max(lower, origin.height + (event.locationInWindow.y - origin.y) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).height))))
     }
     private func apply(_ value: CGFloat) {
         guard lastHeight != value else { return }

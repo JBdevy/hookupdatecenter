@@ -55,9 +55,9 @@ struct FXEditor: View {
     var body: some View {
         VStack(spacing: 16) {
             if !clipChainEditor {
-            HStack { Text(EffectPresentation.title(page) + " · " + title).font(.headline); Spacer(); Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain).jarasHelp("Close") }
+            HStack { Text(EffectPresentation.title(page) + " · " + title).font(.jarasHeadline); Spacer(); Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }.buttonStyle(.plain).jarasHelp("Close") }
             HStack {
-                Text(title).font(.system(size: 9, weight: .semibold, design: .monospaced)).tracking(2).foregroundStyle(JarasTheme.secondary)
+                Text(title).font(.jarasSystem(size: 9, weight: .semibold, design: .monospaced)).tracking(2).foregroundStyle(JarasTheme.secondary)
                 Spacer()
                 Button("Remove effect", action: remove).controlSize(.small)
             }
@@ -144,7 +144,7 @@ struct FXEditor: View {
     }
     private var equalizer: some View {
         VStack(spacing: 10) {
-            HStack { Toggle("Enabled", isOn: $settings.eqEnabled).mapFXMIDI(.enabled, name: "Enabled", range: 0...1); Spacer(); Text("\(settings.bands.count)/10").font(.caption).foregroundStyle(JarasTheme.secondary) }
+            HStack { Toggle("Enabled", isOn: $settings.eqEnabled).mapFXMIDI(.enabled, name: "Enabled", range: 0...1); Spacer(); Text("\(settings.bands.count)/10").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
             GeometryReader { geometry in
                 ZStack {
                     Canvas { context, size in
@@ -153,7 +153,7 @@ struct FXEditor: View {
                             let x = log(hz / 20) / log(1000) * size.width
                             var line = Path(); line.move(to: CGPoint(x: x, y: 0)); line.addLine(to: CGPoint(x: x, y: size.height))
                             context.stroke(line, with: .color(JarasTheme.line), lineWidth: 0.5)
-                            context.draw(Text(hz >= 1000 ? "\(Int(hz/1000))k" : "\(Int(hz))").font(.system(size: 9)).foregroundColor(JarasTheme.secondary), at: CGPoint(x: min(size.width-14,max(14,x)), y: size.height-8))
+                            context.draw(Text(hz >= 1000 ? "\(Int(hz/1000))k" : "\(Int(hz))").font(.jarasSystem(size: 9)).foregroundColor(JarasTheme.secondary), at: CGPoint(x: min(size.width-14,max(14,x)), y: size.height-8))
                         }
                         for gain in stride(from: -24, through: 24, by: 6) {
                             let y = (24 - Double(gain)) / 48 * size.height
@@ -194,6 +194,11 @@ struct FXEditor: View {
                             .position(x: x, y: y)
                             #else
                             .position(x: x, y: y)
+                            .onTapGesture(count: 2) {
+                                guard let index = settings.bands.firstIndex(where: { $0.id == band.id }) else { return }
+                                selected = band.id
+                                settings.bands[index].gain = 0
+                            }
                             .onTapGesture { selected = band.id }
                             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("eqPlot")).onChanged { event in
                                 guard let index = settings.bands.firstIndex(where: { $0.id == band.id }) else { return }
@@ -219,7 +224,7 @@ struct FXEditor: View {
                 })
                 #endif
             }
-            Text("Right-click the zero line to add a band.").font(.caption2).foregroundStyle(JarasTheme.secondary)
+            Text("Right-click the zero line to add a band.").font(.jarasCaption2).foregroundStyle(JarasTheme.secondary)
             if let selected, let index = settings.bands.firstIndex(where: { $0.id == selected }) {
                 let sorted = settings.bands.sorted { $0.frequency < $1.frequency }
                 HStack {
@@ -258,7 +263,7 @@ struct FXEditor: View {
     }
     private func control(_ label: String, parameter: NativeFXParameter.Key, band: UUID, value: Binding<Double>, range: ClosedRange<Double>, scale: Double = 1, suffix: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack { Text(LocalizedStringKey(label)).font(.caption); Spacer(); Text(String(format: "%.1f %@", value.wrappedValue * scale, suffix)).font(.system(size: 10, design: .monospaced)) }
+            HStack { Text(LocalizedStringKey(label)).font(.jarasCaption); Spacer(); Text(String(format: "%.1f %@", value.wrappedValue * scale, suffix)).font(.jarasSystem(size: 10, design: .monospaced)) }
             Slider(value: value, in: range).tint(JarasTheme.green)
         }.mapFXMIDI(parameter, name: label, range: range, band: band)
     }
@@ -281,7 +286,7 @@ struct ClipFXChainEditor: View {
         VStack(spacing: 12) {
             HStack {
                 Text(JarasLocalization.string("FX Manager") + " - " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—"))
-                    .font(.headline).lineLimit(1)
+                    .font(.jarasHeadline).lineLimit(1)
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
@@ -293,12 +298,12 @@ struct ClipFXChainEditor: View {
                             ForEach(effects, id: \.self) { effect in
                                 HStack(spacing: 4) {
                                     Button { show.toggleClipFXBypass(clip, effect: effect) } label: {
-                                        Text("By").font(.system(size: 11, weight: .semibold)).frame(width: 34, height: 34)
+                                        Text("By").font(.jarasSystem(size: 11, weight: .semibold)).frame(width: 34, height: 34)
                                             .background(settings.isEnabled(effect) ? Color.white.opacity(0.12) : Color.red.opacity(0.75))
                                             .cornerRadius(3).contentShape(Rectangle())
                                     }.buttonStyle(.plain).accessibilityLabel(Text("Bypass") + Text(" · " + title(effect)))
                                     Button { selected = effect } label: {
-                                        Text(verbatim: title(effect)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                                        Text(verbatim: title(effect)).font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
                                             .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading).contentShape(Rectangle())
                                     }.buttonStyle(.plain)
                                 }.padding(.horizontal, 4)

@@ -122,8 +122,12 @@ for rate in [44_100.0, 48_000.0] {
                         let value = buffer.floatChannelData![channel][index]
                         low = min(low, value); high = max(high, value)
                     }
-                    precondition(min(abs(point.y + CGFloat(low)), abs(point.y + CGFloat(high))) <= 1 / 48000,
-                                 "compact peak rectangles must preserve actual signed interval extrema")
+                    // The envelope joins adjacent bins at their boundaries;
+                    // each bin retains its actual extrema at its center.
+                    if frame == (intervalStart + min(length, intervalStart + step)) / 2 {
+                        precondition(min(abs(point.y + CGFloat(low)), abs(point.y + CGFloat(high))) <= 1 / 48000,
+                                     "connected peak envelope must preserve actual extrema at each bin center")
+                    }
                 }
                 if channel == 1 && point.y > 0.8 {
                     precondition(step < 256 ? frame == 12_345 : abs(frame - 12_345) <= step); impulse = true
@@ -410,3 +414,52 @@ cancellation.paths[2].forEach { element in
     }
 }
 print("MONO_LR_WAVEFORM_PHASE_CANCELLATION_OK")
+
+var fadeClip = AudioClip(startTime: 10, duration: 2, sourceOffset: 0, playbackRate: 1, gain: 1)
+fadeClip.fadeIn = 1; fadeClip.fadeOut = 1; fadeClip.fadeInSCurve = 0; fadeClip.fadeOutSCurve = 0
+var flatPath = Path(); flatPath.move(to: CGPoint(x: 0, y: 10)); flatPath.addLine(to: CGPoint(x: 200, y: 10))
+let reshaped = fadedTimelineWaveform(flatPath, clip: fadeClip, middle: 50, scale: 100, origin: 1000)
+var middlePoints = 0
+reshaped.forEach { element in
+    if case .line(to: let p) = element, p.x == 50 || p.x == 150 {
+        precondition(abs(p.y - 30) < 0.001, "Canvas waveform amplitude follows the audible fade")
+        middlePoints += 1
+    }
+}
+precondition(middlePoints == 2)
+print("CANVAS_WAVEFORM_FADE_IN_OUT_VIEWPORT_COORDINATES_OK")
+
+// A held drag must redraw transient fade duration/shape before committing the
+// project. Returning to the original value (cancel) removes that overlay.
+MainActor.assumeIsolated {
+    let preview = ItemWaveformPreview()
+    var source = AudioClip(startTime: 0, duration: 2, sourceOffset: 0, playbackRate: 1, gain: 1)
+    source.fadeIn = 1; source.fadeOut = 1; source.fadeInSCurve = 0; source.fadeOutSCurve = 0
+    var path = Path(); path.move(to: CGPoint(x: 0, y: 10)); path.addLine(to: CGPoint(x: 200, y: 10))
+    func amplitude(_ clip: AudioClip, at x: CGFloat) -> CGFloat {
+        let path = fadedTimelineWaveform(path, clip: clip, middle: 50, scale: 100)
+        var result: CGFloat = -1
+        path.forEach { if case .line(let p) = $0, abs(p.x - x) < 0.001 { result = 50 - p.y } }
+        precondition(result >= 0); return result
+    }
+    for left in [true, false] {
+        let x: CGFloat = left ? 25 : 175
+        preview.updateFade(source, fadeIn: left, seconds: 0.5)
+        let first = amplitude(preview.state!.applying(to: source), at: x)
+        preview.updateFade(source, fadeIn: left, seconds: 1.5)
+        let second = amplitude(preview.state!.applying(to: source), at: x)
+        precondition(first > second * 2, "Held fade drag did not reshape the waveform")
+        precondition(source.fadeIn == 1 && source.fadeOut == 1, "Preview changed the project before mouse-up")
+        preview.updateFade(source, fadeIn: left, seconds: 1)
+        precondition(preview.state == nil, "Canceled fade left stale waveform preview")
+        for sCurve in [false, true] {
+            preview.updateShape(source, fadeIn: left, sCurve: sCurve, value: -0.8)
+            let first = amplitude(preview.state!.applying(to: source), at: x)
+            preview.updateShape(source, fadeIn: left, sCurve: sCurve, value: 0.8)
+            let second = amplitude(preview.state!.applying(to: source), at: x)
+            precondition(abs(first - second) > 1, "Held shape drag did not reshape the waveform")
+            preview.clear(); precondition(preview.state == nil)
+        }
+    }
+    print("LIVE_WAVEFORM_FADE_IN_OUT_AND_FOUR_SHAPE_HANDLES_BEFORE_COMMIT_OK")
+}

@@ -2,6 +2,8 @@
 #include "InstrumentAssets.h"
 #include "Instrument.h"
 #include "RegionPitch.h"
+#include "ClipTempo.h"
+#include "../../Core/Tracks/ItemFade.hpp"
 #include "../../Core/Transport/PlaybackScope.hpp"
 namespace catlive {
 struct PlaybackNote {
@@ -10,15 +12,15 @@ struct PlaybackNote {
     std::optional<double> playbackStart;
 };
 inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
-                                               const jaras::Song *song = nullptr) {
+                                               const jaras::Song *song = nullptr, bool includeSilent = false) {
     std::vector<PlaybackNote> result;
     for (const auto &clip : track.clips) {
-        if (!clip.midi || clip.muted || clip.frozenMIDI.value_or(false) ||
-            clip.gain.value_or(1) <= 0)
+        if (!clip.midi || (!includeSilent && (clip.muted || clip.gain.value_or(1) <= 0)) || clip.frozenMIDI.value_or(false))
             continue;
         const auto &midi = *clip.midi;
-        const double seconds = 60 / midi.sourceBPM, rate = clip.playbackRate,
-                     sourceEnd = clip.sourceOffset + clip.duration * rate;
+        const ClipTempo timing(clip, song);
+        const double seconds = 60 / midi.sourceBPM,
+                     sourceEnd = timing.sourceAt(clip.startTime + clip.duration);
         const double loop = clip.loopLength.value_or(0), origin = clip.loopStart.value_or(0);
         if (loop > 0 && (sourceEnd - origin) / loop > 1e12)
             throw std::runtime_error("MIDI loop position exceeds the supported range.");
@@ -41,9 +43,9 @@ inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                     continue;
                 const double start =
                                  std::max(clip.startTime,
-                                          clip.startTime + (rawStart - clip.sourceOffset) / rate),
+                                          timing.timeAt(rawStart, false)),
                              end = std::min(clip.startTime + clip.duration,
-                                            clip.startTime + (rawEnd - clip.sourceOffset) / rate);
+                                            timing.timeAt(rawEnd, false));
                 if (end > start)
                     result.push_back(
                         {start, end,
@@ -52,20 +54,31 @@ inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                                     (song && !clip.renderedTiming.value_or(false)
                                          ? regionPitch::value(*song, track, start)
                                          : 0)),
-                         jlimit(1, 127,
+                         jlimit(0, 127,
                                 (int)std::round(note.velocity *
-                                                std::min(127., clip.gain.value_or(1)))),
+                                                (clip.muted ? 0 : std::min(127., clip.gain.value_or(1))) * jaras::itemFadeGain(clip, start))),
                          note.channel, song ? jaras::playbackItemStart(*song, clip) : std::optional<double>(clip.startTime)});
                 if (result.size() > 1000000)
                     throw std::runtime_error("Too many MIDI playback notes.");
             }
     }
+    if(!includeSilent)result.erase(std::remove_if(result.begin(), result.end(), [](const auto &note) { return note.velocity == 0; }), result.end());
     std::stable_sort(result.begin(), result.end(),
                      [](const auto &a, const auto &b) { return a.start < b.start; });
     return result;
 }
 class MIDIPlayback {
   public:
+    struct Event { double time; PlaybackNote note; bool on; };
+    struct Sequence { std::vector<PlaybackNote> notes; std::vector<Event> events; };
+    static Sequence sequence(std::vector<PlaybackNote> notes) {
+        Sequence result;result.notes=std::move(notes);result.events.reserve(result.notes.size()*2);
+        for(const auto &note:result.notes){if(note.velocity>0)result.events.push_back({note.start,note,true});result.events.push_back({note.end,note,false});}
+        std::stable_sort(result.events.begin(),result.events.end(),[](const auto &a,const auto &b){return a.time==b.time?!a.on && b.on:a.time<b.time;});return result;
+    }
+    void replaceSequence(Sequence &next,bool stopHeld=false) noexcept {
+        notes.swap(next.notes);events.swap(next.events);if(stopHeld)reset();
+    }
     MIDIPlayback(const std::vector<PlaybackNote> &source, const var &fx, const File &directory,
                  double sampleRate)
         : notes(source), rate(sampleRate) {
@@ -86,13 +99,7 @@ class MIDIPlayback {
         }
         if (layers.empty())
             return;
-        for (const auto &note : notes) {
-            events.push_back({note.start, note, true});
-            events.push_back({note.end, note, false});
-        }
-        std::stable_sort(events.begin(), events.end(), [](const auto &a, const auto &b) {
-            return a.time == b.time ? !a.on && b.on : a.time < b.time;
-        });
+        auto plan=sequence(std::move(notes));replaceSequence(plan);
         midi.ensureSize(1048576);
     }
     bool empty() const { return layers.empty(); }
@@ -133,7 +140,7 @@ class MIDIPlayback {
             scopes[head] = scope;
             reset(head);
             for (const auto &note : notes)
-                if (scope.allows(note.playbackStart) && note.start < at - 1e-9 && note.end > at + 1e-9)
+                if (note.velocity>0 && scope.allows(note.playbackStart) && note.start < at - 1e-9 && note.end > at + 1e-9)
                     midi.addEvent(
                         MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity), 0);
         }
@@ -181,11 +188,6 @@ class MIDIPlayback {
   private:
     struct Layer {
         std::unique_ptr<Instrument> synth[2], live;
-    };
-    struct Event {
-        double time;
-        PlaybackNote note;
-        bool on;
     };
     std::vector<PlaybackNote> notes;
     std::vector<Event> events;

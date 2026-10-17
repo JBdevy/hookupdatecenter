@@ -25,7 +25,7 @@ inline double measure(const jaras::AudioClip &clip, const File &directory, Mode 
     if (!clip.audioFile)
         throw std::runtime_error("O item não tem arquivo de áudio.");
     AudioFormatManager formats;
-    formats.registerBasicFormats();
+    registerAudioFormats(formats);
     std::unique_ptr<AudioFormatReader> reader(
         formats.createReaderFor(ProjectCodec::resolveMedia(directory, clip.audioFile->path)));
     if (!reader || reader->numChannels < 1 || reader->numChannels > 128 || reader->sampleRate < 1)

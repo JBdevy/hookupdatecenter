@@ -243,3 +243,50 @@ let monitorStatus = try monitorEngine.renderOffline(512, to: monitorPCM); precon
 precondition(abs(monitorPCM.floatChannelData![0][100] - 0.3) < 0.0001 && abs(monitorPCM.floatChannelData![1][100] - 0.4) < 0.0001, "live monitor maps input channels 3/4 independently from the recording writer")
 monitorEngine.stop()
 print("INPUT_MONITOR_NATIVE_RING_CHANNEL_MAPPING_OK")
+
+// Inspect actual MPEG frame headers; a renamed WAV does not pass this check.
+let bitrateIndices = [128: 9, 160: 10, 192: 11, 224: 12, 256: 13, 320: 14]
+for rate in [128, 160, 192, 224, 256, 320] {
+    let writer = try CaptureWriter(targets: [CaptureTarget(track: UUID(), input: .stereo, format: "mp3-\(rate)", name: "Bitrate - \(rate)")], directory: directory, format: format)
+    let finished = DispatchSemaphore(value: 0)
+    writer.start(); writer.ring.push(buffer)
+    writer.finish(start: 0) { items, error in
+        precondition(error == nil && items.count == 1)
+        let url = directory.appendingPathComponent(items[0].clip.audioFile!.path)
+        precondition(url.pathExtension == "mp3")
+        let bytes = [UInt8](try! Data(contentsOf: url))
+        let header = (0..<min(bytes.count - 4, 4096)).first {
+            bytes[$0] == 0xff && bytes[$0 + 1] & 0xfe == 0xfa && Int(bytes[$0 + 2] >> 4) == bitrateIndices[rate]
+        }
+        precondition(header != nil, "MP3 frame header must match the chosen \(rate) kbps")
+        let file = try! AVAudioFile(forReading: url)
+        precondition(file.length > 0 && file.processingFormat.channelCount == 2)
+        finished.signal()
+    }
+    precondition(finished.wait(timeout: .now() + 10) == .success)
+}
+print("RECORDING_MP3_128_160_192_224_256_320_REAL_CODEC_OK")
+
+let multitrackFormat = AVAudioFormat(standardFormatWithSampleRate: 48000, channelLayout: AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 32)!)
+let multitrackPCM = AVAudioPCMBuffer(pcmFormat: multitrackFormat, frameCapacity: 4096)!
+multitrackPCM.frameLength = 4096
+for channel in 0..<32 { multitrackPCM.floatChannelData![channel].update(repeating: Float(channel + 1) / 100, count: 4096) }
+let multitrackTargets = (1...32).map { CaptureTarget(track: UUID(), input: OutputPatch(firstChannel: $0, channelCount: 1), format: "wav24pcm", name: String(format: "REC - %02d", $0), recordedChannels: 1) }
+let multitrackWriter = try CaptureWriter(targets: multitrackTargets, directory: directory, format: multitrackFormat)
+let multitrackFinished = DispatchSemaphore(value: 0)
+multitrackWriter.start(); multitrackWriter.ring.push(multitrackPCM)
+multitrackWriter.finish(start: 0) { items, error in
+    precondition(error == nil && items.count == 32, "Every armed mono input creates its own take")
+    for (index, item) in items.enumerated() {
+        precondition(item.track == multitrackTargets[index].track)
+        let file = try! AVAudioFile(forReading: directory.appendingPathComponent(item.clip.audioFile!.path))
+        precondition(file.length == 4096 && file.processingFormat.channelCount == 1)
+        precondition(file.fileFormat.streamDescription.pointee.mBitsPerChannel == 24)
+        let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 100)!
+        try! file.read(into: pcm)
+        precondition(abs(pcm.floatChannelData![0][20] - Float(index + 1) / 100) < 0.000001, "Input routing must remain independent across all 32 tracks")
+    }
+    multitrackFinished.signal()
+}
+precondition(multitrackFinished.wait(timeout: .now() + 10) == .success)
+print("RECORDING_32_MONO_FILES_SEQUENTIAL_INPUT_PCM_OK")

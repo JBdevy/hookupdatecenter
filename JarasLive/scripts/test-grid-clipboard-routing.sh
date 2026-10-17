@@ -9,7 +9,9 @@ import sys
 source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 start = source.index('final class RegionShortcutView:')
 helper = source[start:source.index('\n#endif', start)]
-Path(sys.argv[1]).write_text('import AppKit\n' + helper + '\n' + Path('Tests/Apple/GridClipboardRoutingTests.swift').read_text())
+selection = Path('Apple/Shared/TrackMixerRow.swift').read_text()
+selection = selection[selection.index('struct EditorSelectionArea:'):selection.rindex('\n#endif')]
+Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\n' + selection + '\n' + helper + '\n' + Path('Tests/Apple/GridClipboardRoutingTests.swift').read_text())
 PY
 swiftc -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

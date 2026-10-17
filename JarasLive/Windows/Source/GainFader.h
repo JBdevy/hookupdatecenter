@@ -2,7 +2,7 @@
 #include "Common.h"
 namespace catlive {
 // Store actual gain; map only the control's position through the Mac dB range.
-class GainFader final : public Slider {
+class GainFader final : public ParameterSlider {
   public:
     GainFader() { setRange(0, std::pow(10., 12. / 20.), 0); }
     double proportionOfLengthToValue(double proportion) override {

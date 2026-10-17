@@ -194,7 +194,7 @@ private func tpFontAvailable(_ name: String, size: CGFloat) -> Bool {
 }
 private func tpTimerTextWidth(_ size: CGFloat) -> CGFloat {
     #if os(macOS)
-    let font = NSFont(name: "Arial-BoldMT", size: size) ?? NSFont.boldSystemFont(ofSize: size)
+    let font = NSFont(name: "Arial-BoldMT", size: size) ?? NSFont.jarasBoldSystemFont(ofSize: size)
     #else
     let font = UIFont(name: "Arial-BoldMT", size: size) ?? UIFont.boldSystemFont(ofSize: size)
     #endif
@@ -418,7 +418,7 @@ private struct LocalizedTeleprompterConfig: View {
     }
     private func showSettings(initialSlot: Int) {
         if let configuration {
-            let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak configuration] in configuration?.close() }))
+            let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak configuration] in configuration?.close() }).interfaceScaled())
             if #available(macOS 13, *) { host.sizingOptions = [] }
             configuration.contentView = host
             configuration.makeKeyAndOrderFront(nil)
@@ -429,9 +429,10 @@ private struct LocalizedTeleprompterConfig: View {
         panel.contentMinSize = NSSize(width: 500,height: 520)
         panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = true
         panel.level = .normal; panel.delegate = self
-        let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak panel] in panel?.close() }))
+        let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak panel] in panel?.close() }).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         panel.contentView = host
+        InterfaceScaling.shared.register(panel)
         configuration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
     }
     func configureRemote(show: ShowController, directory: URL?) {
@@ -448,7 +449,8 @@ private struct LocalizedTeleprompterConfig: View {
         panel.title = JarasLocalization.string("TP Remoto"); panel.isReleasedWhenClosed = false
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
         panel.hidesOnDeactivate = true; panel.delegate = self
-        panel.contentView = NSHostingView(rootView: TeleprompterRemoteView(close: { [weak panel] in panel?.close() }, remote: TeleprompterRemote.panel(index)))
+        panel.contentView = NSHostingView(rootView: TeleprompterRemoteView(close: { [weak panel] in panel?.close() }, remote: TeleprompterRemote.panel(index)).interfaceScaled())
+        InterfaceScaling.shared.register(panel)
         remoteConfiguration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
     }
     func windowDidResize(_ notification: Notification) {
@@ -482,7 +484,7 @@ struct TeleprompterToggleButton: View {
     }
     var body: some View {
         Button { controller.toggle(show: show) } label: {
-            Label("TP-\(index)",systemImage: "text.alignleft").font(.system(size: TransportControlMetrics.font,weight: .semibold))
+            Label("TP-\(index)",systemImage: "text.alignleft").font(.jarasSystem(size: TransportControlMetrics.font,weight: .semibold))
                     .lineLimit(1).minimumScaleFactor(0.8)
                     .frame(width: buttonWidth, height: TransportControlMetrics.height)
                 .foregroundStyle(controller.visible ? Color.black : JarasTheme.text)
@@ -504,7 +506,7 @@ struct TeleprompterPreviewButton: View {
     @State private var choosingPage = false
     var body: some View {
         Button { controller.togglePreview() } label: {
-            Text("Preview").font(.system(size: TransportControlMetrics.font,weight: .semibold))
+            Text("Preview").font(.jarasSystem(size: TransportControlMetrics.font,weight: .semibold))
                 .frame(width: buttonWidth, height: TransportControlMetrics.height)
                 .foregroundStyle(controller.previewActive ? Color.black : JarasTheme.text)
                 .background(RoundedRectangle(cornerRadius: 5).fill(controller.previewActive ? JarasTheme.green : Color(hex: 0xc44545)))
@@ -514,7 +516,7 @@ struct TeleprompterPreviewButton: View {
             .overlay(TeleprompterRightClick(action: { choosingPage = true }))
             .popover(isPresented: $choosingPage) {
                 VStack(alignment: .leading,spacing: 12) {
-                    Text("Preview").font(.headline)
+                    Text("Preview").font(.jarasHeadline)
                     Picker("Blocks",selection: Binding(get: { controller.previewPage },set: { controller.selectPreviewPage($0) })) {
                         ForEach(0..<6) { page in
                             Text("Blocks \(page * 4 + 1)–\(page * 4 + 4)").tag(page)
@@ -666,9 +668,10 @@ struct TPNoticeAppearance: Codable {
         window.title = JarasLocalization.string("Messages"); window.isReleasedWhenClosed = false
         window.delegate = self
         window.contentMinSize = NSSize(width: 420,height: 360)
-        let host = NSHostingView(rootView: TPNoticeEditor(model: self))
+        let host = NSHostingView(rootView: TPNoticeEditor(model: self).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         window.contentView = host
+        InterfaceScaling.shared.register(window)
         window.center(); window.makeKeyAndOrderFront(nil); panel = window
     }
     func windowWillClose(_ notification: Notification) {
@@ -712,7 +715,7 @@ private struct TPNoticeEditor: View {
                 Text("Global").tag(-1)
                 ForEach(0..<3) { index in Text("Message \(index + 1)").tag(index) }
             }.pickerStyle(.segmented)
-            TextEditor(text: $model.draft).font(.system(size: 18)).onChange(of: model.draft) { value in
+            TextEditor(text: $model.draft).font(.jarasSystem(size: 18)).onChange(of: model.draft) { value in
                 if value.count > 500 { model.draft = String(value.prefix(500)) }
             }
             HStack {

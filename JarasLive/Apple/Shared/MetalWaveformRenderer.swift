@@ -27,6 +27,11 @@ struct MetalWaveformStroke {
     var repeatSpacing: CGFloat? = nil
     var lineWidth: Float = 2
     var itemCornerRadius: Float = 3
+    // Viewport X origin, full item width, fade-in/out lengths in points.
+    var fadeRange: SIMD4<Float> = .zero
+    // Prepared curve bias and S coefficient for each end.
+    var fadeShape: SIMD4<Float> = SIMD4(1, 1, 1, 1)
+    var fadeCenter: Float? = nil
 }
 
 struct MetalWaveformCoordinateSpace: Equatable {
@@ -62,7 +67,7 @@ struct MetalWaveformFrame {
         coordinateSpace == other.coordinateSpace && size == other.size && items == other.items && strokes.count == other.strokes.count && zip(strokes, other.strokes).allSatisfy { a, b in
             a.block === b.block && a.channel == b.channel && a.scale == b.scale && a.translation == b.translation &&
             a.clip == b.clip && a.color == b.color && a.itemRect == b.itemRect && a.firstSeamX == b.firstSeamX &&
-            a.repeatSpacing == b.repeatSpacing && a.lineWidth == b.lineWidth && a.itemCornerRadius == b.itemCornerRadius
+            a.repeatSpacing == b.repeatSpacing && a.lineWidth == b.lineWidth && a.itemCornerRadius == b.itemCornerRadius && a.fadeRange == b.fadeRange && a.fadeShape == b.fadeShape && a.fadeCenter == b.fadeCenter
         }
     }
 }
@@ -710,6 +715,9 @@ final class MetalWaveformEngine {
         var notch: SIMD4<Float>
         var colour: SIMD4<Float>
         var corner: SIMD4<Float>
+        var fadeRange: SIMD4<Float>
+        var fadeShape: SIMD4<Float>
+        var fadeCenterAndSteps: SIMD4<Float>
     }
 
     private struct ItemUniforms {
@@ -808,6 +816,11 @@ final class MetalWaveformEngine {
             }
             let seam = Float(stroke.firstSeamX ?? 0)
             let spacing = Float(stroke.repeatSpacing ?? 0)
+            // Flat/sample-sparse detail blocks need intermediate points for a
+            // nonlinear fade; the immutable audio buffer stays on the GPU.
+            let faded = stroke.fadeRange.z > 0 || stroke.fadeRange.w > 0
+            let detailSteps = faded && !stroke.block.isPeakEnvelope && range.count < 64
+                ? max(1, min(4096, Int(ceil(clip.width / CGFloat(max(1, range.count)) / 0.5)))) : 1
             var uniforms = Uniforms(
                 transform: SIMD4(stroke.scale.x, stroke.scale.y, stroke.translation.x, stroke.translation.y),
                 viewportAndWidth: SIMD4(Float(frame.size.width), Float(frame.size.height), stroke.lineWidth * 0.5, max(1, density)),
@@ -815,14 +828,16 @@ final class MetalWaveformEngine {
                 item: SIMD4(Float(stroke.itemRect.minX), Float(stroke.itemRect.minY), Float(stroke.itemRect.maxX), Float(stroke.itemRect.maxY)),
                 notch: SIMD4(seam, spacing.isFinite && spacing > 0 ? spacing : 0, 4, 5),
                 colour: stroke.color,
-                corner: SIMD4(stroke.itemRect.width < 20 ? 0 : max(0, stroke.itemCornerRadius), stroke.block.isPeakEnvelope ? 1 : 0, Float(stroke.block.channels[stroke.channel].count / 2), Float(range.lowerBound)))
+                corner: SIMD4(stroke.itemRect.width < 20 ? 0 : max(0, stroke.itemCornerRadius), stroke.block.isPeakEnvelope ? 1 : 0, Float(stroke.block.channels[stroke.channel].count / 2), Float(range.lowerBound)),
+                fadeRange: stroke.fadeRange, fadeShape: stroke.fadeShape,
+                fadeCenterAndSteps: SIMD4(stroke.fadeCenter ?? stroke.translation.y, Float(detailSteps), 0, 0))
             let pointsPerInstance = stroke.block.isPeakEnvelope ? 2 : 1
             encoder.setVertexBuffer(source.buffer, offset: stroke.block.isPeakEnvelope ? 0 : range.lowerBound * pointsPerInstance * MemoryLayout<SIMD2<Float>>.stride, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             // One quad per sample segment or min/max interval. Envelopes cover
             // the entire source interval, including a trim inside one bucket.
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: stroke.block.isPeakEnvelope ? 12 : 6, instanceCount: range.count)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: stroke.block.isPeakEnvelope ? 12 : 6, instanceCount: range.count * detailSteps)
             lastEncodedSegmentCount += range.count
             lastEncodedStrokeCount += 1
         }
@@ -946,7 +961,20 @@ final class MetalWaveformEngine {
         float4 notch;
         float4 colour;
         float4 corner;
+        float4 fadeRange;
+        float4 fadeShape;
+        float4 fadeCenterAndSteps;
     };
+    float waveformCurve(float position, float bias, float shape) {
+        float t = saturate(position);
+        float shaped = t + shape * (t * t * (3.0 - 2.0 * t) - t);
+        return shaped / (bias + (1.0 - bias) * shaped);
+    }
+    float waveformFade(float x, constant WaveformUniforms &u) {
+        float elapsed = x - u.fadeRange.x;
+        return (u.fadeRange.z > 0 ? waveformCurve(elapsed / u.fadeRange.z, u.fadeShape.x, u.fadeShape.y) : 1.0)
+             * (u.fadeRange.w > 0 ? waveformCurve((u.fadeRange.y - elapsed) / u.fadeRange.w, u.fadeShape.z, u.fadeShape.w) : 1.0);
+    }
     struct WaveformRaster {
         float4 position [[position]];
         float2 local;
@@ -983,6 +1011,8 @@ final class MetalWaveformEngine {
             bool second = vertexID >= 6;
             float2 edge = second ? mix(extrema, rightEdge, corner.x) : mix(leftEdge, extrema, corner.x);
             float x = mix(a.x, b.x, (corner.x + (second ? 1.0 : 0.0)) * 0.5);
+            float fade = waveformFade(x, u);
+            edge = u.fadeCenterAndSteps.x + (edge - u.fadeCenterAndSteps.x) * fade;
             float centerY = (edge.x + edge.y) * 0.5;
             float halfHeight = max((edge.y - edge.x) * 0.5, 0.5 / u.viewportAndWidth.w);
             float y = corner.y * (halfHeight + 1.0 / u.viewportAndWidth.w);
@@ -995,8 +1025,14 @@ final class MetalWaveformEngine {
             out.peakHalfHeight = halfHeight;
             return out;
         }
-        float2 a = points[segment] * u.transform.xy + u.transform.zw;
-        float2 b = points[segment + 1] * u.transform.xy + u.transform.zw;
+        uint steps = max(1u, uint(u.fadeCenterAndSteps.y));
+        uint source = segment / steps, sub = segment % steps;
+        float2 start = points[source] * u.transform.xy + u.transform.zw;
+        float2 end = points[source + 1] * u.transform.xy + u.transform.zw;
+        float2 a = mix(start, end, float(sub) / float(steps));
+        float2 b = mix(start, end, float(sub + 1) / float(steps));
+        a.y = u.fadeCenterAndSteps.x + (a.y - u.fadeCenterAndSteps.x) * waveformFade(a.x, u);
+        b.y = u.fadeCenterAndSteps.x + (b.y - u.fadeCenterAndSteps.x) * waveformFade(b.x, u);
         float2 delta = b - a;
         float length = metal::length(delta);
         float2 tangent = length > 0.000001 ? delta / length : float2(1, 0);

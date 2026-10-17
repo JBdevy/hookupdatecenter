@@ -1,6 +1,9 @@
 #pragma once
 #include "Common.h"
+#include "TimelineMovementLock.h"
 namespace catlive::timelineGrid {
+// Mac stores a zoom factor from .001 to 8192, at ten points per second.
+inline constexpr double minimumZoom = .01, maximumZoom = 81920.;
 struct Section { double start, end, bpm; int beats, unit; };
 struct Tick { double time; bool primary; String label; };
 inline std::vector<Section> sections(const jaras::Song &song, double end) {
@@ -19,6 +22,56 @@ inline std::vector<Section> sections(const jaras::Song &song, double end) {
     }
     if (end > active.start) { active.end = end; result.push_back(active); }
     return result;
+}
+// ClickTrackProgram.visibleBeats: bounded by the visible pixels, preserving tempo origin.
+inline std::vector<double> clickBeats(const jaras::Song &song,const jaras::AudioClip &clip,double from,double to,double scale) {
+    std::vector<double> result;if(!std::isfinite(scale)||scale<=0)return result;
+    for(const auto &section:sections(song,std::max(song.duration,to))) {
+        const double first=std::max({clip.startTime,from,section.start}),last=std::min({clip.startTime+clip.duration,to,section.end});
+        if(first>=last || section.bpm<=0 || section.unit<=0)continue;
+        const double beat=60./section.bpm*4/section.unit,step=std::max(1.,std::ceil(1/(beat*scale)));
+        double index=std::ceil(std::max(0.,std::ceil((first-section.start)/beat-1e-9))/step)*step;
+        for(;section.start+index*beat<last-1e-9;index+=step)result.push_back(section.start+index*beat);
+    }
+    return result;
+}
+// Match TimelineTempo.snap: visible divisions plus region/marker/cursor anchors.
+inline double snap(double time, const jaras::Song &song, double scale, bool free,
+                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false) {
+    if (!std::isfinite(time) || !std::isfinite(scale) || scale <= 0) return 0;
+    const double position=std::max(0.,time);
+    if (free || !std::isfinite(scale) || scale<=0) return position;
+    auto map=sections(song,std::max(song.duration,position)+1);
+    Section active{0,song.duration,song.bpm,song.beatsPerBar,song.beatUnit};
+    for(const auto &section:map) if(section.start<=position && position<section.end) {active=section;break;}
+    const double bar=60./active.bpm*active.beats*4/active.unit;
+    const int divisions=song.timeSettings?song.timeSettings->divisions:4;
+    double step=0;
+    if(divisions>0 && bar>0) {
+        if(includeHiddenDivisions) step=bar/active.beats*active.unit/divisions;
+        else if(bar*scale>=64) {step=bar/active.beats*active.unit/divisions;step*=std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,step*scale)))));}
+        else step=bar*std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,bar*scale)))));
+    }
+    double nearest=0,distance=position;
+    auto consider=[&](double anchor) {if(!std::isfinite(anchor)||anchor<0)return;const auto d=std::abs(anchor-position);if(d<distance||(d==distance&&anchor<nearest)){nearest=anchor;distance=d;}};
+    if(step>0)consider(std::min(active.end,active.start+std::round((position-active.start)/step)*step));
+    for(const auto &part:song.parts){consider(part.startTime);consider(part.endTime);}
+    if(song.markers)for(const auto &marker:*song.markers)consider(marker.position);
+    if(includeItemEdges) for(const auto &track:song.tracks) for(const auto &clip:track.clips) {
+        consider(clip.startTime);consider(clip.startTime+clip.duration);
+    }
+    if(transport) {
+        consider(transport->editPosition);consider(transport->position);
+        if(transport->subPlay.playing)consider(transport->subPlay.position);
+    }
+    return nearest;
+}
+inline double snapSelection(double time, const jaras::Song &song, double scale,
+                            const jaras::TransportState &transport, bool free) {
+    return snap(time,song,scale,free,false,&transport);
+}
+inline double snapCursor(double time, const jaras::Song &song, double scale, bool free) {
+    return snap(time,song,scale,free,true,nullptr,true);
 }
 inline String label(double time) {
     const auto ms = (int64)std::llround(time * 1000);

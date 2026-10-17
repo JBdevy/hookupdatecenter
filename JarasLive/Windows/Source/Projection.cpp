@@ -1,4 +1,6 @@
+#include "ProjectionSelection.h"
 #include "Projection.h"
+#include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
 Projection::Projection(Session &value, String target, StageState *state)
     : session(value), role(std::move(target)), stage(state),
@@ -22,7 +24,6 @@ Projection::Projection(Session &value, String target, StageState *state)
     fontDown.setVisible(role != "video" && !stage);
     status.setVisible(!stage && role != "video");
     textView.setVisible(!stage);
-    import.onClick = [this] { chooseMedia(); };
     fontUp.onClick = [this] {
         textSize = jlimit(14.f, 120.f, textSize + 4);
         textView.setFont(theme::font(textSize, true));
@@ -32,7 +33,7 @@ Projection::Projection(Session &value, String target, StageState *state)
         textView.setFont(theme::font(textSize, true));
     };
     video.setAudioVolume(0);
-    startTimerHz(20);
+    startTimerHz(role == "video" ? 60 : 20);
 }
 Projection::~Projection() {
     stopTimer();
@@ -44,13 +45,13 @@ void Projection::resized() {
     video.setBounds(content);
     textView.setBounds(content.reduced(22));
     status.setBounds(12, 3, getWidth() - 180, 25);
-    import.setBounds(getWidth() - 86, 3, 74, 26);
     fontUp.setBounds(getWidth() - 110, 3, 45, 26);
     fontDown.setBounds(getWidth() - 58, 3, 45, 26);
 }
 void Projection::paint(Graphics &g) {
     g.fillAll(Colours::black);
     if (image.isValid()) {
+        g.setOpacity(mediaOpacity);
         const auto bounds = mediaBounds();
         const bool stretch = stage && flag(stage->settings(profile), "mediaStretch");
         g.drawImageWithin(image, bounds.getX(), bounds.getY(), bounds.getWidth(),
@@ -110,26 +111,12 @@ bool Projection::keyPressed(const KeyPress &key) {
 void Projection::mouseDown(const MouseEvent &e) {
     grabKeyboardFocus();
     if (!e.mods.isPopupMenu()) return;
-    PopupMenu menu;
-    if (stage) menu.addItem(1, String::fromUTF8("Configurações"));
-    else if (role == "video") {
-        PopupMenu settings;
-        settings.addItem(4, String::fromUTF8("Importar vídeo ou imagem…"));
-        menu.addSubMenu(String::fromUTF8("Configurações"), settings);
-    }
-    menu.addItem(2, presenting ? "Sair da tela cheia" : "Tela cheia");
-    if (stage) menu.addItem(3, "Retirar recado", stage->noticeActive());
-    menu.showMenuAsync(PopupMenu::Options().withTargetComponent(this),
-        [safe = SafePointer<Projection>(this)](int id) {
-            if (!safe) return;
-            if (id == 1 && safe->configure) safe->configure();
-            if (id == 2) safe->toggleFullScreen();
-            if (id == 3 && safe->stage) safe->stage->clearNotice();
-            if (id == 4) safe->chooseMedia();
-        });
+    // Projection windows have no context menu on macOS. Their controls live
+    // on the Video/TP buttons in the workspace.
 }
 void Projection::mouseDoubleClick(const MouseEvent &e) {
     if (!e.mods.isPopupMenu()) toggleFullScreen();
+    else if(role=="video")if(auto *window=findParentComponentOfClass<DocumentWindow>())window->closeButtonPressed();
 }
 void Projection::timerCallback() {
     if (stage) {
@@ -137,14 +124,10 @@ void Projection::timerCallback() {
         repaint();
     }
     const jaras::AudioClip *clip = nullptr;
-    auto at = session.transport().position;
-    if (auto *song = session.song())
-        for (auto &track : song->tracks)
-            if (text(track.role.id) == role && !track.mute)
-                for (auto &item : track.clips)
-                    if (at >= item.startTime && at < item.startTime + item.duration && !item.muted)
-                        clip = &item;
+    auto at = session.transport().playing || session.transport().paused ? session.transport().position : session.transport().editPosition;
+    if (auto *song = session.song()) clip = firstProjectionItem(*song,at,role);
     if (!clip) {
+        videoFade.hide();
         video.stop();
         video.setVisible(false);
         textView.setVisible(false);
@@ -159,6 +142,8 @@ void Projection::timerCallback() {
                        dontSendNotification);
         return;
     }
+    const auto opacity = (float)jaras::itemFadeGain(*clip, at);
+    if (opacity != mediaOpacity) { mediaOpacity = opacity; repaint(); }
     if (clip->id != clipID || (clip->text && text(*clip->text) != lyrics)) {
         clipID = clip->id;
         itemStart = clip->startTime;
@@ -212,31 +197,8 @@ void Projection::timerCallback() {
             video.stop();
     }
     status.setText(text(clip->name) + "  " + clockText(at, true), dontSendNotification);
+    videoFade.update(video,mediaOpacity);
 }
-void Projection::chooseMedia() {
-    chooser = std::make_unique<FileChooser>(
-        "Video / image", File::getSpecialLocation(File::userDocumentsDirectory),
-        "*.mp4;*.mov;*.avi;*.mkv;*.wmv;*.png;*.jpg;*.jpeg", true);
-    chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                         [safe = Component::SafePointer<Projection>(this)](const FileChooser &fc) {
-                             if (!safe || fc.getResult() == File())
-                                 return;
-                             try {
-                                 auto file = fc.getResult();
-                                 double duration = 30;
-                                 if (!file.hasFileExtension("png;jpg;jpeg;bmp;gif")) {
-                                     auto result = safe->video.load(file);
-                                     if (result.failed())
-                                         throw std::runtime_error(utf8(result.getErrorMessage()));
-                                     duration = safe->video.getVideoDuration();
-                                     safe->video.closeVideo();
-                                 }
-                                 safe->session.importVideo(file, duration);
-                             } catch (const std::exception &e) {
-                                 if (safe->error)
-                                     safe->error(String::fromUTF8(e.what()));
-                             }
-                         });
-}
+
 } // namespace catlive
 #include "ProjectionStage.h"

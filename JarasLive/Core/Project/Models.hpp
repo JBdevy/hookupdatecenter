@@ -23,6 +23,7 @@ struct Project {
     bool masterMute = false, masterSolo = false, masterMono = false;
     std::optional<bool> masterPhaseInverted;
     std::optional<unsigned> masterColor;
+    std::optional<bool> timelineMovementLocked;
 };
 // Control-thread validation; never called from an audio callback.
 void validateRegionSetlist(const Project& project, const RegionSetlist& state);

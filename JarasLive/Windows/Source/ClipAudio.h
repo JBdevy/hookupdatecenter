@@ -1,5 +1,6 @@
 #pragma once
 #include "RegionPitch.h"
+#include "ClipTempo.h"
 #include "../ThirdParty/Signalsmith/signalsmith-stretch.h"
 namespace catlive {
 // Streaming clip pitch/rate/loop processing. Input lookahead removes the spectral
@@ -11,9 +12,13 @@ class ClipAudio {
     void configure(const jaras::Song &song, const jaras::Track &track,
                    const jaras::AudioClip &clip, double rate) {
         offset = clip.sourceOffset; speed = clip.playbackRate; duration = clip.duration;
+        start = clip.startTime;
+        timing.emplace(clip, &song);
         loopStart = clip.loopStart.value_or(0); loopLength = clip.loopLength.value_or(0);
         segments.clear();
         std::vector<double> bounds{0, duration};
+        for (const auto &span : timing->spans)
+            if (span.start > start) bounds.push_back(span.start - start);
         for (const auto &part : song.parts) {
             for (double edge : {part.startTime, part.endTime})
                 if (edge > clip.startTime && edge < clip.startTime + duration)
@@ -28,7 +33,8 @@ class ClipAudio {
                     : regionPitch::value(song, track,
                                          clip.startTime + (bounds[i] + bounds[i + 1]) * .5);
             segments.push_back({bounds[i], bounds[i + 1],
-                                clip.pitchSemitones.value_or(0) + region - 12 * std::log2(speed)});
+                                clip.pitchSemitones.value_or(0) + region -
+                                12 * std::log2(timing->at(start + bounds[i])->rate)});
         }
         prepare(rate);
     }
@@ -37,6 +43,9 @@ class ClipAudio {
         if (clip.loopLength.value_or(0) > 0 || std::abs(clip.playbackRate - 1) > 1e-9 ||
             clip.pitchSemitones.value_or(0) != 0)
             return true;
+        const ClipTempo timing(clip, &song);
+        for (const auto &span : timing.spans)
+            if (std::abs(span.rate - 1) > 1e-9) return true;
         if (!clip.frozenMIDI.value_or(false) && !clip.renderedTiming.value_or(false))
             for (const auto &part : song.parts)
                 if (part.pitchSemitones.value_or(0) != 0 && part.endTime > clip.startTime &&
@@ -64,9 +73,19 @@ class ClipAudio {
         preparedPitchRate = rate;
     }
     double sourcePosition(double local) const {
-        const double source = offset + std::max(0., local) * speed;
+        const double source = timing ? timing->sourceAt(start + std::max(0., local))
+                                     : offset + std::max(0., local) * speed;
         return loopLength > 0 && source >= loopStart
             ? loopStart + std::fmod(source - loopStart, loopLength) : source;
+    }
+    std::pair<double, double> readAheadRange(double local, double seconds) const {
+        const auto begin = sourcePosition(local);
+        const auto end = sourcePosition(std::min(duration, local + seconds));
+        // A short source loop may wrap inside the first device block. Priming
+        // only the final sample makes BufferingAudioReader discard its start.
+        if (loopLength > 0 && (end < begin || loopLength <= seconds * speed))
+            return {loopStart, loopStart + loopLength};
+        return {begin, std::max(begin, end)};
     }
     bool render(AudioFormatReader &reader, AudioBuffer<float> &scratch, AudioBuffer<float> &output,
                 int headIndex, double local, int count) {
@@ -121,28 +140,32 @@ class ClipAudio {
     };
     std::array<Head, 2> heads;
     std::vector<Segment> segments;
-    double offset = 0, speed = 1, duration = 0, loopStart = 0, loopLength = 0,
+    std::optional<ClipTempo> timing;
+    double start = 0, offset = 0, speed = 1, duration = 0, loopStart = 0, loopLength = 0,
            sampleRate = 48000, preparedPitchRate = 0;
     bool read(AudioFormatReader &reader, AudioBuffer<float> &scratch, AudioBuffer<float> &output,
               int target, double local, int count) {
         bool ok = true;
         int done = 0;
-        const double step = reader.sampleRate / sampleRate * speed;
         while (done < count) {
             const double now = local + done / sampleRate;
             if (now >= duration) {
                 output.clear(target + done, count - done);
                 break;
             }
+            const auto *span = timing ? timing->at(start + now) : nullptr;
+            const double rate = span ? span->rate : speed;
+            const double step = reader.sampleRate / sampleRate * rate;
+            const double boundary = span ? std::min(duration, span->end - start) : duration;
             int frames = std::min(
                 {512, count - done, std::max(1, (int)((scratch.getNumSamples() - 2) / step)),
-                 std::max(1, (int)std::ceil((duration - now) * sampleRate - 1e-7))});
-            double source = offset + now * speed;
+                 std::max(1, (int)std::ceil((boundary - now) * sampleRate - 1e-7))});
+            double source = timing ? timing->sourceAt(start + now) : offset + now * speed;
             if (loopLength > 0 && source >= loopStart) {
                 source = loopStart + std::fmod(source - loopStart, loopLength);
                 frames =
                     std::min(frames, std::max(1, (int)std::ceil((loopStart + loopLength - source) /
-                                                                    speed * sampleRate -
+                                                                    rate * sampleRate -
                                                                 1e-7)));
             }
             const double frame = source * reader.sampleRate;

@@ -15,7 +15,7 @@ if (yaml) {
     assert.deepEqual(data.jobs.compatibility.needs, ['windows', 'macos-pkg']);
     assert.deepEqual(data.jobs.release.needs, ['windows', 'macos-pkg', 'compatibility']);
     const publication = data.jobs.release.steps.find(step => step.uses?.startsWith('softprops/action-gh-release@'));
-    for (const extension of ['.pkg', '.exe', '.zip']) assert(publication.with.files.includes(extension));
+    for (const extension of ['.pkg', '.exe', '.pkg.sha256', '.exe.sha256']) assert(publication.with.files.includes(extension));
     assert.equal(publication.with.target_commitish, '${{ github.sha }}');
     const tests = data.jobs['macos-pkg'].steps.find(step => step.name === 'Validate project and transport regressions');
     assert(tests.env.CATLIVE_COMPATIBILITY_INPUT && tests.env.CATLIVE_COMPATIBILITY_OUTPUT);

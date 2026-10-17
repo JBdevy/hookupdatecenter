@@ -7,7 +7,7 @@ struct EQRTAOverlay: View {
     let target: UUID?
     var effect = "EQ"
     @StateObject private var display = EQSpectrumDisplay()
-    private let clock = Timer.publish(every: 1.0 / 20, on: .main, in: .common).autoconnect()
+    @State private var clock = Timer.publish(every: 1.0 / 20, on: .main, in: .common).autoconnect()
 
     var body: some View {
         EQRTAPlot(levels: EQSpectrumVector(display.spectrum))
@@ -33,7 +33,7 @@ private struct EQRTAPlot: View, Animatable {
                 context.stroke(output, with: .color(JarasTheme.green.opacity(0.75)), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
             }
             if let input { context.stroke(input, with: .color(.white.opacity(0.38)), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round)) }
-            context.draw(Text("RTA  INPUT / OUTPUT").font(.system(size: 8, weight: .medium, design: .monospaced)).foregroundColor(.white.opacity(0.5)),
+            context.draw(Text("RTA  INPUT / OUTPUT").font(.jarasSystem(size: 8, weight: .medium, design: .monospaced)).foregroundColor(.white.opacity(0.5)),
                          at: CGPoint(x: size.width - 8, y: 10), anchor: .trailing)
         }.allowsHitTesting(false)
     }

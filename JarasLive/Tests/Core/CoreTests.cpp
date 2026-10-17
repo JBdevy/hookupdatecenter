@@ -676,7 +676,7 @@ int main() {
         bool invalidBypassLoad = false; try { validate(invalidSpecialBypass); } catch (...) { invalidBypassLoad = true; }
         expect(invalidBypassLoad, "special clip bypass flags are rejected on load, including explicit false");
     }
-    for (const auto* badFX : {R"({"inserted":["Instruments"]})", R"({"inserted":["Unknown"]})", R"({"inserted":["EQ","EQ"]})", R"({"inserted":[],"instrumentID":"Piano"})", R"({"inserted":[],"instrumentBypassed":true})", "[]", "{"}) {
+    for (const auto* badFX : {R"({"inserted":["Instruments"]})", R"({"inserted":["Unknown"]})", R"({"inserted":["Native:missing"]})", R"({"inserted":["Native:"],"instances":[]})", R"({"inserted":["EQ","EQ"]})", R"({"inserted":[],"instrumentID":"Piano"})", R"({"inserted":[],"instrumentBypassed":true})", "[]", "{"}) {
         bool rejected = false; try { itemEffects.setClipFX("clip", badFX); } catch (...) { rejected = true; }
         expect(rejected && itemEffects.project().songs[0].tracks[0].clips[0].fxJSON == itemFXJSON, "invalid item FX is atomic");
     }
@@ -686,6 +686,11 @@ int main() {
     auto externalItemProject = itemEffects.project();
     externalItemProject.songs[0].tracks[0].clips[0].fxJSON = R"({"inserted":["Limiter","External:take-gain"],"externalPlugins":[{"id":"take-gain","classID":"01234567890123456789012345678901","name":"Instruments","path":"/tmp/GainFixture.vst3"}]})";
     validate(externalItemProject);
+    auto repeatedNativeProject = itemEffects.project();
+    repeatedNativeProject.songs[0].tracks[0].clips[0].fxJSON = R"({"inserted":["EQ","Native:second-eq"],"instances":[{"id":"second-eq","effect":"EQ","settings":{"eqEnabled":true}}]})";
+    validate(repeatedNativeProject);
+    expect(repeatedNativeProject.songs[0].tracks[0].clips[0].fxJSON->find("Native:second-eq") != std::string::npos,
+           "additional native item processors remain valid when duplicating a complete track");
     expect(externalItemProject.songs[0].tracks[0].clips[0].fxJSON->find("External:take-gain") != std::string::npos, "take VST3 FX and Limiter remain valid item processors");
     auto invalidItemFX = itemEffects.project(); invalidItemFX.songs[0].tracks[0].clips[0].fxJSON = R"({"inserted":["Instruments"]})";
     bool invalidItemFXLoad = false; try { validate(invalidItemFX); } catch (...) { invalidItemFXLoad = true; }

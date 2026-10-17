@@ -17,6 +17,21 @@ import XCTest
 }
 
 final class GridItemClipboardTests: XCTestCase {
+    @MainActor func testDuplicateAppendsAfterSelectionAndKeepsClipboard() throws {
+        let executor = ClipboardExecutor(), project = fixture()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let first = project.songs[0].tracks[0].clips[0], second = project.songs[0].tracks[1].clips[0]
+        XCTAssertTrue(show.copyItems([first.id]))
+        let duplicated = show.duplicateItems([first.id, second.id])
+        XCTAssertEqual(duplicated.count, 2)
+        let items = try XCTUnwrap(show.current).tracks.flatMap(\.clips).filter { duplicated.contains($0.id) }
+        XCTAssertEqual(items.map(\.startTime), [25,35])
+        var expected = first; expected.id = items[0].id; expected.startTime = 25
+        XCTAssertEqual(items[0], expected)
+        let pasted = show.pasteItems()
+        XCTAssertEqual(pasted.count, 1, "Duplicate must preserve the previous clipboard")
+        XCTAssertEqual(show.current?.tracks[0].clips.last?.startTime, 100)
+    }
     private func fixture() -> Project {
         var project = Project.empty(name: "Clipboard")
         var fx = NativeFXSettings(); fx.inserted = ["EQ", "Compressor"]; fx.eqEnabled = true; fx.bands[1].gain = 5

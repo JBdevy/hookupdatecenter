@@ -192,7 +192,7 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
             if (!stream->openedOk())
                 throw std::runtime_error("Não foi possível abrir o arquivo de saída.");
             WavAudioFormat wav;
-            AiffAudioFormat aiff;
+            RecordingAiffFormat aiff;
             AudioFormat *format = encoding.format == "WAV"    ? static_cast<AudioFormat *>(&wav)
                                   : encoding.format == "AIFF" ? static_cast<AudioFormat *>(&aiff)
                                                               : nullptr;

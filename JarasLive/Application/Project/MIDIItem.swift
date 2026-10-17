@@ -119,6 +119,8 @@ public extension AudioClip {
                 let start = max(startTime, startTime + (rawStart - sourceOffset) / rate)
                 let end = min(startTime + duration, startTime + (rawEnd - sourceOffset) / rate)
                 if end > start {
+                    let fadedVelocity = min(127, max(0, (Double(note.velocity) * (gain ?? 1) * fadeGain(at: start)).rounded()))
+                    guard fadedVelocity > 0 else { continue }
                     // Each repetition must retrigger; only pieces of the same
                     // held note across tempo boundaries share an identity.
                     var identifier = note.id.uuid
@@ -130,7 +132,7 @@ public extension AudioClip {
                     result.append(MIDIPlaybackNote(sourceID: UUID(uuid: identifier), start: start, end: end, pitch: note.pitch,
                         // Saturate in floating point before converting: a valid
                         // finite item gain can exceed Int.max when multiplied.
-                        velocity: Int(min(127, max(1, (Double(note.velocity) * (gain ?? 1)).rounded()))), channel: note.channel))
+                        velocity: Int(fadedVelocity), channel: note.channel))
                 }
             }
         }
@@ -141,7 +143,7 @@ public extension AudioClip {
     /// audibility filters; the source item's saved state remains unchanged.
     func midiDisplayNotes() -> [MIDIPlaybackNote] {
         var visible = self
-        visible.muted = false; visible.gain = 1
+        visible.muted = false; visible.gain = 1; visible.fadeIn = nil; visible.fadeOut = nil
         return visible.midiPlaybackNotes()
     }
 }
@@ -152,6 +154,7 @@ public extension Song {
         var source = clip.sourceOffset
         for var segment in tempoAudioSegments(clip) {
             segment.sourceOffset = source
+            segment.fadeIn = nil; segment.fadeOut = nil
             source += segment.duration * segment.audioRate
             for note in segment.midiPlaybackNotes() {
                 if let index = last[note.sourceID], abs(result[index].end - note.start) < 0.000001 {
@@ -159,7 +162,11 @@ public extension Song {
                 } else { last[note.sourceID] = result.count; result.append(note) }
             }
         }
-        return result.sorted { $0.start < $1.start }
+        return result.compactMap { note -> MIDIPlaybackNote? in
+            var faded = note
+            faded.velocity = Int((Double(note.velocity) * clip.fadeGain(at: note.start)).rounded())
+            return faded.velocity > 0 ? faded : nil
+        }.sorted { $0.start < $1.start }
     }
 }
 

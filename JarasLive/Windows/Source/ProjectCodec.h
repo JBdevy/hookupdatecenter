@@ -10,6 +10,6 @@ class ProjectCodec {
     static void write(const File &, const var &);
     static MemoryBlock seal(const String &);
     static String unseal(const MemoryBlock &);
-    static File resolveMedia(const File &directory, const std::string &relative);
+    static File resolveMedia(const File &directory, const std::string &relative, bool resolveExisting = true);
 };
 } // namespace catlive

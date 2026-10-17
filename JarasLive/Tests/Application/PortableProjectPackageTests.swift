@@ -3,6 +3,68 @@ import Darwin
 @testable import JarasApplication
 
 final class PortableProjectPackageTests: XCTestCase {
+    /// Opt-in desktop exchange test: the same folder is transferred between the
+    /// Mac test runner and the Windows self-test; no user project is modified.
+    func testDesktopInterchange() throws {
+        guard let path = ProcessInfo.processInfo.environment["CATLIVE_INTERCHANGE"] else {
+            throw XCTSkip("Set CATLIVE_INTERCHANGE to the shared desktop test directory")
+        }
+        let exchange = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: exchange, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["CATLIVE_INTERCHANGE_RETURN"] == "1" {
+            for name in ["Windows", "Windows64", "Mac-Windows"] {
+                let before = try ProjectDocumentCodec.decode(Data(contentsOf: exchange.appendingPathComponent(name + "-Mac.jl")))
+                let after = try ProjectDocumentCodec.decode(Data(contentsOf: exchange.appendingPathComponent(name + "-Mac-Windows.jl")))
+                XCTAssertEqual(after, before, "Windows-created project changed after Mac save and Windows reopen")
+            }
+            return
+        }
+        let audio = Data((0..<600_000).map { UInt8($0 % 251) })
+        try write("Stems/Órgão.wav", audio)
+        try write("Videos/Telão.mp4", Data("video fixture".utf8))
+        var source = project(["Stems/Órgão.wav", "Videos/Telão.mp4"])
+        source.name = "São João — Intercâmbio"
+        let plugin = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "Kontakt fixture", path: "/Library/Fixture.vst3")
+        var fx = NativeFXSettings(); fx.inserted = ["EQ", plugin.effectKey, NativeFXSettings.stemSeparator]
+        fx.externalPlugins = [plugin]; fx.eqEnabled = true; fx.bands[2].gain = 5
+        source.masterFX = fx; source.songs[0].tracks[0].fx = fx
+        source.songs[0].tracks[0].clips[0].fadeIn = 0.2
+        source.songs[0].tracks[0].clips[0].fadeOut = 0.3
+        if ProcessInfo.processInfo.environment["CATLIVE_INTERCHANGE_VERIFY"] != "1" {
+            try ProjectDocumentCodec.encode(source).write(to: exchange.appendingPathComponent("Mac.jl"))
+            _ = try PortableProjectPackage.exportSynchronously(project: source, directory: directory, to: exchange.appendingPathComponent("Mac.ziplive"), instruments: [:], limits: .init(), progress: { _ in })
+            if let real = ProcessInfo.processInfo.environment["CATLIVE_INTERCHANGE_REAL"] {
+                let document = try Data(contentsOf: URL(fileURLWithPath: real))
+                _ = try ProjectDocumentCodec.decode(document)
+                try document.write(to: exchange.appendingPathComponent("Real-Mac.jl"))
+            }
+            return
+        }
+        for name in ["Windows", "Windows64", "Mac-Windows"] {
+            let imported = try read(exchange.appendingPathComponent(name + ".ziplive"))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: imported.documentURL.path))
+            XCTAssertTrue(PortableProjectPackage.removedExternalPlugins(in: imported.project).isEmpty)
+            for path in imported.project.mediaPaths {
+                let file = imported.documentURL.deletingLastPathComponent().appendingPathComponent(path)
+                XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+                if name == "Mac-Windows", path.hasSuffix(".wav") { XCTAssertEqual(try Data(contentsOf: file), audio) }
+            }
+            if name == "Mac-Windows" {
+                let original = try ProjectDocumentCodec.decode(Data(contentsOf: exchange.appendingPathComponent("Mac.jl")))
+                XCTAssertEqual(imported.project, PortableProjectPackage.portableCopy(original))
+            }
+            try ProjectDocumentCodec.encode(imported.project).write(to: exchange.appendingPathComponent(name + "-Mac.jl"))
+        }
+        for name in ["Mac", "Real-Mac"] {
+            let before = try ProjectDocumentCodec.decode(Data(contentsOf: exchange.appendingPathComponent(name + ".jl")))
+            let after = try ProjectDocumentCodec.decode(Data(contentsOf: exchange.appendingPathComponent(name + "-Windows.jl")))
+            try JSONEncoder().encode(before).write(to: exchange.appendingPathComponent(name + "-before.json"))
+            try JSONEncoder().encode(after).write(to: exchange.appendingPathComponent(name + "-after.json"))
+            XCTAssertTrue(after == before, "Windows round trip changed \(name); inspect before/after JSON")
+            try ProjectDocumentCodec.encode(after).write(to: exchange.appendingPathComponent(name + "-Windows-Mac.jl"))
+        }
+    }
+
     func testLargePackageImportKeepsTemporaryReadBuffersBounded() throws {
         let source = try write("Stems/large.wav", Data())
         let output = try FileHandle(forWritingTo: source)

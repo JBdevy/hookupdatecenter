@@ -14,6 +14,51 @@ import UniformTypeIdentifiers
     }
 }
 
+private struct TrackFXButton: View {
+    let show: ShowController
+    let track: UUID?
+    let settings: NativeFXSettings
+    var opensChain = false
+    @Environment(\.openFX) private var openFX
+    var body: some View {
+        Button("FX") { openFX(track, opensChain ? "Chain" : settings.effectKeys.first ?? "Chain") }
+            .foregroundStyle(settings.inserted.isEmpty ? JarasTheme.text : settings.allBypassed ? Color.red : JarasTheme.green)
+            #if os(macOS)
+            .overlay {
+                if !settings.inserted.isEmpty {
+                    TrackFXContext(bypassed: settings.allBypassed,
+                        bypass: { show.changeMixerFX(track) }, remove: { show.changeMixerFX(track, remove: true) })
+                }
+            }
+            #endif
+    }
+}
+
+#if os(macOS)
+private struct TrackFXContext: NSViewRepresentable {
+    let bypassed: Bool
+    let bypass: () -> Void
+    let remove: () -> Void
+    func makeNSView(context: Context) -> TrackFXContextView { TrackFXContextView() }
+    func updateNSView(_ view: TrackFXContextView, context: Context) {
+        view.bypassed = bypassed; view.shiftClick = bypass; view.optionClick = remove
+        view.action = { [weak view] in view?.openMenu() }
+    }
+}
+private final class TrackFXContextView: RightClickTargetView {
+    override var priority: Int { 2 }
+    var bypassed = false
+    func openMenu() {
+        guard let event = NSApp.currentEvent else { return }
+        let menu = NSMenu()
+        let action = TrackMenuAction { [weak self] in self?.shiftClick?() }
+        let item = NSMenuItem(title: "Bypass", action: #selector(TrackMenuAction.invoke), keyEquivalent: "")
+        item.state = bypassed ? .on : .off; item.target = action; menu.addItem(item)
+        withExtendedLifetime(action) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+    }
+}
+#endif
+
 private struct TrackEnvelopeButton: View {
     let show: ShowController
     let track: UUID
@@ -21,7 +66,7 @@ private struct TrackEnvelopeButton: View {
     var body: some View {
         Button("Env") {
             show.toggleAutomationLanes(track)
-        }.buttonStyle(CompactTrackButtonStyle(activeColor: visible ? JarasTheme.green : .red, width: 28))
+        }.buttonStyle(CompactTrackButtonStyle(activeColor: visible ? JarasTheme.green : JarasTheme.yellow, width: 28))
             .jarasHelp("Envelopes")
             .contextMenu {
                 #if os(macOS)
@@ -45,7 +90,7 @@ struct TrackAutomationLaneHeaders: View {
         VStack(spacing: 0) {
             ForEach(track.automation?.visibleEnvelopes ?? []) { envelope in
                 HStack(spacing: 5) {
-                    Text(verbatim: envelope.name).font(.system(size: min(11, max(7, height - 4)), weight: .medium)).lineLimit(1)
+                    Text(verbatim: envelope.name).font(.jarasSystem(size: min(11, max(7, height - 4)), weight: .medium)).lineLimit(1)
                     Spacer(minLength: 0)
                     Button { edit(envelope.id) { $0.enabled.toggle() } } label: {
                         Image(systemName: "power").foregroundStyle(envelope.enabled ? JarasTheme.green : .red)
@@ -63,13 +108,18 @@ struct TrackAutomationLaneHeaders: View {
                     Button { edit(envelope.id) { $0.visible = false } } label: {
                         Image(systemName: "xmark").frame(width: 16, height: min(18, height)).contentShape(Rectangle())
                     }.buttonStyle(.plain).jarasHelp("Hide envelope")
-                }.font(.system(size: min(11, max(7, height - 4))))
+                }.font(.jarasSystem(size: min(11, max(7, height - 4))))
                     .padding(.horizontal, 8).frame(height: height).clipped()
                     .background(Color.black.opacity(0.22))
                     .overlay(alignment: .bottom) { Color.gray.opacity(0.3).frame(height: 1) }
             }
         }.foregroundStyle(.white)
     }
+}
+
+private func trackShowsMuteSolo(_ kind: TrackKind?) -> Bool {
+    guard let kind else { return true } // Master
+    return kind == .standard || kind == .timecode || kind == .click
 }
 
 private func trackShowsMeterReadouts(_ kind: TrackKind?) -> Bool {
@@ -618,6 +668,14 @@ struct TrackMixerRow: View, Equatable {
     private var deletionTargets: Set<UUID> {
         trackSelection.contains(track.id) ? trackSelection : [track.id]
     }
+    private var duplicateSelection: (() -> Void)? {
+        guard track.kind == .standard else { return nil }
+        let project = projectID, song = show.current?.id, ids = deletionTargets
+        return {
+            guard show.snapshot.project.id == project, show.current?.id == song else { return }
+            show.duplicateTracks(ids)
+        }
+    }
     private var deleteSelection: (() -> Void)? {
         guard let deleteTracks else { return nil }
         let project = projectID, ids = deletionTargets
@@ -663,12 +721,12 @@ struct TrackMixerRow: View, Equatable {
                         TrackDragTitle(title: title, foreground: titleColor, project: project, track: track.id, state: dragState, select: select)
                             .frame(maxWidth: .infinity).frame(height: 21)
                     } else {
-                        Text(title).font(.system(size: 11, weight: .semibold))
+                        Text(title).font(.jarasSystem(size: 11, weight: .semibold))
                             .foregroundStyle(Color(hex: titleColor)).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     #else
-                    Text(title).font(.system(size: 11, weight: .semibold))
+                    Text(title).font(.jarasSystem(size: 11, weight: .semibold))
                         .foregroundStyle(Color(hex: titleColor)).lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     #endif
@@ -677,21 +735,21 @@ struct TrackMixerRow: View, Equatable {
                             Button("Patch") { patchTarget = editorTarget(project: project) }
                                 .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
                             TrackEnvelopeButton(show: show, track: track.id, visible: !(track.automation?.visibleEnvelopes.isEmpty ?? true))
-                            Button("FX") {
-                                openFX(track.id, track.fx?.effectKeys.first ?? "Chain")
-                            }.foregroundStyle(track.fx?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text)
+                            TrackFXButton(show: show, track: track.id, settings: track.fx ?? NativeFXSettings())
                                 .buttonStyle(CompactTrackButtonStyle()).jarasHelp("Insert effect")
                             TrackRecordButton(show: show, track: track).buttonStyle(CompactTrackButtonStyle())
                         } else if track.kind == .click {
                             Button("Insert") { show.insertClickItems(track: track.id) }
                                 .buttonStyle(CompactTrackButtonStyle(width: 47)).fixedSize(horizontal: true, vertical: false)
                         }
-                        Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }
-                            .modifier(MappingRightClick(track: track.id, command: "mute"))
-                            .buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
-                        Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }
-                            .modifier(MappingRightClick(track: track.id, command: "solo"))
-                            .buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
+                        if trackShowsMuteSolo(track.kind) {
+                            Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }
+                                .modifier(MappingRightClick(track: track.id, command: "mute"))
+                                .buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
+                            Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }
+                                .modifier(MappingRightClick(track: track.id, command: "solo"))
+                                .buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
+                        }
                     }.trackControlSelectionExclusion()
                 }.padding(.horizontal, 4)
             } else {
@@ -705,7 +763,7 @@ struct TrackMixerRow: View, Equatable {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 4) {
                     if track.kind != .standard && track.kind != .video && track.kind != .timecode && track.kind != .click {
-                        Text(title).font(.system(size: 11, weight: .semibold))
+                        Text(title).font(.jarasSystem(size: 11, weight: .semibold))
                             .foregroundStyle(Color(hex: titleColor))
                             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     } else {
@@ -718,9 +776,7 @@ struct TrackMixerRow: View, Equatable {
                         Button("Patch") { patchTarget = editorTarget(project: project) }
                             .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
                         TrackEnvelopeButton(show: show, track: track.id, visible: !(track.automation?.visibleEnvelopes.isEmpty ?? true))
-                        Button("FX") {
-                            openFX(track.id, track.fx?.effectKeys.first ?? "Chain")
-                        }.foregroundStyle(track.fx?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text).jarasHelp("Insert effect")
+                        TrackFXButton(show: show, track: track.id, settings: track.fx ?? NativeFXSettings()).jarasHelp("Insert effect")
                     }
                     TrackRecordButton(show: show, track: track).buttonStyle(CompactTrackButtonStyle())
                     TrackPanFader(show: show, track: track.id, pan: track.pan, compact: compactHeight).frame(width: 42, height: compactHeight ? 21 : 24)
@@ -742,6 +798,7 @@ struct TrackMixerRow: View, Equatable {
                             }
                         }.buttonStyle(TrackControlButtonStyle()).fixedSize(horizontal: true, vertical: false)
                         Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
+                        Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                     } else if track.kind == .video {
                         Button("Add media", action: importVideo).buttonStyle(TrackControlButtonStyle())
                         Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }.buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
@@ -761,7 +818,7 @@ struct TrackMixerRow: View, Equatable {
                 }
                 HStack(spacing: 3) {
                     if showsFader && (track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click) {
-                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true)
+                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click)
                             .trackControlSelectionExclusion()
                     }
                 }.buttonStyle(TrackControlButtonStyle()).frame(height: track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click ? 20 : 4)
@@ -771,9 +828,9 @@ struct TrackMixerRow: View, Equatable {
                         if track.kind == .standard {
                         TrackDragTitle(title: title, foreground: titleColor, project: project, track: track.id, state: dragState, select: select)
                             .frame(maxWidth: .infinity).frame(height: compactHeight ? 14 : 16)
-                        } else { Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color(hex: titleColor)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading) }
+                        } else { Text(title).font(.jarasSystem(size: 11, weight: .semibold)).foregroundStyle(Color(hex: titleColor)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading) }
                         #else
-                        Text(title).font(.system(size: 11, weight: .semibold)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                        Text(title).font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                             .foregroundStyle(Color(hex: titleColor))
                             .contentShape(Rectangle()).onDrag { dragState.begin(track: track.id); select(); return TrackReorderState.provider(track.id) }
                         #endif
@@ -802,13 +859,16 @@ struct TrackMixerRow: View, Equatable {
                 let range = TimelineAreaSelection.shared.range
                 let valid = range?.song == show.current?.id
                 if let id = show.addMIDIItem(track: track.id, start: valid ? range?.start : nil, duration: valid ? range.map { $0.end - $0.start } : nil) { MIDIEditorWindows.shared.open(show: show, item: id) }
-            } : nil, deleteTracks: deleteSelection, deleteTrackCount: deletionTargets.count))
+            } : nil, duplicateTracks: duplicateSelection, deleteTracks: deleteSelection, deleteTrackCount: deletionTargets.count))
             #else
             .onTapGesture(perform: select)
             .contextMenu {
                 Button("Patch") { patchTarget = editorTarget(project: project) }
                 if track.kind == .standard { Button("FX") { fxTarget = editorTarget(project: project) } }
                 Button("Editar pista") { editTrackDetails(details) }
+                if let duplicateSelection {
+                    Button(LocalizedStringKey(deletionTargets.count > 1 ? "Duplicate tracks" : "Duplicate track"), action: duplicateSelection)
+                }
                 if canLink { Button("Link tracks") { linkSelectedTracks() } }
                 if track.parentTrackID != nil { Button("Remove from group") { show.removeTrackFromGroup(track.id) } }
                 if track.stereoLink != nil { Button("Unlink tracks") { show.unlinkTracks(track.id) } }
@@ -870,7 +930,7 @@ struct TrackMixerRow: View, Equatable {
                     if track.kind == .standard {
                         TrackDragTitle(title: title, foreground: color, project: project, track: track.id, state: dragState, select: select)
                     } else {
-                        Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(Color(hex: color))
+                        Text(title).font(.jarasSystem(size: 11, weight: .semibold)).foregroundStyle(Color(hex: color))
                             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -882,8 +942,7 @@ struct TrackMixerRow: View, Equatable {
                             .frame(width: 34).jarasPlaced(at: 0)
                         TrackEnvelopeButton(show: show, track: track.id, visible: !(track.automation?.visibleEnvelopes.isEmpty ?? true))
                             .frame(width: 28).jarasPlaced(at: 1)
-                        Button("FX") { openFX(track.id, track.fx?.effectKeys.first ?? "Chain") }
-                            .foregroundStyle(track.fx?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text).jarasHelp("Insert effect")
+                        TrackFXButton(show: show, track: track.id, settings: track.fx ?? NativeFXSettings()).jarasHelp("Insert effect")
                             .frame(width: 22).jarasPlaced(at: 2)
                         TrackRecordButton(show: show, track: track).jarasPlaced(at: 3)
                         TrackPanFader(show: show, track: track.id, pan: track.pan)
@@ -910,19 +969,21 @@ struct TrackMixerRow: View, Equatable {
                         }.buttonStyle(TrackControlButtonStyle())
                             .fixedSize()
                     }
-                    Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }
-                        .modifier(MappingRightClick(track: track.id, command: "mute"))
-                        .buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
-                        .frame(width: 22).jarasPlaced(at: 5)
-                    Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }
-                        .modifier(MappingRightClick(track: track.id, command: "solo"))
-                        .buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
-                        .frame(width: 22).jarasPlaced(at: 6)
+                    if trackShowsMuteSolo(track.kind) {
+                        Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }
+                            .modifier(MappingRightClick(track: track.id, command: "mute"))
+                            .buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
+                            .frame(width: 22).jarasPlaced(at: 5)
+                        Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }
+                            .modifier(MappingRightClick(track: track.id, command: "solo"))
+                            .buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
+                            .frame(width: 22).jarasPlaced(at: 6)
+                    }
                 }.buttonStyle(CompactTrackButtonStyle()).trackControlSelectionExclusion().clipped()
                     .modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
                 Group {
                     if showsFader && lowerTitle {
-                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true)
+                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click)
                             .trackControlSelectionExclusion()
                     } else { Color.clear }
                 }.clipped().jarasPlaced(at: 4)
@@ -943,9 +1004,9 @@ private struct TrackGroupSymbol: View {
     let nested: Bool
     var body: some View {
         HStack(alignment: .center, spacing: 1) {
-            if nested { Image(systemName: "folder.fill").font(.system(size: 8)) }
-            Image(systemName: "folder.fill").font(.system(size: 12))
-                .overlay { if nested { Image(systemName: "minus").font(.system(size: 7, weight: .heavy)).foregroundStyle(Color.black).offset(y: 1) } }
+            if nested { Image(systemName: "folder.fill").font(.jarasSystem(size: 8)) }
+            Image(systemName: "folder.fill").font(.jarasSystem(size: 12))
+                .overlay { if nested { Image(systemName: "minus").font(.jarasSystem(size: 7, weight: .heavy)).foregroundStyle(Color.black).offset(y: 1) } }
         }.foregroundStyle(JarasTheme.green)
     }
 }
@@ -1024,12 +1085,11 @@ struct MasterStrip: View {
                         .accessibilityValue(show.snapshot.project.masterMono == true ? "Mono" : "Stereo")
                     Spacer(minLength: 2)
                     TrackPanFader(show: show, track: nil, pan: show.snapshot.project.masterPan ?? 0, compact: true).frame(width: 42, height: 24)
-                    Button("FX") { openFX(nil, show.snapshot.project.masterFX?.effectKeys.first ?? "Chain") }
-                        .foregroundStyle(show.snapshot.project.masterFX?.inserted.isEmpty == false ? JarasTheme.green : JarasTheme.text).jarasHelp("Insert effect")
+                    TrackFXButton(show: show, track: nil, settings: show.snapshot.project.masterFX ?? NativeFXSettings()).jarasHelp("Insert effect")
                     Button("M") { show.send(.mute) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterMute == true ? .red : nil)).jarasHelp("Mute")
                     Button("S") { show.send(.solo) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterSolo == true ? JarasTheme.yellow : nil)).jarasHelp("Solo")
-                }.font(.system(size: 10, weight: .semibold)).buttonStyle(.bordered).controlSize(.small).frame(height: 24)
-                    Text("Master").font(.system(size: 11, weight: .semibold))
+                }.font(.jarasSystem(size: 10, weight: .semibold)).buttonStyle(.bordered).controlSize(.small).frame(height: 24)
+                    Text("Master").font(.jarasSystem(size: 11, weight: .semibold))
                         .foregroundStyle(Color(hex: JarasTheme.masterNameHex(show.snapshot.project.masterColor ?? 0xffdc52)))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 TrackVolumeFader(show: show, track: nil, volume: show.snapshot.project.masterVolume ?? 1, phaseInverted: show.snapshot.project.masterPhaseInverted == true, compact: true)
@@ -1091,9 +1151,9 @@ struct PatchEditor: View {
     private var singlePatch: some View {
         ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(settings?.kind == .timecode ? "Timecode" : "Patch").font(.headline)
+                    Text(settings?.kind == .timecode ? "Timecode" : "Patch").font(.jarasHeadline)
                     if let settings, settings.kind == .timecode { TimecodeOptions(show: show, track: settings) }
-                    Text(audio.deviceName).font(.caption).foregroundStyle(JarasTheme.secondary)
+                    Text(audio.deviceName).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                     if let track, let settings = show.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == track }), settings.kind == .standard {
                         let input = settings.inputPatch ?? TrackRecording.shared.defaultInputPatch
                         let choices = OutputPatch.choices(channels: TrackRecording.shared.inputChannels, includeMaster: false).filter { choice in
@@ -1135,7 +1195,7 @@ struct PatchEditor: View {
                     #endif
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text("Output").font(.subheadline.bold())
+                            Text("Output").font(.jarasSubheadline.bold())
                             Spacer()
                             Button { editOutputs { $0.append(.none) } } label: { Image(systemName: "plus") }
                                 .help("Add output").accessibilityLabel("Add output")
@@ -1155,7 +1215,7 @@ struct PatchEditor: View {
                             ForEach([true, false], id: \.self) { receive in
                                 Divider()
                                 HStack {
-                                    Text(receive ? "Receive" : "Transmitter").font(.subheadline.bold())
+                                    Text(receive ? "Receive" : "Transmitter").font(.jarasSubheadline.bold())
                                     Spacer()
                                     Button { show.addTrackRoute(Set(targets.compactMap { $0 }), receive: receive) } label: { Image(systemName: "plus") }
                                         .help(receive ? "Add receive" : "Add transmitter").accessibilityLabel(receive ? "Add receive" : "Add transmitter")
@@ -1192,8 +1252,7 @@ struct PatchEditor: View {
     }
     private func applyInput(_ input: OutputPatch) {
         for id in targets.compactMap({ $0 }) {
-            let settings = show.snapshot.project.songs.flatMap(\.tracks).first { $0.id == id }
-            show.setRecording(id, input: input, format: settings?.recordingFormat ?? "wav")
+            show.setRecordingInput(id, input: input)
         }
     }
     private func applyMIDI(_ slot: Int) { for id in targets.compactMap({ $0 }) { show.setMIDIInput(id, slot: slot) } }
@@ -1212,7 +1271,7 @@ private struct CompactTrackButtonStyle: ButtonStyle {
         Group {
             if activeColor != nil { configuration.label.foregroundStyle(Color.black) }
             else { configuration.label }
-        }.font(.system(size: 10, weight: .semibold))
+        }.font(.jarasSystem(size: 10, weight: .semibold))
             .frame(width: width, height: 21)
             .background(activeColor.map { $0.opacity(configuration.isPressed ? 0.75 : 1) } ?? JarasTheme.text.opacity(configuration.isPressed ? 0.24 : 0.12))
             .clipShape(RoundedRectangle(cornerRadius: 3)).contentShape(Rectangle())
@@ -1223,7 +1282,7 @@ private struct TrackControlButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12, weight: .semibold))
+            .font(.jarasSystem(size: 12, weight: .semibold))
             .padding(.horizontal, 7)
             .frame(minWidth: 30, minHeight: 24)
             .background(activeColor.map { $0.opacity(configuration.isPressed ? 0.75 : 1) } ?? JarasTheme.text.opacity(configuration.isPressed ? 0.24 : 0.12))
@@ -1279,25 +1338,28 @@ private struct TrackPanFader: View {
                 .frame(height: 13)
                 .simultaneousGesture(TapGesture(count: 2).onEnded { show.sendMixerControl(.pan, target: track, value: 0) })
             #endif
-            Text(verbatim: valueLabel).font(.system(size: 8, weight: .medium, design: .monospaced))
+            Text(verbatim: valueLabel).font(.jarasSystem(size: 8, weight: .medium, design: .monospaced))
                 .foregroundStyle(JarasTheme.text).lineLimit(1).frame(height: compact ? 8 : 10).allowsHitTesting(false)
         }
     }
 }
 
 private struct TrackVolumeFader: View {
+    @ObservedObject private var fadeout: TransportFadeout
     let show: ShowController
     let track: UUID?
     let volume: Double
     let phaseInverted: Bool
     var compact = false
+    var showsPhase = true
     // The Master can keep the same gain/pan across documents. Store its
     // project identity as a view input so SwiftUI rebinds the native callbacks
     // even when the ShowController reference and those scalar values match.
     private let controlIdentity: TrackControlIdentity
-    init(show: ShowController, track: UUID?, volume: Double, phaseInverted: Bool, compact: Bool = false) {
+    init(show: ShowController, track: UUID?, volume: Double, phaseInverted: Bool, compact: Bool = false, showsPhase: Bool = true) {
         self.show = show; self.track = track; self.volume = volume
-        self.phaseInverted = phaseInverted; self.compact = compact
+        _fadeout = ObservedObject(wrappedValue: show.transportFadeout)
+        self.phaseInverted = phaseInverted; self.compact = compact; self.showsPhase = showsPhase
         controlIdentity = TrackControlIdentity(project: show.snapshot.project.id, track: track)
     }
     @State private var decibels = 0.0
@@ -1306,10 +1368,12 @@ private struct TrackVolumeFader: View {
     @State private var editingSession: UUID?
     private var gain: Double { decibels <= -60 ? 0 : pow(10, decibels / 20) }
     var body: some View {
-        let displayedDB = dragging && editingIdentity == controlIdentity ? decibels : (volume <= 0 ? -60 : min(12, max(-59.9, 20 * log10(volume))))
+        let baseGain = fadeout.active ? show.automationPlaybackValue(track, kind: .volume).map(TrackEnvelope.gain) ?? volume : volume
+        let displayedGain = baseGain * fadeout.multiplier(for: track)
+        let displayedDB = dragging && editingIdentity == controlIdentity ? decibels : (displayedGain <= 0 ? -60 : min(12, max(-59.9, 20 * log10(displayedGain))))
         return HStack(spacing: compact ? 3 : 6) {
             Text(displayedDB <= -60 ? "−∞" : String(format: "%+.1f", displayedDB))
-                .font(.system(size: compact ? 9 : 10, weight: .medium, design: .monospaced))
+                .font(.jarasSystem(size: compact ? 9 : 10, weight: .medium, design: .monospaced))
                 .foregroundStyle(JarasTheme.text).frame(width: compact ? 34 : 40, alignment: .leading)
                 .contentShape(Rectangle()).onTapGesture(count: 2) { decibels = 0; show.sendMixerControl(.volume, target: track, value: 1) }
                 .jarasHelp("Double-click to reset to 0 dB")
@@ -1320,7 +1384,7 @@ private struct TrackVolumeFader: View {
                 .jarasHelp("Double-click to reset to 0 dB")
                 .accessibilityLabel(track == nil ? "Master volume" : "Track volume")
                 .accessibilityValue(displayedDB <= -60 ? "−∞ dB" : String(format: "%.1f dB", displayedDB))
-            if let track { PhaseInvertButton(show: show, track: track, inverted: phaseInverted) }
+            if let track, showsPhase { PhaseInvertButton(show: show, track: track, inverted: phaseInverted) }
         }.frame(height: compact ? 20 : 27).padding(.horizontal, 4)
             .onAppear { synchronize() }
             .onChange(of: volume) { _ in if !dragging { synchronize() } }
@@ -1414,17 +1478,20 @@ private struct DirectVolumeSlider: NSViewRepresentable {
 /// The footer value follows the existing fader mirror path, without publishing
 /// a new SwiftUI row or polling the audio meter while the user drags.
 private struct FooterMixerGainReadout: NSViewRepresentable {
+    let show: ShowController
     let identity: TrackControlIdentity
     let gain: Double
     func makeNSView(context: Context) -> FooterMixerGainLabel { FooterMixerGainLabel() }
-    func updateNSView(_ view: FooterMixerGainLabel, context: Context) { view.bind(identity: identity, gain: gain) }
+    func updateNSView(_ view: FooterMixerGainLabel, context: Context) { view.bind(identity: identity, gain: gain, show: show) }
 }
 private final class FooterMixerGainLabel: NSView {
     fileprivate var identity: TrackControlIdentity?
     private var modelGain: Double?
+    private var fadeSubscription: AnyCancellable?
+    private weak var fadeShow: ShowController?
     private(set) var stringValue = ""
     private static let attributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.monospacedSystemFont(ofSize: 8, weight: .semibold), .foregroundColor: NSColor.white
+        .font: NSFont.jarasMonospacedSystemFont(ofSize: 8, weight: .semibold), .foregroundColor: NSColor.white
     ]
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -1442,10 +1509,23 @@ private final class FooterMixerGainLabel: NSView {
         if window == nil { VolumeDoubleClickRouter.shared.removeGainLabel(self) }
         else { VolumeDoubleClickRouter.shared.addGainLabel(self) }
     }
-    func bind(identity: TrackControlIdentity, gain: Double) {
-        guard self.identity != identity || modelGain != gain else { return }
-        self.identity = identity; modelGain = gain
-        setDecibels(gain > 0 ? min(12, max(-60, 20 * log10(gain))) : -60)
+    func bind(identity: TrackControlIdentity, gain: Double, show: ShowController? = nil) {
+        let rebind = self.identity != identity || fadeShow !== show
+        self.identity = identity
+        if rebind {
+            fadeShow = show
+            fadeSubscription = show?.transportFadeout.$run.sink { [weak self] run in self?.updateFade(run) }
+        }
+        guard modelGain != gain || rebind else { return }
+        modelGain = gain; updateFade(show?.transportFadeout.run)
+    }
+    private func updateFade(_ run: TransportFadeout.Run?) {
+        guard let identity else { return }
+        let normalized = run == nil ? nil : fadeShow?.automationPlaybackValue(identity.track, kind: .volume)
+        let gain = normalized.map { $0 <= 0 ? 0 : pow(10, (-96 + $0*108)/20) } ?? modelGain ?? 1
+        let factor = identity.track.flatMap { run?.originalVolumes[$0] } == nil ? 1 : run!.fraction
+        let displayed = gain * factor
+        setDecibels(displayed > 0 ? min(12, max(-60, 20 * log10(displayed))) : -60)
     }
     fileprivate func setDecibels(_ value: Double) {
         let text = value <= -60 ? "−∞" : String(format: "%+.1f", value)
@@ -1471,7 +1551,7 @@ private final class FooterMixerPanLabel: NSView {
     private var modelPan: Double?
     private(set) var stringValue = ""
     private static let attributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.monospacedSystemFont(ofSize: 8, weight: .medium), .foregroundColor: NSColor.white
+        .font: NSFont.jarasMonospacedSystemFont(ofSize: 8, weight: .medium), .foregroundColor: NSColor.white
     ]
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -1502,24 +1582,42 @@ private final class FooterMixerPanLabel: NSView {
 }
 private final class DirectVolumeSliderView: NSView {
     private var automationSubscription: AnyCancellable?
+    private var fadeSubscription: AnyCancellable?
+    private var showingFade = false
     private weak var automationShow: ShowController?
     private var automationKey = ""
     func bindAutomation(_ show: ShowController?) {
         let kind: AutomationTarget.Kind = mini ? .pan : .volume
         let active = show?.automationPlaybackValue(boundTrack, kind: kind) != nil
         let key = "\(boundProject?.uuidString ?? "")/\(boundTrack?.uuidString ?? "master")/\(mini)/\(active)"
-        guard automationShow !== show || automationKey != key else { return }
-        automationSubscription = nil; automationShow = show; automationKey = key
+        guard automationShow !== show || automationKey != key else {
+            updateFade(show?.transportFadeout.run); return
+        }
+        automationSubscription = nil; fadeSubscription = nil; automationShow = show; automationKey = key
+        if let show, !mini {
+            fadeSubscription = show.transportFadeout.$run.sink { [weak self] run in self?.updateFade(run) }
+        }
         guard active, let show else { return }
         automationSubscription = show.$snapshot.sink { [weak self, weak show] _ in
             guard let self, let show, !self.trackingPointer,
                   let normalized = show.automationPlaybackValue(self.boundTrack, kind: kind) else { return }
-            let value = self.mini ? normalized*2-1 : max(-60, -96+normalized*108)
+            let factor = self.mini ? 1 : show.transportFadeout.multiplier(for: self.boundTrack)
+            let value = self.mini ? normalized*2-1 : factor <= 0 ? -60 : max(-60, -96+normalized*108 + 20 * log10(factor))
             guard abs(value-self.doubleValue) > 0.00001 else { return }
             self.pendingModelValue = nil; self.lastModelValue = nil
             self.doubleValue = value
-            VolumeDoubleClickRouter.shared.mirror(self)
+            if !show.transportFadeout.active { VolumeDoubleClickRouter.shared.mirror(self) }
         }
+    }
+    private func updateFade(_ run: TransportFadeout.Run?) {
+        guard !mini, let show = automationShow, let id = boundTrack else { return }
+        let selected = run?.originalVolumes[id] != nil
+        guard selected || showingFade else { return }
+        showingFade = selected
+        let baseline = committedModelValue ?? 0
+        let manual = show.automationPlaybackValue(id, kind: .volume).map { $0 <= 0 ? 0 : pow(10, (-96 + $0*108)/20) } ?? (baseline <= -60 ? 0 : pow(10, baseline/20))
+        let gain = manual * (selected ? run!.fraction : 1)
+        doubleValue = gain <= 0 ? -60 : min(12, max(-59.9, 20 * log10(gain)))
     }
     var groupValues: (() -> [UUID: Double])?
     var mini = false { didSet { updatePanTooltip() } }
@@ -1530,6 +1628,7 @@ private final class DirectVolumeSliderView: NSView {
     var minValue = -60.0
     var maxValue = 12.0
     var isEnabled = true
+    private var committedModelValue: Double?
     private var lastModelValue: Double?
     private var pendingModelValue: Double?
     private var pendingModelDeadline = 0.0
@@ -1548,6 +1647,7 @@ private final class DirectVolumeSliderView: NSView {
     // A SwiftUI redraw carrying the same committed value is not a new volume
     // command. Preserve the pointer value until a genuinely new model arrives.
     func synchronizeModel(_ value: Double) {
+        committedModelValue = value
         guard !trackingPointer, mirroredSource?.trackingPointer != true else { return }
         let now = ProcessInfo.processInfo.systemUptime
         if let pendingModelValue {
@@ -1849,7 +1949,7 @@ private struct TrackInsertionDrop: DropDelegate {
 /// displays only an arrow for a forbidden SwiftUI drop.
 private struct TrackDropBlockedBadge: View {
     var body: some View {
-        Image(systemName: "nosign").font(.system(size: 18, weight: .bold))
+        Image(systemName: "nosign").font(.jarasSystem(size: 18, weight: .bold))
             .foregroundStyle(Color.red).padding(5).background(Color.black.opacity(0.85), in: Circle())
             .allowsHitTesting(false).accessibilityLabel("Drop not allowed")
     }
@@ -1905,10 +2005,11 @@ private struct TrackRightClickInput: NSViewRepresentable {
     var unlink: (() -> Void)? = nil
     var soundDesigner: (() -> Void)? = nil
     var createMIDI: (() -> Void)? = nil
+    var duplicateTracks: (() -> Void)? = nil
     var deleteTracks: (() -> Void)? = nil
     var deleteTrackCount = 1
     func makeNSView(context: Context) -> TrackRightClickView { TrackRightClickView() }
-    func updateNSView(_ view: TrackRightClickView, context: Context) { view.interactionBlocked = interactionBlocked; view.project = project; view.track = track; view.kind = kind; view.dragName = dragName; view.select = select; view.patch = patch; view.fx = fx; view.edit = edit; view.group = group; view.ungroup = ungroup; view.removeFromGroup = removeFromGroup; view.link = link; view.unlink = unlink; view.soundDesigner = soundDesigner; view.createMIDI = createMIDI; view.deleteTracks = deleteTracks; view.deleteTrackCount = deleteTrackCount; view.action = { [weak view] in view?.openMenu() } }
+    func updateNSView(_ view: TrackRightClickView, context: Context) { view.interactionBlocked = interactionBlocked; view.project = project; view.track = track; view.kind = kind; view.dragName = dragName; view.select = select; view.patch = patch; view.fx = fx; view.edit = edit; view.group = group; view.ungroup = ungroup; view.removeFromGroup = removeFromGroup; view.link = link; view.unlink = unlink; view.soundDesigner = soundDesigner; view.createMIDI = createMIDI; view.duplicateTracks = duplicateTracks; view.deleteTracks = deleteTracks; view.deleteTrackCount = deleteTrackCount; view.action = { [weak view] in view?.openMenu() } }
 }
 /// Resolve one row per click, including after native scroll hosting recycles rows.
 /// The title also calls this route directly, so selecting it never relies solely
@@ -2048,7 +2149,7 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
         state.source = source
         let item = NSDraggingItem(pasteboardWriter: ("jaras-track:" + row.track.uuidString) as NSString)
         let size = NSSize(width: min(240, max(80, row.bounds.width)), height: 28)
-        let label = NSAttributedString(string: row.dragName, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.labelColor])
+        let label = NSAttributedString(string: row.dragName, attributes: [.font: NSFont.jarasSystemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.labelColor])
         let image = NSImage(size: size, flipped: true) { rect in
             NSColor.controlBackgroundColor.withAlphaComponent(0.9).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
@@ -2093,6 +2194,7 @@ private final class TrackRightClickView: RightClickTargetView {
     var unlink: (() -> Void)?
     var soundDesigner: (() -> Void)?
     var createMIDI: (() -> Void)?
+    var duplicateTracks: (() -> Void)?
     var deleteTracks: (() -> Void)?
     var deleteTrackCount = 1
     func makeMenu() -> (menu: NSMenu, actions: [TrackMenuAction]) {
@@ -2113,6 +2215,7 @@ private final class TrackRightClickView: RightClickTargetView {
         append(JarasLocalization.string("Link tracks"), link)
         append(JarasLocalization.string("Unlink tracks"), unlink)
         append(JarasLocalization.string("Editar pista"), edit)
+        append(JarasLocalization.string(deleteTrackCount > 1 ? "Duplicate tracks" : "Duplicate track"), duplicateTracks)
         if deleteTracks != nil {
             menu.addItem(.separator())
             append(JarasLocalization.string(deleteTrackCount > 1 ? "Delete tracks" : "Delete track"), deleteTracks)
@@ -2184,7 +2287,7 @@ private final class TrackDragTitleView: NSView {
     private var cachedLabel: NSAttributedString?
     private static let labelAttributes: [NSAttributedString.Key: Any] = {
         let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
-        return [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph.copy() as! NSParagraphStyle]
+        return [.font: NSFont.jarasSystemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph.copy() as! NSParagraphStyle]
     }()
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 28) }
@@ -2195,7 +2298,7 @@ private final class TrackDragTitleView: NSView {
         if compact {
             let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .center; paragraph.lineBreakMode = .byWordWrapping
             attributes[.paragraphStyle] = paragraph
-            attributes[.font] = NSFont.systemFont(ofSize: 10, weight: .semibold)
+            attributes[.font] = NSFont.jarasSystemFont(ofSize: 10, weight: .semibold)
         }
         let label = NSAttributedString(string: title, attributes: attributes)
         cachedLabel = label
@@ -2698,6 +2801,14 @@ private struct FooterMixerStrip: View, Equatable {
         let ids = selection.contains(track.id) ? selection : [track.id]
         return ids.intersection((show.current?.tracks ?? []).map(\.id))
     }
+    private var duplicateSelection: (() -> Void)? {
+        guard track?.kind == .standard else { return nil }
+        let project = show.snapshot.project.id, song = show.current?.id, ids = deletionTargets
+        return {
+            guard show.snapshot.project.id == project, show.current?.id == song else { return }
+            show.duplicateTracks(ids)
+        }
+    }
     private func requestDeletion(_ ids: Set<UUID>, project: UUID) {
         guard project == show.snapshot.project.id, let song = show.current else { return }
         let valid = ids.intersection(song.tracks.map(\.id))
@@ -2717,16 +2828,17 @@ private struct FooterMixerStrip: View, Equatable {
     private var color: Color { Color(hex: track.map { $0.color ?? JarasTheme.roleHex($0.role) } ?? show.snapshot.project.masterColor ?? 0xffdc52) }
     private var buttons: some View {
         VStack(spacing: 5) {
-            Button("FX") { openFX(id, "Chain") }
-                .foregroundStyle(settings.inserted.isEmpty ? JarasTheme.text : JarasTheme.green).jarasHelp("FX Manager")
-            Button("M") { show.sendTrackMixerButton(.mute, target: id) }
-                .buttonStyle(CompactTrackButtonStyle(activeColor: (track?.mute ?? (show.snapshot.project.masterMute == true)) ? .red : nil))
-                .modifier(MappingRightClick(track: id, command: "mute")).jarasHelp("Mute")
-            Button("S") { show.sendTrackMixerButton(.solo, target: id) }
-                .buttonStyle(CompactTrackButtonStyle(activeColor: (track?.solo ?? (show.snapshot.project.masterSolo == true)) ? JarasTheme.yellow : nil))
-                .modifier(MappingRightClick(track: id, command: "solo")).jarasHelp("Solo")
+            TrackFXButton(show: show, track: id, settings: settings, opensChain: true).jarasHelp("FX Manager")
+            if trackShowsMuteSolo(track?.kind) {
+                Button("M") { show.sendTrackMixerButton(.mute, target: id) }
+                    .buttonStyle(CompactTrackButtonStyle(activeColor: (track?.mute ?? (show.snapshot.project.masterMute == true)) ? .red : nil))
+                    .modifier(MappingRightClick(track: id, command: "mute")).jarasHelp("Mute")
+                Button("S") { show.sendTrackMixerButton(.solo, target: id) }
+                    .buttonStyle(CompactTrackButtonStyle(activeColor: (track?.solo ?? (show.snapshot.project.masterSolo == true)) ? JarasTheme.yellow : nil))
+                    .modifier(MappingRightClick(track: id, command: "solo")).jarasHelp("Solo")
+            }
             if let track, track.kind == .standard { TrackRecordButton(show: show, track: track) }
-            if let track {
+            if let track, track.kind != .timecode && track.kind != .click {
                 PhaseInvertButton(show: show, track: track.id, inverted: track.phaseInverted == true)
             }
             if trackShowsMeterReadouts(track?.kind) {
@@ -2735,7 +2847,7 @@ private struct FooterMixerStrip: View, Equatable {
                     .frame(width: 22, height: 12)
             }
             Spacer(minLength: 0)
-        }.frame(width: 22).buttonStyle(CompactTrackButtonStyle()).font(.system(size: 10, weight: .bold))
+        }.frame(width: 22).buttonStyle(CompactTrackButtonStyle()).font(.jarasSystem(size: 10, weight: .bold))
     }
     private var slots: some View {
         ScrollView(.vertical) {
@@ -2760,7 +2872,7 @@ private struct FooterMixerStrip: View, Equatable {
                 #else
                 let percent = Int((min(1, abs(pan)) * 100).rounded())
                 Text(verbatim: percent == 0 ? "Center" : "\(pan < 0 ? "L" : "R")-\(percent)%")
-                    .font(.system(size: 8, weight: .medium, design: .monospaced)).foregroundStyle(.white)
+                    .font(.jarasSystem(size: 8, weight: .medium, design: .monospaced)).foregroundStyle(.white)
                     .frame(width: 50, height: 10)
                 #endif
                 FooterMixerControl(show: show, track: id, value: pan, pan: true, linked: track?.stereoLink?.partner)
@@ -2768,11 +2880,11 @@ private struct FooterMixerStrip: View, Equatable {
             }
             let gain = track?.volume ?? show.snapshot.project.masterVolume ?? 1
             #if os(macOS)
-            FooterMixerGainReadout(identity: TrackControlIdentity(project: show.snapshot.project.id, track: id), gain: gain)
+            FooterMixerGainReadout(show: show, identity: TrackControlIdentity(project: show.snapshot.project.id, track: id), gain: gain)
                 .frame(width: 50, height: 12)
             #else
             Text(verbatim: (gain <= 0 ? "−∞" : String(format: "%+.1f", min(12, max(-60, 20 * log10(gain))))) + " dB")
-                .font(.system(size: 8, weight: .semibold, design: .monospaced)).foregroundStyle(.white)
+                .font(.jarasSystem(size: 8, weight: .semibold, design: .monospaced)).foregroundStyle(.white)
                 .frame(width: 50, height: 12)
             #endif
             HStack(spacing: 2) {
@@ -2808,9 +2920,9 @@ private struct FooterMixerStrip: View, Equatable {
                     if let track {
                         TrackDragTitle(title: track.name, foreground: 0xffffff, project: show.snapshot.project.id,
                             track: track.id, state: TrackReorderState.shared, select: select, compact: true)
-                    } else { Text("Master").font(.system(size: 10, weight: .semibold)) }
+                    } else { Text("Master").font(.jarasSystem(size: 10, weight: .semibold)) }
                     #else
-                    Text(verbatim: track?.name ?? "Master").font(.system(size: 10, weight: .semibold))
+                    Text(verbatim: track?.name ?? "Master").font(.jarasSystem(size: 10, weight: .semibold))
                         .lineLimit(2).multilineTextAlignment(.center)
                         .contentShape(Rectangle()).onDrag {
                             guard let track else { return NSItemProvider() }
@@ -2832,7 +2944,7 @@ private struct FooterMixerStrip: View, Equatable {
                         group: canGroup ? { show.groupTracks(selection) } : nil,
                         ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil,
                         link: canLink ? link : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil,
-                        deleteTracks: { requestDeletion(deleteIDs, project: deleteProject) }, deleteTrackCount: deleteIDs.count)
+                        duplicateTracks: duplicateSelection, deleteTracks: { requestDeletion(deleteIDs, project: deleteProject) }, deleteTrackCount: deleteIDs.count)
                 }
             }
             #else
@@ -2843,6 +2955,9 @@ private struct FooterMixerStrip: View, Equatable {
                 Button("Patch") { patchPresented = true }
                 Button("FX") { fxPresented = true }
                 Button("Editar pista", action: edit)
+                if let duplicateSelection {
+                    Button(LocalizedStringKey(deleteIDs.count > 1 ? "Duplicate tracks" : "Duplicate track"), action: duplicateSelection)
+                }
                 if canGroup { Button("Create group") { show.groupTracks(selection) } }
                 if let id, isFolder { Button("Ungroup") { show.ungroupTrack(id) } }
                 if let track, track.parentTrackID != nil { Button("Remove from group") { show.removeTrackFromGroup(track.id) } }
@@ -2911,7 +3026,7 @@ private struct FooterEffectSlot: View {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel("FX Manager")
             }
-        }.font(.system(size: 10, weight: .medium)).padding(.horizontal, 5).frame(height: 19)
+        }.font(.jarasSystem(size: 10, weight: .medium)).padding(.horizontal, 5).frame(height: 19)
             .background(effect.map { settings.isEnabled($0) ? Color.black.opacity(0.28) : Color.red.opacity(0.8) } ?? Color.black.opacity(0.28))
             .overlay(alignment: .top) { if targeted { JarasTheme.green.frame(height: 2) } }
             .contentShape(Rectangle())
@@ -3052,9 +3167,10 @@ private struct PhaseInvertGlyph: Shape {
         panel.title = "CatLive · Barra Mixer"
         panel.minSize = NSSize(width: 360, height: 240)
         panel.isReleasedWhenClosed = false; panel.delegate = self
-        let host = NSHostingView(rootView: DetachedMixerContent(show: show, owner: self, openFX: openFX, editTrack: editTrack))
+        let host = NSHostingView(rootView: DetachedMixerContent(show: show, owner: self, openFX: openFX, editTrack: editTrack).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         panel.contentView = host
+        InterfaceScaling.shared.register(panel)
         panel.setFrameAutosaveName("CatLiveDetachedMixer")
         if !panel.setFrameUsingName("CatLiveDetachedMixer") { panel.center() }
         window = panel; isDetached = true; isVisible = true
@@ -3109,8 +3225,8 @@ private struct BatchPatchEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Patch · Selected tracks").font(.headline)
-            Text(tracks.map(\.name).joined(separator: ", ")).font(.caption).lineLimit(3)
+            Text("Patch · Selected tracks").font(.jarasHeadline)
+            Text(tracks.map(\.name).joined(separator: ", ")).font(.jarasCaption).lineLimit(3)
             Picker("Patch", selection: $category) {
                 Text("Input").tag(0)
                 #if os(macOS)
@@ -3131,7 +3247,7 @@ private struct BatchPatchEditor: View {
             Button("Apply to selected tracks") {
                 for track in tracks {
                     switch category {
-                    case 0: show.setRecording(track.id, input: input, format: track.recordingFormat ?? "wav")
+                    case 0: show.setRecordingInput(track.id, input: input)
                     case 1: show.setMIDIInput(track.id, slot: midi)
                     default: show.setOutputPatches(track: track.id, patches: [output])
                     }

@@ -172,7 +172,7 @@ import Combine
                 HStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
                     Text("Some output channels are unavailable on this iPad.")
-                        .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                        .font(.jarasCallout).frame(maxWidth: .infinity, alignment: .leading)
                     Button("Patch") { patch = missingOutput }.buttonStyle(.bordered)
                 }.padding(10).foregroundStyle(JarasTheme.yellow).background(JarasTheme.panel)
             }
@@ -213,7 +213,7 @@ import Combine
         .overlay { workspaceDialogs }
         .overlay(alignment: .bottom) {
             if audio.localSessionReconfiguring && !audio.error.isEmpty {
-                Text(verbatim: audio.error).font(.callout).multilineTextAlignment(.center)
+                Text(verbatim: audio.error).font(.jarasCallout).multilineTextAlignment(.center)
                     .foregroundStyle(.white).padding(12)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color(red: 0.4, green: 0.08, blue: 0.08)))
                     .padding()
@@ -341,7 +341,7 @@ import Combine
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text(clip?.name ?? "—").font(.headline).lineLimit(2)
+                    Text(clip?.name ?? "—").font(.jarasHeadline).lineLimit(2)
                     Spacer(); Button("Close") { close() }
                 }.padding(.bottom, 6)
                 if let clip {
@@ -418,7 +418,7 @@ import Combine
                                         Text(LocalizedStringKey(settings.kind(of: effect)))
                                             .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading).contentShape(Rectangle())
                                     }
-                                }.font(.system(size: 12, weight: .semibold)).buttonStyle(.plain)
+                                }.font(.jarasSystem(size: 12, weight: .semibold)).buttonStyle(.plain)
                                     .background(selected == effect ? JarasTheme.green.opacity(0.3) : Color.clear).cornerRadius(4)
                             }
                         }
@@ -434,7 +434,7 @@ import Combine
                         } label: {
                             Text("Remove").frame(maxWidth: .infinity, minHeight: 38).contentShape(Rectangle())
                         }.buttonStyle(.bordered).disabled(selected == nil)
-                    }.font(.system(size: 12, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.85)
+                    }.font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.85)
                 }.frame(width: 142)
                 Divider()
                 ScrollView {
@@ -1109,7 +1109,7 @@ struct IpadCompactModal<Content: View>: View {
     }
     private var card: some View {
         content()
-            .font(.system(size: 13)).tint(JarasTheme.green)
+            .font(.jarasSystem(size: 13)).tint(JarasTheme.green)
             .buttonStyle(IpadDialogButtonStyle())
             .foregroundStyle(JarasTheme.text).preferredColorScheme(.dark)
             .background(RemoteSurface.panel)
@@ -1125,7 +1125,7 @@ struct IpadModalHeader: View {
     var body: some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 2).fill(JarasTheme.green).frame(width: 3, height: 20)
-            Text(LocalizedStringKey(title)).font(.system(size: 15, weight: .semibold))
+            Text(LocalizedStringKey(title)).font(.jarasSystem(size: 15, weight: .semibold))
             if let subtitle { Text(verbatim: subtitle).foregroundStyle(JarasTheme.secondary).lineLimit(1) }
             Spacer(minLength: 8)
             Button(action: close) { Image(systemName: "xmark").frame(width: 36, height: 36).contentShape(Rectangle()) }
@@ -1138,7 +1138,7 @@ struct IpadModalHeader: View {
 struct IpadDialogButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 13, weight: .semibold))
+        configuration.label.font(.jarasSystem(size: 13, weight: .semibold))
             .padding(.horizontal, 12).frame(minHeight: 36)
             .foregroundStyle(enabled ? JarasTheme.text : JarasTheme.secondary.opacity(0.5))
             .background(LinearGradient(colors: [Color(white: configuration.isPressed ? 0.18 : 0.32), Color(white: 0.19)], startPoint: .top, endPoint: .bottom))
@@ -1222,7 +1222,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
     @State private var error = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Detect BPM from the Click track?").font(.headline)
+            Text("Detect BPM from the Click track?").font(.jarasHeadline)
             if working { ProgressView("Detecting BPM…") }
             else {
                 if !error.isEmpty { Text(verbatim: error).foregroundStyle(.red) }

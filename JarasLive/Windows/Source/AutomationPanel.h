@@ -46,8 +46,8 @@ class AutomationPanel final : public Component {
                     if (!found) {
                         const auto *t = track();
                         list.add(automation::envelope(
-                            kind, i == 0   ? AutomationCurve::normalized(t ? t->volume : 1)
-                                  : i == 1 ? (t ? t->pan : 0) * .5 + .5
+                            kind, i == 0   ? AutomationCurve::normalized(t ? t->volume : session.project().masterVolume)
+                                  : i == 1 ? (t ? t->pan : session.project().masterPan) * .5 + .5
                                            : 0));
                     }
                     put(s, "envelopes", list);
@@ -113,6 +113,7 @@ class AutomationPanel final : public Component {
         return nullptr;
     }
     var settings() const {
+        if(id.empty())return session.project().masterAutomationJSON ? JSON::parse(text(*session.project().masterAutomationJSON)) : object();
         if (auto *t = track())
             return automation::settings(*t);
         return {};
@@ -121,6 +122,7 @@ class AutomationPanel final : public Component {
     void edit(std::function<void(var &)> action) {
         try {
             session.edit([&](jaras::Project &p) {
+                if(id.empty()){auto value=settings();action(value);p.masterAutomationJSON=utf8(JSON::toString(value,true));return;}
                 for (auto &s : p.songs)
                     for (auto &t : s.tracks)
                         if (t.id == id) {

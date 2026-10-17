@@ -8,7 +8,6 @@ struct CreateTrackEditor: View {
     @State private var kind = TrackKind.standard
     @State private var name = ""
     @State private var countDraft = "1"
-    @State private var sequential = false
     @State private var inputChannels = 0
     @State private var invalidCount = false
     @State private var countShake = 0.0
@@ -27,7 +26,7 @@ struct CreateTrackEditor: View {
     private var unavailable: Bool { specialTrackExists || !availableKinds.contains(kind) }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Criar pista").font(.title2.bold())
+            Text("Criar pista").font(.jarasTitle2.bold())
             Picker("Type", selection: $kind) {
                 ForEach(availableKinds, id: \.self) { kind in Text(LocalizedStringKey(kind.title)).tag(kind) }
             }
@@ -41,10 +40,6 @@ struct CreateTrackEditor: View {
                 TextField("Nome da pista", text: $name).textFieldStyle(.roundedBorder)
                     .focused($nameFocused).onSubmit(create)
                 HStack(spacing: 12) {
-                    Toggle("Sequential", isOn: $sequential).disabled(inputChannels == 0)
-                        #if os(macOS)
-                        .toggleStyle(.checkbox)
-                        #endif
                     Spacer()
                     Text("Count")
                     TextField("1", text: $countDraft).textFieldStyle(.roundedBorder)
@@ -54,17 +49,17 @@ struct CreateTrackEditor: View {
                         .modifier(InputValidationShake(animatableData: countShake))
                 }
                 if inputChannels == 0 {
-                    Text("No audio inputs available.").font(.caption).foregroundStyle(JarasTheme.secondary)
+                    Text("No audio inputs available.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 }
                 if invalidCount {
-                    Text("Enter a positive whole number.").font(.caption).foregroundStyle(.red)
+                    Text("Enter a positive whole number.").font(.jarasCaption).foregroundStyle(.red)
                 }
             } else { Text(LocalizedStringKey(kind.title)).foregroundStyle(JarasTheme.secondary) }
             if specialTrackExists {
                 Text(String(format: JarasLocalization.string("A %@ track already exists."), JarasLocalization.string(kind.title)))
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.jarasCaption).foregroundStyle(.orange)
             }
-            if !failure.isEmpty { Text(LocalizedStringKey(failure)).font(.caption).foregroundStyle(.red) }
+            if !failure.isEmpty { Text(LocalizedStringKey(failure)).font(.jarasCaption).foregroundStyle(.red) }
             HStack {
                 Button("Cancelar", action: close).keyboardShortcut(.cancelAction)
                 Spacer()
@@ -83,7 +78,6 @@ struct CreateTrackEditor: View {
     }
     private func refreshInputs() {
         inputChannels = TrackRecording.shared.inputChannels
-        if inputChannels == 0 { sequential = false }
     }
     private func validateCount() -> Int? {
         guard let parsed = Int(countDraft.trimmingCharacters(in: .whitespacesAndNewlines)), parsed > 0 else {
@@ -100,9 +94,7 @@ struct CreateTrackEditor: View {
         if kind == .standard { guard let value = validateCount() else { return }; count = value }
         else { count = 1 }
         let inputs: [OutputPatch]
-        if kind == .standard && sequential {
-            inputs = ShowController.sequentialInputPatches(count: count, channels: inputChannels)
-        } else if kind == .standard && inputChannels > 0 {
+        if kind == .standard && inputChannels > 0 {
             inputs = Array(repeating: OutputPatch(firstChannel: 1, channelCount: min(2, inputChannels)), count: count)
         } else { inputs = [] }
         let ids = show.addTracks(name: kind == .standard ? name : kind.title, role: kind == .standard ? .other : TrackRole(rawValue: kind.rawValue), count: count, inputPatches: inputs, after: afterTrack)

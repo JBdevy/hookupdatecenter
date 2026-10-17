@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(CatLiveWindows VERSION 1.1.0 LANGUAGES C CXX)
-set(CATLIVE_VERSION "1.01" CACHE STRING "Public CatLive version (X.XX)")
+set(CATLIVE_VERSION "1.02" CACHE STRING "Public CatLive version (X.XX)")
 if(NOT CATLIVE_VERSION MATCHES "^[0-9]+\\.[0-9][0-9]$")
     message(FATAL_ERROR "CATLIVE_VERSION must use X.XX format.")
 endif()
@@ -13,14 +13,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(CATLIVEROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(CATLIVE_JUCE_SOURCE "" CACHE PATH "Existing JUCE 8.0.15 source directory")
-if(CATLIVE_JUCE_SOURCE)
-    add_subdirectory("${CATLIVE_JUCE_SOURCE}" "${CMAKE_BINARY_DIR}/juce")
-else()
+if(NOT CATLIVE_JUCE_SOURCE)
     include(FetchContent)
     FetchContent_Declare(JUCE GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-        GIT_TAG 8.0.15 GIT_SHALLOW TRUE)
+        GIT_TAG 8.0.15 GIT_SHALLOW TRUE SOURCE_SUBDIR catlive-download-only)
     FetchContent_MakeAvailable(JUCE)
+    set(CATLIVE_JUCE_SOURCE "${juce_SOURCE_DIR}")
 endif()
+# Isolate the presentation fix from the user's shared JUCE checkout/cache.
+include(cmake/Direct2DFramePacing.cmake)
+catlive_prepare_juce("${CATLIVE_JUCE_SOURCE}" CATLIVE_PATCHED_JUCE)
+add_subdirectory("${CATLIVE_PATCHED_JUCE}" "${CMAKE_BINARY_DIR}/juce-framepaced")
 add_library(CatLiveCore STATIC "${CATLIVEROOT}/Core/Project/Models.cpp"
     "${CATLIVEROOT}/Core/Transport/Engine.cpp" "${CATLIVEROOT}/Core/Import/TrackTaxonomy.cpp")
 target_include_directories(CatLiveCore PUBLIC "${CATLIVEROOT}/Core")
@@ -28,25 +31,47 @@ target_compile_options(CatLiveCore PRIVATE /utf-8 /W4)
 add_library(CatLiveLoudness STATIC "${CATLIVEROOT}/Core/ThirdParty/EBUR128/ebur128.c")
 target_include_directories(CatLiveLoudness PRIVATE "${CATLIVEROOT}/Core/ThirdParty/EBUR128/queue")
 target_compile_definitions(CatLiveLoudness PRIVATE _USE_MATH_DEFINES)
+# Keep LAME replaceable as a DLL; no proprietary Media Foundation MP3 restrictions.
+set(CATLIVE_LAME_ROOT "${CATLIVEROOT}/Core/ThirdParty/Lame")
+set(CATLIVE_LAME_SOURCES bitstream encoder fft gain_analysis id3tag lame newmdct presets
+    psymodel quantize quantize_pvt reservoir set_get tables takehiro util vbrquantize VbrTag version)
+set(CATLIVE_LAME_FILES)
+foreach(name IN LISTS CATLIVE_LAME_SOURCES)
+    list(APPEND CATLIVE_LAME_FILES "${CATLIVE_LAME_ROOT}/${name}.c")
+endforeach()
+add_library(CatLiveLame SHARED ${CATLIVE_LAME_FILES})
+set_target_properties(CatLiveLame PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+target_include_directories(CatLiveLame PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame" "${CATLIVE_LAME_ROOT}")
+target_compile_definitions(CatLiveLame PRIVATE HAVE_CONFIG_H _CRT_SECURE_NO_WARNINGS)
+target_compile_options(CatLiveLame PRIVATE /utf-8)
 juce_add_binary_data(CatLiveAssets SOURCES
     Assets/Localization/English.json Assets/Localization/Portuguese.json
     Assets/Localization/StageDefaults.json Assets/Localization/StageFields.json
-    Assets/Localization/InstrumentCatalog.json
+    Assets/Localization/InstrumentCatalog.json Assets/Teleprompter.html
     "${CATLIVEROOT}/Apple/Resources/Click.mp3"
-    Assets/Fonts/Inter-Regular.ttf Assets/Fonts/Inter-Medium.ttf Assets/Fonts/Inter-SemiBold.ttf
-    Assets/Fonts/Inter-Bold.ttf Assets/Fonts/Inter-BoldItalic.ttf
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Regular.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Medium.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-SemiBold.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Bold.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-BoldItalic.ttf"
     "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveSplash.imageset/CatLiveSplash.png"
     "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveIcon.appiconset/icon-256@1x.png")
 juce_add_gui_app(CatLive PRODUCT_NAME "CatLive" COMPANY_NAME "Hook Developer"
     BUNDLE_ID "com.hookdeveloper.catlive" VERSION "${CATLIVE_BINARY_VERSION}"
     ICON_BIG "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveIcon.appiconset/icon-256@1x.png")
 juce_generate_juce_header(CatLive)
+set(CATLIVE_APP_OUTPUT_DIRECTORY "" CACHE PATH "Optional application output directory for local validation builds")
+if(CATLIVE_APP_OUTPUT_DIRECTORY)
+    set_target_properties(CatLive PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CATLIVE_APP_OUTPUT_DIRECTORY}")
+endif()
 target_sources(CatLive PRIVATE Source/Main.cpp Source/Session.cpp Source/ProjectCodec.cpp Source/ProjectBrowser.cpp
     Source/ProjectMigration.cpp Source/LogicProjectImporter.cpp Source/Typography.cpp Source/AdvancedPanel.cpp
-    Source/AudioEngine.cpp Source/Instrument.cpp Source/Projection.cpp Source/NativeFX.cpp Source/Lighting.cpp Source/Auth.cpp Source/Workspace.cpp Source/Tests.cpp Source/MP3Writer.cpp
+    Source/AudioEngine.cpp Source/Instrument.cpp Source/Projection.cpp Source/NativeFX.cpp Source/Lighting.cpp Source/Auth.cpp Source/Workspace.cpp Source/Tests.cpp Source/MP3Writer.cpp Source/AudioFormats.cpp Source/MediaSource.cpp
+    "${CATLIVEROOT}/WindowsNative/Source/AudioFile.cpp"
+    ThirdParty/QRCode/qrcodegen.cpp
     ThirdParty/Monocypher/monocypher.c ThirdParty/Monocypher/monocypher-ed25519.c)
 target_include_directories(CatLive PRIVATE ThirdParty/Monocypher)
-target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveAssets juce::juce_audio_utils
+target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets juce::juce_audio_utils
     juce::juce_dsp juce::juce_osc juce::juce_video juce::juce_cryptography bcrypt crypt32 normaliz dnsapi comctl32 psapi mfplat mfreadwrite mfuuid mf
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
@@ -73,3 +98,20 @@ if(CATLIVE_NODE)
     set_tests_properties(DAWImportCompatibility PROPERTIES TIMEOUT 120)
 endif()
 install(TARGETS CatLive RUNTIME DESTINATION . RESOURCE DESTINATION .)
+
+# Local validation output and installed product both carry the replaceable encoder,
+# license, exact upstream source and the build configuration needed to rebuild it.
+add_custom_command(TARGET CatLive POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:CatLiveLame>" "$<TARGET_FILE_DIR:CatLive>/CatLiveLame.dll"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME" "$<TARGET_FILE_DIR:CatLive>/Licenses/dr_libs"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CATLIVE_LAME_ROOT}/COPYING" "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME/COPYING"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CATLIVE_LAME_ROOT}/lame-3.100-source.tar.gz" "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME/lame-3.100-source.tar.gz"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/config.h" "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME/config.h"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/BUILD.txt" "$<TARGET_FILE_DIR:CatLive>/Licenses/LAME/BUILD.txt"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CATLIVEROOT}/WindowsNative/ThirdParty/dr_libs/LICENSE" "$<TARGET_FILE_DIR:CatLive>/Licenses/dr_libs/LICENSE"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt" "$<TARGET_FILE_DIR:CatLive>/THIRD-PARTY-NOTICES.txt")
+install(TARGETS CatLiveLame RUNTIME DESTINATION .)
+install(FILES "${CATLIVE_LAME_ROOT}/COPYING" "${CATLIVE_LAME_ROOT}/lame-3.100-source.tar.gz"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/config.h" "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/BUILD.txt" DESTINATION Licenses/LAME)
+install(FILES "${CATLIVEROOT}/WindowsNative/ThirdParty/dr_libs/LICENSE" DESTINATION Licenses/dr_libs)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt" DESTINATION .)

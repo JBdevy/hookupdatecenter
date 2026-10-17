@@ -1,6 +1,29 @@
 import XCTest
 @testable import JarasApplication
 final class NativeFXTests: XCTestCase {
+    func testRemovedEffectReinsertsFreshWithoutChangingOtherStages() throws {
+        var fx = NativeFXSettings()
+        fx.appendNative("EQ"); fx.appendNative("Compressor"); fx.appendNative("Delay")
+        fx.bands[1].gain = 11; fx.threshold = -47; fx.delayTime = 1.7
+        let duplicate = fx.appendNative("Compressor")
+        var draft = fx.settings(for: duplicate); draft.threshold = -31
+        fx = fx.merging(effect: duplicate, from: draft)
+        fx.removeEffect("EQ"); fx.appendNative("EQ")
+        XCTAssertEqual(fx.bands[1].gain, 0); XCTAssertEqual(fx.threshold, -47)
+        fx.removeEffect("Compressor"); fx.appendNative("Compressor")
+        XCTAssertEqual(fx.threshold, NativeFXSettings().threshold)
+        XCTAssertEqual(fx.settings(for: duplicate).threshold, -31)
+        XCTAssertEqual(fx.delayTime, 1.7)
+        fx.removeEffect(duplicate)
+        XCTAssertFalse(fx.instances?.contains { $0.effectKey == duplicate } ?? false)
+        fx.removeEffect("Delay"); fx.appendNative("Delay")
+        XCTAssertEqual(fx.delayTime, NativeFXSettings().delayTime)
+        try fx.validate(); try fx.validateForClip()
+        fx.inserted.removeAll { $0 == "Compressor" }; fx.threshold = -52
+        fx.appendNative("Compressor")
+        XCTAssertEqual(fx.threshold, NativeFXSettings().threshold)
+    }
+
     func testStemRealtimeMixPersistenceAndIndependentEdits() throws {
         let key = NativeFXSettings.stemSeparator
         var fx = NativeFXSettings()

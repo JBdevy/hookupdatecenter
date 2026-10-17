@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<title>CatLive component verification</title>
+<link rel="stylesheet" href="/ui/context-menu.css">
+<link rel="stylesheet" href="/ui/timeline-lock.css">
+<link rel="stylesheet" href="/ui/recording-settings.css">
+<style>
+@font-face {font-family: Inter; src: url('/fonts/Inter-Regular.ttf')}
+@font-face {font-family: Inter; src: url('/fonts/Inter-SemiBold.ttf'); font-weight:600}
+:root {color-scheme:dark; --catlive-menu-font-size:12px}
+body {margin:0;background:#1e1e1e;color:#fff;font:12px Inter, sans-serif;display:grid;grid-template-columns:260px 1fr 260px;gap:4px;height:100vh;overflow:hidden}
+body > section {min-width:0;background:#252525;padding:12px;box-sizing:border-box}
+body > section:nth-child(2) {background:#1e1e1e;background-image:repeating-linear-gradient(90deg,transparent,transparent 29px,#333 30px,transparent 31px)}
+#text {font:inherit;background:#141414;color:#fff;border:1px solid #444;padding:4px;width:160px}
+#piano {position:absolute;bottom:15px;left:285px;right:285px;height:120px;background:#252525}
+.note {display:inline-block;background:#69ed91;color:#101010;padding:8px;margin:6px}
+#fixture-notice {margin:12px 0;color:#b8b8bc;line-height:1.5}
+#toolbar {display:flex;gap:4px;align-items:center;height:30px}
+#add {height:21px;padding:0 8px;border:0;border-radius:3px;background:#ffffff1f;color:white;font:inherit}
+#components {position:absolute;top:230px;left:285px;right:285px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+.fixture-heading {font-size:12px;font-weight:600;color:#b8b8bc;margin:0 0 8px}
+#fixture-status {color:#b8b8bc;line-height:1.5}
+</style>
+<section id="tracks" tabindex="0">Track Mixer<input id="text" value="Nome da pista"></section>
+<section id="timeline" tabindex="0">Timeline selection scope
+ <p id="fixture-notice">Component test fixture · simulated action adapter<br>Controls only; this is not the CatLive application.</p>
+ <div id="toolbar"><button type="button" id="add">Add</button></div>
+</section>
+<section id="setlist" tabindex="0">Setlist</section>
+<section id="piano" tabindex="0"><span class="note">MIDI</span></section>
+<div id="components">
+ <div id="rec-project"><h2 class="fixture-heading">REC project creation step</h2></div>
+ <div id="rec-track"><h2 class="fixture-heading">Track REC settings</h2></div>
+ <div id="rec-advanced"><h2 class="fixture-heading">Advanced → Record</h2></div>
+ <div id="fixture-status">Input and action assertions run through CDP against the actual components.<br>Font: Inter · native CSS pixels · no rasterized UI.</div>
+</div>
+<script type="module">
+import {SelectionRouter} from '/ui/selection.js';
+import {showContextMenu, isContextMenuOpen} from '/ui/context-menu.js';
+import {mountTimelineLock} from '/ui/timeline-lock.js';
+import {createRecordingProjectStep,createTrackRecordingSettings,createAdvancedRecordingSettings} from '/ui/recording-settings.js';
+window.counts = {tracks:0,timeline:0,setlist:0,piano:0};
+const router = new SelectionRouter(document, isContextMenuOpen);
+for (const [id, scope] of [['tracks','tracks'],['timeline','grid'],['setlist','setlist'],['piano','pianoRoll']])
+ router.register(document.getElementById(id), () => {window.counts[id]++;return true}, {scope});
+window.openMenu = (x,y) => showContextMenu({x,y,items:[
+ {label:'Patch',children:[{label:'Saída 1–2',checked:true},{label:'Saída 3–4',disabled:true}]},
+ {label:'FX'}, {label:'Env'}, {separator:true}, {label:'Editar…'}
+]});
+// Explicitly simulated session boundary. Production controls receive the same
+// callback contracts; no native project, audio or persistence is exercised here.
+const calls=[], errors=[], held=new Set(), pending=new Map();
+const invoke=(name,payload,result={})=>{
+ calls.push({name,payload:structuredClone(payload)});
+ if(!held.has(name)) return Promise.resolve(result);
+ return new Promise((resolve,reject)=>{
+  const queue=pending.get(name)??[];queue.push({resolve,reject,result});pending.set(name,queue);
+ });
+};
+const fixture=window.fixture={calls,errors,
+ hold(name){held.add(name)},
+ release(name,result){held.delete(name);const request=pending.get(name)?.shift();if(!request)throw Error(`No pending ${name}`);request.resolve(result??request.result)},
+ reject(name,message){held.delete(name);const request=pending.get(name)?.shift();if(!request)throw Error(`No pending ${name}`);request.reject(Error(message))},
+};
+let revision=1;
+fixture.lock=mountTimelineLock({addButton:document.getElementById('add'),projectId:'fixture-project',sessionId:'fixture-session-1',revision,
+ actions:{setTimelineMovementLocked:payload=>invoke('lock',payload,{state:{timelineMovementLocked:payload.locked,revision:++revision}})},
+ onError:error=>errors.push(error.message)});
+fixture.project=createRecordingProjectStep({channels:32,actions:{
+ createProject:payload=>invoke('createProject',payload),back:payload=>invoke('back',payload)}});
+fixture.track=createTrackRecordingSettings({track:{id:'fixture-track',recordingChannels:2,recordingFormat:null,inputMonitoring:true},
+ advanced:{format:'WAV',bitDepth:24,bitrate:320},actions:{
+ setRecordingChannels:payload=>invoke('channels',payload),setRecordingFormat:payload=>invoke('format',payload),
+ setInputMonitoring:payload=>invoke('monitor',payload)}});
+fixture.advanced=createAdvancedRecordingSettings({value:{format:'WAV',bitDepth:24,bitrate:320},
+ actions:{setAdvancedRecording:payload=>invoke('advanced',payload)}});
+document.getElementById('rec-project').append(fixture.project.element);
+document.getElementById('rec-track').append(fixture.track.element);
+document.getElementById('rec-advanced').append(fixture.advanced.element);
+window.ready = true;
+</script>
+</html>

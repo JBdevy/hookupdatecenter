@@ -210,10 +210,10 @@ struct CatStemFXEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Image(systemName: "waveform").font(.title2).foregroundStyle(JarasTheme.green)
+                Image(systemName: "waveform").font(.jarasTitle2).foregroundStyle(JarasTheme.green)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(verbatim: "CatStemSeparation 5").font(.system(size: 19, weight: .semibold))
-                    Text(verbatim: title).font(.caption).foregroundStyle(JarasTheme.secondary).lineLimit(1)
+                    Text(verbatim: "CatStemSeparation 5").font(.jarasSystem(size: 19, weight: .semibold))
+                    Text(verbatim: title).font(.jarasCaption).foregroundStyle(JarasTheme.secondary).lineLimit(1)
                 }
                 Spacer()
                 Toggle("Enabled", isOn: Binding(get: { settings.isEnabled(NativeFXSettings.stemSeparator) }, set: { enabled in
@@ -228,7 +228,7 @@ struct CatStemFXEditor: View {
                     }
                 }
             }.disabled(!available || !settings.isEnabled(NativeFXSettings.stemSeparator))
-            Text(verbatim: status).font(.caption).foregroundStyle(failed ? Color.red : JarasTheme.secondary)
+            Text(verbatim: status).font(.jarasCaption).foregroundStyle(failed ? Color.red : JarasTheme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }.padding(20)
         #if os(macOS)
@@ -257,7 +257,7 @@ struct CatStemFXEditor: View {
 private struct CatStemButtonStyle: ButtonStyle {
     var activeColor: Color?
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 10, weight: .bold)).frame(width: 25, height: 19)
+        configuration.label.font(.jarasSystem(size: 10, weight: .bold)).frame(width: 25, height: 19)
             .foregroundStyle(activeColor == nil ? JarasTheme.text : .black)
             .background(activeColor ?? JarasTheme.line)
             .clipShape(RoundedRectangle(cornerRadius: 3)).opacity(configuration.isPressed ? 0.7 : 1)
@@ -312,7 +312,7 @@ private struct CatStemRealtimeRow: View {
     }
     var body: some View {
         VStack(spacing: 12) {
-            Text(verbatim: stem.rawValue).font(.system(size: 13, weight: .semibold))
+            Text(verbatim: stem.rawValue).font(.jarasSystem(size: 13, weight: .semibold))
                 .foregroundStyle(tint).lineLimit(1).minimumScaleFactor(0.8)
             HStack(spacing: 7) {
                 Button("M") { source.mute.toggle(); commit() }
@@ -323,7 +323,7 @@ private struct CatStemRealtimeRow: View {
                     .accessibilityLabel("Solo " + stem.rawValue)
             }
             gainSlider
-            Text(verbatim: readout).font(.system(size: 11, weight: .medium, design: .monospaced))
+            Text(verbatim: readout).font(.jarasSystem(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(JarasTheme.text).lineLimit(1).minimumScaleFactor(0.8)
         }.padding(.horizontal, 8).padding(.vertical, 14).frame(maxWidth: .infinity)
             .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 7))

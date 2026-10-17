@@ -17,5 +17,5 @@ Path(sys.argv[1]).write_text(source)
 PY
 cp Tests/Apple/RecordingTests.swift "$build_dir/main.swift"
 cp -R Apple/Resources/en.lproj Apple/Resources/pt-BR.lproj "$build_dir/"
-swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasRecording.h Apple/Shared/NativeTooltips.swift Application/Controls/NativeFXParameter.swift Application/Project/{ProjectModels,MIDIItem,ProjectDocumentCodec,ProjectDocumentAppearance,MultiLoop,AudioFileRead,TimelineTempo,OutputPatch,TrackRouting,ClipRepetition,NativeFXSettings,TrackAutomation,RecordingOverview,StemProjectImporter,MediaFileNames,HookImportRules}.swift "$build_dir/Writer.swift" "$build_dir/main.swift" "$build_dir"/*.o -lc++ -o "$build_dir/test"
+swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasRecording.h Apple/Shared/NativeTooltips.swift Application/Controls/NativeFXParameter.swift Application/Project/{ProjectModels,MIDIItem,ItemFade,ItemFadeCurve,ProjectDocumentCodec,ProjectDocumentAppearance,MultiLoop,AudioFileRead,TimelineTempo,OutputPatch,TrackRouting,ClipRepetition,NativeFXSettings,TrackAutomation,RecordingOverview,StemProjectImporter,MediaFileNames,HookImportRules}.swift "$build_dir/Writer.swift" "$build_dir/main.swift" "$build_dir"/*.o -lc++ -o "$build_dir/test"
 "$build_dir/test"

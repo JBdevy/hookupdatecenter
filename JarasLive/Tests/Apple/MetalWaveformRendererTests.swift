@@ -53,6 +53,27 @@ func render(_ strokes: [MetalWaveformStroke], density: Float = 1, items: [MetalT
     return Pixels(bytes: pixels, width: texture.width, height: texture.height)
 }
 
+// Read actual GPU pixels, including a sparse flat sample segment: a fade must
+// reshape amplitude and invalidate presentation while reusing the PCM buffer.
+let flat = TimelineAudioWaveform.VertexBlock(channels: [[SIMD2<Float>(0, -1), SIMD2<Float>(100, -1)]],
+    start: 0, end: 101, step: 1, rate: 1, key: "fade-flat-pcm")
+var faded = MetalWaveformStroke(block: flat, channel: 0, scale: SIMD2(1, 32), translation: SIMD2(10, 64),
+    clip: item, color: SIMD4(1, 1, 1, 1), itemRect: item, lineWidth: 1,
+    fadeRange: SIMD4(10, 100, 50, 50), fadeShape: SIMD4(1, 0, 1, 0))
+let linearPixels = render([faded])
+precondition(linearPixels.maximumAlpha(35, 48) > 120 && linearPixels.maximumAlpha(85, 48) > 120,
+    "Linear fades reshape PCM amplitude at both ends")
+precondition(linearPixels.maximumAlpha(35, 32) == 0, "Unattenuated waveform must disappear inside the fade")
+let linearFrame = MetalWaveformFrame(size: size, strokes: [faded])
+let fadeUploads = engine.uploadedBufferCount
+faded.fadeShape = SIMD4(16, 1, 1.0 / 16.0, -1)
+let curvedPixels = render([faded])
+precondition(curvedPixels.maximumAlpha(35, 62) > 120 && curvedPixels.maximumAlpha(85, 34) > 120,
+    "Both fine controls reach the GPU envelope")
+precondition(!linearFrame.hasSameContent(as: MetalWaveformFrame(size: size, strokes: [faded])), "Fade edits invalidate presentation")
+precondition(engine.uploadedBufferCount == fadeUploads, "Dragging fades must reuse source audio vertices")
+print("METAL_WAVEFORM_FADE_IN_OUT_FINE_CURVES_AND_SPARSE_PCM_PIXELS_OK")
+
 func red(_ image: Pixels, _ x: Int, _ y: Int) -> Int { Int(image.bytes[(y * image.width + x) * 4 + 2]) }
 func green(_ image: Pixels, _ x: Int, _ y: Int) -> Int { Int(image.bytes[(y * image.width + x) * 4 + 1]) }
 var decoration = MetalTimelineItem(rect: CGRect(x: 10, y: 10, width: 100, height: 100),

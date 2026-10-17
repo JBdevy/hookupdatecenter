@@ -23,7 +23,7 @@ enum AppStartupPresentation {
     @Published private(set) var starting = true
     @Published private(set) var startupProgress = 0.1
     @Published private(set) var startupStage = "Carregando projeto…"
-    private var started = false
+    private var startupTask: Task<Void, Never>?
     #if os(iOS)
     @Published private(set) var localPlaybackEnabled = false
     private var localPlaybackTransition: UInt64 = 0
@@ -165,12 +165,15 @@ enum AppStartupPresentation {
             show.audioClipFX = { audio.previewClipFX($0, settings: $1) }
             show.audioClipFXBypass = { audio.previewClipFXBypass($0, bypassed: $1) }
             show.audioItemFade = { audio.previewItemFade($0, fadeIn: $1, seconds: $2) }
+            show.audioItemFadeShape = { audio.previewItemFadeShape($0, fadeIn: $1, curvature: $2, sCurve: $3) }
             show.audioItemPhase = { audio.previewItemPhase($0, inverted: $1) }
             show.audioItemPan = { audio.previewItemPan($0, pan: $1) }
             show.audioItemGain = { audio.previewItemGain($0, gain: $1) }
             show.audioItemChannelMode = { audio.previewItemChannelMode($0, mode: $1) }
             show.audioItemNormalization = { audio.previewItemNormalization($0, gain: $1) }
             show.audioVolume = { audio.previewVolume($0, gain: $1) }
+            show.audioTransportFade = { audio.setTransportFadeGains($0) }
+            show.audioStartTransportFade = { audio.startTransportFade(tracks: $0, duration: $1) }
             show.audioMasterPan = { audio.previewMasterPan($0) }
             show.audioPan = { audio.previewPan($0, pan: $1) }
             show.audioMute = { [weak show] track, muted in
@@ -188,6 +191,13 @@ enum AppStartupPresentation {
             show.audioClipMute = { audio.previewClipMute($0, muted: $1) }
             #if os(macOS)
             show.prepareForSave = { [weak show] in if let show { try ExternalPluginState.captureAllForSaving(show: show) } }
+            show.prepareForFXChange = { [weak show] track, clip, effects in
+                guard let show else { return }
+                let settings = ExternalPluginState.settings(show: show, track: track, clip: clip)
+                for plugin in settings.externalPlugins ?? [] where effects.contains(plugin.effectKey) {
+                    try ExternalPluginState.captureForSaving(show: show, track: track, clip: clip, identifier: plugin.id)
+                }
+            }
             #endif
             show.audioRouting = { audio.previewRouting($0) }
             show.audioPatches = { [weak show] track, patches in
@@ -361,10 +371,25 @@ enum AppStartupPresentation {
     #endif
     func start() async {
         guard !preview else { starting = false; return }
-        guard !started else { return }
-        started = true
-        // A closed startup window cancels its task; a later appearance can retry.
-        defer { if starting { started = false } }
+        // Reparenting the hosting view for interface scaling cancels SwiftUI's
+        // appearance task. Initialization belongs to the container and must
+        // finish once, even when the view disappears and immediately returns.
+        if startupTask == nil { startupTask = Task { await self.initialize() } }
+        await startupTask?.value
+        guard !Task.isCancelled else { return }
+        #if os(macOS)
+        var nextQuarantineCheck = ProcessInfo.processInfo.systemUptime
+        while !Task.isCancelled {
+            do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+            auth.checkLocalExpiry()
+            if ProcessInfo.processInfo.systemUptime >= nextQuarantineCheck {
+                nextQuarantineCheck = ProcessInfo.processInfo.systemUptime + 30
+                Task { await auth.checkOnlineAccess() }
+            }
+        }
+        #endif
+    }
+    private func initialize() async {
         let startupBegan = ProcessInfo.processInfo.systemUptime
         startupProgress = 0.15
         await Task.yield()
@@ -390,16 +415,5 @@ enum AppStartupPresentation {
         #endif
         guard !Task.isCancelled else { return }
         starting = false
-        #if os(macOS)
-        var nextQuarantineCheck = ProcessInfo.processInfo.systemUptime
-        while !Task.isCancelled {
-            do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
-            auth.checkLocalExpiry()
-            if ProcessInfo.processInfo.systemUptime >= nextQuarantineCheck {
-                nextQuarantineCheck = ProcessInfo.processInfo.systemUptime + 30
-                Task { await auth.checkOnlineAccess() }
-            }
-        }
-        #endif
     }
 }

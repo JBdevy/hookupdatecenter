@@ -18,5 +18,5 @@ assert cache.count(draw) == 1, 'Update the rasterization probe after a source ch
 cache=cache.replace(draw, '                GridHeaderRasterProbe.count += 1\n'+draw)
 Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nimport CoreText\n'+item+'\n'+cache+'\n'+Path('Tests/Apple/GridHeaderTextTests.swift').read_text())
 PY
-swiftc -swift-version 5 -target "$(uname -m)-apple-macos12.0" "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 -target "$(uname -m)-apple-macos12.0" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -105,7 +105,7 @@ struct ItemNormalizationEditor: View {
     private func finish() { if let close { close() } else { dismiss() } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Normalize").font(.headline)
+            Text("Normalize").font(.jarasHeadline)
             Picker("Mode", selection: $mode) { ForEach(NormalizationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
             HStack {
                 Text("Target")
@@ -114,9 +114,9 @@ struct ItemNormalizationEditor: View {
                     .modifier(NormalizeShake(value: shake))
                 Text(mode == .lufs ? "LUFS" : mode == .truePeak ? "dBTP" : "dB")
             }
-            Text("Independent normalization gain: up to +24 dB").font(.caption).foregroundStyle(JarasTheme.secondary)
-            if !progress.isEmpty { HStack { ProgressView().controlSize(.small); Text(progress).font(.caption).lineLimit(1) } }
-            if !error.isEmpty { Text(error).foregroundStyle(.red).font(.caption) }
+            Text("Independent normalization gain: up to +24 dB").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            if !progress.isEmpty { HStack { ProgressView().controlSize(.small); Text(progress).font(.jarasCaption).lineLimit(1) } }
+            if !error.isEmpty { Text(error).foregroundStyle(.red).font(.jarasCaption) }
             HStack {
                 Button("Cancel") { worker?.cancel(); finish() }.keyboardShortcut(.cancelAction)
                 Spacer()

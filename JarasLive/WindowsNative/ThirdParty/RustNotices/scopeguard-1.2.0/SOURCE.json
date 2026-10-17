@@ -1,0 +1,7 @@
+﻿{
+    "license":  "MIT OR Apache-2.0",
+    "source":  "registry+https://github.com/rust-lang/crates.io-index",
+    "name":  "scopeguard",
+    "version":  "1.2.0",
+    "repository":  "https://github.com/bluss/scopeguard"
+}

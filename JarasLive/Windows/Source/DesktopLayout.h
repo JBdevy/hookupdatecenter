@@ -1,6 +1,8 @@
 #pragma once
 #include "Common.h"
 namespace catlive {
+// Rounded from the Mac SidebarWidthLimits.setlist (305.63671875 pt).
+inline constexpr int minimumSetlistWidth = 306;
 // Logical dimensions: the peer applies the monitor's DPI. Never force a window
 // larger than the work area, including after moving from a larger monitor.
 inline void fitEditorWindow(DocumentWindow &window, juce::Rectangle<int> restored = {}) {

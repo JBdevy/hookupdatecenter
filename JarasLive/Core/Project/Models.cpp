@@ -144,7 +144,8 @@ void validateClipFXJSON(const std::string& json) {
         if (end == std::string::npos) throw std::invalid_argument("Invalid item FX selection");
         const auto effect = json.substr(position + 1, end - position - 1);
         const bool external = effect.rfind("External:", 0) == 0 && effect.size() > 9 && json.find("\"externalPlugins\"") != std::string::npos;
-        if ((!allowed.count(effect) && !external) || !effects.insert(effect).second) throw std::invalid_argument("Invalid item FX selection");
+        const bool nativeInstance = effect.rfind("Native:", 0) == 0 && effect.size() > 7 && json.find("\"instances\"") != std::string::npos;
+        if ((!allowed.count(effect) && !external && !nativeInstance) || !effects.insert(effect).second) throw std::invalid_argument("Invalid item FX selection");
         position = json.find_first_not_of(" \t\r\n", end + 1);
         if (position == std::string::npos || (json[position] != ',' && json[position] != ']')) throw std::invalid_argument("Invalid item FX selection");
         if (json[position] == ',') {
@@ -308,7 +309,7 @@ void validate(const Project& p) {
                 require((clip.frozenMIDI != true && clip.renderedTiming != true && clip.renderedTempo != true) || (fixed.empty() && clip.audioFile && !clip.midi), "Printed timing requires an audio item");
                 if(clip.midi) {
                     const auto& m=*clip.midi;
-                    require(fixed.empty() && !clip.audioFile && !clip.text && !clip.loopLength, "MIDI items require an instrument track");
+                    require(fixed.empty() && !clip.audioFile && !clip.text, "MIDI items require an instrument track");
                     require(finite(m.sourceBPM) && m.sourceBPM>=1 && m.sourceBPM<=1000 && m.notes.size()<=100000, "Invalid MIDI item");
                     require(m.division>=1 && m.division<=128 && (m.division&(m.division-1))==0 && finite(m.swing) && m.swing>=0 && m.swing<=.95, "Invalid MIDI grid");
                     require(m.mode=="straight" || m.mode=="triplet" || m.mode=="dotted" || m.mode=="swing", "Invalid MIDI grid mode");
@@ -339,6 +340,7 @@ void validate(const Project& p) {
                 require(!clip.pan || (finite(*clip.pan) && *clip.pan >= -1 && *clip.pan <= 1), "Invalid item pan");
                 require(!clip.gain || (finite(*clip.gain) && *clip.gain >= 0), "Invalid clip gain");
                 require(!clip.channelMode || (*clip.channelMode >= 0 && *clip.channelMode <= 3), "Invalid item channel mode");
+                for (auto value : {clip.fadeInCurve, clip.fadeInSCurve, clip.fadeOutCurve, clip.fadeOutSCurve}) require(!value || (finite(*value) && *value >= -1 && *value <= 1), "Invalid fade curve");
                 require((!clip.fadeIn || (finite(*clip.fadeIn) && *clip.fadeIn >= 0)) && (!clip.fadeOut || (finite(*clip.fadeOut) && *clip.fadeOut >= 0)), "Invalid item fade");
                 require(!clip.pitchSemitones || (finite(*clip.pitchSemitones) && *clip.pitchSemitones >= -12 && *clip.pitchSemitones <= 12), "Invalid item pitch");
                 require(!clip.normalizationGain || (finite(*clip.normalizationGain) && *clip.normalizationGain >= 0 && *clip.normalizationGain <= std::pow(10.0, 24.0 / 20.0)), "Invalid normalization gain");

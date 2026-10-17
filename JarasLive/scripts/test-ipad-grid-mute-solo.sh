@@ -28,5 +28,5 @@ struct RemoteNativeItemEditor: View {
 '''
 Path(sys.argv[1]).write_text('import SwiftUI\nimport AppKit\n' + Path('Application/Project/TeleprompterSettings.swift').read_text() + '\n' + Path('Apple/Shared/DAWRemoteProtocol.swift').read_text() + '\n' + stubs + '\nstruct GridSelectionItem {\n' + constants + '\n}\n' + style + '\n' + section('private func remoteColor(', '/// Native rectangular fader') + '\n' + item + '\n' + Path('Tests/Apple/IpadGridMuteSoloTests.swift').read_text())
 PY
-swiftc -swift-version 5 -target "$(uname -m)-apple-macos13.0" "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 -target "$(uname -m)-apple-macos13.0" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

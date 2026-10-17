@@ -73,7 +73,7 @@ struct RecordingGridOverlay: View {
                 let headerHeight: CGFloat = rect.height <= 26 ? rect.height : 13
                 ink.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: headerHeight)), with: .color(.black.opacity(0.16)))
                 if rect.width > 8 {
-                    let title = Text(verbatim: reservation.clip.name).font(.system(size: 9, weight: .bold)).foregroundColor(.white)
+                    let title = Text(verbatim: reservation.clip.name).font(.jarasSystem(size: 9, weight: .bold)).foregroundColor(.white)
                     ink.draw(title, in: CGRect(x: max(rect.minX, visibleRect.minX) + 4, y: rect.minY + 1, width: max(0, min(rect.maxX, visibleRect.maxX) - max(rect.minX, visibleRect.minX) - 8), height: headerHeight))
                 }
                 guard rect.height > 26 else { continue }

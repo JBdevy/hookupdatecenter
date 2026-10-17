@@ -28,12 +28,14 @@ let first = ClipboardTestWindow(contentRect: .init(x: 0, y: 0, width: 300, heigh
 let second = ClipboardTestWindow(contentRect: first.frame, styleMask: [.titled], backing: .buffered, defer: false)
 let owner = RegionShortcutView(), other = RegionShortcutView()
 first.contentView!.addSubview(owner); second.contentView!.addSubview(other)
-var pasted = 0, copied = 0, cut = 0, otherPaste = 0
+var pasted = 0, copied = 0, cut = 0, otherPaste = 0, duplicated = 0
+owner.duplicateItems = { duplicated += 1 }
 owner.pasteItems = { pasted += 1 }; other.pasteItems = { otherPaste += 1 }
 owner.copyItems = { copied += 1; return true }; owner.moveItems = { cut += 1; return true }
 app.targetWindow = first
 for _ in 0..<10 { RegionShortcutView.performClipboard("v") }
 RegionShortcutView.performClipboard("c"); RegionShortcutView.performClipboard("x")
+RegionShortcutView.performClipboard("d"); precondition(duplicated == 1)
 precondition(pasted == 10 && copied == 1 && cut == 1 && otherPaste == 0)
 app.targetWindow = second; RegionShortcutView.performClipboard("v")
 precondition(otherPaste == 1 && pasted == 10)
@@ -42,6 +44,7 @@ let text = NSTextView(frame: .init(x: 0, y: 0, width: 100, height: 40)); first.c
 precondition(first.makeFirstResponder(text))
 RegionShortcutView.performClipboard("v")
 precondition(app.forwarded == ["paste:"] && pasted == 10, "text keeps native paste")
+RegionShortcutView.performClipboard("d"); precondition(duplicated == 1, "text editing must not duplicate timeline items")
 first.makeFirstResponder(nil)
 NativeTimelineInputGate.shared.blocked = true; RegionShortcutView.performClipboard("v")
 precondition(pasted == 10, "modal grid gates remain respected")

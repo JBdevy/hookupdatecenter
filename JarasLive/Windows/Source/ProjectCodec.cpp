@@ -11,6 +11,11 @@ const unsigned char header[]{0x4a, 0x41, 0x52, 0x41, 0x53, 0x4a, 0x4c, 0x00, 0x0
 const unsigned char keyBytes[]{0xce, 0x9a, 0x3a, 0xb3, 0xab, 0x54, 0x63, 0x22, 0x5a, 0x93, 0xd8,
                                0x65, 0xdd, 0xe0, 0x49, 0xce, 0x38, 0x56, 0xde, 0x29, 0x9a, 0x12,
                                0x29, 0x44, 0x07, 0x41, 0xf7, 0x37, 0x0f, 0x49, 0x69, 0xfd};
+// Swift represents these default-valued fields as optionals. Keep an omitted
+// default omitted on round trips, while always persisting an actual edit.
+template <typename T> void putDefault(var &owner, const char *key, T value, T fallback) {
+    if (value != fallback || !get(owner, key).isVoid()) put(owner, key, value);
+}
 void check(NTSTATUS s) {
     if (s < 0)
         throw std::runtime_error("Project authentication/encryption failed.");
@@ -79,7 +84,7 @@ template <class T> void optionalText(const var &v, const char *key, std::optiona
 }
 void optionalJSON(const var &value, const char *key, std::optional<std::string> &out) {
     if (get(value, key).isObject())
-        out = utf8(JSON::toString(get(value, key), true));
+        out = utf8(JSON::toString(get(value, key), true, 17));
 }
 void remove(var &value, const char *key) { value.getDynamicObject()->removeProperty(key); }
 template <class T> void emit(var &value, const char *key, const std::optional<T> &data) {
@@ -282,58 +287,152 @@ String ProjectCodec::unseal(const MemoryBlock &input) {
     require(plain.trimStart().startsWithChar('{'), "Invalid or unsupported .jl project.");
     return plain;
 }
-var ProjectCodec::canonicalIDs(const var &input) {
-    // Early Windows previews used JUCE's 32-digit spelling. Swift's UUID
-    // Codable representation needs the 36-character spelling. Rewrite declared
-    // IDs and all references together, including preserved extension fields.
-    std::map<String, String> replacements;
-    std::function<void(const var &)> collect = [&](const var &value) {
-        if (auto *node = value.getDynamicObject()) {
-            const auto id = str(value, "id");
-            if (id.length() == 32 && id.containsOnly("0123456789abcdefABCDEF"))
-                replacements[id.toLowerCase()] = Uuid(id).toDashedString().toUpperCase();
-            for (const auto &property : node->getProperties())
-                collect(property.value);
-        } else if (auto *array = value.getArray())
-            for (const auto &item : *array)
-                collect(item);
+namespace {
+// Migrate only identities declared by the project schema. Vendor/plugin states
+// and future extension fields own their strings, keys and embedded identities.
+String canonicalID(const String &value) {
+    const auto compact = [](const String &id) {
+        return id.length() == 32 && id.containsOnly("0123456789abcdefABCDEF");
     };
-    collect(input);
-    if (replacements.empty())
-        return input;
-    auto timecodes = replacements;
-    for (const auto &entry : replacements) {
-        auto id = entry.second;
+    if (compact(value)) return Uuid(value).toDashedString().toUpperCase();
+    if (value.length() == 41 && value.endsWith("-timecode") && compact(value.substring(0, 32))) {
+        auto id = Uuid(value.substring(0, 32)).toDashedString().toUpperCase();
         const auto first = String("0123456789ABCDEF").indexOfChar(id[0]) ^ 8;
-        id = String::charToString(String("0123456789ABCDEF")[first]) + id.substring(1);
-        timecodes[entry.first + "-timecode"] = id;
+        return String::charToString(String("0123456789ABCDEF")[first]) + id.substring(1);
     }
-    const auto replace = [&](const String &value) {
-        const auto found = timecodes.find(value.toLowerCase());
-        return found == timecodes.end() ? value : found->second;
-    };
-    std::function<var(const var &)> rewrite = [&](const var &value) -> var {
-        if (value.isString())
-            return replace(value.toString());
-        if (auto *node = value.getDynamicObject()) {
-            auto result = object();
-            for (const auto &property : node->getProperties())
-                put(result, Identifier(replace(property.name.toString())), rewrite(property.value));
-            return result;
-        }
-        if (auto *array = value.getArray()) {
-            Array<var> result;
-            for (const auto &item : *array)
-                result.add(rewrite(item));
-            return result;
-        }
-        return value;
-    };
-    return rewrite(input);
+    return value;
+}
+void canonicalIDValue(var &value) {
+    if (value.isString()) value = canonicalID(value.toString());
+}
+template <typename F> void identityField(var &owner, const char *key, F &&work) {
+    auto *node = owner.getDynamicObject();
+    if (!node || !node->hasProperty(key)) return;
+    auto value = node->getProperty(key);
+    work(value);
+    node->setProperty(key, std::move(value));
+}
+template <typename F> void identityElements(var &owner, const char *key, F &&work) {
+    identityField(owner, key, [&](var &values) {
+        if (auto *array = values.getArray()) for (auto &value : *array) work(value);
+    });
+}
+void canonicalIDFields(var &owner, std::initializer_list<const char *> keys) {
+    for (const auto *key : keys) identityField(owner, key, canonicalIDValue);
+}
+void canonicalIDArray(var &owner, const char *key) {
+    identityElements(owner, key, canonicalIDValue);
+}
+void canonicalNativeKey(var &value) {
+    if (!value.isString()) return;
+    const auto text = value.toString();
+    if (text.startsWith("Native:")) value = "Native:" + canonicalID(text.substring(7));
+}
+void canonicalFX(var &fx) {
+    identityElements(fx, "bands", [](var &band) { canonicalIDFields(band, {"id"}); });
+    identityElements(fx, "instances", [](var &instance) {
+        canonicalIDFields(instance, {"id"});
+        identityField(instance, "settings", canonicalFX);
+    });
+    identityElements(fx, "inserted", canonicalNativeKey);
+    // External instance/class IDs, component/controller state and vendor data
+    // are opaque. In particular, never recurse through externalPlugins.
+}
+void canonicalAutomation(var &automation) {
+    identityElements(automation, "envelopes", [](var &envelope) {
+        canonicalIDFields(envelope, {"id"});
+        identityElements(envelope, "points", [](var &point) { canonicalIDFields(point, {"id"}); });
+        identityField(envelope, "target", [](var &target) {
+            identityField(target, "native", [](var &native) {
+                canonicalIDFields(native, {"band"});
+                identityField(native, "effect", canonicalNativeKey);
+            });
+        });
+    });
+}
+void canonicalRouting(var &routing) {
+    canonicalIDArray(routing, "receives");
+    canonicalIDArray(routing, "transmitters");
+}
+void canonicalMapKeys(var &map, bool prefixed) {
+    const auto *node = map.getDynamicObject();
+    if (!node) return;
+    auto result = object();
+    for (const auto &property : node->getProperties()) {
+        auto key = property.name.toString();
+        if (!prefixed) key = canonicalID(key);
+        else if (key.startsWith("region:") || key.startsWith("marker:"))
+            key = key.substring(0, 7) + canonicalID(key.substring(7));
+        require(!result.getDynamicObject()->hasProperty(Identifier(key)),
+                "Conflicting legacy IDs in integration map.");
+        put(result, Identifier(key), property.value);
+    }
+    map = std::move(result);
+}
+} // namespace
+var ProjectCodec::canonicalIDs(const var &input) {
+    auto root = input.clone();
+    canonicalIDFields(root, {"id"});
+    identityField(root, "savedCursor", [](var &cursor) { canonicalIDFields(cursor, {"songID"}); });
+    identityField(root, "masterFX", canonicalFX);
+    identityField(root, "masterAutomation", canonicalAutomation);
+    identityElements(root, "setlists", [](var &setlist) {
+        canonicalIDFields(setlist, {"id"}); canonicalIDArray(setlist, "songIds");
+    });
+    identityField(root, "regionSetlist", [](var &setlist) {
+        canonicalIDFields(setlist, {"selectedId"});
+        canonicalIDArray(setlist, "playedLiveRegionIDs");
+        identityElements(setlist, "playlists", [](var &playlist) {
+            canonicalIDFields(playlist, {"id", "songId"}); canonicalIDArray(playlist, "regionIds");
+        });
+        identityElements(setlist, "blocks", [](var &block) {
+            canonicalIDFields(block, {"id", "songId", "playlistId", "beforeRegionId"});
+        });
+    });
+    identityElements(root, "songs", [](var &song) {
+        canonicalIDFields(song, {"id"});
+        identityElements(song, "tracks", [](var &track) {
+            canonicalIDFields(track, {"id", "parentTrackID"});
+            identityField(track, "routing", canonicalRouting);
+            identityField(track, "stereoLink", [](var &link) {
+                canonicalIDFields(link, {"partner"});
+                identityField(link, "original", [](var &original) { identityField(original, "routing", canonicalRouting); });
+            });
+            identityField(track, "fx", canonicalFX); identityField(track, "automation", canonicalAutomation);
+            identityElements(track, "clips", [](var &clip) {
+                canonicalIDFields(clip, {"id", "regionOwnerID"});
+                canonicalIDArray(clip, "separatedStemTracks");
+                identityField(clip, "fx", canonicalFX); identityField(clip, "automation", canonicalAutomation);
+                identityField(clip, "midi", [](var &midi) {
+                    identityElements(midi, "notes", [](var &note) { canonicalIDFields(note, {"id"}); });
+                });
+            });
+        });
+        identityElements(song, "parts", [](var &part) {
+            canonicalIDFields(part, {"id", "parentRegionID"});
+            canonicalIDArray(part, "pitchTrackIDs"); canonicalIDArray(part, "pitchGroupIDs");
+            identityElements(part, "multiLoops", [](var &loop) {
+                canonicalIDFields(loop, {"id", "marker1", "marker2"});
+                identityElements(loop, "tracks", [](var &track) { canonicalIDFields(track, {"id"}); });
+            });
+        });
+        identityElements(song, "markers", [](var &marker) {
+            canonicalIDFields(marker, {"id", "unifiedRegionID", "sourceRegionID", "regionOwnerID"});
+        });
+    });
+    identityField(root, "resolume", [](var &resolume) {
+        for (const auto *key : {"withMarkers", "regionsOnly"})
+            identityField(resolume, key, [](var &map) { canonicalMapKeys(map, true); });
+    });
+    identityField(root, "windowsLighting", [](var &lighting) {
+        identityField(lighting, "assignments", [](var &map) { canonicalMapKeys(map, true); });
+        identityField(lighting, "starts", [](var &map) { canonicalMapKeys(map, false); });
+    });
+    return root;
 }
 var ProjectCodec::read(const File &file) {
-    require(file.existsAsFile() && file.getSize() > 0 && file.getSize() <= 64 * 1024 * 1024,
-            "Invalid project or document exceeds 64 MB.");
+    require(file.existsAsFile() && file.getSize() > 0 && file.getSize() <= 128 * 1024 * 1024,
+            "Invalid project or document exceeds 128 MB.");
     MemoryBlock bytes;
     require(file.loadFileAsData(bytes), "Could not read project.");
     var value;
@@ -350,7 +449,7 @@ void ProjectCodec::write(const File &file, const var &input) {
     require(folder.createDirectory().wasOk(), "Could not create project folder.");
     for (auto &other : folder.findChildFiles(File::findFiles, false, "*.jl"))
         require(other == file, "Choose a separate folder for each CatLive project.");
-    auto bytes = seal(JSON::toString(value, true));
+    auto bytes = seal(JSON::toString(value, true, 17));
     TemporaryFile tmp(file);
     {
         FileOutputStream out(tmp.getFile());
@@ -362,7 +461,7 @@ void ProjectCodec::write(const File &file, const var &input) {
     require(tmp.overwriteTargetFileWithTemporary(),
             "Could not replace project; the previous file was preserved.");
 }
-File ProjectCodec::resolveMedia(const File &directory, const std::string &relative) {
+File ProjectCodec::resolveMedia(const File &directory, const std::string &relative, bool resolveExisting) {
     auto path = text(relative).replaceCharacter('\\', '/');
     require(path.isNotEmpty() && !File::isAbsolutePath(path) && !path.containsChar(':') &&
                 !path.startsWithChar('/'),
@@ -371,7 +470,7 @@ File ProjectCodec::resolveMedia(const File &directory, const std::string &relati
         require(part != "..", "Unsafe media path.");
     auto file = directory.getChildFile(path);
     require(file.isAChildOf(directory), "Audio path escapes project folder.");
-    return existingMediaPath(file);
+    return resolveExisting ? existingMediaPath(file) : file;
 }
 jaras::Project ProjectCodec::decode(const var &input) {
     const auto root = canonicalIDs(input);
@@ -379,6 +478,8 @@ jaras::Project ProjectCodec::decode(const var &input) {
     jaras::Project p;
     p.id = s(root, "id");
     p.name = s(root, "name");
+    if (get(root, "timelineMovementLocked").isBool())
+        p.timelineMovementLocked = flag(root, "timelineMovementLocked");
     p.projectFormatVersion = (int)num(root, "projectFormatVersion", 1);
     require(p.projectFormatVersion == 1, "This project version requires a newer CatLive.");
     p.minimumJarasVersion = s(root, "minimumJarasVersion");
@@ -390,7 +491,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
     p.masterSolo = flag(root, "masterSolo");
     optionalJSON(root, "masterAutomation", p.masterAutomationJSON);
     if (get(root, "masterFX").isObject())
-        p.masterFXJSON = utf8(JSON::toString(get(root, "masterFX"), true));
+        p.masterFXJSON = utf8(JSON::toString(get(root, "masterFX"), true, 17));
     p.masterMono = flag(root, "masterMono");
     optionalNum(root, "masterColor", p.masterColor);
     optionalNum(root, "masterPhaseInverted", p.masterPhaseInverted);
@@ -458,7 +559,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 t.timecode = timecode(get(rt, "timecode"));
             if (get(rt, "stereoLink").isObject()) {
                 auto link = get(rt, "stereoLink");
-                t.stereoLinkJSON = utf8(JSON::toString(link, true));
+                t.stereoLinkJSON = utf8(JSON::toString(link, true, 17));
                 t.stereoLinkPartner = s(link, "partner");
                 t.stereoLinkLeft = flag(link, "left");
             }
@@ -504,6 +605,10 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 optionalNum(rc, "normalizationGain", c.normalizationGain);
                 optionalNum(rc, "fadeIn", c.fadeIn);
                 optionalNum(rc, "fadeOut", c.fadeOut);
+                optionalNum(rc, "fadeOutSCurve", c.fadeOutSCurve);
+                optionalNum(rc, "fadeOutCurve", c.fadeOutCurve);
+                optionalNum(rc, "fadeInSCurve", c.fadeInSCurve);
+                optionalNum(rc, "fadeInCurve", c.fadeInCurve);
                 optionalNum(rc, "channelMode", c.channelMode);
                 optionalNum(rc, "loopStart", c.loopStart);
                 optionalNum(rc, "loopLength", c.loopLength);
@@ -536,11 +641,11 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 for (auto sample : list(get(rc, "waveform")))
                     c.waveform.push_back((double)sample);
                 if (get(rc, "fx").isObject())
-                    c.fxJSON = utf8(JSON::toString(get(rc, "fx"), true));
+                    c.fxJSON = utf8(JSON::toString(get(rc, "fx"), true, 17));
                 t.clips.push_back(std::move(c));
             }
             if (get(rt, "fx").isObject())
-                t.fxJSON = utf8(JSON::toString(get(rt, "fx"), true));
+                t.fxJSON = utf8(JSON::toString(get(rt, "fx"), true, 17));
             song.tracks.push_back(std::move(t));
         }
         for (const auto &rp : list(get(raw, "parts"))) {
@@ -637,15 +742,16 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
     auto root = merged(original);
     put(root, "id", text(p.id));
     put(root, "name", text(p.name));
+    emit(root, "timelineMovementLocked", p.timelineMovementLocked);
     put(root, "projectFormatVersion", p.projectFormatVersion);
     put(root, "minimumJarasVersion", "1.0.0");
     put(root, "createdAt", text(p.createdAt));
     put(root, "updatedAt", text(p.updatedAt));
-    put(root, "masterVolume", p.masterVolume);
-    put(root, "masterPan", p.masterPan);
-    put(root, "masterMute", p.masterMute);
-    put(root, "masterSolo", p.masterSolo);
-    put(root, "masterMono", p.masterMono);
+    putDefault(root, "masterVolume", p.masterVolume, 1.0);
+    putDefault(root, "masterPan", p.masterPan, 0.0);
+    putDefault(root, "masterMute", p.masterMute, false);
+    putDefault(root, "masterSolo", p.masterSolo, false);
+    putDefault(root, "masterMono", p.masterMono, false);
     emitJSON(root, "masterAutomation", p.masterAutomationJSON);
     emit(root, "masterPatch", p.masterPatch);
     emit(root, "masterSecondaryPatch", p.masterSecondaryPatch);
@@ -669,6 +775,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
     }
     if (p.masterFXJSON)
         put(root, "masterFX", JSON::parse(text(*p.masterFXJSON)));
+    else remove(root, "masterFX");
     if (p.masterPatch)
         put(root, "masterPatch", patchJSON(*p.masterPatch));
     Array<var> songs;
@@ -678,8 +785,8 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
         put(raw, "name", text(song.name));
         put(raw, "duration", song.duration);
         put(raw, "bpm", song.bpm);
-        put(raw, "beatsPerBar", song.beatsPerBar);
-        put(raw, "beatUnit", song.beatUnit);
+        putDefault(raw, "beatsPerBar", song.beatsPerBar, 4);
+        putDefault(raw, "beatUnit", song.beatUnit, 4);
         if (song.timeSettings) {
             auto value = merged(get(raw, "timeSettings"));
             put(value, "divisions", song.timeSettings->divisions);
@@ -740,6 +847,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 remove(rt, "routing");
             if (t.fxJSON)
                 put(rt, "fx", JSON::parse(text(*t.fxJSON)));
+            else remove(rt, "fx");
             if (t.color)
                 put(rt, "color", (int64)*t.color);
             if (t.patch)
@@ -770,8 +878,8 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 put(rc, "startTime", c.startTime);
                 put(rc, "duration", c.duration);
                 put(rc, "sourceOffset", c.sourceOffset);
-                put(rc, "playbackRate", c.playbackRate);
-                put(rc, "muted", c.muted);
+                putDefault(rc, "playbackRate", c.playbackRate, 1.0);
+                putDefault(rc, "muted", c.muted, false);
                 emitJSON(rc, "automation", c.automationJSON);
                 emit(rc, "audioFile", c.audioFile);
                 emit(rc, "normalizationGain", c.normalizationGain);
@@ -809,6 +917,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 }
                 if (c.fxJSON)
                     put(rc, "fx", JSON::parse(text(*c.fxJSON)));
+                else remove(rc, "fx");
                 if (c.audioFile)
                     put(rc, "audioFile", audioJSON(*c.audioFile));
                 if (c.gain)
@@ -821,6 +930,10 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                     put(rc, "fadeIn", *c.fadeIn);
                 if (c.fadeOut)
                     put(rc, "fadeOut", *c.fadeOut);
+                if (c.fadeOutSCurve) put(rc, "fadeOutSCurve", *c.fadeOutSCurve); else rc.getDynamicObject()->removeProperty("fadeOutSCurve");
+                if (c.fadeOutCurve) put(rc, "fadeOutCurve", *c.fadeOutCurve); else rc.getDynamicObject()->removeProperty("fadeOutCurve");
+                if (c.fadeInSCurve) put(rc, "fadeInSCurve", *c.fadeInSCurve); else rc.getDynamicObject()->removeProperty("fadeInSCurve");
+                if (c.fadeInCurve) put(rc, "fadeInCurve", *c.fadeInCurve); else rc.getDynamicObject()->removeProperty("fadeInCurve");
                 if (c.regionOwnerID)
                     put(rc, "regionOwnerID", text(*c.regionOwnerID));
                 if (c.text)
@@ -911,7 +1024,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
         const auto &state = *p.regionSetlist;
         auto rs = merged(get(original, "regionSetlist"));
         put(rs, "autoAdvance", state.autoAdvance);
-        put(rs, "autoUntilBlockEnd", state.autoUntilBlockEnd);
+        putDefault(rs, "autoUntilBlockEnd", state.autoUntilBlockEnd, false);
         emit(rs, "selectedId", state.selectedId);
         emit(rs, "stopAtRegionEnd", state.stopAtRegionEnd);
         emit(rs, "prepareWithoutPlayback", state.prepareWithoutPlayback);

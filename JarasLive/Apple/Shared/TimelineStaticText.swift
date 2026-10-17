@@ -27,7 +27,7 @@ final class TimelineStaticText: NSObject {
 
     private init?(text: String, style: Style, scale: CGFloat) {
         #if os(macOS)
-        let font = NSFont.monospacedSystemFont(ofSize: 9, weight: style == .regionIdentifier ? .semibold : .medium)
+        let font = NSFont.jarasMonospacedSystemFont(ofSize: 9, weight: style == .regionIdentifier ? .semibold : .medium)
         #else
         let font = UIFont.monospacedSystemFont(ofSize: 9, weight: style == .regionIdentifier ? .semibold : .medium)
         #endif

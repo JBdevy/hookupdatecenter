@@ -14,5 +14,5 @@ start=grid.index('private struct ClipDragInput: View {')
 folder.joinpath('touch.swift').write_text('import SwiftUI\n'+grid[start:grid.index('\n#endif',start)])
 folder.joinpath('main.swift').write_text('import AppKit\n'+Path('Tests/Apple/TimelineItemTouchGestureTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 "$test_dir/metadata.swift" Apple/Shared/TimelineItemTouchGesture.swift "$test_dir/touch.swift" "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/ItemFadeCurve.swift -O -swift-version 5 "$test_dir/metadata.swift" Apple/Shared/TimelineItemTouchGesture.swift "$test_dir/touch.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

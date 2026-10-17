@@ -20,7 +20,11 @@ import AVFoundation
         guard project == nil || project == show.snapshot.project.id else { return }
         if let clip, FXModelLookup.clip(clip, in: show.snapshot.project) == nil { return }
         let node = suppliedNode ?? StemAudioPlayback.shared.effects(for: clip ?? track)?.externalNode(identifier)
-        guard let node, let state = JarasVST3.state(node, identifier: identifier) else { return }
+        guard let node else { return }
+        guard let state = JarasVST3.state(node, identifier: identifier) else {
+            if saving { throw ProjectError.invalid("Não foi possível capturar o estado atual do plugin. A operação foi cancelada.") }
+            return
+        }
         var settings = settings(show: show, track: track, clip: clip)
         guard let index = settings.externalPlugins?.firstIndex(where: { $0.id == identifier }) else { return }
         let before = settings
@@ -188,7 +192,7 @@ struct ExternalPluginEditor: View {
             usesParameterEditor = true
             let language = UserDefaults.standard.string(forKey: "jaras.language") ?? "en"
             let host = NSHostingView(rootView: ExternalPluginEditor(show: show, track: nil, clip: clip, effect: effect)
-                .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
+                .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark).interfaceScaled())
             if #available(macOS 13, *) { host.sizingOptions = [] }
             host.frame = bounds; scroll.documentView = host
         }
@@ -240,6 +244,7 @@ import Combine
     private let list = FXChainTableView()
     private let scroll = NSScrollView()
     private let editorArea = NSView()
+    private var presetBar: FXPresetBar!
     private let footer = NSView()
     private let addButton = NSButton()
     private let removeButton = NSButton()
@@ -286,6 +291,27 @@ import Combine
         removeButton.title = JarasLocalization.string("Remove"); removeButton.bezelStyle = .rounded; removeButton.target = self; removeButton.action = #selector(removeSelectedEffect)
         footer.addSubview(addButton); footer.addSubview(removeButton)
         addSubview(scroll); addSubview(editorArea); addSubview(footer)
+        presetBar = FXPresetBar(read: { [weak self] in self?.settings ?? NativeFXSettings() }, capture: { [weak self] effect in
+            guard let self, self.targetIsCurrent else { throw ProjectError.invalid("Effect no longer exists") }
+            var value = self.settings
+            if let index = value.externalPlugins?.firstIndex(where: { $0.effectKey == effect }), let plugin = value.externalPlugins?[index] {
+                guard let node = StemAudioPlayback.shared.effects(for: self.clip ?? self.track)?.externalNode(plugin.id),
+                      let state = JarasVST3.state(node, identifier: plugin.id) else { throw ProjectError.invalid("Could not read the plugin state") }
+                value.externalPlugins?[index].componentState = state["componentState"] as? String
+                value.externalPlugins?[index].controllerState = state["controllerState"] as? String
+            }
+            return value
+        }, apply: { [weak self] value in
+            guard let self, self.targetIsCurrent else { return }
+            if let clip = self.clip { self.show.previewClipFX(clip, settings: value) }
+            else { self.show.previewFX(self.track, settings: value) }
+            self.show.commitFX()
+        }, report: { [weak self] message in
+            guard let self else { return }
+            self.show.message = message
+            if let window = self.window { let alert = NSAlert(); alert.messageText = message; alert.beginSheetModal(for: window) }
+        })
+        addSubview(presetBar)
         let initial = settings
         refresh(initial, preferred: effect)
         let empty = NativeFXSettings()
@@ -293,7 +319,7 @@ import Combine
             if let clip { return FXModelLookup.clip(clip, in: snapshot.project)?.fx ?? empty }
             return track.flatMap { id in snapshot.project.songs.lazy.flatMap(\.tracks).first(where: { $0.id == id })?.fx }
                 ?? (track == nil ? snapshot.project.masterFX : nil) ?? empty
-        }.removeDuplicates().sink { [weak self] settings in self?.refresh(settings) }
+        }.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] settings in self?.refresh(settings) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layout() {
@@ -302,7 +328,8 @@ import Combine
         footer.frame = NSRect(x: 0, y: max(0, bounds.height - 40), width: sidebarWidth, height: 40)
         addButton.frame = NSRect(x: 6, y: 6, width: 84, height: 28)
         removeButton.frame = NSRect(x: 96, y: 6, width: 88, height: 28)
-        editorArea.frame = NSRect(x: sidebarWidth, y: 0, width: max(1, bounds.width - sidebarWidth), height: bounds.height)
+        presetBar.frame = NSRect(x: sidebarWidth, y: 0, width: max(1, bounds.width - sidebarWidth), height: 36)
+        editorArea.frame = NSRect(x: sidebarWidth, y: 36, width: max(1, bounds.width - sidebarWidth), height: max(0, bounds.height - 36))
         editor?.frame = editorArea.bounds
     }
     private func refresh(_ settings: NativeFXSettings, preferred: String? = nil) {
@@ -316,6 +343,7 @@ import Combine
         let selected = preferred.flatMap { value in rows.first(where: { $0.effect == value })?.effect }
             ?? selection.flatMap { value in rows.first(where: { $0.effect == value })?.effect } ?? rows.first?.effect
         removeButton.isEnabled = selected != nil
+        presetBar.refresh(effect: selected, settings: settings)
         guard let selected else { removeEditor(); selection = nil; return }
         select(selected)
         if let index = rows.firstIndex(where: { $0.effect == selected }) {
@@ -328,6 +356,7 @@ import Combine
             ExternalPluginState.capture(show: show, track: track, identifier: plugin.id)
         }
         selection = effect; removeButton.isEnabled = true; removeEditor()
+        presetBar.refresh(effect: effect, settings: settings)
         let content: NSView
         let size: NSSize
         if effect.hasPrefix("External:"), let clip {
@@ -336,21 +365,21 @@ import Combine
             panel?.contentMinSize = NSSize(width: sidebarWidth + 400, height: 320)
         } else if effect.hasPrefix("External:"), let native = ExternalPluginEditor.nativeEditor(show: show, track: track, effect: effect) {
             content = native; size = native.frame.size
-            panel?.contentMinSize = NSSize(width: sidebarWidth + 64, height: 64)
+            panel?.contentMinSize = NSSize(width: sidebarWidth + 400, height: 64)
         } else {
             let language = UserDefaults.standard.string(forKey: "jaras.language") ?? "en"
             // editorArea supplies the frame; the panel below supplies the
             // minimum size. Do not ask SwiftUI to remeasure window limits.
             if effect == "CatStemSeparation 5" {
-                let host = NSHostingView(rootView: CatStemFXEditor(show: show, track: track, clip: clip).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
+                let host = NSHostingView(rootView: CatStemFXEditor(show: show, track: track, clip: clip).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark).interfaceScaled())
                 if #available(macOS 13, *) { host.sizingOptions = [] }
                 content = host
             } else if effect.hasPrefix("External:") {
-                let host = NSHostingView(rootView: ExternalPluginEditor(show: show, track: track, effect: effect).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
+                let host = NSHostingView(rootView: ExternalPluginEditor(show: show, track: track, effect: effect).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark).interfaceScaled())
                 if #available(macOS 13, *) { host.sizingOptions = [] }
                 content = host
             } else {
-                let host = NSHostingView(rootView: FXEditor(show: show, track: track, clip: clip, effect: effect, close: { [weak panel] in panel?.close() }).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark))
+                let host = NSHostingView(rootView: FXEditor(show: show, track: track, clip: clip, effect: effect, close: { [weak panel] in panel?.close() }).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark).interfaceScaled())
                 if #available(macOS 13, *) { host.sizingOptions = [] }
                 content = host
             }
@@ -360,7 +389,8 @@ import Combine
             panel?.contentMinSize = NSSize(width: sidebarWidth + 640, height: compactControls ? 340 : 540)
         }
         editor = content; editorArea.addSubview(content)
-        preferredContentSize = NSSize(width: size.width + sidebarWidth, height: size.height)
+        preferredContentSize = NSSize(width: size.width + sidebarWidth, height: size.height + 36)
+        if let panel { panel.contentMinSize.height += 36 }
         panel?.setContentSize(preferredContentSize); needsLayout = true
         if let index = rows.firstIndex(where: { $0.effect == effect }) {
             refreshing = true; list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); refreshing = false
@@ -395,7 +425,7 @@ import Combine
         let value = rows[row]
         if tableColumn?.identifier.rawValue == "enabled" {
             let button = NSButton(title: "By", target: self, action: #selector(toggle(_:)))
-            button.isBordered = false; button.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+            button.isBordered = false; button.font = NSFont.jarasSystemFont(ofSize: 10, weight: .semibold)
             button.identifier = NSUserInterfaceItemIdentifier(value.effect)
             button.wantsLayer = true; button.layer?.cornerRadius = 3
             button.layer?.backgroundColor = (value.enabled ? NSColor.white.withAlphaComponent(0.12) : NSColor.systemRed.withAlphaComponent(0.75)).cgColor
@@ -405,7 +435,7 @@ import Combine
             return button
         }
         let text = NSTextField(labelWithString: value.name); text.lineBreakMode = .byTruncatingTail
-        text.font = NSFont.systemFont(ofSize: 12); text.textColor = value.enabled ? .labelColor : .secondaryLabelColor
+        text.font = NSFont.jarasSystemFont(ofSize: 12); text.textColor = value.enabled ? .labelColor : .secondaryLabelColor
         return text
     }
     @objc private func toggle(_ sender: NSButton) {
@@ -421,6 +451,7 @@ import Combine
         guard targetIsCurrent else { return }
         if let clip { show.removeClipFX(clip, effect: effect) }
         else { show.removeFX(track, effect: effect) }
+        refresh(settings)
     }
     @objc private func addEffect() {
         guard targetIsCurrent else { return }

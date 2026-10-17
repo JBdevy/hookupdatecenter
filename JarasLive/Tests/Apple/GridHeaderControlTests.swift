@@ -128,7 +128,7 @@ func makeProjection(_ seed: Int, count: Int = 18) -> PreparedHeaderProjection {
             gain: gains[k % gains.count], phaseInverted: k % 3 == 0,
             pan: pans[k % pans.count], name: "Item \(index)", muted: k % 4 == 0,
             hasFX: k % 2 == 0, fxBypassed: k % 7 == 0, duration: 5,
-            fadeIn: k % 11 == 0 ? 0.05 : 0, fadeOut: k % 13 == 0 ? 0.02 : 0)
+            fadeIn: 0, fadeOut: 0)
         if k % 9 == 0 { item.midiEditable = true }
         if k % 13 == 0 { item.editable = false; item.textEditable = true }
         let gain = item.gainLabel
@@ -165,7 +165,7 @@ for appearance in [NSAppearance.Name.aqua, .darkAqua] {
                     let after = bitmap(scale: scale, flipped: flipped, projection: projection, candidate: true)
                     let n = before.bytesPerRow * before.pixelsHigh
                     precondition(Data(bytes: before.bitmapData!, count: n) == Data(bytes: after.bitmapData!, count: n),
-                        "Cached controls preserve original pixels, clipping, fades and subpixel placement: \(appearance), \(scale)x, flipped=\(flipped), seed=\(seed)")
+                        "Cached controls preserve original pixels, clipping and subpixel placement: \(appearance), \(scale)x, flipped=\(flipped), seed=\(seed)")
                     cases += 1
                 }
             }
@@ -173,3 +173,19 @@ for appearance in [NSAppearance.Name.aqua, .darkAqua] {
     }
 }
 print("GRID_HEADER_CONTROLS_OK: \(cases) pixel-exact cases at 1x/2x/3x, light/dark, fractional origins, heights and continuous gain/pan")
+
+// Fine fade controls intentionally change the old fade pixels. Check the
+// new handles independently of the unchanged header raster comparison.
+var fadeItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0,y: 0,width: 800,height: 90), duration: 8, fadeIn: 2, fadeOut: 2)
+for midi in [false, true] {
+    fadeItem.midiEditable = midi
+    for left in [true, false] {
+        let a = fadeItem.fadeShapeHandle(left, sCurve: false)!
+        let b = fadeItem.fadeShapeHandle(left, sCurve: true)!
+        precondition(!a.intersects(b) && a.minY > fadeItem.fadeTop && b.maxY < fadeItem.rect.maxY)
+        precondition(fadeItem.fadeHandleRect(left) != nil)
+    }
+}
+fadeItem.rect.size.width = 25
+precondition(fadeItem.fadeShapeHandle(true, sCurve: false) == nil)
+print("ITEM_FINE_FADE_HANDLES_AUDIO_MIDI_COMPACT_VISIBILITY_OK")

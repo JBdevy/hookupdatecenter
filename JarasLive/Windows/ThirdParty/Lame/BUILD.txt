@@ -1,0 +1,24 @@
+CatLiveLame.dll: LAME 3.100 encoder, LGPL 2 or later.
+The encoder sources are unmodified. The included config.h is the CatLive MSVC x64 build configuration (no assembly or MP3 decoder).
+Full upstream source is included in lame-3.100-source.tar.gz; COPYING contains the license.
+To rebuild a compatible replacement with MSVC and CMake, extract the archive and create a CMake project using:
+
+cmake_minimum_required(VERSION 3.24)
+project(CatLiveLame LANGUAGES C)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(root "${CMAKE_CURRENT_SOURCE_DIR}/lame-3.100")
+set(names bitstream encoder fft gain_analysis id3tag lame newmdct presets psymodel quantize quantize_pvt reservoir set_get tables takehiro util vbrquantize VbrTag version)
+foreach(name IN LISTS names)
+    list(APPEND sources "${root}/libmp3lame/${name}.c")
+endforeach()
+add_library(CatLiveLame SHARED ${sources})
+set_target_properties(CatLiveLame PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+target_include_directories(CatLiveLame PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${root}/include" "${root}/libmp3lame")
+target_compile_definitions(CatLiveLame PRIVATE HAVE_CONFIG_H _CRT_SECURE_NO_WARNINGS)
+
+Put the included config.h beside this CMakeLists.txt, then:
+cmake -S . -B build -A x64
+cmake --build build --config Release
+
+Close CatLive and replace CatLiveLame.dll beside CatLive.exe with build/Release/CatLiveLame.dll.
+The application does not restrict replacement of this library. Reverse engineering for debugging modifications to this LGPL library is permitted.

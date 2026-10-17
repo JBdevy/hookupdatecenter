@@ -57,6 +57,13 @@ class TempoEditMap {
         return *active->tempoBPM / active->tempoReferenceBPM.value_or(song.bpm);
     }
 public:
+    // Playback and editor cursors use the same persisted ownership and tempo
+    // reference as tempo edits, including tails inside a following song.
+    static double playbackRate(const Song& song, const AudioClip& clip, double time) {
+        if (clip.frozenMIDI.value_or(false) || clip.renderedTiming.value_or(false) ||
+            clip.renderedTempo.value_or(false)) return clip.playbackRate;
+        return clip.playbackRate * rate(song, time, owner(song, clip));
+    }
     TempoEditMap(const Song& before,const Song& after) {
         std::vector<std::pair<double,double>> occupied;
         for(const auto& part:before.parts) if(!folder(before,part)) occupied.emplace_back(part.startTime,part.endTime);

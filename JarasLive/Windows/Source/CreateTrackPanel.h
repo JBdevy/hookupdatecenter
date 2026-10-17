@@ -26,11 +26,8 @@ class CreateTrackPanel final : public Component {
         count.setText("1");
         count.setJustification(Justification::centredRight);
         count.onReturnKey = [this] { create(); };
-        addAndMakeVisible(sequential);
-        sequential.setButtonText("Sequencial");
         if (auto *device = session.audio.devices.getCurrentAudioDevice())
             inputChannels = device->getInputChannelNames().size();
-        sequential.setEnabled(inputChannels > 0);
         addAndMakeVisible(cancel);
         addAndMakeVisible(confirm);
         cancel.onClick = [this] { ModalSheet::dismiss(*this); };
@@ -53,7 +50,6 @@ class CreateTrackPanel final : public Component {
     void resized() override {
         type.setBounds(64, 16, 140, 26);
         name.setBounds(28, 58, getWidth() - 56, 27);
-        sequential.setBounds(25, 100, 154, 26);
         count.setBounds(getWidth() - 90, 100, 62, 26);
         cancel.setBounds(28, getHeight() - 58, 82, 40);
         confirm.setBounds(getWidth() - 84, getHeight() - 58, 56, 40);
@@ -72,7 +68,6 @@ class CreateTrackPanel final : public Component {
     std::function<void(String)> error;
     ComboBox type;
     TextEditor name, count;
-    ToggleButton sequential;
     TextButton cancel{"Cancelar"}, confirm{"Criar"};
     int inputChannels = 0;
     bool unavailable = false;
@@ -92,7 +87,6 @@ class CreateTrackPanel final : public Component {
                         unavailable = true;
         name.setVisible(standard);
         count.setVisible(standard);
-        sequential.setVisible(standard);
         confirm.setEnabled(!unavailable);
         message = unavailable ? String::fromUTF8("Já existe uma pista deste tipo no projeto.")
                   : !standard ? type.getText()
@@ -127,14 +121,7 @@ class CreateTrackPanel final : public Component {
                                     ? utf8(label + (quantity > 1 ? " " + String(i + 1) : String()))
                                     : jaras::fixedTrackName(track.role);
                             if (kind == "other" && inputChannels > 0) {
-                                if (sequential.getToggleState()) {
-                                    if (i < inputChannels) {
-                                        track.inputPatch = jaras::OutputPatch{i + 1, 1};
-                                        track.recordingChannels = 1;
-                                    }
-                                } else
-                                    track.inputPatch =
-                                        jaras::OutputPatch{1, std::min(2, inputChannels)};
+                                track.inputPatch = jaras::OutputPatch{1, std::min(2, inputChannels)};
                             }
                             if (kind == "timecode") {
                                 track.timecode = jaras::TimecodeSettings{};

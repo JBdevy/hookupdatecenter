@@ -385,6 +385,42 @@ struct TimecodePlaybackSpan {
         let effects = NativeEffectsChain()
     }
     private var trackBuses: [UUID: TrackBus] = [:]
+    private var transportFadeEndpointReached = false
+    private var transportFadeSchedule: (tracks: Set<UUID>, duration: Double, host: UInt64, sample: Double)?
+    /// The existing sample-clock envelope lives after the track insert chain.
+    /// Schedule it once: UI stalls, automation and meter refreshes cannot step
+    /// the ramp or let effect tails escape it.
+    func startTransportFade(tracks ids: Set<UUID>, duration: Double) {
+        transportFadeEndpointReached = false
+        let seconds = duration.isFinite ? min(5, max(1, duration)) : 3
+        let manual = engine.isInManualRenderingMode
+        transportFadeSchedule = (ids, seconds, manual ? 0 : mach_absolute_time(),
+            manual ? Double(engine.manualRenderingSampleTime) : 0)
+        for id in ids { if let bus = trackBuses[id] { configureTransportFade(bus, id: id) } }
+    }
+    private func configureTransportFade(_ bus: TrackBus, id: UUID) {
+        guard let fade = transportFadeSchedule, fade.tracks.contains(id) else { return }
+        JarasEqualizer.setInputFade(bus.controls, fadeIn: 0, fadeOut: fade.duration,
+            fadeInCurve: 0, fadeInSCurve: 0, fadeOutCurve: 0, fadeOutSCurve: 0,
+            duration: fade.duration, position: 0, hostTime: fade.host, sampleTime: fade.sample)
+    }
+    func setTransportFadeGains(_ gains: [UUID: Double]) {
+        // Intermediate gains are presentation samples; the audio kernel already
+        // owns the continuous envelope. An empty map restores unity immediately.
+        guard gains.isEmpty else { transportFadeEndpointReached = gains.values.allSatisfy { $0 <= 0 }; return }
+        // After automatic Stop, keep the audio envelope at zero until the next
+        // Play. Restoring the fader display must not revive a plugin tail.
+        if transportFadeEndpointReached && !transportWasRunning { return }
+        clearTransportFade()
+    }
+    private func clearTransportFade() {
+        guard let fade = transportFadeSchedule else { return }
+        transportFadeEndpointReached = false; transportFadeSchedule = nil
+        for id in fade.tracks { if let bus = trackBuses[id] {
+            JarasEqualizer.setInputFade(bus.controls, fadeIn: 0, fadeOut: 0,
+                duration: 0, position: 0, hostTime: 0, sampleTime: 0)
+        } }
+    }
     var armedMIDIRecordingTracks: Set<UUID> = []
     private struct InputMonitor {
         let source: AVAudioSourceNode
@@ -882,6 +918,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     /// decision from the previous one. Device format rebuilds intentionally
     /// retain those same-project values and do not call this reset.
     private func clearProjectState() {
+        transportFadeSchedule = nil; transportFadeEndpointReached = false
         tracks.removeAll(); soloAudibleTracks = nil
         clips.removeAll(); playbackClipIndex = AudioClipPlaybackIndex(clips: [])
         missingAudioPaths.removeAll(); fragmentPlaybackStarts.removeAll(); clipIndices.removeAll()
@@ -941,6 +978,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // newly added tracks unclocked (including their native Click source).
         engine.connect(bus.controls, to: destinations, fromBus: 0, format: format)
         bus.effects.apply(tracks[id]?.fx ?? NativeFXSettings())
+        configureTransportFade(bus, id: id)
         #if os(macOS)
         bus.effects.enableInstrumentMIDI(armedInstrumentTracks.contains(id))
         #endif
@@ -1678,14 +1716,24 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     }
     func previewItemFade(_ id: UUID, fadeIn: Bool, seconds: Double) {
         guard seconds.isFinite, seconds >= 0 else { return }
+        previewFade(id) { clip in
+            if fadeIn { clip.fadeIn = seconds } else { clip.fadeOut = seconds }
+        }
+    }
+    func previewItemFadeShape(_ id: UUID, fadeIn: Bool, curvature: Double, sCurve: Double) {
+        previewFade(id) { clip in
+            if fadeIn { clip.fadeInCurve = curvature; clip.fadeInSCurve = sCurve }
+            else { clip.fadeOutCurve = curvature; clip.fadeOutSCurve = sCurve }
+        }
+    }
+    private func previewFade(_ id: UUID, change: (inout AudioClip) -> Void) {
+        previewMIDITake(id, refreshNotes: true, change: change)
         for fragment in clipFragments[id] ?? [id] {
-            if let index = clipIndices[fragment] {
-                if fadeIn { clips[index].1.fadeIn = seconds } else { clips[index].1.fadeOut = seconds }
-            }
+            if let index = clipIndices[fragment] { change(&clips[index].1) }
             for head in 0...2 {
                 let key = VoiceKey(clip: fragment, head: head)
                 if var voice = voices[key] {
-                    if fadeIn { voice.clip.fadeIn = seconds } else { voice.clip.fadeOut = seconds }
+                    change(&voice.clip)
                     voice.effects?.updateItemFade(voice.clip); setVoice(voice, for: key)
                 }
             }
@@ -2320,7 +2368,7 @@ return false
         midiTakeVoices[key] = voice
         return voice
     }
-    private func previewMIDITake(_ id: UUID, change: (inout AudioClip) -> Void) {
+    private func previewMIDITake(_ id: UUID, refreshNotes: Bool = false, change: (inout AudioClip) -> Void) {
         guard var source = midiTakeSources[id] else { return }
         let wasInstrument = source.clip.hasTakeInstrument
         change(&source.clip); midiTakeSources[id] = source
@@ -2330,12 +2378,12 @@ return false
             midiTakePlans[id] = source.clip.hasTakeInstrument ? plan : nil
         }
         if let song = latestPlayback?.snapshot.project.songs.first(where: { $0.id == midiPlanSong }) {
-            if source.clip.hasTakeInstrument && midiTakePlans[id] == nil {
+            if source.clip.hasTakeInstrument && (midiTakePlans[id] == nil || refreshNotes) {
                 var notes = source.clip; notes.gain = 1
                 midiTakePlans[id] = MIDITakePlan(track: source.track, clip: source.clip,
                     segments: song.tempoAudioSegments(source.clip), notes: song.midiPlaybackNotes(in: notes).map(\.sequenceValues))
             }
-            if wasInstrument != source.clip.hasTakeInstrument {
+            if wasInstrument != source.clip.hasTakeInstrument || refreshNotes {
                 let notes = midiTakeSources.values.filter { $0.track == source.track && !$0.clip.hasTakeInstrument }
                     .flatMap { song.midiPlaybackNotes(in: $0.clip) }.map(\.sequenceValues)
                 midiPlans[source.track] = notes
@@ -2355,6 +2403,9 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
             let position = head == 0 ? transport?.position ?? source.clip.startTime : transport?.subPlay.position ?? source.clip.startTime
             let clip = midiTakePlans[id]?.segments.last(where: { $0.startTime <= position }) ?? source.clip
             let values = clip.automatedValues(at: position)
+            #if os(macOS)
+            if refreshNotes, let notes = midiTakePlans[id]?.notes { voice.effects.setMIDISequence(notes) }
+            #endif
             voice.effects.apply(values.fx)
             JarasEqualizer.setInputPan(voice.controls, pan: values.pan)
             JarasEqualizer.setPolarity(voice.controls, inverted: clip.phaseInverted == true)
@@ -2436,7 +2487,7 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
                 JarasEqualizer.setPolarity(voice.controls, inverted: clip.phaseInverted == true)
                 JarasEqualizer.setInputChannelMode(voice.controls, mode: Int32(clip.channelMode ?? 0))
                 JarasEqualizer.setInputGain(voice.controls, gain: clip.normalizationGain ?? 1)
-                JarasEqualizer.setInputFade(voice.controls, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0,
+                JarasEqualizer.setInputFade(voice.controls, fadeIn: 0, fadeOut: 0,
                     duration: clip.duration, position: position - clip.startTime,
                     hostTime: realtime ? host : 0, sampleTime: realtime ? 0 : Double(engine.manualRenderingSampleTime))
                 JarasVoiceGain.setDecibels(voice.gain, decibels: values.muted || values.gain <= 0 ? -96 : min(24, max(-96, 20 * log10(values.gain))))
@@ -3159,6 +3210,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
         if running {
             cancelVoicePreparation()
             if !transportWasRunning {
+                clearTransportFade()
                 // Prepared players keep their graph/clock ready, but unused
                 // slots must not render an entire silent item-effects chain.
                 for pooled in idleVoices.values {
@@ -3692,11 +3744,11 @@ struct VerticalTrackMeter: NSViewRepresentable {
     private var geometryScale: CGFloat = 0
     private var geometryShowsScale: Bool?
     private static let scaleAttributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.monospacedSystemFont(ofSize: 7, weight: .semibold),
+        .font: NSFont.jarasMonospacedSystemFont(ofSize: 7, weight: .semibold),
         .foregroundColor: NSColor.white
     ]
-    private static let peakFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .bold)
-    private static let compactScalePeakFont = NSFont.monospacedSystemFont(ofSize: 6.5, weight: .bold)
+    private static let peakFont = NSFont.jarasMonospacedSystemFont(ofSize: 8, weight: .bold)
+    private static let compactScalePeakFont = NSFont.jarasMonospacedSystemFont(ofSize: 6.5, weight: .bold)
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         let actions = Dictionary(uniqueKeysWithValues:
@@ -3914,7 +3966,7 @@ struct VerticalTrackMeter: View {
                     scaleSlot("−24")
                     Spacer(minLength: 0)
                     scaleSlot("−∞")
-                }.font(.system(size: 7, design: .monospaced)).foregroundStyle(textColor)
+                }.font(.jarasSystem(size: 7, design: .monospaced)).foregroundStyle(textColor)
             }
         }.frame(maxWidth: peakOnly ? .infinity : nil)
             .accessibilityLabel("Stereo meter, L and R")
@@ -3922,7 +3974,7 @@ struct VerticalTrackMeter: View {
     private func scaleSlot(_ text: String) -> some View {
         // Blank typography preserves the existing peak position without drawing
         // or exposing the fixed scale numbers in the Track Mixer style.
-        Text(verbatim: peakOnly ? " " : text).font(.system(size: 7, weight: .semibold, design: .monospaced))
+        Text(verbatim: peakOnly ? " " : text).font(.jarasSystem(size: 7, weight: .semibold, design: .monospaced))
             .foregroundStyle(textColor).accessibilityHidden(peakOnly)
     }
     private func channel(_ level: Double) -> some View {
@@ -3968,7 +4020,7 @@ struct TrackPeakReadout: View {
     var body: some View {
         Button { peak.clear() } label: {
             Text(verbatim: peak.decibels.map { String(format: "%+.2f", $0) } ?? "")
-                .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                .font(.jarasSystem(size: fontSize, weight: .bold, design: .monospaced))
                 .lineLimit(1).minimumScaleFactor(0.8)
                 .foregroundStyle(redAtZero && (peak.decibels ?? -24) >= 0 ? Color.red : foreground)
                 .frame(width: readoutWidth, height: 12)

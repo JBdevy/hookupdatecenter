@@ -1,3 +1,6 @@
+#include "ProjectionSelection.h"
+#include "MediaSource.h"
+#include "MarkerRegionConversion.h"
 #include "Workspace.h"
 #include "StartupSplash.h"
 #include "TrackTree.h"
@@ -13,7 +16,29 @@
 #include "RemotePresentation.h"
 #include "LicenseProof.h"
 #include "TimelineGrid.h"
-#include "WaveformCache.h"
+#include "TimelineBulkEditing.h"
+#include "WaveformRenderer.h"
+#include "RegionEditing.h"
+#include "ClickTempo.h"
+#include "MP3Writer.h"
+#include "TeleprompterHTTP.h"
+#include "TempoEditing.h"
+#include "MeterDisplay.h"
+#include "EffectsPanel.h"
+#include "FXChain.h"
+#include "ItemRender.h"
+#include "SetlistShareText.h"
+#include "ProjectDeletion.h"
+#include "PortablePackage.h"
+#include "TimelinePlaybackFollow.h"
+#include "RecordingProject.h"
+#include "TrackEditing.h"
+#include "TrackDuplicationTests.h"
+#include "RecordingCaptureTests.h"
+#include "TransportFadeoutTests.h"
+#include "ActionBindingsTests.h"
+#include "UIFeatureTests.h"
+#include "PartsPanelTests.h"
 namespace catlive {
 namespace {
 void expect(bool condition, const String &message) {
@@ -73,6 +98,321 @@ int runTests(const File &directory) {
             failed += name + ": " + String::fromUTF8(e.what()) + "\n";
         }
     };
+    trackDuplicationTests::run(test);
+    trackDuplicationTests::runSession<Session>(test);
+    recordingCaptureTests::registerTests(directory, test);
+    transportFadeoutTests::registerTests(directory, test);
+    addActionBindingsTests(directory, test);
+    addUIFeatureTests(directory, test);
+    addPartsPanelTests(test);
+    test("Transport Fadeout waits for silence, cancels and blocks Subplay without changing saved faders", [&] {
+        Session session; session.inspection = true;
+        auto p = projectFixture();
+        auto &track = p.songs[0].tracks[0]; track.clips.clear();
+        const auto id = track.id; const double volume = track.volume;
+        auto partner = track; partner.id = uuid(); partner.stereoLinkPartner = id;
+        track.stereoLinkPartner = partner.id;
+        track.stereoLinkLeft = true;
+        track.inputPatch = jaras::OutputPatch{1, 1};
+        partner.inputPatch = jaras::OutputPatch{2, 1};
+        partner.pan = -track.pan;
+        const auto stereoLink = [](const ID &other, bool left) {
+            auto link = object(); put(link, "partner", text(other)); put(link, "left", left);
+            put(link, "original", object()); return utf8(JSON::toString(link, true));
+        };
+        track.stereoLinkJSON = stereoLink(partner.id, true);
+        partner.stereoLinkJSON = stereoLink(id, false);
+        p.songs[0].tracks.push_back(partner);
+        session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(p));
+        session.audio.setOffline(true);
+        String warning;
+        session.transportFadeoutWarning = [&](String value) { warning = value; };
+        session.toggleTransportFadeout(true, {id}, 1);
+        expect(!session.transportFadeoutActive() && warning.isNotEmpty(), "Stopped transport accepted Fadeout");
+        session.command(jaras::CommandKind::play);
+        session.toggleTransportFadeout(false, {id}, 1);
+        expect(!session.transportFadeoutActive(), "Disabled Fadeout started");
+        session.toggleTransportFadeout(true, {id}, 1);
+        expect(session.transportFadeoutActive() && session.transport().playing, "Fadeout did not start");
+        const auto saved = JSON::toString(session.snapshot());
+        const bool dirty = session.dirty, undo = session.canUndo();
+        warning.clear(); session.command(jaras::CommandKind::subPlay);
+        expect(!session.transport().subPlay.playing && warning.isNotEmpty() && session.transportFadeoutActive(), "Subplay escaped exclusion");
+        session.command(jaras::CommandKind::volume, id, .1);
+        session.command(jaras::CommandKind::volume, partner.id, .1);
+        expect(session.song()->tracks[0].volume == volume, "Transient fade changed saved fader");
+        AudioBuffer<float> buffer(2, 1024);
+        auto render = [&](int frames) { while (frames > 0) {
+            const int count = std::min(frames, buffer.getNumSamples());
+            session.audio.render(buffer.getArrayOfWritePointers(), 2, count); frames -= count;
+        }};
+        render(24000); session.updateTransportFadeout();
+        expect(session.transport().playing && session.transportFadeoutActive() && session.trackDisplayVolume(id, volume) < volume, "Transport stopped before silence");
+        session.toggleTransportFadeout(true, {id}, 1);
+        expect(session.transport().playing && !session.transportFadeoutActive() && session.trackDisplayVolume(id, volume) == volume, "Repeated Fadeout did not cancel and restore");
+        expect(JSON::toString(session.snapshot()) == saved && session.dirty == dirty && session.canUndo() == undo, "Fadeout changed document or history");
+        session.command(jaras::CommandKind::subPlay);
+        warning.clear(); session.toggleTransportFadeout(true, {id}, 1);
+        expect(!session.transportFadeoutActive() && warning.isNotEmpty() && session.transport().subPlay.playing, "Fadeout escaped Subplay exclusion");
+        session.command(jaras::CommandKind::subStop);
+        session.toggleTransportFadeout(true, {id}, 1);
+        render(47999); session.updateTransportFadeout();
+        expect(session.transport().playing, "Fadeout stopped one sample early");
+        render(1);
+        expect(session.audio.trackFadeoutComplete() && session.audio.trackFadeoutGain(id) == 0, "Fadeout completion was not silent");
+        session.busy = true;
+        session.updateTransportFadeout();
+        expect(session.transportFadeoutActive() && session.transport().playing, "Busy transport discarded completed Fadeout before Stop");
+        session.busy = false;
+        session.updateTransportFadeout();
+        expect(!session.transport().playing && !session.transportFadeoutActive() && session.trackDisplayVolume(id, volume) == volume, "Completed Fadeout did not stop and restore");
+        session.canPlay = [] { return false; };
+        session.command(jaras::CommandKind::play);
+        expect(session.audio.trackFadeoutGain(id) == 0 && !session.transport().playing, "Rejected Play released held FX tails");
+        session.canPlay = [] { return true; };
+        session.command(jaras::CommandKind::subPlay);
+        expect(!session.transport().subPlay.playing && session.audio.trackFadeoutComplete(), "Stopped Subplay changed transport or released FX tails");
+        session.command(jaras::CommandKind::play);
+        expect(session.transport().playing && !session.audio.trackFadeoutActive(), "Next Play after Fadeout remained silent");
+        session.command(jaras::CommandKind::subPlay);
+        expect(session.transport().subPlay.playing && !session.audio.trackFadeoutActive(), "Subplay after restarting remained silent");
+        session.command(jaras::CommandKind::subStop);
+        session.toggleTransportFadeout(true, {id}, 2);
+        session.command(jaras::CommandKind::stop);
+        expect(!session.transportFadeoutActive() && !session.transport().playing && session.trackDisplayVolume(id, volume) == volume, "Ordinary Stop retained fading fader");
+        session.command(jaras::CommandKind::play);
+        session.toggleTransportFadeout(true, {id}, 2);
+        session.restoreSnapshot(session.snapshot());
+        expect(!session.transportFadeoutActive() && !session.trackFaderLocked(id), "Rebuilding audio retained stale Fadeout controls");
+    });
+    test("Movement lock persists, prevents geometry edits and preserves tempo metadata and undo", [&] {
+        Session session;
+        auto p=projectFixture(); for (auto &track:p.songs[0].tracks) for (auto &clip:track.clips) clip.audioFile.reset();
+        p.timelineMovementLocked=true;
+        session.restoreSnapshot(ProjectCodec::encode(p));
+        expect(session.project().timelineMovementLocked == true, "Movement lock was not decoded");
+        for (int change=0; change<6; ++change) {
+            const auto before=JSON::toString(session.snapshot()); bool rejected=false;
+            try { session.edit([&](auto &candidate) {
+                auto &song=candidate.songs[0]; auto &clip=song.tracks[0].clips[0];
+                if(change==0) clip.startTime+=1;
+                if(change==1) clip.duration+=1;
+                if(change==2) clip.sourceOffset+=1;
+                if(change==3) song.parts[0].startTime+=1;
+                if(change==4) song.parts[0].endTime+=1;
+                if(change==5) song.markers->front().position+=1;
+            }); } catch (...) { rejected=true; }
+            expect(rejected && JSON::toString(session.snapshot())==before && !session.canUndo(), "Locked edit committed or changed history");
+        }
+        session.edit([](auto &candidate) {candidate.songs[0].parts[0].name="Renamed";candidate.songs[0].parts[0].color=0xff0000;});
+        session.undo(); expect(session.project().songs[0].parts[0].name==p.songs[0].parts[0].name,"Metadata undo failed with lock");
+        session.setTempo(130); expect(std::abs(session.tempoBPM()-130)<.001,"Lock prevented tempo edit"); session.undo();
+        session.edit([](auto &candidate) {candidate.timelineMovementLocked=false;},false);
+        session.edit([](auto &candidate) {candidate.songs[0].tracks[0].clips[0].startTime+=1;});
+        expect(session.song()->tracks[0].clips[0].startTime==p.songs[0].tracks[0].clips[0].startTime+1,"Unlocked movement rejected");
+    });
+    test("REC Multitrack creates and arms sequential mono inputs only after saving", [&] {
+        for (int channels : {1, 32, 128}) {
+            const auto project = makeRecordingProject("Recording test", channels);
+            const auto decoded = ProjectCodec::decode(ProjectCodec::encode(project));
+            expect(decoded.songs.size() == 1 && decoded.songs[0].tracks.size() == (size_t)channels, "REC track count mismatch");
+            std::set<ID> ids;
+            for (int index = 0; index < channels; ++index) {
+                const auto &track = decoded.songs[0].tracks[(size_t)index];
+                expect(ids.insert(track.id).second, "REC tracks share IDs");
+                expect(track.inputPatch && track.inputPatch->firstChannel == index+1 && track.inputPatch->channelCount == 1, "REC input mismatch");
+                expect(track.recordingChannels == 1 && track.inputMonitoring == false && !track.recordingFormat, "REC defaults mismatch");
+                expect(track.outputs && track.outputs->size() == 1 && track.outputs->front().firstChannel == 0, "REC is not routed to Master");
+            }
+        }
+        for (int channels : {0, 129}) {
+            bool rejected=false; try { (void)makeRecordingProject("Recording test", channels); } catch (...) { rejected=true; }
+            expect(rejected, "Invalid REC count accepted");
+        }
+        Session session;
+        const auto target=directory.getChildFile("rec-template-" + text(uuid()) + "/Recording.jl");
+        session.createRecordingProject("REC 32", 32, target);
+        expect(target.existsAsFile() && !session.dirty, "REC project not saved");
+        for (const auto &track : session.song()->tracks) expect(session.recordingArmed(track.id), "REC track not armed");
+        const auto before=session.project().id;
+        bool rejected=false; try { session.createRecordingProject("Other", 4, target); } catch (...) { rejected=true; }
+        expect(rejected && session.project().id == before && session.song()->tracks.size()==32, "Failed creation replaced open project");
+    });
+    test("Fade shapes preserve legacy envelope, MIDI velocity, document data and fine handles", [&] {
+        expect(std::abs(jaras::FadeCurve{}.value(.25)-.15625)<1e-12,"Legacy smooth envelope changed");
+        for(double curvature:{-1.,0.,1.})for(double shape:{-1.,0.,1.}){
+            jaras::FadeCurve curve(curvature,shape);double previous=0;
+            for(int n=0;n<=1000;++n){const auto v=curve.value(n/1000.);expect(v>=previous-1e-12 && v>=0 && v<=1,"Fade became nonmonotonic");previous=v;}
+            expect(curve.value(0)==0 && curve.value(1)==1,"Fade endpoints changed");
+        }
+        auto p=projectFixture();auto &track=p.songs[0].tracks[0];auto &clip=track.clips[0];
+        clip.startTime=0;clip.duration=8;clip.sourceOffset=0;clip.playbackRate=1;clip.gain=1;clip.loopLength.reset();clip.loopStart.reset();clip.fadeIn=2;clip.fadeOut=2;
+        clip.fadeInCurve=.7;clip.fadeInSCurve=-.4;clip.fadeOutCurve=-.8;clip.fadeOutSCurve=.25;
+        const auto decoded=ProjectCodec::decode(ProjectCodec::encode(p,{})).songs[0].tracks[0].clips[0];
+        expect(decoded.fadeInCurve==.7 && decoded.fadeInSCurve==-.4 && decoded.fadeOutCurve==-.8 && decoded.fadeOutSCurve==.25,"Fade parameters lost in project codec");
+        ItemHeader header({0,0,800,100},800,track,clip);
+        for(auto control:{ItemHeader::fadeInCurve,ItemHeader::fadeInSCurve,ItemHeader::fadeOutCurve,ItemHeader::fadeOutSCurve}){
+            const auto rect=header.shapeRect(clip,ItemHeader::shapeIn(control),ItemHeader::shapeS(control));expect(!rect.isEmpty() && header.hit(rect.getCentre(),clip)==control,"Fine fade handle cannot be grabbed");}
+        clip.fadeInCurve.reset();clip.fadeInSCurve.reset();clip.fadeOutCurve.reset();clip.fadeOutSCurve.reset();clip.audioFile.reset();clip.midi.emplace();clip.midi->sourceBPM=120;
+        for(int n=0;n<16;++n)clip.midi->notes.push_back({uuid(),n*.5,.2,60,100,1});
+        const auto notes=playbackNotes(track);expect(notes.size()==15,"Silent first MIDI note must not be emitted");
+        expect(notes[0].velocity==4 && notes[3].velocity==50 && notes[7].velocity==100,"MIDI fade velocity differs from Mac");
+        expect(clip.midi->notes[0].velocity==100,"Fade destroyed source MIDI velocities");
+    });
+    test("Edit cursor selects setlist songs without changing playback or queue", [&] {
+        Session session; auto p=projectFixture(); auto &song=p.songs[0];
+        const auto first=song.parts[0].id, second=song.parts[1].id;
+        auto child=song.parts[0]; child.id=uuid(); child.startTime=12; child.endTime=18; child.parentRegionID=first; song.parts.push_back(child);
+        jaras::RegionSetlist state; jaras::RegionPlaylist playlist;playlist.id=uuid();playlist.name="First only";playlist.songId=song.id;playlist.regionIds={first};state.playlists={playlist};state.selectedId=playlist.id;p.regionSetlist=state;
+        session.core.loadProject(p);
+        session.command(jaras::CommandKind::editSeek,{},13);
+        expect(session.focusedRegion==child.id,"Unified internal song not focused");
+        expect(session.project().regionSetlist->selectedId==playlist.id,"Matching playlist changed");
+        session.command(jaras::CommandKind::play);
+        session.command(jaras::CommandKind::queueRegion,second);
+        const auto before=session.transport();
+        session.command(jaras::CommandKind::editSeek,{},32);
+        expect(session.focusedRegion==second,"Edit cursor did not select second song");
+        expect(!session.project().regionSetlist->selectedId,"Out-of-playlist song not revealed in all regions");
+        expect(session.transport().playing && session.transport().regionId==before.regionId && session.transport().queuedRegionId==before.queuedRegionId,"Selection changed playback/queue");
+        session.command(jaras::CommandKind::editSeek,{},25);
+        expect(!session.focusedRegion,"Empty grid retained selection");
+        session.command(jaras::CommandKind::stopAll);
+        expect(Session::subCursorOpacity(.1)==1 && Session::subCursorOpacity(.6)==.3f && Session::subCursorOpacity(1)==1,"SubPlay blink differs from Mac 0.9s cycle");
+    });
+    test("Waveform pixels follow fade curves without altering cached peaks", [&] {
+        auto data=std::make_shared<WaveformCache::Data>();data->duration=1;data->sampleRate=48000;data->frames=48000;data->sourceChannels=data->storedChannels=1;
+        data->levels.push_back({256,0,188});data->owned.setSize(188*4,true);
+        auto *bytes=(uint8*)data->owned.getData();
+        const auto high=(uint16)WaveformCache::encode(.4f),low=(uint16)WaveformCache::encode(-.4f);
+        for(int i=0;i<188;++i){bytes[i*4]=(uint8)high;bytes[i*4+1]=(uint8)(high>>8);bytes[i*4+2]=(uint8)low;bytes[i*4+3]=(uint8)(low>>8);}
+        WaveformCache cache;jaras::AudioClip clip;clip.duration=1;clip.fadeIn=.5;clip.fadeOut=.5;clip.fadeInSCurve=clip.fadeOutSCurve=0;
+        const auto render=[&]{Image image(Image::ARGB,200,100,true);Graphics g(image);WaveformRenderer::draw(g,cache,data,clip,{0,0,200,100},{0,0,200,100},200,Colours::white);return image;};
+        const auto extent=[](const Image &image,int x){int count=0;for(int y=18;y<98;++y)if(image.getPixelAt(x,y).getAlpha()>100)++count;return count;};
+        auto linear=render();const auto full=extent(linear,100),left=extent(linear,50),right=extent(linear,150);
+        expect(full>55 && left>25 && left<38 && right>25 && right<38,"Waveform does not shrink at fade-in/out");
+        clip.fadeInCurve=1;clip.fadeInSCurve=1;clip.fadeOutCurve=-1;clip.fadeOutSCurve=-1;auto curved=render();
+        expect(extent(curved,50)<10 && extent(curved,150)>50,"Fine curves not reflected in waveform pixels");
+        expect(std::abs(data->range(0,0,1).second-.4f)<.001f,"Fade modified source peaks");
+        PNGImageFormat png;auto out=directory.getChildFile("waveform-fades.png").createOutputStream();png.writeImageToStream(curved,*out);
+    });
+    test("Continuous scroll matches Mac and none does not change the viewport", [&] {
+        TimelinePlaybackFollowPolicy policy;
+        expect(!policy.destination(39,10,10000,0,800,"main",1),"Scroll before viewport midpoint");
+        expect(policy.destination(41,10,10000,0,800,"main",1)==10,"Follow midpoint");
+        expect(policy.destination(210,10,10000,10,800,"main",1)==1700,"Continuous playback");
+        expect(policy.destination(180,10,10000,1700,800,"sub",1)==1400,"SubPlay handoff");
+        expect(policy.destination(60,10,10000,1400,800,"main",1)==200,"Return to main");
+        expect(!policy.destination({},10,10000,200,800,"main",1)&&!policy.previousPosition,"Stop resets following");
+        Appearance prefs(directory.getNonexistentChildFile("scroll-none",".json"));
+        expect(!prefs.continuousScroll(),"Continuous scroll must default to none");
+        prefs.set("jaras.timeline.continuousScroll",true);expect(prefs.continuousScroll(),"true did not enable continuous scroll");
+    });
+    test("Master default and temporary SubPlay cursor match Mac", [&] {
+        Session session;session.newProject();expect(session.project().masterColor==0x414141,"New Master colour differs");
+        expect(!session.subCursorVisible(),"SubPlay cursor initially visible");session.command(jaras::CommandKind::subSeek,{},2);
+        expect(session.subCursorVisible(),"SubPlay positioning does not reveal needle");
+        session.subCursorPreviewUntil=Time::getMillisecondCounterHiRes()-1;expect(!session.subCursorVisible(),"SubPlay needle persists after preview");
+        session.command(jaras::CommandKind::play);session.command(jaras::CommandKind::subPlay);expect(session.subCursorVisible(),"SubPlay playing needle hidden");session.command(jaras::CommandKind::stopAll);
+        expect(!session.subCursorVisible(),"Stopped SubPlay needle retained");
+    });
+    test("Project deletion protects sibling media and rechecks inventory after confirmation", [&] {
+        auto root=directory.getNonexistentChildFile("DeleteProject",{});root.getChildFile("Stems").createDirectory();
+        auto p=projectFixture();p.songs[0].tracks[0].clips[0].audioFile=jaras::AudioFile{"Stems/Shared.wav",{}};
+        auto own=p.songs[0].tracks[0].clips[0];own.id=uuid();own.startTime=20;own.audioFile=jaras::AudioFile{"Stems/Own.wav",{}};p.songs[0].tracks[0].clips.push_back(own);
+        auto shared=root.getChildFile("Stems/Shared.wav"),exclusive=root.getChildFile("Stems/Own.wav"),unrelated=root.getChildFile("notes.txt");
+        shared.replaceWithText("shared");exclusive.replaceWithText("own");unrelated.replaceWithText("preserve");const auto document=root.getChildFile("Show.jl");ProjectCodec::write(document,ProjectCodec::encode(p,{}));
+        auto make = [&](const char *path) { auto f=root.getChildFile(path);f.getParentDirectory().createDirectory();expect(f.replaceWithText("owned media"),"Deletion fixture");return f; };
+        auto cache=make("Stems/WF/Own.wav.waveform"), sharedCache=make("Stems/WF/Shared.wav.waveform");
+        auto recovery=make("backups/Media/Archive/recovery.wav"), foreign=make("backups/Media/Foreign/keep.wav");
+        auto backup=p;backup.songs[0].tracks[0].clips.resize(1);backup.songs[0].tracks[0].clips[0].audioFile->path="backups/Media/Archive/recovery.wav";
+        const auto backupFile=root.getChildFile("backups/Recovery.bkjl");ProjectCodec::write(backupFile,ProjectCodec::encode(backup,{}));
+        ProjectDeletion plan(document);bool rejected=false;try{plan.remove();}catch(...){rejected=true;}expect(rejected && document.existsAsFile(),"Deletion skipped the three-second confirmation");
+        auto sibling=p;sibling.id=uuid();sibling.songs[0].tracks[0].clips.resize(1);auto siblingData=ProjectCodec::seal(JSON::toString(ProjectCodec::encode(sibling,{}),true));expect(root.getChildFile("Other.jl").replaceWithData(siblingData.getData(),siblingData.getSize()),"Cannot construct legacy sibling fixture");
+        Thread::sleep(3100);plan.remove();expect(!document.exists() && !exclusive.exists() && shared.existsAsFile() && unrelated.existsAsFile() && root.isDirectory(),"Deletion removed shared or unrelated files, or retained exclusive media");
+        expect(!cache.exists() && sharedCache.existsAsFile() && !backupFile.exists() && !recovery.exists() && !recovery.getParentDirectory().exists() && foreign.existsAsFile(),"Deletion must remove owned waveform/recovery media and empty subfolders while preserving unrelated recovery files");
+    });
+    test("Batch FX bypass and deletion undo every selected chain with exact plugin state", [&] {
+        auto p = projectFixture();
+        auto other = p.songs[0].tracks[0]; other.id = uuid(); other.clips.clear(); p.songs[0].tracks.push_back(other);
+        const auto fx = JSON::parse(R"({"inserted":["EQ","Native:repeat","External:kontakt"],"eqEnabled":true,"bands":[{"gain":7}],"instances":[{"id":"repeat","kind":"Compressor","settings":{"inserted":["Compressor"],"compressorEnabled":false,"threshold":-39}}],"externalPlugins":[{"id":"kontakt","classID":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","name":"Kontakt","path":"C:/test.vst3","bypassed":false,"componentState":"bGlicmFyeS1lZGl0ZWQ=","controllerState":"dWktc3RhdGU="}]})");
+        const auto encoded = utf8(JSON::toString(fx, true));
+        for (auto &track : p.songs[0].tracks) track.fxJSON = encoded;
+        p.masterFXJSON = encoded;
+        Session session; session.inspection = true; session.restoreSnapshot(ProjectCodec::encode(p));
+        const std::vector<ID> ids{p.songs[0].tracks[0].id, other.id};
+        fxchain::change(session, ids, false);
+        for (const auto &id : ids) expect(fxchain::allBypassed(fxchain::settings(session, id)), "Selected chain still enabled");
+        expect(session.project().masterFXJSON == p.masterFXJSON, "Track action changed master");
+        session.undo();
+        for (const auto &t : session.song()->tracks) expect(t.fxJSON == encoded, "Undo lost mixed bypass, settings or plugin state");
+        session.redo();
+        fxchain::change(session, ids, false);
+        for (const auto &id : ids) for (auto key : list(get(fx, "inserted"))) expect(fxchain::enabled(fxchain::settings(session, id), key.toString()), "Unbypass left a stage disabled");
+        const auto before = session.snapshot();
+        fxchain::change(session, ids, true);
+        for (const auto &t : session.song()->tracks) expect(!t.fxJSON, "Deleted chain retained plugin state");
+        session.undo();
+        const auto restored = ProjectCodec::decode(before);
+        for (size_t i = 0; i < ids.size(); ++i) expect(session.song()->tracks[i].fxJSON == restored.songs[0].tracks[i].fxJSON, "One undo did not restore both complete chains");
+        session.redo();
+        for (const auto &t : session.song()->tracks) expect(!t.fxJSON, "Redo did not delete chain");
+    });
+    test("Undoing item controls preserves the current song, region and editing cursor", [&] {
+        auto p=projectFixture();Session session;session.inspection=true;session.restoreSnapshot(ProjectCodec::encode(p));
+        const auto songID=p.songs[0].id,regionID=p.songs[0].parts[0].id;
+        session.command(jaras::CommandKind::selectRegion,regionID);
+        session.command(jaras::CommandKind::editSeek,{},14);
+        session.edit([](jaras::Project &p){p.songs[0].tracks[0].clips[0].gain=.25;},false);
+        session.undo();
+        expect(session.transport().songId==songID && session.transport().regionId==regionID && session.transport().editPosition==14,"Undo reset the current editing context");
+        expect(session.song()->tracks[0].clips[0].gain==.7,"Undo did not restore gain");
+        session.redo();
+        expect(session.transport().regionId==regionID && session.transport().editPosition==14 && session.song()->tracks[0].clips[0].gain==.25,"Redo lost context or gain");
+    });
+    test("Overlapping audio items use separate Mac lanes and preserve recording take order", [&] {
+        jaras::Track track; track.role.id="other";
+        auto add=[&](ID id,double start,double length,std::optional<int> recording={}) {
+            jaras::AudioClip clip;clip.id=id;clip.startTime=start;clip.duration=length;clip.recordingLane=recording;track.clips.push_back(clip);
+        };
+        add("a",10,10);add("b",15,10);add("c",20,5);add("take",9,7,0);add("later",30,5);
+        ItemLanes lanes(track);
+        expect(lanes.count==3 && lanes.lane("take")==2 && lanes.lane("later")==0,"Recorded take must be below both overlapping originals");
+        for(const auto &a:track.clips) for(const auto &b:track.clips)
+            if(a.id!=b.id && a.startTime<b.startTime+b.duration && b.startTime<a.startTime+a.duration)
+                expect(lanes.lane(a.id)!=lanes.lane(b.id),"Two overlapping items cover each other");
+        expect(lanes.lane("a")==lanes.lane("c"),"Touching items should share a lane");
+        std::reverse(track.clips.begin(),track.clips.end());
+        expect(ItemLanes(track).lanes==lanes.lanes,"Serialization order changes layout");
+        track.role.id="video";track.clips.resize(0);add("a",0,10);add("b",20,10);
+        expect(clipEditing::constrainedStart(track,track.clips[1],5)==10,"Single-lane drag must stop at nearest free boundary");
+        expect(clipEditing::constrainedEdges(track,track.clips[1],5,35).first==10,"Single-lane resize crosses its neighbor");
+    });
+    test("Extended item triangles preserve source offset, playback rate and bounded zoom work", [&] {
+        jaras::AudioClip clip;clip.duration=12;clip.loopLength=4;clip.loopStart=2;clip.sourceOffset=3;clip.playbackRate=2;
+        const auto seams=itemLoopSeams(clip,{0,0,1200,60},1200,100);
+        expect(seams.size()==6 && std::abs(seams[0]-150)<.001 && std::abs(seams[1]-350)<.001,"Loop seam phase/rate differ from source audio");
+        const auto outline=itemOutline(clip,{0,0,1200,60},1200,100);
+        expect(!outline.contains(150,59) && outline.contains(140,59) && outline.contains(150,50),"Loop boundary must cut a triangle out of the bottom edge");
+        clip.duration=1e9;clip.loopLength=.001;
+        expect(itemLoopSeams(clip,{0,0,5e6f,60},800,.005).size()<82,"Minimum zoom iterates invisible repetitions");
+    });
+    test("Item header controls remain disjoint and fades stay below the header", [&] {
+        jaras::Track track; track.role.id="other";
+        jaras::AudioClip clip;clip.id="clip";clip.duration=10;clip.fadeIn=2;clip.fadeOut=3;
+        ItemHeader header({-80,100,400,60},600,track,clip);
+        expect(header.muteRect.getX()==2.6f && !header.gainLabel.isEmpty(),"Clipped item header loses its controls");
+        const std::vector<std::pair<ItemHeader::Control,juce::Rectangle<float>>> controls{
+            {ItemHeader::mute,header.muteRect},{ItemHeader::fx,header.fxRect},{ItemHeader::phase,header.phaseRect},
+            {ItemHeader::pan,header.panRect},{ItemHeader::gain,header.gainRect}};
+        for(const auto &a:controls) {
+            expect(header.hit(a.second.getCentre(),clip)==a.first,"Header hit selects wrong control");
+            for(const auto &b:controls) if(a.first!=b.first) expect(!a.second.intersects(b.second),"Header controls overlap");
+        }
+        for(bool left:{true,false}) {const auto r=header.fadeRect(clip,left);expect(r.getY()==118 && header.hit(r.getCentre(),clip)==(left?ItemHeader::fadeIn:ItemHeader::fadeOut),"Fade handle not in waveform body");}
+        expect(ItemHeader({0,0,20,60},600,track,clip).gainRect.isEmpty(),"Narrow item paints overflowing controls");
+    });
     test("Footer keyboard preserves the Mac 88-note range across window sizes", [&] {
         MidiKeyboardState state;
         Appearance appearance(directory.getChildFile("keyboard-appearance.json"));
@@ -101,6 +441,97 @@ int runTests(const File &directory) {
             expect(std::abs(fader.getValue() - gain) < 1e-8, "Actual gain is not remapped in the audio model");
         }
     });
+    test("Right clicks never trigger the normal button action", [&] {
+        QuietButton button;
+        button.setBounds(0, 0, 40, 24);
+        int activated = 0, mapped = 0;
+        button.onClick = [&] { ++activated; };
+        const auto mouse = [&](int modifiers) {
+            return MouseEvent(Desktop::getInstance().getMainMouseSource(), {5,5}, ModifierKeys(modifiers),
+                              1, 0, 0, 0, 0, &button, &button, Time::getCurrentTime(),
+                              {5,5}, Time::getCurrentTime(), 1, false);
+        };
+        auto right = mouse(ModifierKeys::rightButtonModifier);
+        auto released = mouse(0);
+        button.mouseDown(right); button.mouseUp(released);
+        expect(activated == 0, "Tuner step ignores right click, including release without modifiers");
+        button.context = [&](Point<int>) { ++mapped; };
+        button.mouseDown(right); button.mouseUp(released);
+        expect(activated == 0 && mapped == 1, "BPM mapping opens once and never changes tempo");
+
+    });
+    test("Parameter wheels forward scrolling without changing gain or pan", [&] {
+        struct Parent : Component { int calls=0; void mouseWheelMove(const MouseEvent &, const MouseWheelDetails &) override { ++calls; } } parent;
+        GainFader gain; ParameterSlider pan;
+        parent.addAndMakeVisible(gain); parent.addAndMakeVisible(pan);
+        gain.setValue(.8); pan.setRange(-1,1); pan.setValue(-.2);
+        for (Slider *slider : std::initializer_list<Slider *>{&gain,&pan}) {
+            const auto before=slider->getValue();
+            MouseEvent event(Desktop::getInstance().getMainMouseSource(), {5,5}, ModifierKeys(), 1, 0, 0, 0, 0, slider, slider, Time::getCurrentTime(), {5,5}, Time::getCurrentTime(), 0, false);
+            MouseWheelDetails wheel{}; wheel.deltaY=.1f;
+            slider->mouseWheelMove(event,wheel); wheel.deltaY=-.1f; slider->mouseWheelMove(event,wheel);
+            expect(slider->getValue()==before,"Wheel must not change parameter");
+            slider->setSize(200,24); slider->setSliderStyle(Slider::LinearHorizontal);slider->setTextBoxStyle(Slider::NoTextBox,false,0,0);
+            slider->setDoubleClickReturnValue(true,0);
+            MouseEvent right(Desktop::getInstance().getMainMouseSource(), {180,12}, ModifierKeys(ModifierKeys::rightButtonModifier), 1, 0, 0, 0, 0, slider, slider, Time::getCurrentTime(), {180,12}, Time::getCurrentTime(), 2, false);
+            slider->mouseDown(right);slider->mouseDrag(right);slider->mouseDoubleClick(right);slider->mouseUp(right);
+            expect(slider->getValue()==before,"Right click, drag and double click must not change parameter");
+        }
+        expect(parent.calls==4,"Wheel reaches parent exactly once");
+    });
+    test("Meter release follows 48 dB per second independently of buffer size", [&] {
+        for (int block : {64,128,480,1024}) {
+            float level=1;const double elapsed=double(block)/48000;int count=(int)(.5/elapsed);
+            for(int i=0;i<count;++i)level=meterDisplay::envelope(level,0,elapsed);
+            expect(std::abs(20*std::log10(level)+48*count*elapsed)<.001,"Same release for every buffer size");
+        }
+        expect(meterDisplay::envelope(0,.8f,.01)==.8f,"Immediate attack");
+        expect(meterDisplay::envelope(.001f,0,.1)==0,"Silence threshold");
+    });
+    test("Removing EQ resets its parameters without changing other effects", [&] {
+        auto value=object();fxui::defaults(value);put(value,"threshold",-47.);put(value,"delayTime",1.7);
+        auto bands=list(get(value,"bands"));put(bands.getReference(1),"gain",11.);put(value,"bands",bands);
+        fxui::reset("EQ",value);
+        expect(num(list(get(value,"bands"))[1],"gain")==0 && num(value,"threshold")==-47 && num(value,"delayTime")==1.7,"Independent reset");
+    });
+    test("FX presets persist defaults and isolate each processor", [&] {
+        fxpresets::Store store(directory.getNonexistentChildFile("fx-presets", ".json"));
+        auto source=object();fxui::defaults(source);put(source,"threshold",-37.);put(source,"ratio",9.);
+        auto preset=fxpresets::capture("Compressor",source,"Voz");
+        auto library=store.read();fxpresets::Store::save(library,preset);
+        fxpresets::Store::setDefault(library,"native:Compressor",str(preset,"id"));store.write(library);
+        auto target=object();fxui::defaults(target);put(target,"delayTime",1.3);put(target,"compressorEnabled",false);
+        store.applyDefault("Compressor",target);
+        expect(num(target,"threshold")==-37 && num(target,"ratio")==9,"Preset restored after disk reload");
+        expect(num(target,"delayTime")==1.3 && !flag(target,"compressorEnabled"),"Other effect and bypass preserved");
+        expect(fxpresets::matches("Compressor",target,preset),"Selected preset recognized");
+        put(target,"threshold",-11.);expect(!fxpresets::matches("Compressor",target,preset),"Edited preset recognized as custom");
+        library=store.read();fxpresets::Store::setDefault(library,"native:Compressor",{});store.write(library);
+        fxui::reset("Compressor",target);store.applyDefault("Compressor",target);
+        expect(num(target,"threshold")==-20,"Factory default restored for new inserts");
+        bool rejected=false;try{fxpresets::apply("Delay",target,preset);}catch(...){rejected=true;}
+        expect(rejected,"Cross-plugin load rejected");
+        rejected=false;try{fxpresets::Store::save(library,preset);}catch(...){rejected=true;}
+        expect(rejected,"Duplicate names rejected");
+    });
+    test("Live tempo edits preserve following songs and undo", [&] {
+        const auto media = directory.getNonexistentChildFile("live-tempo", "");
+        media.getChildFile("Stems").createDirectory();
+        WavAudioFormat wav; auto stream = media.getChildFile("Stems/Piano.wav").createOutputStream();
+        std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(),48000,2,24,{},0));
+        expect(writer != nullptr,"Tempo fixture writer");stream.release();
+        AudioBuffer<float> pcm(2,480000);pcm.clear();
+        for(int i=0;i<pcm.getNumSamples();++i)for(int c=0;c<2;++c)pcm.setSample(c,i,.1f*std::sin(float(i)*.01f));
+        expect(writer->writeFromAudioSampleBuffer(pcm,0,pcm.getNumSamples()),"Tempo fixture audio");writer.reset();
+        Session session;session.inspection=true;session.mediaDirectory=media;
+        session.restoreSnapshot(ProjectCodec::encode(projectFixture()));
+        session.command(jaras::CommandKind::selectRegion,session.song()->parts[0].id);
+        session.command(jaras::CommandKind::play);session.setTempo(135);
+        expect(session.transport().playing && session.tempoBPM()==135,"BPM changes while playing");
+        expect(tempoEditing::bpm(*session.song(),30)==120,"Following song preserved");
+        session.command(jaras::CommandKind::stopAll);session.undo();
+        expect(tempoEditing::bpm(*session.song(),10)==120,"Undo restores tempo");
+    });
     test("Timeline grid follows tempo markers, meter and visible subdivisions", [&] {
         jaras::Song song; song.duration = 60; song.bpm = 120;
         jaras::TimelineMarker marker; marker.id = "tempo"; marker.position = 5.25;
@@ -121,12 +552,319 @@ int runTests(const File &directory) {
         expect(timelineGrid::label(5.25) == "00:00:05.250", "Fractional ruler label");
         expect(timelineGrid::ticks(song, 0, 10, 0).empty(), "Invalid zoom rejected");
     });
-    test("Interface scale defaults to 90 percent and persists separately from projects", [&] {
+    test("Cursor and item snapping match Mac tempo divisions and timeline anchors", [&] {
+        auto song=projectFixture().songs.front();song.bpm=120;song.beatsPerBar=4;song.beatUnit=4;song.duration=40;
+        song.parts={jaras::Part{uuid(),"Region",3.13,7.17}};
+        song.tracks.clear();jaras::Track edgeTrack;jaras::AudioClip edgeClip;edgeClip.startTime=4.19;edgeClip.duration=1.68;edgeTrack.clips.push_back(edgeClip);song.tracks.push_back(edgeTrack);
+        jaras::TimelineMarker marker{uuid(),"Marker",9.23,0xffffff};
+        jaras::TimelineMarker tempo{uuid(),"Tempo",10.25,0xffffff};tempo.tempoBPM=60;tempo.tempoBeats=3;tempo.tempoUnit=4;
+        song.markers=std::vector<jaras::TimelineMarker>{marker,tempo};
+        jaras::TransportState transport;transport.editPosition=15.37;transport.position=16.39;
+        auto checkPosition=[&](double actual,double wanted,const char *message){expect(std::abs(actual-wanted)<1e-7,message);};
+        for(double scale:{1.,20.,100.,1000.}) {
+            checkPosition(timelineGrid::snapCursor(2.21,song,scale,false),2.,"Cursor uses configured subdivisions at every zoom");
+            checkPosition(timelineGrid::snapCursor(2.21,song,scale,true),2.21,"Shift bypasses cursor grid");
+            checkPosition(timelineGrid::snapCursor(10.91,song,scale,false),11.25,"Cursor restarts snap phase at tempo change");
+            for(double target:{3.13,7.17,9.23}) {
+                checkPosition(timelineGrid::snapSelection(target+.001,song,scale,transport,false),target,"Items snap to region start/end and marker");
+                checkPosition(timelineGrid::snapSelection(target+.001,song,scale,transport,true),target+.001,"Shift bypasses item anchors");
+            }
+        }
+        for(double target:{4.19,5.87}) {
+            checkPosition(timelineGrid::snapCursor(target+.001,song,20,false),target,"Cursor snaps to item start and end");
+            checkPosition(timelineGrid::snapCursor(target+.001,song,20,true),target+.001,"Shift bypasses item edge magnets");
+        }
+        checkPosition(timelineGrid::snapSelection(15.371,song,100,transport,false),15.37,"Item snaps to edit cursor");
+        checkPosition(timelineGrid::snapCursor(15.371,song,100,false),15.25,"Edit cursor must not snap back to its old position");
+    });
+    test("Edit cursor clicks and ruler drags snap unless Shift is held", [&] {
+        auto project=projectFixture();auto &song=project.songs.front();song.parts.clear();song.markers.reset();song.tracks.clear();song.bpm=120;song.beatsPerBar=4;song.beatUnit=4;
+        project.savedCursor=jaras::SavedProjectCursor{song.id,0};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("cursor-snap",".json"));workspace.setSize(1366,768);
+        auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");expect(canvas!=nullptr,"Canvas exists");
+        auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,canvas,canvas,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
+        for(float y:{60.f,110.f}) for(bool free:{false,true}) {
+            Point<float> at{46,y};int mods=ModifierKeys::leftButtonModifier|(free?ModifierKeys::shiftModifier:0);
+            canvas->mouseDown(event(at,at,mods,false));canvas->mouseUp(event(at,at,free?ModifierKeys::shiftModifier:0,false));
+            expect(std::abs(session.transport().editPosition-(free?2.3:2.5))<1e-6,"Ruler and empty grid both seek; Shift is free");
+        }
+        Point<float> at{46,60},end{67,60};canvas->mouseDown(event(at,at,ModifierKeys::leftButtonModifier,false));
+        canvas->mouseDrag(event(end,at,ModifierKeys::leftButtonModifier,true));
+        expect(std::abs(session.transport().editPosition-3.5)<1e-6,"Ruler drag snaps");
+        canvas->mouseDrag(event(end,at,ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier,true));
+        expect(std::abs(session.transport().editPosition-3.35)<1e-6,"Shift switches to free positioning during drag");
+        canvas->mouseUp(event(end,at,0,true));
+    });
+    test("Stereo meter channels use identical colour coverage at fractional scale", [&] {
+        for(float scale:{.6f,.9f,1.f,1.1f,1.2f}) {
+            Image image(Image::ARGB,60,160,true);Graphics g(image);g.fillAll(Colour(0xff595959));g.addTransform(AffineTransform::scale(scale));
+            meterDisplay::bar(g,{2,4,5,120},.8f);meterDisplay::bar(g,{18,4,5,120},.8f);
+            const int left=roundToInt(2*scale),right=roundToInt(18*scale),width=std::max(1,roundToInt(5*scale));
+            for(int y=roundToInt(20*scale);y<roundToInt(110*scale);++y)for(int x=0;x<width;++x)
+                expect(image.getPixelAt(left+x,y)==image.getPixelAt(right+x,y),"Equal stereo levels must have identical pixels and hue");
+        }
+    });
+    test("Special track rows expose role-specific controls without audio FX and recording", [&] {
+        auto project=projectFixture();auto &song=project.songs.front();song.tracks.clear();
+        for(const auto &role:{"generatedClick","timecode","video","teleprompt","teleprompt2","chords"}) {
+            jaras::Track track;track.id=uuid();track.role.id=role;track.name=jaras::fixedTrackName(track.role);song.tracks.push_back(track);
+        }
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("special-controls",".json"));workspace.setSize(1366,768);
+        for(const auto &track:session.song()->tracks) {
+            auto *row=uiFeatureTests::find(workspace,"trackRow:"+text(track.id));expect(row!=nullptr,"Special row exists");
+            auto *controls=uiFeatureTests::find(*row,"specialTrackControls");expect(controls&&controls->isVisible(),"Special controls shown");
+            for(auto *control:controls->getChildren())if(control->isVisible())expect(controls->getLocalBounds().contains(control->getBounds()),"Special control remains inside its row");
+            auto *record=uiFeatureTests::find(*row,"trackRecord");expect(record&&!record->isVisible(),"Special tracks cannot record");
+            for(auto *child:row->getChildren())if(auto *button=dynamic_cast<TextButton*>(child)) {
+                if(button->getButtonText()=="M"||button->getButtonText()=="S")expect(button->isVisible()==(track.role.id=="generatedClick"||track.role.id=="timecode"),"Mute/Solo only on audio-generating special tracks");
+                if(button->getButtonText()==String::fromUTF8("Ø"))expect(!button->isVisible(),"Special tracks have no phase inversion button");
+            }
+            auto *pan=uiFeatureTests::find(*row,"trackPan");expect(pan&&!pan->isVisible(),"Standard pan hidden on special tracks");
+            if(track.role.id=="generatedClick")expect(uiFeatureTests::find(*controls,"insertClick")->isVisible(),"Click exposes Insert");
+            if(track.role.id=="video"||jaras::isTeleprompterRole(track.role))expect(uiFeatureTests::find(*controls,"insertMedia")->isVisible(),"Projection exposes Add media");
+            if(track.role.id=="chords"||jaras::isTeleprompterRole(track.role))expect(uiFeatureTests::find(*controls,"insertText")->isVisible(),"Text track exposes Add text");
+        }
+    });
+    test("Video audio decoding preserves source timing and silent video metadata", [&] {
+        const auto fixtures=File(__FILE__).getParentDirectory().getSiblingFile("Tests").getChildFile("Fixtures");
+        const auto video=fixtures.getChildFile("tone-video.mp4"),silent=fixtures.getChildFile("silent.mp4");
+        auto info=inspectMediaSource(video);expect(info.audio&&info.video&&std::abs(info.duration-2)<.05,"Video with audio streams and duration");
+        info=inspectMediaSource(silent);expect(info.video&&!info.audio,"Silent video is valid projection media");
+        AudioFormatManager formats;registerAudioFormats(formats);std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(video));
+        expect(reader&&reader->numChannels==2&&reader->sampleRate>0,"Read embedded stereo audio");
+        AudioBuffer<float> first(2,2048),afterSeek(2,2048),middle(2,2048);
+        expect(reader->read(&first,0,2048,4096,true,true),"Decode initial segment");
+        expect(first.getMagnitude(0,2048)>.1f,"Embedded audio is audible");
+        expect(reader->read(&middle,0,2048,(int64)reader->sampleRate,true,true),"Seek forward by timestamp");
+        expect(reader->read(&afterSeek,0,2048,4096,true,true),"Seek backwards by timestamp");
+        float difference=0;for(int c=0;c<2;++c)for(int i=256;i<2048;++i)difference=std::max(difference,std::abs(first.getSample(c,i)-afterSeek.getSample(c,i)));
+        expect(difference<.002f,"Seeking preserves sample alignment instead of returning the earlier keyframe");
+    });
+    test("Projection selects the first active media item in grid order on ordinary tracks", [&] {
+        jaras::Song song;jaras::Track first,second;first.id=uuid();second.id=uuid();first.role.id=second.role.id="other";
+        jaras::AudioClip a;a.id=uuid();a.startTime=2;a.duration=5;a.audioFile=jaras::AudioFile{"Videos/first.mp4",{}};
+        auto b=a;b.id=uuid();b.audioFile=jaras::AudioFile{"Videos/second.mp4",{}};first.clips={a};second.clips={b};song.tracks={first,second};
+        expect(firstProjectionItem(song,3,"video")->id==a.id,"Topmost active media wins");
+        song.tracks[0].mute=true;expect(firstProjectionItem(song,3,"video")->id==b.id,"Muted track is skipped");
+        song.tracks[0].mute=false;song.tracks[0].clips[0].muted=true;expect(firstProjectionItem(song,3,"video")->id==b.id,"Muted item is skipped");
+        expect(!firstProjectionItem(song,7,"video"),"End is exclusive");
+        expect(!firstProjectionItem(song,3,"teleprompt"),"Teleprompter stays scoped to its own track");
+    });
+    test("Media drop imports a batch into separate tracks or one sequence with gap and one undo", [&] {
+        const auto folder=directory.getChildFile("media-drop");folder.createDirectory();
+        Image image(Image::RGB,8,8,true);image.clear(image.getBounds(),Colours::red);
+        Array<File> files;
+        for(int i=0;i<2;++i){auto file=folder.getChildFile("image"+String(i)+".png");auto stream=file.createOutputStream();PNGImageFormat format;expect(stream&&format.writeImageToStream(image,*stream),"Write image fixture");stream.reset();files.add(file);}
+        auto wait=[&](Session &session){const double deadline=Time::getMillisecondCounterHiRes()+15000;while(session.busy&&Time::getMillisecondCounterHiRes()<deadline){MSG message;while(PeekMessage(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessage(&message);}Thread::sleep(2);}expect(!session.busy,"Import worker finishes");};
+        for(bool same:{false,true}) {
+            auto project=projectFixture();auto &song=project.songs.front();song.parts.clear();song.markers.reset();song.tracks.resize(1);song.tracks.front().role.id="other";song.tracks.front().clips.clear();
+            Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);session.mediaDirectory=folder.getChildFile(same?"same":"separate");session.mediaDirectory.createDirectory();
+            auto before=JSON::toString(ProjectCodec::encode(session.project()));const auto id=session.song()->tracks.front().id;
+            session.importMedia(files,3,id,same,2);wait(session);
+            expect(session.song()->tracks.size()==(same?1u:2u),utf8(session.message).c_str());
+            const auto &first=session.song()->tracks.front();expect(first.id==id&&first.role.id=="other","Dropped item preserves destination track type");
+            expect(first.clips.front().startTime==3&&first.clips.front().duration==10,"Drop time and image duration match Mac");
+            if(same)expect(first.clips.size()==2&&first.clips[1].startTime==15,"Sequential layout preserves two-second gap");
+            else expect(session.song()->tracks[1].clips.front().startTime==3,"Separate tracks share drop time");
+            session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Single undo restores entire batch");
+            session.redo();expect(session.song()->tracks.front().clips.size()==(same?2u:1u),"Redo restores batch and media references");
+        }
+    });
+    test("Generated Click overview follows tempo origins and bounds pixel density", [&] {
+        auto song=projectFixture().songs.front();song.bpm=120;song.beatsPerBar=4;song.beatUnit=4;song.parts.clear();
+        jaras::TimelineMarker tempo{uuid(),"Tempo",5.25,0};tempo.tempoBPM=60;tempo.tempoUnit=4;song.markers=std::vector<jaras::TimelineMarker>{tempo};
+        jaras::AudioClip clip;clip.startTime=.1;clip.duration=10;
+        auto beats=timelineGrid::clickBeats(song,clip,0,12,100);
+        expect(!beats.empty()&&beats.front()==.5,"Trimmed Click starts on musical beat, not item edge");
+        expect(std::find(beats.begin(),beats.end(),5.25)!=beats.end()&&std::find(beats.begin(),beats.end(),6.25)!=beats.end(),"Tempo change resets pulse phase");
+        clip.duration=100000;song.duration=100000;
+        expect(timelineGrid::clickBeats(song,clip,0,100000,.01).size()<=1002,"Zoomed-out Click rendering stays bounded by pixels");
+    });
+    test("Individual track height previews only one row and commits one undo step", [&] {
+        auto project=projectFixture();auto &song=project.songs.front();song.parts.clear();song.markers.reset();
+        for(auto &track:song.tracks){track.clips.clear();track.heightScale=1;track.automationJSON.reset();}
+        jaras::AudioClip heightClip;heightClip.id=uuid();heightClip.name="Height";heightClip.startTime=2;heightClip.duration=4;
+        song.tracks.front().clips.push_back(heightClip);song.tracks.front().color=0xdd3030;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("height-drag",".json"));workspace.setSize(1366,768);
+        auto *handle=uiFeatureTests::find(workspace,"trackHeightHandle");expect(handle!=nullptr,"Height input exists");
+        const auto before=JSON::toString(ProjectCodec::encode(session.project()));
+        auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,handle,handle,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
+        auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");
+        auto firstImage=canvas->createComponentSnapshot(canvas->getLocalBounds());
+        expect(firstImage.getPixelAt(75,140).getRed()<100,"Baseline sample is below first item");
+        Point<float> anchor{50,62},end{50,94};
+        handle->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));handle->mouseDrag(event(end,anchor,ModifierKeys::leftButtonModifier,true));
+        expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Preview leaves stored project unchanged");
+        auto previewImage=canvas->createComponentSnapshot(canvas->getLocalBounds());
+        expect(previewImage.getPixelAt(75,140).getRed()>100,"Grid item grows with its mixer row before mouse release");
+        handle->mouseUp(event(end,anchor,0,true));
+        expect(session.song()->tracks.front().heightScale.value_or(1)>1.4,"Only dragged row grows");
+        for(size_t i=1;i<session.song()->tracks.size();++i)expect(session.song()->tracks[i].heightScale.value_or(1)==1,"Other rows keep their heights");
+        session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"One undo restores row height");
+        handle->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));handle->mouseDrag(event(end,anchor,ModifierKeys::leftButtonModifier,true));handle->keyPressed(KeyPress(KeyPress::escapeKey));handle->mouseUp(event(end,anchor,0,true));
+        expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Escape cancels resize without a project mutation");
+    });
+    test("Track drop destination matches group indicator and preserves routes and descendants", [&] {
+        jaras::Song song;auto make=[](const char *id,std::optional<ID> parent={}){jaras::Track t;t.id=id;t.name=id;t.role.id="other";t.parentTrackID=parent;t.patch=jaras::OutputPatch{parent?-2:0,2};return t;};
+        song.tracks={make("A"),make("G"),make("C","G"),make("D","G"),make("Z")};
+        auto into=trackDrop::resolve(song,"A","D",true,false);expect(into&&into->joins&&into->parent==ID("G")&&into->before=="Z","Last child bottom remains inside group");
+        trackDrop::apply(song,*into);expect(song.tracks[3].id=="A"&&song.tracks[3].patch->firstChannel==-2,"Commit matches yellow indicator and routes to group");
+        auto out=trackDrop::resolve(song,"A","C",true,true);expect(out&&!out->joins&&!out->parent&&out->indicator=="D","Gutter points past entire remaining group");
+        trackDrop::apply(song,*out);expect(!song.tracks[3].parentTrackID&&song.tracks[3].patch->firstChannel==0,"Leaving group restores master output");
+        expect(!trackDrop::resolve(song,"G","C",true,false),"Folder cannot enter its own child");
+        song.tracks.front().role.id="generatedClick";expect(!trackDrop::resolve(song,song.tracks.front().id,"Z",true,false),"Special tracks cannot be reordered");
+    });
+    test("Grid right drag selects intersecting items without seeking or opening menus", [&] {
+        Session session; session.inspection=true;
+        auto project=projectFixture(); auto &song=project.songs.front(); song.tracks.clear();
+        for(int row=0;row<2;++row) {
+            jaras::Track track;track.id=uuid();track.role.id="other";track.name="Selection";
+            jaras::AudioClip clip;clip.id=uuid();clip.startTime=2;clip.duration=4;
+            track.clips.push_back(clip);song.tracks.push_back(track);
+        }
+        session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        auto preferences=directory.getNonexistentChildFile("grid-input", ".json");
+        Appearance appearance(preferences);
+        appearance.set("jaras.timeline.zoom", 10.);
+        Auth auth; Lighting lighting(session); Workspace workspace(session,auth,lighting,false,preferences);
+        workspace.setSize(1366,768);
+        auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");expect(canvas!=nullptr,"Grid canvas available");
+        auto event=[&](Point<float> point,Point<float> anchor,int modifiers,bool dragged) {
+            return MouseEvent(Desktop::getInstance().getMainMouseSource(),point,ModifierKeys(modifiers),1,0,0,0,0,
+                canvas,canvas,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);
+        };
+        const auto selectedCount=[&] {return list(get(workspace.diagnostics(),"selectedItems")).size();};
+        const double edit=session.transport().editPosition;
+        const int modals=Component::getNumCurrentlyModalComponents();
+        Point<float> anchor{0,65},end{(float)canvas->getWidth()-1,(float)canvas->getHeight()-1};
+        canvas->mouseDown(event(anchor,anchor,ModifierKeys::rightButtonModifier,false));
+        expect(Component::getNumCurrentlyModalComponents()==modals,"Right down defers menu");
+        canvas->mouseDrag(event(end,anchor,ModifierKeys::rightButtonModifier,true));
+        expect(selectedCount()==2,"Both rows selected during drag, before release");
+        canvas->mouseUp(event(end,anchor,0,true));
+        expect(selectedCount()==2 && session.transport().editPosition==edit,"Selection persists without changing edit cursor");
+        expect(Component::getNumCurrentlyModalComponents()==modals,"Drag release does not open item menu");
+        // An empty rectangle retains the previous selection only with Shift/Ctrl.
+        for(int additive:std::initializer_list<int>{ModifierKeys::shiftModifier,ModifierKeys::ctrlModifier,0}) {
+            anchor={0,(float)canvas->getHeight()-8};end={5,(float)canvas->getHeight()-1};
+            canvas->mouseDown(event(anchor,anchor,ModifierKeys::rightButtonModifier|additive,false));
+            canvas->mouseDrag(event(end,anchor,ModifierKeys::rightButtonModifier|additive,true));
+            canvas->mouseUp(event(end,anchor,additive,true));
+            expect(selectedCount()==(additive?2:0),"Additive modifiers preserve; plain drag replaces");
+        }
+    });
+    test("Dragging paints the actual item at the pointer and commits only on release", [&] {
+        auto project=projectFixture();auto &song=project.songs.front();song.parts.clear();song.markers.reset();project.savedCursor=jaras::SavedProjectCursor{song.id,0};
+        auto &track=song.tracks.front();track.role.id="other";track.color=0xdd3030;track.heightScale=1;track.mute=false;track.clips.clear();
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Live item";clip.startTime=2;clip.duration=4;track.clips.push_back(clip);
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("drag-visual",".json"));workspace.setSize(1366,768);
+        auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");expect(canvas!=nullptr,"Canvas exists");
+        auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,canvas,canvas,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
+        const int left=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
+        Point<float> anchor{70,90},end{270,90};
+        canvas->mouseDown(event(anchor,anchor,left,false));
+        const auto before=JSON::toString(ProjectCodec::encode(session.project()));
+        auto guide=canvas->createComponentSnapshot(canvas->getLocalBounds());
+        auto yellowAt=[&](const Image &image,int x){for(int dx=-1;dx<=1;++dx){auto c=image.getPixelAt(x+dx,160);if(c.getRed()>180 && c.getGreen()>180 && c.getBlue()<80)return true;}return false;};
+        expect(yellowAt(guide,40)&&yellowAt(guide,120),"Yellow guides appear on press at both item boundaries");
+        canvas->mouseDrag(event(end,anchor,left,true));
+        auto image=canvas->createComponentSnapshot(canvas->getLocalBounds());
+        expect(yellowAt(image,240)&&yellowAt(image,320),"Yellow guides follow moved item boundaries");
+        const auto source=image.getPixelAt(70,90),target=image.getPixelAt(270,90);
+        expect(target.getRed()>100 && target.getRed()>target.getGreen()*1.5,"Moved item renders its real red surface, not a translucent green rectangle");
+        expect(source.getRed()<100,"Original item disappears while moving");
+        expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Drag drawing does not mutate the saved project");
+        canvas->mouseUp(event(end,anchor,ModifierKeys::shiftModifier,true));
+        expect(std::abs(session.song()->tracks.front().clips.front().startTime-12)<.001,"Release commits pointer position");
+        session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"One undo restores the item");
+    });
+    test("Ruler range drives looping and resizes without moving items or cursors", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        auto fixture=projectFixture();fixture.songs.front().tracks.clear();
+        session.restoreSnapshot(ProjectCodec::encode(fixture));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);
+        Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("range-input",".json"));workspace.setSize(1366,768);
+        auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");expect(canvas!=nullptr,"Canvas available");
+        const auto before=JSON::toString(session.snapshot());
+        auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,canvas,canvas,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
+        const int right=ModifierKeys::rightButtonModifier|ModifierKeys::shiftModifier;
+        Point<float> anchor{200,60},end{100,60};
+        canvas->mouseDown(event(anchor,anchor,right,false));
+        expect(!session.selectedTimeRange(),"Press alone creates no selection");
+        canvas->mouseDrag(event(end,anchor,right,true));
+        const auto range=session.selectedTimeRange();expect(range && range->first<range->second,"Reverse drag normalizes persistent range");
+        canvas->mouseUp(event(end,anchor,ModifierKeys::shiftModifier,true));
+        expect(session.selectedTimeRange()==range,"Range remains after release");
+        expect(JSON::toString(session.snapshot())==before,"Range is transient and does not change the project or cursors");
+        session.command(jaras::CommandKind::toggleLoop);
+        expect(session.transport().loop.enabled && session.transport().loop.start==range->first && session.transport().loop.end==range->second,"Loop uses selection rather than whole song");
+        anchor={200,60};end={250,60};
+        const int left=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
+        canvas->mouseDown(event(anchor,anchor,left,false));canvas->mouseDrag(event(end,anchor,left,true));canvas->mouseUp(event(end,anchor,ModifierKeys::shiftModifier,true));
+        expect(session.selectedTimeRange()->second>range->second && session.transport().loop.end==session.selectedTimeRange()->second,"Dragging edge updates active loop immediately");
+        session.command(jaras::CommandKind::escape);expect(!session.transport().loop.enabled && session.selectedTimeRange().has_value(),"First Escape cancels loop, retaining range");
+        session.command(jaras::CommandKind::escape);expect(!session.selectedTimeRange(),"Next Escape clears range");
+        session.selectTimeRange(2,5);session.command(jaras::CommandKind::editSeek,{},2);session.command(jaras::CommandKind::toggleLoop);session.command(jaras::CommandKind::play);
+        session.core.advance(3.25);expect(session.transport().position>=2 && session.transport().position<5,"Playback wraps inside selected interval");
+    });
+    test("Timeline bulk deletions isolate categories and undo restores unified regions", [&] {
+        auto original=projectFixture();auto &song=original.songs.front();
+        jaras::TimelineMarker tempo{uuid(),"Tempo",4,0x999999};tempo.tempoBPM=125;
+        song.markers->push_back(tempo);
+        const auto root=song.parts.front().id;
+        jaras::Part child{uuid(),"Unified child",11,19};child.parentRegionID=root;song.parts.push_back(child);
+        jaras::TimelineMarker unified{uuid(),"Unified child",11,0xffcc00};unified.unifiedRegionID=root;unified.sourceRegionID=child.id;song.markers->push_back(unified);
+        for(auto kind:{timelineBulk::Kind::tempo,timelineBulk::Kind::regions,timelineBulk::Kind::markers}) {
+            Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(original));session.audio.setOffline(true);
+            const auto before=JSON::toString(session.snapshot());const auto clips=session.song()->tracks.front().clips.size();
+            session.edit([&](auto &project){timelineBulk::erase(project,song.id,kind);},true,kind==timelineBulk::Kind::tempo);
+            const auto *current=session.song();
+            expect(current->tracks.front().clips.size()==clips,"Bulk region deletion preserves media items");
+            if(kind==timelineBulk::Kind::regions)expect(current->parts.empty(),"Deletes wrappers and members together");
+            for(const auto &m:current->markers.value_or(std::vector<jaras::TimelineMarker>{}))expect(!timelineBulk::matches(m,kind),"Requested category removed");
+            if(kind!=timelineBulk::Kind::regions)expect(std::any_of(current->markers->begin(),current->markers->end(),[&](const auto &m){return m.id==unified.id;}),"Unified region marker protected");
+            session.undo();expect(JSON::toString(session.snapshot())==before,"One undo restores entire operation exactly");
+            session.redo();expect(session.canUndo(),"Redo remains undoable");
+        }
+    });
+    test("Marker conversion follows VS Hook bounds and restores exactly with undo", [&] {
+        auto original=projectFixture();auto &song=original.songs.front();song.duration=40;
+        song.parts={jaras::Part{uuid(),"Existing",25,30}};
+        song.markers=std::vector<jaras::TimelineMarker>{{uuid(),"First",0,0x123456},{uuid(),"Second",10,0x654321},{uuid(),"No audio",5,1},{uuid(),"*1",8,1},{uuid(),"Inside",26,1},{uuid(),"No audio 2",20,1}};
+        song.tracks.front().clips.clear();
+        for(auto times: {std::pair<double,double>{0,20},{0,30},{10,25},{8,3}}) {
+            jaras::AudioClip clip;clip.id=uuid();clip.name="Take";clip.startTime=times.first;clip.duration=times.second;
+            clip.audioFile=jaras::AudioFile{"Stems/take.wav",{}};song.tracks.front().clips.push_back(clip);
+        }
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(original));session.audio.setOffline(true);
+        const auto before=JSON::toString(session.snapshot());const auto result=markerRegions::plan(*session.song());
+        expect(result.plans.size()==2 && result.plans[0].end==10 && result.plans[1].end==25,"Audio-start and next marker/region boundaries match VS Hook");
+        expect(result.skipped.size()==4 && result.message().contains("Alinhe o marcador"),"Skipped markers explain corrective action");
+        expect(markerRegions::plan(*session.song(),song.markers->at(2).id).plans.empty(),"Invalid individual conversion preserves marker");
+        session.edit([&](auto &project){markerRegions::apply(project,song.id,result);});
+        const auto after=JSON::toString(session.snapshot());
+        expect(session.song()->parts.size()==3 && session.song()->markers->size()==4,"Only eligible markers replaced");
+        expect(session.song()->parts[1].color==0x123456 && session.song()->parts[2].color==0x654321,"Colours preserved");
+        expect(session.song()->tracks.front().clips.size()==4,"Media preserved");
+        session.undo();expect(JSON::toString(session.snapshot())==before,"Single undo restores markers and regions");
+        session.redo();expect(JSON::toString(session.snapshot())==after,"Redo restores region identities");
+    });
+    test("Interface scale defaults to 100 percent and persists separately from projects", [&] {
         auto file = directory.getNonexistentChildFile("interface-scale", ".json");
         Appearance preferences(file);
-        expect(std::abs(preferences.interfaceScale() - .9f) < 1e-6, "Compact default");
-        expect(preferences.set("jaras.interface.scale", 1.25).wasOk(), "Scale saved");
-        expect(std::abs(Appearance(file).interfaceScale() - 1.25f) < 1e-6, "Scale restored");
+        expect(std::abs(preferences.interfaceScale() - 1.f) < 1e-6, "First-install default");
+        expect(preferences.set("jaras.interface.scale", 1.1).wasOk(), "Scale saved");
+        expect(std::abs(Appearance(file).interfaceScale() - 1.1f) < 1e-6, "Scale restored");
+        for (int percent = 60; percent <= 120; percent += 10) {
+            expect(preferences.set("jaras.interface.scale", percent / 100.0).wasOk(), "Save scale option");
+            expect(std::abs(Appearance(file).interfaceScale() - percent / 100.f) < 1e-6, "Restore scale option");
+        }
+        expect(preferences.set("jaras.interface.scale", 1.5).wasOk(), "Legacy scale saved");
+        expect(std::abs(Appearance(file).interfaceScale() - 1.2f) < 1e-6, "Legacy scale is limited to 120 percent");
     });
     test("Waveforms analyse real stereo media asynchronously and map offsets, rates and loops", [&] {
         const auto file = directory.getNonexistentChildFile("waveform-source", ".wav");
@@ -146,7 +884,7 @@ int runTests(const File &directory) {
         std::shared_ptr<const WaveformCache::Data> data = cache.request(file);
         const auto deadline = Time::getMillisecondCounterHiRes() + 5000;
         while (!data && Time::getMillisecondCounterHiRes() < deadline) { Thread::sleep(10); data = cache.request(file); }
-        expect(data != nullptr && data->channels.size() == 2, "Source produces two cached channels without embedded waveform");
+        expect(data != nullptr && data->sourceChannels == 2 && data->storedChannels == 3, "Source produces two cached channels without embedded waveform");
         expect(data->range(0, .2, .3).second < .11f && data->range(0, 1.2, 1.3).second > .69f, "Real source amplitude retained");
         expect(data->range(1, .2, .3).second > .29f && data->range(1, 1.2, 1.3).second < .06f, "Stereo channels remain independent");
         expect(data->range(0, 3, 4).second == 0, "No fabricated waveform beyond the source");
@@ -155,6 +893,193 @@ int runTests(const File &directory) {
         clip.loopStart = .25; clip.loopLength = .5;
         expect(std::abs(WaveformCache::sourcePosition(clip, .3) - .6) < 1e-8, "Loop maps wrapped source time");
         expect(cache.request(file) == data, "Repeated paint reuses analysis");
+    });
+    test("Waveform hierarchy preserves signed peaks, mono cancellation and Mac cache format", [&] {
+        const auto file = directory.getNonexistentChildFile("waveform-detail", ".wav");
+        AudioBuffer<float> samples(2, 131071);
+        for (int i = 0; i < samples.getNumSamples(); ++i) {
+            const float sample = .2f + .1f * std::sin((float)(i * .013));
+            samples.setSample(0, i, sample); samples.setSample(1, i, -sample);
+        }
+        samples.setSample(0, 65535, .95f); samples.setSample(1, 65535, -.95f);
+        WavAudioFormat wav;
+        auto stream = file.createOutputStream();
+        std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(), 48000, 2, 24, {}, 0));
+        expect(writer != nullptr, "PCM writer"); stream.release();
+        expect(writer->writeFromAudioSampleBuffer(samples, 0, samples.getNumSamples()), "PCM fixture"); writer.reset();
+        std::unique_ptr<AudioFormatReader> reader(wav.createReaderFor(file.createInputStream().release(), true));
+        expect(reader != nullptr, "PCM reader");
+        auto data = WaveformCache::analyse(*reader);
+        expect(data != nullptr, "Peak hierarchy");
+        expect(data->range(0, 0, data->duration).first > .099f, "Positive DC is not expanded to zero");
+        expect(data->range(1, 0, data->duration).second < -.099f, "Negative DC is not expanded to zero");
+        expect(std::abs(data->range(2, 0, data->duration).second) < .0001f, "Mono averages PCM before extrema; opposing channels cancel");
+        expect(data->range(0, 0, data->duration).second > .949f, "Single transient survives widest view");
+        for (int64 step : {256, 512, 1024, 2048, 16384, 65536}) {
+            for (int64 frame = 0; frame < data->frames; frame += step) {
+                const int end = (int)std::min(data->frames, frame + step);
+                const auto exact = FloatVectorOperations::findMinAndMax(samples.getReadPointer(0, (int)frame), end - (int)frame);
+                const auto peak = data->rangeFrames(0, frame, end);
+                expect(std::abs(peak.first - exact.getStart()) < .0001f && std::abs(peak.second - exact.getEnd()) < .0001f, "Aligned LOD equals original PCM extrema");
+            }
+        }
+        for (float amplitude : {-24.f, -2.f, -1.f, -.123f, 0.f, .321f, 1.f, 2.f, 24.f})
+            expect(std::abs(WaveformCache::decode(WaveformCache::encode(amplitude)) - amplitude) < std::max(.0001f, std::abs(amplitude) * .0005f), "Mac signed logarithmic peak encoding");
+        const auto cacheFile = directory.getNonexistentChildFile("peaks", ".waveform");
+        const auto stamp = file.getLastModificationTime().toMilliseconds();
+        expect(WaveformCache::writeCache(*data, cacheFile, file.getSize(), stamp), "Write JARASPK4 cache");
+        auto restored = WaveformCache::readCache(cacheFile, file.getSize(), stamp);
+        expect(restored && restored->mappedBytes() > 0 && restored->owned.getSize() == 0, "Cache memory mapped without copying all peaks");
+        expect(restored->range(0, 0, data->duration) == data->range(0, 0, data->duration), "Persistent peaks identical");
+        expect(!WaveformCache::readCache(cacheFile, file.getSize() + 1, stamp), "Reject stale source size");
+        expect(!WaveformCache::readCache(cacheFile, file.getSize(), stamp + 1000), "Reject stale source date");
+        restored.reset();
+        expect(cacheFile.replaceWithText("JARASPK4"), "Truncate fixture");
+        expect(!WaveformCache::readCache(cacheFile, file.getSize(), stamp), "Reject truncated cache");
+        WaveformCache cache;
+        auto ready = cache.request(file);
+        const auto deadline = Time::getMillisecondCounterHiRes() + 5000;
+        while (!ready && Time::getMillisecondCounterHiRes() < deadline) { Thread::sleep(10); ready = cache.request(file); }
+        expect(ready != nullptr, "Async source ready");
+        auto detail = cache.detail(ready, 65535);
+        while (!detail && Time::getMillisecondCounterHiRes() < deadline) { Thread::sleep(10); detail = cache.detail(ready, 65535); }
+        expect(detail && std::abs(detail->sample(0, 65535) - .95f) < .0001f, "Detailed PCM retains transient at page boundary");
+        expect(std::abs(detail->sample(2, 65535)) < .0001f, "Detailed mono matches coarse mono");
+        expect(WaveformCache::step(48000, 10) == 2048 && WaveformCache::step(48000, 500) == 48, "LOD matches Mac half-point rule");
+        Image image(Image::ARGB, 1024, 80, true); Graphics graphics(image);
+        jaras::AudioClip clip; clip.duration = data->duration; clip.playbackRate = 1;
+        const auto started = Time::getMillisecondCounterHiRes();
+        for (int n = 0; n < 20; ++n)
+            WaveformRenderer::draw(graphics, cache, ready, clip, {0, 0, 1024, 80}, {0, 0, 1024, 80}, 1024 / clip.duration, Colours::white);
+        expect(Time::getMillisecondCounterHiRes() - started < 2000, "Viewport envelope rendering remains bounded");
+    });
+    test("Unify and disunify match Mac region, marker, playlist and audio ownership rules", [&] {
+        auto project = projectFixture(); auto &song = project.songs.front();
+        song.parts[1].startTime = 19; song.parts[1].endTime = 30;
+        const auto first=song.parts[0].id,second=song.parts[1].id;
+        jaras::Part adjacent{uuid(),"Touching only",30,40}; song.parts.push_back(adjacent);
+        song.tracks[0].clips[0].regionOwnerID=first;
+        project.regionSetlist.emplace();
+        jaras::RegionPlaylist playlist{uuid(),"Show",song.id,{second,first,adjacent.id}};
+        project.regionSetlist->playlists.push_back(playlist);
+        jaras::SetlistBlock block{uuid(),song.id,playlist.id,"Block",0,first};
+        project.regionSetlist->blocks=std::vector<jaras::SetlistBlock>{block};
+        const auto media=song.tracks[0].clips[0].audioFile->path;
+        expect(regionEditing::overlapping(song,first).size()==2,"Touching edges never join overlapping roots");
+        const auto group=regionEditing::unify(project,song.id,first,"Unified");
+        expect(song.parts.size()==4&&regionEditing::hasChildren(song,group),"Wrapper retains both complete songs");
+        expect(project.regionSetlist->playlists[0].regionIds==std::vector<ID>{group,adjacent.id},"Playlist keeps first occurrence and surviving order");
+        expect(project.regionSetlist->blocks->front().beforeRegionId==group,"Block follows unified root");
+        expect(song.tracks[0].clips[0].regionOwnerID==first,"Original audio ownership remains with its song");
+        for(auto &marker:*song.markers)if(marker.sourceRegionID==first){marker.position=9;marker.name="Edited song";marker.color=0x112233;}
+        regionEditing::disunify(project,song.id,group);
+        expect(song.parts.size()==3&&!regionEditing::hasChildren(song,group),"Unwrap removes only wrapper");
+        const auto restored=std::find_if(song.parts.begin(),song.parts.end(),[&](const auto &p){return p.id==first;});
+        expect(restored!=song.parts.end()&&restored->startTime==9&&restored->name=="Edited song"&&restored->color==0x112233,"Edited unified markers restore name, colour and start");
+        expect(project.regionSetlist->playlists[0].regionIds==std::vector<ID>{first,second,adjacent.id},"Unwrapped playlist expands chronologically");
+        expect(song.tracks[0].clips[0].audioFile->path==media&&song.tracks[0].clips[0].startTime==10,"Region operations never move or replace audio");
+        jaras::validate(project);
+    });
+    test("Region deletion preserves other songs, while timeline wrapper deletion restores children", [&] {
+        auto project=projectFixture();auto &song=project.songs.front();song.regionOwnershipInitialized=true;
+        auto &first=song.parts[0];auto &second=song.parts[1];second.startTime=18;
+        const auto firstID=first.id,secondID=second.id,songID=song.id;
+        auto owned=song.tracks[0].clips[0];owned.regionOwnerID=firstID;
+        auto other=owned;other.id=uuid();other.startTime=19;other.regionOwnerID=secondID;
+        song.tracks[0].clips={owned,other};
+        jaras::TimelineMarker manual{uuid(),"Other song",19,0xffffff};manual.regionOwnerID=secondID;
+        jaras::TimelineMarker tempo{uuid(),"Old unassigned tempo",12,0x999999};tempo.tempoBPM=123;
+        song.markers=std::vector<jaras::TimelineMarker>{manual,tempo};
+        regionEditing::erase(project,songID,{firstID},true);
+        expect(song.parts.size()==1&&song.parts[0].id==secondID,"Only selected top-level song removed");
+        expect(song.tracks[0].clips.size()==1&&song.tracks[0].clips[0].id==other.id,"Overlapping audio belonging to another song is preserved");
+        expect(song.markers->size()==1&&song.markers->front().id==manual.id,"Owned marker preserved; legacy unassigned tempo inside removed song cleared");
+        project=projectFixture();auto &restore=project.songs.front();restore.parts[1].startTime=19;
+        const auto group=regionEditing::unify(project,restore.id,restore.parts[0].id,"Group");
+        const auto count=restore.tracks[0].clips.size();
+        regionEditing::erase(project,restore.id,{group},false);
+        expect(restore.parts.size()==2&&restore.tracks[0].clips.size()==count,"Timeline wrapper deletion restores songs and retains audio items");
+        jaras::validate(project);
+    });
+    test("Click BPM detection preserves Mac clock phase, meter, rests and tempo changes", [&] {
+        for(double rate:{44100.,48000.})for(double bpm:{147.999,130.001,119.9995,155.998})for(int count:{8,64,600}){
+            std::vector<double> pulses;for(int i=0;i<count;++i)pulses.push_back(std::round((.123+i*60/bpm)*rate)/rate);
+            const auto spans=clickTempo::sections(pulses);
+            expect(spans.size()==1&&spans[0].bpm==std::round(bpm)&&spans[0].position==pulses[0],"Near-integer source clocks match Mac");
+        }
+        std::vector<double> pulses;double time=.123;
+        for(int i=0;i<32;++i){pulses.push_back(time);time+=.5;}
+        for(int i=0;i<9;++i){pulses.push_back(time);time+=1;}
+        auto spans=clickTempo::sections(pulses);
+        expect(spans.size()==2&&spans[0].bpm==120&&spans[1].bpm==60,"Sustained slow ending survives");
+        pulses.clear();for(int i=0;i<80;++i)pulses.push_back(.123+i*.5);pulses.push_back(pulses.back()+2);
+        spans=clickTempo::sections(pulses);expect(spans.size()==1&&spans[0].bpm==120,"Whole-beat rest does not create false tempo");
+        for(int signature:{3,4,7}){
+            std::vector<clickTempo::Transient> accents;
+            for(int i=0;i<signature*5;++i)accents.push_back({i*.5,i%signature==0?.4:.8,{}});
+            expect(clickTempo::meter(accents)==signature,"Quieter accented beat detects shortest repeated meter");
+        }
+        auto song=projectFixture().songs.front();song.tracks[0].name="Click";song.tracks[0].role.id="click";
+        auto &clip=song.tracks[0].clips[0];clip.startTime=10;clip.duration=20;clip.sourceOffset=0;
+        jaras::Part region{uuid(),"Click song",10,30};song.parts={region};
+        const auto detected=clickTempo::markers(song,region,[](const auto &){std::vector<clickTempo::Transient> result;for(int i=0;i<30;++i)result.push_back({.125+i*.5,1,{}});return result;});
+        expect(detected.size()==2&&detected[0].position==10&&detected[1].position==10.125,"Intro guard preserves first audible sample anchor");
+        clickTempo::insert(song,region,detected);
+        expect(song.tracks[0].clips[0].startTime==10&&song.tracks[0].clips[0].playbackRate==1,"Detection does not move or retime the click");
+        auto original=song;original.bpm=87;original.beatsPerBar=7;original.markers=std::vector<jaras::TimelineMarker>{{uuid(),"Manual",15,0xff0000}};
+        clickTempo::insert(original,region,detected);
+        const auto initial=std::find_if(original.markers->begin(),original.markers->end(),[](const auto &m){return m.tempoBPM&&m.position==0;});
+        expect(initial!=original.markers->end() && initial->tempoBPM==120 && initial->tempoReferenceBPM==120 && initial->tempoBeats==4 && initial->tempoUnit==4,"Empty lead-in differs from current Mac initial tempo");
+        expect(std::any_of(original.markers->begin(),original.markers->end(),[](const auto &m){return m.name=="Manual";}),"Tempo detection removed manual marker");
+        const auto count=original.markers->size();clickTempo::insert(original,region,detected);
+        expect(original.markers->size()==count,"Repeated BPM application duplicates markers");
+        expect(original.tracks[0].clips[0].startTime==song.tracks[0].clips[0].startTime && original.tracks[0].clips[0].playbackRate==1,"Applying BPM changed source items");
+        auto atBoundary=detected.front();atBoundary.position=region.endTime;atBoundary.regionOwnerID.reset();original.markers->push_back(atBoundary);
+        auto updated=atBoundary;updated.tempoBPM=130;clickTempo::insert(original,region,{updated});
+        const auto boundary=std::find_if(original.markers->begin(),original.markers->end(),[&](const auto &m){return m.id==atBoundary.id;});
+        expect(boundary!=original.markers->end() && !boundary->regionOwnerID && boundary->tempoBPM==130,"Updating existing onset lost intentional marker ownership");
+    });
+    test("MP3 click detection keeps a stable clock across compressed frame boundaries", [&] {
+        const auto file=directory.getChildFile("click-123.mp3");file.deleteFile();
+        const int rate=44100,frames=rate*48;const double period=60./123;
+        MP3Writer writer(file,rate,2,192);AudioBuffer<float> pcm(2,4096);
+        for(int first=0;first<frames;first+=pcm.getNumSamples()) {
+            pcm.clear();const int count=std::min(pcm.getNumSamples(),frames-first);
+            for(int n=0;n<count;++n){const double t=(first+n)/(double)rate-.2;
+                if(t<0)continue;const double local=std::fmod(t,period);
+                if(local<.018){const float value=(float)(.7*std::sin(2*MathConstants<double>::pi*1800*local)*std::exp(-local*220));pcm.setSample(0,n,value);pcm.setSample(1,n,value);}
+            }
+            writer.write(pcm,count);
+        }
+        writer.finish();const auto pulses=clickTempo::transients(file);
+        std::vector<double> positions;for(const auto &p:pulses)positions.push_back(p.position);
+        const auto sections=clickTempo::sections(positions);
+        expect(pulses.size()>90&&sections.size()==1&&sections[0].bpm==123,"MP3 frame seeks created false tempo changes");
+        for(size_t i=1;i<pulses.size();++i)expect(std::abs(pulses[i].position-pulses[0].position-i*period)<.002,"Decoded click clock drifts between MP3 frames");
+    });
+    test("TP web serves independent snapshots, shared preview page and bounded media ranges", [&] {
+        TeleprompterHTTP first,second;first.start(0,"127.0.0.1");second.start(0,"127.0.0.1");
+        auto one=object(),two=object();put(one,"text",String::fromUTF8("TP1 · Canção"));put(two,"text","TP2");
+        put(one,"mediaID","current");const auto media=directory.getChildFile("tp-range.mp4");media.replaceWithText("0123456789",false,false,nullptr);
+        first.publish(one,media);second.publish(two);
+        auto request=[&](TeleprompterHTTP &server,String text){
+            StreamingSocket socket;expect(socket.connect("127.0.0.1",server.port(),2000),"TP connection failed");
+            expect(socket.write(text.toRawUTF8(),(int)text.getNumBytesAsUTF8())==(int)text.getNumBytesAsUTF8(),"TP request failed");
+            String response;const auto until=Time::getMillisecondCounterHiRes()+3000;
+            while(Time::getMillisecondCounterHiRes()<until){if(socket.waitUntilReady(true,100)<=0)continue;char bytes[8192];const int n=socket.read(bytes,sizeof(bytes),false);if(n<=0)break;response+=String::fromUTF8(bytes,n);}
+            return response;
+        };
+        auto a=request(first,"GET /state HTTP/1.1\r\nHost: localhost\r\n\r\n"),b=request(second,"GET /state HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        expect(a.contains(String::fromUTF8("Canção"))&&b.contains("TP2")&&!b.contains("TP1"),"TP profiles leaked into each other");
+        expect(request(first,"GET / HTTP/1.1\r\n\r\n").contains("CatLive Teleprompter"),"Shared browser preview missing");
+        expect(request(first,"HEAD /state HTTP/1.1\r\n\r\n").endsWith("\r\n\r\n"),"HEAD returned a body");
+        const auto range=request(first,"GET /media/current HTTP/1.1\r\nRange: bytes=2-5\r\n\r\n");
+        expect(range.contains("206 Partial Content")&&range.contains("Content-Range: bytes 2-5/10")&&range.endsWith("2345"),"Video range is incorrect");
+        expect(request(first,"GET /media/current HTTP/1.1\r\nRange: bytes=-3\r\n\r\n").endsWith("789"),"Video suffix range is incorrect");
+        expect(request(first,"GET /media/current HTTP/1.1\r\nRange: bytes=99-\r\n\r\n").contains("416"),"Invalid range was accepted");
+        expect(request(first,"GET /media/../anything HTTP/1.1\r\n\r\n").contains("404"),"Non-current media was exposed");
+        expect(request(first,"POST /state HTTP/1.1\r\n\r\n").contains("405"),"TP accepted a write request");
+        first.stop();expect(!first.enabled()&&second.enabled(),"TP1 shutdown stopped TP2");
     });
     test("Resource metrics use process CPU normalized by cores and sample once per second", [&] {
         expect(std::abs(ResourceUsage::cpuPercent(1, 2, 8) - 6.25) < 1e-8, "CPU is normalized by active processors");
@@ -214,7 +1139,7 @@ int runTests(const File &directory) {
         expect(regular.getTypefaceName() == "Inter", "Embedded Inter family loaded");
         expect(bold.getTypefaceStyle().containsIgnoreCase("Bold"), "Real embedded bold face");
         expect(italic.getTypefaceStyle().containsIgnoreCase("Italic"), "Real embedded italic face");
-        expect(std::abs(regular.getHeightInPoints() - 13.f * .9684564f) < .01f, "Font cap height is calibrated to the Mac reference before display DPI");
+        expect(std::abs(regular.getHeightInPoints() - 13.f * .9f) < .01f, "Compact Windows text remains independent of display DPI");
     });
     test("Timecode LTC physical route, Master bypass, spans and main-only playback", [&] {
         auto project = projectFixture();
@@ -345,17 +1270,19 @@ int runTests(const File &directory) {
         verifyIDs(fixture);
         const auto legacy = JSON::parse(serialized);
         const auto migrated = ProjectCodec::canonicalIDs(legacy);
-        expect(JSON::toString(migrated) == JSON::toString(fixture),
+        auto expected = fixture.clone();
+        put(expected, "extension", get(legacy, "extension"));
+        expect(JSON::toString(migrated) == JSON::toString(expected),
                "Migration changed data or lost UUID references");
         const auto model = ProjectCodec::decode(legacy);
         expect(model.id == p.id && model.songs[0].tracks[0].id == p.songs[0].tracks[0].id,
                "Legacy model IDs were not migrated");
         const auto round = ProjectCodec::encode(model, legacy);
-        expect(str(get(round, "extension"), "track") == text(p.songs[0].tracks[0].id),
+        expect(str(get(round, "extension"), "track") == text(p.songs[0].tracks[0].id).removeCharacters("-"),
                "Unknown extension reference was lost");
         const auto target = directory.getChildFile("legacy-uuid/Show.jl");
         ProjectCodec::write(target, legacy);
-        expect(JSON::toString(ProjectCodec::read(target)) == JSON::toString(fixture),
+        expect(JSON::toString(ProjectCodec::read(target)) == JSON::toString(expected),
                "Saved legacy project is not portable");
         auto timed = p;
         jaras::Track timecode; timecode.id = uuid(); timecode.name = "Timecode"; timecode.role.id = "timecode";
@@ -708,6 +1635,27 @@ int runTests(const File &directory) {
             }
             expect(writer->writeFromAudioSampleBuffer(buffer, 0, 48000), "WAV fixture failed");
         }
+        {
+            auto p=projectFixture();auto &song=p.songs[0];song.duration=1;song.parts.clear();song.markers.reset();p.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+            auto &track=song.tracks[0];track.volume=1;track.pan=0;track.phaseInverted=false;track.fxJSON.reset();track.automationJSON.reset();
+            jaras::AudioClip clip;clip.id=uuid();clip.name="Fade test";clip.duration=1;clip.audioFile=jaras::AudioFile{"signal.wav",{}};clip.fadeIn=1;clip.fadeInCurve=1;clip.fadeInSCurve=0;track.clips={clip};
+            AudioEngine shaped;shaped.prepareOffline(48000);shaped.prepareSong(song,folder,{},&p);shaped.setOffline(true);shaped.setMixer(p,song);
+            AudioBuffer<float> output(2,512);AudioEngine::State state;state.playing=true;state.position=.25;shaped.transport(state);shaped.render(output.getArrayOfWritePointers(),2,512);
+            const auto t=.25+100./48000;expect(std::abs(output.getSample(0,100)-.1*t/(16-15*t))<.0001,"Rendered samples ignore curvature handle");
+            std::atomic<bool> cancel{false};auto rendered=itemRender::render(p,song,folder,{clip.id},false,0,cancel,{});
+            expect(rendered.size()==1 && !rendered[0].clip.fadeIn && !rendered[0].clip.fadeInCurve,"Re-render keeps baked fade active twice");
+            song.tracks[0].clips={rendered[0].clip};shaped.prepareSong(song,folder,{},&p);shaped.setOffline(true);shaped.setMixer(p,song);shaped.transport(state);shaped.render(output.getArrayOfWritePointers(),2,512);
+            expect(std::abs(output.getSample(0,100)-.1*t/(16-15*t))<.0001,"Re-render changed the audible fade");
+        }
+        {
+            auto p=projectFixture();auto &song=p.songs[0];song.duration=1;song.parts.clear();song.markers.reset();p.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+            auto &t=song.tracks[0];t.volume=1;t.pan=0;t.phaseInverted=false;t.fxJSON.reset();t.automationJSON.reset();
+            jaras::AudioClip c;c.id=uuid();c.duration=1;c.audioFile=jaras::AudioFile{"signal.wav",{}};t.clips={c};
+            auto settings=object();put(settings,"mode","read");auto envelope=automation::envelope("volume",AutomationCurve::normalized(.5));put(settings,"envelopes",Array<var>{envelope});p.masterAutomationJSON=utf8(JSON::toString(settings,true));
+            AudioEngine engine;engine.prepareOffline(48000);engine.prepareSong(song,folder,{},&p);engine.setOffline(true);engine.setMixer(p,song);
+            AudioBuffer<float> out(2,512);AudioEngine::State state;state.playing=true;state.position=.1;engine.transport(state);engine.render(out.getArrayOfWritePointers(),2,512);
+            expect(std::abs(out.getSample(0,100)-.05)<.0001 && std::abs(out.getSample(1,100)-.1)<.0001,"Master volume envelope must affect rendered output");
+        }
         AudioEngine engine;
         jaras::Song song;
         song.id = uuid();
@@ -1026,7 +1974,7 @@ int runTests(const File &directory) {
             std::atomic<bool> cancel{false};
             audioExport::render(p, song, media, request, cancel, {});
             AudioFormatManager formats;
-            formats.registerBasicFormats();
+            registerAudioFormats(formats);
             std::unique_ptr<AudioFormatReader> reader(
                 formats.createReaderFor(request.directory.getChildFile(job.name)));
             expect(reader && reader->sampleRate == encoding.rate &&
@@ -1077,7 +2025,8 @@ int runTests(const File &directory) {
         jaras::validate(p);
         expect(song.tracks[0].id == outside.id && song.tracks[3].id == child.id,
                "Folder ordering lost descendants");
-        trackTree::duplicate(song, folder.id);
+        const auto copy = trackEditing::duplicateDocument(ProjectCodec::encode(p), song.id, {folder.id});
+        song = ProjectCodec::decode(copy.document).songs[0];
         jaras::validate(p);
         expect(song.tracks.size() == 7 && song.tracks[5].parentTrackID == song.tracks[4].id &&
                    song.tracks[6].parentTrackID == song.tracks[5].id,
@@ -1135,6 +2084,14 @@ int runTests(const File &directory) {
         expect(session.audio.state().position > before, "Live FX stalled the audio cursor");
         expect(session.dirty && session.canUndo(),
                "Live FX did not create an undoable project edit");
+        const auto cursor = session.audio.state().position;
+        session.undo();
+        expect(session.audio.state().playing && session.audio.state().position == cursor, "Undoing live FX stopped or moved playback");
+        session.audio.render(buffer.getArrayOfWritePointers(), 2, 480);
+        expect(std::abs(buffer.getSample(0, 100) - .1f) < .002f, "Live FX undo did not restore dry audio");
+        session.redo();
+        session.audio.render(buffer.getArrayOfWritePointers(), 2, 480);
+        expect(std::abs(buffer.getSample(0, 100) - .1f * Decibels::decibelsToGain(6.f)) < .002f, "Live FX redo did not restore processing");
     });
     test("Generated Click and metronome follow tempo, spans, mute and output patch", [&] {
         jaras::Song song;
@@ -1526,7 +2483,7 @@ int runTests(const File &directory) {
         auto takes = capture.finish();
         expect(takes.size() == 4 && capture.overflows() == 0, "Capture count/overflows");
         AudioFormatManager formats;
-        formats.registerBasicFormats();
+        registerAudioFormats(formats);
         for (size_t i = 0; i < 3; ++i) {
             auto reader =
                 std::unique_ptr<AudioFormatReader>(formats.createReaderFor(takes[i].file));
@@ -1579,7 +2536,7 @@ int runTests(const File &directory) {
         writer->writeFromAudioSampleBuffer(tone, 0, tone.getNumSamples());
         writer.reset();
         AudioFormatManager formats;
-        formats.registerBasicFormats();
+        registerAudioFormats(formats);
         auto reader = std::unique_ptr<AudioFormatReader>(formats.createReaderFor(source));
         AudioBuffer<float> scratch(2, 131080), output(2, 480);
         jaras::Song song;
@@ -1633,6 +2590,25 @@ int runTests(const File &directory) {
         }
         clip.playbackRate = 1;
         clip.pitchSemitones.reset();
+        song.timeSettings.emplace();
+        song.timeSettings->timebase=jaras::ProjectTimebase::relative;
+        jaras::TimelineMarker tempo{uuid(),"Tempo",.5,0x999999};
+        tempo.tempoBPM=240; tempo.tempoReferenceBPM=120; tempo.tempoTimebase="relative";
+        song.markers=std::vector<jaras::TimelineMarker>{tempo};
+        ClipAudio varied(song,track,clip,48000);
+        expect(ClipAudio::needed(song,track,clip) && std::abs(varied.sourcePosition(1)-1.75)<1e-9,
+               "Audio did not consume source at the new tempo");
+        int variedCrossings=0;float previousSample=0;
+        for(int block=0;block<150;++block){
+            expect(varied.render(*reader,scratch,output,0,block*.01,480),"Variable-tempo audio read");
+            if(block>=100)for(int n=0;n<480;++n){
+                const float sample=output.getSample(0,n);
+                if(previousSample<=0 && sample>0)++variedCrossings;
+                previousSample=sample;
+            }
+        }
+        expect(std::abs(variedCrossings-220)<5,"Tempo marker changed the pitch of the audio");
+        song.markers.reset();
         clip.loopStart = .25;
         clip.loopLength = .1;
         ClipAudio loop(song, track, clip, 48000);
@@ -1894,6 +2870,48 @@ int runTests(const File &directory) {
         expect(fixture.waitForThreadToExit(4000) && fixture.error.isEmpty(),
                "Loopback REST verification failed: " + fixture.error);
     });
+    test("Timeline clipboard preserves complete items, relative positions and undo", [&] {
+        auto p = projectFixture();
+        auto &first = p.songs[0].tracks[0].clips[0];
+        first.fxJSON = utf8(JSON::toString(JSON::parse(R"({"inserted":["EQ"],"eqEnabled":true,"bands":[{"gain":5}]})"),true,17));
+        first.fadeInCurve = .4; first.fadeOutSCurve = -.2; first.pan = -.3;
+        first.loopStart = 1; first.loopLength = 4; first.separatedStemTracks = {uuid()};
+        auto other = p.songs[0].tracks[0]; other.id = uuid(); other.clips[0].id = uuid();
+        other.clips[0].startTime = 20; other.clips[0].midi.emplace(); other.clips[0].audioFile.reset();
+        other.clips[0].midi->notes.push_back({uuid(), 0, 1, 60, 100, 1});
+        const auto firstID = first.id, secondID = other.clips[0].id;
+        p.songs[0].tracks.push_back(other);
+        const auto clipboard = GridItemClipboard::copy(p,p.songs[0].id,{firstID,secondID});
+        expect(bool(clipboard),"Copy lost the selection");
+        const auto entries = clipboard->items(p,100), repeated = clipboard->items(p,200);
+        const auto &copy = entries[0].clips[0], &source = p.songs[0].tracks[0].clips[0];
+        expect(copy.id!=firstID && copy.id!=repeated[0].clips[0].id && copy.separatedStemTracks.empty(),"Paste reused an item ID or derived-track ownership");
+        expect(copy.startTime==100 && entries[1].clips[0].startTime==110 && entries[1].id==other.id,"Multiple-item paste lost track or timing offsets");
+        expect(copy.fxJSON==source.fxJSON && copy.audioFile->path==source.audioFile->path && copy.fadeInCurve==source.fadeInCurve && copy.fadeOutSCurve==source.fadeOutSCurve && copy.gain==source.gain && copy.pan==source.pan && copy.loopLength==source.loopLength && copy.waveform==source.waveform,"Paste changed item processing or source data");
+        expect(entries[1].clips[0].midi->notes[0].pitch==60 && clipboard->endPosition()==28,"MIDI copy or duplicate endpoint incorrect");
+        Session session; session.inspection=true; session.restoreSnapshot(ProjectCodec::encode(p));
+        const auto apply=[&](const auto &values){session.edit([&](auto &project){auto edit=session.core;edit.pasteItems(clipboard->song,values,false);project=edit.project();});};
+        apply(entries);expect(session.song()->tracks[0].clips.size()==2 && session.song()->tracks[1].clips.size()==2,"Paste did not insert all items");
+        session.undo();expect(session.song()->tracks[0].clips.size()==1 && session.song()->tracks[1].clips.size()==1,"One undo must remove the complete paste");
+        session.redo();expect(session.song()->tracks[0].clips.back().id==copy.id && session.song()->tracks[0].clips.back().fxJSON==source.fxJSON,"Redo did not restore exact item state");
+        const auto duplicate=clipboard->items(p,clipboard->endPosition());
+        expect(duplicate[0].clips[0].startTime==28 && duplicate[1].clips[0].startTime==38,"Duplicate must begin immediately after the selected span");
+        auto foreign=p;foreign.id=uuid();bool rejected=false;try{clipboard->items(foreign,0);}catch(...){rejected=true;}
+        expect(rejected,"Clipboard crossed project media roots");
+    });
+    test("MIDI timeline extension repeats notes and draws bottom triangular cuts", [&] {
+        auto p=projectFixture();auto &track=p.songs[0].tracks[0];auto &clip=track.clips[0];
+        clip.startTime=10;clip.duration=2;clip.sourceOffset=0;clip.audioFile.reset();clip.fadeIn.reset();clip.fadeOut.reset();
+        clip.midi.emplace();clip.midi->sourceBPM=120;clip.midi->notes={{uuid(),0,1,60,100,1},{uuid(),2,1,67,100,1}};
+        const auto original=clip;
+        clip=clipEditing::resizedSource(original,10,16);
+        const auto right=playbackNotes(track);expect(right.size()==6,"Right extension did not repeat MIDI notes");
+        for(size_t i=0;i<right.size();++i) expect(right[i].start==10+i,"Right MIDI repeat timing differs");
+        const auto outline=itemOutline(clip,{0,0,600,60},600,100);
+        for(float x:{200.f,400.f}) expect(!outline.contains(x,59) && outline.contains(x,50),"Repeated MIDI item has no bottom cut");
+        clip=clipEditing::resizedSource(original,6,12);const auto left=playbackNotes(track);
+        expect(left.size()==6 && left.front().start==6 && left.back().start==11 && clip.midi->notes[1].start==2,"Left extension changed original MIDI notes");
+    });
     test("Timeline trimming preserves Mac source loops, MIDI notes and track constraints", [&] {
         auto p = projectFixture();
         auto &song = p.songs[0];
@@ -1903,6 +2921,15 @@ int runTests(const File &directory) {
         clip.duration = 10;
         clip.playbackRate = 2;
         clip.sourceOffset = 30;
+        const auto preview = clipEditing::resizedSource(clip, 17, 35);
+        expect(clip.startTime==20 && clip.duration==10 && !clip.loopLength, "Resize preview mutated the saved item");
+        expect(preview.sourceOffset==44 && preview.loopLength==20 && preview.duration==18, "Live resize preview differs from committed source loop");
+        const auto outline=itemOutline(preview,{0,0,360,60},360,20);
+        const auto seams=itemLoopSeams(preview,{0,0,360,60},360,20);
+        expect(!seams.empty(),"Extended item has no repeated-source cuts");
+        for(auto seam:seams) expect(!outline.contains(seam,59) && outline.contains(seam,50),"Bottom triangular cut not visible during edge drag");
+        const ItemHeader edges({0,0,360,60},360,song.tracks[0],preview);
+        expect(edges.resizeSide({9,56})==-1 && edges.resizeSide({351,56})==1 && !edges.resizeSide({180,56}),"Edge grab tolerance differs from Mac");
         clipEditing::resize(p, id, 23, 28);
         expect(clip.sourceOffset == 36 && clip.loopStart == 30 && clip.loopLength == 20 &&
                    clip.duration == 5,
@@ -1922,8 +2949,8 @@ int runTests(const File &directory) {
         clip.startTime = 10;
         clip.sourceOffset = 1;
         clipEditing::resize(p, id, 8, 20);
-        expect(clip.sourceOffset == 0 && clip.midi->notes[0].start == 9,
-               "MIDI left extension did not preserve the note's audible position");
+        expect(clip.sourceOffset == 25 && clip.loopLength == 28 && clip.midi->notes[0].start == 3,
+               "MIDI left extension must repeat the original source without moving notes");
         jaras::Track destination;
         destination.id = uuid();
         destination.name = "Target";
@@ -2127,6 +3154,12 @@ int runTests(const File &directory) {
         auto expected = statusPacket;
         expected.insert(expected.begin(), 1);
         expect(client.open(readFrame()) == expected, "Remote response payload changed");
+        auto ack = packet(3, var(int64(42)));
+        ack.insert(ack.begin(), 1);
+        writeFrame(client.seal(ack));
+        const auto acknowledgment = waitEvent(Transport::Event::packetReceived);
+        expect(acknowledgment.kind == 3 && (int64)acknowledgment.body == 42,
+               "Remote disconnected on a scalar snapshot acknowledgement");
         writeFrame(encrypted);
         expect(waitEvent(Transport::Event::disconnected).client == connected.client &&
                    server.peers().empty(),
@@ -2299,6 +3332,37 @@ int runTests(const File &directory) {
         directory.getChildFile("remote-state.json")
             .replaceWithText(JSON::toString(presentation.snapshot(1)));
     });
+    test("Portable packages exchange encrypted projects and UTF-8 media with Mac, including ZIP64", [&] {
+        const auto root=directory.getChildFile("portable-package");
+        root.getChildFile("Stems/Primeiro").createDirectory();root.getChildFile("Stems/Segundo").createDirectory();
+        auto project=projectFixture();auto &track=project.songs[0].tracks[0];
+        track.clips[0].audioFile->path="Stems/Primeiro/Órgão.wav";
+        auto second=track.clips[0];second.id=uuid();second.startTime=22;second.audioFile->path="Stems/Segundo/Órgão.wav";track.clips.push_back(second);
+        expect(root.getChildFile(String::fromUTF8("Stems/Primeiro/Órgão.wav")).replaceWithText("first media"),"Fixture media");
+        expect(root.getChildFile(String::fromUTF8("Stems/Segundo/Órgão.wav")).replaceWithText("second media"),"Fixture media");
+        auto raw=ProjectCodec::encode(project);const auto original=JSON::toString(raw);
+        auto imports=root.getChildFile("Imported");imports.createDirectory();
+        for(bool zip64:{false,true}){
+            const auto archive=root.getChildFile(zip64?"Windows64.ziplive":"Windows.ziplive");double progress=0;
+            portablePackage::exportPackage(raw,root,archive,[&](double p){expect(p>=progress&&p<=1,"Monotonic export progress");progress=p;},zip64);
+            expect(progress==1&&JSON::toString(raw)==original,"Export changed source or failed to complete");
+            const auto local=portablePackage::importPackage(archive,imports);auto imported=ProjectCodec::decode(ProjectCodec::read(local));
+            expect(imported.id==project.id&&imported.name==project.name&&local.getFileName()==text(project.name)+".jl","Project identity or local name changed");
+            const auto &clips=imported.songs[0].tracks[0].clips;
+            expect(clips[0].audioFile->path!=clips[1].audioFile->path,"Duplicate basenames collided");
+            expect(ProjectCodec::resolveMedia(local.getParentDirectory(),clips[0].audioFile->path).loadFileAsString()=="first media"&&ProjectCodec::resolveMedia(local.getParentDirectory(),clips[1].audioFile->path).loadFileAsString()=="second media","Media lost or corrupted");
+            expect(local.getSiblingFile("backups").isDirectory()&&local.getSiblingFile("Stems/WF").isDirectory(),"Ordinary editable project folders missing");
+            packageZIP::Reader envelope(archive);expect(envelope.entries.size()==4,"Unexpected portable inventory");
+            const auto damaged=root.getChildFile(zip64?"Damaged64.ziplive":"Damaged.ziplive");archive.copyFileTo(damaged);
+            {FileOutputStream out(damaged);out.setPosition((int64)envelope.entries.at(text(clips[0].audioFile->path)).start);out.writeByte(0);out.flush();}
+            bool rejected=false;try{portablePackage::importPackage(damaged,imports);}catch(...){rejected=true;}expect(rejected,"Corrupt media accepted");
+        }
+        const auto fromMac=directory.getChildFile("Mac.ziplive");
+        if(fromMac.existsAsFile()){
+            const auto local=portablePackage::importPackage(fromMac,imports);const auto saved=ProjectCodec::read(local);ProjectCodec::write(local,saved);
+            portablePackage::exportPackage(ProjectCodec::read(local),local.getParentDirectory(),root.getChildFile("Mac-Windows.ziplive"));
+        }
+    });
     test("Media cleanup preserves ownership, sibling projects and encrypted recovery backups", [&] {
         const auto root = directory.getNonexistentChildFile("media-cleanup", {}, false);
         expect(root.getChildFile("Stems").createDirectory().wasOk() &&
@@ -2429,6 +3493,53 @@ int runTests(const File &directory) {
         clipEditing::split(song, {}, 12);
         expect(song.tracks[0].clips.size() == 2, "Split modified generated timecode");
     });
+    test("Piano roll and MIDI playback preserve held notes across tempo changes", [&] {
+        auto p = projectFixture();
+        auto &song = p.songs[0];
+        song.parts.clear(); song.duration = 12; song.bpm = 120;
+        song.timeSettings.emplace(); song.timeSettings->timebase = jaras::ProjectTimebase::relative;
+        auto &track = song.tracks[0]; auto &clip = track.clips[0];
+        clip.audioFile.reset(); clip.startTime = 0; clip.duration = 6; clip.sourceOffset = .5;
+        clip.gain = 1; clip.fadeIn.reset(); clip.fadeOut.reset(); clip.midi.emplace();
+        clip.midi->sourceBPM = 120;
+        clip.midi->notes = {{uuid(),1,12,60,100,1},{uuid(),13,2,64,90,2}};
+        auto marker = [&](double time, double bpm, const char *mode) {
+            jaras::TimelineMarker m{uuid(),"Tempo",time,0x999999};
+            m.tempoBPM=bpm; m.tempoReferenceBPM=120; m.tempoTimebase=mode; return m;
+        };
+        song.markers = std::vector<jaras::TimelineMarker>{marker(0,120,"relative"),
+            marker(2,240,"relative"),marker(4,60,"free")};
+        const ClipTempo timing(clip,&song);
+        expect(timing.spans.size()==3 && timing.sourceAt(2)==2.5 && timing.sourceAt(4)==6.5 &&
+               timing.sourceAt(6)==8.5, "Tempo change discarded source samples");
+        for(double time : {0.,1.,2.,3.,4.,5.,6.})
+            expect(std::abs(timing.timeAt(timing.sourceAt(time))-time)<1e-9,
+                   "Piano-roll ruler and playback cursor disagree");
+        const auto notes = playbackNotes(track,&song);
+        expect(notes.size()==2 && notes[0].start==0 && notes[0].end==4 &&
+               notes[1].start==4 && notes[1].end==5,
+               "Held MIDI note retriggered or ended at the wrong tempo");
+        auto next=*clip.midi; next.notes[1].length=8;
+        midiEditing::replace(p,clip.id,next);
+        expect(clip.duration==8, "Piano-roll extension ignored later free-time section");
+        song.parts={{uuid(),"Previous",0,3},{uuid(),"Next",3,10}};
+        clip.regionOwnerID=song.parts[0].id;
+        song.markers=std::vector<jaras::TimelineMarker>{marker(0,120,"relative"),marker(3,240,"relative")};
+        (*song.markers)[0].regionOwnerID=song.parts[0].id;
+        (*song.markers)[1].regionOwnerID=song.parts[1].id;
+        const ClipTempo owned(clip,&song);
+        expect(owned.sourceAt(6)==6.5, "Previous-song MIDI tail inherited the next song tempo");
+        clip.regionOwnerID.reset(); song.regionOwnershipInitialized=true;
+        const ClipTempo unowned(clip,&song);
+        expect(unowned.sourceAt(6)==9.5, "Explicitly unowned MIDI did not use global tempo");
+    });
+    test("Teleprompter links choose unicast LAN addresses instead of multicast memberships", [&] {
+        Array<IPAddress> addresses{IPAddress("224.0.0.1"),IPAddress("127.0.0.1"),
+            IPAddress("169.254.171.135"),IPAddress("10.0.0.102"),IPAddress("239.255.255.250")};
+        expect(TeleprompterHTTP::localAddress(addresses)=="10.0.0.102", "TP QR code selected multicast or link-local over LAN");
+        addresses={IPAddress("224.0.0.1"),IPAddress("169.254.171.135")};
+        expect(TeleprompterHTTP::localAddress(addresses)=="169.254.171.135", "Direct Ethernet TP link unavailable");
+    });
     test("Mac normalization calibration, source loops, cancellation and true peak", [&] {
         using namespace normalization;
         for (int rate : {44100, 48000}) {
@@ -2529,11 +3640,16 @@ int runTests(const File &directory) {
             audio.transport(state);
             const auto before = audio.getUnderruns();
             audio.render(output.getArrayOfWritePointers(), 2, 512);
-            expect(audio.getUnderruns() == before, "First block after seek was not ready");
+            expect(audio.getUnderruns() == before, "First block after seek was not ready at " + String(position,6));
             for (int c = 0; c < 2; ++c) for (int n = 0; n < 512; ++n)
                 expect(std::abs(output.getSample(c, n) - expected) < .001f, "Large project lost or doubled PCM");
         };
         verify(.25, false, .1f);
+        verify(32760. / 48000., false, .1f); // First block crosses a decoder cache boundary.
+        auto changed=track.clips[0];changed.gain=.5;audio.setItemControls(changed);verify(.25,false,.05f);
+        changed.phaseInverted=true;audio.setItemControls(changed);verify(.25,false,-.05f);
+        changed.muted=true;audio.setItemControls(changed);verify(.25,false,0);
+        changed.muted=false;changed.phaseInverted=false;changed.gain=1;audio.setItemControls(changed);verify(.25,false,.1f);
         verify(1495.25, true, .2f);
         verify(1497.99, false, .1f);
         expect(audio.residentStreams() <= 4, "Cache grew with total project files");

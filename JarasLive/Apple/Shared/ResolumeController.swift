@@ -124,7 +124,7 @@ struct ResolumeSettingsView: View {
     init(show: ShowController) { self.show = show; _settings = State(initialValue: show.snapshot.project.resolume ?? ResolumeSettings()) }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text(verbatim: "Resolume").font(.title2.bold()); Spacer(); Button("Close") { dismiss() }.disabled(busy) }
+            HStack { Text(verbatim: "Resolume").font(.jarasTitle2.bold()); Spacer(); Button("Close") { dismiss() }.disabled(busy) }
             Divider()
             HStack {
                 Text("Host"); TextField("127.0.0.1", text: $settings.host).frame(width: 170)
@@ -134,20 +134,20 @@ struct ResolumeSettingsView: View {
             Toggle("Include markers in the Resolume map", isOn: $settings.includeMarkers)
             Toggle("Follow CatLive transport", isOn: $settings.enabled).tint(JarasTheme.green)
             Text("Enable OSC Input in Resolume Preferences (port 7000). For automatic composition creation, enable the Webserver (port 8080) in Resolume Arena 7.22 or later.")
-                .font(.callout).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.jarasCallout).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Before creating the composition, save your work in Resolume and open a new empty composition. CatLive creates one deck per song and one column per marker. Place your videos in these columns afterward.")
-                .font(.callout).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.jarasCallout).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Create / update map") { saveMap() }
                 Button("Create Resolume project…") { confirmCreate = true }
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
             }.disabled(busy)
-            if !status.isEmpty { Text(LocalizedStringKey(status)).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
-            if !runtime.error.isEmpty { Text(LocalizedStringKey(runtime.error)).foregroundStyle(.red).font(.caption) }
+            if !status.isEmpty { Text(LocalizedStringKey(status)).font(.jarasCallout).textSelection(.disabled).fixedSize(horizontal: false, vertical: true) }
+            if !runtime.error.isEmpty { Text(LocalizedStringKey(runtime.error)).foregroundStyle(.red).font(.jarasCaption) }
             Spacer(minLength: 0)
             Divider()
-            HStack { Text("The map and connection settings are saved with this CatLive project.").font(.caption).foregroundStyle(JarasTheme.secondary); Spacer(); Button("Apply") { if saveMap() { dismiss() } }.keyboardShortcut(.defaultAction).disabled(busy) }
+            HStack { Text("The map and connection settings are saved with this CatLive project.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary); Spacer(); Button("Apply") { if saveMap() { dismiss() } }.keyboardShortcut(.defaultAction).disabled(busy) }
         }.padding(24).frame(width: 680, height: 520)
             .foregroundStyle(JarasTheme.text).background(JarasTheme.background)
             .interactiveDismissDisabled(busy)

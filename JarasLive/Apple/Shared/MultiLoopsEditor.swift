@@ -22,7 +22,7 @@ struct MultiLoopsEditor: View {
     private var markers: [TimelineMarker] { guard let song = show.current, let region else { return [] }; return song.multiLoopMarkers(in: region) }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Multiloop Manager").font(.title2.bold())
+            Text("Multiloop Manager").font(.jarasTitle2.bold())
             Text(region?.displayName ?? "").foregroundStyle(.secondary)
             if stage == 0 { loopList }
             else if stage == 1 { nameForm }
@@ -54,7 +54,7 @@ struct MultiLoopsEditor: View {
                 Button { name = ""; invalid = false; first = nil; second = nil; stage = 1; nameFocused = true } label: { Image(systemName: "plus") }
                     .help("Create multiloop").disabled(bypassed)
                 Button { show.setTotalLoop(!totalLoop, region: regionID) } label: {
-                    Text("Total Loop").font(.callout.bold()).padding(.horizontal, 10).padding(.vertical, 6)
+                    Text("Total Loop").font(.jarasCallout.bold()).padding(.horizontal, 10).padding(.vertical, 6)
                         .background(totalLoop ? JarasTheme.green : Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
                         .foregroundStyle(totalLoop ? Color.black : Color.white)
                 }.buttonStyle(.plain).accessibilityValue(totalLoop ? "On" : "Off")
@@ -68,7 +68,7 @@ struct MultiLoopsEditor: View {
                                 var next = loop; next.enabled = !loop.isEnabled; commit(next)
                             }.help("Enable multiloop").disabled(bypassed)
                             Text(loop.name).lineLimit(1).opacity(bypassed || !loop.isEnabled ? 0.45 : 1)
-                            if bypassed { Text("Bypass").font(.caption).foregroundStyle(.secondary) }
+                            if bypassed { Text("Bypass").font(.jarasCaption).foregroundStyle(.secondary) }
                             Spacer()
                             Button("Markers") { draft = loop; name = loop.name; first = loop.marker1; second = loop.marker2; stage = 2 }
                             Button("Edit") { editTracks(loop) }
@@ -102,14 +102,14 @@ struct MultiLoopsEditor: View {
     }
     private var markerForm: some View {
         VStack(alignment: .leading) {
-            Text(name).font(.headline)
+            Text(name).font(.jarasHeadline)
             if markers.isEmpty { Text("No markers found").foregroundStyle(.secondary); Spacer() }
             else {
                 HStack(alignment: .top, spacing: 18) {
                     markerColumn("Marker 1", selection: $first, isFirst: true)
                     markerColumn("Marker 2", selection: $second, isFirst: false)
                 }
-                Text("Choose two different markers in chronological order").font(.caption).foregroundStyle(.secondary)
+                Text("Choose two different markers in chronological order").font(.jarasCaption).foregroundStyle(.secondary)
             }
         }
     }
@@ -164,7 +164,7 @@ struct MultiLoopsEditor: View {
     }
     private func trackForm(_ loop: MultiLoop) -> some View {
         VStack(alignment: .leading) {
-            Text(loop.name).font(.headline)
+            Text(loop.name).font(.jarasHeadline)
             HStack {
                 flag("M/S", active: loop.usesMixer, color: .yellow) { draft?.mixerEnabled = !loop.usesMixer }
                     .help("Apply saved mute and solo settings")
@@ -186,14 +186,14 @@ struct MultiLoopsEditor: View {
         return HStack {
             Text(name).lineLimit(1).frame(width: 155, alignment: .leading)
             Slider(value: Binding(get: { min(ceiling, rule.gain) }, set: { value in change(id) { $0.gain = min(ceiling, value) } }), in: 0...max(0.000001, ceiling)).disabled(ceiling <= 0)
-            Text(rule.gain <= 0 ? "−∞" : String(format: "%.1f dB", 20 * log10(max(0.000001,min(ceiling,rule.gain))))).monospacedDigit().font(.caption).frame(width: 62)
+            Text(rule.gain <= 0 ? "−∞" : String(format: "%.1f dB", 20 * log10(max(0.000001,min(ceiling,rule.gain))))).monospacedDigit().font(.jarasCaption).frame(width: 62)
             flag("Auto Fader", active: rule.autoFader, color: .green) { change(id) { $0.autoFader.toggle() } }
             flag("M", active: rule.mute, color: .red) { change(id) { $0.mute.toggle() } }
             flag("S", active: rule.solo, color: .yellow) { change(id) { $0.solo.toggle() } }
         }.padding(.vertical, 5)
     }
     private func flag(_ label: String, active: Bool, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Text(LocalizedStringKey(label)).font(.caption.bold()).padding(5).background(active ? color : Color.white.opacity(0.1)).foregroundStyle(active ? .black : .white).cornerRadius(3) }.buttonStyle(.plain)
+        Button(action: action) { Text(LocalizedStringKey(label)).font(.jarasCaption.bold()).padding(5).background(active ? color : Color.white.opacity(0.1)).foregroundStyle(active ? .black : .white).cornerRadius(3) }.buttonStyle(.plain)
     }
     private func change(_ id: UUID, edit: (inout MultiLoopTrack) -> Void) {
         guard var next = draft, let i = next.tracks.firstIndex(where: { $0.id == id }) else { return }

@@ -24,5 +24,5 @@ fixture = fixture.replace('        // INSERT_ACTIVATION_COMMIT', activate).repla
 fixture = fixture.replace('    // INSERT_PENDING_DROP_TYPE', pending).replace('        // INSERT_DROP_CONFIRMATION', drop_confirmation)
 Path(sys.argv[1]).write_text('import Combine\n' + Path('Apple/Shared/AudioExportSelection.swift').read_text() + '\n' + area_selection + '\n' + fixture)
 PY
-swiftc -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -15,5 +15,5 @@ cache = grid[start:grid.index('\n#endif', start)]
 prefix = 'import AppKit\nimport SwiftUI\nstruct TimelineRenderKey: Equatable { let revision: Int }\n'
 Path(sys.argv[1]).write_text(prefix + selection + cache + '\n' + Path('Tests/Apple/GridSelectionHeightTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/ItemFadeCurve.swift -O -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

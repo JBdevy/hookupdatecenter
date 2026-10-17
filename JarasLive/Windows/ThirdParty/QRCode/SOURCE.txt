@@ -1,0 +1,3 @@
+Project Nayuki QR Code generator v1.8.0 (MIT).
+https://github.com/nayuki/QR-Code-generator/tree/v1.8.0/cpp
+License retained in each source file.

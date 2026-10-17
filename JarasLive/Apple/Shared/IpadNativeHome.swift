@@ -38,7 +38,7 @@ extension UTType {
                         HStack {
                             Text("Free trial: \(purchases.trialDaysRemaining) day(s) remaining")
                             Button("Unlock Native mode") { showingPurchase = true }
-                        }.font(.callout).foregroundStyle(JarasTheme.green)
+                        }.font(.jarasCallout).foregroundStyle(JarasTheme.green)
                     }
                     if entering { ProgressView() }
                     if !error.isEmpty { Text(LocalizedStringKey(error)).foregroundStyle(.red).multilineTextAlignment(.center) }
@@ -72,9 +72,9 @@ extension UTType {
     private func mode(_ name: String, detail: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 18) {
-                Image(systemName: icon).font(.system(size: 34)).foregroundStyle(JarasTheme.green)
-                Text(LocalizedStringKey(name)).font(.title2.bold())
-                Text(LocalizedStringKey(detail)).font(.body).foregroundStyle(JarasTheme.secondary)
+                Image(systemName: icon).font(.jarasSystem(size: 34)).foregroundStyle(JarasTheme.green)
+                Text(LocalizedStringKey(name)).font(.jarasTitle2.bold())
+                Text(LocalizedStringKey(detail)).font(.jarasBody).foregroundStyle(JarasTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }.padding(26).frame(maxWidth: .infinity, minHeight: 195, alignment: .leading)
                 .background(RemoteSurface.panel)

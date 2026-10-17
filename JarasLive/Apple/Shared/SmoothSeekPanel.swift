@@ -155,7 +155,7 @@ struct SmoothSeekPanel: View {
             VStack(spacing: 0) {
                 #if os(macOS)
                 Button { show.send(.cancelSection) } label: {
-                    Text("Cancel").font(.system(size: 12, weight: .semibold))
+                    Text("Cancel").font(.jarasSystem(size: 12, weight: .semibold))
                         .foregroundStyle(Color.black)
                         .frame(maxWidth: .infinity).frame(height: 26)
                         .background(Color(hex: 0xffd600))
@@ -245,7 +245,7 @@ struct SmoothSeekBankView: View {
                     Text(LocalizedStringKey(title)).foregroundStyle(JarasTheme.secondary)
                     Text(verbatim: name).foregroundStyle(JarasTheme.text).lineLimit(1)
                     Spacer(minLength: 0)
-                }.font(.system(size: 11, weight: .semibold)).frame(height: 17)
+                }.font(.jarasSystem(size: 11, weight: .semibold)).frame(height: 17)
                 ScrollView(.vertical) {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), spacing: 4), count: SmoothSeekPanelLayout.columns), spacing: 4) {
                         ForEach(displayMarkers) { marker in sectionButton(marker).frame(height: buttonHeight) }
@@ -280,8 +280,8 @@ struct SmoothSeekBankView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 5)).allowsHitTesting(false)
                 }
                 HStack(spacing: 2) {
-                    if queued { Image(systemName: "arrow.turn.up.left").font(.system(size: 8, weight: .bold)) }
-                    Text(verbatim: marker.name.uppercased()).font(.system(size: isStart ? 16 : 12, weight: isStart ? .heavy : .semibold)).lineLimit(nil).multilineTextAlignment(.center).minimumScaleFactor(0.35)
+                    if queued { Image(systemName: "arrow.turn.up.left").font(.jarasSystem(size: 8, weight: .bold)) }
+                    Text(verbatim: marker.name.uppercased()).font(.jarasSystem(size: isStart ? 16 : 12, weight: isStart ? .heavy : .semibold)).lineLimit(nil).multilineTextAlignment(.center).minimumScaleFactor(0.35)
                 }.foregroundStyle(Color.white).padding(.horizontal, 3).frame(maxWidth: .infinity, maxHeight: .infinity)
                 RoundedRectangle(cornerRadius: 5).stroke(selected ? JarasTheme.green : isStart ? Color.blue : JarasTheme.line, lineWidth: selected || isStart ? 1.5 : 0.5)
             }.contentShape(Rectangle())
@@ -382,8 +382,8 @@ struct SectionListTabs<Content: View>: View {
         Button { secondary = target } label: {
             VStack(spacing: 3) {
                 Text(LocalizedStringKey(target ? (subPlaying ? "Sub Play" : "Queued") : "Playing / Selected"))
-                    .font(.system(size: 9, weight: .medium)).lineLimit(1).minimumScaleFactor(0.5)
-                Text(verbatim: name ?? "—").font(.system(size: 12, weight: .semibold))
+                    .font(.jarasSystem(size: 9, weight: .medium)).lineLimit(1).minimumScaleFactor(0.5)
+                Text(verbatim: name ?? "—").font(.jarasSystem(size: 12, weight: .semibold))
                     .lineLimit(3).minimumScaleFactor(0.45).multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }.padding(4).frame(maxWidth: .infinity).frame(height: 42)

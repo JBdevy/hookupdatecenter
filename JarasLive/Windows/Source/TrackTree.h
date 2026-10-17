@@ -26,6 +26,17 @@ inline size_t end(const jaras::Song &song, size_t first) {
         ++last;
     return last;
 }
+inline bool silenced(const jaras::Song &song, const jaras::Track &track) {
+    if (track.mute || !jaras::fixedTrackName(track.role).empty()) return track.mute;
+    bool anySolo = false;
+    const auto at = index(song, track.id);
+    for (size_t i = 0; i < song.tracks.size(); ++i) {
+        if (!song.tracks[i].solo) continue;
+        anySolo = true;
+        if (i == at || descendant(song, at, song.tracks[i].id) || descendant(song, i, track.id)) return false;
+    }
+    return anySolo;
+}
 inline void resetGroupOutput(jaras::Track &track) {
     if (track.parentTrackID)
         return;
@@ -89,40 +100,5 @@ inline void move(jaras::Song &song, const ID &id, const ID &before) {
     resetGroupOutput(moving.front());
     song.tracks.erase(song.tracks.begin() + first, song.tracks.begin() + last);
     song.tracks.insert(song.tracks.begin() + index(song, before), moving.begin(), moving.end());
-}
-inline void duplicate(jaras::Song &song, const ID &id) {
-    const auto first = index(song, id);
-    if (first == song.tracks.size())
-        return;
-    if (!jaras::fixedTrackName(song.tracks[first].role).empty())
-        throw std::runtime_error("Esta pista especial não pode ser duplicada.");
-    const auto last = end(song, first);
-    if (song.tracks.size() + last - first > 512)
-        throw std::runtime_error("Track limit reached.");
-    std::vector<jaras::Track> copies(song.tracks.begin() + first, song.tracks.begin() + last);
-    std::map<ID, ID> ids;
-    for (auto &track : copies)
-        ids[track.id] = uuid();
-    for (auto &track : copies) {
-        track.id = ids.at(track.id);
-        if (track.parentTrackID && ids.count(*track.parentTrackID))
-            track.parentTrackID = ids.at(*track.parentTrackID);
-        track.stereoLinkPartner.reset();
-        track.stereoLinkJSON.reset();
-        track.stereoLinkLeft = false;
-        if (track.routing)
-            for (auto *slots : {&track.routing->receives, &track.routing->transmitters})
-                for (auto &slot : *slots)
-                    if (slot && ids.count(*slot))
-                        slot = ids.at(*slot);
-        for (auto &clip : track.clips) {
-            clip.id = uuid();
-            for (auto &stem : clip.separatedStemTracks)
-                if (ids.count(stem))
-                    stem = ids.at(stem);
-        }
-    }
-    copies.front().name += " copy";
-    song.tracks.insert(song.tracks.begin() + last, copies.begin(), copies.end());
 }
 } // namespace catlive::trackTree

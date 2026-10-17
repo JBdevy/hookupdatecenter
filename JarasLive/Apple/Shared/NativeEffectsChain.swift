@@ -256,6 +256,8 @@ final class NativeEffectsChain {
     }
     func updateItemFade(_ clip: AudioClip) {
         JarasEqualizer.setInputFade(equalizer, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0,
+                                    fadeInCurve: clip.fadeInCurve ?? 0, fadeInSCurve: clip.fadeInSCurve ?? 1,
+                                    fadeOutCurve: clip.fadeOutCurve ?? 0, fadeOutSCurve: clip.fadeOutSCurve ?? 1,
                                     duration: clip.fadeTimelineDuration ?? clip.duration, position: itemFadeClock.position,
                                     hostTime: itemFadeClock.host, sampleTime: itemFadeClock.sample)
     }

@@ -18,7 +18,8 @@ import AppKit
         let window = NSWindow(contentRect: CGRect(x: 120, y: 160, width: 980, height: 610), styleMask: [.titled,.closable,.resizable,.miniaturizable], backing: .buffered, defer: false)
         window.title = "CatLive — Piano Roll"; window.minSize = CGSize(width: 760,height: 440)
         window.isReleasedWhenClosed = false; window.delegate = self
-        window.contentView = NSHostingView(rootView: MIDIEditor(show: show, project: show.snapshot.project.id, item: item, close: { [weak window] in window?.close() }))
+        window.contentView = NSHostingView(rootView: MIDIEditor(show: show, project: show.snapshot.project.id, item: item, close: { [weak window] in window?.close() }).interfaceScaled())
+        InterfaceScaling.shared.register(window)
         windows[item] = window; window.center(); window.makeKeyAndOrderFront(nil)
     }
     func windowWillClose(_ notification: Notification) {
@@ -72,7 +73,7 @@ private struct MIDIEditor: View {
                     }
                     Button("Quantizar…") { quantizeOpen = true }.disabled(visibleNotes.isEmpty).popover(isPresented:$quantizeOpen) {
                         VStack(alignment:.leading,spacing:12) {
-                            Text(channel == 0 && visibleSelection.isEmpty ? "Quantizar todas as notas" : "Quantizar \(quantizeTargets.count) notas").font(.headline)
+                            Text(channel == 0 && visibleSelection.isEmpty ? "Quantizar todas as notas" : "Quantizar \(quantizeTargets.count) notas").font(.jarasHeadline)
                             HStack { Text("Força"); Slider(value:$strength,in:0...1); Text("\(Int(strength*100))%").monospacedDigit().frame(width:38) }
                             Toggle("Quantizar também o final das notas",isOn:$quantizeLengths)
                             HStack { Button("Cancelar") { quantizeOpen = false }; Spacer(); Button("Aplicar") {
@@ -103,9 +104,9 @@ private struct MIDIEditor: View {
                     } label: { Text(verbatim:JarasLocalization.string("Channel")) }
                         .frame(width:132).jarasHelp("Show notes from all channels or only the selected channel")
                     Text(channel == 0 ? "\(midi.notes.count) notas" : "\(visibleNotes.count)/\(midi.notes.count) notas").foregroundStyle(JarasTheme.secondary)
-                }.font(.caption).padding(10)
+                }.font(.jarasCaption).padding(10)
                 if row?.fx?.instrumentKeys.isEmpty != false && row?.fx?.externalPlugins?.isEmpty != false {
-                    Text("Escolha um instrumento no FX da pista para ouvir as notas.").font(.caption).foregroundStyle(JarasTheme.secondary).padding(.bottom,7)
+                    Text("Escolha um instrumento no FX da pista para ouvir as notas.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary).padding(.bottom,7)
                 }
             } else { Text("O item MIDI foi removido.").padding(); Button("Fechar",action:close) }
         }.background(JarasTheme.background).foregroundStyle(JarasTheme.text)
@@ -251,7 +252,7 @@ final class MIDIPianoCanvas: NSView {
             NSColor(JarasTheme.green).withAlphaComponent(selected.contains(note.id) ? 1:0.55+Double(note.velocity)/127*0.25).setFill()
             NSBezierPath(roundedRect:r,xRadius:2,yRadius:2).fill()
             if selected.contains(note.id) {NSColor.white.setStroke();let border=NSBezierPath(rect:r.insetBy(dx:0.5,dy:0.5));border.lineWidth=1;border.stroke()}
-            if r.width>30 {("\(note.pitch)" as NSString).draw(at:CGPoint(x:r.minX+4,y:r.minY+1),withAttributes:[.font:NSFont.systemFont(ofSize:10),.foregroundColor:NSColor.black])}
+            if r.width>30 {("\(note.pitch)" as NSString).draw(at:CGPoint(x:r.minX+4,y:r.minY+1),withAttributes:[.font:NSFont.jarasSystemFont(ofSize:10),.foregroundColor:NSColor.black])}
         }
         // Trim boundaries and transport cursor share the same source transform.
         for (value,color) in [(sourceStart,NSColor.yellow),(sourceEnd,NSColor.yellow),(cursorBeat,NSColor(JarasTheme.green))] {
@@ -263,13 +264,13 @@ final class MIDIPianoCanvas: NSView {
         if first<=last {for row in first...last {
             let note=127-row,black=[1,3,6,8,10].contains(note%12),y=rulerHeight+CGFloat(row)*keyHeight
             NSColor(white:black ? 0.10:0.78,alpha:1).setFill();CGRect(x:visible.minX,y:y,width:keyboardWidth-1,height:keyHeight-1).fill()
-            if note%12==0 {("C\(note/12-1)" as NSString).draw(at:CGPoint(x:visible.minX+32,y:y+2),withAttributes:[.font:NSFont.systemFont(ofSize:10,weight:.semibold),.foregroundColor:NSColor.black])}
+            if note%12==0 {("C\(note/12-1)" as NSString).draw(at:CGPoint(x:visible.minX+32,y:y+2),withAttributes:[.font:NSFont.jarasSystemFont(ofSize:10,weight:.semibold),.foregroundColor:NSColor.black])}
         }}
         NSColor(white:0.09,alpha:1).setFill();CGRect(x:visible.minX,y:visible.minY,width:visible.width,height:rulerHeight).fill()
         let firstBeat=max(0,Int(beat(CGPoint(x:visible.minX+keyboardWidth,y:0))/4)*4)
         for value in stride(from:firstBeat,through:Int(beat(CGPoint(x:visible.maxX,y:0)))+4,by:4) {
             let x=keyboardWidth+CGFloat(value)*scale
-            if x>=visible.minX+keyboardWidth {("\(value/4+1)" as NSString).draw(at:CGPoint(x:x+3,y:visible.minY+5),withAttributes:[.font:NSFont.monospacedDigitSystemFont(ofSize:10,weight:.semibold),.foregroundColor:NSColor(JarasTheme.green)])}
+            if x>=visible.minX+keyboardWidth {("\(value/4+1)" as NSString).draw(at:CGPoint(x:x+3,y:visible.minY+5),withAttributes:[.font:NSFont.jarasMonospacedSystemFont(ofSize:10,weight:.semibold),.foregroundColor:NSColor(JarasTheme.green)])}
         }
         let cursorX=keyboardWidth+CGFloat(cursorBeat)*scale
         if cursorX>=rulerRect.minX,cursorX<=rulerRect.maxX {

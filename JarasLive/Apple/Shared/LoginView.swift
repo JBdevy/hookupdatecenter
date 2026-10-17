@@ -24,15 +24,15 @@ struct LoginView: View {
         VStack(spacing: 22) {
             Image("CatLiveSplash").resizable().scaledToFit().frame(width: 160, height: 160)
             if auth.requiresDeviceName {
-                Text("Nome deste dispositivo").font(.title2.bold())
+                Text("Nome deste dispositivo").font(.jarasTitle2.bold())
                 Text("Escolha um nome para identificar este PC na sua conta e na lista de conexão do iPad ou celular.")
-                    .font(.callout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                    .font(.jarasCallout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
                 TextField("Ex.: PC do palco", text: $deviceName)
                     .textFieldStyle(.roundedBorder).focused($field, equals: 3).onSubmit { finishNaming() }
                 Text(deviceName.isEmpty || DeviceDisplayName.validated(deviceName) != nil
                      ? "O nome é obrigatório. Use um nome curto e fácil de reconhecer."
                      : "Use um nome mais curto, com letras ou números, sem quebras de linha.")
-                    .font(.caption).foregroundStyle(JarasTheme.secondary)
+                    .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 HStack(spacing: 12) {
                     Button("Voltar") { auth.cancelDeviceNaming(); cpf = ""; field = 2 }
                         .buttonStyle(StageButtonStyle())
@@ -41,7 +41,7 @@ struct LoginView: View {
                         .disabled(DeviceDisplayName.validated(deviceName) == nil)
                 }.disabled(auth.busy)
             } else {
-            Text("Bem-vindo ao CatLive").font(.title2.bold())
+            Text("Bem-vindo ao CatLive").font(.jarasTitle2.bold())
             HStack(spacing: 12) {
                 Button("Login") { login = true; field = 1 }
                     .buttonStyle(StageButtonStyle(color: JarasTheme.accent, active: login))
@@ -62,9 +62,9 @@ struct LoginView: View {
             }
             }
             if auth.busy { ProgressView().controlSize(.small) }
-            if !auth.message.isEmpty { Text(auth.message).font(.footnote).foregroundStyle(JarasTheme.yellow).fixedSize(horizontal: false, vertical: true) }
+            if !auth.message.isEmpty { Text(auth.message).font(.jarasFootnote).foregroundStyle(JarasTheme.yellow).fixedSize(horizontal: false, vertical: true) }
             if !auth.requiresDeviceName { Text(offersTrial ? "Use o e-mail e o CPF da sua compra.\nO trial começa no primeiro acesso neste dispositivo." : "Use o e-mail e o CPF da sua compra.")
-                .font(.caption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center) }
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center) }
         }.padding(30).frame(maxWidth: 440).background(JarasTheme.panel)
             .clipShape(RoundedRectangle(cornerRadius: 16)).padding(24)
             .onChange(of: auth.requiresDeviceName) { naming in
@@ -99,9 +99,9 @@ struct CredentialDevicesView: View {
     @State private var message = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("Dispositivos conectados").font(.title2.bold()); Spacer(); Button("Fechar") { dismiss() }.disabled(busy) }
+            HStack { Text("Dispositivos conectados").font(.jarasTitle2.bold()); Spacer(); Button("Fechar") { dismiss() }.disabled(busy) }
             Text(email).foregroundStyle(JarasTheme.secondary)
-            Text("Remova um computador para liberar sua licença e entrar em outro.").font(.callout)
+            Text("Remova um computador para liberar sua licença e entrar em outro.").font(.jarasCallout)
             ScrollView {
                 VStack(spacing: 10) {
                     ForEach(devices) { device in
@@ -111,7 +111,7 @@ struct CredentialDevicesView: View {
                 }
             }.frame(minHeight: 160, maxHeight: 300)
             if busy { ProgressView().controlSize(.small) }
-            if !message.isEmpty { Text(message).font(.caption).foregroundStyle(JarasTheme.yellow) }
+            if !message.isEmpty { Text(message).font(.jarasCaption).foregroundStyle(JarasTheme.yellow) }
             Button("Atualizar lista") { Task { await load() } }.disabled(busy)
         }.padding(24).frame(width: 520).background(JarasTheme.background).foregroundStyle(JarasTheme.text)
             .task { await load() }
@@ -142,11 +142,11 @@ struct DeviceAccountRow: View {
     var remove: () -> Void
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: device.platform == "macOS" ? "desktopcomputer" : "laptopcomputer").font(.title2)
+            Image(systemName: device.platform == "macOS" ? "desktopcomputer" : "laptopcomputer").font(.jarasTitle2)
             VStack(alignment: .leading, spacing: 4) {
-                Text(device.deviceName).font(.headline)
-                Text(device.platform + (current ? " · Este computador" : "")).font(.caption).foregroundStyle(JarasTheme.secondary)
-                Text("Último acesso: " + device.lastSeenAt.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(JarasTheme.secondary)
+                Text(device.deviceName).font(.jarasHeadline)
+                Text(device.platform + (current ? " · Este computador" : "")).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                Text("Último acesso: " + device.lastSeenAt.formatted(date: .abbreviated, time: .shortened)).font(.jarasCaption2).foregroundStyle(JarasTheme.secondary)
             }
             Spacer()
             Button("Remover", role: .destructive, action: remove)
@@ -169,10 +169,10 @@ struct LicenseNotice: View {
         Group {
             if showingGrace && !auth.graceNotice.isEmpty && auth.restriction.isEmpty && !signingIn {
                 VStack(spacing: 18) {
-                    Image(systemName: "clock.badge.exclamationmark").font(.system(size: 25)).foregroundStyle(JarasTheme.yellow)
-                    Text("Prazo de tolerância").font(.title2.bold())
+                    Image(systemName: "clock.badge.exclamationmark").font(.jarasSystem(size: 25)).foregroundStyle(JarasTheme.yellow)
+                    Text("Prazo de tolerância").font(.jarasTitle2.bold())
                     Text(auth.graceNotice).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-                    Text("Este aviso fecha em \(graceSeconds)s").font(.caption).foregroundStyle(JarasTheme.secondary)
+                    Text("Este aviso fecha em \(graceSeconds)s").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 }.padding(26).frame(width: 440).background(JarasTheme.panel)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(JarasTheme.yellow.opacity(0.5)))
@@ -180,8 +180,8 @@ struct LicenseNotice: View {
             }
             if visible && !auth.restriction.isEmpty && auth.workspaceAllowed && !signingIn {
                 VStack(spacing: 18) {
-                    Image(systemName: "speaker.slash.fill").font(.system(size: 25)).foregroundStyle(JarasTheme.yellow)
-                    Text("CatLive").font(.title2.bold())
+                    Image(systemName: "speaker.slash.fill").font(.jarasSystem(size: 25)).foregroundStyle(JarasTheme.yellow)
+                    Text("CatLive").font(.jarasTitle2.bold())
                     Text(auth.restriction).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 12) {
                         Button("Fechar") { visible = false }

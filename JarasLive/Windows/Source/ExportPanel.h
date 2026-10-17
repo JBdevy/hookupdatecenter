@@ -117,6 +117,10 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         rebuild();
         startTimerHz(8);
     }
+    void selectRegions(std::set<ID> ids) {
+        regions = std::move(ids); tracks.clear(); clips.clear();
+        bounds.setSelectedId(3, dontSendNotification); pattern.setText("%region", false); rebuild();
+    }
     ~ExportPanel() override {
         stopTimer();
         files.setModel(nullptr);

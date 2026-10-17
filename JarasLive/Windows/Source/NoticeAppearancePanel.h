@@ -89,7 +89,7 @@ class NoticeAppearancePanel final : public Component {
     StageState &state;
     ToggleButton toggles[4];
     ComboBox font;
-    Slider scale;
+    ParameterSlider scale;
     TextButton wells[3];
     TextEditor emoji;
     void change(const String &key, var value) {

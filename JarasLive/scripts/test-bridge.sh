@@ -82,7 +82,7 @@ project.songs[0].tracks[0].automation = automation; project.masterAutomation = a
 let data = try JSONEncoder().encode(project)
 try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
 SWIFT
-swiftc Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
+swiftc Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift build/bridge-tests/main.swift -o build/bridge-tests/fixture
 build/bridge-tests/fixture build/bridge-tests/demo.json
 clang++ -std=c++17 -fobjc-arc -framework Foundation Core/Project/Models.cpp Core/Transport/Engine.cpp Core/Import/TrackTaxonomy.cpp Apple/Bridge/JarasCoreBridge.mm Tests/Core/BridgeTests.mm -o build/bridge-tests/test
 build/bridge-tests/test build/bridge-tests/demo.json

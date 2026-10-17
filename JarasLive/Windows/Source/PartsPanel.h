@@ -12,8 +12,6 @@ class PartsPanel final : public Component, private Timer {
             addChildComponent(button);
             button->setWantsKeyboardFocus(false);
         }
-        cancel.setColour(TextButton::buttonColourId, Colour(0xffffd600));
-        cancel.setColour(TextButton::textColourOffId, Colours::black);
         cancel.onClick = [this] {
             try {
                 session.command(jaras::CommandKind::cancelSection);
@@ -29,7 +27,7 @@ class PartsPanel final : public Component, private Timer {
             secondaryTab = true;
             resized();
         };
-        startTimerHz(30);
+        startTimerHz(60);
     }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
@@ -127,6 +125,15 @@ class PartsPanel final : public Component, private Timer {
             for (const auto &marker : markers)
                 ids.add(text(marker.id));
             put(result, "markers", ids);
+            Array<var> pads;
+            for (const auto *button : buttons) {
+                auto pad = object();
+                put(pad, "progress", button->progress);
+                put(pad, "queued", button->queued);
+                put(pad, "active", button->active);
+                pads.add(pad);
+            }
+            put(result, "pads", pads);
             return result;
         }
         void refresh() {
@@ -155,7 +162,8 @@ class PartsPanel final : public Component, private Timer {
             const auto *part = secondary
                                    ? (state.subPlay.playing ? at(state.subPlay.position)
                                                             : byID(state.queuedRegionId))
-                                   : (state.playing ? at(state.position) : byID(state.regionId));
+                                   : (state.playing ? panel.session.core.sectionPlaybackRegion()
+                                                    : byID(panel.session.focusedRegion ? panel.session.focusedRegion : state.regionId));
             if (!secondary && !part)
                 part = at(state.editPosition);
             std::vector<jaras::TimelineMarker> next;
@@ -198,7 +206,10 @@ class PartsPanel final : public Component, private Timer {
                                                     : state.editPosition;
             const bool running = secondary ? state.subPlay.playing : state.playing;
             int active = -1;
-            if (part && position < part->endTime && (!secondary || state.subPlay.playing))
+            const double regionEnd = part ? (!secondary && state.playing
+                ? state.ignoreNextEnd.value_or(part->endTime) : part->endTime) : 0;
+            const auto trigger = state.queuedSectionMarkerId ? panel.session.core.nextSectionTrigger() : std::nullopt;
+            if (part && position < regionEnd && (!secondary || state.subPlay.playing))
                 for (size_t i = 0; i < markers.size(); ++i)
                     if (markers[i].position <= position)
                         active = (int)i;
@@ -209,17 +220,19 @@ class PartsPanel final : public Component, private Timer {
                 button.active = active == i;
                 button.queued = state.queuedSectionMarkerId == markers[(size_t)i].id;
                 button.selected = button.queued || (!state.queuedSectionMarkerId && button.active);
-                const double end =
-                    part ? std::min(part->endTime, i + 1 < (int)markers.size()
-                                                       ? markers[(size_t)i + 1].position
-                                                       : part->endTime)
-                         : 0;
-                button.progress =
-                    running && button.active && !button.queued
-                        ? jlimit(0., 1.,
-                                 (position - markers[(size_t)i].position) /
-                                     std::max(.001, end - markers[(size_t)i].position))
-                        : 0;
+                double end = regionEnd;
+                for (const auto &marker : markers)
+                    if (marker.position > markers[(size_t)i].position) {
+                        end = std::min(end, marker.position);
+                        break;
+                    }
+                if (button.queued && trigger && state.playing)
+                    button.progress = jlimit(0., 1., (*trigger - state.position) /
+                        std::max(.001, *trigger - state.sectionQueueStartedAt));
+                else
+                    button.progress = running && button.active && !button.queued
+                        ? jlimit(0., 1., (position - markers[(size_t)i].position) /
+                            std::max(.001, end - markers[(size_t)i].position)) : 0;
                 button.repaint();
             }
             repaint();
@@ -253,9 +266,11 @@ class PartsPanel final : public Component, private Timer {
                     g.fillRoundedRectangle(bounds, 5);
                 }
                 if (progress > 0) {
-                    g.setColour(theme::green);
-                    g.fillRect(2.f, (float)getHeight() - 6, (float)((getWidth() - 4) * progress),
-                               4.f);
+                    Graphics::ScopedSaveState saved(g);
+                    Path clip; clip.addRoundedRectangle(bounds, 5);
+                    g.reduceClipRegion(clip);
+                    g.setColour(queued ? theme::yellow : theme::green);
+                    g.fillRect(0.f, (float)getHeight() - 5, (float)(getWidth() * progress), 5.f);
                 }
                 g.setColour(selected ? theme::green : start ? Colour(0xff007aff) : theme::line);
                 g.drawRoundedRectangle(bounds, 5, selected || start ? 1.5f : .5f);
@@ -304,7 +319,24 @@ class PartsPanel final : public Component, private Timer {
     struct Tab final : public TextButton {
         void paintButton(Graphics &, bool, bool) override {}
     } currentTab, queuedTab;
-    TextButton cancel{"Cancel"};
+    class CancelButton final : public TextButton {
+      public:
+        CancelButton() : TextButton("Cancel") {}
+        void paintButton(Graphics &g, bool, bool down) override {
+            // SmoothSeekPanel uses a plain button with an explicit yellow
+            // background, including when no jump is queued. Do not apply the
+            // generic disabled-button opacity, which turns it olive on Windows.
+            g.setColour(Colour(0xffffd600));
+            g.fillRoundedRectangle(getLocalBounds().toFloat(), 4);
+            if (down && isEnabled()) {
+                g.setColour(Colours::black.withAlpha(.1f));
+                g.fillRoundedRectangle(getLocalBounds().toFloat(), 4);
+            }
+            g.setColour(Colours::black);
+            g.setFont(theme::semiboldFont(12));
+            g.drawText(getButtonText(), getLocalBounds(), Justification::centred);
+        }
+    } cancel;
     Bank current, queued;
     void timerCallback() override {
         if (isShowing())

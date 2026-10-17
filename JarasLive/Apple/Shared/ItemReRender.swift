@@ -41,6 +41,7 @@ enum ItemReRender {
             var result = clip
             result.name = url.deletingPathExtension().lastPathComponent
             result.audioFile = AudioFile(path: "Stems/" + name)
+            result.fadeInCurve = nil; result.fadeInSCurve = nil; result.fadeOutCurve = nil; result.fadeOutSCurve = nil
             result.fadeIn = nil; result.fadeOut = nil; result.fadeTimelineStart = nil; result.fadeTimelineDuration = nil
             result.pitchSemitones = nil
             result.fx = nil; result.fxBypassed = nil
@@ -205,8 +206,8 @@ struct ItemReRenderProgressView: View {
     let close: () -> Void
     var body: some View {
         VStack(spacing: 16) {
-            Text(JarasLocalization.string(title)).font(.headline)
-            Text(progress.fileName).lineLimit(2).textSelection(.enabled)
+            Text(JarasLocalization.string(title)).font(.jarasHeadline)
+            Text(progress.fileName).lineLimit(2).textSelection(.disabled)
             Text("\(progress.index + 1) / \(progress.total)").monospacedDigit()
             if let error = progress.error {
                 Text(error).foregroundStyle(.red)

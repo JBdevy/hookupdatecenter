@@ -2,6 +2,7 @@
 #include "RemoteProtocol.h"
 #include "Session.h"
 #include "StageState.h"
+#include "StageContent.h"
 namespace catlive::remote {
 class Presentation final {
   public:
@@ -454,49 +455,8 @@ class Presentation final {
         return result;
     }
     var teleprompter(int index) {
-        auto result = object();
-        const auto settings = stage.settings(index);
-        const auto *song = session.song();
-        const auto &t = session.transport();
-        const double position = t.playing ? t.position : t.editPosition;
-        String lyrics, chords, name, queued;
-        double progress = 0;
-        if (song) {
-            name = text(song->name);
-            for (const auto &part : song->parts) {
-                if (t.regionId == part.id)
-                    name = text(part.name);
-                if (t.queuedRegionId == part.id)
-                    queued = text(part.name);
-            }
-            for (const auto &track : song->tracks)
-                if (!track.mute)
-                    for (const auto &clip : track.clips)
-                        if (!clip.muted && position >= clip.startTime &&
-                            position < clip.startTime + clip.duration) {
-                            if (track.role.id == (index == 1 ? "teleprompt" : "teleprompt2")) {
-                                if (clip.text)
-                                    lyrics = text(*clip.text);
-                                progress = clip.duration > 0
-                                               ? jlimit(0., 1.,
-                                                        (position - clip.startTime) / clip.duration)
-                                               : 0;
-                                if (clip.audioFile) {
-                                    put(result, "mediaName", text(clip.name));
-                                    put(result, "imageID", wireID(clip.id));
-                                }
-                            } else if (track.role.id == "chords" && clip.text)
-                                chords = text(*clip.text);
-                        }
-        }
-        put(result, "index", index);
-        put(result, "text", lyrics);
-        put(result, "chords", chords);
-        put(result, "song", name);
-        put(result, "queued", queued);
-        put(result, "progress", progress);
-        put(result, "preview", stage.preview);
-        put(result, "blocks", Array<var>{});
+        auto result = StageContent::make(session,stage,index).payload;
+        const auto settings=stage.settings(index);
         auto style = object();
         for (auto key : {"textColor", "chordColor", "clockColor", "localClockColor", "borderColor",
                          "textBoxColor", "progressColor"})

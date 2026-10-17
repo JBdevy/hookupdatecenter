@@ -1640,3 +1640,34 @@
 "Loading waveforms…" = "Carregando waveforms…";
 
 "%ld REAPER items before the project start were ignored." = "%ld itens do REAPER anteriores ao início do projeto foram ignorados.";
+
+"Interface scale" = "Escala da interface";
+
+"Continuous scroll" = "Scroll contínuo";
+
+"Duplicate track" = "Duplicar pista";
+
+"Duplicate tracks" = "Duplicar pistas";
+
+"REC Multitrack" = "REC Multitrack";
+
+"Track" = "Pista";
+
+"Use Advanced setting" = "Usar configuração do Avançado";
+
+"Mono inputs in sequence, all tracks armed, monitoring off." = "Entradas mono em sequência, todas as pistas armadas e monitor desligado.";
+
+"Choose between 1 and 128 channels." = "Escolha entre 1 e 128 canais.";
+
+"Fadeout…" = "Fadeout…";
+"Fadeout" = "Fadeout";
+"Duration" = "Duração";
+"Choose an unused shortcut. Space and standard shortcuts cannot control Fadeout." = "Escolha um atalho livre. Espaço e atalhos padrão não podem controlar o Fadeout.";
+"Fadeout requires playback." = "O Fadeout precisa do transporte tocando.";
+"Stop Sub Play before starting Fadeout." = "Pare o Sub Play antes de iniciar o Fadeout.";
+"Select tracks in the Fadeout settings." = "Selecione pistas nas configurações de Fadeout.";
+"Cancel Fadeout before starting Sub Play." = "Cancele o Fadeout antes de iniciar o Sub Play.";
+
+"Use the same key or MIDI control again to cancel Fadeout and restore the volumes." = "Use a mesma tecla ou controle MIDI novamente para cancelar o Fadeout e restaurar os volumes.";
+
+"Press a MIDI note or controller button." = "Pressione uma nota MIDI ou um botão do controlador.";

@@ -16,7 +16,9 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     auto command = [&](jaras::CommandKind kind, const ID &id = ID{}, double number = 0) {
         session.command(kind, id, number);
     };
-    if (action == "selectTrack") {
+    if (action == "transportFadeout") {
+        triggerTransportFadeout();
+    } else if (action == "selectTrack") {
         selectedTrack = track;
         repaint();
     } else if (action == "muteTrack")
@@ -53,9 +55,7 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     else if (action == "ignoreNext")
         command(jaras::CommandKind::ignoreNext);
     else if (action == "tempoDown" || action == "tempoUp")
-        session.configureTiming(jlimit(60., 300., song->bpm + (action == "tempoUp" ? 1 : -1)),
-                                song->beatsPerBar, song->beatUnit,
-                                song->timeSettings.value_or(jaras::ProjectTimeSettings{}));
+        session.setTempo(jlimit(60., 300., session.tempoBPM() + (action == "tempoUp" ? 1 : -1)));
     else if (action == "tapTempo") {
         const double now = Time::getMillisecondCounterHiRes() / 1000, interval = now - lastTap;
         lastTap = now;
@@ -69,9 +69,7 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         double sum = 0;
         for (auto x : tapIntervals)
             sum += x;
-        session.configureTiming(jlimit(60., 300., 60 * tapIntervals.size() / sum),
-                                song->beatsPerBar, song->beatUnit,
-                                song->timeSettings.value_or(jaras::ProjectTimeSettings{}));
+        session.setTempo(jlimit(60., 300., 60 * tapIntervals.size() / sum));
     } else if (action == "tunerDown" || action == "tunerUp") {
         if (!tuner->region())
             return;
@@ -198,16 +196,7 @@ void Workspace::performAction(const String &action, float value, int trackNumber
                          std::make_unique<NormalizationPanel>(session, appearance, selectedClip),
                          360, 230);
     } else if (action == "createTempoMarker") {
-        const auto songID = song->id;
-        const double at = session.transport().editPosition;
-        session.edit([&](jaras::Project &p) {
-            jaras::Engine edit;
-            edit.loadProject(p);
-            edit.execute({jaras::CommandKind::select, songID});
-            edit.setMarker(uuid(), "TEMPO", at, 0x999999, song->bpm, song->beatsPerBar,
-                           song->beatUnit, std::string("global"));
-            p = edit.project();
-        });
+        editTempoMarker({},session.transport().editPosition);
     }
 }
 } // namespace catlive

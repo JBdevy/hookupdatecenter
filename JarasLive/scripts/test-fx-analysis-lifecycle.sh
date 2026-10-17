@@ -12,7 +12,7 @@ swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Head
     Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
     Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
     Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift \
-    Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift \
+    Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift \
     Application/Project/TimelineTempo.swift "${JARAS_FX_ANALYSIS_CHAIN_SOURCE:-Apple/Shared/NativeEffectsChain.swift}" \
     Apple/Shared/CatStemRealtimeRuntime.swift "$build_dir/main.swift" \
     "$build_dir/effects.o" "$build_dir/stemseparator.o" "$build_dir"/vst3*.o \

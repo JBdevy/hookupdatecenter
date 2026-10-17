@@ -27,7 +27,7 @@ private final class TrialTitlebarAnchor: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         label.identifier = NSUserInterfaceItemIdentifier("catlive.trialTitle")
-        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.font = .jarasSystemFont(ofSize: 11, weight: .semibold)
         label.textColor = NSColor(red: 84/255, green: 1, blue: 147/255, alpha: 1)
         label.alignment = .center; label.lineBreakMode = .byTruncatingMiddle
         label.toolTip = text

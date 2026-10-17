@@ -1,4 +1,224 @@
-Current Mac-driven Windows validation — 2026-10-15, visual batch 5
+INTERAÇÃO — BUILD15, 16/10/2026
+Escala padrão de primeira instalação: 100%; preferências já salvas são preservadas.
+Arraste direito no corpo do grid seleciona itens por interseção, incluindo início
+sobre um item; desenho verde durante o gesto, sem seek nem menu no mouse-down.
+Shift/Ctrl somam à seleção; soltar sem arrastar abre o contexto do item.
+Contextos de Todas as regiões/playlist mantêm a lista aberta; Escape fecha só
+o contexto. Conferidos no projeto real Guilherme Camargo com playlist existente.
+Menus genéricos dos campos numéricos BPM/cronômetro removidos, preservando
+as ações próprias do aplicativo. 113/113 testes passaram sem skips neste binário.
+Mac: build de menus de texto compilado, assinado e instalado; teste de foco
+numérico passou. Conferência visual completa dos menus Mac ainda pendente.
+
+AJUSTES VISUAIS — BUILD14, 16/10/2026
+GrandMA2 usa o mesmo estilo neutro do Resolume. Cancelar no Parts mantém
+#FFD600 e texto preto como o botão plain do Mac, sem opacidade genérica que
+produzia o tom oliva. Conferidos no projeto real; ação desabilitada sem salto
+continua desabilitada. Build14 contém a correção Direct2D validada no build13.
+
+RENDERIZAÇÃO — BUILD13, 16/10/2026
+Reproduzida perda grande de conteúdo/retângulos pretos por um quadro, com
+transporte parado. Backport isolado da correção de frame pacing Direct2D de
+reuk (17/07/2026), tratando também Present1 bem-sucedido com oclusão.
+2 falhas em 30 s antes; nenhuma nas amostras seguintes: 30 s parado, 30 s com
+Parts e 15 s tocando no projeto Guilherme Camargo. Minimizar/restaurar e
+interação conferidos. Amostragem ~15 fps; não é garantia para todo driver.
+Cópia JUCE original não modificada; CMake valida hash e prepara cópia privada.
+WindowsNative: host VST3 independente em desenvolvimento; Kontakt 7 passou
+scan/PCM/preservação do áudio de entrada/estado/restauração e editor HWND
+(1023x637) em testes isolados. Ainda
+NÃO integrado ao catálogo/cadeia de FX do aplicativo. CatStem continua pendente.
+
+LOTE 16 — 16/10/2026 — INSTALADO LOCALMENTE; CONFERÊNCIA VISUAL EM ANDAMENTO
+Mac e Windows compilados/instalados com Fadeout no clique direito do Play;
+padrão desligado, duração 1–5 s, pistas por projeto, atalho vazio e ação MIDI.
+Rampa pós-FX por amostra; repetir cancela; ao chegar a zero para e restaura
+faders. Bloqueio mútuo com Subplay e aviso separado da contagem.
+REC vermelho fixo. Windows recebeu as opções de gravação, REC Multitrack,
+cadeado, duplicação completa e seleção Ctrl+A por área no aplicativo atual.
+MP3: LAME em DLL substitui encoder MF; seis bitrates, mono/estéreo, metadados
+gapless e leitor compartilhado. Mac também grava metadados gapless. AIFF32
+corrigido no Windows em gravação/exportação. Falha de conversão preserva WAV.
+112/112 testes Windows passaram sem skips no build13, incluindo SF2 real e barras de Parts.
+Build10 inclui correção UTF-8 dos avisos, organização do Create Project conforme
+o Mac (Stems/Vazio/REC; REAPER/Logic) e espessura física das linhas abaixo de 100%.
+Create Project conferido a 90% e 100%; build11 remove a imagem intermediária dos
+modais, preservando recorte arredondado. Nitidez geral segue em avaliação.
+11/11 grupos CTest Core/DAW, codec AES
+independente e contrato Remote passaram no build8, antes desses ajustes visuais.
+O executável instalado tem SHA256 3866506142bffad9ac1ccd778abdacff3e4a683032973bde49e239947b23d93e.
+Mac: 28 testes Fadeout/ações, PCM 44.1/48k e faders nativos passaram;
+28 arquivos MP3 da ponte Mac foram conferidos também no decoder compartilhado.
+Windows: 36 casos LAME/decoder passaram com ASan/UBSan na validação local.
+Documentos e binários anteriores preservados. Sem Git push ou Actions.
+IMPORTANTE: este aplicativo Windows ainda usa JUCE; a substituição completa
+em WindowsNative NÃO terminou. Skia está em avaliação, não foi integrado.
+CatStemSeparation 5 e host de plugins externos não estão implementados no Windows.
+Parts: build12 instalado com barra regressiva amarela do salto enfileirado,
+progresso verde, desenho a 60 Hz e região sonora correta durante Ignore Next.
+Teste novo cobre contagem, troca para progresso, cancelamento, pausa e fim da
+música como limite; cinco grupos Core de playback/saltos/loops passaram.
+GUI conferida no projeto Guilherme real: progresso verde durante playback,
+regresso amarelo ao enfileirar INÍCIO e limpeza ao parar; capturas em batch16.
+Nitidez fora de 100% continua aberta: escala global mais redução tipográfica
+fixa de 10%; não considerar a queixa resolvida por estes testes funcionais.
+Evidências: Documents/CatLive-Mac-Validation/batch16 e native-migration-20261016/batch16.
+
+--------------------------------------------------------------------------
+LOTE 15 — 16/10/2026 — MAC INSTALADO; MIGRAÇÃO WINDOWS EM ANDAMENTO
+Mac: /Applications/CatLive.app atualizado às 20:32, assinatura verificada.
+Backup: Documents/CatLive-Mac-Validation/backups/mac-before-batch15-20261016-203232.
+Inclui Duplicar pista com itens/envelopes/estados dos plugins e histórico;
+cadeado à esquerda de Add, persistido no projeto; REC Multitrack de 1 a 128
+pistas (32 por padrão), entradas mono sequenciais, Master, monitor off e armadas.
+REC por pista: seguir Advanced, WAV 24 PCM, WAV 32 float ou MP3.
+Advanced > Gravar: MP3 128/160/192/224/256/320 kbps. Gravação respeita o
+formato da pista; mudar o patch de entrada não força mais WAV.
+Menus e etapas conferidos na interface Mac. Projeto Guilherme QA reaberto;
+original preservado. Testes de arquivos gravados e roteamento passaram;
+não houve validação com uma interface física de 32 canais.
+
+A substituição do JUCE está em WindowsNative, separada do aplicativo atual.
+Há bibliotecas de documento/histórico, decoders de áudio, SF2, I/O Rust e
+componentes de interface; ainda falta integrá-los em um aplicativo completo.
+O CatLive Windows instalado continua sendo o lote 14 e ainda usa JUCE.
+Não declarar a migração concluída nem essas novas telas instaladas no Windows.
+Validação da base: 18/18 grupos CTest, 14/14 testes Rust e 52/52 testes UI.
+Após o último ajuste de formato, 9/9 grupos SessionActions passaram novamente.
+Edge: 25 interações, escalas 60–120%, 21 layouts sem corte nos componentes.
+Codec: leitura/salvamento em cópia separada do Guilherme real passou;
+template REC 32 gerado no Windows foi validado pelo modelo Swift do Mac.
+Isso não comprova playback, gravação ou paridade da interface completa.
+Detalhes: ../WindowsNative/README.txt e ../WindowsNative/validation-status.txt.
+Evidências: Documents/CatLive-Mac-Validation/native-migration-20261016.
+Nenhum push, Actions ou publicação realizado neste lote.
+
+--------------------------------------------------------------------------
+LOTE 14 — 16/10/2026 — LOCAL, SEM PUBLICAÇÃO
+Inter restaurada nos dois fontes; Windows compilado e conferido em tela.
+73 integrações sem skips, 14/14 grupos CTest (batch14-build3.log).
+Ctrl+C/V/D e Ctrl+Z/Shift+Z conferidos fisicamente na cópia do projeto real.
+MIDI: expansão repete a fonte, desenha notas e recortes inferiores ao arrastar.
+Mac: 44 testes de itens e roteamento nativo de clipboard passaram;
+build com Inter/duplicação/MIDI instalado em /Applications/CatLive.app às 19:22,
+assinatura verificada. Backup preservado em CatLive-Mac-Validation/backups.
+A auditoria geral de menus e as demais pendências históricas não estão concluídas.
+
+ATUALIZAÇÃO LOCAL — 2026-10-16 — lotes 12/13 (em validação)
+As regras atuais substituem as faixas/fontes antigas mencionadas no histórico abaixo:
+escala 60–120%, passo 10; padrão de instalação Windows 90%, Mac 100%.
+Source Sans 3 substitui a prévia JetBrains Mono rejeitada pelo usuário.
+Scroll contínuo true/none em Advanced > Timeline, padrão none.
+Windows exporta/importa .ziplive compatível com Mac, incluindo ZIP64 e integridade.
+Intercâmbio do projeto real Mac -> Windows -> Mac passou sem diferenças no modelo.
+Exclusão/limpeza preservam referências compartilhadas e recuperação; excluir projeto
+inclui seu inventário, backups exclusivos e caches WF, mantendo o contêiner.
+Mac atualiza waveform durante arraste de fades; Windows atualiza desenho ao puxar
+as bordas e recortes de repetição. Build13 e validação GUI ainda em andamento.
+Menus ainda têm diferenças identificadas: Keyboard, SIMBOL dos blocos, edição
+multisseleção de músicas, Env e seleção múltipla de itens. Não declarar paridade total.
+Detalhes/evidências: Documents/CatLive-Mac-Validation/batch12-13/README.txt.
+Nenhum push ou Actions disparado.
+
+--------------------------------------------------------------------------
+ATUALIZAÇÃO LOCAL — 2026-10-16 — lote 11
+Não publicado no Git; validação de lançamento ainda em andamento.
+
+Escala da interface: 50% a 150%, passo de 10%; a escala é independente da
+redução tipográfica de 10% aplicada à Inter. Mac: corrigida a área vazia em
+escalas menores. Escala deve ser aplicada pelo SwiftUI para manter desenho
+e hit-testing coerentes; foi removida a alteração de bounds do host nativo.
+Fades: duas alças finas para curvatura/S, áudio, MIDI e vídeo. Waveform de
+áudio acompanha duração e curva durante a edição; PCM e picos originais são
+preservados. Mac: validação de pixels no Metal e Canvas; Windows: validação
+de pixels da waveform, com fade-in/out e parâmetros finos.
+Setlist Windows: mover o cursor de edição foca a música e revela sua linha,
+incluindo músicas internas de região unificada; não muda reprodução/fila.
+SubPlay: prévia de 2 s e pulsação de 0,9 s (opacidade 1/0,3), como no Mac.
+Cores: faixa superior do grid usa painel #252525; divisórias do cabeçalho
+#444444 e divisórias das pistas com opacidade 0,8, iguais ao código Mac.
+Grid uniforme, sem alternância por pista; destaque com cor enfatizada e
+sobreposição branca de 0,025, conforme implementação atual do Mac.
+BPM: alinhado marcador inicial em 120 BPM 4/4, substituição sem duplicação,
+preservação de marcadores manuais e de vínculo explícito no mesmo ponto.
+Master: menus Patch/FX/Env/Editar, patch múltiplo e automação de ganho/pan/mute.
+Clique direito em faders não altera seus parâmetros. Playlist picker corrigido.
+Mac: cabeça de marcador de tempo não some quando o último marcador de um
+grupo denso tem espaço disponível para sua legenda.
+
+Build Windows 10 do lote 11: 14/14 grupos e 69 testes de integração passaram. Não interpretar
+isso como validação de todos os equipamentos ou integração VST3 externa.
+Nitidez das fontes: renderização Direct2D confirmada, captura nativa em
+100% mais legível que 80%; queixa de nitidez continua aberta, principalmente
+nos textos pequenos. Não declarar esse ponto resolvido só pela captura.
+As limitações de host VST3, Kontakt, equipamentos e testes físicos descritas
+abaixo continuam abertas. A fidelidade de todos os menus ainda não está
+certificada. Nenhuma publicação feita.
+
+--------------------------------------------------------------------------
+ATUALIZAÇÃO LOCAL — 2026-10-16 — lote 10
+Não publicado no Git; validação de lançamento ainda em andamento.
+
+Fontes Inter reduzidas em 10%, mantendo a escala geral em 100%.
+ENV: amarelo fechado, verde com envelopes visíveis, igual nas duas plataformas.
+FX: menu Bypass, Shift+clique alterna a cadeia, Alt+clique remove todos;
+FX vermelho quando todos os inserts estão em bypass. Uma seleção de várias
+pistas recebe uma única operação de histórico; pista fora da seleção e Master
+permanecem independentes. O mixer acoplado e o destacado compartilham a ação.
+Ctrl+Z / Ctrl+Shift+Z restauram/refazem parâmetros e estados serializados dos
+FX. O histórico de FX guarda apenas as cadeias afetadas e funciona durante
+playback sem reconstruir a timeline. Corrigida a reintrodução de FX removidos
+pelo codec e a atualização de gerenciadores abertos após alterações externas.
+Piano roll: campo de texto não encaminha seu undo para o projeto; atalhos
+Ctrl+Z e Ctrl+Shift+Z mantidos, sem o atalho extra Ctrl+Y para notas.
+
+Teleprompter: servidores TP1/TP2 em 10101/10102, QR com IPv4 unicast da LAN;
+GET HTML e estado validados por Wi-Fi e cabo. Remote: descoberta Bonjour,
+criptografia, autenticação observer, snapshots, ACK e troca TP1/TP2 validados
+por cliente independente. Teste com iPad físico ainda não realizado.
+Detector BPM: cache PCM sequencial elimina saltos artificiais do decoder MP3;
+comparado com três Clicks do projeto real e com regressão sintética.
+MIDI/audio: mapeamento de tempo relativo e notas sustentadas nas mudanças
+implementado; ainda revisar menus MIDI, criação por compasso e preview de notas.
+
+Verificação: build Windows e 14/14 grupos de testes passam (build8 do lote 10).
+Mac: 30 testes do controlador passam, build Release arm64 compila; teste real
+VST3 de captura de estado continua áudio sem restauração ou reconexão.
+Captura do estado vivo antes de excluir plugins aplicada ao Mac. Não declarar
+Kontakt com biblioteca do usuário validado até executar esse teste real.
+O host de plugins VST3 externos do Windows continua sendo uma pendência;
+restaurar dados serializados de um projeto não comprova execução do plugin.
+As pendências anteriores abaixo não devem ser consideradas concluídas apenas
+pela existência de um build ou de capturas da interface.
+
+--------------------------------------------------------------------------
+Current Mac-driven Windows validation — 2026-10-15, visual batch 6 (local only)
+
+- Reference: running /Applications/CatLive.app, Version 1.01, real GUILHERME
+  CAMARGO session dated 15/10/2026 10:26. Compared the native macOS drawing in
+  SongListView.swift, Theme.swift and TrackMixerRow.swift; these Setlist/theme
+  sources match origin/main. Mac application and project were not modified.
+- Setlist uses #151B22, the Mac card gradients for selection/playback/queue,
+  smaller number/duration text and a reserved 14-point drawer gutter on every
+  song. Vector chevrons open unified songs without selecting another song.
+- Selection is restored by region ID when expanding/collapsing children, so
+  the blue highlight stays on the same song. Real Mac project: 45 visible rows
+  become 48 when BLOCO opens, then return to 45; cursor and selected IDs remain.
+  Collapsing a selected child highlights its parent; reopening restores the
+  child's highlight. Children are numbered 01/02/03 independently of the parent.
+  Both behaviors passed native input checks on the real project.
+- Footer chevron hides/shows ByPass, Live and Parts and persists the preference.
+  ByPass and Live use Mac state colors; active ByPass blinks at 150 ms.
+- Track/mixer/master surfaces now use the Mac opacity, selection emphasis,
+  mute/solo desaturation and text-contrast calculation; special-track defaults
+  match the Mac palette. Embedded Inter and the 90% Windows scale remain.
+- Final build: 14/14 CTest passed. Native tests on a copy of the real Mac project
+  passed drawer/selection/footer and 1280/900-pixel window layout checks.
+  Only one CatLive instance was open; original Mac/Windows documents preserved.
+- This is a local test candidate, not a release. Remaining parity and release
+  work below is still pending; this batch does not claim complete Mac parity.
+
+Previous validation — visual batch 5
 
 - Inter uses its natural glyph widths, with embedded Regular/Medium/SemiBold/
   Bold faces. The Mac font was not changed. Removed the extra Start Audio button;

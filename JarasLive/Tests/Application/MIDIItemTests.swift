@@ -318,11 +318,22 @@ extension MIDIItemTests {
         let saved=try ProjectDocumentCodec.encode(show.snapshot.project)
         XCTAssertEqual(try ProjectDocumentCodec.decode(saved),show.snapshot.project)
         show.resizeItem(id,start:2.5,end:5)
-        let trimmed=try XCTUnwrap(show.current?.tracks[0].clips[0]);XCTAssertNil(trimmed.loopLength);XCTAssertEqual(trimmed.sourceOffset,0.5)
+        let trimmed=try XCTUnwrap(show.current?.tracks[0].clips[0]);XCTAssertEqual(trimmed.loopLength,4);XCTAssertEqual(trimmed.sourceOffset,0.5)
         show.resizeItem(id,start:1,end:5)
-        let extended=try XCTUnwrap(show.current?.tracks[0].clips[0]);XCTAssertEqual(extended.midiPlaybackNotes().first?.start,2)
+        let extended=try XCTUnwrap(show.current?.tracks[0].clips[0]);XCTAssertEqual(extended.midiPlaybackNotes().map(\.start),[1,2]);XCTAssertEqual(extended.midi,midi)
         show.splitItems([id],at:3)
         XCTAssertEqual(show.current?.tracks[0].clips.count,2);XCTAssertTrue(show.current!.tracks[0].clips.allSatisfy{$0.midi != nil})
         show.canExecute={false};XCTAssertNil(show.addMIDIItem(track:track.id))
+    }
+    func testTimelineMIDIExtensionLoopsOriginalNotesBothDirections() throws {
+        let midi = MIDIItem(notes: [MIDINote(start: 0, length: 1, pitch: 60), MIDINote(start: 2, length: 1, pitch: 67)], sourceBPM: 120)
+        let original = AudioClip(id: UUID(), name: "Pattern", startTime: 10, duration: 2, midi: midi)
+        let right = original.resized(start: 10, end: 16)
+        XCTAssertEqual(right.loopLength, 2); XCTAssertEqual(right.loopStart, 0)
+        XCTAssertEqual(right.midiPlaybackNotes().map(\.start).sorted(), [10,11,12,13,14,15])
+        let left = original.resized(start: 6, end: 12)
+        XCTAssertEqual(left.midiPlaybackNotes().map(\.start).sorted(), [6,7,8,9,10,11])
+        XCTAssertEqual(left.midi, midi); XCTAssertEqual(right.midi, midi)
+        XCTAssertEqual(left.resized(start: 10, end: 12).midiPlaybackNotes(), original.midiPlaybackNotes())
     }
 }

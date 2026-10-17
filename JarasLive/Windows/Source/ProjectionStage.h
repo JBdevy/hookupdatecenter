@@ -1,7 +1,9 @@
 #pragma once
+#include "StageContent.h"
 namespace catlive {
 void Projection::paintStage(Graphics &g) {
     const auto settings = stage->settings(profile);
+    const auto content = StageContent::make(session,*stage,profile).payload;
     const auto notices = stage->preferences.value("jaras.notices.appearance", object());
     const bool showingNotice =
         stage->noticeActive() && flag(notices, profile == 1 ? "window1" : "window2", true);
@@ -30,16 +32,7 @@ void Projection::paintStage(Graphics &g) {
         g.setColour(ink);
         g.drawFittedText(display(value), area.toNearestInt(), alignment, lines, .3f);
     };
-    const auto &transport = session.transport();
     auto *song = session.song();
-    const jaras::Part *current = nullptr, *queued = nullptr;
-    if (song)
-        for (const auto &part : song->parts) {
-            if (transport.regionId && *transport.regionId == part.id)
-                current = &part;
-            if (transport.queuedRegionId && *transport.queuedRegionId == part.id)
-                queued = &part;
-        }
     if (!clear && !flag(settings, "hideTransport") &&
         !(showingNotice && flag(notices, "cleanDisplay", true))) {
         const auto position = str(settings, "clockPosition", "center-top");
@@ -88,24 +81,9 @@ void Projection::paintStage(Graphics &g) {
                             : box.removeFromTop(size * 1.4f);
             label(value, area, key + "FontFamily", size, color(key + "Color"));
         };
-        title(current ? text(current->name)
-              : song  ? text(song->name)
-                      : String(),
-              "songName", getHeight() / 18.f);
-        title(queued ? text(queued->name) : String(), "queueName", getHeight() / 22.f);
-        String chords;
-        double chordStart = 0, chordDuration = 0;
-        if (song)
-            for (const auto &track : song->tracks)
-                if (track.role.id == "chords" && !track.mute)
-                    for (const auto &clip : track.clips)
-                        if (clip.text && !clip.muted && transport.position >= clip.startTime &&
-                            transport.position < clip.startTime + clip.duration) {
-                            chords = text(*clip.text);
-                            chordStart = clip.startTime;
-                            chordDuration = clip.duration;
-                            break;
-                        }
+        title(str(content,"song"), "songName", getHeight() / 18.f);
+        title(str(content,"queued"), "queueName", getHeight() / 22.f);
+        const auto chords=str(content,"chords");
         if (!preview && flag(settings, "chordsEnabled", true) && chords.isNotEmpty()) {
             const float size = (float)num(settings, "chordScale", 50);
             auto area = str(settings, "chordPosition", "top") == "bottom"
@@ -117,64 +95,49 @@ void Projection::paintStage(Graphics &g) {
                   Justification::centred, 2);
         }
         if (flag(settings, "progressEnabled")) {
-            const bool chord = str(settings, "progressMode") == "chords";
-            const double duration = chord ? chordDuration : itemDuration,
-                         start = chord ? chordStart : itemStart;
+            const double progress=num(content,"progress");
             auto area = str(settings, "progressPosition", "bottom") == "top"
                             ? box.removeFromTop(7)
                             : box.removeFromBottom(7);
             g.setColour(color("progressColor").withAlpha(.18f));
             g.fillRoundedRectangle(area, 3);
-            if (duration > 0) {
+            if (progress > 0) {
                 g.setColour(color("progressColor"));
                 g.fillRoundedRectangle(
                     area.withWidth(area.getWidth() *
-                                   (float)jlimit(0., 1., (transport.position - start) / duration)),
+                                   (float)progress),
                     3);
             }
         }
     }
     if (preview && song && !clear) {
-        std::vector<const jaras::Part *> parts;
-        if (const auto &setlist = session.project().regionSetlist; setlist && setlist->selectedId) {
-            for (const auto &playlist : setlist->playlists)
-                if (playlist.id == *setlist->selectedId)
-                    for (const auto &id : playlist.regionIds)
-                        for (const auto &p : song->parts)
-                            if (p.id == id)
-                                parts.push_back(&p);
-        } else
-            for (const auto &p : song->parts)
-                parts.push_back(&p);
-        const int columns = (int)parts.size() > 16 ? 2 : 1;
-        const int count = std::max(1, ((int)parts.size() + columns - 1) / columns);
-        const float height = std::min(48.f, box.getHeight() / count);
-        const float font =
-            (float)jlimit(9., 34., height * .65 * num(settings, "previewScale", 100) / 100.);
-        for (size_t i = 0; i < parts.size(); ++i) {
-            const auto *part = parts[i];
-            juce::Rectangle<float> area{box.getX() + (i / count) * (box.getWidth() / columns),
-                                        box.getY() + (i % count) * height,
-                                        box.getWidth() / columns - 10, height};
-            auto value = text(part->name);
-            if (flag(settings, "previewSongDurationEnabled", true))
-                value += String::fromUTF8(" • ") + clockText(part->endTime - part->startTime);
-            const auto ink = part == current  ? color("highlightColor")
-                             : part == queued ? color("queueNameColor")
-                                              : color("textColor");
-            label(value, area, "previewFontFamily", font, ink, Justification::centredLeft);
-            if (flag(settings, "previewUnderlineEnabled", true)) {
-                g.setColour(ink.withAlpha(.5f));
-                g.drawHorizontalLine((int)area.getBottom() - 2, area.getX(), area.getRight());
-            }
+        const auto blocks=list(get(content,"blocks"));
+        const int columns=std::max(1,std::min(4,blocks.size()));
+        int rows=1;for(const auto &block:blocks)rows=std::max(rows,list(get(block,"songs")).size()+(str(block,"name").isNotEmpty()?1:0));
+        const float width=(box.getWidth()-12-(columns-1)*8)/columns;
+        const float font=std::max(9.f,std::min((width-20)/13,(box.getHeight()-20)/rows/1.1f)*(float)num(settings,"previewScale",100)/100);
+        for(int i=0;i<blocks.size();++i) {
+            const auto &block=blocks[i];const auto songs=list(get(block,"songs"));
+            const bool heading=str(block,"name").isNotEmpty();
+            auto frame=juce::Rectangle<float>(box.getX()+6+i*(width+8),box.getY()+6,width,(songs.size()+(heading?1:0))*(font*1.2f+3)+12);
+            g.setColour(Colour(0xff000000|(uint32)(int64)get(block,"color")).withAlpha(.7f));g.drawRoundedRectangle(frame,6,1);
+            auto body=frame.reduced(6);
+            auto row=[&](const var &value,bool title){
+                auto text=str(value,"name");if(flag(settings,title?"previewBlockDurationEnabled":"previewSongDurationEnabled",true)&&num(value,"duration")>0)text+=String::fromUTF8(" • ")+clockText(std::ceil(num(value,"duration")));
+                const auto area=body.removeFromTop(font*1.2f+3);
+                const auto ink=Colour(0xff000000|(uint32)(int64)get(value,"color"));
+                label(text,area,"previewFontFamily",title?font*1.05f:font,ink,Justification::centredLeft,2);
+                if(!title&&flag(settings,"previewUnderlineEnabled",true)){g.setColour(ink);g.drawHorizontalLine((int)area.getBottom()-2,area.getX(),area.getRight());}
+            };
+            if(heading)row(block,true);for(const auto &value:songs)row(value,false);
         }
-    } else if (!clear && lyrics.isNotEmpty()) {
+    } else if (!clear && str(content,"text").isNotEmpty()) {
         if (flag(settings, "textBoxEnabled", true)) {
             g.setColour(border("textBoxColor", "rgbTextBoxBorderEnabled"));
             g.drawRoundedRectangle(box, 5, 1);
         }
         auto align = str(settings, "textAlignment", "center");
-        label(lyrics, box.reduced(12), "fontFamily",
+        label(str(content,"text"), box.reduced(12), "fontFamily",
               (float)(getHeight() / 9. * num(settings, "textScale", 100) / 100.),
               color("textColor"),
               align == "left"    ? Justification::centredLeft

@@ -115,7 +115,7 @@ struct GridExternalFilePreviewOverlay: View {
                     context.stroke(Path(rect), with: .color(.white.opacity(0.85)), style: StrokeStyle(lineWidth: 1, dash: [4, 2]))
                     var titleContext = context
                     titleContext.clip(to: Path(bar))
-                    let label = Text(verbatim: file.name).font(.system(size: 10, weight: .semibold)).foregroundColor(.white)
+                    let label = Text(verbatim: file.name).font(.jarasSystem(size: 10, weight: .semibold)).foregroundColor(.white)
                     titleContext.draw(label, at: CGPoint(x: max(bar.minX + 4, 4), y: bar.midY), anchor: .leading)
                 }
             }.frame(width: viewport.width, height: viewport.height)

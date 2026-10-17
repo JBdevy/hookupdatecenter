@@ -110,7 +110,7 @@ struct TeleprompterConfig: View {
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Text(LocalizedStringKey(showingNotices ? "Messages" : "Teleprompter settings")).font(.headline)
+                Text(LocalizedStringKey(showingNotices ? "Messages" : "Teleprompter settings")).font(.jarasHeadline)
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 36,height: 36).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
@@ -124,7 +124,7 @@ struct TeleprompterConfig: View {
                         VStack(spacing: 12) {
                             ForEach(["Colors","Scales","Fonts and positions","Display"],id: \.self) { group in
                                 VStack(alignment: .leading,spacing: 10) {
-                                    Text(LocalizedStringKey(group)).font(.system(size: 12,weight: .bold)).foregroundStyle(JarasTheme.green)
+                                    Text(LocalizedStringKey(group)).font(.jarasSystem(size: 12,weight: .bold)).foregroundStyle(JarasTheme.green)
                                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 8),count: geometry.size.width > 520 ? 2 : 1),spacing: 8) {
                                         ForEach(TPSettingField.all.filter { $0.group == group }) { field in
                                             fieldView(field).padding(9).frame(maxWidth: .infinity,minHeight: group == "Colors" || group == "Display" ? 48 : 70,alignment: .leading)

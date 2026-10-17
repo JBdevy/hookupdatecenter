@@ -1248,5 +1248,6 @@
   "Parts Down": "Parts abaixo",
   "Parts show/hide": "Mostrar/ocultar Parts",
   "Loading waveforms…": "Carregando waveforms…",
-  "%ld REAPER items before the project start were ignored.": "%ld itens do REAPER anteriores ao início do projeto foram ignorados."
+  "%ld REAPER items before the project start were ignored.": "%ld itens do REAPER anteriores ao início do projeto foram ignorados.",
+  "Interface scale": "Escala da interface"
 }

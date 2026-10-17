@@ -32,7 +32,7 @@ struct TextItemEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Text Editor").font(.headline)
+                Text("Text Editor").font(.jarasHeadline)
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).accessibilityLabel("Cancel")
@@ -49,8 +49,8 @@ struct TextItemEditor: View {
                 Text("\(draft.unicodeScalars.count)")
                     .monospacedDigit()
                 Text("characters")
-            }.font(.caption).foregroundStyle(JarasTheme.secondary)
-            Text("Command+Enter to apply; Enter for a new line.").font(.caption).foregroundStyle(JarasTheme.secondary)
+            }.font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            Text("Command+Enter to apply; Enter for a new line.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             HStack {
                 Button("Cancel", action: close).keyboardShortcut(.cancelAction)
                 Spacer()
@@ -76,7 +76,7 @@ private struct TextItemNotepad: NSViewRepresentable {
         let editor = TextItemNotepadView()
         editor.isRichText = false; editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false
-        editor.font = .systemFont(ofSize: 14)
+        editor.font = .jarasSystemFont(ofSize: 14)
         editor.textColor = NSColor(JarasTheme.text)
         editor.insertionPointColor = NSColor(JarasTheme.green)
         editor.backgroundColor = NSColor(JarasTheme.background)

@@ -304,7 +304,6 @@ final class OfflineAudioExport {
         var idleSources: [(AVAudioUnitEffect, AVAudioPlayerNode, Double, Double, Bool)] = []
         var sourceClocks: [(AVAudioNode, (Double) -> Void)] = []
         var itemFades: [(NativeEffectsChain, AudioClip, Double, Double, Double)] = []
-        var midiTakeFades: [(AVAudioUnitEffect, AudioClip, Double)] = []
         var automationClocks: [(AVAudioNode, Double, (Double) -> Void)] = []
         var transportClocks: [(NativeEffectsChain, Double)] = []
         func applyAutomatedFX(_ values: AutomationPlaybackValues, to effects: NativeEffectsChain?) {
@@ -500,9 +499,6 @@ final class OfflineAudioExport {
                 applyTake(clip.startTime)
                 JarasEqualizer.setPolarity(controls, inverted: clip.phaseInverted == true)
                 JarasEqualizer.setInputChannelMode(controls, mode: Int32(clip.channelMode ?? 0))
-                JarasEqualizer.setInputFade(controls, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0,
-                    duration: clip.duration, position: position - clip.startTime, hostTime: 0, sampleTime: 0)
-                midiTakeFades.append((controls, clip, start))
                 if let automation = clip.automation, automation.enabled, !automation.active.isEmpty {
                     automationClocks.append((gain, start, applyTake))
                 }
@@ -665,12 +661,6 @@ final class OfflineAudioExport {
                 captureStarts[lane] += Int64((max(0, maximumLatency - node.outputPresentationLatency) * format.sampleRate).rounded())
             }
             for (index, binding) in sourceClocks.enumerated() { binding.1(max(0, maximumLatency - clockLatencies[index])) }
-            for (controls, clip, origin) in midiTakeFades {
-                let delay = max(0, maximumLatency - controls.outputPresentationLatency)
-                JarasEqualizer.setInputFade(controls, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0,
-                    duration: clip.duration, position: 0, hostTime: 0,
-                    sampleTime: (clip.startTime - origin + Double(preroll) / format.sampleRate + delay) * format.sampleRate)
-            }
             for (effects, clip, begin, origin, sourceRate) in itemFades {
                 let delay = max(0, maximumLatency - effects.equalizer.outputPresentationLatency)
                 effects.configureItemFade(clip, position: begin,

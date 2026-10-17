@@ -10,7 +10,9 @@ void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
     const float textWidth = GlyphArrangement::getStringWidth(font, getName());
     float x = (getWidth() - textWidth - 24) * .5f, y = (getHeight() - 16) * .5f;
     Path path;
-    if (icon == piano) {
+    if (icon == recording) {
+        drawInterfaceIcon(g, "record", {x, y, 16, 16});
+    } else if (icon == piano) {
         drawInterfaceIcon(g, "piano", {x, y, 16, 16});
     } else if (icon == folder || icon == plusFolder) {
         path.startNewSubPath(x, y + 3);
@@ -51,7 +53,7 @@ void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
 ProjectBrowser::ProjectBrowser() {
     setOpaque(true);
     for (auto *button :
-         {&create, &add, &recent, &empty, &stems, &reaper, &logic, &package, &back}) {
+         {&create, &add, &recent, &empty, &stems, &reaper, &logic, &recording, &package, &back}) {
         addAndMakeVisible(*button);
         button->setComponentID(button->getName());
     }
@@ -73,6 +75,7 @@ ProjectBrowser::ProjectBrowser() {
         if (createLogic)
             createLogic();
     };
+    recording.onClick = [this] { if (createRecording) createRecording(); };
     stems.onClick = [this] {
         auto action = mode == adding ? addStems : createStems;
         if (action)
@@ -143,12 +146,22 @@ void ProjectBrowser::resized() {
     package.setVisible(mode == adding);
     reaper.setVisible(mode == creating);
     logic.setVisible(mode == creating);
-    int optionWidth = mode == creating ? (width - 30) / 4 : (width - 10) / 2;
-    stems.setBounds(24, 114, optionWidth, 38);
-    empty.setBounds(34 + optionWidth, 114, optionWidth, 38);
-    reaper.setBounds(44 + optionWidth * 2, 114, optionWidth, 38);
-    logic.setBounds(54 + optionWidth * 3, 114, width - 3 * optionWidth - 30, 38);
-    package.setBounds(34 + optionWidth, 114, optionWidth, 38);
+    recording.setVisible(mode == creating);
+    // ProjectBrowserView on macOS: three creation choices, then two imports.
+    // These inner HStacks use an 8-point gap; the top navigation uses 10.
+    if (mode == creating) {
+        const int creationWidth = (width - 16) / 3;
+        stems.setBounds(24, 114, creationWidth, 38);
+        empty.setBounds(32 + creationWidth, 114, creationWidth, 38);
+        recording.setBounds(40 + 2 * creationWidth, 114, width - 2 * creationWidth - 16, 38);
+        const int importWidth = (width - 8) / 2;
+        reaper.setBounds(24, 160, importWidth, 38);
+        logic.setBounds(32 + importWidth, 160, width - importWidth - 8, 38);
+    } else if (mode == adding) {
+        const int optionWidth = (width - 10) / 2;
+        stems.setBounds(24, 114, optionWidth, 38);
+        package.setBounds(34 + optionWidth, 114, width - optionWidth - 10, 38);
+    }
     browseButton.setVisible(mode == opening);
     search.setVisible(mode == opening);
     recents.setVisible(mode == opening);
@@ -191,18 +204,12 @@ void ProjectBrowser::listBoxItemClicked(int row, const MouseEvent &event) {
     }
     File file(filtered[row]);
     PopupMenu menu;
-    menu.addItem(1, "Remove from recents");
-    menu.addItem(2, "Show in Explorer", file.existsAsFile());
-    menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&recents),
-                       [safe = Component::SafePointer<ProjectBrowser>(this), file](int result) {
-                           if (!safe)
-                               return;
-                           if (result == 1) {
-                               RecentProjects::forget(file);
-                               safe->refresh();
-                           }
-                           if (result == 2)
-                               file.revealToUser();
-                       });
+    const bool missing=!file.existsAsFile();
+    menu.addItem(1,missing?"Remove from recents":"Delete project");
+    menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&recents),[safe=Component::SafePointer<ProjectBrowser>(this),file,missing](int result){
+        if(!safe || result!=1)return;
+        if(missing){RecentProjects::forget(file);safe->refresh();}
+        else if(safe->deleteProject)safe->deleteProject(file);
+    });
 }
 } // namespace catlive

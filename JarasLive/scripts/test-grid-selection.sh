@@ -16,5 +16,5 @@ router = router[router.index('struct EditorSelectionArea: NSViewRepresentable {'
 controls = '@MainActor final class ControlMappings { static let shared = ControlMappings(); var editing: Int? }\n'
 Path(sys.argv[1]).write_text('import SwiftUI\n' + controls + router + diagnostics + '\n' + native_class('GridNativeScrollView') + '\n' + native_class('NativeTimelinePinnedView') + '\n' + Path('Tests/Apple/GridSelectionTests.swift').read_text())
 PY
-swiftc -swift-version 5 Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/GridSelectionInput.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/GridSelectionInput.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

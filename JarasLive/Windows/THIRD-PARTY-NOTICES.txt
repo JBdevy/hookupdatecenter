@@ -17,10 +17,11 @@ The bundled ASIO sources in JUCE are used under their accompanying licence.
 
 The original CatLive portable C++ core and product artwork remain part of CatLive.
 
-Inter, copyright 2016 The Inter Project Authors.
-Regular, Medium, SemiBold, Bold and Bold Italic faces are embedded in CatLive.
-Licensed under the SIL Open Font License 1.1. The complete licence accompanies
-this build as Inter-LICENSE.txt and is in Windows/Assets/Fonts/LICENSE.txt.
+Inter 4.1, copyright 2016 The Inter Project Authors.
+Distributed under the SIL Open Font License, Version 1.1.
+The unmodified font files are bundled with the desktop application.
+The full license is included as Inter-LICENSE.txt and in
+Resources/Fonts/Inter/LICENSE.txt.
 https://github.com/rsms/inter
 
 Signalsmith Stretch 1.4.0 and Signalsmith Linear 0.6.4, by Signalsmith Audio.
@@ -40,3 +41,18 @@ libebur128 1.2.6, copyright Jan Kokemüller, and BSD queue macros.
 The same vendored source is used by the Mac build. Complete notices accompany
 the executable as EBUR128-LICENSE.txt and EBUR128-QUEUE-LICENSE.txt.
 https://github.com/jiixyj/libebur128
+
+QR Code generator library 1.8.0, copyright Project Nayuki.
+Licensed under MIT. The complete notice accompanies the executable as
+QRCode-LICENSE.txt and is in Windows/ThirdParty/QRCode/LICENSE.txt.
+https://github.com/nayuki/QR-Code-generator
+
+
+LAME 3.100 (Windows MP3 recording and export)
+https://lame.sourceforge.io/
+Copyright the LAME developers. Licensed under LGPL version 2 or later.
+CatLiveLame.dll is a separate, replaceable shared library. See Licenses/LAME/COPYING, the complete upstream source archive and BUILD.txt supplied beside the application. The application does not restrict reverse engineering for debugging modifications to this LGPL component.
+
+dr_libs (MP3 file decoding and gapless timeline alignment)
+https://github.com/mackron/dr_libs
+Copyright David Reid. Distributed under its MIT license; see Licenses/dr_libs/LICENSE. The pinned source and provenance are in WindowsNative/ThirdParty/dr_libs.

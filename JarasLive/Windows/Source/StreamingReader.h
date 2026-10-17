@@ -19,9 +19,9 @@ class StreamingReader final : public AudioFormatReader, private TimeSliceClient 
         requested.store(jlimit(int64(0), std::max(int64(0), lengthInSamples - 1), position));
         lastDemand.store(Time::getMillisecondCounter());
     }
-    bool ready(int64 position) {
+    bool ready(int64 position, int count = 4096) {
         auto current = std::atomic_load(&reader);
-        return current && probeAt(*current, position);
+        return current && probeAt(*current, position, count);
     }
     bool cached() const noexcept { return resident.load(); }
     std::atomic<uint64> cacheMisses{0}, inactiveMisses{0};
@@ -69,10 +69,10 @@ class StreamingReader final : public AudioFormatReader, private TimeSliceClient 
             resident.store(true);
         }
     }
-    bool probeAt(BufferingAudioReader& current, int64 at) {
+    bool probeAt(BufferingAudioReader& current, int64 at, int count = 1) {
         // Updating the delegate's read position also schedules its next block.
-        AudioBuffer<float> probe(2, 1);
-        return current.read(&probe, 0, 1, at, true, true);
+        AudioBuffer<float> probe(2, count);
+        return current.read(&probe, 0, count, at, true, true);
     }
     int useTimeSlice() override {
         const ScopedTryLock guard(lock);

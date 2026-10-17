@@ -7,7 +7,199 @@ public enum GridDeleteTarget: Equatable {
     }
 }
 
+public enum TimelineBulkDeletion: String, CaseIterable, Identifiable {
+    case tempo, regions, markers
+    public var id: String { rawValue }
+    public func matches(_ marker: TimelineMarker) -> Bool {
+        if marker.unifiedRegionID != nil || marker.sourceRegionID != nil { return self == .regions }
+        return self == .tempo ? marker.tempoBPM != nil : self == .markers && marker.tempoBPM == nil
+    }
+}
+
+/// Matches VS Hook's Converter for markers outside existing regions.
+public struct MarkerRegionConversion {
+    public struct Plan { public let marker: TimelineMarker; public let end: Double }
+    public let plans: [Plan]
+    public let skipped: [String]
+    public var message: String {
+        let summary = "\(plans.count) marcador(es) convertido(s) em região."
+        return skipped.isEmpty ? summary : summary + "\n\nNão convertidos:\n" + skipped.joined(separator: "\n")
+    }
+    public static func outsideRegions(_ marker: TimelineMarker, in song: Song) -> Bool {
+        marker.tempoBPM == nil && marker.unifiedRegionID == nil && marker.sourceRegionID == nil &&
+        !song.parts.contains { marker.position >= $0.startTime - 0.000001 && marker.position < $0.endTime - 0.000001 }
+    }
+    private static func reserved(_ marker: TimelineMarker) -> Bool {
+        let name = marker.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let loop = name.hasPrefix("*") ? Int(name.dropFirst().drop(while: { $0.isWhitespace }).prefix(while: { $0.isNumber })) : nil
+        return marker.isSection || marker.isLoopSection || name.hasPrefix("$") || name.hasPrefix("!") || loop == 1 || loop == 2
+    }
+    public init(song: Song, markerID: UUID? = nil) {
+        let epsilon = 0.000001
+        let markers = (song.markers ?? []).sorted { $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position }
+        let audio = song.tracks.flatMap(\.clips).filter { $0.audioFile != nil && $0.midi == nil && $0.duration > epsilon }
+        func audioEnd(_ position: Double) -> Double? {
+            audio.filter { abs($0.startTime - position) <= epsilon }.map { $0.startTime + $0.duration }.max()
+        }
+        func ordinary(_ marker: TimelineMarker) -> Bool {
+            marker.tempoBPM == nil && marker.unifiedRegionID == nil && marker.sourceRegionID == nil && !Self.reserved(marker) && !marker.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        var plans: [Plan] = [], skipped: [String] = []
+        for marker in markers where markerID == nil || marker.id == markerID {
+            // Tempo and unified-region heads are not ordinary markers.
+            if markerID == nil && (marker.tempoBPM != nil || marker.unifiedRegionID != nil || marker.sourceRegionID != nil) { continue }
+            let name = marker.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            var reason: String?
+            if !Self.outsideRegions(marker, in: song) { reason = "Já pertence a uma região ou é um marcador de tempo. Use um marcador comum fora das regiões." }
+            else if Self.reserved(marker) { reason = "Marcador reservado para Parts/loops ou desativado. Use um marcador comum, sem os prefixos $, !, *1 ou *2." }
+            else if name.isEmpty { reason = "O marcador está sem nome. Edite o marcador e dê um nome antes de converter." }
+            else if let end = audioEnd(marker.position) {
+                var limit = end
+                for region in song.parts where region.startTime > marker.position + epsilon { limit = min(limit, region.startTime) }
+                for next in markers where next.position > marker.position + epsilon && ordinary(next) && audioEnd(next.position) != nil { limit = min(limit, next.position) }
+                if plans.contains(where: { abs($0.marker.position - marker.position) <= epsilon }) {
+                    reason = "Outro marcador já será convertido neste ponto. Mova este marcador para o início de outro item de áudio."
+                } else if limit > marker.position + epsilon { plans.append(Plan(marker: marker, end: limit)) }
+                else { reason = "Não há duração disponível para a região. Ajuste o áudio ou o início da próxima região." }
+            } else { reason = "Nenhum item de áudio começa neste ponto. Alinhe o marcador ao início de um item de áudio com duração maior que zero." }
+            if let reason { skipped.append("\(name.isEmpty ? "Sem nome" : name): \(reason)") }
+        }
+        if plans.isEmpty && skipped.isEmpty { skipped.append("Não há marcadores comuns nesta timeline. Crie um marcador no início de um item de áudio, fora das regiões.") }
+        self.plans = plans; self.skipped = skipped
+    }
+}
+
 public extension Project {
+    @discardableResult mutating func convertMarkersToRegions(song songID: UUID, markerID: UUID? = nil) -> MarkerRegionConversion? {
+        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return nil }
+        let result = MarkerRegionConversion(song: songs[index], markerID: markerID)
+        for plan in result.plans {
+            var part = Part(id: UUID(), name: plan.marker.name, startTime: plan.marker.position, endTime: plan.end)
+            part.color = plan.marker.color
+            songs[index].parts.append(part)
+        }
+        let converted = Set(result.plans.map { $0.marker.id })
+        songs[index].markers?.removeAll { converted.contains($0.id) }
+        return result
+    }
+
+    mutating func deleteTimelineElements(_ kind: TimelineBulkDeletion, song songID: UUID) {
+        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return }
+        if kind == .regions {
+            let regions = songs[index].parts
+            let ids = Set(regions.map(\.id))
+            // Remove members before wrappers: bulk deletion must not disunify them.
+            for part in regions.sorted(by: { ($0.parentRegionID != nil ? 0 : 1) < ($1.parentRegionID != nil ? 0 : 1) }) { deleteRegion(part.id) }
+            for track in songs[index].tracks.indices {
+                for item in songs[index].tracks[track].clips.indices {
+                    if let owner = songs[index].tracks[track].clips[item].regionOwnerID, ids.contains(owner) { songs[index].tracks[track].clips[item].regionOwnerID = nil }
+                }
+            }
+            if var markers = songs[index].markers {
+                for item in markers.indices { if let owner = markers[item].regionOwnerID, ids.contains(owner) { markers[item].regionOwnerID = nil } }
+                songs[index].markers = markers
+            }
+            regionSetlist?.playedLiveRegionIDs?.removeAll { ids.contains($0) }
+        }
+        let removed = Set((songs[index].markers ?? []).filter { kind.matches($0) }.map(\.id))
+        songs[index].markers?.removeAll { removed.contains($0.id) }
+        for part in songs[index].parts.indices {
+            songs[index].parts[part].multiLoops?.removeAll { removed.contains($0.marker1) || removed.contains($0.marker2) }
+        }
+    }
+
+    /// A track copy owns its editable state while reusing immutable media files.
+    /// Folders include their descendants; linked stereo channels stay a pair.
+    @discardableResult mutating func duplicateTracks(_ ids: Set<UUID>, song songID: UUID) throws -> Set<UUID> {
+        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return [] }
+        let source = songs[index], selected = source.trackDuplicationTargets(ids)
+        guard !selected.isEmpty else { return [] }
+        let hierarchy = TrackHierarchy(source.tracks)
+        let roots = source.tracks.filter { selected.contains($0.id) && Set(hierarchy.ancestors(of: $0.id)).isDisjoint(with: selected) }
+        let rootIDs = Set(roots.map(\.id))
+        let mapping = Dictionary(uniqueKeysWithValues: source.tracks.filter { selected.contains($0.id) }.map { ($0.id, UUID()) })
+        func mapped(_ id: UUID) -> UUID { mapping[id] ?? id }
+        func routing(_ value: TrackRouting?) -> TrackRouting? {
+            value.map { TrackRouting(receives: $0.receives.map { $0.map(mapped) }, transmitters: $0.transmitters.map { $0.map(mapped) }) }
+        }
+        var copies: [UUID: Track] = [:]
+        let connections = source.trackConnections.sorted {
+            $0.source == $1.source ? $0.destination.uuidString < $1.destination.uuidString : $0.source.uuidString < $1.source.uuidString
+        }
+        for original in source.tracks where selected.contains(original.id) {
+            var copy = original
+            copy.id = mapped(original.id)
+            copy.parentTrackID = original.parentTrackID.map(mapped)
+            copy.routing = routing(original.routing)
+            if var link = copy.stereoLink {
+                link.partner = mapped(link.partner); link.original.routing = routing(link.original.routing)
+                copy.stereoLink = link
+            }
+            // A connection can be stored only on the opposite endpoint. Carry
+            // it onto the new endpoint without modifying the original tracks.
+            for edge in connections where edge.source == original.id || edge.destination == original.id {
+                var routes = copy.routing ?? TrackRouting()
+                if edge.source == original.id {
+                    let destination = mapped(edge.destination)
+                    if !routes.transmitters.contains(destination) { routes.transmitters.append(destination) }
+                } else {
+                    let sender = mapped(edge.source)
+                    if !routes.receives.contains(sender) { routes.receives.append(sender) }
+                }
+                copy.routing = routes
+            }
+            var trackFX = TrackCopyFXIdentities()
+            copy.fx = original.fx.map { trackFX.copy($0) }
+            copy.automation = trackFX.copy(original.automation)
+            copy.clips = original.clips.map { original in
+                var clip = original
+                clip.id = UUID()
+                clip.separatedStemTracks = original.separatedStemTracks?.map(mapped)
+                if var midi = clip.midi {
+                    for note in midi.notes.indices { midi.notes[note].id = UUID() }
+                    clip.midi = midi
+                }
+                var clipFX = TrackCopyFXIdentities()
+                clip.fx = original.fx.map { clipFX.copy($0) }
+                clip.automation = clipFX.copy(original.automation)
+                return clip
+            }
+            copies[original.id] = copy
+        }
+        // Insert each complete subtree after its source. Child copies retain
+        // the same parent when that parent was outside the selection.
+        var insertions: [Int: [Track]] = [:], handled: Set<UUID> = []
+        for root in roots where !handled.contains(root.id) {
+            var block = hierarchy.descendants(of: root.id).union([root.id])
+            handled.insert(root.id)
+            if let partner = root.stereoLink?.partner, rootIDs.contains(partner),
+               source.tracks.first(where: { $0.id == partner })?.parentTrackID == root.parentTrackID {
+                block.formUnion(hierarchy.descendants(of: partner).union([partner])); handled.insert(partner)
+            }
+            let positions = source.tracks.indices.filter { block.contains(source.tracks[$0].id) }
+            if let last = positions.last { insertions[last, default: []] += positions.compactMap { copies[source.tracks[$0].id] } }
+        }
+        var candidate = self
+        candidate.songs[index].tracks = source.tracks.enumerated().flatMap { [$0.element] + (insertions[$0.offset] ?? []) }
+        // Explicit region pitch selections and multi-loop mixer rules are part
+        // of the track's sound. Nil pitch lists already include all tracks.
+        for part in candidate.songs[index].parts.indices {
+            if let tracks = source.parts[part].pitchTrackIDs { candidate.songs[index].parts[part].pitchTrackIDs = tracks + tracks.compactMap { mapping[$0] } }
+            if let groups = source.parts[part].pitchGroupIDs { candidate.songs[index].parts[part].pitchGroupIDs = groups + groups.compactMap { mapping[$0] } }
+            if var loops = source.parts[part].multiLoops {
+                for loop in loops.indices {
+                    loops[loop].tracks += loops[loop].tracks.compactMap { original -> MultiLoopTrack? in
+                        guard let id = mapping[original.id] else { return nil }
+                        var copy = original; copy.id = id; return copy
+                    }
+                }
+                candidate.songs[index].parts[part].multiLoops = loops
+            }
+        }
+        try candidate.validate()
+        self = candidate
+        return Set(mapping.values)
+    }
     /// Track IDs may appear in more than one song; deletion removes them all.
     func tracksContainItems(_ ids: Set<UUID>) -> Bool {
         songs.contains { song in song.tracks.contains { ids.contains($0.id) && !$0.clips.isEmpty } }
@@ -405,6 +597,72 @@ public extension Project {
     }
 }
 
+public extension Song {
+    /// Master and special singleton lanes have no duplication action.
+    func trackDuplicationTargets(_ ids: Set<UUID>) -> Set<UUID> {
+        let eligible = Set(tracks.filter { $0.kind == .standard }.map(\.id))
+        let hierarchy = TrackHierarchy(tracks)
+        var result = ids.intersection(eligible), previous: Set<UUID> = []
+        while result != previous {
+            previous = result
+            for track in tracks where previous.contains(track.id) {
+                result.formUnion(hierarchy.descendants(of: track.id).intersection(eligible))
+                if let partner = track.stereoLink?.partner, eligible.contains(partner) { result.insert(partner) }
+            }
+        }
+        return result
+    }
+}
+
+/// Effect keys and EQ-band references must travel with their automation. The
+/// plugin's opaque component/controller state is copied byte for byte.
+private struct TrackCopyFXIdentities {
+    private var effects: [String: String] = [:]
+    private var plugins: [String: String] = [:]
+    private var bands: [String: [UUID: UUID]] = [:]
+    mutating func copy(_ original: NativeFXSettings) -> NativeFXSettings {
+        var result = original
+        func copyBands(_ original: [EQBand]) -> (values: [EQBand], ids: [UUID: UUID]) {
+            var ids: [UUID: UUID] = [:]
+            let values = original.map { band -> EQBand in var copy = band; copy.id = UUID(); ids[band.id] = copy.id; return copy }
+            return (values, ids)
+        }
+        let base = copyBands(original.bands); result.bands = base.values; bands["EQ"] = base.ids
+        if let instances = original.instances {
+            result.instances = instances.map { instance in
+                var copy = instance; copy.id = UUID().uuidString
+                effects[instance.effectKey] = copy.effectKey
+                let nested = copyBands(instance.settings.bands)
+                copy.settings.bands = nested.values; bands[instance.effectKey] = nested.ids
+                return copy
+            }
+        }
+        if let external = original.externalPlugins {
+            result.externalPlugins = external.map { plugin in
+                var copy = plugin; copy.id = UUID().uuidString
+                effects[plugin.effectKey] = copy.effectKey; plugins[plugin.id] = copy.id
+                return copy
+            }
+        }
+        result.inserted = original.inserted.map { effects[$0] ?? $0 }
+        return result
+    }
+    func copy(_ original: TrackAutomation?) -> TrackAutomation? {
+        guard var result = original else { return nil }
+        for index in result.envelopes.indices {
+            result.envelopes[index].id = UUID()
+            for point in result.envelopes[index].points.indices { result.envelopes[index].points[point].id = UUID() }
+            if var native = result.envelopes[index].target.native {
+                native.band = native.band.map { bands[native.effect]?[$0] ?? $0 }
+                native.effect = effects[native.effect] ?? native.effect
+                result.envelopes[index].target.native = native
+            }
+            if let plugin = result.envelopes[index].target.plugin { result.envelopes[index].target.plugin = plugins[plugin] ?? plugin }
+        }
+        return result
+    }
+}
+
 private extension Track {
     mutating func sendToGroup(_ parent: UUID) {
         var patches = outputPatches
@@ -468,13 +726,6 @@ public extension AudioClip {
     func resized(start: Double, end: Double) -> AudioClip {
         guard start.isFinite, end.isFinite, start >= 0, end - start >= 0.01 else { return self }
         var clip = self
-        if var midi = clip.midi {
-            let offset = clip.sourceOffset + (start - clip.startTime) * clip.audioRate
-            if offset < 0 { for index in midi.notes.indices { midi.notes[index].start -= offset * midi.sourceBPM / 60 } }
-            clip.sourceOffset = max(0, offset); clip.midi = midi
-            clip.startTime = start; clip.duration = end - start
-            return clip
-        }
         let loopStart = clip.loopStart ?? clip.sourceOffset
         let loopLength = clip.loopLength ?? clip.duration * clip.audioRate
         clip.loopStart = loopStart; clip.loopLength = loopLength

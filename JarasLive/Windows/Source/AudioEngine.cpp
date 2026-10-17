@@ -1,3 +1,6 @@
+#include "MediaSource.h"
+#include "ProjectionSelection.h"
+#include "MeterDisplay.h"
 #include "AudioEngine.h"
 #include "ProjectCodec.h"
 #include "ClipAudio.h"
@@ -13,7 +16,7 @@ AudioEngine::AudioEngine() {
         midiSlots[i].reset(48000);
         slotMessages[i].ensureSize(32768);
     }
-    formats.registerBasicFormats();
+    registerAudioFormats(formats);
     metronome.a = ClickProgram::tone("Digital", true);
     metronome.b = ClickProgram::tone("Digital", false);
     readAhead.startThread(Thread::Priority::high);
@@ -40,7 +43,7 @@ void AudioEngine::startRecording(const File &file, int channels, int bits) {
     if (!stream->openedOk())
         throw std::runtime_error("Não foi possível abrir a gravação.");
     WavAudioFormat wav;
-    AiffAudioFormat aiff;
+    RecordingAiffFormat aiff;
     AudioFormat &format = file.hasFileExtension("aif;aiff") ? static_cast<AudioFormat &>(aiff)
                                                             : static_cast<AudioFormat &>(wav);
     if (bits != 16 && bits != 24 && bits != 32)
@@ -108,6 +111,35 @@ std::vector<TrackCapture::Take> AudioEngine::stopTrackRecording() {
     recordingDrops = captured->overflows();
     return captured->finish();
 }
+void AudioEngine::startTrackFadeout(const std::set<ID> &selected, double seconds) {
+    if (!std::isfinite(seconds) || seconds < 1 || seconds > 5)
+        throw std::invalid_argument("Track fadeout duration must be between 1 and 5 seconds.");
+    const ScopedLock lock(devices.getAudioCallbackLock());
+    bool any = false;
+    for (auto &bus : buses) {
+        const bool enabled = selected.count(bus->id) != 0;
+        bus->fadeoutSelected.store(enabled, std::memory_order_relaxed);
+        any |= enabled;
+    }
+    if (!any) { transportFadeout.cancel(); return; }
+    transportFadeout.start((uint32_t)std::llround(seconds * rate.load()));
+}
+void AudioEngine::cancelTrackFadeout() noexcept { transportFadeout.cancel(); }
+double AudioEngine::trackFadeoutRemainingSeconds() const noexcept {
+    const auto value = transportFadeout.block();
+    return value.active ? value.remaining / rate.load() : 0;
+}
+float AudioEngine::trackFadeoutGain(const ID &id) const {
+    const auto value = transportFadeout.block();
+    if (value.active) for (const auto &bus : buses)
+        if (bus->id == id && bus->fadeoutSelected.load(std::memory_order_relaxed)) return value.gain();
+    return 1;
+}
+bool AudioEngine::trackFadeoutComplete() const noexcept {
+    const auto value = transportFadeout.block();
+    return value.active && value.remaining == 0;
+}
+bool AudioEngine::trackFadeoutActive() const noexcept { return transportFadeout.block().active; }
 String AudioEngine::openDevice() {
     if (attached)
         return {};
@@ -122,6 +154,30 @@ String AudioEngine::openDevice() {
         attached = true;
     }
     return error;
+}
+void AudioEngine::previewMIDIItem(const jaras::Song &song,const jaras::AudioClip &clip) {
+    for(const auto &track:song.tracks)if(std::any_of(track.clips.begin(),track.clips.end(),[&](const auto &c){return c.id==clip.id;})){
+        auto draft=track;for(auto &item:draft.clips)if(item.id==clip.id)item=clip;
+        auto notes=playbackNotes(draft,&song,true);auto sequence=MIDIPlayback::sequence(notes);
+        const ScopedLock lock(devices.getAudioCallbackLock());
+        for(auto &bus:buses)if(bus->id==track.id && bus->midi){bus->midiNotes.swap(notes);bus->midi->replaceSequence(sequence,clip.muted);}
+        return;
+    }
+}
+void AudioEngine::refreshTiming(const jaras::Song &song) {
+    auto timing = ClickProgram::tempo(song);
+    std::map<ID, std::vector<ClickProgram::Section>> clicks;
+    for (const auto &track : song.tracks) if (track.role.id == "generatedClick") {
+        ClickProgram program; program.prepare(song, &track);
+        clicks.emplace(track.id, std::move(program.sections));
+    }
+    // Build sections before the callback lock; publish with allocation-free swaps.
+    const ScopedLock lock(devices.getAudioCallbackLock());
+    metronome.sections.swap(timing);
+    for (auto &bus : buses) if (bus->click) {
+        auto found = clicks.find(bus->id);
+        if (found != clicks.end()) bus->click->sections.swap(found->second);
+    }
 }
 void AudioEngine::closeDevice() {
     timecodeMIDI.stop();
@@ -225,6 +281,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     const bool resume = attached;
     if (resume)
         devices.removeAudioCallback(this);
+    cancelTrackFadeout();
     stage("detachMilliseconds");
     // The callback has finished before any reader or scratch buffer is replaced.
     // Structural edits keep the same media. Retain its decoders/metadata while
@@ -265,6 +322,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
         jaras::validateRouting(song);
         if (song.tracks.size() > 512)
             throw std::runtime_error("O projeto excede 512 pistas.");
+        masterAutomation.prepare(project && project->masterAutomationJSON ? JSON::parse(text(*project->masterAutomationJSON)) : var());
         masterFXSettings = masterSettings;
         masterFX.prepare(masterSettings, rate.load());
         try {
@@ -381,11 +439,14 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 continue;
             for (const auto &clip : track.clips) {
                 const auto &sourceFile = clip.audioFile ? clip.audioFile : track.audioFile;
-                if (!sourceFile || clip.muted || clip.duration <= 0 ||
+                if (!sourceFile || clip.duration <= 0 ||
                     (clip.midi && !clip.frozenMIDI.value_or(false)))
                     continue;
                 const auto file = ProjectCodec::resolveMedia(directory, sourceFile->path);
+                if(file.hasFileExtension("png;jpg;jpeg;bmp;gif;tif;tiff"))continue;
+                if(projectionMedia(clip))try{if(!inspectMediaSource(file).audio)continue;}catch(...){}
                 auto voice = std::make_unique<Voice>();
+                voice->frozen = clip.frozenMIDI.value_or(false);
                 if (voices.size() >= 20000)
                     throw std::runtime_error("Too many audio items in one timeline.");
                 auto sourceKey = utf8(file.getFullPathName());
@@ -431,9 +492,13 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 voice->speed = clip.playbackRate;
                 voice->clipGain = clip.gain.value_or(1) * clip.normalizationGain.value_or(1) *
                                   (clip.phaseInverted.value_or(false) ? -1 : 1);
+                voice->itemMuted = clip.muted;
+                voice->fxBypassed = clip.fxBypassed.value_or(false);
                 voice->clipPan = clip.pan.value_or(0);
                 voice->fadeIn = clip.fadeIn.value_or(0);
                 voice->fadeOut = clip.fadeOut.value_or(0);
+                voice->fadeInShape = {clip.fadeInCurve.value_or(0), clip.fadeInSCurve.value_or(1)};
+                voice->fadeOutShape = {clip.fadeOutCurve.value_or(0), clip.fadeOutSCurve.value_or(1)};
                 voice->channelMode = clip.channelMode.value_or(0);
                 if (ClipAudio::needed(song, track, clip)) {
                     const auto previous = previousProcessors.find(clip.id);
@@ -491,7 +556,8 @@ void AudioEngine::transport(const State &state) {
     // Click track) must not wait for the two-second disk-read deadline, and a
     // Stop must reach the callback without waiting for inactive media.
     // The ongoing device callback continues with its current transport meanwhile.
-    std::vector<std::pair<StreamingReader*, int64>> pending;
+    struct Prime { StreamingReader *reader; int64 position; int count; };
+    std::vector<Prime> pending;
     for (int head = 0; head < 2; ++head) {
         if (head == 0 ? !state.playing : !state.subPlaying) continue;
         const auto cursor = head == 0 ? state.position : state.subPosition;
@@ -501,16 +567,23 @@ void AudioEngine::transport(const State &state) {
             auto* reader = voice->source->readers[head].get();
             const double local = std::max(0., cursor - voice->start);
             const double source = voice->clipAudio ? voice->clipAudio->sourcePosition(local) : voice->offset + local * voice->speed;
-            const auto position = (int64)std::floor(source * reader->sampleRate);
+            auto position = (int64)std::floor(source * reader->sampleRate);
+            int count = 4096;
+            if (voice->clipAudio) {
+                const auto range = voice->clipAudio->readAheadRange(local, .15);
+                const auto first = (int64)std::floor(range.first * reader->sampleRate);
+                const auto frames = (int64)std::ceil((range.second-range.first) * reader->sampleRate) + 2;
+                if (frames <= 131072) { position = first; count = (int)std::max<int64>(4096, frames); }
+            }
             reader->request(position);
             ++lastPrimedSources;
-            if (voice->start <= cursor) pending.emplace_back(reader, position);
+            if (voice->start <= cursor) pending.push_back({reader, position, count});
         }
     }
     const auto deadline = Time::getMillisecondCounter() + 2000;
     while (!pending.empty()) {
         pending.erase(std::remove_if(pending.begin(), pending.end(), [](const auto& entry) {
-            return entry.first->ready(entry.second);
+            return entry.reader->ready(entry.position, entry.count);
         }), pending.end());
         if (pending.empty() || (int32)(Time::getMillisecondCounter() - deadline) >= 0) break;
         Thread::sleep(1);
@@ -523,6 +596,15 @@ void AudioEngine::transport(const State &state) {
     enqueue(u);
     timecodeMIDI.transport(state.position, state.playing, state.loop, state.loopStart,
         state.loopEnd, state.end, state.timecodePreferred, attached && !exportCapture);
+}
+void AudioEngine::setItemControls(const jaras::AudioClip &clip) {
+    for(size_t i=0;i<voices.size();++i) if(voices[i]->clipID==clip.id) {
+        Update u; u.kind=Update::item; u.index=(int)i;
+        u.itemGain=clip.gain.value_or(1)*clip.normalizationGain.value_or(1)*(clip.phaseInverted.value_or(false)?-1:1);
+        u.itemPan=clip.pan.value_or(0); u.fadeIn=clip.fadeIn.value_or(0); u.fadeOut=clip.fadeOut.value_or(0);
+        u.fadeInShape={clip.fadeInCurve.value_or(0),clip.fadeInSCurve.value_or(1)}; u.fadeOutShape={clip.fadeOutCurve.value_or(0),clip.fadeOutSCurve.value_or(1)};
+        u.mute=clip.muted; u.fxBypassed=clip.fxBypassed.value_or(false); enqueue(u);
+    }
 }
 void AudioEngine::setMixer(const jaras::Project &project, const jaras::Song &song) {
     Update u;
@@ -571,7 +653,12 @@ void AudioEngine::applyUpdates() {
     auto apply = [this](const Update &u) {
         if (u.kind == Update::transport)
             current = u.state;
-        else if (u.index < 0) {
+        else if (u.kind == Update::item) {
+            if (u.index>=0 && u.index<(int)voices.size()) {
+                auto &v=*voices[(size_t)u.index]; v.clipGain=u.itemGain; v.clipPan=u.itemPan;
+                v.fadeIn=u.fadeIn; v.fadeOut=u.fadeOut; v.fadeInShape=u.fadeInShape; v.fadeOutShape=u.fadeOutShape; v.itemMuted=u.mute; v.fxBypassed=u.fxBypassed;
+            }
+        } else if (u.index < 0) {
             masterVolume = u.volume;
             masterPan = u.pan;
             masterMute = u.mute;
@@ -595,6 +682,7 @@ void AudioEngine::applyUpdates() {
 }
 void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int channels, int dest,
                            int count) {
+    if (v.itemMuted) return;
     const double sr = rate.load(std::memory_order_relaxed);
     auto &reader = *v.source->readers[head];
     int begin = std::max(0, (int)std::ceil((v.start - at) * sr - 1e-7));
@@ -654,13 +742,13 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
             right *= 1 + (float)values.pan;
         float fade = 1;
         if (v.fadeIn > 0)
-            fade *= jlimit(0.0f, 1.0f, (float)(local / v.fadeIn));
+            fade *= (float)v.fadeInShape.value(local / std::min(v.duration, v.fadeIn));
         if (v.fadeOut > 0)
-            fade *= jlimit(0.0f, 1.0f, (float)((v.duration - local) / v.fadeOut));
+            fade *= (float)v.fadeOutShape.value((v.duration - local) / std::min(v.duration, v.fadeOut));
         v.processed[head].setSample(0, i - begin, a * left * fade);
         v.processed[head].setSample(1, i - begin, b * right * fade);
     }
-    v.fx[head].process(v.processed[head], end - begin);
+    if (!v.fxBypassed) v.fx[head].process(v.processed[head], end - begin);
     for (int ch = 0; ch < std::min(2, channels); ++ch)
         if (out[ch])
             FloatVectorOperations::add(out[ch] + dest + begin, v.processed[head].getReadPointer(ch),
@@ -685,6 +773,10 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         if (out[ch])
             FloatVectorOperations::clear(out[ch], samples);
     applyUpdates();
+    const auto fadeout = transportFadeout.block();
+    if (fadeout.active)
+        for (int frame = 0; frame < samples; ++frame)
+            trackFadeoutGains[(size_t)frame] = fadeout.gain((uint32_t)frame);
     if (trackCapture)
         trackCapture->input(input, inputChannels, samples, inputMapping);
     liveMidi.clear();
@@ -705,6 +797,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         anySolo |= bus->solo;
         bus->buffer.clear(0, samples);
         bus->subBuffer.clear(0, samples);
+        for(auto &buffer:bus->frozen)buffer.clear(0,samples);
         if (bus->midi && !bus->midi->empty() && bus->midiSlot > 0)
             routedHardware = true;
     }
@@ -756,7 +849,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 if (audible[v->bus] && current.scope[head].allows(v->playbackStart)) {
                     if (v->start > cursor && v->start <= cursor + 2)
                         v->source->readers[head]->request((int64)std::floor((v->clipAudio ? v->clipAudio->sourcePosition(0) : v->offset) * v->source->readers[head]->sampleRate));
-                    mixVoice(*v, head, cursor, buses[v->bus]->head(head).getArrayOfWritePointers(), 2, done, count);
+                    mixVoice(*v, head, cursor, (v->frozen ? buses[v->bus]->frozen[head] : buses[v->bus]->head(head)).getArrayOfWritePointers(), 2, done, count);
                 }
             for (size_t index = 0; index < buses.size(); ++index)
                 if (audible[index] && buses[index]->midi)
@@ -828,11 +921,16 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     };
     for (int index : busOrder) {
         auto &bus = *buses[(size_t)index];
+        const bool fadeSelected = fadeout.active && bus.fadeoutSelected.load(std::memory_order_relaxed);
         if (bus.timecode) {
             // LTC is a direct physical route, independent of Master gain,
             // track solo, pan, FX, sends and the secondary playback head.
+            if (fadeSelected) for (int ch = 0; ch < 2; ++ch)
+                FloatVectorOperations::multiply(bus.buffer.getWritePointer(ch), trackFadeoutGains.data(), samples);
             const float peak = bus.mute ? 0.f : bus.buffer.getMagnitude(0, samples);
             bus.peak.store(peak, std::memory_order_relaxed);
+            for (int ch = 0; ch < 2; ++ch)
+                bus.levels[(size_t)ch].store(bus.mute ? 0.f : bus.buffer.getMagnitude(ch, 0, samples));
             if (!bus.mute && !masterSolo) for (const auto& patch : bus.outputs) routeHardware(bus.buffer, patch);
             continue;
         }
@@ -865,10 +963,12 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         for (int ch = 0; ch < 2; ++ch)
             bus.buffer.addFrom(ch, 0, liveRecordBuffer, ch, 0, samples);
         float peak = 0, fxInput = 0, fxOutput = 0;
+        std::array<float, 2> stereoPeak{};
         for (int head = 0; head < 2; ++head) {
             auto &buffer = bus.head(head);
             fxInput = std::max(fxInput, buffer.getMagnitude(0, samples));
             bus.fx[head].process(buffer, samples);
+            for(int ch=0;ch<2;++ch)buffer.addFrom(ch,0,bus.frozen[head],ch,0,samples);
             fxOutput = std::max(fxOutput, buffer.getMagnitude(0, samples));
             for (int n = 0; n < samples; ++n) {
                 const auto values = bus.automation.evaluate(
@@ -879,11 +979,14 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                     left *= 1 - (float)values.pan;
                 else
                     right *= 1 + (float)values.pan;
+                if (fadeSelected) left *= trackFadeoutGains[(size_t)n], right *= trackFadeoutGains[(size_t)n];
                 buffer.setSample(0, n, buffer.getSample(0, n) * left);
                 buffer.setSample(1, n, buffer.getSample(1, n) * right);
             }
             const bool silent = !routeAudible[(size_t)index];
             peak = std::max(peak, silent ? 0.f : buffer.getMagnitude(0, samples));
+            if (!silent) for (int ch = 0; ch < 2; ++ch)
+                stereoPeak[(size_t)ch] = std::max(stereoPeak[(size_t)ch], buffer.getMagnitude(ch, 0, samples));
             if (silent)
                 continue;
             for (int target : bus.sends)
@@ -903,8 +1006,10 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         }
         bus.fxInput.store(std::max(fxInput, bus.fxInput.load() * .85f));
         bus.fxOutput.store(std::max(fxOutput, bus.fxOutput.load() * .85f));
-        bus.peak.store(std::max(peak, bus.peak.load(std::memory_order_relaxed) * .85f),
-                       std::memory_order_relaxed);
+        const double elapsed = samples / rate.load();
+        bus.peak.store(meterDisplay::envelope(bus.peak.load(), peak, elapsed), std::memory_order_relaxed);
+        for (int ch = 0; ch < 2; ++ch)
+            bus.levels[(size_t)ch].store(meterDisplay::envelope(bus.levels[(size_t)ch].load(), stereoPeak[(size_t)ch], elapsed), std::memory_order_relaxed);
     }
     if (routedHardware)
         liveMidi.clear();
@@ -933,11 +1038,12 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 0, i, (masterBuffer.getSample(0, i) + masterBuffer.getSample(1, i)) * .5f),
                 masterBuffer.setSample(1, i, masterBuffer.getSample(0, i));
         for (int ch = 0; ch < 2; ++ch) {
-            float gain = masterMute ? 0 : masterVolume * (masterPhase ? -1.0f : 1.0f);
-            if (ch % 2 == 0 && masterPan > 0)
-                gain *= 1 - masterPan;
-            if (ch % 2 == 1 && masterPan < 0)
-                gain *= 1 + masterPan;
+            const auto values=masterAutomation.evaluate(timelinePositions[0][(size_t)i],masterVolume,masterPan,masterMute);
+            float gain = values.mute ? 0 : (float)values.gain * (masterPhase ? -1.0f : 1.0f);
+            if (ch % 2 == 0 && values.pan > 0)
+                gain *= 1 - (float)values.pan;
+            if (ch % 2 == 1 && values.pan < 0)
+                gain *= 1 + (float)values.pan;
             masterBuffer.setSample(ch, i, masterBuffer.getSample(ch, i) * gain);
         }
     }
@@ -960,14 +1066,25 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 }
         }
     }
+    // A completed transport fade remains held until the next Play/cancel.
+    // Silence the physical outputs after Stop as well: Master reverb/delay and
+    // unselected monitor routes must not leak their tails into a stopped fade.
+    // During playback only the selected buses are affected by the fade ramp.
+    if (fadeout.active && fadeout.remaining == 0 && !current.playing && !current.subPlaying) {
+        masterBuffer.clear(0, samples);
+        for (int ch = 0; ch < channels; ++ch)
+            if (out[ch]) FloatVectorOperations::clear(out[ch], samples);
+    }
     for (int ch = 0; ch < channels; ++ch)
         if (out[ch]) {
             auto range = FloatVectorOperations::findMinAndMax(out[ch], samples);
             maxPeak =
                 std::max(maxPeak, std::max(std::abs(range.getStart()), std::abs(range.getEnd())));
         }
-    meter.store(std::max(maxPeak, meter.load(std::memory_order_relaxed) * .9f),
-                std::memory_order_relaxed);
+    meter.store(meterDisplay::envelope(meter.load(), maxPeak, samples / rate.load()), std::memory_order_relaxed);
+    for (int ch = 0; ch < 2; ++ch)
+        masterLevels[(size_t)ch].store(meterDisplay::envelope(masterLevels[(size_t)ch].load(),
+            masterBuffer.getMagnitude(ch, 0, samples), samples / rate.load()), std::memory_order_relaxed);
     position.store(current.position);
     subPosition.store(current.subPosition);
     playing.store(current.playing);
@@ -978,6 +1095,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         trackCapture->advance(samples);
         recordedFrames = trackCapture->sampleCount();
     }
+    transportFadeout.advance(fadeout, (uint32_t)std::max(0, samples));
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(const float *const *input, int inputs,
                                                    float *const *out, int channels, int samples,
@@ -989,6 +1107,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float *const *input, in
     render(out, channels, samples, input, inputs);
 }
 void AudioEngine::audioDeviceAboutToStart(AudioIODevice *d) {
+    cancelTrackFadeout();
     rate = d->getCurrentSampleRate();
     inputMapping.fill(-1);
     int packed = 0;
@@ -1044,6 +1163,7 @@ void AudioEngine::loadSoundFont(const File &file) {
         devices.addAudioCallback(this);
 }
 void AudioEngine::audioDeviceStopped() {
+    cancelTrackFadeout();
     playing = false;
     subPlaying = false;
 }

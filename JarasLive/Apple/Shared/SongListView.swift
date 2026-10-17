@@ -167,8 +167,8 @@ struct SongListView: View {
                     HStack(spacing: 3) {
                         Group { if let playlist { Text(playlist.name) } else { Text("All regions") } }.lineLimit(1)
                         Spacer(minLength: 3)
-                        Image(systemName: "chevron.down").font(.system(size: 8))
-                    }.font(.system(size: 12, weight: .semibold))
+                        Image(systemName: "chevron.down").font(.jarasSystem(size: 8))
+                    }.font(.jarasSystem(size: 12, weight: .semibold))
                         .padding(.horizontal, 7).frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.45)))
                         .contentShape(Rectangle())
@@ -201,7 +201,7 @@ struct SongListView: View {
                 }.buttonStyle(.plain).jarasHelp("Search songs (Tab)").accessibilityLabel("Search songs")
                     .popover(isPresented: $searching, attachmentAnchor: .rect(.bounds), arrowEdge: .top) { searchPanel }
                 Button { show.toggleRegionAuto() } label: {
-                    Text("AUTO").font(.system(size: 9, weight: .bold))
+                    Text("AUTO").font(.jarasSystem(size: 9, weight: .bold))
                         .foregroundStyle(setlist.autoAdvance ? .black : JarasTheme.secondary)
                         .frame(width: 34, height: 26)
                         .background(setlist.autoAdvance ? JarasTheme.green : JarasTheme.panel)
@@ -221,7 +221,7 @@ struct SongListView: View {
                         }.toggleStyle(.automatic).padding(18).frame(width: 270)
                     }
                 Button { createdBlock = show.addSetlistBlock(symbol: defaultBlockSymbol, namePrefix: JarasLocalization.string("Bloco")) } label: {
-                    Text("Blocks").font(.system(size: 9, weight: .bold)).padding(.horizontal, 6).frame(height: 26)
+                    Text("Blocks").font(.jarasSystem(size: 9, weight: .bold)).padding(.horizontal, 6).frame(height: 26)
                         .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
                 }.buttonStyle(.plain).jarasHelp("Add a setlist block").accessibilityLabel("Blocks")
                     .immediateRightClick {
@@ -297,7 +297,7 @@ struct SongListView: View {
                         }
                         if visible.isEmpty {
                             Text("Select an item and press Shift + R to create a region.")
-                                .font(.caption).foregroundStyle(JarasTheme.secondary).padding(12)
+                                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary).padding(12)
                         }
                     }.padding(.leading, 8)
                     // Keep the drawer button inside the scroll viewport.
@@ -420,7 +420,7 @@ struct SongListView: View {
         }
         .sheet(isPresented: $showingBlockDefaults) {
             VStack(alignment: .leading, spacing: 18) {
-                Text("Blocks").font(.headline)
+                Text("Blocks").font(.jarasHeadline)
                 Toggle("SIMBOL", isOn: $blockSymbolDraft)
                 HStack {
                     Button("Cancelar") { showingBlockDefaults = false }.keyboardShortcut(.cancelAction)
@@ -477,12 +477,12 @@ struct SongListView: View {
                                 Text(region.displayName).lineLimit(1)
                                 Spacer(minLength: 0)
                                 Text(regionDurationText(region.endTime - region.startTime))
-                                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
-                            }.font(.system(size: 12)).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                                    .font(.jarasSystem(size: 10, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
+                            }.font(.jarasSystem(size: 12)).padding(8).frame(maxWidth: .infinity, alignment: .leading)
                                 .background(JarasTheme.background).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
-                    if results.isEmpty { Text("No results").font(.caption).foregroundStyle(JarasTheme.secondary).padding(12) }
+                    if results.isEmpty { Text("No results").font(.jarasCaption).foregroundStyle(JarasTheme.secondary).padding(12) }
                 }
             }.frame(height: 300) // Keep the popover anchored while filtering results.
         }.padding(12).frame(width: 300).onAppear { searchFocused = true }
@@ -493,7 +493,7 @@ struct SongListView: View {
     private var creationPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(addingToPlaylist == nil ? "New playlist" : "Add regions").font(.system(size: 13, weight: .semibold)); Spacer()
+                Text(addingToPlaylist == nil ? "New playlist" : "Add regions").font(.jarasSystem(size: 13, weight: .semibold)); Spacer()
                 Button { creatingPlaylist = false } label: { Image(systemName: "xmark").frame(width: 30, height: 30).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Cancel playlist creation")
             }
             TextField("Playlist name", text: $playlistName).textFieldStyle(.roundedBorder).disabled(addingToPlaylist != nil)
@@ -505,7 +505,7 @@ struct SongListView: View {
                 .overlay(alignment: .topLeading) {
                     if missingPlaylistName {
                         Text("Escolha um nome")
-                            .font(.system(size: 10, weight: .semibold)).foregroundStyle(JarasTheme.text)
+                            .font(.jarasSystem(size: 10, weight: .semibold)).foregroundStyle(JarasTheme.text)
                             .padding(.horizontal, 7).padding(.vertical, 3)
                             .background(Color(red: 0.7, green: 0.12, blue: 0.16))
                             .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -525,7 +525,7 @@ struct SongListView: View {
                 Button("Clear") { selection.removeAll(); selectionAnchor = nil }
                 Spacer(minLength: 0)
             }.buttonStyle(StageButtonStyle()).controlSize(.small)
-            Text("⌘ / Ctrl: multiple · Shift: range").font(.system(size: 9)).foregroundStyle(JarasTheme.secondary)
+            Text("⌘ / Ctrl: multiple · Shift: range").font(.jarasSystem(size: 9)).foregroundStyle(JarasTheme.secondary)
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 3) {
                     ForEach(playlistCandidates) { region in
@@ -537,8 +537,8 @@ struct SongListView: View {
                                 }
                                 Text(region.displayName).lineLimit(1)
                                 Spacer(minLength: 0)
-                                Text(regionDurationText(region.endTime - region.startTime)).font(.system(size: 9, design: .monospaced))
-                            }.font(.system(size: 12)).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                                Text(regionDurationText(region.endTime - region.startTime)).font(.jarasSystem(size: 9, design: .monospaced))
+                            }.font(.jarasSystem(size: 12)).padding(8).frame(maxWidth: .infinity, alignment: .leading)
                                 .background(selection.contains(region.id) ? JarasTheme.green.opacity(0.25) : JarasTheme.background)
                                 .overlay(Rectangle().stroke(selection.contains(region.id) ? JarasTheme.green.opacity(0.7) : .clear))
                                 .contentShape(Rectangle())
@@ -550,7 +550,7 @@ struct SongListView: View {
                 }
             }
             HStack {
-                Text("\(selection.count)").font(.caption).foregroundStyle(JarasTheme.secondary)
+                Text("\(selection.count)").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 Spacer()
                 Button(addingToPlaylist == nil ? "Create" : "Add regions", action: createPlaylist)
                     .buttonStyle(StageButtonStyle(color: JarasTheme.green))
@@ -629,7 +629,7 @@ struct SetlistFooterControls: View {
             #endif
             Button { visible.toggle() } label: {
                 Image(systemName: visible ? "chevron.down" : "chevron.up")
-                    .font(.system(size: 10, weight: .bold)).foregroundStyle(JarasTheme.green)
+                    .font(.jarasSystem(size: 10, weight: .bold)).foregroundStyle(JarasTheme.green)
                     #if os(iOS)
                     .frame(width: 24, height: visible ? 28 : 16)
                     #else
@@ -669,7 +669,7 @@ struct SetlistFooterControls: View {
     private func control(_ title: String, width: CGFloat, color: Color, highlighted: Bool,
                          darkText: Bool = true, blinking: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(verbatim: title).font(.system(size: 11, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
+            Text(verbatim: title).font(.jarasSystem(size: 11, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
                 .foregroundStyle(darkText ? Color.black : Color.white)
                 .frame(width: width, height: 22)
                 .background {
@@ -700,13 +700,13 @@ private struct PlaylistNameEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Edit playlist").font(.headline)
+            Text("Edit playlist").font(.jarasHeadline)
             TextField("Playlist name", text: $name).focused($focused)
                 .onSubmit(confirm)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(invalid ? Color.red : Color.clear))
                 .modifier(InputValidationShake(animatableData: shake))
                 .onChange(of: name) { _ in invalid = false }
-            if invalid { Text("Choose a name").font(.caption).foregroundStyle(.red) }
+            if invalid { Text("Choose a name").font(.jarasCaption).foregroundStyle(.red) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
@@ -744,7 +744,7 @@ private struct PlaylistSelectionPanel: View {
         let needsScroll = contentHeight > maximumListHeight
         VStack(spacing: 2) {
             HStack {
-                Text("Playlists").font(.headline); Spacer()
+                Text("Playlists").font(.jarasHeadline); Spacer()
                 Button { isPresented = false } label: {
                     Image(systemName: "xmark").frame(width: 30, height: 30).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel("Close playlists")
@@ -784,7 +784,7 @@ private struct PlaylistSelectionPanel: View {
             HStack {
                 Group { if id == nil { Text(LocalizedStringKey(name)) } else { Text(name) } }.lineLimit(1); Spacer()
                 if show.regionSetlist.selectedId == id { Image(systemName: "checkmark").foregroundStyle(JarasTheme.green) }
-            }.font(.system(size: 12)).padding(.horizontal, 8)
+            }.font(.jarasSystem(size: 12)).padding(.horizontal, 8)
                 .frame(maxWidth: .infinity).frame(height: rowHeight)
                 .background(JarasTheme.background).contentShape(Rectangle())
         }.buttonStyle(.plain)
@@ -930,10 +930,10 @@ private struct RegionSetlistRow: View, Equatable {
             #else
             HStack(spacing: 6) {
                 RoundedRectangle(cornerRadius: 2).fill(active ? Color.red : queued ? (prepareOnly ? JarasTheme.green : .orange) : color).frame(width: 3)
-                Text(String(format: "%02d", number)).font(.system(size: 9, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
+                Text(String(format: "%02d", number)).font(.jarasSystem(size: 9, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
                     .frame(width: numberWidth, alignment: .leading)
-                Text(region.displayName).font(fontStyle == 2 ? .system(size: 13, weight: .bold).italic() : .system(size: 13, weight: fontStyle == 0 ? .regular : .bold)).foregroundStyle(Color(hex: nameColor)).strikethrough(playedLive).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                Text(regionDurationText(Double(remaining))).font(.system(size: 9, weight: .medium, design: .monospaced)).monospacedDigit().fixedSize()
+                Text(region.displayName).font(fontStyle == 2 ? .jarasSystem(size: 13, weight: .bold).italic() : .jarasSystem(size: 13, weight: fontStyle == 0 ? .regular : .bold)).foregroundStyle(Color(hex: nameColor)).strikethrough(playedLive).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                Text(regionDurationText(Double(remaining))).font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).monospacedDigit().fixedSize()
             }.padding(.horizontal, 8).padding(.vertical, 7).frame(height: 34).frame(maxWidth: .infinity)
                 .background {
                     if active || queued {
@@ -964,7 +964,7 @@ private struct RegionSetlistRow: View, Equatable {
                 if let expanded, let toggleDrawer {
                     Button(action: toggleDrawer) {
                         Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 11, weight: .bold)).foregroundStyle(JarasTheme.green)
+                            .font(.jarasSystem(size: 11, weight: .bold)).foregroundStyle(JarasTheme.green)
                             .frame(width: 14, height: 34).contentShape(Rectangle())
                     }.buttonStyle(.plain).jarasHelp("Show unified songs").accessibilityLabel("Show unified songs")
                 } else {
@@ -1007,10 +1007,10 @@ private struct NativeRegionSetlistLabel: NSViewRepresentable {
     }
 }
 private final class NativeRegionSetlistLabelView: NSView {
-    private static let nameFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
-    private static let numberFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+    private static let nameFont = NSFont.jarasSystemFont(ofSize: 13, weight: .semibold)
+    private static let numberFont = NSFont.jarasMonospacedSystemFont(ofSize: 9, weight: .regular)
     private static let durationFont: NSFont = {
-        let font = NSFont.monospacedSystemFont(ofSize: 9, weight: .medium)
+        let font = NSFont.jarasMonospacedSystemFont(ofSize: 9, weight: .medium)
         let descriptor = font.fontDescriptor.addingAttributes([.featureSettings: [[NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType, .selectorIdentifier: kMonospacedNumbersSelector]]])
         return NSFont(descriptor: descriptor, size: 9) ?? font
     }()
@@ -1130,7 +1130,7 @@ private final class NativeRegionSetlistLabelView: NSView {
         }
         if name != nameText || nameColor != nameColorValue || fontStyle != fontStyleValue {
             fontStyleValue = fontStyle
-            let baseFont = NSFont.systemFont(ofSize: 13, weight: fontStyle == 0 ? .regular : .bold)
+            let baseFont = NSFont.jarasSystemFont(ofSize: 13, weight: fontStyle == 0 ? .regular : .bold)
             let font = fontStyle == 2 ? NSFontManager.shared.convert(baseFont, toHaveTrait: .italicFontMask) : baseFont
             nameColorValue = nameColor
             let ink = NSColor(Color(hex: nameColor))
@@ -1384,7 +1384,7 @@ private struct SetlistBlockRow: View {
                 }.stroke(Color.yellow, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                     .frame(width: 62, height: 12).accessibilityHidden(true)
             }
-            Text(block.name).font(fontStyle == 2 ? .system(size: 13, weight: .bold).italic() : .system(size: 13, weight: fontStyle == 0 ? .regular : .bold)).lineLimit(1)
+            Text(block.name).font(fontStyle == 2 ? .jarasSystem(size: 13, weight: .bold).italic() : .jarasSystem(size: 13, weight: fontStyle == 0 ? .regular : .bold)).lineLimit(1)
                 .foregroundStyle(JarasTheme.green)
         }.padding(.horizontal, 10)
             .frame(maxWidth: .infinity, alignment: .leading).frame(height: 24)
@@ -1544,7 +1544,7 @@ private final class SetlistNativeDragSource: NSObject, NSDraggingSource {
         let source = SetlistNativeDragSource(); source.state = state; state.source = source
         let item = NSDraggingItem(pasteboardWriter: text as NSString)
         let size = NSSize(width: max(80, min(300, row.bounds.width)), height: 34)
-        let title = NSAttributedString(string: row.name, attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor])
+        let title = NSAttributedString(string: row.name, attributes: [.font: NSFont.jarasSystemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor])
         let preview = NSImage(size: size, flipped: true) { rect in
             NSColor.controlBackgroundColor.withAlphaComponent(0.9).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
@@ -1615,7 +1615,7 @@ private struct LockedRegionDrag: ViewModifier {
             }.onEnded { _ in dragging = false })
             .overlay(alignment: .top) {
                 if warning {
-                    Text("Not possible").font(.caption).foregroundStyle(.white)
+                    Text("Not possible").font(.jarasCaption).foregroundStyle(.white)
                         .padding(6).background(Color.red.opacity(0.9)).clipShape(RoundedRectangle(cornerRadius: 4))
                         .allowsHitTesting(false)
                 }
@@ -1629,7 +1629,7 @@ private struct RegionStopButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Text("STOP").font(.system(size: 9, weight: .bold))
+            Text("STOP").font(.jarasSystem(size: 9, weight: .bold))
                 .foregroundStyle(active ? JarasTheme.green : Color.red)
                 .padding(.horizontal, 6).frame(height: 26)
                 .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 4))
@@ -1679,7 +1679,7 @@ private final class PlaylistSelectionNotice {
         let notice = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 380,height: 90),styleMask: [.borderless,.nonactivatingPanel],backing: .buffered,defer: false)
         notice.isReleasedWhenClosed = false; notice.isOpaque = false; notice.backgroundColor = .clear
         notice.ignoresMouseEvents = true; notice.hasShadow = true
-        notice.contentView = NSHostingView(rootView: Text(name).font(.system(size: 22,weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
+        notice.contentView = NSHostingView(rootView: Text(name).font(.jarasSystem(size: 22,weight: .semibold)).lineLimit(2).multilineTextAlignment(.center)
             .foregroundStyle(JarasTheme.text).padding(18).frame(width: 380,height: 90)
             .background(RoundedRectangle(cornerRadius: 10).fill(JarasTheme.panel))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(JarasTheme.green,lineWidth: 1)))

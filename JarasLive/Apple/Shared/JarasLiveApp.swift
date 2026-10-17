@@ -63,7 +63,7 @@ import UIKit
     }
     @ViewBuilder private var bootstrappedContent: some View {
         if let container = bootstrap.container { RootView(container: container) }
-        else { VStack(spacing: 20) { Text("CatLive").font(.largeTitle.bold()); Text(LocalizedStringKey(bootstrap.error ?? "Iniciando…")); Button("Tentar novamente") { bootstrap.retry() } }.padding(40) }
+        else { VStack(spacing: 20) { Text("CatLive").font(.jarasLargeTitle.bold()); Text(LocalizedStringKey(bootstrap.error ?? "Iniciando…")); Button("Tentar novamente") { bootstrap.retry() } }.padding(40) }
     }
     var body: some Scene {
         #if os(macOS)
@@ -79,6 +79,7 @@ import UIKit
                 Button("Cut") { RegionShortcutView.performClipboard("x") }.keyboardShortcut("x")
                 Button("Copy") { RegionShortcutView.performClipboard("c") }.keyboardShortcut("c")
                 Button("Paste") { RegionShortcutView.performClipboard("v") }.keyboardShortcut("v")
+                Button("Duplicate") { RegionShortcutView.performClipboard("d") }.keyboardShortcut("d")
             }
         }
         #else
@@ -126,7 +127,7 @@ struct RootView: View {
                         HStack {
                             Button("Modes") { leaveNative?() }.disabled(documents.busy)
                             Spacer()
-                            Text("Native").font(.headline).foregroundStyle(JarasTheme.green)
+                            Text("Native").font(.jarasHeadline).foregroundStyle(JarasTheme.green)
                             Spacer()
                             if documents.ready { Button("Back to project") { browsingNative = false } }
                         }.padding(16).background(JarasTheme.panel)
@@ -149,7 +150,8 @@ struct RootView: View {
             } else { LoginView(auth: auth, backend: container.backend) }
         }
         #if os(macOS)
-        .frame(minWidth: documents.ready ? 1408 : 600, minHeight: documents.ready ? 650 : 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(InterfaceScaleAnchor(preserveFrame: true))
         .background(TrialTitlebar(auth: auth))
         .background(ProjectWindowSizing(editor: documents.ready && auth.workspaceAllowed,
                                         login: !auth.workspaceAllowed, documents: documents))
@@ -183,7 +185,7 @@ struct RootView: View {
                     Color.black.opacity(0.45).ignoresSafeArea()
                     VStack(spacing: 16) {
                         ProgressView(value: documents.audioImportProgress).tint(JarasTheme.green)
-                        Text(LocalizedStringKey(documents.status)).font(.callout)
+                        Text(LocalizedStringKey(documents.status)).font(.jarasCallout)
                         if documents.canCancelOpening { Button("Cancel") { documents.cancelOpening() } }
                     }.padding(28).frame(width: 360).background(JarasTheme.panel)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -203,7 +205,7 @@ struct RootView: View {
         }
         .overlay(alignment: .top) {
             if !documents.closeNotice.isEmpty {
-                Text(LocalizedStringKey(documents.closeNotice)).font(.callout)
+                Text(LocalizedStringKey(documents.closeNotice)).font(.jarasCallout)
                     .padding(12).background(JarasTheme.panel)
                     .clipShape(RoundedRectangle(cornerRadius: 8)).padding(.top, 20)
                     .accessibilityAddTraits(.updatesFrequently)
@@ -213,6 +215,10 @@ struct RootView: View {
         .preferredColorScheme(.dark)
         .jarasHideScrollIndicators()
         .environment(\.locale, Locale(identifier: language)).task { await container.start() }
+        #if os(macOS)
+        .interfaceScaled()
+        .font(.jarasBody)
+        #endif
     }
 }
 /// A native alert sizes itself to all of its text, which can put its dismiss
@@ -228,9 +234,9 @@ struct ProjectMigrationNotice: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(verbatim: text("Project migration")).font(.headline)
+                Text(verbatim: text("Project migration")).font(.jarasHeadline)
                 Text(verbatim: text("Project imported. Review these notes before playback."))
-                    .font(.callout).foregroundStyle(JarasTheme.secondary)
+                    .font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }.accessibilityIdentifier("migration-notice-header")
             ScrollView(.vertical, showsIndicators: true) {
@@ -239,10 +245,10 @@ struct ProjectMigrationNotice: View {
                         HStack(alignment: .top, spacing: 8) {
                             Text(verbatim: "\(index + 1).").foregroundStyle(JarasTheme.yellow)
                             Text(verbatim: note).frame(maxWidth: .infinity, alignment: .leading)
-                                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true).textSelection(.disabled)
                         }
                     }
-                }.font(.system(size: 12)).padding(12)
+                }.font(.jarasSystem(size: 12)).padding(12)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(JarasTheme.background)
@@ -250,7 +256,7 @@ struct ProjectMigrationNotice: View {
             .accessibilityIdentifier("migration-notice-details")
             HStack {
                 Text(verbatim: String(format: text("Import notes: %ld"), notes.count))
-                    .font(.caption).foregroundStyle(JarasTheme.secondary)
+                    .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 Spacer()
                 Button(action: dismiss) {
                     Text(verbatim: text("OK")).frame(minWidth: 64, minHeight: 24)
@@ -293,7 +299,7 @@ struct StartupView: View {
                 }.frame(width: 300)
                     .accessibilityLabel(LocalizedStringKey(stage))
                     .accessibilityValue(progress.map { "\(Int($0 * 100))%" } ?? "")
-                Text(LocalizedStringKey(stage)).font(.system(size: 12))
+                Text(LocalizedStringKey(stage)).font(.jarasSystem(size: 12))
                     .foregroundStyle(JarasTheme.secondary)
             }
             .onAppear { withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) { pulse = true } }

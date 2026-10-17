@@ -1,0 +1,7 @@
+﻿{
+    "license":  "MIT",
+    "source":  "registry+https://github.com/rust-lang/crates.io-index",
+    "name":  "zmij",
+    "version":  "1.0.23",
+    "repository":  "https://github.com/dtolnay/zmij"
+}

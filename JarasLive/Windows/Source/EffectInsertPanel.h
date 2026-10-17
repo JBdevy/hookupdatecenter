@@ -5,14 +5,13 @@ namespace catlive {
 class EffectInsertPanel final : public Component, private ListBoxModel, private Timer {
   public:
     EffectInsertPanel(File directory, std::function<bool(String, String)> insert,
-                      std::function<void()> close)
+                      std::function<void()> close, bool allowInstruments = true)
         : projectDirectory(std::move(directory)), apply(std::move(insert)),
           dismiss(std::move(close)), list("Instrument catalog", this) {
         setComponentID("effectInsertPanel");
         addAndMakeVisible(effect);
-        effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter",
-                            String::fromUTF8("Instrumentos")},
-                           1);
+        effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"}, 1);
+        if (allowInstruments) effect.addItem(String::fromUTF8("Instrumentos"), 7);
         effect.setSelectedId(1, dontSendNotification);
         effect.onChange = [this] { updateLayout(); };
         const StringArray names{String::fromUTF8("Piano de cauda"),

@@ -350,7 +350,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         guard acceptsInput else { cancelDrag(); return }
         guard var drag else { return }
         let limits = TrackHeightGeometry.laneLimits(count: drag.count)
-        let travel = Double((drag.startY - event.locationInWindow.y) * drag.direction)
+        let travel = Double((drag.startY - event.locationInWindow.y) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).height)) * drag.direction)
         let lane = min(limits.upperBound, max(limits.lowerBound, ((Double(drag.height) + travel) / Double(drag.count)).rounded()))
         let scale = min(TrackHeightGeometry.maximumScale, max(TrackHeightGeometry.minimumScale, lane / drag.denominator))
         guard scale != drag.scale else { return }
@@ -970,7 +970,7 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
             return
         }
         NSCursor.closedHand.set()
-        let delta = event.locationInWindow.x - previousX
+        let delta = (event.locationInWindow.x - previousX) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).width))
         previousX = event.locationInWindow.x
         var parent = superview
         while let view = parent {

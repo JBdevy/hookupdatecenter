@@ -42,6 +42,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)setInputPan:(AVAudioUnitEffect *)node pan:(double)pan;
 + (void)setPlaybackBoundary:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime;
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime;
++ (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut fadeInCurve:(double)inCurve fadeInSCurve:(double)inS fadeOutCurve:(double)outCurve fadeOutSCurve:(double)outS duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime;
 + (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode;
 + (void)setOutputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (float)takeOutputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel;

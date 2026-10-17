@@ -11,23 +11,23 @@ struct NativeStemImportReview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                Image(systemName: "waveform").font(.title2).foregroundStyle(JarasTheme.green)
-                Text("Review stems").font(.title3.bold())
+                Image(systemName: "waveform").font(.jarasTitle2).foregroundStyle(JarasTheme.green)
+                Text("Review stems").font(.jarasTitle3.bold())
                 Spacer()
-                Text("\(scan.folders.count) songs").font(.subheadline.bold()).foregroundStyle(JarasTheme.green)
-                Text("\(count) audio files").font(.caption).foregroundStyle(JarasTheme.secondary)
+                Text("\(scan.folders.count) songs").font(.jarasSubheadline.bold()).foregroundStyle(JarasTheme.green)
+                Text("\(count) audio files").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             }
             ScrollViewReader { scroll in
                 ScrollView {
                     HStack(alignment: .top, spacing: 14) {
                         VStack(alignment: .leading, spacing: 10) {
-                            Label("Import order", systemImage: "list.number").font(.headline)
+                            Label("Import order", systemImage: "list.number").font(.jarasHeadline)
                             ForEach(Array(scan.folders.enumerated()), id: \.element.url) { entry in
                                 HStack(spacing: 10) {
                                     Text(String(format: "%02d", entry.offset + 1)).monospacedDigit().foregroundStyle(JarasTheme.green)
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(entry.element.url.lastPathComponent).font(.body.weight(.semibold)).lineLimit(2)
-                                        Text("\(entry.element.files.count) audio files").font(.caption).foregroundStyle(JarasTheme.secondary)
+                                        Text(entry.element.url.lastPathComponent).font(.jarasBody.weight(.semibold)).lineLimit(2)
+                                        Text("\(entry.element.files.count) audio files").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                                     }
                                     Spacer(minLength: 0)
                                 }.padding(10).background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 8))
@@ -35,28 +35,28 @@ struct NativeStemImportReview: View {
                         }.padding(14).frame(maxWidth: .infinity, alignment: .topLeading).background(importPanel, in: RoundedRectangle(cornerRadius: 10))
                         VStack(alignment: .leading, spacing: 12) {
                             if !documents.adding {
-                                Text("Project name").font(.subheadline.bold())
+                                Text("Project name").font(.jarasSubheadline.bold())
                                 TextField("Project name", text: $documents.nativeProjectName).textFieldStyle(.roundedBorder)
                                     .focused($focusedField, equals: .name).id(Field.name)
                             }
-                            Label("Track names", systemImage: "textformat").font(.headline)
+                            Label("Track names", systemImage: "textformat").font(.jarasHeadline)
                             TextField("Names to remove, separated by commas", text: $documents.removal)
                                 .textFieldStyle(.roundedBorder).focused($focusedField, equals: .cleanup).id(Field.cleanup)
                             Text("Remove repeated words from track names, if needed. Original files remain unchanged.")
-                                .font(.caption).foregroundStyle(JarasTheme.secondary)
+                                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                             ForEach(scan.suggestions) { item in
                                 Button { toggle(item.text) } label: {
                                     HStack(spacing: 10) {
                                         Image(systemName: terms.contains(item.text) ? "checkmark.square.fill" : "square").foregroundStyle(JarasTheme.green)
                                         Text(item.text).lineLimit(2)
                                         Spacer(minLength: 4)
-                                        Text("\(item.count)×").font(.caption.monospacedDigit()).foregroundStyle(JarasTheme.secondary)
+                                        Text("\(item.count)×").font(.jarasCaption.monospacedDigit()).foregroundStyle(JarasTheme.secondary)
                                     }.padding(10).frame(maxWidth: .infinity, minHeight: 40).contentShape(Rectangle())
                                         .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 8))
                                 }.buttonStyle(.plain)
                             }
                             ForEach(Array(documents.warnings.enumerated()), id: \.offset) { entry in
-                                Text(verbatim: entry.element).font(.caption).foregroundStyle(JarasTheme.yellow)
+                                Text(verbatim: entry.element).font(.jarasCaption).foregroundStyle(JarasTheme.yellow)
                             }
                         }.padding(14).frame(maxWidth: .infinity, alignment: .topLeading).background(importPanel, in: RoundedRectangle(cornerRadius: 10))
                     }
@@ -127,13 +127,13 @@ struct NativeStemFolderBrowser: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Choose folders").font(.title3.bold())
+            Text("Choose folders").font(.jarasTitle3.bold())
             Text("Open the folder containing your songs, check the folders you want, then continue.")
-                .font(.callout).foregroundStyle(JarasTheme.secondary)
+                .font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
             HStack {
                 Button { navigate(current.deletingLastPathComponent()) } label: { Label("Back", systemImage: "chevron.left") }
                     .disabled(current.standardizedFileURL == root.standardizedFileURL)
-                Text(current.lastPathComponent).font(.headline).lineLimit(1)
+                Text(current.lastPathComponent).font(.jarasHeadline).lineLimit(1)
                 Spacer()
                 Button("Select all") { for folder in children where (audioCounts[folder] ?? 0) > 0 && !selected.contains(folder) { selected.append(folder) } }
                     .disabled(loading || children.isEmpty)
@@ -153,9 +153,9 @@ struct NativeStemFolderBrowser: View {
                     }
                 }.frame(maxWidth: .infinity)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("All regions preview").font(.headline)
+                    Text("All regions preview").font(.jarasHeadline)
                     Text("Folders will be placed on the grid in the order you check them.")
-                        .font(.caption).foregroundStyle(JarasTheme.secondary)
+                        .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                     ScrollView {
                         LazyVStack(spacing: 6) {
                             ForEach(Array(selected.enumerated()), id: \.element) { entry in
@@ -188,8 +188,8 @@ struct NativeStemFolderBrowser: View {
                     VStack(alignment: .leading) {
                         Text(folder.lastPathComponent).lineLimit(2)
                         if let count = audioCounts[folder] {
-                            if count > 0 { Text("\(count) audio files").font(.caption).foregroundStyle(JarasTheme.secondary) }
-                            else { Text("No audio directly in this folder").font(.caption).foregroundStyle(JarasTheme.secondary) }
+                            if count > 0 { Text("\(count) audio files").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
+                            else { Text("No audio directly in this folder").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
                         }
                     }
                     Spacer(minLength: 0)
@@ -275,7 +275,7 @@ struct FolderImportReview: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Choose folders", systemImage: "folder.badge.plus").font(.title2.bold()).foregroundStyle(JarasTheme.green)
+            Label("Choose folders", systemImage: "folder.badge.plus").font(.jarasTitle2.bold()).foregroundStyle(JarasTheme.green)
             HStack {
                 Spacer(minLength: 0)
                 HStack(spacing: 8) {
@@ -287,15 +287,15 @@ struct FolderImportReview: View {
             HStack {
                 Button(selection.allSelected ? "Deselect all" : "Select all") { selection.toggleAll() }
                 Spacer()
-                Text("\(selection.selected.count) / \(selection.folders.count)").font(.caption.monospacedDigit()).foregroundStyle(JarasTheme.secondary)
+                Text("\(selection.selected.count) / \(selection.folders.count)").font(.jarasCaption.monospacedDigit()).foregroundStyle(JarasTheme.secondary)
             }
             Text(LocalizedStringKey(appending
                 ? "Songs will be added in this order after the last song in the open project."
                 : "Folders will be placed on the grid in the order you check them."))
-                .font(.caption).foregroundStyle(JarasTheme.secondary)
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Folders").font(.caption.bold()).foregroundStyle(JarasTheme.secondary)
+                    Text("Folders").font(.jarasCaption.bold()).foregroundStyle(JarasTheme.secondary)
                     ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 4) {
                     ForEach(selection.matching(query), id: \.self) { folder in
@@ -304,10 +304,10 @@ struct FolderImportReview: View {
                             HStack(spacing: 10) {
                                 Image(systemName: order == nil ? "square" : "checkmark.square.fill")
                                     .foregroundStyle(order == nil ? JarasTheme.secondary : JarasTheme.green)
-                                    .font(.system(size: 16)).frame(width: 20)
+                                    .font(.jarasSystem(size: 16)).frame(width: 20)
                                 Text(folder.lastPathComponent).lineLimit(1).truncationMode(.middle)
                                 Spacer(minLength: 4)
-                                if let order { Text(String(format: "%02d", order)).font(.caption.monospacedDigit().bold()).foregroundStyle(JarasTheme.green) }
+                                if let order { Text(String(format: "%02d", order)).font(.jarasCaption.monospacedDigit().bold()).foregroundStyle(JarasTheme.green) }
                             }.padding(.horizontal, 10).frame(maxWidth: .infinity, minHeight: rowHeight)
                                 .background(order == nil ? JarasTheme.panel : JarasTheme.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 5))
                                 .contentShape(Rectangle())
@@ -320,16 +320,16 @@ struct FolderImportReview: View {
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 Rectangle().fill(JarasTheme.line).frame(width: 1)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("All regions preview").font(.caption.bold()).foregroundStyle(JarasTheme.secondary)
+                    Text("All regions preview").font(.jarasCaption.bold()).foregroundStyle(JarasTheme.secondary)
                     ScrollView(showsIndicators: false) {
                         LazyVStack(spacing: 4) {
                             ForEach(Array(selection.selected.enumerated()), id: \.element) { entry in
                                 HStack(spacing: 6) {
                                     RoundedRectangle(cornerRadius: 2).fill(JarasTheme.green).frame(width: 3)
                                     Text(String(format: "%02d", entry.offset + 1))
-                                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
+                                        .font(.jarasSystem(size: 10, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
                                         .frame(minWidth: 20, alignment: .leading)
-                                    Text(entry.element.lastPathComponent).font(.system(size: 13, weight: .semibold))
+                                    Text(entry.element.lastPathComponent).font(.jarasSystem(size: 13, weight: .semibold))
                                         .lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
                                 }.padding(.horizontal, 8).padding(.vertical, 7).frame(height: rowHeight)
                                     .background(JarasTheme.panel, in: RoundedRectangle(cornerRadius: 5))

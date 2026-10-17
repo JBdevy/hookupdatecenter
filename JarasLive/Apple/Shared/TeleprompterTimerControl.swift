@@ -69,7 +69,7 @@ import Combine
                 .immediateRightClick { timer.showConfiguration() }
             }
         }
-        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+        .font(.jarasSystem(size: 12, weight: .semibold, design: .monospaced))
         .modifier(InputValidationShake(animatableData: shake))
         .jarasHelp("Timer settings · Right-click")
     }
@@ -79,7 +79,7 @@ import Combine
             else if commit() { focused = nil; timer.start() }
         } label: {
             Text(LocalizedStringKey(timer.running ? "Stop" : "Start"))
-                .font(.system(size: 12, weight: .semibold)).frame(width: 52, height: 35)
+                .font(.jarasSystem(size: 12, weight: .semibold)).frame(width: 52, height: 35)
                 .foregroundStyle(timer.running ? Color.white : JarasTheme.green)
                 .background(timer.running ? Color.red.opacity(0.65) : JarasTheme.display)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
@@ -110,7 +110,7 @@ private struct TimerReadout: NSViewRepresentable {
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField(labelWithString: text)
         field.alignment = .center
-        field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        field.font = .jarasMonospacedSystemFont(ofSize: 12, weight: .semibold)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return field
     }

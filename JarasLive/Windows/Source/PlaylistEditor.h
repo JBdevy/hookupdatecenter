@@ -5,12 +5,12 @@ namespace catlive {
 class PlaylistEditor final : public Component, private ListBoxModel {
   public:
     PlaylistEditor(const jaras::Song &song, const jaras::RegionPlaylist *existing,
-                   std::function<void(jaras::RegionPlaylist)> save, std::function<void()> cancel)
-        : commit(std::move(save)), close(std::move(cancel)), list("Playlist regions", this) {
+                   std::function<void(jaras::RegionPlaylist)> save, std::function<void()> cancel, bool appendOnly = false)
+        : commit(std::move(save)), close(std::move(cancel)), list("Playlist regions", this), adding(appendOnly) {
         playlist = existing ? *existing : jaras::RegionPlaylist{uuid(), {}, song.id, {}};
         editing = existing != nullptr;
         for (const auto &p : song.parts)
-            if (!p.parentRegionID)
+            if (!p.parentRegionID && (!adding || std::find(playlist.regionIds.begin(),playlist.regionIds.end(),p.id)==playlist.regionIds.end()))
                 regions.push_back(p);
         std::stable_sort(regions.begin(), regions.end(),
                          [](const auto &a, const auto &b) { return a.startTime < b.startTime; });
@@ -51,7 +51,7 @@ class PlaylistEditor final : public Component, private ListBoxModel {
             for (int i = 0; i < (int)regions.size(); ++i)
                 if (list.isRowSelected(i))
                     chosen.insert(regions[(size_t)i].id);
-            result.regionIds.erase(std::remove_if(result.regionIds.begin(), result.regionIds.end(),
+            if(!adding) result.regionIds.erase(std::remove_if(result.regionIds.begin(), result.regionIds.end(),
                                                   [&](const ID &id) { return !chosen.count(id); }),
                                    result.regionIds.end());
             for (const auto &region : regions)
@@ -76,7 +76,7 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(13));
-        g.drawText(editing ? "Editar playlist" : "Nova playlist", 12, 8, getWidth() - 52, 28,
+        g.drawText(adding ? "Adicionar regiões" : editing ? "Editar playlist" : "Nova playlist", 12, 8, getWidth() - 52, 28,
                    Justification::centredLeft);
         g.setColour(theme::secondary);
         g.setFont(theme::font(10));
@@ -106,7 +106,7 @@ class PlaylistEditor final : public Component, private ListBoxModel {
     std::function<void()> close;
     jaras::RegionPlaylist playlist;
     std::vector<jaras::Part> regions;
-    bool editing = false;
+    bool editing = false, adding = false;
     ListBox list;
     TextEditor name;
     TextButton all{"Todas"}, clear{"Limpar"}, saveButton{"Criar"}, closeButton;
@@ -138,11 +138,11 @@ class RegionEditor final : public Component {
   public:
     RegionEditor(String value, unsigned colour, bool uppercase,
                  std::function<void(String, unsigned, bool)> save, std::function<void()> close,
-                 bool allowUppercase = true)
-        : commit(std::move(save)), cancel(std::move(close)), showsUppercase(allowUppercase) {
+                 bool allowUppercase = true, bool allowName = true)
+        : commit(std::move(save)), cancel(std::move(close)), showsUppercase(allowUppercase), showsName(allowName) {
         getProperties().set("selfContainedSheet", true);
         name.setComponentID("nameColourName");
-        addAndMakeVisible(name);
+        addAndMakeVisible(name); name.setVisible(showsName);
         name.setFont(theme::font(13));
         name.setText(value);
         name.selectAll();
@@ -193,23 +193,23 @@ class RegionEditor final : public Component {
         };
         name.onReturnKey = [this] { saveButton.triggerClick(); };
     }
-    void visibilityChanged() override { if (isShowing()) name.grabKeyboardFocus(); }
+    void visibilityChanged() override { if (isShowing() && showsName) name.grabKeyboardFocus(); }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         g.setColour(Colours::white); g.setFont(theme::font(13,true));
         g.drawText(getName(),18,18,getWidth()-36,18,Justification::centredLeft);
         g.setColour(Colour(0xff000000u | colourValue()));
-        g.fillRoundedRectangle(18,86,getWidth()-36.f,28,5);
+        g.fillRoundedRectangle(18,showsName ? 86 : 42,getWidth()-36.f,28,5);
         g.setFont(theme::font(13)); g.setColour(Colours::white);
-        for(int i=0;i<3;++i) { g.drawText(String::charToString("RGB"[i]),18,128+i*30,14,20,Justification::centredLeft);
-            g.drawText(String((int)rgb[i].getValue()),getWidth()-48,128+i*30,30,20,Justification::centredRight); }
+        for(int i=0;i<3;++i) { g.drawText(String::charToString("RGB"[i]),18,(showsName ? 128 : 84)+i*30,14,20,Justification::centredLeft);
+            g.drawText(String((int)rgb[i].getValue()),getWidth()-48,(showsName ? 128 : 84)+i*30,30,20,Justification::centredRight); }
     }
     bool keyPressed(const KeyPress &key) override { if(key==KeyPress::returnKey){saveButton.triggerClick();return true;} return false; }
     void resized() override {
         name.setBounds(18,50,getWidth()-36,22);
-        for(int i=0;i<3;++i) rgb[i].setBounds(38,128+i*30,getWidth()-90,20);
+        for(int i=0;i<3;++i) rgb[i].setBounds(38,(showsName ? 128 : 84)+i*30,getWidth()-90,20);
         const float cell=(getWidth()-36-42)/8.f;
-        for(int i=0;i<swatches.size();++i) swatches[i]->setBounds(roundToInt(18+(i%8)*(cell+6)),roundToInt(220+(i/8)*(cell+6)),roundToInt(cell),roundToInt(cell));
+        for(int i=0;i<swatches.size();++i) swatches[i]->setBounds(roundToInt(18+(i%8)*(cell+6)),roundToInt((showsName ? 220 : 176)+(i/8)*(cell+6)),roundToInt(cell),roundToInt(cell));
         upper.setBounds(18,330,getWidth()-36,20);
         cancelButton.setBounds(18,getHeight()-42,78,24); saveButton.setBounds(getWidth()-80,getHeight()-42,62,24);
     }
@@ -218,8 +218,9 @@ class RegionEditor final : public Component {
     std::function<void(String, unsigned, bool)> commit;
     std::function<void()> cancel;
     bool showsUppercase;
+    bool showsName;
     TextEditor name;
-    Slider rgb[3];
+    ParameterSlider rgb[3];
     ToggleButton upper;
     OwnedArray<TextButton> swatches;
     TextButton saveButton{"Salvar"}, cancelButton{"Cancelar"};

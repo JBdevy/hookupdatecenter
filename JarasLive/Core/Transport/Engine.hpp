@@ -1,7 +1,7 @@
 #pragma once
 #include "../Project/Models.hpp"
 namespace jaras {
-enum class CommandKind { toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipPhase, clipPan, clipChannelMode, clipNormalization, clipPitch };
+enum class CommandKind { toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipPhase, clipPan, clipChannelMode, clipNormalization, clipPitch, clipFadeInCurve, clipFadeInSCurve, clipFadeOutCurve, clipFadeOutSCurve };
 struct Command { CommandKind kind = CommandKind::stop; ID target; double value = 0; };
 class Engine {
 public:
@@ -48,11 +48,12 @@ public:
     void advance(double elapsed);
     // Licensing only requests a safe boundary; it never stops an active callback.
     void finishCurrentSong(bool enabled) noexcept { finishCurrent_ = enabled; }
+    // The Parts display uses the same owner and boundary as the audio jump.
+    const Part* sectionPlaybackRegion() const;
+    std::optional<double> nextSectionTrigger() const;
 private:
     void advanceContinuous(double elapsed, const TimelineMarker* sectionDestination = nullptr);
     const Part* sectionRegion(double position) const;
-    const Part* sectionPlaybackRegion() const;
-    std::optional<double> nextSectionTrigger() const;
     std::optional<TimelineMarker> sectionDestination(const ID& id) const;
     void resetMultiLoop();
     void refreshMultiLoop();

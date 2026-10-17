@@ -13,14 +13,14 @@ struct ClickSoundDesigner: View {
     private var sound: AudioFile? { show.current?.tracks.first { $0.id == track }?.clickSound }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Sound Designer", systemImage: "waveform").font(.headline).foregroundStyle(JarasTheme.green)
+            Label("Sound Designer", systemImage: "waveform").font(.jarasHeadline).foregroundStyle(JarasTheme.green)
             Text(sound.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "Click padrão")
-                .font(.system(size: 13, weight: .medium)).lineLimit(2)
+                .font(.jarasSystem(size: 13, weight: .medium)).lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                 .background(Color.black.opacity(0.3)).cornerRadius(8)
             Text("WAV, AIFF ou MP3. O som escolhido será copiado para a pasta Stems deste projeto.")
-                .font(.caption).foregroundStyle(JarasTheme.secondary)
-            if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.red) }
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            if !error.isEmpty { Text(error).font(.jarasCaption).foregroundStyle(.red) }
             HStack {
                 Button("Escolher arquivo…", action: choose).disabled(busy || directory == nil)
                 if busy { ProgressView().controlSize(.small) }

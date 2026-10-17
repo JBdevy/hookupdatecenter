@@ -245,11 +245,11 @@ shortLoop.loopStart = 0.123
 shortLoop.loopLength = 1 / rate
 shortLoop.sourceOffset = shortLoop.loopStart!
 let tinyLoop = scene(shortLoop)
-precondition(tinyLoop.strokes.count == 2 && tinyLoop.strokes.allSatisfy { $0.lineWidth > 30 },
+precondition(tinyLoop.strokes.count == 2 && tinyLoop.strokes.allSatisfy { $0.block.isPeakEnvelope && $0.scale.y * 2 > 30 },
              "a loop contained inside a peak interval must retain both channels' extrema instead of a flat line")
 shortLoop.channelMode = 3
 let cancellingLoop = scene(shortLoop)
-precondition(cancellingLoop.strokes.count == 1 && cancellingLoop.strokes[0].lineWidth == 0.5,
+precondition(cancellingLoop.strokes.count == 1 && cancellingLoop.strokes[0].scale.y * 2 == 0.5,
              "a truly phase-cancelled loop must retain the silent centerline")
 print("METAL_SCENE_SUBBUCKET_REPETITION_PRESERVES_REAL_PEAKS_AND_MONO_CANCELLATION_OK")
 

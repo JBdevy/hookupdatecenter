@@ -633,6 +633,19 @@ private final class MarkerInputTestWindow: NSWindow {
 MainActor.assumeIsolated { runMarkerInputMutationTests() }
 
 @MainActor private func runDenseTempoHeaderTests() {
+    for positions in [[0.1, 0.15, 100.0], [0.1, 0.1, 100.0]] {
+        let cluster = positions.map { TimelineMarker(id: UUID(), name: "TEMPO", position: $0,
+            color: 0x999999, tempoBPM: 120, tempoBeats: 4, tempoUnit: 4) }
+        let widths = Dictionary(uniqueKeysWithValues: cluster.map { ($0.id, 48.0) })
+        let layout = NativeTimelineMarkerLayout(cluster, drawingWidths: widths, inputWidths: widths, regionEnds: [:])
+        for scale in [0.5, 1, 2, 4, 8, 16] {
+            var visible: Set<UUID> = []
+            layout.forEachTempoProjection(scale: scale, viewport: CGRect(x: 0, y: 0, width: 700, height: 240), draggingID: nil) { marker, _, width, _ in
+                if width >= 18 { visible.insert(marker.id) }
+            }
+            precondition(visible.contains(cluster[1].id), "The last tempo in a dense column must keep its head when there is room after it")
+        }
+    }
     let markers = (0..<12000).map { index in
         TimelineMarker(id: UUID(), name: "TEMPO", position: Double(index) / 8,
             color: 0x999999, tempoBPM: 120 + Double(index % 23), tempoBeats: 4, tempoUnit: 4)
@@ -755,3 +768,40 @@ MainActor.assumeIsolated { runDenseTempoHeaderTests() }
     print("HEADER_RESIZE_RETAINS_CONTENT_WITH_FRESH_INPUT_CALLBACKS_OK")
 }
 MainActor.assumeIsolated { testResizeKeepsFreshHeaderCommands() }
+
+@MainActor private func testMovementLockCancelsMarkerPreviewAndKeepsEditors() {
+    let cue = TimelineMarker(id: UUID(), name: "Cue", position: 3, color: 0x40a050)
+    let tempo = TimelineMarker(id: UUID(), name: "TEMPO", position: 8, color: 0x999999, tempoBPM: 120)
+    let song = Song(id: UUID(), name: "Locked header", duration: 60, bpm: 120, tracks: [], parts: [], markers: [cue, tempo])
+    let header = NativeTimelineHeaderView()
+    var moved = 0, edited = 0, sought = 0
+    func configuration(locked: Bool) -> NativeTimelineHeaderConfiguration {
+        .init(song: song, lanes: RegionLanes(parts: []), parentIDs: [], regionTargets: [],
+            edit: { _ in edited += 1 }, delete: { _ in }, seek: { _ in sought += 1 },
+            move: { _ in moved += 1 }, movementLocked: locked)
+    }
+    header.configure(configuration(locked: false))
+    header.project(scale: 10, viewport: CGRect(x: 0, y: 0, width: 700, height: 240), layoutWidth: 1000, displayScale: 2)
+    let input = header.markerForTest(cue.id)!
+    let oldDrag = input.drag
+    oldDrag?(10, false)
+    precondition(header.previewForTest != nil)
+    header.configure(configuration(locked: true))
+    precondition(header.previewForTest == nil, "Locking cancels an in-flight marker preview")
+    oldDrag?(10, true)
+    precondition(moved == 0 && header.previewForTest == nil, "A retained pre-lock gesture cannot commit")
+    header.project(scale: 10, viewport: CGRect(x: 0, y: 0, width: 700, height: 240), layoutWidth: 1000, displayScale: 2)
+    for marker in [cue, tempo] {
+        let target = header.markerForTest(marker.id)!
+        precondition(target.drag == nil, "Both ordinary and tempo flags lose movement targets")
+        target.action?(); target.seek?()
+    }
+    precondition(edited == 2 && sought == 2, "Marker editors and cursor positioning remain available")
+    header.configure(configuration(locked: false))
+    header.project(scale: 10, viewport: CGRect(x: 0, y: 0, width: 700, height: 240), layoutWidth: 1000, displayScale: 2)
+    header.markerForTest(cue.id)?.drag?(10, true)
+    precondition(moved == 1, "Unlocking restores marker dragging")
+    header.configure(nil)
+    print("HEADER_MOVEMENT_LOCK_CANCELS_PREVIEW_RETAINS_EDIT_SEEK_UNLOCK_OK")
+}
+MainActor.assumeIsolated { testMovementLockCancelsMarkerPreviewAndKeepsEditors() }

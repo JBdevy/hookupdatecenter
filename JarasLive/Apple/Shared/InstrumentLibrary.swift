@@ -383,7 +383,7 @@ struct InstrumentBrowser: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 82), spacing: 5)], spacing: 5) {
                     ForEach(InstrumentCategory.allCases) { entry in
                         Button { category = entry } label: {
-                            Text(LocalizedStringKey(entry.rawValue)).font(.system(size: 12, weight: .semibold))
+                            Text(LocalizedStringKey(entry.rawValue)).font(.jarasSystem(size: 12, weight: .semibold))
                                 .frame(maxWidth: .infinity).frame(height: 28)
                                 .background(category == entry ? JarasTheme.green.opacity(0.25) : JarasTheme.display)
                                 .clipShape(RoundedRectangle(cornerRadius: 5)).contentShape(Rectangle())
@@ -393,7 +393,7 @@ struct InstrumentBrowser: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 5) {
                     if !InstrumentLibrary.catalog.contains(where: { $0.category == category }) {
-                        Text("No instruments available yet").font(.callout).foregroundStyle(JarasTheme.secondary).padding(24)
+                        Text("No instruments available yet").font(.jarasCallout).foregroundStyle(JarasTheme.secondary).padding(24)
                     }
                     ForEach(InstrumentLibrary.catalog.filter { $0.category == category }) { instrument in
                         HStack(spacing: 12) {
@@ -402,7 +402,7 @@ struct InstrumentBrowser: View {
                             }.buttonStyle(.plain).disabled(!library.downloaded.contains(instrument.id))
                             if let progress = library.progress[instrument.id] {
                                 ProgressView(value: progress).frame(width: 90).tint(JarasTheme.green)
-                                Text("\(Int(progress*100))%").font(.caption.monospacedDigit()).frame(width: 32)
+                                Text("\(Int(progress*100))%").font(.jarasCaption.monospacedDigit()).frame(width: 32)
                             } else if library.downloaded.contains(instrument.id) {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(JarasTheme.green)
                             } else {
@@ -414,7 +414,7 @@ struct InstrumentBrowser: View {
                     }
                 }
             }
-            if !library.error.isEmpty { Text(LocalizedStringKey(library.error)).font(.caption).foregroundStyle(.red) }
+            if !library.error.isEmpty { Text(LocalizedStringKey(library.error)).font(.jarasCaption).foregroundStyle(.red) }
         }.onAppear { library.refresh(); if let instrument = InstrumentLibrary.catalog.first(where: { $0.id == selected }) { category = instrument.category } }
     }
 }

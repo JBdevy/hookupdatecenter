@@ -60,6 +60,15 @@ let snapshot = row.makeMenu()
 row.patch = { replacementPatch += 1 }; row.fx = { replacementFX += 1 }
 snapshot.actions[0].invoke(); snapshot.actions[1].invoke()
 precondition(originalPatch == 1 && originalFX == 1 && replacementPatch == 0 && replacementFX == 0, "a menu retains the handlers of the track that opened it")
+var originalDuplicates = 0, recycledDuplicates = 0
+row.duplicateTracks = { originalDuplicates += 1 }; row.deleteTrackCount = 2
+let duplicateMenu = row.makeMenu()
+row.duplicateTracks = { recycledDuplicates += 1 }
+precondition(duplicateMenu.menu.items.last?.title == JarasLocalization.string("Duplicate tracks"), "the track menu exposes complete multi-track duplication")
+duplicateMenu.actions.last?.invoke()
+precondition(originalDuplicates == 1 && recycledDuplicates == 0, "duplicate uses the original track selection even after row recycling")
+row.duplicateTracks = nil; row.deleteTrackCount = 1
+precondition(!row.makeMenu().menu.items.contains { $0.title == JarasLocalization.string("Duplicate track") }, "special lanes and Master do not acquire duplicate handlers")
 router.withPinnedTrack(originalTrack) {
     precondition(router.pinnedTracks == [originalTrack], "context menu tracking pins its original row")
     router.withPinnedTrack(originalTrack) { precondition(router.pinnedTracks.contains(originalTrack)) }

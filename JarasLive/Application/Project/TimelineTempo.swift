@@ -356,7 +356,7 @@ public extension TimelineTempo {
     static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool = true,
                      cursor: Double? = nil, enabled: Bool = true,
                      otherCursors: [Double] = [], excludingRegion: UUID? = nil, excludingMarker: UUID? = nil,
-                     includeHiddenDivisions: Bool = false) -> Double {
+                     includeHiddenDivisions: Bool = false, includeItemEdges: Bool = false) -> Double {
         guard time.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 0 }
         let position = max(0, time)
         guard enabled else { return position }
@@ -387,6 +387,12 @@ public extension TimelineTempo {
             if regionEnds { consider(part.endTime) }
         }
         for marker in song.markers ?? [] where marker.id != excludingMarker { consider(marker.position) }
+        if includeItemEdges {
+            for track in song.tracks { for item in track.clips {
+                consider(item.startTime)
+                consider(item.startTime + item.duration)
+            } }
+        }
         if let cursor { consider(cursor) }
         for cursor in otherCursors { consider(cursor) }
         return nearest

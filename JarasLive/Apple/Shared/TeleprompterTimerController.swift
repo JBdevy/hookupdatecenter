@@ -112,7 +112,7 @@ struct TeleprompterTimerConfiguration: View {
     var body: some View {
         VStack(spacing: 12) {
             TimelineView(.periodic(from: .now,by: 0.5)) { _ in
-                Text(controller.displayText()).font(.system(size: 30,weight: .bold,design: .monospaced))
+                Text(controller.displayText()).font(.jarasSystem(size: 30,weight: .bold,design: .monospaced))
                     .foregroundStyle(controller.expired() ? Color.red : JarasTheme.green)
                     .opacity(controller.displayOpacity())
                     .frame(maxWidth: .infinity,minHeight: 48).background(JarasTheme.display).cornerRadius(6)
@@ -123,8 +123,8 @@ struct TeleprompterTimerConfiguration: View {
                     ForEach(0..<3,id: \.self) { index in
                         Button { field = index; caret = 0 } label: {
                             VStack(spacing: 4) {
-                                Text(LocalizedStringKey(["Hours","Minutes","Seconds"][index])).font(.caption)
-                                Text(digits[index]).font(.system(size: 24,weight: .semibold,design: .monospaced))
+                                Text(LocalizedStringKey(["Hours","Minutes","Seconds"][index])).font(.jarasCaption)
+                                Text(digits[index]).font(.jarasSystem(size: 24,weight: .semibold,design: .monospaced))
                             }.frame(maxWidth: .infinity,minHeight: 52).contentShape(Rectangle())
                         }.buttonStyle(.plain).padding(4).background(JarasTheme.display).cornerRadius(6)
                             .overlay(RoundedRectangle(cornerRadius: 6).stroke(field == index ? JarasTheme.yellow : JarasTheme.line))

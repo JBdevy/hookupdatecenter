@@ -476,7 +476,7 @@ private final class CaptureWriter: @unchecked Sendable {
     }
     private func target(for track: Track, position: Double) -> CaptureTarget {
         let lane = TrackLanes(track: track).recordingLane(start: position, duration: 0.01, clips: track.clips)
-        let target = CaptureTarget(track: track.id, input: track.inputPatch ?? defaultInputPatch, format: MediaProcessingFormat.load("record").recordingKey, name: recordingNames.allocate(track: track.name, clips: track.clips), lane: lane, recordedChannels: track.recordingChannels ?? 2)
+        let target = CaptureTarget(track: track.id, input: track.inputPatch ?? defaultInputPatch, format: MediaProcessingFormat.load("record").recordingKey(for: track), name: recordingNames.allocate(track: track.name, clips: track.clips), lane: lane, recordedChannels: track.recordingChannels ?? 2)
         let clip = AudioClip(id: target.id, name: target.name, startTime: position, duration: 0.01, recordingLane: lane)
         RecordingLaneLayout.shared.reserve(track: track, clip: clip)
         LiveRecordingPreview.shared.takes[target.id] = RecordingPreviewTake(start: position, duration: 0.01, channels: Array(repeating: [0], count: target.channelCount))
@@ -768,7 +768,7 @@ struct TrackRecordButton: View {
         } label: {
             Group {
                 if recorder.armState.mode(for: track.id) == .automatic {
-                    Text(verbatim: "A").font(.system(size: 11, weight: .bold))
+                    Text(verbatim: "A").font(.jarasSystem(size: 11, weight: .bold))
                 } else { Image(systemName: "record.circle") }
             }
                 .frame(width: 22, height: 21)
@@ -779,7 +779,7 @@ struct TrackRecordButton: View {
         .immediateRightClick { editingMode = true }
         .popover(isPresented: $editingMode) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Recording mode").font(.headline)
+                Text("Recording mode").font(.jarasHeadline)
                 Picker("Recording mode", selection: Binding(get: { track.recordingChannels ?? 2 }, set: { show.setRecordingChannels(track.id, channel: $0) })) {
                     Text("Mono").tag(1)
                     Text("Stereo").tag(2)
@@ -788,6 +788,14 @@ struct TrackRecordButton: View {
                     #endif
                 }.pickerStyle(.segmented).labelsHidden().disabled(recorder.recording || recorder.busy)
                 if track.recordingMode != .midi {
+                    Picker("Format", selection: Binding(get: { track.recordingFormat ?? "" }, set: {
+                        show.setRecordingFormat(track.id, format: $0.isEmpty ? nil : $0)
+                    })) {
+                        Text("Use Advanced setting").tag("")
+                        Text(verbatim: "WAV · 24-bit PCM").tag("wav")
+                        Text(verbatim: "WAV · 32-bit float").tag("wav32")
+                        Text(verbatim: "MP3 · \(MediaProcessingFormat.load("record").bitrate) kbps").tag("mp3")
+                    }.disabled(recorder.recording || recorder.busy)
                     Picker("Input monitoring", selection: Binding(get: { track.inputMonitoring != false }, set: { show.setInputMonitoring(track.id, enabled: $0) })) {
                         Text(verbatim: "Monitor On").tag(true)
                         Text(verbatim: "Monitor Off").tag(false)
@@ -801,8 +809,7 @@ struct TrackRecordButton: View {
 
     }
 }
-/// Keep the original idle appearance; only an active REC has a flashing red face.
-/// Its layout and click target stay fixed throughout both phases of the blink.
+/// Armed and recording controls remain solid red throughout recording.
 private struct RecordingButtonStyle: ButtonStyle {
     let active: Bool
     var width: CGFloat = 22
@@ -813,7 +820,7 @@ private struct RecordingButtonStyle: ButtonStyle {
     private let red = Color(red: 1, green: 0.12, blue: 0.12)
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: fontSize, weight: .semibold))
+            .font(.jarasSystem(size: fontSize, weight: .semibold))
             .lineLimit(1).minimumScaleFactor(0.75)
             .frame(width: width, height: height)
             .foregroundStyle(active ? Color.black : transport ? JarasTheme.secondary : Color.red)
@@ -823,7 +830,6 @@ private struct RecordingButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay(RoundedRectangle(cornerRadius: cornerRadius).stroke(transport ? (active ? red : Color.white.opacity(0.45)) : .clear))
             .contentShape(Rectangle())
-            .modifier(JarasBlink(active: active, interval: 0.4, lowOpacity: 0.05))
             .transaction { $0.animation = nil }
     }
 }

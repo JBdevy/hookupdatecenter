@@ -370,7 +370,7 @@ MigratedProject readReaperProject(const File &file) {
     project.masterMute = ((int)root->number("MASTERMUTESOLO") & 1) != 0;
     TempoMap tempo(*root);
     AudioFormatManager formats;
-    formats.registerBasicFormats();
+    registerAudioFormats(formats);
     std::map<String, std::string> references;
     std::vector<ID> folders;
     auto reference = [&](String path, bool video) {

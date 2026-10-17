@@ -96,7 +96,7 @@ struct StageButtonStyle: ButtonStyle {
     var color = JarasTheme.panel
     var active = false
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 13, weight: .semibold, design: .rounded)).padding(.horizontal, 13).frame(minHeight: 40)
+        configuration.label.font(.jarasSystem(size: 13, weight: .semibold, design: .rounded)).padding(.horizontal, 13).frame(minHeight: 40)
             .foregroundStyle(active ? Color.black : JarasTheme.text)
             .background(active ? color : color.opacity(configuration.isPressed ? 0.7 : 0.45))
             .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -264,4 +264,66 @@ enum TimelineAppearanceDefaults {
     static let playCursor = 0x7548DD
     static let editCursor = 0xB9E229
     static let subPlayCursor = 0xFF6F00
+}
+
+// App-owned typography. Font files are registered only inside CatLive's process;
+// switching this family does not change macOS or external plug-in editors.
+#if os(macOS)
+import AppKit
+import CoreText
+private enum CatLiveTypeface {
+    static let register: Void = {
+        guard let directory = Bundle.main.resourceURL?.appendingPathComponent("Inter") else { return }
+        for weight in ["Regular", "Medium", "SemiBold", "Bold", "Italic", "BoldItalic"] {
+            CTFontManagerRegisterFontsForURL(directory.appendingPathComponent("Inter-\(weight).ttf") as CFURL, .process, nil)
+        }
+    }()
+    static func name(_ weight: Font.Weight?) -> String {
+        _ = register
+        switch weight {
+        case .bold, .heavy, .black: return "Inter-Bold"
+        case .semibold: return "Inter-SemiBold"
+        case .medium: return "Inter-Medium"
+        default: return "Inter-Regular"
+        }
+    }
+}
+extension NSFont {
+    static func jarasSystemFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+        _ = CatLiveTypeface.register
+        let name = weight.rawValue >= NSFont.Weight.bold.rawValue ? "Bold" : weight.rawValue >= NSFont.Weight.semibold.rawValue ? "SemiBold" : weight.rawValue >= NSFont.Weight.medium.rawValue ? "Medium" : "Regular"
+        return NSFont(name: "Inter-" + name, size: size) ?? NSFont.systemFont(ofSize: size, weight: weight)
+    }
+    static func jarasMonospacedSystemFont(ofSize size: CGFloat, weight: NSFont.Weight) -> NSFont { jarasSystemFont(ofSize: size, weight: weight) }
+    static func jarasBoldSystemFont(ofSize size: CGFloat) -> NSFont { jarasSystemFont(ofSize: size, weight: .bold) }
+}
+#endif
+extension Font {
+    static func jarasSystem(size: CGFloat, weight: Font.Weight? = nil, design: Font.Design? = nil) -> Font {
+        #if os(macOS)
+        return .custom(CatLiveTypeface.name(weight), fixedSize: size)
+        #else
+        return .system(size: size, weight: weight, design: design)
+        #endif
+    }
+    static func jarasSystem(_ style: Font.TextStyle, design: Font.Design? = nil, weight: Font.Weight? = nil) -> Font {
+        #if os(macOS)
+        let size: CGFloat
+        switch style { case .largeTitle: size = 26; case .title: size = 22; case .title2: size = 17; case .title3: size = 15; case .callout: size = 12; case .subheadline: size = 11; case .footnote, .caption, .caption2: size = 10; default: size = 13 }
+        return jarasSystem(size: size, weight: weight ?? (style == .headline ? .bold : .regular))
+        #else
+        return .system(style, design: design, weight: weight)
+        #endif
+    }
+    static var jarasBody: Font { jarasSystem(.body) }
+    static var jarasHeadline: Font { jarasSystem(.headline) }
+    static var jarasSubheadline: Font { jarasSystem(.subheadline) }
+    static var jarasCallout: Font { jarasSystem(.callout) }
+    static var jarasCaption: Font { jarasSystem(.caption) }
+    static var jarasCaption2: Font { jarasSystem(.caption2) }
+    static var jarasFootnote: Font { jarasSystem(.footnote) }
+    static var jarasTitle: Font { jarasSystem(.title) }
+    static var jarasTitle2: Font { jarasSystem(.title2) }
+    static var jarasTitle3: Font { jarasSystem(.title3) }
+    static var jarasLargeTitle: Font { jarasSystem(.largeTitle) }
 }

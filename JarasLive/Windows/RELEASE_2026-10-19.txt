@@ -1,3 +1,5 @@
+Atualização build15 (16/10/2026): escala padrão Windows agora 100%; valores de 90% abaixo registram etapas anteriores. Seleção por arraste direito, contexto aninhado de playlists e menus numéricos corrigidos; 113 testes aprovados.
+
 CATLIVE WINDOWS — PREPARAÇÃO PARA 19/10/2026
 
 Requisito do usuário: concluir pendências funcionais e reproduzir fielmente
@@ -90,3 +92,64 @@ sem dispositivo. Espaço segurado executa uma única ação, e rearma após solt
 reais verificadas, incluindo a transição onde Sub Play estava cortado no CI.
 Evidências em evidence/batch5. Menus, auditoria integral de atalhos, controles
 completos dos itens e CatStemSeparation 5 continuam pendentes.
+
+15/10/2026 — lote visual 6, mantido local sem push/Actions:
+Referência direta no CatLive 1.01 aberto no Mac e no projeto real salvo às 10:26.
+Setlist: fundo #151B22, degradês nativos, coluna externa de 14 pontos para a
+seta das músicas unificadas, números/durações e contraste conforme o Mac.
+Expandir BLOCO preserva seleção por ID e cursor (45 -> 48 -> 45 linhas).
+Seta do rodapé recolhe/expande controles e salva a preferência; cores de
+ByPass/Live e transparência, seleção e mute/solo das pistas ajustados.
+Build final: 14/14 CTest. Teste nativo no projeto real: gaveta, seleção,
+rodapé e janelas 1280/900 aprovados. Evidências: evidence/batch6/mac-project.
+Pacote de teste local; pendências gerais acima continuam abertas.
+
+16/10/2026 — lote visual 7, build local items-build6 (sem push/Actions):
+Rodapé: altura mínima 27 também em janela estreita, display até a borda inferior,
+separador Próxima/Fila e espaçamento do texto baseado no SongNameDisplay atual
+do Mac. Teste nativo confirmou alturas 27/90/161 e janela 900x540; display e
+rodapé terminam na mesma coordenada inferior da área de trabalho. Preferência
+de altura restaurada após o teste. Aviso de dispositivo ausente conferido na
+aba Áudio: ocupa linha própria, sem sobreposição com o título de entrada.
+
+Itens: lanes internas separam itens simultâneos, sem mudar sua posição no tempo.
+Controles M/FX/fase/pan/ganho, fades com curva e recortes triangulares de loops.
+No projeto real, arrastar ganho/pan/fade-out, abrir FX do item, inserir EQ e
+desfazer cada alteração passaram. Prévia escalar de áudio tem teste de PCM;
+alterar a cadeia de FX de item ainda depende de transporte parado/repreparação.
+
+Waveform: menos recortes gráficos redundantes; grade tracejada reutilizada e
+caches de rótulos/caminhos. Neste PC, última amostra de desenho no zoom mínimo
+12,17 ms; repetição 11,81 ms; zoom normal 20,51 ms. São amostras de pintura,
+não garantia de taxa de quadros. 165 fontes prontas e zero expulsões do cache.
+Rolagem de Setlist, repetição de zoom e controles dos itens passaram neste build.
+14/14 CTest aprovados, com fixture SF2 real. Evidências Windows em
+Documents/CatLive-Mac-Validation/evidence/batch7/{footer,items,layout-check}.
+Pacote de teste em Downloads de ambos os computadores:
+CatLive_Windows_Lote_Visual_7_2026-10-16.zip
+SHA256: 32553DADB0D3C2C064402FDE5EAB43D2AD5F7A9AD88029C70E6D0CCC85275119
+
+Não encerra a lista de lançamento. Menus de pistas/playlists, CatStem e demais
+pendências gerais ainda exigem trabalho. TrackEditing.h e ClickSoundDesigner.h
+são preparações locais ainda não integradas aos menus; não contar como prontas.
+Na inspeção da aba Áudio, o rótulo Mapeamentos quebra uma palavra em duas linhas;
+precisa ajuste de largura/medição no próximo lote de configurações.
+
+ATUALIZAÇÃO — FONTES E CLIQUES DO TRANSPORTE, 16/10/2026
+Nomes de pistas: Inter semibold 11 (referência Mac 11). Env: 10; Stop/Auto/
+Blocos: 9 bold; BPM: 15, símbolos +/-: 10. A escala geral permanece 90%.
+Removido o menu de compassos; numerador/denominador editáveis no próprio
+controle. Botão direito no Tuner +/- não altera tom; no BPM +/- abre apenas
+o mapeamento. Tap tempo com botão esquerdo no valor BPM; direito edita BPM.
+Atalhos/tap usam Session.setTempo para acompanhar a seção ativa em reprodução.
+Mac: campos de compasso encerram edição ao clicar fora, incluindo área vazia.
+Build Mac Release arm64 compilado; aplicação instalada ainda não substituída.
+Teste AppKit de foco passou. Windows build-batch8, batch8-build7.log:
+14/14 CTest, 59 cenários, nenhuma falha/pulo, SF2 real incluído.
+Presets e mudanças anteriores deste lote estão incluídos. Isso não encerra
+as pendências gerais de lançamento; publicação não executada.
+Validação interativa aprovada: direito nos campos sem janela extra; direito
+no Tuner sem transposição; direito em BPM +/- abre mapeamento sem editar;
+esquerdo incrementa/decrementa a seção ativa. Projeto Guilherme Camargo
+reaberto em modo normal com licença restaurada e uma única instância.
+Pacote local Windows: Downloads/CatLive-1.02-fontes-cliques.zip.

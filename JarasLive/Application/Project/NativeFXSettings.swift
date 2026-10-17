@@ -209,6 +209,10 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
 
 extension NativeFXSettings {
     public var effectKeys: [String] { inserted }
+    public var allBypassed: Bool { !inserted.isEmpty && inserted.allSatisfy { !isEnabled($0) } }
+    public mutating func setAllBypassed(_ bypassed: Bool) {
+        for effect in inserted { setEnabled(effect, enabled: !bypassed) }
+    }
     /// Item audio keeps the original native stages before repeated inserts
     /// and external plugins. Show that execution order without rewriting the
     /// persisted insertion order or enabling unsupported item reordering.
@@ -222,6 +226,9 @@ extension NativeFXSettings {
     @discardableResult public mutating func appendNative(_ kind: String, instrument: String? = nil, parameters: InstrumentParameters? = nil) -> String {
         if kind == Self.stemSeparator, inserted.contains(kind) { return kind }
         if !inserted.contains(kind) {
+            // A new insertion owns fresh parameters, including legacy projects
+            // that retained values after removing their original native stage.
+            self = merging(effect: kind, from: Self())
             inserted.append(kind); setEnabled(kind, enabled: true)
             if kind == "Instruments" { instrumentID = instrument; instrumentParameters = parameters; instrumentBypassed = false }
             return kind
@@ -233,6 +240,16 @@ extension NativeFXSettings {
         return instance.effectKey
     }
     public mutating func removeInstance(_ key: String) { instances?.removeAll { $0.effectKey == key } }
+    public mutating func removeEffect(_ key: String) {
+        guard inserted.contains(key) else { return }
+        if Self.order.contains(key) || key == Self.stemSeparator {
+            self = merging(effect: key, from: Self())
+            if key == "Instruments" { instrumentBypassed = nil }
+        }
+        inserted.removeAll { $0 == key }
+        externalPlugins?.removeAll { $0.effectKey == key }
+        removeInstance(key)
+    }
 
     public func isEnabled(_ effect: String) -> Bool {
         if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }

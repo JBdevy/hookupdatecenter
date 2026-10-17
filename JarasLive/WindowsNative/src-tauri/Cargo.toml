@@ -1,0 +1,28 @@
+[package]
+name = "catlive-native-host"
+version = "1.2.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "catlive_native_host"
+path = "src/lib.rs"
+
+[features]
+default = []
+asio = ["cpal/asio"]
+
+[dependencies]
+cpal = { version = "=0.17.3", features = ["audio_thread_priority"] }
+midir = "=0.11.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[build-dependencies]
+cc = "1"
+
+[profile.dev]
+debug = 1
+
+[profile.dev.package.catlive-native-host]
+opt-level = 2

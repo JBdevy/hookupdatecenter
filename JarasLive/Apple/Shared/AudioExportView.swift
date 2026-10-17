@@ -79,9 +79,9 @@ struct AudioExportView: View {
     var body: some View {
         VStack(alignment: .leading,spacing: 14) {
             HStack {
-                Text(renderScreen ? "Rendering" : regionMode ? "Export region audio" : "Export").font(.headline)
+                Text(renderScreen ? "Rendering" : regionMode ? "Export region audio" : "Export").font(.jarasHeadline)
                 Spacer()
-                Text("\(renderedPlan?.jobs.count ?? plan.jobs.count) files").font(.caption).foregroundStyle(JarasTheme.secondary)
+                Text("\(renderedPlan?.jobs.count ?? plan.jobs.count) files").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 if !session.running {
                     Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 28,height: 28).contentShape(Rectangle()) }
                         .buttonStyle(.plain).accessibilityLabel("Close").keyboardShortcut(.cancelAction)
@@ -108,7 +108,7 @@ struct AudioExportView: View {
         VStack(alignment: .leading,spacing: 12) {
             if regionMode {
                 Text("Render each selected region through the Master, including tracks routed to hardware outputs.")
-                    .font(.caption).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(.jarasCaption).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
             } else { HStack(spacing: 18) {
                 Picker("Source",selection: $source) { ForEach(AudioExportSource.allCases,id: \.self) { Text(LocalizedStringKey($0.rawValue)).tag($0) } }
                 Picker("Bounds",selection: $bounds) { ForEach(AudioExportBounds.allCases,id: \.self) { Text(LocalizedStringKey($0.rawValue)).tag($0) } }.disabled(source == .stems)
@@ -128,7 +128,7 @@ struct AudioExportView: View {
             }
             HStack(spacing: 8) {
                 ForEach(["%track","%region","%stem","%project"],id: \.self) { token in
-                    Button { outputName.wrappedValue += token } label: { Text(verbatim: token).font(.system(size: 11,design: .monospaced)) }
+                    Button { outputName.wrappedValue += token } label: { Text(verbatim: token).font(.jarasSystem(size: 11,design: .monospaced)) }
                         .buttonStyle(.bordered).help(token)
                 }
             }
@@ -139,14 +139,14 @@ struct AudioExportView: View {
                             Text(verbatim: job.fileName).lineLimit(1).truncationMode(.middle)
                             Spacer()
                             Text(verbatim: String(format:"%.2f s",job.duration)).foregroundStyle(JarasTheme.secondary)
-                        }.font(.system(size: 12)).padding(.vertical,3)
+                        }.font(.jarasSystem(size: 12)).padding(.vertical,3)
                     }
                 }.padding(8)
             }.frame(height: 155).background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 6))
-            if plan.jobs.isEmpty { Text("Select files to render.").font(.caption).foregroundStyle(JarasTheme.yellow) }
+            if plan.jobs.isEmpty { Text("Select files to render.").font(.jarasCaption).foregroundStyle(JarasTheme.yellow) }
             formatOptions
             HStack {
-                Text("Sample rate").font(.caption)
+                Text("Sample rate").font(.jarasCaption)
                 Picker("Sample rate",selection: $rate) { Text(verbatim: "44.1 kHz").tag(44100.0); Text(verbatim: "48 kHz").tag(48000.0) }.labelsHidden().frame(width: 105)
 
                 Picker("Channels",selection: $channels) { Text("Stereo").tag(2); Text("Mono").tag(1) }.frame(width: 135)
@@ -219,7 +219,7 @@ struct AudioExportView: View {
                 }
                 }
             }
-        }.font(.caption)
+        }.font(.jarasCaption)
     }
     private var exportRegions: [Part] {
         guard let song else { return [] }
@@ -236,7 +236,7 @@ struct AudioExportView: View {
     private var rendering: some View {
         VStack(alignment: .leading,spacing: 14) {
             if let progress = session.progress {
-                Text(verbatim: progress.fileName).font(.system(size: 12,weight: .semibold)).lineLimit(1)
+                Text(verbatim: progress.fileName).font(.jarasSystem(size: 12,weight: .semibold)).lineLimit(1)
                 Canvas { context,size in
                     let width = size.width/CGFloat(max(1,progress.waveform.count))
                     let finished = Int(progress.fraction * Double(progress.waveform.count))
@@ -253,9 +253,9 @@ struct AudioExportView: View {
                     Spacer()
                     Text(verbatim: progress.peak > 0 ? String(format: "Peak %+.2f dBFS",20*log10(progress.peak)) : "Peak −∞ dBFS")
                         .foregroundStyle(progress.clipped.contains(true) ? Color.red : JarasTheme.secondary)
-                }.font(.caption)
+                }.font(.jarasCaption)
             } else { ProgressView().frame(height: 180).frame(maxWidth: .infinity) }
-            if !session.error.isEmpty { Text(verbatim: session.error).font(.caption).foregroundStyle(.red) }
+            if !session.error.isEmpty { Text(verbatim: session.error).font(.jarasCaption).foregroundStyle(.red) }
             HStack {
                 if session.running { Button("Cancel") { session.cancel() }.keyboardShortcut(.cancelAction) }
                 else if session.finished { Text("Render complete.").foregroundStyle(JarasTheme.green) }
@@ -301,9 +301,9 @@ struct ItemAudioExportView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Export audio items").font(.headline)
+                Text("Export audio items").font(.jarasHeadline)
                 Spacer()
-                Text("\(plan.jobs.count) files").font(.caption).foregroundStyle(JarasTheme.secondary)
+                Text("\(plan.jobs.count) files").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             }
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -341,7 +341,7 @@ struct ItemAudioExportView: View {
             if session.running {
                 ProgressView(value: session.progress.map { (Double($0.completed) + $0.fraction) / Double(max(1, $0.total)) } ?? 0)
             }
-            if !session.error.isEmpty { Text(verbatim: session.error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            if !session.error.isEmpty { Text(verbatim: session.error).font(.jarasCaption).foregroundStyle(.red).textSelection(.disabled) }
             if session.finished { Text("Render complete.").foregroundStyle(JarasTheme.green) }
             HStack {
                 Button(session.running ? "Cancel" : "Close") {

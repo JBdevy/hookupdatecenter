@@ -116,6 +116,7 @@ class SettingsPanel final : public Component, private Timer {
         fields.add(field);
         page.addAndMakeVisible(field);
         field->setName(name);
+        field->setComponentID(name);
         field->addItemList(items, 1);
         field->setSelectedId(current, dontSendNotification);
         field->setBounds(x, y, width, 26);
@@ -161,7 +162,15 @@ class SettingsPanel final : public Component, private Timer {
         auto &title = label(tabs[index]->getButtonText(), 20, 30, true);
         title.setFont(theme::font(18, true));
         if (index == 0) {
-            contentHeight = 150;
+            contentHeight = 240;
+            label(String::fromUTF8("Escala da interface"), 152, 26, true);
+            StringArray scales;
+            for (int percent = 60; percent <= 120; percent += 10) scales.add(String(percent) + "%");
+            choice("interfaceScale", scales, roundToInt(preferences.interfaceScale() * 10) - 5, 24, 188, 176,
+                   [this](int choice) {
+                       auto result = preferences.set("jaras.interface.scale", (choice + 5) / 10.0);
+                       if (result.failed()) error(result.getErrorMessage());
+                   });
             label("Idioma", 66, 26, true);
             for (int language = 0; language < 2; ++language) {
                 auto &b = button(language == 0 ? "English" : String::fromUTF8("Português"),
@@ -250,10 +259,10 @@ class SettingsPanel final : public Component, private Timer {
             label(String::fromUTF8("Pare o transporte antes de alterar o dispositivo de áudio."),
                   136, 28, false, theme::yellow);
         auto *type = manager.getCurrentDeviceTypeObject();
-        if (!type || !manager.getCurrentAudioDevice()) {
+        if (!type) {
             label(String::fromUTF8("Nenhum dispositivo de áudio disponível."), 166, 28,
                   false, theme::secondary);
-            if (!type) return;
+            return;
         }
         type->scanForDevices();
         auto inputNames = type->getDeviceNames(true), outputNames = type->getDeviceNames(false);
@@ -288,7 +297,7 @@ class SettingsPanel final : public Component, private Timer {
         auto *device = manager.getCurrentAudioDevice();
         label(device ? String(device->getActiveOutputChannels().countNumberOfSetBits()) +
                            String::fromUTF8(" canais de saída")
-                     : String::fromUTF8("Nenhum dispositivo de saída"),
+                     : String::fromUTF8("Nenhum dispositivo de áudio disponível."),
               332, 26, false, theme::secondary);
         if (device) {
             auto rates = device->getAvailableSampleRates();

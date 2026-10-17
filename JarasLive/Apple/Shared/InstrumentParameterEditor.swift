@@ -13,7 +13,7 @@ struct InstrumentParameterEditor: View {
         VStack(spacing: 24) {
             HStack {
                 Image(systemName: "pianokeys").foregroundStyle(JarasTheme.green)
-                Text(name).font(.title2.weight(.semibold))
+                Text(name).font(.jarasTitle2.weight(.semibold))
                 Spacer()
                 Picker("Parameters", selection: $page) {
                     Text("Envelope").tag("Envelope")
@@ -85,7 +85,7 @@ struct InstrumentParameterEditor: View {
             }.frame(minHeight: 150, maxHeight: 240).background(JarasTheme.display).cornerRadius(8)
             HStack(spacing: 24) {
                 FXKnob("Cutoff", value: Binding(get: { velocity.cutoffMinimum }, set: { var value = velocity; value.cutoffMinimum = $0; parameters.velocity = value }), range: 20...20000, unit: "Hz", logarithmic: true, reset: 20000, parameter: .velocityCutoff)
-                Text("Minimum cutoff for soft notes. Stronger notes open their own filter.").font(.callout).foregroundStyle(JarasTheme.secondary)
+                Text("Minimum cutoff for soft notes. Stronger notes open their own filter.").font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
             }.padding(18).background(JarasTheme.display).cornerRadius(10)
         }
     }
@@ -94,7 +94,7 @@ struct InstrumentParameterEditor: View {
             HStack(spacing: 24) {
                 FXKnob("Cutoff", value: filter(\.frequency), range: 20...20000, unit: "Hz", logarithmic: true, reset: 20000, parameter: .cutoffFrequency)
                 FXKnob("Depth", value: filter(\.depth), range: 0...10, unit: "oct", reset: 0, parameter: .cutoffDepth)
-                Text("Cutoff envelope").font(.title3.weight(.semibold))
+                Text("Cutoff envelope").font(.jarasTitle3.weight(.semibold))
                 Spacer()
             }.padding(18).background(JarasTheme.display).cornerRadius(10)
             HStack(spacing: 8) {

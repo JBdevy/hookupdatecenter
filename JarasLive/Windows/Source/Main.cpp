@@ -87,8 +87,9 @@ class CatLiveApplication final : public JUCEApplication {
                 auto original = ProjectCodec::read(File(args[i + 1]));
                 auto model = ProjectCodec::decode(original);
                 ProjectCodec::write(File(args[i + 2]), ProjectCodec::encode(model, original));
-            } catch (...) {
+            } catch (const std::exception &e) {
                 testResult = 1;
+                if (i+2<args.size()) File(args[i+2]).withFileExtension("roundtrip-error.txt").replaceWithText(String::fromUTF8(e.what()));
             }
             quit();
             return;
@@ -114,7 +115,7 @@ class CatLiveApplication final : public JUCEApplication {
             const int scaleArg = args.indexOf("--ui-scale");
             if (scaleArg >= 0 && scaleArg + 1 < args.size()) {
                 const auto requested = args[scaleArg + 1].getFloatValue();
-                if (std::isfinite(requested) && requested > 0) scale = jlimit(.75f, 2.f, requested);
+                if (std::isfinite(requested) && requested > 0) scale = std::round(jlimit(.6f, 1.2f, requested) * 10) / 10;
             }
             Desktop::getInstance().setGlobalScaleFactor(scale);
             if (!visualTest)
@@ -182,10 +183,11 @@ class CatLiveApplication final : public JUCEApplication {
                 }
             }
             for (auto &arg : args)
-                if (!projectPreview && arg.endsWithIgnoreCase(".jl") && File::isAbsolutePath(arg)) {
-                    session->load(File(arg));
-                    lighting->loadSettings();
-                    content->projectOpened();
+                if (!projectPreview && File::isAbsolutePath(arg) && File(arg).hasFileExtension("jl;bkjl;ziplive;zip")) {
+                    const File source(arg);
+                    if (source.hasFileExtension("ziplive;zip"))
+                        Timer::callAfterDelay(1700, [safe=Component::SafePointer<Workspace>(content),source]{if(safe)safe->openProject(source);});
+                    else content->openProject(source);
                     break;
                 }
         } catch (const std::exception &e) {
@@ -222,7 +224,7 @@ class CatLiveApplication final : public JUCEApplication {
         window->toFront(true);
         auto args = StringArray::fromTokens(arguments, true);
         for (auto arg : args)
-            if (arg.unquoted().endsWithIgnoreCase(".jl")) {
+            if (File::isAbsolutePath(arg.unquoted()) && File(arg.unquoted()).hasFileExtension("jl;bkjl;ziplive;zip")) {
                 if (auto *w = dynamic_cast<Workspace *>(window->getContentComponent()))
                     w->openProject(File(arg.unquoted()));
                 break;

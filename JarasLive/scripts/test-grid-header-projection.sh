@@ -24,5 +24,5 @@ source = source.replace(needle, wrapper + needle)
 (out / 'GridSelectionInput.swift').write_text(source)
 (out / 'main.swift').write_text(Path('Tests/Apple/GridHeaderProjectionTests.swift').read_text())
 PY
-swiftc -swift-version 5 -target "$(uname -m)-apple-macos12.0" Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift "$test_dir/GridSelectionInput.swift" "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 -target "$(uname -m)-apple-macos12.0" Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift "$test_dir/GridSelectionInput.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

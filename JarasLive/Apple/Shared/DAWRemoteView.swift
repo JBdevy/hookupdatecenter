@@ -12,41 +12,41 @@ struct DAWRemoteHostView: View {
     @State private var noticesSaved = false
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(verbatim: "Remote").font(.headline)
+            Text(verbatim: "Remote").font(.jarasHeadline)
             #if os(macOS)
-            Text("Open Remote on the iPad and choose this computer.").font(.callout)
+            Text("Open Remote on the iPad and choose this computer.").font(.jarasCallout)
             #else
-            Text("Open Remote on another device and choose this iPad.").font(.callout)
+            Text("Open Remote on another device and choose this iPad.").font(.jarasCallout)
             #endif
-            Text(LocalizedStringKey(remote.status)).font(.caption).foregroundStyle(remote.connected ? JarasTheme.green : JarasTheme.secondary)
-            if !remote.peerName.isEmpty { Text(verbatim: remote.peerName).font(.caption) }
+            Text(LocalizedStringKey(remote.status)).font(.jarasCaption).foregroundStyle(remote.connected ? JarasTheme.green : JarasTheme.secondary)
+            if !remote.peerName.isEmpty { Text(verbatim: remote.peerName).font(.jarasCaption) }
             #if os(macOS)
-            Text("Audio continues on the Mac. Nearby Apple devices can connect directly over peer-to-peer Wi-Fi.").font(.caption).foregroundStyle(JarasTheme.secondary)
+            Text("Audio continues on the Mac. Nearby Apple devices can connect directly over peer-to-peer Wi-Fi.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             #else
-            Text("Audio continues on this iPad. Use the same local network or a direct connection between nearby Apple devices.").font(.caption).foregroundStyle(JarasTheme.secondary)
+            Text("Audio continues on this iPad. Use the same local network or a direct connection between nearby Apple devices.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             #endif
             Divider()
-            Text("Senha do modo Diretor").font(.headline)
+            Text("Senha do modo Diretor").font(.jarasHeadline)
             Text(remote.directorRequiresPIN ? "O Diretor está protegido por senha." : "O Diretor está liberado sem senha.")
-                .font(.caption).foregroundStyle(JarasTheme.secondary)
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             TextField("4 dígitos · vazio para remover", text: $pin)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: pin) { value in pin = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4)); saved = false }
             Text("Deixe vazio e salve para entrar sem senha. Observadores entram sem senha e não controlam o PC.")
-                .font(.caption).foregroundStyle(JarasTheme.secondary)
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             Button("Salvar senha") { saved = remote.setDirectorPIN(pin) }
                 .disabled(!pin.isEmpty && pin.count != 4)
-            if saved { Text("Configuração salva.").font(.caption).foregroundStyle(JarasTheme.green) }
+            if saved { Text("Configuração salva.").font(.jarasCaption).foregroundStyle(JarasTheme.green) }
             Divider()
-            Text("Senha do modo Recados").font(.headline)
+            Text("Senha do modo Recados").font(.jarasHeadline)
             TextField("4 dígitos · vazio para remover", text: $noticesPIN)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: noticesPIN) { value in noticesPIN = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4)); noticesSaved = false }
             Text("Acesso apenas aos recados. Deixe vazio para entrar sem senha.")
-                .font(.caption).foregroundStyle(JarasTheme.secondary)
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             Button("Salvar senha de Recados") { noticesSaved = remote.setNoticesPIN(noticesPIN) }
                 .disabled(!noticesPIN.isEmpty && noticesPIN.count != 4)
-            if noticesSaved { Text("Configuração salva.").font(.caption).foregroundStyle(JarasTheme.green) }
+            if noticesSaved { Text("Configuração salva.").font(.jarasCaption).foregroundStyle(JarasTheme.green) }
             if remote.enabled { Button("Disable Remote") { remote.setHostEnabled(false) } }
         }.padding(20).frame(maxWidth: 420).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear { pin = remote.savedDirectorPIN; noticesPIN = remote.savedNoticesPIN }
@@ -66,10 +66,10 @@ struct PhoneRemoteHomeView: View {
                 VStack(spacing: 24) {
                     Spacer()
                     Image("CatLiveSplash").resizable().scaledToFit().frame(width: 180, height: 180)
-                    Text("Remote").font(.title2.bold()).foregroundStyle(JarasTheme.green)
+                    Text("Remote").font(.jarasTitle2.bold()).foregroundStyle(JarasTheme.green)
                     Text("Control or follow your PC’s session.").multilineTextAlignment(.center).foregroundStyle(JarasTheme.secondary)
                     Button { entering = true } label: {
-                        Text("Connect to PC").font(.headline)
+                        Text("Connect to PC").font(.jarasHeadline)
                             .frame(maxWidth: .infinity, minHeight: 48)
                             .foregroundStyle(.black)
                             .modifier(RemoteControlSurface(color: JarasTheme.green, radius: 10))
@@ -133,10 +133,10 @@ struct DAWRemoteClientView: View {
                         Color.black.opacity(0.65).ignoresSafeArea()
                         VStack(spacing: 16) {
                             ProgressView().tint(JarasTheme.green).scaleEffect(1.25)
-                            Text("Waiting for reconnection").font(.title3.bold())
+                            Text("Waiting for reconnection").font(.jarasTitle3.bold())
                             Text(verbatim: remote.peerName).foregroundStyle(JarasTheme.green)
                             Text("Open CatLive and enable Remote on your PC.")
-                                .font(.callout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                                .font(.jarasCallout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
                             Button("Exit Remote") { remote.stop(); dismiss() }.buttonStyle(.bordered)
                         }.padding(28).frame(maxWidth: 360)
                             .background(RemoteSurface.panel).clipShape(RoundedRectangle(cornerRadius: 16))
@@ -176,7 +176,7 @@ struct DAWRemoteClientView: View {
     private var accessPicker: some View {
         ScrollView {
         VStack(spacing: 20) {
-            Text(verbatim: remote.peerName).font(.title2.bold())
+            Text(verbatim: remote.peerName).font(.jarasTitle2.bold())
             Text(verbatim: "Escolha como acompanhar esta sessão\nChoose how to join this session").foregroundStyle(JarasTheme.secondary)
             let layout = UIDevice.current.userInterfaceIdiom == .phone ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 16))
             layout {
@@ -186,16 +186,16 @@ struct DAWRemoteClientView: View {
                     else { remote.requestAccess(.director) }
                 } label: {
                     VStack(spacing: 12) {
-                        Image(systemName: "slider.horizontal.3").font(.largeTitle)
-                        Text(verbatim: "Diretor · Director").font(.title3.bold())
-                        Text(verbatim: "Controle o CatLive no PC\nControl CatLive on your PC").font(.caption)
+                        Image(systemName: "slider.horizontal.3").font(.jarasLargeTitle)
+                        Text(verbatim: "Diretor · Director").font(.jarasTitle3.bold())
+                        Text(verbatim: "Controle o CatLive no PC\nControl CatLive on your PC").font(.jarasCaption)
                     }.frame(width: 220, height: 140).modifier(RemoteControlSurface(radius: 12))
                 }
                 Button { directorPIN = ""; remote.requestAccess(.observer) } label: {
                     VStack(spacing: 12) {
-                        Image(systemName: "eye").font(.largeTitle)
-                        Text(verbatim: "Observador · Observer").font(.title3.bold())
-                        Text(verbatim: UIDevice.current.userInterfaceIdiom == .phone ? "Repertório e teleprompters\nRepertoire and teleprompters" : "Acompanhe Setlist e teleprompters\nFollow the setlist and teleprompters").font(.caption)
+                        Image(systemName: "eye").font(.jarasLargeTitle)
+                        Text(verbatim: "Observador · Observer").font(.jarasTitle3.bold())
+                        Text(verbatim: UIDevice.current.userInterfaceIdiom == .phone ? "Repertório e teleprompters\nRepertoire and teleprompters" : "Acompanhe Setlist e teleprompters\nFollow the setlist and teleprompters").font(.jarasCaption)
                     }.frame(width: 220, height: 140).modifier(RemoteControlSurface(radius: 12))
                 }
                 Button {
@@ -204,27 +204,27 @@ struct DAWRemoteClientView: View {
                     else { remote.requestAccess(.notices) }
                 } label: {
                     VStack(spacing: 12) {
-                        Image(systemName: "text.bubble").font(.largeTitle)
-                        Text(verbatim: "Recados · Notices").font(.title3.bold())
-                        Text(verbatim: "Envie recados aos teleprompters\nSend notices to the teleprompters").font(.caption)
+                        Image(systemName: "text.bubble").font(.jarasLargeTitle)
+                        Text(verbatim: "Recados · Notices").font(.jarasTitle3.bold())
+                        Text(verbatim: "Envie recados aos teleprompters\nSend notices to the teleprompters").font(.jarasCaption)
                     }.frame(width: 220, height: 140).modifier(RemoteControlSurface(radius: 12))
                 }
             }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green).disabled(remote.authorizing)
             if let enteringMode {
                 VStack(spacing: 16) {
-                    Image(systemName: "lock.shield").font(.system(size: 30)).foregroundStyle(JarasTheme.green)
-                    Text(verbatim: enteringMode == .notices ? "Acesso Recados · Notices access" : "Acesso Diretor · Director access").font(.headline)
-                    Text(verbatim: remote.peerName).font(.subheadline).foregroundStyle(JarasTheme.secondary)
+                    Image(systemName: "lock.shield").font(.jarasSystem(size: 30)).foregroundStyle(JarasTheme.green)
+                    Text(verbatim: enteringMode == .notices ? "Acesso Recados · Notices access" : "Acesso Diretor · Director access").font(.jarasHeadline)
+                    Text(verbatim: remote.peerName).font(.jarasSubheadline).foregroundStyle(JarasTheme.secondary)
                     SecureField("", text: $directorPIN, prompt: Text(verbatim: "••••"))
                         .keyboardType(.numberPad).textContentType(.oneTimeCode)
-                        .font(.system(size: 30, weight: .semibold, design: .monospaced))
+                        .font(.jarasSystem(size: 30, weight: .semibold, design: .monospaced))
                         .multilineTextAlignment(.center).padding(12).frame(width: 180)
                         .background(RemoteSurface.background).clipShape(RoundedRectangle(cornerRadius: 10))
                         .accessibilityLabel("Senha de quatro dígitos · Four-digit PIN")
                         .onChange(of: directorPIN) { value in directorPIN = String(value.filter { $0.isASCII && $0.isNumber }.prefix(4)) }
                     Button { remote.requestAccess(enteringMode, pin: directorPIN) } label: {
                         HStack { if remote.authorizing { ProgressView() }; Text(verbatim: "Conectar · Connect"); Image(systemName: "arrow.right") }
-                            .font(.headline).padding(.vertical, 12).frame(maxWidth: .infinity)
+                            .font(.jarasHeadline).padding(.vertical, 12).frame(maxWidth: .infinity)
                     }.buttonStyle(.borderedProminent).tint(JarasTheme.green)
                         .disabled(directorPIN.count != 4 || remote.authorizing)
                 }.padding(20).frame(maxWidth: 330).background(RemoteSurface.panel)
@@ -243,37 +243,37 @@ struct DAWRemoteClientView: View {
             VStack(spacing: 0) {
                 HStack {
                     Button { remote.stop(); dismiss() } label: {
-                        Label { Text(verbatim: "Voltar · Back") } icon: { Image(systemName: "chevron.left") }.font(.system(size: 14, weight: .semibold))
+                        Label { Text(verbatim: "Voltar · Back") } icon: { Image(systemName: "chevron.left") }.font(.jarasSystem(size: 14, weight: .semibold))
                     }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.secondary)
                     Spacer()
                 }.padding(24)
                 Spacer(minLength: 12)
                 VStack(spacing: 22) {
-                    Image(systemName: "desktopcomputer").font(.system(size: 38, weight: .light))
+                    Image(systemName: "desktopcomputer").font(.jarasSystem(size: 38, weight: .light))
                         .foregroundStyle(JarasTheme.green).frame(width: 80, height: 80)
                         .background(JarasTheme.green.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 20))
                     VStack(spacing: 8) {
-                        Text(verbatim: "Conectar ao PC ou iPad · Connect to PC or iPad").font(.system(size: 23, weight: .semibold))
+                        Text(verbatim: "Conectar ao PC ou iPad · Connect to PC or iPad").font(.jarasSystem(size: 23, weight: .semibold))
                             .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                         Text(verbatim: "Conecte os aparelhos à mesma rede. Ative Remote no CatLive do PC ou no modo Nativo do iPad e escolha-o abaixo.\n\nConnect both devices to the same network. Enable Remote in CatLive on your PC or in Native mode on your iPad, then choose it below.")
-                            .font(.system(size: 14)).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                            .font(.jarasSystem(size: 14)).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)
                         Label { Text(verbatim: "Entre dispositivos Apple: conexão direta por Wi-Fi, sem roteador. Mantenha Wi-Fi e Bluetooth ligados nos dois aparelhos.\nBetween Apple devices: direct peer-to-peer Wi-Fi, without a router. Keep Wi-Fi and Bluetooth enabled on both devices.") } icon: { Image(systemName: "wifi") }
-                            .font(.system(size: 12, weight: .medium)).foregroundStyle(JarasTheme.green)
+                            .font(.jarasSystem(size: 12, weight: .medium)).foregroundStyle(JarasTheme.green)
                     }
                     VStack(spacing: 10) {
                         HStack {
-                            Text(verbatim: "Dispositivos disponíveis · Available devices").font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.secondary)
+                            Text(verbatim: "Dispositivos disponíveis · Available devices").font(.jarasSystem(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.secondary)
                             Spacer()
                             Button { remote.browse() } label: {
-                                Image(systemName: "arrow.clockwise").font(.system(size: 14, weight: .semibold)).frame(width: 32, height: 30)
+                                Image(systemName: "arrow.clockwise").font(.jarasSystem(size: 14, weight: .semibold)).frame(width: 32, height: 30)
                             }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green).disabled(remote.connecting)
                                 .accessibilityLabel(Text(verbatim: "Buscar PCs novamente · Refresh PCs"))
                         }
                         if remote.peers.isEmpty {
                             HStack(spacing: 10) {
                                 ProgressView().tint(JarasTheme.green)
-                                Text(verbatim: "Procurando PCs… · Searching for PCs…").font(.system(size: 14)).foregroundStyle(JarasTheme.secondary)
+                                Text(verbatim: "Procurando PCs… · Searching for PCs…").font(.jarasSystem(size: 14)).foregroundStyle(JarasTheme.secondary)
                             }.frame(maxWidth: .infinity).frame(height: 76).background(RemoteSurface.background).cornerRadius(10)
                         } else {
                             ScrollView {
@@ -281,11 +281,11 @@ struct DAWRemoteClientView: View {
                                     ForEach(remote.peers, id: \.self) { peer in
                                         Button { remote.connect(peer) } label: {
                                             HStack(spacing: 12) {
-                                                Image(systemName: "desktopcomputer").font(.system(size: 22)).foregroundStyle(JarasTheme.green)
-                                                Text(verbatim: peer.displayName).font(.system(size: 15, weight: .semibold)).lineLimit(2).multilineTextAlignment(.leading)
+                                                Image(systemName: "desktopcomputer").font(.jarasSystem(size: 22)).foregroundStyle(JarasTheme.green)
+                                                Text(verbatim: peer.displayName).font(.jarasSystem(size: 15, weight: .semibold)).lineLimit(2).multilineTextAlignment(.leading)
                                                 Spacer()
                                                 if remote.connecting && remote.peerName == peer.displayName { ProgressView().tint(JarasTheme.green) }
-                                                else { Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.secondary) }
+                                                else { Image(systemName: "chevron.right").font(.jarasSystem(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.secondary) }
                                             }.padding(16).background(RemoteSurface.background).cornerRadius(10)
                                                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(remote.connecting && remote.peerName == peer.displayName ? JarasTheme.green : JarasTheme.line))
                                         }.buttonStyle(RemoteFullAreaButtonStyle()).disabled(remote.connecting)
@@ -295,10 +295,10 @@ struct DAWRemoteClientView: View {
                         }
                         if remote.status.hasPrefix("Connection failed") {
                             Text(verbatim: "Não foi possível conectar. Aproxime os aparelhos e confira o Remote no PC.\nCould not connect. Bring the devices closer and check Remote on your PC.")
-                                .font(.system(size: 12)).foregroundStyle(JarasTheme.yellow)
+                                .font(.jarasSystem(size: 12)).foregroundStyle(JarasTheme.yellow)
                         } else if remote.status == "Disconnected" {
                             Text(verbatim: "Conexão encerrada. Escolha o PC para reconectar.\nDisconnected. Choose your PC to reconnect.")
-                                .font(.system(size: 12)).foregroundStyle(JarasTheme.secondary)
+                                .font(.jarasSystem(size: 12)).foregroundStyle(JarasTheme.secondary)
                         }
                     }
                 }.padding(28).frame(maxWidth: 520).modifier(RemoteControlSurface(radius: 18))
@@ -779,7 +779,7 @@ private struct IpadNativeRemoteToggle: View {
     var body: some View {
         Button { host.setHostEnabled(!host.enabled) } label: {
             Text(verbatim: "R\nE\nM\nO\nT\nE")
-                .font(.system(size: 10, weight: .heavy)).multilineTextAlignment(.center)
+                .font(.jarasSystem(size: 10, weight: .heavy)).multilineTextAlignment(.center)
                 .foregroundStyle(Color.black).frame(width: width, height: 94)
                 .modifier(RemoteControlSurface(color: host.enabled ? JarasTheme.green : Color(hex: 0xff3434), radius: 5))
                 .contentShape(Rectangle())
@@ -1131,13 +1131,13 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private func hideSidebarButton(width: CGFloat) -> some View {
         Button(action: hideSidebar) {
-            Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
+            Image(systemName: "chevron.left").font(.jarasSystem(size: 13, weight: .semibold))
                 .frame(width: width, height: RemoteSidebarMetrics.buttonSize).contentShape(Rectangle())
         }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green).accessibilityLabel("Hide sidebar")
     }
     private func restoreSidebarButton(height: CGFloat = 25) -> some View {
         Button(action: revealSidebar) {
-            Image(systemName: "chevron.right").font(.system(size: 15, weight: .bold))
+            Image(systemName: "chevron.right").font(.jarasSystem(size: 15, weight: .bold))
                 .frame(width: 44, height: height).contentShape(Rectangle())
         }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green)
             .accessibilityLabel("Show sidebar").accessibilityIdentifier("remote-show-sidebar")
@@ -1154,8 +1154,8 @@ private struct RemoteSidebarRail<Content: View>: View {
         Button { choosePhonePanel(panel) } label: {
             Group {
                 if panel == .sections { SectionButtonsIcon() }
-                else if let icon { Image(systemName: icon).font(.system(size: 18, weight: .semibold)) }
-                else { Text(verbatim: title).font(.system(size: 11, weight: .bold)) }
+                else if let icon { Image(systemName: icon).font(.jarasSystem(size: 18, weight: .semibold)) }
+                else { Text(verbatim: title).font(.jarasSystem(size: 11, weight: .bold)) }
             }.frame(width: 44, height: 44)
                 .modifier(RemoteControlSurface(color: phonePanel == panel ? JarasTheme.green.opacity(0.14) : nil, radius: 5))
         }.buttonStyle(RemoteFullAreaButtonStyle())
@@ -1164,7 +1164,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private var cancelSectionButton: some View {
         Button { action(.cancelSection) } label: {
-            Text("Cancel").font(.system(size: 12, weight: .bold))
+            Text("Cancel").font(.jarasSystem(size: 12, weight: .bold))
                 .frame(maxWidth: .infinity).frame(height: 28)
                 .contentShape(Rectangle())
         }.buttonStyle(RemoteCancelSectionButtonStyle())
@@ -1268,8 +1268,8 @@ private struct RemoteSidebarRail<Content: View>: View {
     private func phoneTransportButton(_ title: String, icon: String, active: Bool = false, color: Color = JarasTheme.green, perform: @escaping () -> Void) -> some View {
         Button(action: perform) {
             VStack(spacing: 3) {
-                Image(systemName: icon).font(.system(size: 14, weight: .semibold))
-                Text(LocalizedStringKey(title)).font(.system(size: 9, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
+                Image(systemName: icon).font(.jarasSystem(size: 14, weight: .semibold))
+                Text(LocalizedStringKey(title)).font(.jarasSystem(size: 9, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
             }.frame(maxWidth: .infinity, minHeight: 44)
                 .modifier(RemoteControlSurface(color: active ? color.opacity(0.35) : nil, radius: 5))
         }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(color)
@@ -1278,12 +1278,12 @@ private struct RemoteSidebarRail<Content: View>: View {
         VStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
-                    Text(state.playing ? "Now playing" : "Selected song").font(.system(size: 10, weight: .semibold))
+                    Text(state.playing ? "Now playing" : "Selected song").font(.jarasSystem(size: 10, weight: .semibold))
                     Spacer(minLength: 2)
-                    Text(verbatim: timeText).monospacedDigit().font(.system(size: 12, weight: .semibold))
+                    Text(verbatim: timeText).monospacedDigit().font(.jarasSystem(size: 12, weight: .semibold))
                 }.foregroundStyle(JarasTheme.secondary)
                 Text(verbatim: state.songDisplays?.current ?? selectedTimelineRegion?.name ?? state.songName)
-                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(JarasTheme.green).lineLimit(2)
+                    .font(.jarasSystem(size: 13, weight: .semibold)).foregroundStyle(JarasTheme.green).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }.padding(6).background(RemoteSurface.display).cornerRadius(5)
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.22), lineWidth: 1).allowsHitTesting(false))
@@ -1307,7 +1307,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     private var phoneInformationDisplay: some View {
         TransportInformationMessage(message: state.loop ? "Loop Ativo" : state.footerInformation ?? "",
             beatPhase: state.loop ? state.footerLoopBeatPhase : nil, steady: !state.loop)
-            .font(.system(size: 10, weight: .bold)).lineLimit(2).minimumScaleFactor(0.7)
+            .font(.jarasSystem(size: 10, weight: .bold)).lineLimit(2).minimumScaleFactor(0.7)
             .multilineTextAlignment(.center).accessibilityLabel("Information")
     }
     private var phoneRepertoire: some View {
@@ -1344,8 +1344,8 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private func phoneObserverDisplay(_ title: String, name: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(LocalizedStringKey(title)).font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(JarasTheme.secondary)
-            Text(verbatim: name).font(.system(size: 13, weight: .semibold)).foregroundStyle(color).lineLimit(2)
+            Text(LocalizedStringKey(title)).font(.jarasSystem(size: 10, weight: .bold, design: .rounded)).foregroundStyle(JarasTheme.secondary)
+            Text(verbatim: name).font(.jarasSystem(size: 13, weight: .semibold)).foregroundStyle(color).lineLimit(2)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(8).background(RemoteSurface.display).cornerRadius(5)
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.22), lineWidth: 1).allowsHitTesting(false))
     }
@@ -1426,8 +1426,8 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private func observerDisplay(_ title: String, value: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(verbatim: title).font(.caption2).foregroundStyle(JarasTheme.secondary)
-            Text(verbatim: value).font(.system(size: 15, weight: .semibold)).foregroundStyle(color).lineLimit(1)
+            Text(verbatim: title).font(.jarasCaption2).foregroundStyle(JarasTheme.secondary)
+            Text(verbatim: value).font(.jarasSystem(size: 15, weight: .semibold)).foregroundStyle(color).lineLimit(1)
         }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(RemoteSurface.display).cornerRadius(5)
     }
     private var observerSetlist: some View {
@@ -1472,7 +1472,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             HStack(spacing: sidebarHidden ? 0 : 1) {
                 RemoteSidebarRail(hidden: sidebarHidden, width: railWidth) {
                     Button { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } } label: {
-                        Image(systemName: "line.3.horizontal").font(.system(size: 17, weight: .semibold))
+                        Image(systemName: "line.3.horizontal").font(.jarasSystem(size: 17, weight: .semibold))
                             .frame(width: railButton, height: 44).contentShape(Rectangle())
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).accessibilityLabel("Abrir barra lateral")
                     Button { withAnimation(.easeOut(duration: 0.16)) {
@@ -1484,24 +1484,24 @@ private struct RemoteSidebarRail<Content: View>: View {
                         livePanelWidths = nil; trackResizeStart = nil; setlistResizeStart = nil
                     } } label: {
                         Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.jarasSystem(size: 15, weight: .semibold))
                             .foregroundStyle(prompterPanel != nil || mixerCollapsed ? Color(hex: 0xc44545) : JarasTheme.green)
                             .frame(width: railButton, height: 44).contentShape(Rectangle())
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true))
                         .accessibilityLabel(prompterPanel != nil || mixerCollapsed ? "Expandir Track-Mixer" : "Recolher Track-Mixer")
                         .accessibilityValue(prompterPanel != nil || mixerCollapsed ? "Hidden" : "Shown")
                     Button { showPrompter(prompterPanel == .first ? nil : .first) } label: {
-                        Text(verbatim: "TP1").font(.system(size: 10, weight: .bold)).frame(width: railButton, height: 44)
+                        Text(verbatim: "TP1").font(.jarasSystem(size: 10, weight: .bold)).frame(width: railButton, height: 44)
                     }.foregroundStyle(prompterPanel == .first ? JarasTheme.green : Color(hex: 0xff5555))
                         .accessibilityLabel("Teleprompter 1").accessibilityValue(prompterPanel == .first ? "On" : "Off")
                         .modifier(IpadTeleprompterRemoteHold(open: openTeleprompterRemote.map { callback in { callback(1) } }, surface: true))
                     Button { showPrompter(prompterPanel == .second ? nil : .second) } label: {
-                        Text(verbatim: "TP2").font(.system(size: 10, weight: .bold)).frame(width: railButton, height: 44)
+                        Text(verbatim: "TP2").font(.jarasSystem(size: 10, weight: .bold)).frame(width: railButton, height: 44)
                     }.foregroundStyle(prompterPanel == .second ? JarasTheme.green : Color(hex: 0xff5555))
                         .accessibilityLabel("Teleprompter 2").accessibilityValue(prompterPanel == .second ? "On" : "Off")
                         .modifier(IpadTeleprompterRemoteHold(open: openTeleprompterRemote.map { callback in { callback(2) } }, surface: true))
                     Button { noticesOpen = true } label: {
-                        Image(systemName: "text.bubble").font(.system(size: 15, weight: .medium)).frame(width: railButton, height: 44)
+                        Image(systemName: "text.bubble").font(.jarasSystem(size: 15, weight: .medium)).frame(width: railButton, height: 44)
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(JarasTheme.yellow).accessibilityLabel("Notices")
                         .popover(isPresented: $noticesOpen, attachmentAnchor: .rect(.bounds), arrowEdge: .leading) {
                             RemoteNativeNoticesView(close: { noticesOpen = false }, managesSubscription: false, remote: remote)
@@ -1511,7 +1511,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 .preferredColorScheme(.dark)
                         }
                     Button { timerOpen = true } label: {
-                        Image(systemName: "clock").font(.system(size: 16, weight: .medium)).frame(width: railButton, height: 44)
+                        Image(systemName: "clock").font(.jarasSystem(size: 16, weight: .medium)).frame(width: railButton, height: 44)
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(Color(hex: 0x409cff)).accessibilityLabel("Timer")
                         .popover(isPresented: $timerOpen, attachmentAnchor: .rect(.bounds), arrowEdge: .leading) {
                             VStack(spacing: 0) {
@@ -1521,7 +1521,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 }, close: { timerOpen = false })
                                 if state.timer == nil {
                                     Text("Atualize o CatLive no PC para sincronizar o cronômetro.")
-                                        .font(.caption).foregroundStyle(JarasTheme.secondary).padding(12).frame(width: 300)
+                                        .font(.jarasCaption).foregroundStyle(JarasTheme.secondary).padding(12).frame(width: 300)
                                 }
                             }.background(RemoteSurface.panel).preferredColorScheme(.dark)
                         }
@@ -1538,7 +1538,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(sectionsOpen && !sectionsInList ? JarasTheme.green : JarasTheme.secondary)
                         .accessibilityLabel("Section manager").accessibilityValue(sectionsOpen && !sectionsInList ? "Shown" : "Hidden")
                     Button { if let openSettings { openSettings() } else { settingsOpen = true } } label: {
-                        Image(systemName: "gearshape").font(.system(size: 17, weight: .semibold))
+                        Image(systemName: "gearshape").font(.jarasSystem(size: 17, weight: .semibold))
                             .frame(width: railButton, height: 44).contentShape(Rectangle())
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(settingsOpen ? JarasTheme.green : JarasTheme.secondary)
                         .accessibilityLabel("Configurações")
@@ -1710,7 +1710,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         return HStack(spacing: 10) {
             if sidebarHidden { restoreSidebarButton() }
             ResourceUsageView(memoryScope: .device)
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .font(.jarasSystem(size: 9, weight: .medium, design: .monospaced))
                 .fixedSize(horizontal: true, vertical: false)
                 .accessibilityElement(children: .combine)
             FooterSongDisplays(next: displays?.next, nextBPM: displays?.nextBPM,
@@ -1743,7 +1743,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                             Circle().stroke(lineWidth: 1.3).frame(width: 11, height: 11).offset(x: -3.5)
                             Circle().stroke(lineWidth: 1.3).frame(width: 11, height: 11).offset(x: 3.5)
                         }
-                    }.font(.system(size: 10, weight: .semibold)).frame(width: 58, height: 28)
+                    }.font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 58, height: 28)
                         .foregroundStyle(state.masterMono ? JarasTheme.green : JarasTheme.text)
                         .modifier(RemoteControlSurface(radius: 3))
                 }.buttonStyle(RemoteFullAreaButtonStyle()).accessibilityLabel("Master Stereo/Mono")
@@ -1761,12 +1761,12 @@ private struct RemoteSidebarRail<Content: View>: View {
                     .buttonStyle(RemoteNativeTrackButtonStyle(activeColor: state.masterSolo ? JarasTheme.yellow : nil, width: local ? 28 : 32, touchPadding: 0, height: 28))
             }.frame(maxWidth: .infinity, alignment: local ? .leading : .trailing).frame(height: 28)
             HStack {
-                Text(verbatim: "Master").font(.system(size: 11, weight: .semibold))
+                Text(verbatim: "Master").font(.jarasSystem(size: 11, weight: .semibold))
                     .foregroundStyle(remoteColor(state.masterNameColor ?? 0xffffff)).frame(maxWidth: .infinity)
                 RemotePeakReadout(decibels: state.masterPeakDB, name: "Master", project: state.project, song: state.song, target: nil, nameColor: state.masterNameColor ?? 0xffffff, reset: { action(.resetMeterPeak) }).equatable()
             }.frame(height: 14)
             HStack(spacing: 3) {
-                Text(remoteDecibelText(state.masterVolume)).font(.system(size: 10, weight: .semibold, design: .monospaced)).frame(width: 36, alignment: .leading)
+                Text(remoteDecibelText(state.masterVolume)).font(.jarasSystem(size: 10, weight: .semibold, design: .monospaced)).frame(width: 36, alignment: .leading)
                     .contentShape(Rectangle()).onTapGesture(count: 2) { action(.volume, value: 1) }
                 RemoteNativeSlider(value: DAWRemoteFaderScale.decibels(state.masterVolume), range: -60...12, height: 20) { action(.volume, value: DAWRemoteFaderScale.gain($0)) }
                     .accessibilityLabel("Master volume")
@@ -1809,14 +1809,14 @@ private struct RemoteSidebarRail<Content: View>: View {
                             Rectangle().fill(JarasTheme.line).frame(width: 1)
                             TransportInformationMessage(message: state.loop ? "Loop Ativo" : state.footerInformation ?? "",
                                 beatPhase: state.loop ? state.footerLoopBeatPhase : nil, steady: !state.loop)
-                                .font(.system(size: 10, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
+                                .font(.jarasSystem(size: 10, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
                                 .frame(width: max(0, (geometry.size.width - 1) * 0.25), height: 25).clipped()
                                 .accessibilityLabel("Information")
                         }
                     }.frame(height: 25).background(RemoteSurface.display).cornerRadius(5)
                     Text(verbatim: timeText).monospacedDigit().frame(width: local ? 72 : 82, height: 25)
                         .background(RemoteSurface.display).cornerRadius(5).accessibilityLabel("Tempo da agulha")
-                }.font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                }.font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
                 GeometryReader { geometry in
                 if local {
                     nativeTransportControls(width: geometry.size.width)
@@ -1833,7 +1833,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             }
             Button { confirmSave = true } label: {
                 Label(state.saving ? "Salvando…" : state.pendingSave ? "Save" : "Salvo", systemImage: state.pendingSave ? "square.and.arrow.down" : "checkmark")
-                    .font(.system(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
+                    .font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
                     .frame(width: local ? 56 : 72, height: 28)
                     .foregroundStyle(state.pendingSave ? JarasTheme.green : JarasTheme.secondary)
                     .modifier(RemoteControlSurface(color: state.pendingSave ? JarasTheme.green.opacity(0.16) : nil))
@@ -1920,9 +1920,9 @@ private struct RemoteSidebarRail<Content: View>: View {
             }.disabled(pitch ? state.pitchRegion == nil || (state.pitchSemitones ?? 0) <= -12 : state.bpm <= 60)
                 .accessibilityLabel(pitch ? "Diminuir afinação" : "Diminuir BPM")
             VStack(spacing: 0) {
-                Text(verbatim: pitch ? "Tuner" : "BPM").font(.system(size: 8))
+                Text(verbatim: pitch ? "Tuner" : "BPM").font(.jarasSystem(size: 8))
                 Text(verbatim: pitch ? String(format: "%+dst", state.pitchSemitones ?? 0) : String(format: "%.0f", state.bpm))
-                    .monospacedDigit().font(.system(size: 12, weight: .semibold))
+                    .monospacedDigit().font(.jarasSystem(size: 12, weight: .semibold))
             }.lineLimit(1).minimumScaleFactor(0.6).frame(maxWidth: .infinity)
             Button { if pitch { stepPitch(1) } else { stepTempo(1) } } label: {
                 Image(systemName: "plus").frame(width: buttonWidth, height: 32).contentShape(Rectangle())
@@ -1934,7 +1934,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private func topPrompterButton(_ panel: PrompterPanel, title: String, minimumHeight: CGFloat = 25) -> some View {
         Button { showPrompter(prompterPanel == panel ? nil : panel) } label: {
-            Text(verbatim: title).font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: minimumHeight)
+            Text(verbatim: title).font(.jarasSystem(size: 12, weight: .semibold)).frame(maxWidth: .infinity, minHeight: minimumHeight)
                 .modifier(RemoteControlSurface(radius: 5))
         }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(prompterPanel == panel ? JarasTheme.green : Color(hex: 0xff5555))
             .accessibilityLabel("Teleprompter \(panel.rawValue), controles superiores")
@@ -1946,14 +1946,14 @@ private struct RemoteSidebarRail<Content: View>: View {
                         .disabled(state.pitchRegion == nil || (state.pitchSemitones ?? 0) <= -12)
                         .accessibilityLabel("Diminuir afinação")
                     VStack(spacing: 0) {
-                        Text(verbatim: "Tuner").font(.system(size: 10))
+                        Text(verbatim: "Tuner").font(.jarasSystem(size: 10))
                         Text(String(format: "%+dst", state.pitchSemitones ?? 0)).monospacedDigit()
                     }.frame(minWidth: local ? 48 : 70, maxWidth: .infinity)
                     Button { stepPitch(1) } label: { Image(systemName: "plus").frame(width: 28, height: 32) }
                         .disabled(state.pitchRegion == nil || (state.pitchSemitones ?? 0) >= 12)
                         .accessibilityLabel("Aumentar afinação")
                 }.disabled(pitchStepPending)
-                .font(.system(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green)
+                .font(.jarasSystem(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.green)
                 .padding(.horizontal, 4).frame(minWidth: local ? 0 : 134, maxWidth: local ? .infinity : UIDevice.current.userInterfaceIdiom == .pad ? 134 : .infinity, minHeight: 32).background(RemoteSurface.display).cornerRadius(5)
     }
     private var bpmControl: some View {
@@ -1966,7 +1966,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 Image(systemName: "plus").frame(width: 28, height: 32)
             }.accessibilityLabel("Aumentar BPM")
         }.disabled(tempoStepPending)
-            .font(.system(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle())
+            .font(.jarasSystem(size: local ? 12 : 14, weight: .semibold)).buttonStyle(RemoteFullAreaButtonStyle())
             .frame(minWidth: local ? 0 : 134, maxWidth: local ? .infinity : UIDevice.current.userInterfaceIdiom == .pad ? 134 : .infinity, minHeight: 32)
             .foregroundStyle(JarasTheme.green).background(RemoteSurface.display).cornerRadius(5)
     }
@@ -2012,7 +2012,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     Button { addTrack?() } label: {
                         Text(verbatim: "Add").lineLimit(1).frame(maxWidth: .infinity, minHeight: 32).contentShape(Rectangle())
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(JarasTheme.green)
-                }.font(.system(size: 11, weight: .semibold)).padding(.horizontal, 6)
+                }.font(.jarasSystem(size: 11, weight: .semibold)).padding(.horizontal, 6)
                     .frame(height: RemoteNativeGridMetrics.rulerAreaHeight(local: local)).background(RemoteSurface.panel)
             } else { masterStrip }
             HStack(spacing: 1) {
@@ -2073,8 +2073,8 @@ private struct RemoteSidebarRail<Content: View>: View {
                         Text(verbatim: playlist.name).lineLimit(1)
                     } else { Text("All regions").lineLimit(1) }
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
-                }.font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.text)
+                    Image(systemName: "chevron.down").font(.jarasSystem(size: 10, weight: .bold))
+                }.font(.jarasSystem(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.text)
                     .padding(.horizontal, 9).frame(maxWidth: .infinity).frame(height: 30)
                     .background(RemoteSurface.panel)
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.45)))
@@ -2098,13 +2098,13 @@ private struct RemoteSidebarRail<Content: View>: View {
             HStack(spacing: 6) {
                 TextField("Pesquisar músicas", text: $search).textFieldStyle(.roundedBorder).focused($searchFocused)
                 Button { action(.toggleRegionAuto) } label: {
-                    Text(verbatim: "AUTO").font(.system(size: 9, weight: .bold)).frame(width: local ? 40 : 34, height: local ? 30 : 26)
+                    Text(verbatim: "AUTO").font(.jarasSystem(size: 9, weight: .bold)).frame(width: local ? 40 : 34, height: local ? 30 : 26)
                         .foregroundStyle(state.regionAuto == true ? Color.black : JarasTheme.secondary)
                         .modifier(RemoteControlSurface(color: state.regionAuto == true ? JarasTheme.green : nil, radius: 4))
                 }.buttonStyle(RemoteFullAreaButtonStyle()).accessibilityLabel("AUTO").accessibilityValue(state.regionAuto == true ? "On" : "Off")
                 if let addBlock {
                     Button(action: addBlock) {
-                        Text("Blocks").font(.system(size: 9, weight: .bold))
+                        Text("Blocks").font(.jarasSystem(size: 9, weight: .bold))
                             .foregroundStyle(JarasTheme.text).frame(width: 40, height: 30)
                             .modifier(RemoteControlSurface(color: nil, radius: 4))
                             .contentShape(Rectangle())
@@ -2114,7 +2114,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 }
                 if let toggleRegionStop {
                     Button(action: toggleRegionStop) {
-                        Text(verbatim: "STOP").font(.system(size: 9, weight: .bold))
+                        Text(verbatim: "STOP").font(.jarasSystem(size: 9, weight: .bold))
                             .foregroundStyle(stopsAtRegionEnd ? Color.red : JarasTheme.green)
                             .frame(width: local ? 40 : 38, height: local ? 30 : 26)
                             .overlay(RoundedRectangle(cornerRadius: 4).stroke(stopsAtRegionEnd ? Color.red : JarasTheme.green))
@@ -2243,12 +2243,12 @@ private struct RemoteSetlistRowLabel: View, Equatable {
     var body: some View {
         HStack(spacing: 8) {
             Rectangle().fill(active ? Color.red : queued ? (prepareOnly ? JarasTheme.green : .orange) : color).frame(width: 3)
-            if let number { Text(String(format: "%02d", number)).font(.system(size: 10, design: .monospaced)).foregroundStyle(JarasTheme.secondary) }
+            if let number { Text(String(format: "%02d", number)).font(.jarasSystem(size: 10, design: .monospaced)).foregroundStyle(JarasTheme.secondary) }
             Text(verbatim: title)
                 .font(fontStyle == 2 ? .system(size: 13, weight: .bold).italic() : .system(size: 13, weight: fontStyle == 0 ? .regular : .bold))
                 .foregroundStyle(nameColor).strikethrough(played, color: nameColor).lineLimit(2)
             Spacer(minLength: 0)
-            if let duration { Text(String(format: "%dm %02ds", duration / 60, duration % 60)).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(JarasTheme.text) }
+            if let duration { Text(String(format: "%dm %02ds", duration / 60, duration % 60)).font(.jarasSystem(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(JarasTheme.text) }
             if active { Image(systemName: "play.fill").foregroundStyle(JarasTheme.green) }
             if queued { Image(systemName: "arrow.right").foregroundStyle(JarasTheme.yellow) }
         }.padding(.horizontal, 8).padding(.vertical, 7).frame(maxWidth: .infinity, alignment: .leading).frame(minHeight: 38)
@@ -2282,14 +2282,14 @@ private struct NativeRemoteSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
-                Label("Configurações", systemImage: "gearshape").font(.headline)
+                Label("Configurações", systemImage: "gearshape").font(.jarasHeadline)
                 Spacer()
                 Button { dismiss() } label: {
                     Image(systemName: "xmark").frame(width: 28, height: 28)
                 }.buttonStyle(RemoteFullAreaButtonStyle()).accessibilityLabel("Close")
             }
             VStack(alignment: .leading, spacing: 10) {
-                Text("Language").font(.subheadline.weight(.semibold))
+                Text("Language").font(.jarasSubheadline.weight(.semibold))
                 Picker("Language", selection: $language) {
                     Text(verbatim: "English").tag("en")
                     Text(verbatim: "Português").tag("pt-BR")
@@ -2550,7 +2550,7 @@ private struct RemoteNativeTimeline: View {
                 let lanes = RegionLanes(parts: song.parts)
                 ForEach(song.parts.filter { $0.parentRegionID == nil && $0.startTime < end && $0.endTime > start }) { part in
                     let left = max(start, part.startTime), right = min(end, part.endTime)
-                    Text(verbatim: part.name).font(.system(size: 10, weight: .semibold)).lineLimit(1)
+                    Text(verbatim: part.name).font(.jarasSystem(size: 10, weight: .semibold)).lineLimit(1)
                         .foregroundStyle(remoteColor(state.timelineRegions.first(where: { $0.id == part.id })?.nameColor ?? 0xffffff)).padding(.horizontal, 4)
                         .frame(width: max(0, (right - left) / span * width), height: RemoteNativeGridMetrics.regionHeight, alignment: .leading)
                         .background(remoteColor(part.color ?? 0x705264).opacity(0.7)).clipped()
@@ -2570,7 +2570,7 @@ private struct RemoteNativeTimeline: View {
                         .offset(x: (left - start) / span * width, y: CGFloat(lanes.lanes[part.id] ?? 0) * RemoteNativeGridMetrics.regionHeight)
                 }
             } else if let region {
-                Text(verbatim: region.name).font(.system(size: 10, weight: .semibold)).lineLimit(1)
+                Text(verbatim: region.name).font(.jarasSystem(size: 10, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(remoteColor(region.nameColor ?? 0xffffff)).padding(.horizontal, 5)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .background(remoteColor(region.color).opacity(0.6))
@@ -2583,7 +2583,7 @@ private struct RemoteNativeTimeline: View {
             JarasTheme.display
             Canvas { context, size in
                 let widths = Dictionary(uniqueKeysWithValues: markers.map { marker in
-                    (marker.id, Double(context.resolve(Text(verbatim: marker.name).font(.system(size: 9, weight: .semibold)))
+                    (marker.id, Double(context.resolve(Text(verbatim: marker.name).font(.jarasSystem(size: 9, weight: .semibold)))
                         .measure(in: CGSize(width: .infinity, height: size.height)).width))
                 })
                 let ends = Dictionary(uniqueKeysWithValues: markers.map { ($0.id, min(end, regionEnds[$0.id] ?? end)) })
@@ -2595,7 +2595,7 @@ private struct RemoteNativeTimeline: View {
                     var flagContext = context
                     flagContext.clip(to: Path(rect))
                     drawMarkerFlag(marker, rect: rect, context: &flagContext)
-                    flagContext.draw(Text(verbatim: marker.name).font(.system(size: 9, weight: .semibold)).foregroundColor(.black),
+                    flagContext.draw(Text(verbatim: marker.name).font(.jarasSystem(size: 9, weight: .semibold)).foregroundColor(.black),
                         in: rect.insetBy(dx: marker.isSection ? 7 : 3, dy: 2))
                 }
             }
@@ -2838,7 +2838,7 @@ private struct IpadNativeWaveformRow: View {
             .frame(width: width, height: viewport.height).clipped()
             .overlay(alignment: .bottomTrailing) {
                 if !cache.preparingSourcePaths.isEmpty, items.contains(where: { cache.preparingSourcePaths.contains($0.sourcePath ?? $0.url.path) }) {
-                    Text("Loading waveforms…").font(.system(size: 9)).foregroundStyle(.white.opacity(0.8))
+                    Text("Loading waveforms…").font(.jarasSystem(size: 9)).foregroundStyle(.white.opacity(0.8))
                         .padding(3).background(JarasTheme.panel.opacity(0.85)).cornerRadius(3).padding(2)
                 }
             }.allowsHitTesting(false)
@@ -2896,15 +2896,15 @@ private struct RemoteNativeGridItem: View, Equatable {
         let itemColor = silenced ? Color(white: 0.55) : remoteColor(color)
         VStack(spacing: 0) {
             HStack(spacing: 4) {
-                Button(action: mute) { Text(verbatim: "M").font(.system(size: local ? GridSelectionItem.headerFontSize : 11 * GridSelectionItem.headerScale, weight: .bold)).frame(width: (local ? 17 : 28) * GridSelectionItem.headerScale, height: headerHeight) }
+                Button(action: mute) { Text(verbatim: "M").font(.jarasSystem(size: local ? GridSelectionItem.headerFontSize : 11 * GridSelectionItem.headerScale, weight: .bold)).frame(width: (local ? 17 : 28) * GridSelectionItem.headerScale, height: headerHeight) }
                     .buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(clip.muted == true ? Color.black : Color.white)
                     .background(clip.muted == true ? Color.red : Color.black.opacity(0.28)).cornerRadius(2)
                     .accessibilityLabel("Mute do item " + clip.name)
                 if let openFX {
-                    Button("FX", action: openFX).font(.system(size: 10, weight: .semibold))
+                    Button("FX", action: openFX).font(.jarasSystem(size: 10, weight: .semibold))
                         .frame(width: local ? 20 * GridSelectionItem.headerScale : 32, height: headerHeight).contentShape(Rectangle()).buttonStyle(.plain)
                 }
-                Text(verbatim: clip.name).font(.system(size: local ? GridSelectionItem.headerFontSize : 10 * GridSelectionItem.headerScale, weight: .semibold)).lineLimit(1)
+                Text(verbatim: clip.name).font(.jarasSystem(size: local ? GridSelectionItem.headerFontSize : 10 * GridSelectionItem.headerScale, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(remoteColor(nameColor)).frame(maxWidth: .infinity, alignment: .leading)
             }.padding(.horizontal, 3).frame(width: width, height: headerHeight, alignment: .leading).clipped()
                 .background(Color.black.opacity(0.16))
@@ -2964,25 +2964,25 @@ private struct RemoteNativeItemEditor: View {
             HStack(spacing: 9) {
                 RoundedRectangle(cornerRadius: 2).fill(remoteColor(color)).frame(width: 3, height: 32)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Item volume").font(.system(size: 10, weight: .medium)).foregroundStyle(JarasTheme.secondary)
-                    Text(verbatim: clip.name).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                    Text("Item volume").font(.jarasSystem(size: 10, weight: .medium)).foregroundStyle(JarasTheme.secondary)
+                    Text(verbatim: clip.name).font(.jarasSystem(size: 13, weight: .semibold)).lineLimit(2)
                 }
                 Spacer(minLength: 4)
                 Button(action: close) {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                    Image(systemName: "xmark").font(.jarasSystem(size: 11, weight: .semibold))
                         .frame(width: 28, height: 28).background(RemoteSurface.display).cornerRadius(5)
                 }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.secondary).accessibilityLabel("Close")
             }
             HStack(spacing: 10) {
                 Text(verbatim: (clip.gain == 0 ? "−∞" : String(format: "%+.1f", decibels)) + " dB")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .font(.jarasSystem(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(JarasTheme.green).frame(width: 67, height: 34)
                     .background(RemoteSurface.display).cornerRadius(5)
                 RemoteNativeSlider(value: decibels, range: -60...24, height: 36) {
                     setGain($0 <= -60 ? 0 : pow(10, $0 / 20))
                 }.accessibilityLabel("Volume do item " + clip.name)
                 Button(action: mute) {
-                    Text(verbatim: "M").font(.system(size: 13, weight: .bold)).frame(width: 38, height: 34)
+                    Text(verbatim: "M").font(.jarasSystem(size: 13, weight: .bold)).frame(width: 38, height: 34)
                         .foregroundStyle(clip.muted == true ? Color.white : JarasTheme.text)
                         .modifier(RemoteControlSurface(color: clip.muted == true ? Color.red.opacity(0.8) : nil, radius: 5))
                         .overlay(RoundedRectangle(cornerRadius: 5).stroke(clip.muted == true ? Color.red : JarasTheme.line))
@@ -3011,7 +3011,7 @@ private func remoteColor(_ hex: UInt32) -> Color {
             RemoteNativeSlider(value: pan, range: -1...1, height: 16) { show.send(.pan, value: $0) }
                 .accessibilityLabel("Master pan")
             Text(verbatim: abs(pan) < 0.005 ? "Center" : String(format: "%@-%d%%", pan < 0 ? "L" : "R", Int((abs(pan) * 100).rounded())))
-                .font(.system(size: 7, weight: .medium, design: .monospaced)).lineLimit(1)
+                .font(.jarasSystem(size: 7, weight: .medium, design: .monospaced)).lineLimit(1)
                 .foregroundStyle(JarasTheme.text).frame(height: 9)
         }
     }
@@ -3148,7 +3148,7 @@ private struct RemoteNativeTrackButtonStyle: ButtonStyle {
     var touchPadding: CGFloat = 6
     var height: CGFloat = 22
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 10, weight: .semibold))
+        configuration.label.font(.jarasSystem(size: 10, weight: .semibold))
             .foregroundStyle(activeColor == nil ? Color.white : Color.black)
             .frame(width: width, height: height)
             .modifier(RemoteControlSurface(color: activeColor?.opacity(configuration.isPressed ? 0.75 : 1), radius: 3))
@@ -3192,9 +3192,9 @@ private struct RemoteNativePlaylistPicker: View, Equatable {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "list.bullet").foregroundStyle(JarasTheme.green)
-                Text(verbatim: "Playlists").font(.system(size: 16, weight: .semibold))
+                Text(verbatim: "Playlists").font(.jarasSystem(size: 16, weight: .semibold))
                 Spacer()
-                Button(action: close) { Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).frame(width: 30, height: 30) }
+                Button(action: close) { Image(systemName: "xmark").font(.jarasSystem(size: 12, weight: .bold)).frame(width: 30, height: 30) }
                     .buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.secondary).accessibilityLabel("Fechar")
             }.padding(.horizontal, 14).frame(height: 54).background(RemoteSurface.panel)
             Rectangle().fill(JarasTheme.line).frame(height: 1)
@@ -3212,9 +3212,9 @@ private struct RemoteNativePlaylistPicker: View, Equatable {
         Button { choose(id) } label: {
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 2).fill(id == selected ? JarasTheme.green : JarasTheme.secondary.opacity(0.4)).frame(width: 3, height: 22)
-                Text(verbatim: name).font(.system(size: 14, weight: id == selected ? .semibold : .medium))
+                Text(verbatim: name).font(.jarasSystem(size: 14, weight: id == selected ? .semibold : .medium))
                     .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                if id == selected { Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(JarasTheme.green) }
+                if id == selected { Image(systemName: "checkmark").font(.jarasSystem(size: 12, weight: .bold)).foregroundStyle(JarasTheme.green) }
             }.padding(.horizontal, 12).frame(height: 42)
                 .background(RemoteSurface.fill(id == selected ? JarasTheme.green.opacity(0.10) : JarasTheme.panel))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -3277,7 +3277,7 @@ private struct RemoteSetlistEntryEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text(colored ? "Edit song" : "Rename playlist").font(.title3.bold())
+            Text(colored ? "Edit song" : "Rename playlist").font(.jarasTitle3.bold())
             TextField("Name", text: $name).textFieldStyle(.roundedBorder)
             if colored { ColorPicker("Color", selection: $color, supportsOpacity: false) }
             HStack {
@@ -3337,7 +3337,7 @@ private struct RemotePeakReadout: View, Equatable {
     var body: some View {
         Button(action: reset) {
             Text(verbatim: decibels.map { String(format: "%+.2f", $0) } ?? "")
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .font(.jarasSystem(size: 8, weight: .bold, design: .monospaced))
                 .foregroundStyle(remoteColor(nameColor))
                 .frame(width: 34, height: 12)
                 .frame(height: 22).contentShape(Rectangle())
@@ -3407,14 +3407,14 @@ private struct RemoteNativeMixerRow: View, Equatable {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 3) {
                 if compact || !hasVolume {
-                    if isGroup { Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)) }
-                    Text(String(format: "%02d  %@", number, track.name)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    if isGroup { Image(systemName: "folder.fill").font(.jarasSystem(size: 11)).foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)) }
+                    Text(String(format: "%02d  %@", number, track.name)).font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1)
                         .foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if !compact && hasVolume { Spacer(minLength: 0) }
                 HStack(spacing: 3) {
                 if !local || kind == .standard {
-                if isGroup && !compact { Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)) }
+                if isGroup && !compact { Image(systemName: "folder.fill").font(.jarasSystem(size: 11)).foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)) }
                 if patchVisible, let openPatch { Button("Patch", action: openPatch).buttonStyle(RemoteNativeTrackButtonStyle(activeColor: nil, width: 44)) }
                 if fxVisible, let openFX { Button("FX", action: openFX).buttonStyle(RemoteNativeTrackButtonStyle(activeColor: nil)) }
                 if let localShow, let row = localShow.current?.tracks.first(where: { $0.id == track.id }), row.kind == .standard {
@@ -3425,7 +3425,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
                         RemoteNativeSlider(value: track.pan, range: -1...1, height: 16) { send(.pan, $0) }
                             .accessibilityLabel("Pan " + track.name)
                         Text(verbatim: abs(track.pan) < 0.005 ? "Center" : String(format: "%@-%d%%", track.pan < 0 ? "L" : "R", Int((abs(track.pan) * 100).rounded())))
-                            .font(.system(size: 7, weight: .medium, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.8)
+                            .font(.jarasSystem(size: 7, weight: .medium, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.8)
                             .foregroundStyle(JarasTheme.text).frame(height: 9)
                     }.frame(width: local ? 52.5 : 42, height: 28)
                 }
@@ -3448,7 +3448,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
             }
             if hasVolume {
             HStack(spacing: 3) {
-                Text(remoteDecibelText(track.volume)).font(.system(size: 10, weight: .semibold, design: .monospaced))
+                Text(remoteDecibelText(track.volume)).font(.jarasSystem(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(JarasTheme.text).frame(width: 36, alignment: .leading)
                     .contentShape(Rectangle()).onTapGesture(count: 2) { send(.volume, 1) }
                 RemoteNativeSlider(value: DAWRemoteFaderScale.decibels(track.volume), range: -60...12, height: 22, linked: track.linkedTrack != nil) { send(.volume, DAWRemoteFaderScale.gain($0)) }
@@ -3462,7 +3462,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
                     RemotePeakReadout(decibels: track.peakDB, name: track.name, project: project, song: song, target: track.id, nameColor: track.nameColor ?? 0xffffff, reset: { send(.resetMeterPeak, 0) }).equatable()
                         .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
                 }
-                Text(String(format: "%02d  %@", number, track.name)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                Text(String(format: "%02d  %@", number, track.name)).font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)).frame(maxWidth: .infinity, alignment: .leading)
             }
             }
@@ -3612,17 +3612,17 @@ private final class IpadMixerMeterView: UIView {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Recent projects").font(.title2.bold())
+                    Text("Recent projects").font(.jarasTitle2.bold())
                     Label { Text(verbatim: computerName) } icon: { Image(systemName: "desktopcomputer") }
-                        .font(.subheadline).foregroundStyle(JarasTheme.secondary)
+                        .font(.jarasSubheadline).foregroundStyle(JarasTheme.secondary)
                 }
                 Spacer()
                 Button(action: close) {
-                    Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).frame(width: 36, height: 36)
+                    Image(systemName: "xmark").font(.jarasSystem(size: 15, weight: .semibold)).frame(width: 36, height: 36)
                         .background(RemoteSurface.panel).clipShape(Circle())
                 }.buttonStyle(RemoteFullAreaButtonStyle()).accessibilityLabel("Close")
             }
-            Text("Choose a project to open on the PC.").font(.callout).foregroundStyle(JarasTheme.secondary)
+            Text("Choose a project to open on the PC.").font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
             if let browser {
                 if browser.recent.isEmpty {
                     Text("No recent projects on this PC.").foregroundStyle(JarasTheme.secondary)
@@ -3633,15 +3633,15 @@ private final class IpadMixerMeterView: UIView {
                             ForEach(browser.recent) { project in
                                 Button { requested = project.id; open(project.id) } label: {
                                     HStack(spacing: 12) {
-                                        Image(systemName: "doc.text").font(.system(size: 22)).foregroundStyle(JarasTheme.green)
-                                        Text(verbatim: project.name).font(.body.weight(.semibold)).lineLimit(2)
+                                        Image(systemName: "doc.text").font(.jarasSystem(size: 22)).foregroundStyle(JarasTheme.green)
+                                        Text(verbatim: project.name).font(.jarasBody.weight(.semibold)).lineLimit(2)
                                         Spacer()
                                         if project.current {
-                                            Text("Open").font(.caption.weight(.semibold)).foregroundStyle(JarasTheme.green)
+                                            Text("Open").font(.jarasCaption.weight(.semibold)).foregroundStyle(JarasTheme.green)
                                         } else if requested == project.id && browser.busy {
                                             ProgressView().tint(JarasTheme.green)
                                         } else {
-                                            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(JarasTheme.secondary)
+                                            Image(systemName: "chevron.right").font(.jarasCaption.weight(.semibold)).foregroundStyle(JarasTheme.secondary)
                                         }
                                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                                         .background(RemoteSurface.panel).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -3654,14 +3654,14 @@ private final class IpadMixerMeterView: UIView {
                 if !browser.status.isEmpty {
                     HStack(spacing: 10) {
                         if browser.busy { ProgressView().tint(JarasTheme.green) }
-                        Text(LocalizedStringKey(browser.status)).font(.callout).foregroundStyle(JarasTheme.secondary)
+                        Text(LocalizedStringKey(browser.status)).font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
                     }
                 }
                 if !browser.error.isEmpty {
-                    Text(LocalizedStringKey(browser.error)).font(.callout).foregroundStyle(JarasTheme.yellow)
+                    Text(LocalizedStringKey(browser.error)).font(.jarasCallout).foregroundStyle(JarasTheme.yellow)
                 }
             } else {
-                Text("Update CatLive on the PC to browse recent projects.").font(.callout).foregroundStyle(JarasTheme.secondary)
+                Text("Update CatLive on the PC to browse recent projects.").font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3869,7 +3869,7 @@ private final class IpadMixerMeterView: UIView {
             Button { controller.step(1) } label: {
                 Image(systemName: "chevron.down").frame(width: 28, height: 36)
             }.accessibilityLabel("Rolar pistas para baixo")
-        }.font(.system(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.green)
+        }.font(.jarasSystem(size: 12, weight: .semibold)).foregroundStyle(JarasTheme.green)
             .buttonStyle(RemoteFullAreaButtonStyle()).frame(maxHeight: .infinity).background(RemoteSurface.display)
             .contentShape(Rectangle())
             .simultaneousGesture(DragGesture(minimumDistance: 3)
@@ -4040,7 +4040,7 @@ private struct RemoteNativeProjectionImage: View {
         VStack(spacing: 6) {
             if !fullscreen {
             HStack {
-                Text("TP-\(index)").font(.system(size: 15, weight: .semibold)).foregroundStyle(JarasTheme.green)
+                Text("TP-\(index)").font(.jarasSystem(size: 15, weight: .semibold)).foregroundStyle(JarasTheme.green)
                 Spacer()
                 if let toggleSetlist {
                     Button(action: toggleSetlist) {
@@ -4057,7 +4057,7 @@ private struct RemoteNativeProjectionImage: View {
                 projection(content, state: state)
             } else if remote.remoteState?.timer == nil {
                 Text("Atualize o CatLive no PC para usar este painel.")
-                    .font(.callout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                    .font(.jarasCallout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
                     .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ProgressView("Aguardando teleprompter…").frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -4136,11 +4136,11 @@ private struct RemoteNativeNoticeOverlay: View {
     var body: some View {
         RemoteNoticePanel {
             HStack {
-                Text("Messages").font(.headline)
+                Text("Messages").font(.jarasHeadline)
                 Spacer()
                 if let notices {
                     Text(notices.pinned ? "∞" : "\(notices.remaining)s")
-                        .font(.caption).monospacedDigit().foregroundStyle(JarasTheme.secondary)
+                        .font(.jarasCaption).monospacedDigit().foregroundStyle(JarasTheme.secondary)
                 }
                 Button(action: closeNotices) {
                     Text("Fechar").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
@@ -4163,7 +4163,7 @@ private struct RemoteNativeNoticeOverlay: View {
                     }.buttonStyle(RemoteNoticeActionStyle())
                         .foregroundStyle(notices.pinned ? JarasTheme.yellow : JarasTheme.text)
                     Spacer(minLength: 0)
-                }.font(.system(size: 13, weight: .semibold))
+                }.font(.jarasSystem(size: 13, weight: .semibold))
             }
         } content: {
             if let notices {
@@ -4174,7 +4174,7 @@ private struct RemoteNativeNoticeOverlay: View {
                 }.pickerStyle(.segmented).onChange(of: slot) { value in
                     draft = value < 0 ? globalDraft : notices.templates[value]
                 }
-                TextEditor(text: $draft).font(.system(size: 18)).scrollContentBackground(.hidden)
+                TextEditor(text: $draft).font(.jarasSystem(size: 18)).scrollContentBackground(.hidden)
                     .frame(height: 150).padding(5).background(RemoteSurface.display).cornerRadius(6)
                     .onChange(of: draft) { value in
                         var bounded = String(value.prefix(500))
@@ -4183,9 +4183,9 @@ private struct RemoteNativeNoticeOverlay: View {
                         if slot < 0 { globalDraft = bounded }
                     }
                 HStack {
-                    Text("\(draft.count) / 500").font(.caption).foregroundStyle(JarasTheme.secondary)
+                    Text("\(draft.count) / 500").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                     if slot >= 0 && notices.imageSlots[slot] {
-                        Label("Imagem salva", systemImage: "photo").font(.caption).foregroundStyle(JarasTheme.secondary)
+                        Label("Imagem salva", systemImage: "photo").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                     }
                     Spacer()
                     if slot >= 0 { Button("Salvar recado") { command(.noticeSaveTemplate, value: Double(slot), text: draft) } }
@@ -4196,7 +4196,7 @@ private struct RemoteNativeNoticeOverlay: View {
                 }.toggleStyle(.button).tint(JarasTheme.green)
             } else if remote.remoteState?.timer == nil {
                 Text("Atualize o CatLive no PC para usar este painel.")
-                    .font(.callout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                    .font(.jarasCallout).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
                     .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else { ProgressView("Aguardando recados…").frame(maxWidth: .infinity, maxHeight: .infinity) }
         }.background(RemoteSurface.panel).foregroundStyle(JarasTheme.text)
@@ -4345,7 +4345,7 @@ struct NoticeSendButtonLabel: View {
     let phase: NoticeSendFeedback.Phase
     var body: some View {
         Label("Send", systemImage: phase.accepted ? "checkmark" : "paperplane.fill")
-            .font(.system(size: 13, weight: .semibold))
+            .font(.jarasSystem(size: 13, weight: .semibold))
     }
 }
 struct NoticeSendButtonStyle: ButtonStyle {
@@ -4375,7 +4375,7 @@ struct NoticeSendFeedbackView: View {
                 Image(systemName: feedback.phase.accepted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .accessibilityHidden(true)
             }
-            Text(LocalizedStringKey(feedback.phase.message)).font(.system(size: 12, weight: .medium))
+            Text(LocalizedStringKey(feedback.phase.message)).font(.jarasSystem(size: 12, weight: .medium))
                 .fixedSize(horizontal: false, vertical: true)
         }.foregroundStyle(feedback.phase.failed ? Color.red : JarasTheme.green)
             .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
@@ -4562,9 +4562,9 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
         Group {
         if compact {
             HStack(spacing: 3) {
-                Image(systemName: "clock").foregroundStyle(Color.blue).font(.system(size: 13))
+                Image(systemName: "clock").foregroundStyle(Color.blue).font(.jarasSystem(size: 13))
                 if timer.running {
-                    RemoteNativeTimerReadout(timer: timer).font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    RemoteNativeTimerReadout(timer: timer).font(.jarasSystem(size: 14, weight: .semibold, design: .monospaced))
                         .frame(maxWidth: .infinity)
                 } else {
                     ForEach(0..<3, id: \.self) { index in
@@ -4586,13 +4586,13 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
         } else {
         VStack(spacing: 12) {
             HStack {
-                Text("Timer").font(.system(size: 15, weight: .semibold))
+                Text("Timer").font(.jarasSystem(size: 15, weight: .semibold))
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 30, height: 30) }
                     .buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.secondary).accessibilityLabel("Close")
             }
             RemoteNativeTimerReadout(timer: timer)
-                .font(.system(size: 26, weight: .semibold, design: .monospaced))
+                .font(.jarasSystem(size: 26, weight: .semibold, design: .monospaced))
                 .frame(maxWidth: .infinity, minHeight: 42).background {
             #if os(iOS)
             RemoteSurface.display
@@ -4605,14 +4605,14 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
                 ForEach(0..<3, id: \.self) { index in
                     VStack(spacing: 5) {
                         Text(LocalizedStringKey(["Hours", "Minutes", "Seconds"][index]))
-                            .font(.system(size: 11)).foregroundStyle(JarasTheme.secondary)
+                            .font(.jarasSystem(size: 11)).foregroundStyle(JarasTheme.secondary)
                         durationField(index)
                     }.frame(maxWidth: .infinity)
                 }
             }.disabled(timer.running)
             Button(action: toggleTimer) {
                 Text(LocalizedStringKey(timer.running ? "Stop" : "Start"))
-                    .font(.system(size: 14, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 38)
+                    .font(.jarasSystem(size: 14, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 38)
             }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(timer.running ? Color.white : JarasTheme.green)
                 .background {
                     #if os(iOS)
@@ -4664,7 +4664,7 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
             digits[index] = String(value.filter { $0.isASCII && $0.isNumber }.prefix(2))
         }))
         .textFieldStyle(.plain).focused($focused, equals: index)
-        .font(.system(size: compact ? 14 : 22, weight: .semibold, design: .monospaced))
+        .font(.jarasSystem(size: compact ? 14 : 22, weight: .semibold, design: .monospaced))
         .multilineTextAlignment(.center).frame(height: compact ? 30 : 40).background {
             #if os(iOS)
             RemoteSurface.display

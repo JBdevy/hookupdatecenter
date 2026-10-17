@@ -350,19 +350,19 @@ struct TeleprompterRemoteView: View {
     var body: some View {
         VStack(spacing: 16) {
             HStack {
-                Text(verbatim: "TP \(remote.index) · " + JarasLocalization.string("TP Remoto")).font(.headline)
+                Text(verbatim: "TP \(remote.index) · " + JarasLocalization.string("TP Remoto")).font(.jarasHeadline)
                 Spacer()
                 Toggle("Enabled", isOn: Binding(get: { remote.enabled }, set: { remote.setEnabled($0); copied = false })).toggleStyle(.switch).tint(JarasTheme.green).accessibilityLabel("Enabled")
             }
             if let image = remote.qrCode {
                 Image(decorative: image, scale: 1).interpolation(.none).resizable().scaledToFit().frame(width: 190, height: 190).padding(10).background(Color.white).cornerRadius(6)
             } else {
-                Image(systemName: "qrcode").font(.system(size: 100)).foregroundStyle(JarasTheme.secondary).frame(width: 210, height: 210)
+                Image(systemName: "qrcode").font(.jarasSystem(size: 100)).foregroundStyle(JarasTheme.secondary).frame(width: 210, height: 210)
             }
             Text(remote.enabled ? "Open this link on a device connected to the same network." : "Enable TP Remote to share the teleprompter.")
-                .font(.caption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary).multilineTextAlignment(.center)
             HStack(spacing: 8) {
-                Text(remote.link.isEmpty ? "—" : remote.link).font(.system(size: 11, design: .monospaced)).lineLimit(2).textSelection(.enabled)
+                Text(remote.link.isEmpty ? "—" : remote.link).font(.jarasSystem(size: 11, design: .monospaced)).lineLimit(2).textSelection(.disabled)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(8).background(JarasTheme.display).cornerRadius(5)
                 Button(copied ? "Copied" : "Copy link") {
                     #if os(macOS)
@@ -373,7 +373,7 @@ struct TeleprompterRemoteView: View {
                     copied = true
                 }.disabled(remote.link.isEmpty)
             }
-            if !remote.message.isEmpty { Text(LocalizedStringKey(remote.message)).font(.caption).foregroundStyle(JarasTheme.yellow) }
+            if !remote.message.isEmpty { Text(LocalizedStringKey(remote.message)).font(.jarasCaption).foregroundStyle(JarasTheme.yellow) }
             HStack { Spacer(); Button("Close", action: close).keyboardShortcut(.cancelAction) }
         }.padding(20).frame(maxWidth: 420).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)

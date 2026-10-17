@@ -27,6 +27,12 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         if (name == "folderOpen") {
             line(3, 10, 21, 10);
         }
+    } else if (name == "lock" || name == "unlock") {
+        p.addRoundedRectangle(5, 11, 14, 11, 2);
+        p.startNewSubPath(8, 11); p.lineTo(8, 7);
+        if (name == "lock") { p.cubicTo(8, 1, 16, 1, 16, 7); p.lineTo(16, 11); }
+        else { p.cubicTo(8, 1, 17, 1, 17, 7); }
+        line(12, 15, 12, 18);
     } else if (name == "menu") {
         for (int y : {6, 12, 18})
             line(3, (float)y, 21, (float)y);

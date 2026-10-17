@@ -49,6 +49,7 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"play", "Play", 0, ""},
         {"stop", "Stop", 0, ""},
         {"pause", "Pause", 0, ""},
+        {"transportFadeout", "Fadeout", 0, ""},
         {"repeatPlayback", "Repeat", 0, "R"},
         {"subPlayStop", "SubPlay/Stop", 0, "shift + spacebar"},
         {"subPlay", "Sub Play", 0, ""},
@@ -85,6 +86,36 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"createTempoMarker", "Create tempo marker", 5, "ctrl + shift + T"},
         {"toggleTracks", "Tracks show/hide", 5, "F1"}};
     return definitions;
+}
+inline KeyPress normalizedActionKey(const KeyPress &key) {
+    auto code = key.getKeyCode();
+    if (key.getModifiers().isCtrlDown() && code > 0 && code <= 26)
+        code = 'A' + code - 1;
+    if (code >= 'a' && code <= 'z') code -= 'a' - 'A';
+    return KeyPress(code, key.getModifiers(), key.getTextCharacter());
+}
+inline bool transportFadeoutReservedKey(const KeyPress &pressed) {
+    const auto raw = pressed.getKeyCode();
+    // Space belongs to transport under every modifier combination. Focus,
+    // dismissal and deletion keys must keep their normal editor behaviour.
+    if (raw == KeyPress::spaceKey || raw == KeyPress::tabKey || raw == KeyPress::returnKey ||
+        raw == KeyPress::escapeKey || raw == KeyPress::deleteKey || raw == KeyPress::backspaceKey)
+        return true;
+    const auto key = normalizedActionKey(pressed);
+    const auto code = key.getKeyCode();
+    const auto mods = key.getModifiers();
+    if ((code == KeyPress::F4Key && mods.isAltDown()) || code == KeyPress::F12Key) return true;
+    if (mods.isCtrlDown() && !mods.isAltDown()) {
+        if (code == 'S' || code == 'Z' || code == 'Y') return true;
+        if (!mods.isShiftDown() && String("ACVDXNOIQ,").containsChar((juce_wchar)code)) return true;
+    }
+    if (code == 'M' && mods.isShiftDown() && !mods.isCtrlDown() && !mods.isAltDown()) return true;
+    // Protect original defaults even when users removed/reassigned them.
+    for (const auto &definition : actionDefinitions())
+        if (String(definition.defaultKey).isNotEmpty() &&
+            normalizedActionKey(KeyPress::createFromDescription(definition.defaultKey)) == key)
+            return true;
+    return false;
 }
 // Device callbacks enqueue only three MIDI bytes. Learning, persistence and project
 // commands run on the message thread, never in the audio/MIDI callback.
@@ -137,6 +168,11 @@ class ActionBindings final : public ChangeBroadcaster,
             return {};
         return String((int)num(midi, "status") == 0xb0 ? "CC " : "Note ") +
                String((int)num(midi, "number")) + " / Ch " + String((int)num(midi, "channel"));
+    }
+    String inputLabel(const String &id, const String &kind) const {
+        for (const auto &definition : actionDefinitions())
+            if (id == definition.id) return inputLabel(definition, kind);
+        return {};
     }
     void begin(const String &action, const String &kind) {
         learning = action;
@@ -193,7 +229,18 @@ class ActionBindings final : public ChangeBroadcaster,
             return false;
         }
         if (kind == "keyboard" && input.toString().isNotEmpty()) {
-            const auto key = KeyPress::createFromDescription(input.toString());
+            const auto parsed = KeyPress::createFromDescription(input.toString());
+            if (!parsed.isValid()) {
+                error = String::fromUTF8("Escolha uma tecla ou combinação válida.");
+                sendChangeMessage();
+                return false;
+            }
+            if (id == "transportFadeout" && transportFadeoutReservedKey(parsed)) {
+                error = String::fromUTF8("Este atalho é reservado pelo CatLive e não pode acionar o Fadeout.");
+                sendChangeMessage();
+                return false;
+            }
+            const auto key = normalizedActionKey(parsed);
             if (key.getModifiers().isCtrlDown() &&
                 String("QONSIYZ,").containsChar((juce_wchar)key.getKeyCode())) {
                 error = String::fromUTF8("Este atalho pertence ao menu de projetos e edição.");
@@ -206,8 +253,12 @@ class ActionBindings final : public ChangeBroadcaster,
             if (id == definition.id)
                 continue;
             const auto b = binding(definition);
-            if (!input.isVoid() && input.toString().isNotEmpty() &&
-                JSON::toString(get(b, Identifier(kind))) == JSON::toString(input)) {
+            const auto existing = get(b, Identifier(kind));
+            const bool same = kind == "keyboard" && existing.isString() && input.isString()
+                ? normalizedActionKey(KeyPress::createFromDescription(existing.toString())) ==
+                    normalizedActionKey(KeyPress::createFromDescription(input.toString()))
+                : JSON::toString(existing) == JSON::toString(input);
+            if (!input.isVoid() && input.toString().isNotEmpty() && same) {
                 error = String::fromUTF8("Já está atribuído a ") + definition.title;
                 sendChangeMessage();
                 return false;

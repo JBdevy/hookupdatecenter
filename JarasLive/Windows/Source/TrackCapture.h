@@ -1,6 +1,15 @@
 #pragma once
 #include "Common.h"
+#include "AudioFormats.h"
+#include "MP3Writer.h"
+#include "RecordingEncoding.h"
 namespace catlive {
+// JUCE's AIFF writer implements signed PCM32, but its advertised depth list
+// omits 32. Expose the implemented encoding for parity with Advanced on Mac.
+class RecordingAiffFormat final : public AiffAudioFormat {
+  public:
+    Array<int> getPossibleBitDepths() override { return {8, 16, 24, 32}; }
+};
 // Prepared on the control thread, fed only by the audio callback, finalized after
 // detaching from that callback. File writes run on the disk thread.
 class TrackCapture {
@@ -11,12 +20,19 @@ class TrackCapture {
         int input = 1, channels = 2;
         bool bus = false, midi = false;
         int bits = 0;
+        bool floatingPoint = false;
+        int bitrate = 320;
     };
     struct Take {
         ID track;
         File file;
         double duration = 0;
         std::optional<jaras::MIDIItem> midi;
+        // MP3 is finalized on Session's worker after capture is detached. Keep
+        // file pointing to recoverable PCM until encoding succeeds completely.
+        File encodedFile;
+        int bitrate = 320;
+        int encoderDelaySamples = -1;
     };
     TrackCapture(const std::vector<Target> &specs, double sampleRate, int bits, double tempo)
         : rate(sampleRate), bpm(tempo) {
@@ -31,24 +47,31 @@ class TrackCapture {
             Entry entry;
             entry.target = spec;
             if (!spec.midi) {
+                const bool mp3 = spec.file.hasFileExtension("mp3");
+                entry.captureFile = mp3 ? spec.file.withFileExtension(".capture.wav") : spec.file;
                 if (spec.file.exists())
                     throw std::runtime_error("Recording file already exists.");
-                spec.file.getParentDirectory().createDirectory();
-                auto stream = std::make_unique<FileOutputStream>(spec.file);
-                if (!stream->openedOk())
+                if (entry.captureFile.exists())
+                    throw std::runtime_error("Recording capture file already exists.");
+                entry.captureFile.getParentDirectory().createDirectory();
+                std::unique_ptr<OutputStream> stream = entry.captureFile.createOutputStream();
+                if (!stream)
                     throw std::runtime_error("Unable to create recording.");
                 WavAudioFormat wav;
-                AiffAudioFormat aiff;
-                AudioFormat &format = spec.file.hasFileExtension("aif;aiff")
+                RecordingAiffFormat aiff;
+                AudioFormat &format = entry.captureFile.hasFileExtension("aif;aiff")
                                           ? static_cast<AudioFormat &>(aiff)
                                           : static_cast<AudioFormat &>(wav);
-                auto *writer = format.createWriterFor(stream.get(), rate, (unsigned)spec.channels,
-                                                      spec.bits ? spec.bits : bits, {}, 0);
+                const auto options = AudioFormatWriterOptions{}.withSampleRate(rate)
+                    .withNumChannels(spec.channels).withBitsPerSample(mp3 ? 32 : spec.bits ? spec.bits : bits)
+                    .withSampleFormat(mp3 || spec.floatingPoint
+                        ? AudioFormatWriterOptions::SampleFormat::floatingPoint
+                        : AudioFormatWriterOptions::SampleFormat::integral);
+                auto writer = format.createWriterFor(stream, options);
                 if (!writer)
                     throw std::runtime_error("Invalid recording encoding.");
-                stream.release();
                 entry.writer =
-                    std::make_unique<AudioFormatWriter::ThreadedWriter>(writer, thread, 131072);
+                    std::make_unique<AudioFormatWriter::ThreadedWriter>(writer.release(), thread, 131072);
             }
             entries.push_back(std::move(entry));
         }
@@ -116,7 +139,11 @@ class TrackCapture {
             entry.writer.reset();
             Take take;
             take.track = entry.target.track;
-            take.file = entry.target.file;
+            take.file = entry.target.midi ? File() : entry.captureFile;
+            if (entry.target.file.hasFileExtension("mp3")) {
+                take.encodedFile = entry.target.file;
+                take.bitrate = recordingEncoding::normalizedBitrate(entry.target.bitrate);
+            }
             take.duration = (double)frames / rate;
             if (entry.target.midi) {
                 jaras::MIDIItem item;
@@ -174,9 +201,53 @@ class TrackCapture {
         return takes;
     }
 
+    // Worker thread only. Never encode MP3 from the realtime callback.
+    // Failure preserves the full WAV capture and never publishes a partial MP3.
+    static void finalizeEncoding(Take &take) {
+        if (take.encodedFile == File() || take.midi || take.duration <= 0) return;
+        if (take.encodedFile.exists()) throw std::runtime_error("O arquivo MP3 de destino já existe.");
+        AudioFormatManager formats;
+        registerAudioFormats(formats);
+        auto reader = std::unique_ptr<AudioFormatReader>(formats.createReaderFor(take.file));
+        if (!reader || reader->sampleRate <= 0 || reader->numChannels < 1 || reader->numChannels > 2)
+            throw std::runtime_error("Não foi possível ler o áudio capturado para MP3.");
+        const double sourceRate = reader->sampleRate;
+        const int channels = (int)reader->numChannels;
+        // Encode MPEG-1 MP3 rates. Keep compatible device
+        // rates; downsample higher-rate captures without changing take duration.
+        const int outputRate = sourceRate == 32000 || sourceRate == 44100 || sourceRate == 48000
+                                   ? (int)sourceRate : 48000;
+        const int64 outputFrames = (int64)std::llround(reader->lengthInSamples * outputRate / sourceRate);
+        TemporaryFile temporary(take.encodedFile);
+        {
+            MP3Writer encoder(temporary.getFile(), outputRate, channels, take.bitrate);
+            take.encoderDelaySamples = encoder.encoderDelaySamples();
+            AudioFormatReaderSource source(reader.release(), true);
+            ResamplingAudioSource resampler(&source, false, channels);
+            resampler.setResamplingRatio(sourceRate / outputRate);
+            resampler.prepareToPlay(2048, outputRate);
+            AudioBuffer<float> block(channels, 2048);
+            for (int64 position = 0; position < outputFrames; position += block.getNumSamples()) {
+                const int count = (int)std::min<int64>(block.getNumSamples(), outputFrames - position);
+                block.clear();
+                resampler.getNextAudioBlock(AudioSourceChannelInfo(&block, 0, count));
+                encoder.write(block, count);
+            }
+            resampler.releaseResources();
+            encoder.finish();
+        }
+        if (take.encodedFile.exists() || !temporary.overwriteTargetFileWithTemporary())
+            throw std::runtime_error("Não foi possível concluir o arquivo MP3.");
+        const auto capture = take.file;
+        take.file = take.encodedFile;
+        take.encodedFile = File();
+        capture.deleteFile();
+    }
+
   private:
     struct Entry {
         Target target;
+        File captureFile;
         std::unique_ptr<AudioFormatWriter::ThreadedWriter> writer;
     };
     struct Event {

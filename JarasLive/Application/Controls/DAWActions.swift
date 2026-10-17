@@ -1,6 +1,7 @@
 import Foundation
 
 public enum DAWAction: String, Codable, CaseIterable, Sendable {
+    case transportFadeout
     case selectTrack, muteTrack, soloTrack, volumeTrack, panTrack
     case muteMaster, soloMaster, volumeMaster
     case tempoDown, tempoUp, tapTempo, playStop, play, stop, pause, repeatPlayback, subPlayStop, subPlay, addTrack
@@ -18,6 +19,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     public var repeats: Bool { [.tempoDown, .tempoUp, .nextRegion, .previousRegion, .nextTimelinePoint, .previousTimelinePoint].contains(self) }
     public var title: String {
         switch self {
+        case .transportFadeout: return "Fadeout"
         case .selectTrack: return "Select Track"
         case .muteTrack: return "Mute Track"
         case .soloTrack: return "Solo Track"
@@ -66,7 +68,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         let command: UInt = 1 << 20, shift: UInt = 1 << 17, option: UInt = 1 << 19
         let key: UInt16, modifiers: UInt, label: String
         switch self {
-        case .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts: return nil
+        case .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts: return nil
         case .muteTrack: (key, modifiers, label) = (46, 0, "M")
         case .soloTrack: (key, modifiers, label) = (1, shift, "⇧S")
         case .tempoDown: (key, modifiers, label) = (27, 0, "−")
@@ -163,11 +165,33 @@ public struct DAWActionBindings: Codable, Equatable {
             }
             return binding
         }
+        if let index = entries.firstIndex(where: { $0.action == .transportFadeout }), let input = entries[index].keyboard,
+           Self.reservedForFadeout(input) || entries.contains(where: { $0.action != .transportFadeout && $0.matches(input) }) {
+            entries[index].keyboard = nil
+        }
+    }
+    /// Fadeout never takes over a standard editing/transport shortcut, even
+    /// when that shortcut has been reassigned in Actions.
+    public static func reservedForFadeout(_ input: ControlInput) -> Bool {
+        guard input.kind == "keyboard", let key = input.key else { return false }
+        if key == 49 { return true }
+        if DAWAction.allCases.filter({ $0 != .transportFadeout }).contains(where: { DAWActionBinding(action: $0).matches(input) }) { return true }
+        let flags = input.modifiers ?? 0
+        let command: UInt = 1 << 20, control: UInt = 1 << 18, shift: UInt = 1 << 17, option: UInt = 1 << 19
+        if (flags == command || flags == control || flags == command | shift || flags == control | shift),
+           [0,1,2,4,6,7,8,9,12,13,17,31,35,45,43,44,46].contains(key) { return true }
+        if flags == 0, [36,48,51,53,76,115,116,117,119,121,123,124,125,126].contains(key) { return true }
+        if flags == shift && [15, 46].contains(key) { return true }
+        if key == 46 && flags == option { return true }
+        if key == 3 && flags == command | control { return true }
+        if key == 4 && flags == command | option { return true }
+        return false
     }
     public func binding(_ action: DAWAction) -> DAWActionBinding { entries.first { $0.action == action }! }
     public func matching(_ input: ControlInput) -> DAWAction? { entries.first { $0.matches(input) }?.action }
     @discardableResult public mutating func setInput(_ input: ControlInput?, action: DAWAction, kind: String) -> Bool {
         guard let index = entries.firstIndex(where: { $0.action == action }), input == nil || conflict(input!, excluding: action) == nil else { return false }
+        if action == .transportFadeout, let input, Self.reservedForFadeout(input) { return false }
         if kind == "keyboard" { guard !action.fixedKeyboard && !action.continuous else { return false }; entries[index].keyboard = input } else {
             guard action.supportsMIDI, !action.continuous || input == nil || (input?.kind == "midi" && input?.status == 0xb0) else { return false }
             entries[index].midi = input
@@ -179,6 +203,7 @@ public struct DAWActionBindings: Codable, Equatable {
               kind != "keyboard" || (!action.fixedKeyboard && !action.continuous),
               kind != "midi" || (action.supportsMIDI && (!action.continuous || input.status == 0xb0)) else { return false }
         let conflicts = entries.filter { $0.action != action && $0.matches(input) }
+        if action == .transportFadeout, kind == "keyboard", Self.reservedForFadeout(input) || !conflicts.isEmpty { return false }
         guard kind != "keyboard" || !conflicts.contains(where: { $0.action.fixedKeyboard }) else { return false }
         for conflict in conflicts { setInput(nil, action: conflict.action, kind: kind) }
         return setInput(input, action: action, kind: kind)
@@ -215,7 +240,7 @@ public enum DAWActionCategory: String, CaseIterable, Identifiable {
 extension DAWAction {
     public var category: DAWActionCategory {
         switch self {
-        case .playStop, .play, .stop, .pause, .subPlay, .subPlayStop, .repeatPlayback, .tempoDown, .tempoUp, .tapTempo, .tunerDown, .tunerUp: return .transport
+        case .transportFadeout, .playStop, .play, .stop, .pause, .subPlay, .subPlayStop, .repeatPlayback, .tempoDown, .tempoUp, .tapTempo, .tunerDown, .tunerUp: return .transport
         case .volumeMaster, .volumeTrack, .panTrack: return .volume
         case .muteMaster, .muteTrack: return .mute
         case .soloMaster, .soloTrack: return .solo

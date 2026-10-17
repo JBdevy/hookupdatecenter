@@ -194,7 +194,7 @@ struct ExternalPluginBrowser: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("External").font(.headline)
+                Text("External").font(.jarasHeadline)
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
@@ -210,9 +210,9 @@ struct ExternalPluginBrowser: View {
                     ForEach(matches) { plugin in
                         Button { selected = plugin.id; close() } label: {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text(verbatim: plugin.name).font(.system(size: 12, weight: .semibold)).lineLimit(2)
+                                Text(verbatim: plugin.name).font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(2)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                Text(verbatim: plugin.vendor).font(.system(size: 10)).foregroundStyle(JarasTheme.secondary).lineLimit(1)
+                                Text(verbatim: plugin.vendor).font(.jarasSystem(size: 10)).foregroundStyle(JarasTheme.secondary).lineLimit(1)
                             }.padding(10).frame(maxWidth: .infinity).frame(height: 80)
                                 .background(selected == plugin.id ? JarasTheme.green.opacity(0.16) : JarasTheme.display, in: RoundedRectangle(cornerRadius: 6))
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected == plugin.id ? JarasTheme.green : JarasTheme.line))
@@ -237,13 +237,13 @@ struct PluginSettings: View {
     @ObservedObject private var catalog = PluginCatalog.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("VST3 paths").font(.headline)
+            Text("VST3 paths").font(.jarasHeadline)
             ForEach(catalog.paths, id: \.self) { path in
-                HStack { Text(verbatim: path).lineLimit(2).font(.caption); Spacer(); Button { catalog.removePath(path) } label: { Image(systemName: "minus.circle") }.disabled(catalog.scanning) }
+                HStack { Text(verbatim: path).lineLimit(2).font(.jarasCaption); Spacer(); Button { catalog.removePath(path) } label: { Image(systemName: "minus.circle") }.disabled(catalog.scanning) }
             }
             HStack { Button("Add path") { catalog.addPath() }; Button("Scan plugins") { catalog.scan() }.disabled(catalog.scanning); if catalog.scanning { ProgressView().controlSize(.small) } }
-            if !catalog.status.isEmpty { Text(verbatim: JarasLocalization.string(catalog.status)).font(.caption).foregroundStyle(JarasTheme.secondary) }
-            ForEach(catalog.plugins) { plugin in HStack { Text(verbatim: plugin.name); Spacer(); Text(verbatim: plugin.vendor).foregroundStyle(JarasTheme.secondary) }.font(.caption) }
+            if !catalog.status.isEmpty { Text(verbatim: JarasLocalization.string(catalog.status)).font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
+            ForEach(catalog.plugins) { plugin in HStack { Text(verbatim: plugin.name); Spacer(); Text(verbatim: plugin.vendor).foregroundStyle(JarasTheme.secondary) }.font(.jarasCaption) }
         }
     }
 }

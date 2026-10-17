@@ -1,6 +1,7 @@
 #pragma once
 #include "Session.h"
 #include "StageState.h"
+#include "VideoFadeSurface.h"
 namespace catlive {
 class Projection final : public Component, private Timer {
   public:
@@ -19,8 +20,10 @@ class Projection final : public Component, private Timer {
     Session &session;
     String role;
     VideoComponent video{false};
+    VideoFadeSurface videoFade;
     TextEditor textView;
     Image image;
+    float mediaOpacity = 1;
     StageState *stage = nullptr;
     String lyrics;
     int profile = 1;
@@ -28,13 +31,11 @@ class Projection final : public Component, private Timer {
     void paintStage(Graphics &);
     juce::Rectangle<int> mediaBounds() const;
     Label status;
-    TextButton import{"Import"}, fontUp{"A+"}, fontDown{"A-"};
-    std::unique_ptr<FileChooser> chooser;
+    TextButton fontUp{"A+"}, fontDown{"A-"};
     ID clipID;
     float textSize = 36;
     bool loaded = false;
     void timerCallback() override;
-    void chooseMedia();
     void toggleFullScreen();
     juce::Rectangle<int> windowedBounds;
     int windowedTitleHeight = 32;

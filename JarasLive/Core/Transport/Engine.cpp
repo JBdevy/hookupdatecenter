@@ -932,6 +932,21 @@ void Engine::execute(const Command& c) {
                 clip.channelMode = c.value == 0 ? std::nullopt : std::optional<int>(int(c.value)); return;
             }
         throw std::invalid_argument("Unknown clip");
+    case CommandKind::clipFadeInCurve:
+    case CommandKind::clipFadeInSCurve:
+    case CommandKind::clipFadeOutCurve:
+    case CommandKind::clipFadeOutSCurve:
+        if (!std::isfinite(c.value) || c.value < -1 || c.value > 1) throw std::invalid_argument("Invalid fade curve");
+        for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
+            if (clip.id == c.target) {
+                if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Special items cannot have fades");
+                if (c.kind == CommandKind::clipFadeInCurve) clip.fadeInCurve = c.value;
+                if (c.kind == CommandKind::clipFadeInSCurve) clip.fadeInSCurve = c.value;
+                if (c.kind == CommandKind::clipFadeOutCurve) clip.fadeOutCurve = c.value;
+                if (c.kind == CommandKind::clipFadeOutSCurve) clip.fadeOutSCurve = c.value;
+                return;
+            }
+        throw std::invalid_argument("Unknown clip");
     case CommandKind::clipFadeIn:
     case CommandKind::clipFadeOut:
         if (!std::isfinite(c.value) || c.value < 0) throw std::invalid_argument("Invalid item fade");

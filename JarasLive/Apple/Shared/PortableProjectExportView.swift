@@ -35,20 +35,20 @@ import UniformTypeIdentifiers
     private var excluded: [String] { PortableProjectPackage.removedExternalPlugins(in: show.snapshot.project) }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(exportTitle).font(.title2.bold())
+            Text(exportTitle).font(.jarasTitle2.bold())
             Text("Create a .ziplive package with this project, its media and native instruments.")
-                .font(.callout).foregroundStyle(JarasTheme.secondary)
+                .font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
             Label("External VST3 plug-ins will not be included. Native effects will be preserved.", systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(JarasTheme.yellow).fixedSize(horizontal: false, vertical: true)
             if !excluded.isEmpty {
                 ScrollView { VStack(alignment: .leading, spacing: 5) {
-                    ForEach(Array(excluded.enumerated()), id: \.offset) { _, value in Text(verbatim: value).font(.caption) }
+                    ForEach(Array(excluded.enumerated()), id: \.offset) { _, value in Text(verbatim: value).font(.jarasCaption) }
                 }.frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 130)
             }
             if requiresSave {
                 Text("Save the project before exporting.").foregroundStyle(JarasTheme.yellow)
             }
-            if busy { ProgressView(value: progress).tint(JarasTheme.green); Text("Exporting project…").font(.caption) }
+            if busy { ProgressView(value: progress).tint(JarasTheme.green); Text("Exporting project…").font(.jarasCaption) }
             if let exported {
                 Label("Project exported successfully.", systemImage: "checkmark.circle.fill").foregroundStyle(JarasTheme.green)
                 #if os(macOS)
@@ -57,7 +57,7 @@ import UniformTypeIdentifiers
                 Button("Save to Files") { exportFile = ExportFile(url: exported) }
                 #endif
             }
-            if !error.isEmpty { Text(LocalizedStringKey(error)).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            if !error.isEmpty { Text(LocalizedStringKey(error)).font(.jarasCaption).foregroundStyle(.red).textSelection(.disabled) }
             HStack {
                 Button(busy ? "Cancel" : "Close") { if busy { worker?.cancel() } else { if let close { close() } else { dismiss() } } }
                     .keyboardShortcut(.cancelAction)

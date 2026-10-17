@@ -7,6 +7,15 @@ class AdvancedPanel final : public Component {
     AdvancedPanel(Appearance &, Session &, std::function<void(String)>);
     void paint(Graphics &) override;
     void resized() override;
+    bool keyPressed(const KeyPress &key) override {
+        if(key.getModifiers().isCtrlDown() && !key.getModifiers().isAltDown() &&
+           (key.getKeyCode()=='Z'||key.getKeyCode()=='z'||key.getKeyCode()==26) && !dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent())) {
+            try {if(key.getModifiers().isShiftDown())session.redo();else session.undo();}
+            catch(const std::exception &e){if(error)error(String::fromUTF8(e.what()));}
+            return true;
+        }
+        return false;
+    }
 
   private:
     Appearance &appearance;

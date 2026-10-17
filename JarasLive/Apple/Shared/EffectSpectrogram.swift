@@ -69,7 +69,7 @@ struct EffectSpectrogram: View {
     let track: UUID?
     let effect: String
     @StateObject private var display = SpectrumDisplay()
-    private let clock = Timer.publish(every: 1.0/15,on: .main,in: .common).autoconnect()
+    @State private var clock = Timer.publish(every: 1.0/15,on: .main,in: .common).autoconnect()
     var body: some View {
         ZStack {
             JarasTheme.display
@@ -78,7 +78,7 @@ struct EffectSpectrogram: View {
                 HStack { Text("20 kHz"); Spacer(); Text("OUTPUT · SPECTROGRAM") }
                 Spacer()
                 HStack { Text("20 Hz"); Spacer(); Text("17 s") }
-            }.font(.system(size: 8,weight: .medium,design: .monospaced)).foregroundStyle(.white.opacity(0.55)).padding(8)
+            }.font(.jarasSystem(size: 8,weight: .medium,design: .monospaced)).foregroundStyle(.white.opacity(0.55)).padding(8)
         }.frame(minHeight: 120,idealHeight: 155,maxHeight: .infinity).clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(JarasTheme.line))
             .onReceive(clock) { _ in display.update(StemAudioPlayback.shared.spectrumFrame(track,effect: effect),rate: AudioDeviceSettings.shared.sampleRate) }

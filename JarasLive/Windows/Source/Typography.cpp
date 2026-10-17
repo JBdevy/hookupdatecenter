@@ -2,13 +2,14 @@
 #include <BinaryData.h>
 namespace catlive::theme {
 namespace {
-// Calibrated against NSFont.systemFont at 13 pt using the real project labels.
-// Inter is redistributable with the app; the Mac still uses its native system font.
-constexpr float capScale = .9684564f;
+// Inter, bundled on both desktop platforms.
+// Compact Windows text requested for the notebook display. Keep component
+// bounds and the application's DPI/UI scale independent of typography.
+constexpr float windowsTextScale = .9f;
 Font calibrated(Typeface::Ptr face, float points) {
     // Keep the outlines at their natural aspect ratio. Stretching every glyph
     // to match another font's widths makes small text less legible on Windows.
-    return Font(FontOptions(face).withPointHeight(points * capScale));
+    return Font(FontOptions(face).withPointHeight(points * windowsTextScale));
 }
 }
 Font mediumFont(float size) {

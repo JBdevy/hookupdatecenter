@@ -17,7 +17,7 @@ class ModalSheet final : public Component {
         close.getProperties().set("textClose", heading == "Resolume");
         setComponentID("modalSheet");
         addAndMakeVisible(*content);
-        content->setComponentEffect(&roundedBottom);
+        content->setCachedComponentImage(new RoundedContentRenderer(*content));
         addAndMakeVisible(close);
         close.setVisible(!selfContained);
         close.onClick = [this] {
@@ -27,7 +27,6 @@ class ModalSheet final : public Component {
         setWantsKeyboardFocus(true);
         setFocusContainerType(FocusContainerType::focusContainer);
     }
-    ~ModalSheet() override { content->setComponentEffect(nullptr); }
     void paint(Graphics &g) override {
         g.fillAll(Colours::black.withAlpha(.48f));
         DropShadow(Colours::black.withAlpha(.3f), 20, {0, 8}).drawForRectangle(g, frame);
@@ -68,16 +67,28 @@ class ModalSheet final : public Component {
     }
     static void open(Component &parent, String name, std::unique_ptr<Component> panel, int width,
                      int height) {
+        const SafePointer<Component> previousFocus(Component::getCurrentlyFocusedComponent());
         auto *sheet = new ModalSheet(std::move(name), std::move(panel), width, height);
         parent.addAndMakeVisible(sheet);
         sheet->setBounds(parent.getLocalBounds());
         sheet->toFront(true);
         sheet->enterModalState(
-            true, ModalCallbackFunction::create([safe = SafePointer<Component>(&parent)](int) {
+            true, ModalCallbackFunction::create([safe = SafePointer<Component>(&parent), previousFocus](int) {
+                if (previousFocus && previousFocus->isShowing() && !previousFocus->isCurrentlyBlockedByAnotherModalComponent()) {
+                    previousFocus->grabKeyboardFocus(); return;
+                }
                 if (safe && safe->isShowing() && !safe->isCurrentlyBlockedByAnotherModalComponent())
                     safe->grabKeyboardFocus();
             }),
             true);
+        if (sheet->content->getWantsKeyboardFocus()) sheet->content->grabKeyboardFocus();
+    }
+    static void resizeContent(Component &child, int height) {
+        if (auto *sheet = child.findParentComponentOfClass<ModalSheet>()) {
+            sheet->preferredHeight = height;
+            sheet->resized();
+            sheet->repaint();
+        }
     }
     static void dismiss(Component &child) {
         if (auto *sheet = child.findParentComponentOfClass<ModalSheet>()) {
@@ -99,17 +110,29 @@ class ModalSheet final : public Component {
     }
 
   private:
-    class RoundedBottom final : public ImageEffectFilter {
-        void applyEffect(Image &source, Graphics &g, float scale, float alpha) override {
+    // Use the component painting hook solely to clip its children. An image
+    // effect rendered the entire panel to a bitmap first, then sampled that
+    // bitmap again at fractional desktop origins (notably at 90% UI scale).
+    // Draw text and controls directly at the destination's physical scale.
+    class RoundedContentRenderer final : public CachedComponentImage {
+      public:
+        explicit RoundedContentRenderer(Component &component) : owner(component) {}
+        void paint(Graphics &g) override {
             Path clip;
-            clip.addRoundedRectangle(0, 0, (float)source.getWidth(), (float)source.getHeight(),
-                                     16 * scale, 16 * scale, false, false, true, true);
+            clip.addRoundedRectangle(0, 0, (float)owner.getWidth(), (float)owner.getHeight(),
+                                     16, 16, false, false, true, true);
             Graphics::ScopedSaveState saved(g);
             g.reduceClipRegion(clip);
-            g.setOpacity(alpha);
-            g.drawImageAt(source, 0, 0);
+            // paintEntireComponent bypasses this painting hook, as it does
+            // for JUCE's normal CachedComponentImage implementation.
+            owner.paintEntireComponent(g, false);
         }
-    } roundedBottom;
+        bool invalidateAll() override { return true; }
+        bool invalidate(const juce::Rectangle<int> &) override { return true; }
+        void releaseResources() override {}
+      private:
+        Component &owner;
+    };
     class Close final : public Button {
       public:
         Close() : Button("Fechar") {}

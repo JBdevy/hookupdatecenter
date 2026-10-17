@@ -97,7 +97,7 @@ private struct AutomationChoice: Identifiable {
                                                 next.envelopes.append(envelope); selected = envelope.id; next.lanesVisible = true; next.enabled = true
                                             }
                                         }
-                                    })) { Text(verbatim: choice.name).font(.system(size: 12)).lineLimit(2) }
+                                    })) { Text(verbatim: choice.name).font(.jarasSystem(size: 12)).lineLimit(2) }
                                     Spacer(minLength: 0)
                                 }.padding(5)
                             }
@@ -118,7 +118,7 @@ private struct AutomationChoice: Identifiable {
                         }
                     }.frame(minHeight: 130)
                     if track == nil, let envelope = settings.envelopes.first(where: { $0.id == selected }) ?? settings.envelopes.first {
-                        Text(verbatim: envelope.name).font(.headline).frame(maxWidth: .infinity, alignment: .leading)
+                        Text(verbatim: envelope.name).font(.jarasHeadline).frame(maxWidth: .infinity, alignment: .leading)
                         GeometryReader { geometry in
                             AutomationCurveEditor(show: show, track: track, envelope: envelope,
                                 scale: max(1, geometry.size.width) / (duration / zoom), offset: offset,
@@ -129,12 +129,12 @@ private struct AutomationChoice: Identifiable {
                             Slider(value: $offset, in: 0...max(0.001, duration - duration / zoom))
                         }
                         Text("Double-click to add a point. Drag to move. Shift disables snap. Delete removes selected points. Right-click changes the curve.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .font(.jarasCaption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     } else if track != nil, !settings.envelopes.isEmpty {
                         Text("Edit envelope points in the grid, below the track.")
                             .foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
                         Text("Double-click to add a point. Drag to move. Shift disables snap. Delete removes selected points. Right-click changes the curve.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .font(.jarasCaption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     } else {
                         Text("Select parameters to create envelopes.").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 180)
                     }
@@ -149,7 +149,7 @@ private struct AutomationChoice: Identifiable {
                 next.envelopes[index][keyPath: path] = value
                 if path == \.visible, value { next.lanesVisible = true; next.enabled = true }
             } }
-        })).font(.caption).toggleStyle(.checkbox)
+        })).font(.jarasCaption).toggleStyle(.checkbox)
     }
     private func loadChoices() {
         let row = track.flatMap { id in show.current?.tracks.first { $0.id == id } }
@@ -248,7 +248,7 @@ private struct AutomationCurveEditor: NSViewRepresentable {
             context.setFillColor(NSColor(calibratedWhite: 0.10, alpha: 0.72).cgColor); context.fill(r)
             context.setStrokeColor(NSColor(calibratedWhite: 0.3, alpha: 1).cgColor); context.stroke(r.insetBy(dx: 0, dy: 0.5))
             if entry.height >= 48 {
-                (entry.envelope.name as NSString).draw(at: NSPoint(x: 8, y: r.minY+3), withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white])
+                (entry.envelope.name as NSString).draw(at: NSPoint(x: 8, y: r.minY+3), withAttributes: [.font: NSFont.jarasSystemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white])
             }
             let color = entry.envelope.enabled ? NSColor.systemGreen : NSColor.gray
             context.setStrokeColor(color.cgColor); context.setLineWidth(1.5)

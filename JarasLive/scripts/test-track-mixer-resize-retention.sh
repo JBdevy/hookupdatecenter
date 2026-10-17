@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 root=Path(sys.argv[1])
 s=Path('Apple/Shared/TrackMixerRow.swift').read_text()
-parts=['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n']
+parts=['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n', Path('Application/Transport/TransportFadeout.swift').read_text().split('extension ShowController {')[0], ('// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1])]
 for begin,end in [('struct TrackMixerHeightGeometry','\n#endif'),('private struct CompactTrackButtonStyle:','private struct TrackPanFader:'),('private struct DirectVolumeSlider:','\n#endif'),('private struct TrackDragTitle:','\n#endif'),('struct TrackControlSelectionExclusion:','@MainActor final class TrackSelectionRouter')]:
  a=s.index(begin);parts.append(s[a:s.index(end,a)])
 m=Path('Apple/Shared/StemAudioPlayback.swift').read_text()
@@ -18,7 +18,7 @@ v=Path('Apple/Shared/TimelineGridView.swift').read_text()
 a=v.index('private struct TimelineTrackRowsContainer');parts.append(v[a:v.index('private struct TimelineMixerIdentity',a)])
 parts.append('''
 private enum AutomationTarget { enum Kind { case pan, volume } }
-private final class ShowController: ObservableObject { var projectSessionID = UUID(); @Published var snapshot = 0; func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind) -> Double? { nil } }
+@MainActor private final class ShowController: ObservableObject { let transportFadeout = TransportFadeout(); var projectSessionID = UUID(); @Published var snapshot = 0; func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind) -> Double? { nil } }
 private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white }
 private struct TrackControlIdentity: Equatable { let project: UUID; let track: UUID? }
 private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin(track: UUID) {} ; func finish() {} }

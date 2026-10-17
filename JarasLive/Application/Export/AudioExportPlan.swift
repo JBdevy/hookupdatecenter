@@ -107,3 +107,28 @@ public struct AudioExportPlan: Sendable {
         self.jobs = jobs
     }
 }
+
+/// New takes and frozen items use their own global format preference.
+public struct MediaProcessingFormat: Sendable {
+    public var format: AudioExportFormat
+    public var bitDepth: Int
+    public var bitrate: Int
+    public init(format: AudioExportFormat, bitDepth: Int, bitrate: Int) { self.format = format; self.bitDepth = bitDepth; self.bitrate = bitrate }
+    public static let mp3Bitrates = [128,160,192,224,256,320]
+    public func recordingKey(for track: Track) -> String {
+        switch track.recordingFormat {
+        case "wav": return "wav24pcm"
+        case "wav32": return "wav32"
+        case "mp3": return "mp3-\(bitrate)"
+        default: return recordingKey
+        }
+    }
+    public var recordingKey: String { format == .mp3 ? "mp3-\(bitrate)" : format.fileExtension + "\(bitDepth)pcm" }
+    public static func load(_ scope: String, preferences: UserDefaults = .standard) -> Self {
+        let root = "jaras.media." + scope + "."
+        return Self(format: AudioExportFormat(rawValue: preferences.string(forKey: root + "format") ?? "WAV") ?? .wav,
+                    bitDepth: [16,24,32].contains(preferences.integer(forKey: root + "bits")) ? preferences.integer(forKey: root + "bits") : 24,
+                    bitrate: mp3Bitrates.contains(preferences.integer(forKey: root + "bitrate")) ? preferences.integer(forKey: root + "bitrate") : 320)
+    }
+    public var encoding: AudioExportEncoding { AudioExportEncoding(format: format, bitDepth: bitDepth, bitrate: bitrate) }
+}

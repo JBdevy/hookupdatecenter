@@ -1,6 +1,22 @@
 import XCTest
 @testable import JarasApplication
 final class TempoMarkerTests: XCTestCase {
+    func testEditCursorSnapsToItemBoundariesAndShiftBypassesThem() {
+        var song = resizeSong(); song.parts = []; song.markers = []
+        song.bpm = 120; song.beatsPerBar = 4; song.beatUnit = 4
+        song.tracks[0].clips = [AudioClip(id: UUID(), name: "Item", startTime: 4.19, duration: 1.68)]
+        for scale in [1.0, 20, 100, 1000] {
+            for edge in [4.19, 5.87] {
+                XCTAssertEqual(TimelineTempo.snap(edge + 0.001, song: song, pixelsPerSecond: scale,
+                    includeHiddenDivisions: true, includeItemEdges: true), edge, accuracy: 0.000001)
+                XCTAssertEqual(TimelineTempo.snap(edge + 0.001, song: song, pixelsPerSecond: scale,
+                    enabled: false, includeHiddenDivisions: true, includeItemEdges: true), edge + 0.001, accuracy: 0.000001)
+            }
+        }
+        XCTAssertEqual(TimelineTempo.snap(4.191, song: song, pixelsPerSecond: 100), 4, accuracy: 0.000001,
+            "Item movement does not acquire its own old edges as anchors")
+    }
+
     func testDenseTempoRampsLimitGridToScreenColumnsAndRetainMusicalCoordinates() {
         let sections = (0..<12000).map { index in
             TimelineTempoSection(start: Double(index) / 8, end: Double(index + 1) / 8,

@@ -27,29 +27,29 @@ struct DAWActionsList: View {
                 Text("MIDI").tag("midi")
             }.pickerStyle(.segmented)
             #endif
-            Text("Actions are saved for all projects.").font(.caption).foregroundStyle(JarasTheme.secondary)
-            if !mappings.error.isEmpty { Text(mappings.error).font(.caption).foregroundStyle(.red) }
+            Text("Actions are saved for all projects.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            if !mappings.error.isEmpty { Text(mappings.error).font(.jarasCaption).foregroundStyle(.red) }
             ForEach(category.actions.filter { inputKind == "midi" ? $0.supportsMIDI : !$0.continuous }, id: \.self) { action in
                 let binding = mappings.actions.binding(action)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Text(LocalizedStringKey(action.title)).font(.headline)
+                        Text(LocalizedStringKey(action.title)).font(.jarasHeadline)
                         Spacer()
-                        Button("Reset") { resetRequest = ResetRequest(action: action, kind: inputKind) }.font(.caption)
+                        Button("Reset") { resetRequest = ResetRequest(action: action, kind: inputKind) }.font(.jarasCaption)
                     }
                     if action.needsTrack {
                         HStack {
-                            Text("Track").font(.caption)
+                            Text("Track").font(.jarasCaption)
                             TextField("Selected track", text: Binding(get: { binding.trackNumber.map(String.init) ?? "" }, set: { text in
                                 if text.isEmpty { mappings.setActionTrack(action, number: nil) }
                                 else if let number = Int(text) { mappings.setActionTrack(action, number: number) }
                             })).frame(width: 90).textFieldStyle(.roundedBorder)
-                            Text(targetName(binding.trackNumber)).font(.caption).foregroundStyle(JarasTheme.secondary).lineLimit(1)
+                            Text(targetName(binding.trackNumber)).font(.jarasCaption).foregroundStyle(JarasTheme.secondary).lineLimit(1)
                         }
                     }
                     HStack(spacing: 10) {
                         if inputKind == "keyboard" && action.fixedKeyboard {
-                            Label(binding.keyboard?.label ?? "", systemImage: "lock.fill").font(.caption).frame(width: 140, alignment: .leading)
+                            Label(binding.keyboard?.label ?? "", systemImage: "lock.fill").font(.jarasCaption).frame(width: 140, alignment: .leading)
                         } else {
                             inputButton(action, kind: inputKind, input: inputKind == "keyboard" ? binding.keyboard : binding.midi)
                         }
@@ -76,7 +76,7 @@ struct DAWActionsList: View {
             ForEach(categories) { item in
                 Button { category = item } label: {
                     Text(LocalizedStringKey(item.rawValue))
-                        .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        .font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: 30)
                         .background(category == item ? JarasTheme.accent.opacity(0.18) : JarasTheme.panel)
                         .clipShape(RoundedRectangle(cornerRadius: 5)).contentShape(Rectangle())
@@ -98,8 +98,8 @@ struct DAWActionsList: View {
         HStack(spacing: 4) {
             Button { mappings.beginAction(action, kind: kind) } label: {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(LocalizedStringKey(kind == "keyboard" ? "Keyboard" : "MIDI")).font(.caption2).foregroundStyle(JarasTheme.secondary)
-                    Text(input?.label ?? JarasLocalization.string("Map control")).font(.caption).lineLimit(1).truncationMode(.middle)
+                    Text(LocalizedStringKey(kind == "keyboard" ? "Keyboard" : "MIDI")).font(.jarasCaption2).foregroundStyle(JarasTheme.secondary)
+                    Text(input?.label ?? JarasLocalization.string("Map control")).font(.jarasCaption).lineLimit(1).truncationMode(.middle)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(6).contentShape(Rectangle())
             }.buttonStyle(.plain).background(JarasTheme.display).cornerRadius(4)
             if input != nil {

@@ -409,7 +409,7 @@ class StageConfigPanel final : public Component {
         String key, kind;
         Label label;
         TextButton swatch;
-        Slider slider;
+        ParameterSlider slider;
         ToggleButton toggle;
         ComboBox choice;
     };

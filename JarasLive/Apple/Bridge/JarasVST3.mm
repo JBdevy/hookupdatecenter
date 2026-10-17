@@ -388,7 +388,14 @@ public:
         if(!v)replacement[@"controllerState"]=current[@"controllerState"];
         return replacement;
     }
-    NSDictionary *state(){Stream componentData,controllerData;component->getState(&componentData);if(controller)controller->getState(&controllerData);return @{@"componentState":componentData.base64(),@"controllerState":controllerData.base64()};}
+    NSDictionary *state(){
+        Stream componentData,controllerData;
+        // Never replace a recoverable preset with an empty blob when a plugin
+        // fails to serialize (for example while a library is still loading).
+        if(component->getState(&componentData)!=kResultOk)return nil;
+        if(controller)controller->getState(&controllerData);
+        return @{@"componentState":componentData.base64(),@"controllerState":controllerData.base64()};
+    }
 };
 struct Chain {std::vector<std::shared_ptr<Instance>> instances;};
 struct Kernel {

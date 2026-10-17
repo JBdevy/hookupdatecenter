@@ -53,6 +53,10 @@ struct GridSelectionItem {
     var duration: Double = 0
     var fadeIn: Double = 0
     var fadeOut: Double = 0
+    var fadeInCurve: Double = 0
+    var fadeInSCurve: Double = 1
+    var fadeOutCurve: Double = 0
+    var fadeOutSCurve: Double = 1
     var visibleHeader: CGRect? = nil
     // Track/lane identity survives row-height changes. The immutable item and
     // horizontal index are reused; only the row projection changes.
@@ -112,7 +116,7 @@ struct GridSelectionItem {
     }
     var fadeTop: CGFloat { min(rect.maxY, rect.minY + Self.bodyInset) }
     func fadeHandleRect(_ left: Bool) -> CGRect? {
-        guard editable, !midiEditable, duration > 0, rect.width >= 20, rect.maxY - fadeTop >= 7 else { return nil }
+        guard editable, duration > 0, rect.width >= 20, rect.maxY - fadeTop >= 7 else { return nil }
         let amount = min(duration, max(0, left ? fadeIn : fadeOut)) / duration
         let x = left ? rect.minX + amount * rect.width : rect.maxX - amount * rect.width
         return CGRect(x: min(rect.maxX - 7, max(rect.minX, x - 3.5)), y: fadeTop, width: 7, height: 7)
@@ -147,6 +151,30 @@ struct GridSelectionItem {
     }
     func draggingFade(left: Bool, delta: CGFloat) -> Double {
         min(duration, max(0, (left ? fadeIn : fadeOut) + Double(delta) * (left ? 1 : -1) * duration / max(1, rect.width)))
+    }
+    func curve(_ left: Bool) -> ItemFadeCurve {
+        ItemFadeCurve(curvature: left ? fadeInCurve : fadeOutCurve, sCurve: left ? fadeInSCurve : fadeOutSCurve)
+    }
+    func fadeShapeHandle(_ left: Bool, sCurve: Bool) -> CGRect? {
+        let amount = min(duration, max(0, left ? fadeIn : fadeOut))
+        let width = rect.width * amount / max(0.000001, duration)
+        let height = rect.maxY - 2 - fadeTop
+        guard editable, width >= 26, height >= 24 else { return nil }
+        let level = sCurve ? 0.25 : 0.75
+        let x = curve(left).position(at: level) * width
+        return CGRect(x: (left ? rect.minX + x : rect.maxX - x) - 3,
+                      y: fadeTop + (1 - level) * height - 3, width: 6, height: 6)
+    }
+    func fadeShape(at point: CGPoint) -> (left: Bool, sCurve: Bool)? {
+        for left in [true, false] { for sCurve in [false, true] {
+            if fadeShapeHandle(left, sCurve: sCurve)?.insetBy(dx: -3, dy: -3).contains(point) == true { return (left, sCurve) }
+        } }
+        return nil
+    }
+    func draggingFadeShape(left: Bool, sCurve: Bool, delta: CGFloat) -> Double {
+        let width = rect.width * min(duration, max(0, left ? fadeIn : fadeOut)) / max(0.000001, duration)
+        let old = sCurve ? curve(left).sCurve : curve(left).curvature
+        return min(1, max(-1, old + Double(delta) * (left ? 1 : -1) * 2 / max(26, width)))
     }
     func resizeSide(at point: CGPoint) -> Bool? {
         guard resizable, point.y >= rect.minY, point.y < rect.maxY else { return nil }
@@ -401,8 +429,8 @@ enum GridSelectionHeaderText {
             }
         }
     }
-    private static let font = NSFont.systemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold)
-    private static let readoutFont = NSFont.systemFont(ofSize: GridSelectionItem.headerReadoutFontSize, weight: .semibold)
+    private static let font = NSFont.jarasSystemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold)
+    private static let readoutFont = NSFont.jarasSystemFont(ofSize: GridSelectionItem.headerReadoutFontSize, weight: .semibold)
     private static func attributes(centered: Bool? = nil, color: NSColor = .white, font: NSFont? = nil) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byTruncatingTail
@@ -504,6 +532,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var projection: GridSelectionProjection? = nil
     var interactionBlocked = false
     var resize: (UUID, Bool, CGFloat, Bool) -> Void = { _,_,_,_ in }
+    var fadeShape: (UUID, Bool, Bool, Double, Bool) -> Void = { _, _, _, _, _ in }
     var fade: (UUID, Bool, Double, Bool) -> Void = { _, _, _, _ in }
     var gain: (UUID, Double, Bool) -> Void = { _,_,_ in }
     var phase: (UUID) -> Void = { _ in }
@@ -545,7 +574,7 @@ struct GridSelectionInput: NSViewRepresentable {
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
-        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
+        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
@@ -607,6 +636,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let midi: Bool
         let text: Bool
         let fadeRects: [CGRect?]
+        let fadeCurves: [Double]
     }
     private var drawnHeaderProjection: HeaderProjection?
     private struct HeaderProjectionKey: Equatable {
@@ -620,6 +650,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let fadeID: UUID?
         let fadeLeft: Bool?
         let fadeSeconds: Double?
+        let fadeSCurve: Bool?
     }
     private struct PreparedHeaderProjection {
         let key: HeaderProjectionKey
@@ -638,9 +669,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     var selectionChanged: ((Set<UUID>) -> Void)?
     var createRegion: ((UUID) -> Void)?
     var resize: ((UUID, Bool, CGFloat, Bool) -> Void)?
+    var fadeShape: ((UUID, Bool, Bool, Double, Bool) -> Void)?
     var fade: ((UUID, Bool, Double, Bool) -> Void)?
-    private var fadeItem: (item: GridSelectionItem, left: Bool)?
-    private var liveFade: (id: UUID, left: Bool, seconds: Double)?
+    private var fadeItem: (item: GridSelectionItem, left: Bool, sCurve: Bool?)?
+    private var liveFade: (id: UUID, left: Bool, seconds: Double, sCurve: Bool?)?
     var gain: ((UUID, Double, Bool) -> Void)?
     var phase: ((UUID) -> Void)?
     var pan: ((UUID, Double, Bool) -> Void)?
@@ -751,7 +783,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         var item = source
         if liveHeaderGain?.id == item.id { item.gain = liveHeaderGain!.value }
         if let liveFade, liveFade.id == item.id {
-            if liveFade.left { item.fadeIn = liveFade.seconds } else { item.fadeOut = liveFade.seconds }
+            if let sCurve = liveFade.sCurve {
+                if liveFade.left { if sCurve { item.fadeInSCurve = liveFade.seconds } else { item.fadeInCurve = liveFade.seconds } }
+                else { if sCurve { item.fadeOutSCurve = liveFade.seconds } else { item.fadeOutCurve = liveFade.seconds } }
+            } else if liveFade.left { item.fadeIn = liveFade.seconds } else { item.fadeOut = liveFade.seconds }
         }
         return item.visibleLeftHeader(in: CGRect(origin: origin, size: viewport.size), titleWidth: GridSelectionHeaderText.title(name).width, gainLabel: gainLabel)
     }
@@ -778,7 +813,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let key = HeaderProjectionKey(viewport: viewport, origin: origin, height: headerHeight,
             gainID: liveHeaderGain?.id, gain: liveHeaderGain?.value,
             panID: liveHeaderPan?.id, pan: liveHeaderPan?.value,
-            fadeID: liveFade?.id, fadeLeft: liveFade?.left, fadeSeconds: liveFade?.seconds)
+            fadeID: liveFade?.id, fadeLeft: liveFade?.left, fadeSeconds: liveFade?.seconds, fadeSCurve: liveFade?.sCurve)
         if let preparedHeaderProjection, preparedHeaderProjection.key == key { return preparedHeaderProjection }
         let body = CGRect(x: viewport.minX, y: viewport.minY + headerHeight,
                           width: viewport.width, height: max(0, viewport.height - headerHeight))
@@ -808,7 +843,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             drawings.append(HeaderDrawing(item: item, gainLabel: gainLabel))
             return HeaderPixels(id: item.id, rect: item.headerRect, name: item.name!, gain: item.gain, pan: item.pan,
                 phase: item.phaseInverted, muted: item.muted, hasFX: item.hasFX, bypass: item.fxBypassed,
-                editable: item.editable, midi: item.midiEditable, text: item.textEditable, fadeRects: fadeRects)
+                editable: item.editable, midi: item.midiEditable, text: item.textEditable, fadeRects: fadeRects, fadeCurves: [item.fadeInCurve, item.fadeInSCurve, item.fadeOutCurve, item.fadeOutSCurve])
         }
         let prepared = PreparedHeaderProjection(key: key,
             pixels: HeaderProjection(viewport: body, headers: headers), drawings: drawings)
@@ -865,7 +900,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     func timelineInputGateChanged(blocked: Bool) {
         guard blocked else { return }
-        if let fadeItem { fade?(fadeItem.item.id, fadeItem.left, fadeItem.left ? fadeItem.item.fadeIn : fadeItem.item.fadeOut, false) }
+        if let fadeItem {
+            if let sCurve = fadeItem.sCurve { fadeShape?(fadeItem.item.id, fadeItem.left, sCurve, sCurve ? fadeItem.item.curve(fadeItem.left).sCurve : fadeItem.item.curve(fadeItem.left).curvature, false) }
+            else { fade?(fadeItem.item.id, fadeItem.left, fadeItem.left ? fadeItem.item.fadeIn : fadeItem.item.fadeOut, false) }
+        }
         fadeItem = nil; liveFade = nil
         heldItemGuide = nil
         pendingSeek = nil
@@ -900,11 +938,16 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             if createMIDI != nil && !event.modifierFlags.intersection([.command,.control]).isEmpty { midiStart = timeline; return }
             pendingSeek = timeline; return
         }
-        if item.midiEditable && event.clickCount == 2 { editMIDI?(item.id); return }
+        if let shape = item.fadeShape(at: timeline) {
+            if event.clickCount == 2 { fadeShape?(item.id, shape.left, shape.sCurve, shape.sCurve ? 1 : 0, true); return }
+            fadeItem = (item, shape.left, shape.sCurve); draggedItem = item.id; return
+        }
         if let left = item.fadeSide(at: timeline) {
-            fadeItem = (item, left); draggedItem = item.id; dragStart = event.locationInWindow
+            if event.clickCount == 2 { fade?(item.id, left, 0, true); return }
+            fadeItem = (item, left, nil); draggedItem = item.id; dragStart = event.locationInWindow
             return
         }
+        if item.midiEditable && event.clickCount == 2 { editMIDI?(item.id); return }
         if let rect = item.editRect, rect.contains(timeline) {
             pressedHeader = (item.id, rect, .editText); dragStart = event.locationInWindow; return
         } else if let rect = item.phaseRect, rect.contains(timeline) {
@@ -944,13 +987,19 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             return
         }
         guard let id = draggedItem else { return }
-        let translation = CGSize(width: event.locationInWindow.x - dragStart.x, height: dragStart.y - event.locationInWindow.y)
+        let start = convert(dragStart, from: nil), current = convert(event.locationInWindow, from: nil)
+        let translation = CGSize(width: current.x - start.x, height: current.y - start.y)
         guard hasDragged || hypot(translation.width, translation.height) >= 3 else { return }
         hasDragged = true
         if let fadeItem {
-            let seconds = fadeItem.item.draggingFade(left: fadeItem.left, delta: translation.width)
-            liveFade = (id, fadeItem.left, seconds); needsDisplay = true
-            fade?(id, fadeItem.left, seconds, false)
+            if let sCurve = fadeItem.sCurve {
+                let value = fadeItem.item.draggingFadeShape(left: fadeItem.left, sCurve: sCurve, delta: translation.width)
+                liveFade = (id, fadeItem.left, value, sCurve); fadeShape?(id, fadeItem.left, sCurve, value, false)
+            } else {
+                let seconds = fadeItem.item.draggingFade(left: fadeItem.left, delta: translation.width)
+                liveFade = (id, fadeItem.left, seconds, nil); fade?(id, fadeItem.left, seconds, false)
+            }
+            needsDisplay = true
         }
         else if let resizingLeft { resize?(id, resizingLeft, translation.width, false) }
         else if let panItem {
@@ -1002,8 +1051,12 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             }
         }
         if let id = draggedItem, hasDragged {
-            let translation = CGSize(width: event.locationInWindow.x - dragStart.x, height: dragStart.y - event.locationInWindow.y)
-            if let fadeItem { fade?(id, fadeItem.left, fadeItem.item.draggingFade(left: fadeItem.left, delta: translation.width), true) }
+            let start = convert(dragStart, from: nil), current = convert(event.locationInWindow, from: nil)
+        let translation = CGSize(width: current.x - start.x, height: current.y - start.y)
+            if let fadeItem {
+                if let sCurve = fadeItem.sCurve { fadeShape?(id, fadeItem.left, sCurve, fadeItem.item.draggingFadeShape(left: fadeItem.left, sCurve: sCurve, delta: translation.width), true) }
+                else { fade?(id, fadeItem.left, fadeItem.item.draggingFade(left: fadeItem.left, delta: translation.width), true) }
+            }
             else if let resizingLeft { resize?(id, resizingLeft, translation.width, true) }
             else if let panItem { pan?(id, panItem.draggingPan(by: translation.height), true) }
             else if let gainItem { gain?(id, gainItem.draggingGain(by: translation.height), true) }
@@ -1049,7 +1102,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     func pointerCursor(at point: CGPoint) -> NSCursor {
         guard let item = hitItem(at: point) else { return .arrow }
-        if item.fadeSide(at: point) != nil { return .crosshair }
+        if item.fadeSide(at: point) != nil || item.fadeShape(at: point) != nil { return .crosshair }
         if item.panKnobRect?.contains(point) == true { return .resizeUpDown }
         if item.gainKnobRect?.contains(point) == true { return .resizeUpDown }
         if item.fxRect?.contains(point) == true || item.muteRect?.contains(point) == true || item.editRect?.contains(point) == true { return .pointingHand }
@@ -1246,14 +1299,23 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 let width = item.rect.width * amount / item.duration
                 let x1 = left ? item.rect.minX : item.rect.maxX - width
                 let x2 = x1 + width
-                let y1 = left ? bottom : top, y2 = left ? top : bottom
-                let curve = NSBezierPath()
-                curve.move(to: CGPoint(x: x1, y: y1))
-                curve.curve(to: CGPoint(x: x2, y: y2), controlPoint1: CGPoint(x: x1 + width / 3, y: y1), controlPoint2: CGPoint(x: x2 - width / 3, y: y2))
+                let curve = NSBezierPath(), shape = item.curve(left)
+                let steps = min(128, max(16, Int(ceil(min(width, 128)))))
+                for step in 0...steps {
+                    let t = Double(step) / Double(steps)
+                    let point = CGPoint(x: x1 + t * width, y: bottom - shape.value(at: left ? t : 1 - t) * (bottom - top))
+                    if step == 0 { curve.move(to: point) } else { curve.line(to: point) }
+                }
                 let shade = curve.copy() as! NSBezierPath
                 shade.line(to: CGPoint(x: x2, y: top)); shade.line(to: CGPoint(x: x1, y: top)); shade.close()
                 NSColor.black.withAlphaComponent(0.25).setFill(); shade.fill()
                 NSColor.white.withAlphaComponent(0.95).setStroke(); curve.lineWidth = 1; curve.stroke()
+            }
+            for sCurve in [false, true] {
+                if let handle = item.fadeShapeHandle(left, sCurve: sCurve) {
+                    NSColor.black.withAlphaComponent(0.8).setFill(); NSBezierPath(ovalIn: handle).fill()
+                    NSColor.white.withAlphaComponent(0.95).setStroke(); let circle = NSBezierPath(ovalIn: handle); circle.lineWidth = 1; circle.stroke()
+                }
             }
             if let handle = item.fadeHandleRect(left) {
                 NSColor.white.withAlphaComponent(0.85).setFill()

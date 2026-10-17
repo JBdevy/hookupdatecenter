@@ -42,15 +42,15 @@ class ProjectBrowser final : public Component, private ListBoxModel {
     void paint(Graphics &) override;
     void resized() override;
     void refresh();
-    std::function<void()> createEmpty, createStems, createReaper, createLogic, addStems, addPackage,
+    std::function<void()> createEmpty, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
         browse, resume;
-    std::function<void(File)> open;
+    std::function<void(File)> open, deleteProject;
     void setProjectOpen(bool);
 
   private:
     class Action final : public Button {
       public:
-        enum Icon { document, plusDocument, folder, plusFolder, waveform, archive, back, piano };
+        enum Icon { document, plusDocument, folder, plusFolder, waveform, archive, back, piano, recording };
         Action(String title, Icon symbol) : Button(title), icon(symbol) {}
         void paintButton(Graphics &, bool, bool) override;
 
@@ -64,6 +64,7 @@ class ProjectBrowser final : public Component, private ListBoxModel {
     Action stems{"Adicionar stems", Action::waveform};
     Action reaper{"REAPER", Action::waveform};
     Action logic{"Logic", Action::piano};
+    Action recording{"REC Multitrack", Action::recording};
     Action package{"Add .ziplive", Action::archive};
     Action back{"Voltar ao projeto", Action::back};
     TextButton browseButton{String::fromUTF8("Procurar…")};

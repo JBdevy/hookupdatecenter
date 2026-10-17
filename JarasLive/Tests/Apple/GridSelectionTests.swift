@@ -609,6 +609,28 @@ grid.mouseMoved(with: event(.mouseMoved, CGPoint(x: 102, y: 120)))
 precondition(NSCursor.current == NSCursor.crosshair,
              "below-header fades use their distinct cursor instead of the trim cursor")
 print("GRID_FADE_CORNERS_FULL_ITEM_LENGTH_PREVIEW_COMMIT_AND_EDGE_CURSOR_OK")
+var fineChanges: [(Bool, Bool, Double, Bool)] = []
+grid.fadeShape = { _, left, shape, value, ended in fineChanges.append((left,shape,value,ended)) }
+for midi in [false,true] {
+    grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100,y: 100,width: 400,height: 80), duration: 10, fadeIn: 4, fadeOut: 4)]
+    grid.items[0].midiEditable = midi
+    for left in [true,false] { for shape in [false,true] {
+        fineChanges.removeAll()
+        let grip = grid.items[0].fadeShapeHandle(left,sCurve:shape)!
+        let point = CGPoint(x:grip.midX,y:grip.midY), end = CGPoint(x:grip.midX+(left ? -16 : 16),y:grip.midY)
+        _ = grid.handlePointerEvent(event(.leftMouseDown,point))
+        _ = grid.handlePointerEvent(event(.leftMouseDragged,end))
+        _ = grid.handlePointerEvent(event(.leftMouseUp,end))
+        precondition(fineChanges.count==2 && !fineChanges[0].3 && fineChanges[1].3)
+        precondition(fineChanges.allSatisfy { $0.0==left && $0.1==shape && abs($0.2-(shape ? 0.8 : -0.2))<1e-8 })
+        fineChanges.removeAll()
+        _ = grid.handlePointerEvent(event(.leftMouseDown,point,clicks:2))
+        _ = grid.handlePointerEvent(event(.leftMouseUp,point,clicks:2))
+        precondition(fineChanges.count==1 && fineChanges[0].2==(shape ? 1 : 0) && fineChanges[0].3)
+    } }
+}
+print("GRID_FINE_FADE_AUDIO_MIDI_PREVIEW_SINGLE_COMMIT_DOUBLE_CLICK_RESET_OK")
+
 
 // The same immutable scene must support consecutive zoom scales without
 // rebuilding all item rectangles, including fixed-width minimum-size items.

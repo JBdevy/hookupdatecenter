@@ -1,0 +1,65 @@
+CatLive WindowsNative — 2026-10-16 — validation checkpoint
+
+STATUS
+This directory is a JUCE-free foundation, not an installed replacement app.
+The running Windows CatLive remains the earlier JUCE batch 14 application.
+No new Tauri window, production playback graph, recorder or installer exists
+in this foundation yet. The old Windows tree is retained until replacement.
+Mac batch 15 is signed, installed and visually checked separately.
+
+WINDOWS VERIFICATION
+Host: Windows 11 x64, VS 18 2026, Rust 1.94.1, Edge 155.
+Build/source location: D:\CatLive-Native-Build (avoid nearly full C: drive).
+- CTest: 18/18 groups passed, including document/session/actions/bridge,
+  duplication, REC factory, audio reader and SF2 with an external fixture.
+- Final SessionActions change: 9/9 groups passed; timecode and video tracks
+  reject recording-format changes, as do other fixed special roles.
+- Rust: 14/14 tests passed against the final C++ source.
+- Node UI: 52/52 tests passed.
+- Real Edge component harness: 25 interactions; 7 scales (60–120%),
+  21 layouts without clipping; focus, keyboard and pointer cases passed.
+  Fixture adapters are simulated and do not establish product integration.
+- Final real Guilherme .jl read/save roundtrip: PROJECT_FILE_ROUNDTRIP_OK.
+  Output is D:\CatLive-Native-Build\Guilherme-codec-roundtrip-QA.jl;
+  the source project was not modified.
+- Windows REC-32 JSON decoded, validated and re-encoded by the actual Mac
+  Swift Project model. All inputs 1–32, Master routing and monitor off checked.
+- Audio device enumeration and a silent default-output probe passed earlier;
+  no physical multitrack recording or ASIO validation was performed.
+- build-core.ps1 parses and its VS environment setup ran on Windows;
+  equivalent CMake/Cargo commands passed. The complete final PowerShell script
+  was not rerun as one end-to-end invocation.
+
+IMPLEMENTATION DETAILS TO PRESERVE
+- Codec edits retain unknown/opaque plugin data. UUID normalization applies
+  only to schema identifiers; Native FX references stay coherent.
+- Clearing clip.regionOwnerID and other known optional fields removes the
+  old JSON values rather than resurrecting them on save.
+- History is bounded and preserves the nearest undo/redo entries; document
+  changes commit atomically and preserve transport when appropriate.
+- Duplication copies complete stored FX states and regenerates entity IDs.
+  Capturing live external-plugin state still needs the eventual plugin host.
+- prepareRecordingProject returns a document plus transient armedTrackIDs;
+  it does not silently replace an unsaved session.
+- Device endpoints currently support at most 32 channels; the REC factory's
+  128-track limit is a document limit, not a hardware claim.
+- Save As to another parent remains rejected until media packaging is ready.
+
+NEXT INTEGRATION WORK
+- Build the actual window and connect UI controls to document/session actions.
+- Connect file streaming, waveforms, playback/DSP/MIDI and the device host.
+- Implement production recording/file writing and plugin hosting.
+- Carry fadeTimelineStart, fadeTimelineDuration and automationSourceOffset
+  through typed Core/import/actions/rendering/audio, not only retained JSON.
+- Integrate open/save/import/.ziplive/preferences and full Mac menu parity.
+- Validate the real project in the complete replacement before retiring JUCE.
+
+EVIDENCE
+Documents/CatLive-Mac-Validation/native-migration-20261016:
+cpp-test.log, actions-final-tests.log, rust-test.log,
+catlive-native-ui-tests.log, Mac build/sign/install logs and screenshots.
+Documents/CatLive-Mac-Validation/native-controls-20261016:
+result.json and real Edge component screenshots.
+All component test browsers, tunnels and servers were closed after testing.
+No user audio or commercial SF2 is bundled. Dependency notices/source are
+documented in THIRD-PARTY-NOTICES.txt. No Git push or Actions was triggered.

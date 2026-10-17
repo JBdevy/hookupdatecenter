@@ -48,14 +48,14 @@ class TunerControl final : public Component, private Timer {
                    getWidth() - 79, getHeight(), Justification::centred);
     }
     void mouseDown(const MouseEvent &e) override {
-        if (e.mods.isPopupMenu() && region())
+        if (e.mods.isPopupMenu() && e.x >= 55 && e.x < getWidth() - 24 && region())
             configure();
     }
 
   private:
     Session &session;
     std::function<void()> configure;
-    TextButton down{String::fromUTF8("−")}, up{"+"};
+    QuietButton down{String::fromUTF8("−")}, up{"+"};
     void timerCallback() override {
         if (!isShowing())
             return;

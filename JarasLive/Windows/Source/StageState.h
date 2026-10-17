@@ -10,7 +10,7 @@ class StageState final {
         autoStart = flag(saved, "initAutoEnabled");
     }
     Appearance &preferences;
-    int target = 0;
+    int target = 0, previewPage = 0;
     bool running = false, autoStart = false, preview = false;
     double started = 0;
     String notice;
@@ -145,6 +145,7 @@ class StageTimerControl final : public Component, private Timer {
         for (int i = 0; i < 3; ++i) {
             addAndMakeVisible(digits[i]);
             digits[i].setInputRestrictions(2, "0123456789");
+            digits[i].setPopupMenuEnabled(false);
             digits[i].setText("00");
             digits[i].setJustification(Justification::centred);
             digits[i].setFont(theme::semiboldFont(12));

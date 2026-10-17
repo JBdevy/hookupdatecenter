@@ -97,11 +97,11 @@ extension NativePurchaseStore {
                     HStack {
                         HStack(spacing: 9) {
                             Image(systemName: "waveform").foregroundStyle(green)
-                            Text(verbatim: "CatLive").font(.title2.bold())
+                            Text(verbatim: "CatLive").font(.jarasTitle2.bold())
                         }
                         Spacer()
                         Button(action: close) {
-                            Image(systemName: "xmark").font(.system(size: 17, weight: .semibold))
+                            Image(systemName: "xmark").font(.jarasSystem(size: 17, weight: .semibold))
                                 .frame(width: 44, height: 44).background(.white.opacity(0.07), in: Circle())
                                 .contentShape(Circle())
                         }.buttonStyle(.plain).accessibilityLabel("Close").disabled(store.busy)
@@ -115,7 +115,7 @@ extension NativePurchaseStore {
                         } else {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("Create and play your projects directly on iPad, without a computer.")
-                                    .font(.subheadline).foregroundStyle(.white.opacity(0.7))
+                                    .font(.jarasSubheadline).foregroundStyle(.white.opacity(0.7))
                                 purchaseCard
                             }
                         }
@@ -126,7 +126,7 @@ extension NativePurchaseStore {
                         Spacer(minLength: 0)
                         Link("Privacy", destination: URL(string: "https://www.privacidade.vshook.app/catlive/")!)
                         Link("Support", destination: URL(string: "https://www.privacidade.vshook.app/catlive/suporte/")!)
-                    }.font(.footnote).tint(green)
+                    }.font(.jarasFootnote).tint(green)
                 }
                 .padding(20).frame(maxWidth: 950)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -137,12 +137,12 @@ extension NativePurchaseStore {
     }
     private var features: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("NATIVE ON IPAD").font(.system(size: 12, weight: .bold, design: .rounded)).tracking(2)
+            Text("NATIVE ON IPAD").font(.jarasSystem(size: 12, weight: .bold, design: .rounded)).tracking(2)
                 .foregroundStyle(green).padding(.horizontal, 12).padding(.vertical, 8)
                 .background(green.opacity(0.1), in: Capsule())
-            Text("Your show.\nOn your iPad.").font(.system(size: 30, weight: .bold, design: .rounded)).fixedSize(horizontal: false, vertical: true)
+            Text("Your show.\nOn your iPad.").font(.jarasSystem(size: 30, weight: .bold, design: .rounded)).fixedSize(horizontal: false, vertical: true)
             Text("Create and play your projects directly on iPad, without a computer.")
-                .font(.system(size: 14)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
+                .font(.jarasSystem(size: 14)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 12) {
                 feature("waveform", "Multitrack playback and audio recording")
                 feature("slider.horizontal.3", "Mixer, routing and native effects")
@@ -153,22 +153,22 @@ extension NativePurchaseStore {
     }
     private func feature(_ icon: String, _ title: LocalizedStringKey) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon).font(.system(size: 17)).foregroundStyle(green).frame(width: 24)
-            Text(title).font(.system(size: 14)).fixedSize(horizontal: false, vertical: true)
+            Image(systemName: icon).font(.jarasSystem(size: 17)).foregroundStyle(green).frame(width: 24)
+            Text(title).font(.jarasSystem(size: 14)).fixedSize(horizontal: false, vertical: true)
         }
     }
     private var purchaseCard: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                Image(systemName: "ipad.landscape").font(.system(size: 24, weight: .light)).foregroundStyle(green)
-                Text("CatLive Native iPad").font(.system(size: 19, weight: .bold))
+                Image(systemName: "ipad.landscape").font(.jarasSystem(size: 24, weight: .light)).foregroundStyle(green)
+                Text("CatLive Native iPad").font(.jarasSystem(size: 19, weight: .bold))
             }
-            Text("One-time purchase. No subscription.").font(.system(size: 13)).foregroundStyle(.white.opacity(0.65))
+            Text("One-time purchase. No subscription.").font(.jarasSystem(size: 13)).foregroundStyle(.white.opacity(0.65))
             Group {
                 if store.unlocked {
                     Label("Purchased", systemImage: "checkmark.seal.fill").foregroundStyle(green)
                 } else if let product = store.product {
-                    Text(verbatim: product.displayPrice).font(.system(size: 32, weight: .bold, design: .rounded))
+                    Text(verbatim: product.displayPrice).font(.jarasSystem(size: 32, weight: .bold, design: .rounded))
                         .accessibilityIdentifier("native-purchase-price")
                 } else if store.loading { ProgressView().tint(green) }
                 else { Text("Price unavailable").foregroundStyle(.white.opacity(0.65)) }
@@ -180,7 +180,7 @@ extension NativePurchaseStore {
                 HStack {
                     Spacer()
                     if store.busy { ProgressView().tint(.black) }
-                    Text(store.unlocked ? "Open Native mode" : "Unlock Native mode").font(.system(size: 16, weight: .bold))
+                    Text(store.unlocked ? "Open Native mode" : "Unlock Native mode").font(.jarasSystem(size: 16, weight: .bold))
                     Spacer()
                 }.frame(height: 44).foregroundStyle(.black)
                     .background(LinearGradient(colors: [green, Color(red: 0.22, green: 0.77, blue: 0.42)], startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: 12))
@@ -191,21 +191,21 @@ extension NativePurchaseStore {
             if !store.unlocked {
                 if store.trialDaysRemaining > 0 {
                     Text("Free trial: \(store.trialDaysRemaining) day(s) remaining")
-                        .font(.subheadline.bold()).foregroundStyle(green)
+                        .font(.jarasSubheadline.bold()).foregroundStyle(green)
                     Button("Continue free trial", action: openNative).buttonStyle(.bordered).tint(green).disabled(store.busy)
                 } else if store.trialExpiresAt != nil {
-                    Text("Your 7-day free trial has ended.").font(.subheadline).foregroundStyle(.orange)
+                    Text("Your 7-day free trial has ended.").font(.jarasSubheadline).foregroundStyle(.orange)
                 } else {
                     Button("Start 7-day free trial") { Task { await store.startTrial() } }
                         .buttonStyle(.bordered).tint(green).controlSize(.large)
                         .disabled(store.busy || store.trialProduct == nil || store.product == nil)
                         .accessibilityIdentifier("native-purchase-trial")
                     if !store.loading && store.trialProduct == nil {
-                        Text("The free trial is unavailable right now. Try again shortly.").font(.caption).foregroundStyle(.white.opacity(0.65))
+                        Text("The free trial is unavailable right now. Try again shortly.").font(.jarasCaption).foregroundStyle(.white.opacity(0.65))
                     }
                 }
                 Text("Try all Native features for 7 days. Afterward, Native mode requires the one-time purchase shown above. Your projects are kept. Remote stays free. No automatic charge.")
-                    .font(.caption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                    .font(.jarasCaption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 16) {
@@ -218,13 +218,13 @@ extension NativePurchaseStore {
                         Text("Try again").frame(minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain).foregroundStyle(green).disabled(store.busy)
                 }
-            }.font(.system(size: 13, weight: .semibold))
+            }.font(.jarasSystem(size: 13, weight: .semibold))
             if !store.notice.isEmpty {
-                Text(LocalizedStringKey(store.notice)).font(.footnote).foregroundStyle(.white.opacity(0.85))
+                Text(LocalizedStringKey(store.notice)).font(.jarasFootnote).foregroundStyle(.white.opacity(0.85))
                     .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
             Text("Payment is handled by the App Store. Restore your purchase using the same Apple Account.")
-                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
+                .font(.jarasSystem(size: 11)).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(maxWidth: .infinity)
             .background(RemoteSurface.panel, in: RoundedRectangle(cornerRadius: 22))

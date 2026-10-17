@@ -53,6 +53,51 @@ inline void requireSpace(const jaras::Track &track, const jaras::AudioClip &clip
             start < other.startTime + other.duration - 1e-7 && end > other.startTime + 1e-7)
             throw std::runtime_error("Já existe um item nesta posição da pista.");
 }
+inline bool fits(const jaras::Track &track, const jaras::AudioClip &clip, double start) {
+    if(start<0 || !std::isfinite(start)) return false;
+    try { requireSpace(track,clip,start,start+clip.duration); return true; } catch(const std::runtime_error &) { return false; }
+}
+inline double constrainedStart(const jaras::Track &track, const jaras::AudioClip &clip, double proposed) {
+    proposed=std::max(0.,proposed);
+    if(!singleLane(track) || fits(track,clip,proposed)) return proposed;
+    double best=clip.startTime, distance=std::numeric_limits<double>::infinity();
+    auto consider=[&](double candidate) {if(fits(track,clip,candidate) && std::abs(candidate-proposed)<distance) {best=candidate;distance=std::abs(candidate-proposed);}};
+    consider(0);
+    for(const auto &other:track.clips) if(other.id!=clip.id && (!jaras::isTeleprompterRole(track.role) || projection(other)==projection(clip))) {
+        consider(other.startTime-clip.duration); consider(other.startTime+other.duration);
+    }
+    return best;
+}
+inline std::pair<double,double> constrainedEdges(const jaras::Track &track,const jaras::AudioClip &clip,double start,double end) {
+    if(!singleLane(track)) return {start,end};
+    double left=0,right=std::numeric_limits<double>::infinity();
+    for(const auto &other:track.clips) if(other.id!=clip.id && (!jaras::isTeleprompterRole(track.role) || projection(other)==projection(clip))) {
+        if(other.startTime+other.duration<=clip.startTime+1e-7) left=std::max(left,other.startTime+other.duration);
+        if(other.startTime>=clip.startTime+clip.duration-1e-7) right=std::min(right,other.startTime);
+    }
+    return {std::max(left,start),std::min(right,end)};
+}
+// Preview and commit share the same source interval, including left extension.
+inline jaras::AudioClip resizedSource(jaras::AudioClip clip, double start, double end) {
+    if (!std::isfinite(start) || !std::isfinite(end) || start < 0 || end - start < .01)
+        return clip;
+    const double loopStart = clip.loopStart.value_or(clip.sourceOffset);
+    const double loopLength =
+        clip.loopLength.value_or(clip.duration * clip.playbackRate);
+    if (!std::isfinite(loopLength) || loopLength <= 0)
+        throw std::runtime_error("Duração da fonte inválida.");
+    const double offset = clip.sourceOffset - loopStart +
+                          (start - clip.startTime) * clip.playbackRate;
+    clip.loopStart = loopStart;
+    clip.loopLength = loopLength;
+    clip.sourceOffset =
+        loopStart +
+        std::fmod(std::fmod(offset, loopLength) + loopLength, loopLength);
+
+    clip.startTime = start;
+    clip.duration = end - start;
+    return clip;
+}
 inline void resize(jaras::Project &project, const ID &id, double start, double end) {
     if (!std::isfinite(start) || !std::isfinite(end) || start < 0 || end - start < .01)
         throw std::runtime_error("O item precisa ter pelo menos 10 ms.");
@@ -73,27 +118,7 @@ inline void resize(jaras::Project &project, const ID &id, double start, double e
                             clip.timecodeStartOffset = start - region->startTime;
                             clip.timecodeEndOffset = end - region->endTime;
                         }
-                    } else if (clip.midi) {
-                        const double offset =
-                            clip.sourceOffset + (start - clip.startTime) * clip.playbackRate;
-                        if (offset < 0)
-                            for (auto &note : clip.midi->notes)
-                                note.start -= offset * clip.midi->sourceBPM / 60.;
-                        clip.sourceOffset = std::max(0., offset);
-                    } else {
-                        const double loopStart = clip.loopStart.value_or(clip.sourceOffset);
-                        const double loopLength =
-                            clip.loopLength.value_or(clip.duration * clip.playbackRate);
-                        if (!std::isfinite(loopLength) || loopLength <= 0)
-                            throw std::runtime_error("Duração da fonte inválida.");
-                        const double offset = clip.sourceOffset - loopStart +
-                                              (start - clip.startTime) * clip.playbackRate;
-                        clip.loopStart = loopStart;
-                        clip.loopLength = loopLength;
-                        clip.sourceOffset =
-                            loopStart +
-                            std::fmod(std::fmod(offset, loopLength) + loopLength, loopLength);
-                    }
+                    } else { clip = resizedSource(clip, start, end); }
                     clip.startTime = start;
                     clip.duration = end - start;
                     song.duration = std::max(song.duration, end);

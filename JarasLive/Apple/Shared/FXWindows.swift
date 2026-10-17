@@ -61,7 +61,7 @@ struct FXInsertEditor: View {
     }
     var body: some View {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Insert effect").font(.headline)
+                    Text("Insert effect").font(.jarasHeadline)
                     Picker("Effect", selection: $effect) {
                         ForEach(availableEffects, id: \.self) { Text(LocalizedStringKey($0 == "Limiter" ? "CatLive Limiter" : $0)).tag($0) }
                     }.pickerStyle(.menu)
@@ -84,7 +84,7 @@ struct FXInsertEditor: View {
                             }.frame(maxWidth: .infinity).padding(8)
                         }.buttonStyle(.bordered)
                         HStack { Button("Scan plugins") { plugins.scan() }.disabled(plugins.scanning); if plugins.scanning { ProgressView().controlSize(.small) } }
-                        if !externalError.isEmpty { Text(verbatim: externalError).font(.caption).foregroundStyle(.red) }
+                        if !externalError.isEmpty { Text(verbatim: externalError).font(.jarasCaption).foregroundStyle(.red) }
                     }
                     #endif
                     HStack {
@@ -104,7 +104,7 @@ struct FXInsertEditor: View {
                                     defer { preparation.releaseExternal() }
                                     do {
                                         var settings = show.clipFXSettings(clip)
-                                        var instance = chosen.instance
+                                        var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
                                         settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
                                         settings.inserted.append(instance.effectKey)
                                         try settings.validateForClip()
@@ -130,7 +130,7 @@ struct FXInsertEditor: View {
                                     for target in targets {
                                         guard let chain = StemAudioPlayback.shared.effects(for: target) else { continue }
                                         var settings = show.fxSettings(target)
-                                        var instance = chosen.instance
+                                        var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
                                         settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
                                         settings.inserted.append(instance.effectKey)
                                         try settings.validate()
@@ -161,6 +161,8 @@ struct FXInsertEditor: View {
                                 guard targets.count == 1, let instrument, library.downloaded.contains(instrument) else { return }
                                 var settings = show.fxSettings(track)
                                 insertedKey = settings.appendNative(effect, instrument: instrument, parameters: InstrumentLibrary.parameters(instrument))
+                                do { settings = try FXPresetStore.shared.applyingDefault(to: settings, effect: insertedKey!) }
+                                catch { show.message = error.localizedDescription; return }
                                 show.previewFX(track, settings: settings); show.commitFX()
                             } else {
                                 insertedKey = show.insertFX(targets, effect: effect)[track]
@@ -253,6 +255,7 @@ import Combine
         panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = true
         panel.level = .normal; panel.delegate = self
         panel.contentView = content(key, show: show, panel: panel, preferredEffect: preferredEffect)
+        InterfaceScaling.shared.register(panel)
         panel.center()
         let stagger = CGFloat(windows.count % 5) * 26
         panel.setFrameOrigin(NSPoint(x: panel.frame.minX + stagger,y: panel.frame.minY - stagger))

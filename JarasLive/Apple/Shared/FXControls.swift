@@ -27,7 +27,7 @@ struct FXKnob: View {
     }
     var body: some View {
         VStack(spacing: 10) {
-            Text(LocalizedStringKey(title)).font(.system(size: 11, weight: .medium)).foregroundStyle(JarasTheme.secondary)
+            Text(LocalizedStringKey(title)).font(.jarasSystem(size: 11, weight: .medium)).foregroundStyle(JarasTheme.secondary)
             ZStack {
                 Circle().trim(from: 0,to: 0.75).stroke(Color.white.opacity(0.08),style: StrokeStyle(lineWidth: 4,lineCap: .round)).rotationEffect(.degrees(135))
                 Circle().trim(from: 0,to: 0.75*fraction).stroke(AngularGradient(colors: [Color.cyan,JarasTheme.green],center: .center,startAngle: .degrees(135),endAngle: .degrees(405)),style: StrokeStyle(lineWidth: 4,lineCap: .round)).rotationEffect(.degrees(135))
@@ -44,7 +44,7 @@ struct FXKnob: View {
                 #endif
                 .accessibilityElement().accessibilityLabel(LocalizedStringKey(title)).accessibilityValue(String(format: "%.1f %@",value*multiplier,unit))
                 .accessibilityAdjustableAction { set(fraction + ($0 == .increment ? 0.01 : -0.01)) }
-            Text(String(format: "%.1f %@", value*multiplier,unit)).font(.system(size: 11,weight: .medium,design: .monospaced)).monospacedDigit()
+            Text(String(format: "%.1f %@", value*multiplier,unit)).font(.jarasSystem(size: 11,weight: .medium,design: .monospaced)).monospacedDigit()
         }.frame(maxWidth: .infinity).jarasHelp("Drag vertically. Double-click to reset.")
             .mapFXMIDI(parameter, name: title, range: range, logarithmic: logarithmic)
     }
@@ -54,11 +54,11 @@ struct EffectVerticalMeters: View {
     let effect: String
     @StateObject private var input = TrackMeterLevel()
     @StateObject private var output = TrackMeterLevel()
-    private let clock = Timer.publish(every: 1.0/30,on: .main,in: .common).autoconnect()
+    @State private var clock = Timer.publish(every: 1.0/30,on: .main,in: .common).autoconnect()
     var body: some View {
         HStack(spacing: 9) {
             bars(input.levels, title: "IN")
-            VStack { Text("0"); Spacer(); Text("−24"); Spacer(); Text("−60") }.font(.system(size: 8,design: .monospaced)).foregroundStyle(JarasTheme.secondary).padding(.vertical,20)
+            VStack { Text("0"); Spacer(); Text("−24"); Spacer(); Text("−60") }.font(.jarasSystem(size: 8,design: .monospaced)).foregroundStyle(JarasTheme.secondary).padding(.vertical,20)
             bars(output.levels, title: "OUT")
         }.frame(width: 104,height: 145)
         .onReceive(clock) { _ in
@@ -69,7 +69,7 @@ struct EffectVerticalMeters: View {
     }
     private func bars(_ values: SIMD2<Double>, title: String) -> some View {
         VStack(spacing: 6) {
-            Text(title).font(.system(size: 9,weight: .semibold,design: .monospaced)).foregroundStyle(JarasTheme.secondary)
+            Text(title).font(.jarasSystem(size: 9,weight: .semibold,design: .monospaced)).foregroundStyle(JarasTheme.secondary)
             HStack(spacing: 3) {
                 ForEach(0..<2,id: \.self) { channel in
                     GeometryReader { geometry in
@@ -82,7 +82,7 @@ struct EffectVerticalMeters: View {
                     }.frame(width: 9)
                 }
             }
-            Text("L  R").font(.system(size: 8,design: .monospaced)).foregroundStyle(JarasTheme.secondary)
+            Text("L  R").font(.jarasSystem(size: 8,design: .monospaced)).foregroundStyle(JarasTheme.secondary)
         }
     }
 }

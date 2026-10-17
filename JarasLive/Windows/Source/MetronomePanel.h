@@ -46,7 +46,7 @@ class MetronomePanel final:public Component {
         status.setBounds(20,308,getWidth()-100,42);close.setBounds(getWidth()-86,getHeight()-38,66,26);
     }
   private:
-    Appearance &preferences;AudioEngine &engine;var settings;ComboBox sound,output;OwnedArray<TextButton>modes;Slider gainA,gainB;
+    Appearance &preferences;AudioEngine &engine;var settings;ComboBox sound,output;OwnedArray<TextButton>modes;ParameterSlider gainA,gainB;
     TextButton close{"Fechar"},fileA{"Importar A"},fileB{"Importar B"};Label status;std::vector<jaras::OutputPatch>patches;std::unique_ptr<FileChooser>chooser;
     void change(String key,var value){
         auto next=settings.clone();put(next,Identifier(key),value);

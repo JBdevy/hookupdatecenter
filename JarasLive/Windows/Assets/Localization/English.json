@@ -1229,5 +1229,6 @@
   "Parts Down": "Parts Down",
   "Parts show/hide": "Parts show/hide",
   "Loading waveforms…": "Loading waveforms…",
-  "%ld REAPER items before the project start were ignored.": "%ld REAPER items before the project start were ignored."
+  "%ld REAPER items before the project start were ignored.": "%ld REAPER items before the project start were ignored.",
+  "Interface scale": "Interface scale"
 }

@@ -1,11 +1,23 @@
 #ifndef AppVersion
-  #define AppVersion "1.01"
+  #define AppVersion "1.02"
 #endif
 #ifndef PackageDirectory
   #error PackageDirectory must point to the tested CatLive package.
 #endif
 #ifndef OutputDirectory
   #error OutputDirectory is required.
+#endif
+#if !FileExists(PackageDirectory + "\CatLiveLame.dll")
+  #error CatLiveLame.dll is missing from the tested package.
+#endif
+#if !FileExists(PackageDirectory + "\Licenses\LAME\COPYING") || !FileExists(PackageDirectory + "\Licenses\LAME\lame-3.100-source.tar.gz")
+  #error The LAME licence and complete source archive must accompany the runtime.
+#endif
+#if !FileExists(PackageDirectory + "\Licenses\LAME\config.h") || !FileExists(PackageDirectory + "\Licenses\LAME\BUILD.txt")
+  #error The LAME replacement build instructions and configuration are missing.
+#endif
+#if !FileExists(PackageDirectory + "\Licenses\dr_libs\LICENSE")
+  #error The dr_libs licence is missing from the tested package.
 #endif
 
 [Setup]
@@ -49,6 +61,11 @@ Root: HKCU; Subkey: "Software\Classes\.jl\OpenWithProgids"; ValueType: string; V
 Root: HKCU; Subkey: "Software\Classes\CatLive.Project"; ValueType: string; ValueName: ""; ValueData: "CatLive Project"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\CatLive.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\CatLive.exe,0"
 Root: HKCU; Subkey: "Software\Classes\CatLive.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\CatLive.exe"" ""%1"""
+
+Root: HKCU; Subkey: "Software\Classes\.ziplive\OpenWithProgids"; ValueType: string; ValueName: "CatLive.Package"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\CatLive.Package"; ValueType: string; ValueName: ""; ValueData: "CatLive Portable Project"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\CatLive.Package\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\CatLive.exe,0"
+Root: HKCU; Subkey: "Software\Classes\CatLive.Package\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\CatLive.exe"" ""%1"""
 
 [Run]
 Filename: "{app}\CatLive.exe"; Description: "{cm:LaunchProgram,CatLive}"; Flags: nowait postinstall skipifsilent
