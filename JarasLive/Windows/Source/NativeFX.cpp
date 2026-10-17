@@ -3,6 +3,10 @@
 namespace catlive {
 struct NativeFX::Effect {
     String kind;
+    String key, externalConfiguration;
+    bool bypassed = false;
+    std::shared_ptr<native::vst3::Processor> plugin;
+    std::array<native::vst3::MIDIEvent,4096> midi{};
     std::vector<std::unique_ptr<dsp::IIR::Filter<float>>> eq[2];
     dsp::Compressor<float> compressor;
     dsp::Limiter<float> limiter;
@@ -21,7 +25,7 @@ void NativeFX::swap(NativeFX &other)noexcept {
     effects.swap(other.effects);
     unsupported.swapWith(other.unsupported);
 }
-void NativeFX::prepare(const var &settings, double sampleRate) {
+void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *previous) {
     effects.clear();
     unsupported.clear();
     auto append = [&](String kind, const var &value) {
@@ -154,6 +158,41 @@ void NativeFX::prepare(const var &settings, double sampleRate) {
     };
     for (auto raw : list(get(settings, "inserted"))) {
         auto key = raw.toString();
+        if (key.startsWith("External:")) {
+            try {
+            for (auto plugin : list(get(settings,"externalPlugins"))) if (key=="External:"+str(plugin,"id")) {
+                // Keep opaque states editable/undoable when a project arrives
+                // from a computer where this plug-in was installed elsewhere.
+                if(!File(str(plugin,"path")).exists()) {
+                    unsupported.addIfNotAlreadyThere(str(plugin,"name",key)+": plugin VST3 ausente");
+                    break;
+                }
+                auto e=std::make_unique<Effect>();e->kind="External";e->key=key;e->bypassed=flag(plugin,"bypassed");
+                auto configuration=plugin.clone();configuration.getDynamicObject()->removeProperty("bypassed");
+                e->externalConfiguration=JSON::toString(configuration,true);
+                if(previous)for(const auto &old:previous->effects)
+                    if(old->key==key&&old->externalConfiguration==e->externalConfiguration)e->plugin=old->plugin;
+                if(!e->plugin) {
+                    native::vst3::Description description;
+                    description.path=std::filesystem::u8path(utf8(str(plugin,"path")));
+                    description.classID=utf8(str(plugin,"classID"));description.name=utf8(str(plugin,"name"));description.category=utf8(str(plugin,"category"));
+                    native::vst3::State state;
+                    auto decode=[&](const char *field,std::vector<uint8_t> &bytes){
+                        MemoryOutputStream stream;
+                        const auto encoded=str(plugin,field);
+                        if(encoded.isNotEmpty()&&!Base64::convertFromBase64(stream,encoded))throw std::runtime_error("Estado VST3 inválido.");
+                        auto *data=static_cast<const uint8_t*>(stream.getData());
+                        if(stream.getDataSize())bytes.assign(data,data+stream.getDataSize());
+                    };
+                    decode("componentState",state.component);decode("controllerState",state.controller);
+                    e->plugin=std::make_shared<native::vst3::Processor>(description,state,sampleRate,4096);
+                }
+                effects.push_back(std::move(e));
+                break;
+            }
+            }catch(const std::exception &e){if(previous)throw;unsupported.addIfNotAlreadyThere(key+": "+String::fromUTF8(e.what()));}
+            continue;
+        }
         auto value = settings;
         auto kind = key;
         for (auto instance : list(get(settings, "instances")))
@@ -166,9 +205,33 @@ void NativeFX::prepare(const var &settings, double sampleRate) {
         append(kind, value);
     }
 }
-void NativeFX::process(AudioBuffer<float> &buffer, int samples) {
+std::shared_ptr<native::vst3::Processor> NativeFX::external(const String &key) const {
+    for(const auto &effect:effects)if(effect->key==key)return effect->plugin;
+    return {};
+}
+void NativeFX::captureExternalState(var &settings) const {
+    for(auto plugin:list(get(settings,"externalPlugins"))) {
+        auto processor=external("External:"+str(plugin,"id"));if(!processor)continue;
+        const auto state=processor->state();
+        put(plugin,"componentState",Base64::toBase64(state.component.data(),state.component.size()));
+        put(plugin,"controllerState",Base64::toBase64(state.controller.data(),state.controller.size()));
+        auto configuration=plugin.clone();configuration.getDynamicObject()->removeProperty("bypassed");
+        for(const auto &effect:effects)if(effect->plugin==processor)effect->externalConfiguration=JSON::toString(configuration,true);
+    }
+}
+bool NativeFX::hasExternal() const {for(const auto &effect:effects)if(effect->plugin)return true;return false;}
+void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi) {
     ScopedNoDenormals noDenormals;
     for (auto &e : effects) {
+        if(e->plugin&&!e->bypassed) {
+            native::vst3::Transport transport;transport.seconds=seconds;transport.quarterNotes=seconds*2;transport.playing=playing;
+            int count=0;
+            if(midi)for(const auto metadata:*midi)if(metadata.numBytes<=3&&count<(int)e->midi.size()){
+                auto &event=e->midi[(size_t)count++];event.offset=metadata.samplePosition;event.status=metadata.data[0];
+                event.data1=metadata.numBytes>1?metadata.data[1]:0;event.data2=metadata.numBytes>2?metadata.data[2]:0;
+            }
+            e->plugin->process(buffer.getWritePointer(0),buffer.getWritePointer(1),samples,transport,e->midi.data(),count);
+        }
         if (e->kind == "Pitch") {
             for (int ch = 0; ch < 2; ++ch)
                 e->pitchInput.copyFrom(ch, 0, buffer, ch, 0, samples);

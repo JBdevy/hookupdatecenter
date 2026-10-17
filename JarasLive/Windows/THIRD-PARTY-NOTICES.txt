@@ -17,6 +17,10 @@ The bundled ASIO sources in JUCE are used under their accompanying licence.
 
 The original CatLive portable C++ core and product artwork remain part of CatLive.
 
+VST 3 plug-in interfaces, copyright Steinberg Media Technologies GmbH.
+The native Windows host uses the vendored interfaces under their MIT license.
+The complete notice accompanies the executable as VST3-LICENSE.txt.
+
 Inter 4.1, copyright 2016 The Inter Project Authors.
 Distributed under the SIL Open Font License, Version 1.1.
 The unmodified font files are bundled with the desktop application.

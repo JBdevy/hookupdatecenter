@@ -16,6 +16,11 @@ titleStart=source.index('private struct TrackDragTitle:')
 title=source[titleStart:source.index('\n#endif',titleStart)].replace('private ', '')
 stubs='''
 private enum JarasTheme { static let text = Color.white }
+extension NSFont {
+ static func jarasSystemFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+  .systemFont(ofSize: size, weight: weight)
+ }
+}
 final class NativeVerticalTrackMeterView: NSView {}
 final class TrackReorderState: ObservableObject {
  var source: TrackDragSource?

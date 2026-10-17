@@ -623,7 +623,7 @@ int runTests(const File &directory) {
             }
             auto *pan=uiFeatureTests::find(*row,"trackPan");expect(pan&&!pan->isVisible(),"Standard pan hidden on special tracks");
             if(track.role.id=="generatedClick")expect(uiFeatureTests::find(*controls,"insertClick")->isVisible(),"Click exposes Insert");
-            if(track.role.id=="video"||jaras::isTeleprompterRole(track.role))expect(uiFeatureTests::find(*controls,"insertMedia")->isVisible(),"Projection exposes Add media");
+            expect(uiFeatureTests::find(*controls,"insertMedia")->isVisible()==(track.role.id=="video"),"Only legacy video tracks expose Add media");
             if(track.role.id=="chords"||jaras::isTeleprompterRole(track.role))expect(uiFeatureTests::find(*controls,"insertText")->isVisible(),"Text track exposes Add text");
         }
     });
@@ -2133,6 +2133,118 @@ int runTests(const File &directory) {
         session.redo();
         session.audio.render(buffer.getArrayOfWritePointers(), 2, 480);
         expect(std::abs(buffer.getSample(0, 100) - .1f * Decibels::decibelsToGain(6.f)) < .002f, "Live FX redo did not restore processing");
+    });
+    test("Item FX insert remove undo and redo preserve live readers and sample position", [&] {
+        Session session;
+        session.mediaDirectory = directory.getChildFile("Audio");
+        session.edit([&](jaras::Project &p) {
+            auto &song=p.songs[0];song.duration=10;
+            jaras::Track track;track.id=uuid();track.name="Item FX";
+            jaras::AudioClip clip;clip.id=uuid();clip.name="Signal";clip.duration=1;
+            clip.audioFile=jaras::AudioFile{"signal.wav",{}};track.clips={clip};song.tracks={track};
+        });
+        const auto id=session.song()->tracks[0].clips[0].id;
+        session.audio.setOffline(true);session.command(jaras::CommandKind::play);
+        AudioBuffer<float> output(2,128);
+        session.audio.render(output.getArrayOfWritePointers(),2,128);
+        const auto readers=session.audio.residentStreams();
+        auto settings=object();put(settings,"inserted",Array<var>{"Compressor"});
+        put(settings,"compressorEnabled",true);put(settings,"ratio",1);put(settings,"threshold",0);put(settings,"makeup",6);
+        for(int i=0;i<12;++i) {
+            const double before=session.audio.state().position;
+            session.configureEffects(id,settings);
+            expect(session.audio.state().playing&&session.audio.state().position==before,"Item FX moved or stopped playback");
+            session.audio.render(output.getArrayOfWritePointers(),2,128);
+            expect(std::abs(output.getSample(0,64)-.1f*Decibels::decibelsToGain(6.f))<.002f,"Item FX was not applied");
+            session.configureEffects(id,var());
+            session.audio.render(output.getArrayOfWritePointers(),2,128);
+            expect(std::abs(output.getSample(0,64)-.1f)<.002f,"Removing item FX did not restore audio");
+            session.undo();session.audio.render(output.getArrayOfWritePointers(),2,128);
+            expect(std::abs(output.getSample(0,64)-.1f*Decibels::decibelsToGain(6.f))<.002f,"Undo did not restore item FX state");
+            session.redo();session.audio.render(output.getArrayOfWritePointers(),2,128);
+            expect(std::abs(output.getSample(0,64)-.1f)<.002f,"Redo did not remove item FX");
+            expect(session.audio.residentStreams()==readers,"Item FX rebuilt the audio readers");
+        }
+    });
+    test("Native and external FX can be replaced while the device callback renders", [&] {
+        Session session;session.mediaDirectory=directory.getChildFile("Audio");
+        session.edit([&](jaras::Project &p){
+            auto &song=p.songs[0];song.duration=10;
+            jaras::Track track;track.id=uuid();track.name="Live FX";
+            jaras::AudioClip clip;clip.id=uuid();clip.name="Signal";clip.duration=1;clip.audioFile=jaras::AudioFile{"signal.wav",{}};
+            track.clips={clip};song.tracks={track};
+        });
+        const auto track=session.song()->tracks[0].id,clip=session.song()->tracks[0].clips[0].id;
+        session.audio.setOffline(true);session.command(jaras::CommandKind::play);
+        AudioEngine::State state;state.playing=true;state.position=.1;state.loop=true;state.loopStart=.05;state.loopEnd=.9;session.audio.transport(state);
+        std::vector<var> chains;
+        for(const String &kind:StringArray{"EQ","Compressor","Limiter","Delay","Reverb","Pitch"}){
+            auto fx=object();fxui::defaults(fx);put(fx,"inserted",Array<var>{kind});fxui::enable(kind,fx,true);put(fx,"pitchSemitones",2);chains.push_back(fx);
+        }
+        const auto pluginPath=SystemStats::getEnvironmentVariable("CATLIVE_TEST_VST3",{});
+        if(pluginPath.isNotEmpty()){
+            const auto plugins=native::vst3::scan(std::filesystem::u8path(utf8(pluginPath)));
+            expect(!plugins.empty(),"Test VST3 has no processor");
+            auto plugin=object(),fx=object();put(plugin,"id",text(uuid()));put(plugin,"classID",text(plugins[0].classID));
+            put(plugin,"name",text(plugins[0].name));put(plugin,"path",pluginPath);put(plugin,"category",text(plugins[0].category));put(plugin,"bypassed",false);
+            put(fx,"externalPlugins",Array<var>{plugin});put(fx,"inserted",Array<var>{"External:"+str(plugin,"id")});chains.push_back(fx);
+        }
+        struct Running {std::atomic<bool> stop{false},finite{true};std::atomic<int> blocks{0};std::thread thread;
+            ~Running(){stop=true;if(thread.joinable())thread.join();}} running;
+        running.thread=std::thread([&]{AudioBuffer<float> output(2,128);while(!running.stop.load()){
+            {const ScopedLock lock(session.audio.devices.getAudioCallbackLock());session.audio.render(output.getArrayOfWritePointers(),2,128);}
+            for(int ch=0;ch<2;++ch)for(int n=0;n<128;++n)if(!std::isfinite(output.getSample(ch,n)))running.finite=false;
+            ++running.blocks;Thread::sleep(1);
+        }});
+        for(const auto &target:std::vector<ID>{track,clip})for(const auto &fx:chains){
+            session.configureEffects(target,fx);Thread::sleep(8);
+            const auto keys=list(get(fx,"inserted"));
+            if(keys[0].toString().startsWith("External:")){
+                auto captured=fx.clone();session.audio.captureExternalEffects(target,captured);
+                expect(str(list(get(captured,"externalPlugins"))[0],"componentState").isNotEmpty(),"External FX did not capture its live state");
+                const auto file=directory.getChildFile("live-vst-save/"+text(target)+"/project.jl");
+                session.save(file);
+                const auto saved=ProjectCodec::decode(ProjectCodec::read(file));
+                const auto &savedTrack=saved.songs[0].tracks[0];
+                const auto encoded=target==track?savedTrack.fxJSON:savedTrack.clips[0].fxJSON;
+                expect(encoded.has_value(),"Saved project lost its external FX chain");
+                expect(str(list(get(JSON::parse(text(*encoded)),"externalPlugins"))[0],"componentState").isNotEmpty(),
+                    "Saving did not preserve the plugin's live state");
+            }
+            session.configureEffects(target,var());session.undo();Thread::sleep(4);session.redo();
+        }
+        expect(running.blocks.load()>10&&running.finite.load()&&session.audio.state().playing,"Live FX stalled crashed or emitted nonfinite samples");
+    });
+    test("Physical channel gaps preserve inputs nested groups and direct hardware outputs", [&] {
+        AudioEngine engine;engine.prepareOffline(48000);engine.instrumentAllowed=true;
+        jaras::Project project;project.masterMute=true;
+        jaras::Song song;song.id=uuid();song.duration=10;
+        jaras::Track group;group.id=uuid();group.name="Group";group.volume=.5;
+        group.outputs=std::vector<jaras::OutputPatch>{{5,2}};
+        jaras::Track nested;nested.id=uuid();nested.name="Nested";nested.parentTrackID=group.id;
+        nested.outputs=std::vector<jaras::OutputPatch>{{-2,2}};
+        jaras::Track stereo;stereo.id=uuid();stereo.name="Input 3-4";stereo.parentTrackID=nested.id;
+        stereo.inputPatch=jaras::OutputPatch{3,2};stereo.inputMonitoring=true;
+        stereo.outputs=std::vector<jaras::OutputPatch>{{-2,2}};
+        jaras::Track mono;mono.id=uuid();mono.name="Input 7";mono.inputPatch=jaras::OutputPatch{7,1};
+        mono.inputMonitoring=true;mono.outputs=std::vector<jaras::OutputPatch>{{9,1}};
+        song.tracks={group,nested,stereo,mono};
+        engine.prepareSong(song,directory,{},&project);engine.setMixer(project,song);
+        engine.armTrack(stereo.id,true);engine.armTrack(mono.id,true);
+        BigInteger inputs,outputs;for(int channel:{2,3,6})inputs.setBit(channel);
+        for(int channel:{4,5,8})outputs.setBit(channel);
+        engine.configureDeviceChannels(inputs,outputs);
+        AudioBuffer<float> in(3,128),out(3,128);
+        for(int ch=0;ch<3;++ch)FloatVectorOperations::fill(in.getWritePointer(ch),.1f*(ch+1),128);
+        auto render=[&]{static_cast<AudioIODeviceCallback&>(engine).audioDeviceIOCallbackWithContext(in.getArrayOfReadPointers(),3,out.getArrayOfWritePointers(),3,128,{});};
+        render();
+        expect(std::abs(out.getSample(0,64)-.05f)<.0001f&&std::abs(out.getSample(1,64)-.1f)<.0001f,"Stereo group channels were shifted mixed or duplicated");
+        expect(std::abs(out.getSample(2,64)-.3f)<.0001f,"Mono input or direct output used the wrong physical channel");
+        song.tracks[0].mute=true;engine.setMixer(project,song);render();
+        expect(out.getMagnitude(0,0,128)==0&&out.getMagnitude(1,0,128)==0,"Group mute did not silence its children");
+        expect(std::abs(out.getSample(2,64)-.3f)<.0001f,"Group mute leaked to an independent direct output");
+        engine.armTrack(mono.id,false);render();
+        expect(out.getMagnitude(2,0,128)==0,"Disarmed track still monitored its input");
     });
     test("Generated Click and metronome follow tempo, spans, mute and output patch", [&] {
         jaras::Song song;

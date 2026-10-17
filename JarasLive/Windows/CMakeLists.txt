@@ -60,6 +60,24 @@ juce_add_gui_app(CatLive PRODUCT_NAME "CatLive" COMPANY_NAME "Hook Developer"
     BUNDLE_ID "com.hookdeveloper.catlive" VERSION "${CATLIVE_BINARY_VERSION}"
     ICON_BIG "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveIcon.appiconset/icon-256@1x.png")
 juce_generate_juce_header(CatLive)
+add_library(CatLiveVST3 STATIC "${CATLIVEROOT}/WindowsNative/Source/VST3Host.cpp"
+    "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp"
+    "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp"
+    "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/coreiids.cpp")
+target_include_directories(CatLiveVST3 PUBLIC "${CATLIVEROOT}/WindowsNative/Source" PRIVATE "${CATLIVEROOT}/Core/ThirdParty/VST3")
+target_compile_definitions(CatLiveVST3 PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(CatLiveVST3 PRIVATE /utf-8)
+target_link_libraries(CatLiveVST3 PRIVATE ole32 user32)
+add_executable(CatLiveVST3Probe "${CATLIVEROOT}/WindowsNative/Tests/VST3Probe.cpp")
+target_include_directories(CatLiveVST3Probe PRIVATE "${CATLIVEROOT}/WindowsNative/ThirdParty")
+target_link_libraries(CatLiveVST3Probe PRIVATE CatLiveVST3)
+add_dependencies(CatLive CatLiveVST3Probe)
+add_custom_command(TARGET CatLive POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "$<TARGET_FILE:CatLiveVST3Probe>" "$<TARGET_FILE_DIR:CatLive>/CatLiveVST3Probe.exe")
+install(TARGETS CatLiveVST3Probe RUNTIME DESTINATION .)
+add_custom_command(TARGET CatLive POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CATLIVEROOT}/Core/ThirdParty/VST3/VST3-LICENSE.txt" "$<TARGET_FILE_DIR:CatLive>/VST3-LICENSE.txt")
+install(FILES "${CATLIVEROOT}/Core/ThirdParty/VST3/VST3-LICENSE.txt" DESTINATION .)
 set(CATLIVE_APP_OUTPUT_DIRECTORY "" CACHE PATH "Optional application output directory for local validation builds")
 if(CATLIVE_APP_OUTPUT_DIRECTORY)
     set_target_properties(CatLive PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CATLIVE_APP_OUTPUT_DIRECTORY}")
@@ -86,7 +104,7 @@ if(NOT CATLIVE_FFMPEG_INCLUDE_DIR)
     set(CATLIVE_FFMPEG_INCLUDE_DIR "${catlive_ffmpeg_headers_SOURCE_DIR}")
 endif()
 target_include_directories(CatLive PRIVATE ThirdParty/FFmpeg/include "${CATLIVE_FFMPEG_INCLUDE_DIR}")
-target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets juce::juce_audio_utils
+target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets CatLiveVST3 juce::juce_audio_utils
     juce::juce_dsp juce::juce_osc juce::juce_cryptography bcrypt crypt32 normaliz dnsapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0

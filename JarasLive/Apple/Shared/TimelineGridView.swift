@@ -5120,6 +5120,10 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
         if body.height >= 12 { drawTimelineName(JarasLocalization.string("Not found"), in: body, visibleRect: tile, centered: true, context: &context) }
         return
     }
+    let rgb = TrackNameContrast.components(track.color ?? JarasTheme.roleHex(track.role), emphasized: selected)
+    let luminance = 0.2126 * rgb.red + 0.7152 * rgb.green + 0.0722 * rgb.blue
+    // Audio and generated Click items share the same neutral waveform ink.
+    let waveColor = Color(white: silenced ? 0.78 : luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8)
     if track.kind == .click && !clip.isProjectionMedia {
         let body = CGRect(x: rect.minX, y: rect.minY + GridSelectionItem.bodyInset, width: rect.width, height: max(0, rect.height - GridSelectionItem.bodyInset - 2))
         let visible = body.intersection(tile)
@@ -5137,7 +5141,7 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
             wave.closeSubpath()
         }
         var waveContext = context; waveContext.clip(to: Path(visible))
-        waveContext.fill(wave, with: .color(Color(white: 0.88).opacity(silenced ? 0.5 : 0.9)))
+        waveContext.fill(wave, with: .color(waveColor))
         return
     }
     if (track.kind == .timecode && !clip.isProjectionMedia) || track.kind == .video || (clip.isProjectionMedia && ["mov", "mp4", "m4v", "avi", "mkv", "webm"].contains(URL(fileURLWithPath: clip.audioFile?.path ?? "").pathExtension.lowercased())) {
@@ -5161,10 +5165,6 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
     }
     guard drawWaveform || track.kind != .standard || mediaDirectory == nil || (clip.audioFile ?? track.audioFile) == nil else { return }
     let waveTop = rect.minY + min(GridSelectionItem.bodyInset, rect.height)
-    let rgb = TrackNameContrast.components(track.color ?? JarasTheme.roleHex(track.role), emphasized: selected)
-    let luminance = 0.2126 * rgb.red + 0.7152 * rgb.green + 0.0722 * rgb.blue
-    // Neutral gray ink follows the item brightness, without becoming black.
-    let waveColor = Color(white: silenced ? 0.78 : luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8)
     if let mediaDirectory, let file = clip.audioFile ?? track.audioFile, track.kind == .standard {
         for fragment in tempoSegments ?? [clip] {
             var waveformContext = context

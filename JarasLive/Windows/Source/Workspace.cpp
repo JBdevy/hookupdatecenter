@@ -1761,7 +1761,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             pulses.addTriangle(x,middle-amplitude,x+tail,middle,x,middle+amplitude);
                         }
                         g.saveState();g.reduceClipRegion(body.getSmallestIntegerContainer());
-                        g.setColour(Colour::greyLevel(.88f).withAlpha(muted?.5f:.9f));g.fillPath(pulses);g.restoreState();
+                        g.setColour(Colour::greyLevel(waveGray));g.fillPath(pulses);g.restoreState();
                     } else if (!clip.text && (!clip.midi || clip.frozenMIDI.value_or(false))) {
                         const auto &source = clip.audioFile ? clip.audioFile : track.audioFile;
                         const auto data = source ? t.waveforms.request(t.waveformFile(source->path)) : nullptr;

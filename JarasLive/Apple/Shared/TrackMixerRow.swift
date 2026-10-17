@@ -810,12 +810,6 @@ struct TrackMixerRow: View, Equatable {
                     }
                 }.buttonStyle(CompactTrackButtonStyle()).trackControlSelectionExclusion()
                 }.frame(height: compactHeight ? 21 : 24)
-                if track.kind.isTeleprompter {
-                    HStack {
-                        Spacer(minLength: 0)
-                        Button("Add media", action: importVideo).buttonStyle(TrackControlButtonStyle())
-                    }.frame(height: 24).padding(.top, 5)
-                }
                 HStack(spacing: 3) {
                     if showsFader && (track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click) {
                         TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click)
@@ -991,10 +985,7 @@ struct TrackMixerRow: View, Equatable {
                     if isFolder { TrackGroupButton(show: show, project: project, track: track.id, parent: track.parentTrackID) }
                     else { Color.clear }
                 }.jarasPlaced(at: 5)
-                Group {
-                    if track.kind.isTeleprompter { Button("Add media", action: importVideo).buttonStyle(TrackControlButtonStyle()).trackControlSelectionExclusion() }
-                    else { Color.clear }
-                }.clipped().jarasPlaced(at: 6)
+                Color.clear.jarasPlaced(at: 6)
             }
     }
     #endif

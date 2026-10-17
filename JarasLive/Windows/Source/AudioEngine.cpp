@@ -8,7 +8,7 @@
 namespace catlive {
 AudioEngine::AudioEngine() {
     for (int i = 0; i < 128; ++i)
-        inputMapping[(size_t)i] = i;
+        inputMapping[(size_t)i] = outputMapping[(size_t)i] = i;
     liveMidi.ensureSize(32768);
     midiInput.reset(48000);
     keyboardMidi.ensureSize(32768);
@@ -159,8 +159,13 @@ void AudioEngine::previewMIDIItem(const jaras::Song &song,const jaras::AudioClip
     for(const auto &track:song.tracks)if(std::any_of(track.clips.begin(),track.clips.end(),[&](const auto &c){return c.id==clip.id;})){
         auto draft=track;for(auto &item:draft.clips)if(item.id==clip.id)item=clip;
         auto notes=playbackNotes(draft,&song,true);auto sequence=MIDIPlayback::sequence(notes);
+        auto externalEvents=sequence.events;
         const ScopedLock lock(devices.getAudioCallbackLock());
-        for(auto &bus:buses)if(bus->id==track.id && bus->midi){bus->midiNotes.swap(notes);bus->midi->replaceSequence(sequence,clip.muted);}
+        for(auto &bus:buses)if(bus->id==track.id){
+            bus->midiNotes.swap(notes);bus->externalEvents.swap(externalEvents);
+            for(auto &expected:bus->externalExpected)expected=-1;
+            if(bus->midi)bus->midi->replaceSequence(sequence,clip.muted);
+        }
         return;
     }
 }
@@ -216,13 +221,35 @@ void AudioEngine::configureMetronome(const var &settings) {
         metronomeEnabled = flag(settings, "enabled");
     }
 }
+NativeFX *AudioEngine::effects(const ID &id,int head) const {
+    if(id.empty())return const_cast<NativeFX*>(&masterFX);
+    for(const auto &bus:buses)if(bus->id==id)return &bus->fx[head];
+    for(const auto &voice:voices)if(voice->clipID==id)return &voice->fx[head];
+    return nullptr;
+}
+std::shared_ptr<native::vst3::Processor> AudioEngine::externalEffect(const ID &id,const String &key) const {
+    if(auto *chain=effects(id))return chain->external(key);
+    return {};
+}
+void AudioEngine::captureExternalEffects(const ID &id,var &settings) const {
+    if(auto *chain=effects(id))chain->captureExternalState(settings);
+}
 void AudioEngine::setEffects(const ID &id, const var &settings) {
     NativeFX prepared[2];
     auto saved = settings.clone();
     const auto sampleRate = rate.load();
-    prepared[0].prepare(saved, sampleRate);
+    prepared[0].prepare(saved, sampleRate, effects(id));
     if (!id.empty())
-        prepared[1].prepare(saved, sampleRate);
+        prepared[1].prepare(saved, sampleRate, effects(id,1));
+    // Item edits replace only the processors; readers and playback heads stay alive.
+    for (auto &voice : voices)
+        if (voice->clipID == id) {
+            const ScopedLock lock(devices.getAudioCallbackLock());
+            voice->fx[0].swap(prepared[0]);
+            voice->fx[1].swap(prepared[1]);
+            std::swap(voice->fxSettings, saved);
+            return;
+        }
     auto signature = [](const var &fx) {
         Array<var> values;
         for (auto value : instrumentAssets::settings(fx))
@@ -235,6 +262,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
             target = bus.get();
             break;
         }
+    if (!id.empty() && !target) return;
     const bool changeMIDI =
         signature(settings) != signature(target ? target->settings : masterFXSettings);
     std::unique_ptr<MIDIPlayback> midi;
@@ -261,6 +289,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
                 if (bus->id == id) {
                     bus->fx[0].swap(prepared[0]);
                     bus->fx[1].swap(prepared[1]);
+                    for(auto &expected:bus->externalExpected)expected=-1;
                     std::swap(bus->settings, saved);
                     if (changeMIDI)
                         bus->midi.swap(midi);
@@ -352,6 +381,8 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             bus->outputs = track.outputPatches();
             bus->settings = track.fxJSON ? JSON::parse(text(*track.fxJSON)) : var();
             bus->midiNotes = playbackNotes(track, &song);
+            bus->externalEvents = MIDIPlayback::sequence(bus->midiNotes).events;
+            for(auto &messages:bus->externalMIDI)messages.ensureSize(131072);
             bus->midiSlot = track.midiInput.value_or(0);
             bus->midiChannel = track.midiChannel.value_or(0);
             bus->midiMessages.ensureSize(32768);
@@ -748,7 +779,7 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
         v.processed[head].setSample(0, i - begin, a * left * fade);
         v.processed[head].setSample(1, i - begin, b * right * fade);
     }
-    if (!v.fxBypassed) v.fx[head].process(v.processed[head], end - begin);
+    if (!v.fxBypassed) v.fx[head].process(v.processed[head], end - begin,at+begin/sr);
     for (int ch = 0; ch < std::min(2, channels); ++ch)
         if (out[ch])
             FloatVectorOperations::add(out[ch] + dest + begin, v.processed[head].getReadPointer(ch),
@@ -798,7 +829,8 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         bus->buffer.clear(0, samples);
         bus->subBuffer.clear(0, samples);
         for(auto &buffer:bus->frozen)buffer.clear(0,samples);
-        if (bus->midi && !bus->midi->empty() && bus->midiSlot > 0)
+        for(auto &messages:bus->externalMIDI)messages.clear();
+        if (((bus->midi && !bus->midi->empty()) || bus->fx[0].hasExternal()) && bus->midiSlot > 0)
             routedHardware = true;
     }
     std::array<bool, 512> audible{};
@@ -828,9 +860,15 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         int done = 0;
         std::fill_n(timelinePositions[(size_t)head].begin(), samples, cursor);
         if (!run)
-            for (auto &bus : buses)
+            for (auto &bus : buses) {
                 if (bus->midi)
                     bus->midi->reset(head);
+                if(bus->externalExpected[head]>=0){
+                    for(int channel=1;channel<=16;++channel)
+                        bus->externalMIDI[head].addEvent(MidiMessage::allNotesOff(channel),0);
+                    bus->externalExpected[head]=-1;
+                }
+            }
         while (run && done < samples) {
             const bool looping = head == 0 && current.loop && current.loopEnd > current.loopStart;
             double boundary = looping ? std::min(duration, current.loopEnd) : duration;
@@ -845,6 +883,29 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             }
             int count = std::min(samples - done,
                                  std::max(1, (int)std::ceil((boundary - cursor) * sr - 1e-7)));
+            for(size_t index=0;index<buses.size();++index) {
+                auto &bus=*buses[index];
+                if(!bus.fx[head].hasExternal())continue;
+                auto &messages=bus.externalMIDI[head];
+                const auto scope=current.scope[head];
+                const bool reset=std::abs(bus.externalExpected[head]-cursor)>1.5/sr||bus.externalScopes[head]!=scope;
+                if(reset || !audible[index]) {
+                    for(int channel=1;channel<=16;++channel)messages.addEvent(MidiMessage::allNotesOff(channel),done);
+                    if(audible[index])for(const auto &note:bus.midiNotes)
+                        if(note.velocity>0&&scope.allows(note.playbackStart)&&note.start<cursor-1e-9&&note.end>cursor+1e-9)
+                            messages.addEvent(MidiMessage::noteOn(note.channel,note.pitch,(uint8)note.velocity),done);
+                }
+                if(!audible[index]){bus.externalExpected[head]=-1;continue;}
+                const double end=cursor+count/sr;
+                auto event=std::lower_bound(bus.externalEvents.begin(),bus.externalEvents.end(),cursor-1e-9,
+                    [](const MIDIPlayback::Event &event,double value){return event.time<value;});
+                for(;event!=bus.externalEvents.end()&&event->time<end-1e-9;++event) {
+                    const auto &note=event->note;if(!scope.allows(note.playbackStart))continue;
+                    messages.addEvent(event->on?MidiMessage::noteOn(note.channel,note.pitch,(uint8)note.velocity):MidiMessage::noteOff(note.channel,note.pitch),
+                        done+jlimit(0,count-1,(int)std::round((event->time-cursor)*sr)));
+                }
+                bus.externalExpected[head]=end;bus.externalScopes[head]=scope;
+            }
             for (auto &v : voices)
                 if (audible[v->bus] && current.scope[head].allows(v->playbackStart)) {
                     if (v->start > cursor && v->start <= cursor + 2)
@@ -943,6 +1004,11 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         }
         if (trackCapture)
             trackCapture->midi(bus.id, bus.midiMessages, samples, bus.midiChannel);
+        if(allowInstrument)for(const auto event:bus.midiMessages)
+            if(bus.midiChannel<=0||event.getMessage().getChannel()==bus.midiChannel)
+                bus.externalMIDI[0].addEvent(event.getMessage(),event.samplePosition);
+        if(!allowInstrument&&instrumentWasAllowed)
+            for(int channel=1;channel<=16;++channel)bus.externalMIDI[0].addEvent(MidiMessage::allNotesOff(channel),0);
         liveRecordBuffer.clear(0, samples);
         if (bus.midi && !bus.midi->empty()) {
             if (allowInstrument)
@@ -967,7 +1033,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         for (int head = 0; head < 2; ++head) {
             auto &buffer = bus.head(head);
             fxInput = std::max(fxInput, buffer.getMagnitude(0, samples));
-            bus.fx[head].process(buffer, samples);
+            bus.fx[head].process(buffer, samples,timelinePositions[(size_t)head][0],head==0?current.playing:current.subPlaying,&bus.externalMIDI[head]);
             for(int ch=0;ch<2;++ch)buffer.addFrom(ch,0,bus.frozen[head],ch,0,samples);
             fxOutput = std::max(fxOutput, buffer.getMagnitude(0, samples));
             for (int n = 0; n < samples; ++n) {
@@ -1028,7 +1094,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     instrumentWasAllowed = allowInstrument;
     masterFXInput.store(
         std::max(masterBuffer.getMagnitude(0, samples), masterFXInput.load() * .85f));
-    masterFX.process(masterBuffer, samples);
+    masterFX.process(masterBuffer, samples,timelinePositions[0][0],current.playing||current.subPlaying,allowInstrument?&liveMidi:nullptr);
     masterFXOutput.store(
         std::max(masterBuffer.getMagnitude(0, samples), masterFXOutput.load() * .85f));
     float maxPeak = 0;
@@ -1104,16 +1170,33 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float *const *input, in
         if (!recorder->write(input, samples))
             recordingDrops.fetch_add(1, std::memory_order_relaxed);
     }
-    render(out, channels, samples, input, inputs);
+    // JUCE packs enabled device channels. The routing graph uses physical,
+    // one-based channel numbers, including gaps in the enabled channel mask.
+    std::array<float *, 128> physical{};
+    for(int channel=0;channel<channels;++channel)if(out[channel])FloatVectorOperations::clear(out[channel],samples);
+    int count = 0;
+    for (int channel = 0; channel < 128; ++channel) {
+        const int packed = outputMapping[(size_t)channel];
+        if (packed >= 0 && packed < channels) {
+            physical[(size_t)channel] = out[packed];
+            count = channel + 1;
+        }
+    }
+    render(physical.data(), count, samples, input, inputs);
+}
+void AudioEngine::configureDeviceChannels(const BigInteger &inputs, const BigInteger &outputs) {
+    inputMapping.fill(-1);
+    outputMapping.fill(-1);
+    int input = 0, output = 0;
+    for (int channel = 0; channel < 128; ++channel) {
+        if (inputs[channel]) inputMapping[(size_t)channel] = input++;
+        if (outputs[channel]) outputMapping[(size_t)channel] = output++;
+    }
 }
 void AudioEngine::audioDeviceAboutToStart(AudioIODevice *d) {
     cancelTrackFadeout();
     rate = d->getCurrentSampleRate();
-    inputMapping.fill(-1);
-    int packed = 0;
-    for (int channel = 0; channel < 128; ++channel)
-        if (d->getActiveInputChannels()[channel])
-            inputMapping[(size_t)channel] = packed++;
+    configureDeviceChannels(d->getActiveInputChannels(), d->getActiveOutputChannels());
     masterFX.prepare(masterFXSettings, rate.load());
     midiInput.reset(rate.load());
     for (auto &slot : midiSlots)

@@ -46,6 +46,8 @@ Copy-Item -LiteralPath $binary -Destination (Join-Path $packageDirectory 'CatLiv
 $runtimeDirectory=Split-Path -Parent $binary
 $requiredRuntimeFiles=@(
     'CatLiveLame.dll',
+    'CatLiveVST3Probe.exe',
+    'VST3-LICENSE.txt',
     'Licenses/LAME/COPYING',
     'Licenses/LAME/lame-3.100-source.tar.gz',
     'Licenses/LAME/config.h',

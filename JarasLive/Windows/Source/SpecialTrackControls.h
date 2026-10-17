@@ -20,7 +20,7 @@ class SpecialTrackControls final : public Component {
         const auto *t=track();if(!t)return;const auto &role=t->role.id;
         std::vector<TextButton*> buttons;
         if(role=="generatedClick")buttons={&insert};else if(role=="timecode")buttons={&settings,&mtc,&ltc};else if(role=="video")buttons={&media};
-        else if(jaras::isTeleprompterRole(t->role))buttons={&addText,&media};else if(role=="chords")buttons={&addText};
+        else if(jaras::isTeleprompterRole(t->role)||role=="chords")buttons={&addText};
         if(getWidth()<100 || jaras::isTeleprompterRole(t->role)){int y=0;for(auto *b:buttons){b->setBounds(0,y,getWidth(),21);b->setVisible(true);y+=24;}}
         else{int x=0;for(auto *b:buttons){int width=b==&settings?30:(b==&mtc||b==&ltc?38:role=="generatedClick"?47:102);b->setBounds(x,0,width,std::min(24,getHeight()));b->setVisible(true);x+=width+3;}}
     }

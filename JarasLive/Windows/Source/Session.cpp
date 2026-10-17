@@ -156,7 +156,21 @@ void Session::load(const File &file) {
     dirty = false;
     notify();
 }
-var Session::snapshot() const { return ProjectCodec::encode(project(), original); }
+static void captureExternalProjectState(const AudioEngine &audio,jaras::Project &p) {
+    auto capture=[&](const ID &id,std::optional<std::string> &json){
+        if(!json)return;auto settings=JSON::parse(text(*json));audio.captureExternalEffects(id,settings);
+        json=utf8(JSON::toString(settings,true));
+    };
+    capture({},p.masterFXJSON);
+    for(auto &song:p.songs)for(auto &track:song.tracks){
+        capture(track.id,track.fxJSON);
+        for(auto &clip:track.clips)capture(clip.id,clip.fxJSON);
+    }
+}
+var Session::snapshot() const {
+    auto p=project();captureExternalProjectState(audio,p);
+    return ProjectCodec::encode(p, original);
+}
 void Session::save(const File &file) {
     if (audio.isRecording())
         throw std::runtime_error("Conclua a gravação antes de salvar o projeto.");
@@ -220,6 +234,7 @@ void Session::save(const File &file) {
             }
         }
     p.updatedAt = utf8(Time::getCurrentTime().toISO8601(true));
+    captureExternalProjectState(audio,p);
     auto raw = ProjectCodec::encode(p, original);
     const auto remembered = targetDir == mediaDirectory ? observedMedia : mediaCleanup::Paths{};
     mediaCleanup::remember(p, target, remembered);
@@ -722,7 +737,7 @@ void Session::edit(const std::function<void(jaras::Project &)> &change, bool reb
     if (rebuild && (transport().playing || transport().subPlay.playing))
         throw std::runtime_error("Pare a reprodução antes de alterar a estrutura do projeto.");
     auto before = snapshot();
-    auto p = project();
+    auto p = ProjectCodec::decode(before);
     change(p);
     if (!allowTimingEdit && timelineGrid::changesLockedGeometry(project(), p))
         throw std::runtime_error("Desbloqueie o cadeado para mover ou redimensionar itens, regiões e marcadores.");
@@ -750,12 +765,20 @@ std::map<ID, var> Session::currentEffects(const std::map<ID, var> &targets) cons
     std::map<ID, var> result;
     for (const auto &[id, ignored] : targets) {
         if (id.empty()) result[id] = project().masterFXJSON ? JSON::parse(text(*project().masterFXJSON)) : var();
-        else for (const auto &song : project().songs) for (const auto &track : song.tracks)
+        else for (const auto &song : project().songs) for (const auto &track : song.tracks) {
             if (track.id == id) result[id] = track.fxJSON ? JSON::parse(text(*track.fxJSON)) : var();
+            for (const auto &clip : track.clips)
+                if (clip.id == id) result[id] = clip.fxJSON ? JSON::parse(text(*clip.fxJSON)) : var();
+        }
     }
+    for(auto &[id,settings]:result)audio.captureExternalEffects(id,settings);
     return result;
 }
-void Session::configureEffects(const std::map<ID, var> &changes) { applyEffects(changes, true); }
+void Session::configureEffects(const std::map<ID, var> &changes) {
+    auto live=changes;
+    for(auto &[id,settings]:live){settings=settings.clone();audio.captureExternalEffects(id,settings);}
+    applyEffects(live, true);
+}
 void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory) {
     if (busy || changes.empty())
         return;
@@ -766,8 +789,10 @@ void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory)
         const std::optional<std::string> json = settings.isVoid() ? std::nullopt : std::optional<std::string>(utf8(JSON::toString(settings, true)));
         bool found = id.empty();
         if (id.empty()) p.masterFXJSON = json;
-        else for (auto &song : p.songs) for (auto &track : song.tracks) if (track.id == id) {
-            track.fxJSON = json; found = true;
+        else for (auto &song : p.songs) for (auto &track : song.tracks) {
+            if (track.id == id) { track.fxJSON = json; found = true; }
+            for (auto &clip : track.clips)
+                if (clip.id == id) { clip.fxJSON = json; found = true; }
         }
         if (!found) throw std::runtime_error("A faixa deste efeito não existe mais.");
     }

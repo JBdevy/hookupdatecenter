@@ -274,6 +274,7 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
     Changes changes;
     EventList events;
     ParamID midiParameters[16][130];
+    bool heldNotes[16][128]{};
     std::vector<AudioBusBuffers> inputs,outputs;
     std::vector<std::vector<float>> storage;
     std::vector<std::vector<float *>> pointers;
@@ -393,7 +394,10 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         ProcessSetup setup{kRealtime,kSample32,maxFrames,rate};
         if(processor->setupProcessing(setup)!=kResultOk)throw std::runtime_error("VST3 audio setup failed.");
         if(component->setActive(true)!=kResultOk)throw std::runtime_error("Could not activate this VST3 processor.");active=true;
-        if(processor->setProcessing(true)!=kResultOk)throw std::runtime_error("Could not start this VST3 processor.");processing=true;
+        const auto processingResult=processor->setProcessing(true);
+        if(processingResult!=kResultOk&&processingResult!=kNotImplemented)
+            throw std::runtime_error("Could not start this VST3 processor ("+std::to_string(processingResult)+").");
+        processing=true;
         latencySamples=processor->getLatencySamples();
     }catch(...){close();throw;}}
     ~Impl(){close();}
@@ -429,6 +433,12 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
             if(message.offset<0||message.offset>=count)continue;
             const int kind=message.status&0xf0,channel=message.status&15;
             if(kind==0xb0||kind==0xe0){
+                if(kind==0xb0&&(message.data1==120||message.data1==123))
+                    for(int pitch=0;pitch<128;++pitch)if(heldNotes[channel][pitch]){
+                        Event off{};off.sampleOffset=message.offset;off.type=Event::kNoteOffEvent;
+                        off.noteOff.channel=int16(channel);off.noteOff.pitch=int16(pitch);off.noteOff.noteId=-1;
+                        events.addEvent(off);heldNotes[channel][pitch]=false;
+                    }
                 const int cc=kind==0xe0?129:message.data1;
                 if(cc<130&&midiParameters[channel][cc]!=kNoParamId){
                     int32 index;auto q=changes.addParameterData(midiParameters[channel][cc],index);
@@ -439,6 +449,8 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
             if(kind!=0x90&&kind!=0x80)continue;
             Event event{};event.sampleOffset=message.offset;
             const bool on=kind==0x90&&message.data2>0;
+            if(message.data1>127)continue;
+            heldNotes[channel][message.data1]=on;
             event.type=on?Event::kNoteOnEvent:Event::kNoteOffEvent;
             if(on){event.noteOn.channel=int16(channel);event.noteOn.pitch=message.data1;event.noteOn.velocity=message.data2/127.f;event.noteOn.noteId=-1;}
             else{event.noteOff.channel=int16(channel);event.noteOff.pitch=message.data1;event.noteOff.velocity=message.data2/127.f;event.noteOff.noteId=-1;}
@@ -470,8 +482,10 @@ bool Processor::process(float *l,float *r,int n,const Transport &t,const MIDIEve
 }
 State Processor::state()const {
     Stream component,controller;
-    if(impl->component->getState(&component)!=kResultOk)throw std::runtime_error("VST3 could not save its processor state.");
-    if(impl->controller&&impl->controller->getState(&controller)!=kResultOk)throw std::runtime_error("VST3 could not save its controller state.");
+    const auto componentResult=impl->component->getState(&component);
+    if(componentResult!=kResultOk&&componentResult!=kNotImplemented)throw std::runtime_error("VST3 could not save its processor state.");
+    if(impl->controller){const auto result=impl->controller->getState(&controller);
+        if(result!=kResultOk&&result!=kNotImplemented)throw std::runtime_error("VST3 could not save its controller state.");}
     return {std::move(component.bytes),std::move(controller.bytes)};
 }
 bool Processor::consumeEdited()noexcept {

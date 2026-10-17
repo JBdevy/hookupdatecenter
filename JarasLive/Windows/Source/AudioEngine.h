@@ -33,8 +33,11 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::atomic<bool> instrumentAllowed{false};
     void loadSoundFont(const File &);
     String openDevice();
+    void configureDeviceChannels(const BigInteger &inputs, const BigInteger &outputs);
     void configureMetronome(const var &);
     void setEffects(const ID &, const var &);
+    std::shared_ptr<native::vst3::Processor> externalEffect(const ID &, const String &) const;
+    void captureExternalEffects(const ID &, var &) const;
     void setMIDISlot(int, const String &);
     void setKeyboardTarget(const ID &id) {
         int index = -1;
@@ -148,6 +151,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     var preparationDiagnostics;
 
   private:
+    NativeFX *effects(const ID &, int head = 0) const;
     int lastPrimedSources = 0;
     double lastPrimeWaitMilliseconds = 0;
     struct Source {
@@ -194,6 +198,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::unique_ptr<ClickProgram> click;
         bool timecode = false;
         std::vector<PlaybackNote> midiNotes;
+        std::vector<MIDIPlayback::Event> externalEvents;
+        MidiBuffer externalMIDI[2];
+        double externalExpected[2]{-1,-1};
+        jaras::PlaybackScope externalScopes[2];
         std::unique_ptr<MIDIPlayback> midi;
         MidiBuffer midiMessages;
         int midiSlot = 0, midiChannel = 0;
@@ -227,6 +235,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::vector<jaras::OutputPatch> masterOutputs{{1, 2}};
     TimeSliceThread readAhead{"CatLive media read-ahead"};
     std::vector<std::unique_ptr<Voice>> voices;
+    std::array<int, 128> outputMapping{};
     std::atomic<double> rate{48000}, position{0}, subPosition{0};
     std::atomic<bool> playing{false}, subPlaying{false};
     std::atomic<uint64> elapsedSamples{0}, underruns{0};
