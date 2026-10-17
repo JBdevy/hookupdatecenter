@@ -61,6 +61,8 @@ foreach ($relativePath in $requiredRuntimeFiles) {
     New-Item -ItemType Directory -Force (Split-Path -Parent $packageFile) | Out-Null
     Copy-Item -LiteralPath $runtimeFile -Destination $packageFile -Force
 }
+& (Join-Path $sourceDirectory 'scripts/prepare-ffmpeg-runtime.ps1') -BuildDirectory $BuildDirectory -PackageDirectory $packageDirectory -SourceDirectory $sourceDirectory
+if($LASTEXITCODE){throw 'Falha ao preparar o runtime FFmpeg do vídeo.'}
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'README.txt') -Destination $packageDirectory -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'THIRD-PARTY-NOTICES.txt') -Destination $packageDirectory -Force
 Remove-Item -LiteralPath (Join-Path $packageDirectory 'Figtree-LICENSE.txt') -ErrorAction SilentlyContinue

@@ -19,6 +19,12 @@
 #if !FileExists(PackageDirectory + "\Licenses\dr_libs\LICENSE")
   #error The dr_libs licence is missing from the tested package.
 #endif
+#if !FileExists(PackageDirectory + "\CatLiveRuntime\FFmpeg\avcodec-62.dll") || !FileExists(PackageDirectory + "\CatLiveRuntime\FFmpeg\avformat-62.dll") || !FileExists(PackageDirectory + "\CatLiveRuntime\FFmpeg\avutil-60.dll") || !FileExists(PackageDirectory + "\CatLiveRuntime\FFmpeg\swresample-6.dll") || !FileExists(PackageDirectory + "\CatLiveRuntime\FFmpeg\swscale-9.dll")
+  #error The FFmpeg video runtime is missing from the tested package.
+#endif
+#if !FileExists(PackageDirectory + "\Licenses\FFmpeg\COPYING.LGPLv2.1")
+  #error The FFmpeg licence is missing from the tested package.
+#endif
 
 [Setup]
 AppId={{67D3087D-1528-496B-B48A-1371A0FDD915}

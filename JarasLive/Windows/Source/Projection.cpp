@@ -1,12 +1,31 @@
 #include "ProjectionSelection.h"
-#include "MediaSource.h"
 #include "Projection.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
+namespace {
+File videoStretchPreference() {
+    return File::getSpecialLocation(File::userApplicationDataDirectory)
+        .getChildFile("Hook Developer").getChildFile("CatLive").getChildFile("video-stretch.txt");
+}
+bool &videoStretchSetting() {
+    static bool enabled=videoStretchPreference().loadFileAsString().trim()=="1";
+    return enabled;
+}
+}
+bool Projection::videoStretchEnabled() { return videoStretchSetting(); }
+void Projection::setVideoStretchEnabled(bool enabled) {
+    videoStretchSetting()=enabled;
+    const auto file=videoStretchPreference();
+    file.getParentDirectory().createDirectory();
+    file.replaceWithText(enabled?"1":"0");
+}
+void Projection::refreshVideoAppearance() {
+    if(videoSurface)InvalidateRect(videoSurface,nullptr,FALSE);
+    repaint();
+}
 Projection::Projection(Session &value, String target, StageState *state)
     : session(value), role(std::move(target)), stage(state),
       profile(role == "teleprompt2" ? 2 : 1) {
-    addAndMakeVisible(video);
     addAndMakeVisible(textView);
     addAndMakeVisible(status);
 
@@ -19,7 +38,6 @@ Projection::Projection(Session &value, String target, StageState *state)
     textView.setColour(TextEditor::backgroundColourId, Colours::black);
     textView.setColour(TextEditor::outlineColourId, Colours::transparentBlack);
     setWantsKeyboardFocus(true);
-    video.addMouseListener(this, true);
     textView.addMouseListener(this, true);
     fontUp.setVisible(role != "video" && !stage);
     fontDown.setVisible(role != "video" && !stage);
@@ -33,40 +51,15 @@ Projection::Projection(Session &value, String target, StageState *state)
         textSize = jlimit(14.f, 120.f, textSize - 4);
         textView.setFont(theme::font(textSize, true));
     };
-    video.setAudioVolume(0);
-    Component::SafePointer<Projection> safe(this);
-    stillWorker=std::thread([this,safe] {
-        for(;;) {
-            StillRequest request;
-            {
-                std::unique_lock<std::mutex> lock(stillMutex);
-                stillSignal.wait(lock,[this]{return stopStillWorker||pendingStill.has_value();});
-                if(stopStillWorker)return;
-                request=*pendingStill;pendingStill.reset();
-            }
-            Image frame;
-            try {frame=decodeVideoFrame(request.file,request.source);}catch(...){}
-            MessageManager::callAsync([safe,
-                                       serial=request.serial,file=request.file,frame=std::move(frame)]() mutable {
-                if(!safe||serial!=safe->stillSerial||file!=safe->stillFile||!frame.isValid())return;
-                safe->stillFrame=std::move(frame);
-                if(!safe->session.transport().playing)safe->video.setVisible(false);
-                safe->repaint();
-            });
-        }
-    });
     startTimerHz(role == "video" ? 60 : 20);
 }
 Projection::~Projection() {
     stopTimer();
-    {std::lock_guard<std::mutex> lock(stillMutex);stopStillWorker=true;pendingStill.reset();}
-    stillSignal.notify_one();if(stillWorker.joinable())stillWorker.join();
-    video.stop();
-    video.closeVideo();
+    if(videoSurface)DestroyWindow(videoSurface);
 }
 void Projection::resized() {
     auto content = mediaBounds();
-    video.setBounds(content);
+    updateVideoSurface();
     textView.setBounds(content.reduced(22));
     status.setBounds(12, 3, getWidth() - 180, 25);
     fontUp.setBounds(getWidth() - 110, 3, 45, 26);
@@ -82,18 +75,118 @@ void Projection::paint(Graphics &g) {
                           bounds.getHeight(),
                           stretch ? RectanglePlacement::stretchToFit : RectanglePlacement::centred);
     }
-    if(stillFrame.isValid()&&!session.transport().playing) {
-        g.setOpacity(mediaOpacity);
-        const auto bounds=mediaBounds();
-        g.drawImageWithin(stillFrame,bounds.getX(),bounds.getY(),bounds.getWidth(),bounds.getHeight(),RectanglePlacement::centred);
+}
+void Projection::updateVideoFrame(double source,bool playing,double rate) {
+    if(videoFile==File())return;
+    updateVideoSurface();
+    const auto bounds=mediaBounds();
+    vshook_video::DecodedFrame frame;
+    const auto path=utf8(videoFile.getFullPathName());
+    if(!videoDecoder.frameAt(path,clipID,source,playing,rate,
+                             std::max(1,bounds.getWidth()),std::max(1,bounds.getHeight()),frame) ||
+       !frame.pixels || frame.sequence==videoSequence)return;
+    if(frame.width<=0||frame.height<=0||frame.stride<frame.width*4)return;
+    videoSequence=frame.sequence;
+    videoFrame=std::move(frame);
+    if(videoSurface)InvalidateRect(videoSurface,nullptr,FALSE);
+}
+LRESULT CALLBACK Projection::videoSurfaceProc(HWND window,UINT message,WPARAM wp,LPARAM lp) {
+    auto *self=reinterpret_cast<Projection*>(GetWindowLongPtrW(window,GWLP_USERDATA));
+    if(message==WM_NCCREATE) {
+        auto *create=reinterpret_cast<CREATESTRUCTW*>(lp);
+        SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+        return TRUE;
+    }
+    if(message==WM_ERASEBKGND)return 1;
+    if(message==WM_LBUTTONDBLCLK && self) {
+        self->toggleFullScreen();return 0;
+    }
+    if(message==WM_RBUTTONDBLCLK && self && self->role=="video") {
+        if(auto *parent=self->findParentComponentOfClass<DocumentWindow>())
+            parent->closeButtonPressed();
+        return 0;
+    }
+    if(message==WM_PAINT) {
+        PAINTSTRUCT paint{};
+        if(HDC dc=BeginPaint(window,&paint)) {
+            if(self)self->paintVideoSurface(dc);
+            EndPaint(window,&paint);
+        }
+        return 0;
+    }
+    return DefWindowProcW(window,message,wp,lp);
+}
+void Projection::paintVideoSurface(HDC dc) {
+    RECT area{};GetClientRect(videoSurface,&area);
+    const int width=area.right-area.left,height=area.bottom-area.top;
+    if(!videoFrame.pixels||width<=0||height<=0) {
+        FillRect(dc,&area,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));return;
+    }
+    const bool stretch=role=="video"?videoStretchEnabled():stage&&flag(stage->settings(profile),"mediaStretch");
+    int x=0,y=0,w=width,h=height;
+    if(!stretch) {
+        const double fit=std::min(double(width)/videoFrame.width,double(height)/videoFrame.height);
+        w=std::max(1,int(std::lround(videoFrame.width*fit)));
+        h=std::max(1,int(std::lround(videoFrame.height*fit)));
+        x=(width-w)/2;y=(height-h)/2;
+        if(y>0) {RECT top{0,0,width,y},bottom{0,y+h,width,height};
+            FillRect(dc,&top,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+            FillRect(dc,&bottom,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));}
+        if(x>0) {RECT left{0,y,x,y+h},right{x+w,y,width,y+h};
+            FillRect(dc,&left,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+            FillRect(dc,&right,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));}
+    }
+    BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth=videoFrame.width;
+    info.bmiHeader.biHeight=-videoFrame.height;
+    info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
+    info.bmiHeader.biCompression=BI_RGB;
+    const int mode=SetStretchBltMode(dc,COLORONCOLOR);
+    StretchDIBits(dc,x,y,w,h,0,0,videoFrame.width,videoFrame.height,
+                  videoFrame.pixels,&info,DIB_RGB_COLORS,SRCCOPY);
+    if(mode)SetStretchBltMode(dc,mode);
+    if(mediaOpacity<.999f) {
+        auto mask=CreateCompatibleDC(dc);
+        auto bitmap=CreateCompatibleBitmap(dc,1,1);
+        auto previous=SelectObject(mask,bitmap);
+        RECT pixel{0,0,1,1};FillRect(mask,&pixel,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        BLENDFUNCTION blend{AC_SRC_OVER,0,static_cast<BYTE>(std::lround(255*(1-mediaOpacity))),0};
+        AlphaBlend(dc,x,y,w,h,mask,0,0,1,1,blend);
+        SelectObject(mask,previous);DeleteObject(bitmap);DeleteDC(mask);
     }
 }
-void Projection::requestStillFrame(const File &file,double source) {
-    if(file==stillFile&&std::abs(requestedStillTime-source)<.015)return;
-    if(file!=stillFile){stillFrame={};stillFile=file;}
-    requestedStillTime=source;
-    {std::lock_guard<std::mutex> lock(stillMutex);pendingStill=StillRequest{file,source,++stillSerial};}
-    stillSignal.notify_one();
+void Projection::updateVideoSurface() {
+    if(videoFile==File()) {
+        if(videoSurface)ShowWindow(videoSurface,SW_HIDE);
+        return;
+    }
+    auto *peer=getPeer();if(!peer)return;
+    HWND parent=static_cast<HWND>(peer->getNativeHandle());if(!parent)return;
+    if(!videoSurface) {
+        static const bool registered=[] {
+            WNDCLASSW type{};type.lpfnWndProc=&Projection::videoSurfaceProc;
+            type.style=CS_DBLCLKS;
+            type.hInstance=GetModuleHandleW(nullptr);
+            type.lpszClassName=L"CatLiveNativeVideoSurface";
+            type.hCursor=LoadCursorW(nullptr,MAKEINTRESOURCEW(32512));
+            return RegisterClassW(&type)!=0 || GetLastError()==ERROR_CLASS_ALREADY_EXISTS;
+        }();
+        if(!registered)return;
+        videoSurface=CreateWindowExW(0,L"CatLiveNativeVideoSurface",L"",WS_CHILD|WS_VISIBLE,
+                                    0,0,1,1,parent,nullptr,GetModuleHandleW(nullptr),this);
+    }
+    if(!videoSurface)return;
+    auto bounds=mediaBounds();
+    POINT point{bounds.getX(),bounds.getY()};
+    auto screen=localPointToGlobal(juce::Point<int>(point.x,point.y));
+    point={static_cast<LONG>(std::lround(screen.x)),static_cast<LONG>(std::lround(screen.y))};
+    ScreenToClient(parent,&point);
+    RECT current{};GetWindowRect(videoSurface,&current);
+    POINT topLeft{current.left,current.top};ScreenToClient(parent,&topLeft);
+    if(!IsWindowVisible(videoSurface)||topLeft.x!=point.x||topLeft.y!=point.y||
+       current.right-current.left!=bounds.getWidth()||current.bottom-current.top!=bounds.getHeight())
+        SetWindowPos(videoSurface,HWND_TOP,point.x,point.y,bounds.getWidth(),bounds.getHeight(),
+                     SWP_NOACTIVATE|SWP_SHOWWINDOW);
 }
 juce::Rectangle<int> Projection::mediaBounds() const {
     if (role == "video") return getLocalBounds();
@@ -163,10 +256,9 @@ void Projection::timerCallback() {
     auto at = session.transport().playing || session.transport().paused ? session.transport().position : session.transport().editPosition;
     if (auto *song = session.song()) clip = firstProjectionItem(*song,at,role);
     if (!clip) {
-        videoFade.hide();
-        stillFrame={};stillFile={};requestedStillTime=-1;++stillSerial;
-        video.stop();
-        video.setVisible(false);
+        if(videoFrame.pixels||videoFile.existsAsFile()) {
+            videoFrame={};videoFile={};videoSequence=0;videoDecoder.reset();updateVideoSurface();repaint();
+        }
         textView.setVisible(false);
         if (image.isValid()) {
             image = {};
@@ -180,22 +272,19 @@ void Projection::timerCallback() {
         return;
     }
     const auto opacity = (float)jaras::itemFadeGain(*clip, at);
-    if (opacity != mediaOpacity) { mediaOpacity = opacity; repaint(); }
+    if (opacity != mediaOpacity) { mediaOpacity = opacity; if(videoSurface)InvalidateRect(videoSurface,nullptr,FALSE);repaint(); }
     if (clip->id != clipID || (clip->text && text(*clip->text) != lyrics)) {
         clipID = clip->id;
         itemStart = clip->startTime;
         itemDuration = clip->duration;
         loaded = false;
-        stillFrame={};stillFile={};requestedStillTime=-1;++stillSerial;
+        videoFrame={};videoFile={};videoSequence=0;videoDecoder.reset();updateVideoSurface();
         image = {};
-        video.stop();
-        video.closeVideo();
         if (clip->text) {
             lyrics = text(*clip->text);
             textView.setText(lyrics, false);
             textView.moveCaretToTop(false);
             textView.setVisible(!stage);
-            video.setVisible(false);
         } else if (clip->audioFile) {
             lyrics.clear();
             textView.setVisible(false);
@@ -204,16 +293,12 @@ void Projection::timerCallback() {
                     ProjectCodec::resolveMedia(session.mediaDirectory, clip->audioFile->path);
                 if (file.hasFileExtension("png;jpg;jpeg;bmp;gif")) {
                     image = ImageFileFormat::loadFrom(file);
-                    video.setVisible(false);
                     if (!image.isValid())
                         throw std::runtime_error("Unable to decode image.");
                 } else {
-                    auto result = video.load(file);
-                    if (result.failed())
-                        throw std::runtime_error(utf8(result.getErrorMessage()));
-                    video.setAudioVolume(0);
-                    video.setVisible(true);
+                    videoFile=file;
                     loaded = true;
+                    updateVideoSurface();
                 }
             } catch (const std::exception &e) {
                 status.setText(String::fromUTF8(e.what()), dontSendNotification);
@@ -225,19 +310,9 @@ void Projection::timerCallback() {
     itemDuration = clip->duration;
     if (loaded) {
         double source = clip->sourceOffset + (at - clip->startTime) * clip->playbackRate;
-        if(session.transport().playing) {
-            if(!video.isVisible())video.setVisible(true);
-            if(std::abs(video.getPlayPosition()-source)>.1)video.setPlayPosition(source);
-            video.setPlaySpeed(clip->playbackRate);
-            if(!video.isPlaying())video.play();
-        } else {
-            if(video.isPlaying())video.stop();
-            requestStillFrame(ProjectCodec::resolveMedia(session.mediaDirectory,clip->audioFile->path),source);
-            if(stillFrame.isValid())video.setVisible(false);
-        }
+        updateVideoFrame(source,session.transport().playing,clip->playbackRate);
     }
     status.setText(text(clip->name) + "  " + clockText(at, true), dontSendNotification);
-    videoFade.update(video,mediaOpacity);
 }
 
 } // namespace catlive

@@ -2734,6 +2734,18 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     }).setTooltip("Teclado");
     button("soundfont", "SF2", [this] { chooseSoundFont(); });
     button("video", "Video", [this] { openVideo(); });
+    static_cast<QuietButton &>(*controls["video"]).context=[safe=SafePointer<Workspace>(this)](Point<int> point){
+        PopupMenu menu;
+        menu.addItem(1,"Stretch",true,Projection::videoStretchEnabled());
+        menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x,point.y,1,1}),[safe](int choice){
+            if(!safe||choice!=1)return;
+            Projection::setVideoStretchEnabled(!Projection::videoStretchEnabled());
+            auto found=safe->floatingWindows.find("Video");
+            if(found!=safe->floatingWindows.end())
+                if(auto *projection=dynamic_cast<Projection*>(found->second->getContentComponent()))
+                    projection->refreshVideoAppearance();
+        });
+    };
     button("railTeleprompt", "T", [this] { showTeleprompter(); }).setTooltip("Teleprompter");
     button("tp1", "TP-1", [this] { showTeleprompter(1); }, Colour(0xffc44848));
     button("tp2", "TP-2", [this] { showTeleprompter(2); }, Colour(0xffc44848));
@@ -2997,9 +3009,9 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
         }
     };
     auto window = std::make_unique<PanelWindow>(name);
-    // Match the floating level of the Mac projection windows. Keep this tied
-    // to the content so translated titles and TP profiles have the same policy.
-    window->setAlwaysOnTop(dynamic_cast<Projection *>(panel.get()) != nullptr);
+    // Projection windows participate in normal window ordering so settings,
+    // FX and plug-in windows can come to the front when opened.
+    window->setAlwaysOnTop(false);
     if (name == "Mixer") window->selectAll = [safe = SafePointer<Workspace>(this)](const KeyPress &key) {
         return safe && safe->selectionAreas.selectAll(key);
     };
@@ -3413,6 +3425,29 @@ void Workspace::rebuild() {
     repaint();
 }
 void Workspace::updateState() {
+    // Owned, non-topmost projection windows stay visible above the workspace,
+    // while independent FX/plugin windows can take focus and move in front.
+    // A sheet is painted inside this HWND, so temporarily drop the ownership
+    // while it is open; otherwise the video would obscure its controls.
+    if(auto *peer=getPeer()) {
+        const auto main=static_cast<HWND>(peer->getNativeHandle());
+        const bool sheet=dynamic_cast<ModalSheet*>(Component::getCurrentlyModalComponent())!=nullptr;
+        for(const auto &entry:floatingWindows) {
+            if(!dynamic_cast<Projection*>(entry.second->getContentComponent()))continue;
+            auto *floatingPeer=entry.second->getPeer();if(!floatingPeer)continue;
+            const auto handle=static_cast<HWND>(floatingPeer->getNativeHandle());
+            const auto owner=reinterpret_cast<HWND>(GetWindowLongPtrW(handle,GWLP_HWNDPARENT));
+            if(sheet && owner==main) {
+                SetWindowLongPtrW(handle,GWLP_HWNDPARENT,0);
+                SetWindowPos(handle,HWND_BOTTOM,0,0,0,0,
+                             SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+            } else if(!sheet && owner!=main) {
+                SetWindowLongPtrW(handle,GWLP_HWNDPARENT,reinterpret_cast<LONG_PTR>(main));
+                SetWindowPos(handle,HWND_TOP,0,0,0,0,
+                             SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+            }
+        }
+    }
     if (fadeoutOverlay) fadeoutOverlay->update();
     if (session.transportFadeoutActive() || lastFadeoutActive)
         for (auto *row : rows) if (row->isShowing()) row->refresh();

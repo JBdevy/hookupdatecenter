@@ -56,3 +56,13 @@ CatLiveLame.dll is a separate, replaceable shared library. See Licenses/LAME/COP
 dr_libs (MP3 file decoding and gapless timeline alignment)
 https://github.com/mackron/dr_libs
 Copyright David Reid. Distributed under its MIT license; see Licenses/dr_libs/LICENSE. The pinned source and provenance are in WindowsNative/ThirdParty/dr_libs.
+
+FFmpeg 8.1.x (Windows video decoding)
+https://ffmpeg.org/
+The Windows video window loads replaceable shared FFmpeg libraries from
+CatLiveRuntime/FFmpeg. The LGPL version 2.1 license accompanies them in
+Licenses/FFmpeg/COPYING.LGPLv2.1. FFmpeg source is available from
+https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz (SHA-256:
+464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c).
+The app does not restrict reverse engineering for debugging modifications to
+these libraries.

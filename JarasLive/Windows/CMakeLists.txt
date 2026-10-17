@@ -66,13 +66,28 @@ if(CATLIVE_APP_OUTPUT_DIRECTORY)
 endif()
 target_sources(CatLive PRIVATE Source/Main.cpp Source/Session.cpp Source/ProjectCodec.cpp Source/ProjectBrowser.cpp
     Source/ProjectMigration.cpp Source/LogicProjectImporter.cpp Source/Typography.cpp Source/AdvancedPanel.cpp
-    Source/AudioEngine.cpp Source/Instrument.cpp Source/Projection.cpp Source/NativeFX.cpp Source/Lighting.cpp Source/Auth.cpp Source/Workspace.cpp Source/Tests.cpp Source/MP3Writer.cpp Source/AudioFormats.cpp Source/MediaSource.cpp
+    Source/AudioEngine.cpp Source/Instrument.cpp Source/Projection.cpp Source/native_video_decoder_ffmpeg.cpp Source/NativeFX.cpp Source/Lighting.cpp Source/Auth.cpp Source/Workspace.cpp Source/Tests.cpp Source/MP3Writer.cpp Source/AudioFormats.cpp Source/MediaSource.cpp
     "${CATLIVEROOT}/WindowsNative/Source/AudioFile.cpp"
     ThirdParty/QRCode/qrcodegen.cpp
     ThirdParty/Monocypher/monocypher.c ThirdParty/Monocypher/monocypher-ed25519.c)
 target_include_directories(CatLive PRIVATE ThirdParty/Monocypher)
+find_path(CATLIVE_FFMPEG_INCLUDE_DIR NAMES libavcodec/avcodec.h
+    HINTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/ffmpeg-8.1.2")
+if(NOT CATLIVE_FFMPEG_INCLUDE_DIR)
+    include(FetchContent)
+    FetchContent_Declare(catlive_ffmpeg_headers
+        URL "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz"
+        URL_HASH SHA256=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_GetProperties(catlive_ffmpeg_headers)
+    if(NOT catlive_ffmpeg_headers_POPULATED)
+        FetchContent_MakeAvailable(catlive_ffmpeg_headers)
+    endif()
+    set(CATLIVE_FFMPEG_INCLUDE_DIR "${catlive_ffmpeg_headers_SOURCE_DIR}")
+endif()
+target_include_directories(CatLive PRIVATE ThirdParty/FFmpeg/include "${CATLIVE_FFMPEG_INCLUDE_DIR}")
 target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets juce::juce_audio_utils
-    juce::juce_dsp juce::juce_osc juce::juce_video juce::juce_cryptography bcrypt crypt32 normaliz dnsapi comctl32 psapi mfplat mfreadwrite mfuuid mf
+    juce::juce_dsp juce::juce_osc juce::juce_cryptography bcrypt crypt32 normaliz dnsapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="CatLive" JUCE_APPLICATION_VERSION_STRING="${CATLIVE_VERSION}"

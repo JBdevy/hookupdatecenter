@@ -1,9 +1,7 @@
 #pragma once
 #include "Session.h"
 #include "StageState.h"
-#include "VideoFadeSurface.h"
-#include <condition_variable>
-#include <thread>
+#include "native_video_decoder.h"
 namespace catlive {
 class Projection final : public Component, private Timer {
   public:
@@ -15,27 +13,26 @@ class Projection final : public Component, private Timer {
     void mouseDown(const MouseEvent &) override;
     void mouseDoubleClick(const MouseEvent &) override;
     bool keyPressed(const KeyPress &) override;
+    static bool videoStretchEnabled();
+    static void setVideoStretchEnabled(bool);
+    void refreshVideoAppearance();
     std::function<void(String)> error;
     std::function<void()> configure;
 
   private:
     Session &session;
     String role;
-    VideoComponent video{false};
-    VideoFadeSurface videoFade;
+    vshook_video::Decoder videoDecoder;
     TextEditor textView;
     Image image;
-    Image stillFrame;
-    struct StillRequest { File file; double source; uint64 serial; };
-    std::mutex stillMutex;
-    std::condition_variable stillSignal;
-    std::optional<StillRequest> pendingStill;
-    std::thread stillWorker;
-    bool stopStillWorker = false;
-    uint64 stillSerial = 0;
-    File stillFile;
-    double requestedStillTime = -1;
-    void requestStillFrame(const File &, double);
+    vshook_video::DecodedFrame videoFrame;
+    HWND videoSurface = nullptr;
+    File videoFile;
+    uint64 videoSequence = 0;
+    void updateVideoFrame(double source, bool playing, double rate);
+    void updateVideoSurface();
+    void paintVideoSurface(HDC);
+    static LRESULT CALLBACK videoSurfaceProc(HWND, UINT, WPARAM, LPARAM);
     float mediaOpacity = 1;
     StageState *stage = nullptr;
     String lyrics;
