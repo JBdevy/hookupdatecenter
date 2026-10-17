@@ -1342,6 +1342,17 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         const auto current = waveforms.revision();
         if (current != waveformRevision) { waveformRevision = current; canvas.repaint(); }
     }
+    void revealEditPosition() {
+        if (w.session.transport().playing || w.session.transport().subPlay.playing) return;
+        const double cursor = w.session.transport().editPosition * w.pixelsPerSecond;
+        const double left = horizontal.getCurrentRangeStart();
+        const double leftInset = std::min(14.0, cursor);
+        const double rightLimit = std::max(14.0, canvas.getWidth() * (547.0 / 1003.0));
+        if (cursor < left + leftInset - 0.5)
+            horizontal.setCurrentRangeStart(std::max(0.0, cursor - leftInset), sendNotificationSync);
+        else if (cursor > left + rightLimit + 0.5)
+            horizontal.setCurrentRangeStart(std::max(0.0, cursor - rightLimit), sendNotificationSync);
+    }
     void followPlayback() {
         const auto &state = w.session.transport();
         if (!w.appearance.continuousScroll() || !(state.playing || state.subPlay.playing)) { followPolicy.reset(); return; }
@@ -2865,6 +2876,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     };
     session.selectionChanged = [this] {
         setlist->refresh();
+        timeline->revealEditPosition();
         timeline->repaint();
         updateState();
     };
