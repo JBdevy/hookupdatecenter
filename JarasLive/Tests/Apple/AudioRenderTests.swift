@@ -1618,6 +1618,65 @@ precondition(abs(readyPlayed - 0.1) < 0.003, "prepared song begins sounding when
 scalarAudio.stop()
 print("PREPARE_ONLY_QUEUE_SILENCE_AND_EXPLICIT_PLAY_PCM_OK")
 
+// Reusing an offline engine must clear converter state between documents.
+// 44.1 kHz sources also exercise conversion when the suite renders at 48 kHz.
+do {
+    let engine = AVAudioEngine()
+    try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+    let audio = StemAudioPlayback(engine: engine, realtime: false)
+    let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
+    func peak() throws -> Float {
+        var result: Float = 0
+        for block in 0..<16 {
+            let status = try engine.renderOffline(512, to: buffer)
+            precondition(status == .success)
+            if block >= 10 {
+                for frame in 0..<Int(buffer.frameLength) { result = max(result, abs(buffer.floatChannelData![0][frame])) }
+            }
+        }
+        return result
+    }
+    func track(_ onset: Double, _ volume: Double) -> Track {
+        var track = Track(id: UUID(), name: "Test", role: .keys)
+        track.volume = volume
+        track.clips = [AudioClip(id: UUID(), name: "tone", startTime: onset, duration: 10, audioFile: AudioFile(path: "tone.wav"))]
+        return track
+    }
+    for iteration in 0..<64 {
+        audio.open(directory: directory)
+        var project = Project.empty(name: "Prepare after project swap")
+        let current = UUID(), incoming = UUID()
+        project.songs[0].tracks = [track(2, 1)]
+        project.songs[0].parts = [Part(id: current, name: "Current", startTime: 0, endTime: 2),
+                                  Part(id: incoming, name: "Next", startTime: 2, endTime: 10)]
+        project.regionSetlist = RegionSetlist(prepareWithoutPlayback: true)
+        var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+            position: 1.8, regionId: current, queuedRegionId: incoming, queue: QueueState(), loop: LoopState(enabled: false),
+            subPlay: SubPlayState(playing: false, position: 2)))
+        try audio.update(state, revision: 1)
+        let silent = try peak()
+        state.transport.playing = false; state.transport.regionId = incoming; state.transport.queuedRegionId = nil
+        state.transport.position = 2; state.transport.editPosition = 2
+        try audio.update(state, revision: 1)
+        state.transport.playing = true
+        try audio.update(state, revision: 1)
+        let sound = try peak()
+        precondition(silent < 0.000001 && abs(sound - 0.1) < 0.003,
+                     "offline project swap \(iteration) must preserve prepare silence and explicit Play: silence=\(silent), sound=\(sound)")
+        audio.stop(); audio.open(directory: directory)
+        project = Project.empty(name: "Future onset after project swap")
+        project.songs[0].tracks = [track(0, 0.5), track(2, 1)]
+        state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+            position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+        try audio.update(state, revision: 1)
+        let future = try peak()
+        precondition(abs(future - 0.05) < 0.003,
+                     "offline project swap \(iteration) must not pull a future item before its onset: \(future)")
+        audio.stop()
+    }
+    print("OFFLINE_PROJECT_SWAP_RESAMPLING_PREPARE_AND_FUTURE_ONSET_PCM_OK")
+}
+
 // Overlapping songs in one drawer must not leak the previous song's PCM.
 scalarAudio.open(directory: directory)
 var drawerProject = Project.empty(name: "Unified song ownership")

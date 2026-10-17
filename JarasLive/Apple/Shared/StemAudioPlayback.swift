@@ -874,6 +874,10 @@ struct TimecodePlaybackSpan {
         appliedRoutes.removeAll()
         // A project swap rebuilds the graph before it is warmed again by update.
         engine.stop()
+        // Manual-rendering format converters retain buffered PCM and their
+        // sample clocks across stop/start. A new offline graph must not inherit
+        // that state when its source rate differs from the output rate.
+        if !realtime { engine.reset() }
         discardMIDITakeVoices()
         discardNativeMeterPeaks()
         instrumentGeneration = UUID(); instrumentRequests.removeAll(); instrumentNames.removeAll()
