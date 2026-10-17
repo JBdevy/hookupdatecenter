@@ -1209,7 +1209,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         #endif
         // prepare/start can resolve the system's default route again. Keep
         // output silent until its physical device is confirmed after both.
-        engine.mainMixerNode.outputVolume = 0
+        if realtime { engine.mainMixerNode.outputVolume = 0 }
+        else { engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0 }
         do {
             engine.prepare()
             #if os(macOS)
@@ -1220,7 +1221,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             #if os(macOS)
             if usesSelectedHardware { try AudioDeviceSettings.shared.validateOutputBinding() }
             #endif
-            engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0
+            if realtime { engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0 }
         } catch {
             engine.mainMixerNode.outputVolume = 0; engine.stop()
             throw error

@@ -7,6 +7,10 @@ on:
         description: 'Versão pública do CatLive (ex.: 1.02)'
         required: true
         default: '1.02'
+      audio_only:
+        description: 'Executar somente os testes de áudio do macOS (sem publicar)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -16,7 +20,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  audio-validation:
+    if: ${{ inputs.audio_only }}
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate native audio scheduling and rendering
+        working-directory: JarasLive
+        run: bash scripts/test-audio.sh
+
   windows:
+    if: ${{ !inputs.audio_only }}
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
