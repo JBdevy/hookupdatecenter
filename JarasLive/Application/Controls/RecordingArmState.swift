@@ -1,7 +1,7 @@
 import Foundation
 
 public extension Project {
-    /// Recording templates use mono hardware inputs without live monitoring.
+    /// Recording templates use sequential mono hardware inputs with monitoring on.
     /// Arming remains session state and is applied only after creation succeeds.
     static func recordingMultitrack(name: String, channels: Int, trackPrefix: String = "Track") throws -> Project {
         guard (1...128).contains(channels) else { throw ProjectError.invalid("Choose between 1 and 128 channels.") }
@@ -9,7 +9,7 @@ public extension Project {
         project.songs[0].tracks = (1...channels).map { input in
             var track = Track(id: UUID(), name: trackPrefix + String(format: " %02d", input), role: .other, color: Track.defaultStandardColor)
             track.inputPatch = OutputPatch(firstChannel: input, channelCount: 1)
-            track.recordingChannels = 1; track.inputMonitoring = false; track.outputs = [.master]
+            track.recordingChannels = 1; track.inputMonitoring = true; track.outputs = [.master]
             return track
         }
         try project.validate()

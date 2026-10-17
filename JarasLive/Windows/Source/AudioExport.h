@@ -107,9 +107,15 @@ inline std::vector<ExportJob> plan(const jaras::Project &project, const jaras::S
                     if (tracks.count(track.id) && jaras::fixedTrackName(track.role).empty())
                         append(&track, nullptr, region, start, end);
         };
-        if (bounds == 0)
-            range(nullptr, 0, song.duration);
-        else if (bounds == 1 && area)
+        if (bounds == 0) {
+            double lastAudioEnd = 0;
+            for (const auto &track : song.tracks)
+                if (jaras::fixedTrackName(track.role).empty())
+                    for (const auto &clip : track.clips)
+                        if (clip.audioFile || track.audioFile)
+                            lastAudioEnd = std::max(lastAudioEnd, clip.startTime + clip.duration);
+            range(nullptr, 0, lastAudioEnd);
+        } else if (bounds == 1 && area)
             range(nullptr, area->first, area->second);
         else
             for (const auto &region : song.parts)
@@ -142,19 +148,25 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
     for (const auto &job : request.jobs) {
         if (job.name != File(job.name).getFileName() || job.output < 0 || job.output > 1 ||
             !std::isfinite(job.start) || !std::isfinite(job.end) || job.start < 0 ||
-            job.end <= job.start || job.end > original.duration + .001)
+            job.end <= job.start)
             throw std::runtime_error("Plano de exportação inválido.");
         if (request.directory.getChildFile(job.name).exists())
             throw std::runtime_error(
                 "Já existe um arquivo com este nome. Escolha outro nome ou diretório.");
     }
-    for (size_t jobIndex = 0; jobIndex < request.jobs.size(); ++jobIndex) {
+    std::vector<File> published;
+    try {
+        for (size_t jobIndex = 0; jobIndex < request.jobs.size(); ++jobIndex) {
         if (cancel.load())
             throw std::runtime_error("Exportação cancelada.");
         const auto &job = request.jobs[jobIndex];
         const auto &encoding = request.encodings[job.output];
         if ((encoding.channels != 1 && encoding.channels != 2) ||
-            (encoding.bits != 16 && encoding.bits != 24 && encoding.bits != 32))
+            (encoding.bits != 16 && encoding.bits != 24 && encoding.bits != 32) ||
+            (encoding.rate != 44100 && encoding.rate != 48000) ||
+            (encoding.bitrate != 128 && encoding.bitrate != 160 &&
+             encoding.bitrate != 192 && encoding.bitrate != 224 &&
+             encoding.bitrate != 256 && encoding.bitrate != 320))
             throw std::runtime_error("Formato de exportação inválido.");
         auto song = original;
         for (auto &track : song.tracks) {
@@ -237,6 +249,12 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
             throw std::runtime_error("Falha na leitura das mídias durante a exportação.");
         if (destination.exists() || !temporary.overwriteTargetFileWithTemporary())
             throw std::runtime_error("Não foi possível concluir o arquivo de saída.");
+        published.push_back(destination);
+        }
+    } catch (...) {
+        for (const auto &file : published)
+            file.deleteFile();
+        throw;
     }
     if (progress)
         progress(1);

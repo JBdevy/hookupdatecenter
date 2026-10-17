@@ -18,7 +18,7 @@ inline jaras::Project makeRecordingProject(String name, int channels) {
         track.id = uuid(); track.name = utf8("Track " + String(channel).paddedLeft('0', 2));
         track.role.id = "other"; track.color = 0x828282;
         track.inputPatch = jaras::OutputPatch{channel, 1};
-        track.recordingChannels = 1; track.inputMonitoring = false;
+        track.recordingChannels = 1; track.inputMonitoring = true;
         track.output = 1; track.outputs = std::vector<jaras::OutputPatch>{{0, 2}};
         song.tracks.push_back(std::move(track));
     }

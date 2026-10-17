@@ -147,7 +147,11 @@ struct RootView: View {
             }
             else if [.launching,.checkingSession,.checkingLicense,.checkingDevice].contains(auth.phase) {
                 StartupView(progress: nil, stage: [.launching, .checkingSession].contains(auth.phase) ? "Restaurando ativação…" : "Validando acesso…")
-            } else { LoginView(auth: auth, backend: container.backend) }
+            } else {
+                LoginView(auth: auth, backend: container.backend,
+                          offersTrial: auth.trialDaysRemaining != 0,
+                          showsCloseButton: false)
+            }
         }
         #if os(macOS)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

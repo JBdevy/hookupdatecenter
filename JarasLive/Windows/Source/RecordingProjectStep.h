@@ -26,7 +26,7 @@ class RecordingProjectStep final : public Component {
         g.setColour(Colours::white); g.setFont(theme::mediumFont(12));
         g.drawText("Quantidade de canais", 20, 14, getWidth()-40, 25, Justification::centredLeft);
         g.setColour(theme::secondary); g.setFont(theme::font(11));
-        g.drawFittedText(String::fromUTF8("Entradas mono sequenciais, todas as pistas armadas,\nsaída Master e monitoramento desligado."),
+        g.drawFittedText(String::fromUTF8("Entradas mono sequenciais, todas as pistas armadas,\nsaída Master e monitoramento ligado."),
                         20, 85, getWidth()-40, 48, Justification::centredLeft, 2, 1.f);
     }
     void resized() override {

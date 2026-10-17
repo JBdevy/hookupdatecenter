@@ -29,7 +29,7 @@ final class RecordingTemplateTests: XCTestCase {
             XCTAssertEqual(track.name, String(format: "Pista %02d", index + 1))
             XCTAssertEqual(track.kind, .standard); XCTAssertEqual(track.color, Track.defaultStandardColor)
             XCTAssertEqual(track.inputPatch, OutputPatch(firstChannel: index + 1, channelCount: 1))
-            XCTAssertEqual(track.recordingMode, .mono); XCTAssertEqual(track.inputMonitoring, false)
+            XCTAssertEqual(track.recordingMode, .mono); XCTAssertEqual(track.inputMonitoring, true)
             XCTAssertEqual(track.outputPatches, [.master]); XCTAssertNil(track.recordingFormat)
             XCTAssertTrue(track.clips.isEmpty); XCTAssertNil(track.fx)
         }

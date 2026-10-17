@@ -165,7 +165,7 @@ final class LicenseLeaseTests: XCTestCase {
             let auth = AuthService(backend: backend, store: store, installation: result.device, feature: "desktop", verifier: verifier)
             await auth.restore()
             XCTAssertFalse(auth.allowed)
-            XCTAssertTrue(auth.workspaceAllowed, "Expired access must still allow the editor to save")
+            XCTAssertEqual(auth.workspaceAllowed, plan != "trial", "An expired trial must reopen at login; paid plans keep the editor available for saving")
             XCTAssertFalse(auth.restriction.isEmpty)
             XCTAssertFalse(auth.restriction.contains("internet"))
             let requests = await backend.requests

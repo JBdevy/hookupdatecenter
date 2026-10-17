@@ -86,7 +86,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
                 encodings[selectedOutput].bits = quality.getSelectedId();
             rebuild();
         };
-        for (int r : {32000, 44100, 48000, 88200, 96000, 192000})
+        for (int r : {44100, 48000})
             rate.addItem(String(r / 1000., r % 1000 ? 1 : 0) + " kHz", r);
         rate.onChange = [this] {
             if (updating)

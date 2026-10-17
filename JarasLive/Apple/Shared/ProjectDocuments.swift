@@ -1286,7 +1286,7 @@ struct ProjectBrowserView: View {
                                 Stepper("Channels", value: $recordingChannelCount, in: 1...128).labelsHidden().fixedSize()
                                 Spacer()
                             }
-                            Text("Mono inputs in sequence, all tracks armed, monitoring off.")
+                            Text("Mono inputs in sequence, all tracks armed, monitoring on.")
                                 .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                             HStack {
                                 Button("Back") { recordingSetup = false }

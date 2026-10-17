@@ -222,7 +222,7 @@ int runTests(const File &directory) {
                 const auto &track = decoded.songs[0].tracks[(size_t)index];
                 expect(ids.insert(track.id).second, "REC tracks share IDs");
                 expect(track.inputPatch && track.inputPatch->firstChannel == index+1 && track.inputPatch->channelCount == 1, "REC input mismatch");
-                expect(track.recordingChannels == 1 && track.inputMonitoring == false && !track.recordingFormat, "REC defaults mismatch");
+                expect(track.recordingChannels == 1 && track.inputMonitoring == true && !track.recordingFormat, "REC defaults mismatch");
                 expect(track.outputs && track.outputs->size() == 1 && track.outputs->front().firstChannel == 0, "REC is not routed to Master");
             }
         }

@@ -9,6 +9,7 @@ struct LoginView: View {
     @State private var login = false
     @State private var managingDevices = false
     var offersTrial = true
+    var showsCloseButton = true
     var onAuthorized: () -> Void = {}
     @FocusState private var field: Int?
     var body: some View {
@@ -48,7 +49,7 @@ struct LoginView: View {
                 if offersTrial { Button("Trial teste · 7 dias") {
                     Task { if await auth.startTrial(hardwareID: hardwareID) { onAuthorized() } }
                 }.buttonStyle(StageButtonStyle(color: JarasTheme.accent, active: false)) }
-                if !offersTrial { Button("Fechar") { dismiss() }.buttonStyle(StageButtonStyle()) }
+                if !offersTrial && showsCloseButton { Button("Fechar") { dismiss() }.buttonStyle(StageButtonStyle()) }
             }.disabled(auth.busy)
             if login || !offersTrial {
                 VStack(alignment: .leading, spacing: 12) {
