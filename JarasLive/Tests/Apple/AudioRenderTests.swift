@@ -2,6 +2,9 @@ import Foundation
 import AVFoundation
 import Darwin
 setbuf(stdout, nil)
+@MainActor func audioAutoreleasepool(_ body: @MainActor () throws -> Void) rethrows {
+    try autoreleasepool { try MainActor.assumeIsolated { try body() } }
+}
 @MainActor func run() throws {
 let meter = TrackMeterLevel()
 meter.update(peak: 0.01, elapsed: 1.0 / 30)
@@ -26,7 +29,7 @@ let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UU
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: directory) }
 let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
-do {
+try audioAutoreleasepool {
     let file = try AVAudioFile(forWriting: directory.appendingPathComponent("tone.wav"), settings: format.settings)
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 441000)!
     buffer.frameLength = 441000
@@ -35,7 +38,7 @@ do {
 }
 // First use of dormant group/internal sends must preserve scheduled file
 // position, item tails and the continuously attached live input.
-do {
+try audioAutoreleasepool {
     let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
     let routeFormat = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
     do {
@@ -61,7 +64,7 @@ do {
     project.songs[0].tracks = [parent, receiver, child]
     var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
         position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
-    func makeRenderer() throws -> (AVAudioEngine, StemAudioPlayback) {
+    @MainActor func makeRenderer() throws -> (AVAudioEngine, StemAudioPlayback) {
         let engine = AVAudioEngine()
         try engine.enableManualRenderingMode(.offline, format: routeFormat, maximumFrameCount: 512)
         let audio = StemAudioPlayback(engine: engine, realtime: false)
@@ -125,7 +128,7 @@ do {
 // Compare each rendered sample with the established manual-fader path. This
 // covers the same DSP smoothing, tails, monitor, linked controls and hardware
 // fanout, with no engine reconnects while the automatic amount changes.
-do {
+try audioAutoreleasepool {
     let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
     let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 4)!
     let hardware = AVAudioFormat(standardFormatWithSampleRate: rate, channelLayout: layout)
@@ -149,7 +152,7 @@ do {
     var pairRule = MultiLoopTrack(id: left.id, gain: 0.3); pairRule.autoFader = true
     var masterRule = MultiLoopTrack(id: MultiLoopTrack.masterID, gain: 0); masterRule.autoFader = true
     let loopID = UUID()
-    func attachMonitors(_ audio: StemAudioPlayback) {
+    @MainActor func attachMonitors(_ audio: StemAudioPlayback) {
         for (id, amplitude) in [(child.id, Float(0.011)), (left.id, Float(0.017)), (right.id, Float(0.029))] {
             let source = AVAudioSourceNode(format: stereo) { silent, _, frames, buffers in
                 silent.pointee = false
@@ -161,7 +164,7 @@ do {
             audio.setInputMonitor(id, source: source, format: stereo)
         }
     }
-    func makeAudio() throws -> (AVAudioEngine, StemAudioPlayback) {
+    @MainActor func makeAudio() throws -> (AVAudioEngine, StemAudioPlayback) {
         let engine = AVAudioEngine()
         try engine.enableManualRenderingMode(.offline, format: hardware, maximumFrameCount: 512)
         let audio = StemAudioPlayback(engine: engine, realtime: false)
@@ -187,7 +190,7 @@ do {
         state.project.songs[0].tracks[2].volume = manualPair; state.project.songs[0].tracks[3].volume = manualPair
         state.project.masterVolume = manualMaster
         let a = bypassed ? 0 : amount
-        func target(_ manual: Double, _ ceiling: Double) -> Double { manual + (min(manual, ceiling) - manual) * a }
+        @MainActor func target(_ manual: Double, _ ceiling: Double) -> Double { manual + (min(manual, ceiling) - manual) * a }
         if (132..<140).contains(block) {
             // Conflicting linked presets still arrive through the controller's
             // existing mixer callbacks, and must not receive a second envelope.
@@ -253,8 +256,8 @@ do {
     print("INTERNAL_AUTOFADER_PCM_REFERENCE_MONITOR_GROUP_HARDWARE_TAILS_MASTER_ZERO_LINKED_GESTURE_PAUSE_BYPASS_RELOAD_OK rate=\(rate) maxError=\(largestError)")
 }
 // Item phase/pan use the live production graph and remain local to that item.
-do {
-    func itemPCM(inverted: Bool, pan: Double, live: Bool = false) throws -> [[Float]] {
+try audioAutoreleasepool {
+    @MainActor func itemPCM(inverted: Bool, pan: Double, live: Bool = false) throws -> [[Float]] {
         let engine = AVAudioEngine()
         let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
         let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
@@ -293,11 +296,11 @@ do {
 }
 // Item fades use the whole timeline item clock even after seeking or looping
 // the underlying file. Exercise the production voice scheduler, not only the AU.
-do {
+try audioAutoreleasepool {
     let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
     let fadeFormat = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
     for position in [0.0, 1.25] {
-        func renderFade(enabled: Bool) throws -> [Float] {
+        @MainActor func renderFade(enabled: Bool) throws -> [Float] {
             let fadeEngine = AVAudioEngine()
             try fadeEngine.enableManualRenderingMode(.offline, format: fadeFormat, maximumFrameCount: 512)
             let audio = StemAudioPlayback(engine: fadeEngine, realtime: false)
@@ -326,7 +329,7 @@ do {
         var error = 0.0
         for i in dry.indices {
             let t = Double(i)/rate + position - 0.5
-            func curve(_ input: Double) -> Double { let x = min(1, max(0, input)); return x*x*(3-2*x) }
+            @MainActor func curve(_ input: Double) -> Double { let x = min(1, max(0, input)); return x*x*(3-2*x) }
             error = max(error, abs(Double(faded[i]) - Double(dry[i])*curve(t/2.5)*curve((3-t)/1.5)))
         }
         precondition(error < 0.0003, "production item fade clock at \(position)s / \(rate) Hz: \(error)")
@@ -335,7 +338,7 @@ do {
 }
 // Exercise the production live graph in offline mode: click goes directly to
 // selected hardware buses even with Master muted and its fader at silence.
-do {
+try audioAutoreleasepool {
     let settings = MetronomeSettings.shared
     let saved = (settings.enabled, settings.output, settings.preset, settings.gainA, settings.gainB)
     defer { settings.enabled = saved.0; settings.output = saved.1; settings.preset = saved.2; settings.gainA = saved.3; settings.gainB = saved.4 }
@@ -353,7 +356,7 @@ do {
     try clickAudio.update(state, revision: 1)
     let generator = Mirror(reflecting: clickAudio).children.first { $0.label == "metronome" }!.value as! JarasMetronomeGenerator?
     let buffer = AVAudioPCMBuffer(pcmFormat: clickFormat, frameCapacity: 512)!
-    func clickPeaks() throws -> [Float] {
+    @MainActor func clickPeaks() throws -> [Float] {
         generator!.configurePosition(0, hostTime: mach_absolute_time(), running: settings.enabled, loopStart: 0, loopEnd: 0, sampleTime: Double(clickEngine.manualRenderingSampleTime))
         var peaks = [Float](repeating: 0, count: 4)
         for block in 0..<110 {
@@ -379,7 +382,7 @@ do {
     print("METRONOME_DIRECT_OUTPUT_MASTER_BYPASS_STEREO_MONO_LIVE_PATCH_AND_OFF_PCM_OK")
 }
 // Track polarity reverses PCM; Master never adds a second inversion.
-do {
+try audioAutoreleasepool {
     let phaseEngine = AVAudioEngine()
     let renderFormat = AVAudioFormat(standardFormatWithSampleRate: Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!, channels: 2)!
     try phaseEngine.enableManualRenderingMode(.offline, format: renderFormat, maximumFrameCount: 512)
@@ -390,7 +393,7 @@ do {
     project.songs[0].tracks = [channel]
     var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
     let buffer = AVAudioPCMBuffer(pcmFormat: renderFormat, frameCapacity: 512)!
-    func signedPCM() throws -> Float {
+    @MainActor func signedPCM() throws -> Float {
         for _ in 0..<50 { _ = try phaseEngine.renderOffline(512, to: buffer) }
         return buffer.floatChannelData![0][Int(buffer.frameLength) - 1]
     }
@@ -410,7 +413,7 @@ let engine = AVAudioEngine()
 let outputFormat = AVAudioFormat(standardFormatWithSampleRate: Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!, channels: 2)!
 // A monitor may prepare its track bus before the snapshot creates meter banks.
 // Removing and restoring that track must not revive an unread historical peak.
-do {
+try audioAutoreleasepool {
     let meterEngine = AVAudioEngine()
     try meterEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
     let audio = StemAudioPlayback(engine: meterEngine, realtime: false)
@@ -434,12 +437,12 @@ do {
     try audio.update(state, revision: revision)
     try meterEngine.start()
     let pcm = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-    func renderBlocks(_ count: Int) throws {
+    @MainActor func renderBlocks(_ count: Int) throws {
         for _ in 0..<count {
             let status = try meterEngine.renderOffline(512, to: pcm); precondition(status == .success)
         }
     }
-    func poll() throws {
+    @MainActor func poll() throws {
         Thread.sleep(forTimeInterval: 0.04)
         try audio.update(state, revision: revision)
     }
@@ -478,7 +481,7 @@ track.clips = [AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 10, a
 project.songs[0].tracks = [track]
 var snapshot = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
 let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-func peak() throws -> Float {
+@MainActor func peak() throws -> Float {
     var value: Float = 0
     for iteration in 0..<24 {
         let status = try engine.renderOffline(512, to: output)
@@ -588,7 +591,7 @@ for iteration in 0..<32 {
 precondition(remainingAudio > 0.09 && remainingAudio < 0.11, "missing audio must stay silent while present tracks keep playing")
 missingRenderer.stop()
 print("MISSING_AUDIO_SILENT_OTHER_TRACKS_PLAY_OK")
-do {
+try audioAutoreleasepool {
     let file = try AVAudioFile(forWriting: directory.appendingPathComponent("tempo-tone.wav"), settings: format.settings)
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 441000)!; buffer.frameLength = 441000
     for c in 0..<2 { for i in 0..<441000 { buffer.floatChannelData![c][i] = Float(0.1 * sin(Double(i) * 2 * .pi * 997 / 44100)) } }
@@ -596,7 +599,7 @@ do {
 }
 // Tempo markers must leave the actual PCM unchanged in Free Grid, including
 // when playback starts directly inside a section after a tempo change.
-func markerPCM(position: Double, withMarkers: Bool, projectTimebase: ProjectTimebase = .free, markerTimebase: TempoMarkerTimebase = .global, detectedReference: Bool = false) throws -> [Float] {
+@MainActor func markerPCM(position: Double, withMarkers: Bool, projectTimebase: ProjectTimebase = .free, markerTimebase: TempoMarkerTimebase = .global, detectedReference: Bool = false) throws -> [Float] {
     let testEngine = AVAudioEngine()
     try testEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
     let audio = StemAudioPlayback(engine: testEngine, realtime: false); audio.open(directory: directory)
@@ -708,7 +711,7 @@ precondition(handoffMinimum > 0.07, "promoted subplay must keep its existing str
 let handoffMaximum = (64..<Int(output.frameLength)).map { abs(output.floatChannelData![0][$0]) }.max() ?? 0
 precondition(handoffMaximum < 0.13, "promotion stops only the former main stream, without doubling the promoted audio")
 print("SUBPLAY_HANDOFF_PCM_OK")
-do {
+try audioAutoreleasepool {
     do {
     let file = try AVAudioFile(forWriting: directory.appendingPathComponent("two-heads.wav"), settings: format.settings)
     let source = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 441000)!; source.frameLength = 441000
@@ -718,7 +721,7 @@ do {
     } }
     try file.write(from: source)
     }
-    func headPCM(main: Bool, sub: Bool, bpm: Double) throws -> [Float] {
+    @MainActor func headPCM(main: Bool, sub: Bool, bpm: Double) throws -> [Float] {
         let testEngine = AVAudioEngine()
         try testEngine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
         let audio = StemAudioPlayback(engine: testEngine, realtime: false)
@@ -751,7 +754,7 @@ do {
         // The phase vocoder may choose different phases as graph inputs change.
         // Distinct source frequencies identify both independent cursor positions
         // without incorrectly requiring sample-identical phase after stretching.
-        func amplitude(_ pcm: [Float], _ frequency: Double) -> Double {
+        @MainActor func amplitude(_ pcm: [Float], _ frequency: Double) -> Double {
             var real = 0.0, imaginary = 0.0
             for (index, value) in pcm.enumerated() {
                 let phase = 2 * .pi * frequency * Double(index) / outputFormat.sampleRate
@@ -836,7 +839,7 @@ print("LATER_REGION_TRACK_AUDIO_OK")
 
 // Render real stereo PCM through the production scheduler and time stretcher.
 // A 440/880 Hz signal lasts three source seconds, followed by one silent second.
-do {
+try audioAutoreleasepool {
     let file = try AVAudioFile(forWriting: directory.appendingPathComponent("tempo.wav"), settings: format.settings)
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 176400)!
     buffer.frameLength = 176400
@@ -848,7 +851,7 @@ do {
     }
     try file.write(from: buffer)
 }
-func renderTempo(_ rate: Double, change: Bool = false, timebase: ProjectTimebase = .relative) throws -> [[Float]] {
+@MainActor func renderTempo(_ rate: Double, change: Bool = false, timebase: ProjectTimebase = .relative) throws -> [[Float]] {
     renderer.open(directory: directory)
     var project = Project.empty(name: "Tempo PCM")
     project.songs[0].timeSettings = ProjectTimeSettings()
@@ -879,7 +882,7 @@ func renderTempo(_ rate: Double, change: Bool = false, timebase: ProjectTimebase
     renderer.stop()
     return samples
 }
-func frequency(_ samples: [Float], from: Double, to: Double) -> Double {
+@MainActor func frequency(_ samples: [Float], from: Double, to: Double) -> Double {
     let start = Int(from * outputFormat.sampleRate), end = Int(to * outputFormat.sampleRate)
     let crossings = (start+1..<end).filter { samples[$0-1] <= 0 && samples[$0] > 0 }.count
     return Double(crossings) / (to-from)
@@ -996,7 +999,7 @@ routeProject.songs[0].tracks = [folder, child]
 var routingState = ShowSnapshot(project: routeProject, transport: TransportState(playing: true, songId: routeProject.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
 let routingBuffer = AVAudioPCMBuffer(pcmFormat: routingFormat, frameCapacity: 512)!
 var routeRevision: UInt64 = 1
-func routePeaks() throws -> [Float] {
+@MainActor func routePeaks() throws -> [Float] {
     routeRevision += 1
     try routing.update(routingState, revision: routeRevision)
     var levels = Array(repeating: Float(0), count: 6)
@@ -1009,7 +1012,7 @@ func routePeaks() throws -> [Float] {
     }
     return levels
 }
-func checkRoutes(_ expected: [Float], _ description: String) throws {
+@MainActor func checkRoutes(_ expected: [Float], _ description: String) throws {
     let actual = try routePeaks()
     if !zip(actual, expected).allSatisfy({ abs($0-$1)<0.005 }) { FileHandle.standardError.write(Data("Mixer input \(routingEngine.mainMixerNode.inputFormat(forBus: 0)) output \(routingEngine.mainMixerNode.outputFormat(forBus: 0)) manual \(routingEngine.manualRenderingFormat)\n".utf8)) }
     precondition(zip(actual, expected).allSatisfy { abs($0-$1)<0.005 }, "\(description): \(actual)")
@@ -1081,7 +1084,7 @@ itemFXTrack.clips = [
 itemFXProject.songs[0].tracks = [itemFXTrack]; itemFXProject.masterVolume = 0.5
 var itemFXState = ShowSnapshot(project: itemFXProject, transport: TransportState(playing: true, songId: itemFXProject.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: true, position: 0)))
 let itemFXBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-func itemFXPeak() throws -> Float {
+@MainActor func itemFXPeak() throws -> Float {
     var maximum: Float = 0
     for block in 0..<24 {
         let status = try itemFXEngine.renderOffline(512, to: itemFXBuffer)
@@ -1161,7 +1164,7 @@ allBypassTrack.clips = [AudioClip(id: allBypassClipID, name: "Item", startTime: 
 allBypassProject.songs[0].tracks = [allBypassTrack]
 var allBypassState = ShowSnapshot(project: allBypassProject, transport: TransportState(playing: true, songId: allBypassProject.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: true, position: 0)))
 let allBypassBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-func allBypassPeak() throws -> Float {
+@MainActor func allBypassPeak() throws -> Float {
     var peak: Float = 0
     for block in 0..<24 {
         let status = try allBypassEngine.renderOffline(512, to: allBypassBuffer)
@@ -1278,7 +1281,7 @@ let importedSpan = TimecodePlaybackSpan(song: spanProject.songs[0], track: impor
 precondition(abs(importedSpan.time - 3602.8) < 0.000001 && importedSpan.end == 3604, "imported generator uses its own item origin and clock settings")
 var spanState = ShowSnapshot(project: spanProject, transport: TransportState(playing: true, songId: spanProject.songs[0].id, position: 0.3, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
 let spanBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-func timecodeSpanPeak(at position: Double, revision: UInt64, warmup: Int = 0) throws -> Float {
+@MainActor func timecodeSpanPeak(at position: Double, revision: UInt64, warmup: Int = 0) throws -> Float {
     spanState.transport.position = position
     try spanAudio.update(spanState, revision: revision)
     var peak: Float = 0
@@ -1356,7 +1359,7 @@ print("TIMECODE_ITEM_SPAN_EDGES_MONOTONIC_CLOCK_AND_FUTURE_START_GATING_PCM_OK")
 
 // Entry filtering applies to musical stems. A unified region keeps one
 // continuous timecode origin; selecting a child must not reset or gate it.
-do {
+try audioAutoreleasepool {
     var project = Project.empty(name: "Unified timecode")
     let parent = Part(id: UUID(), name: "Unified", startTime: 1, endTime: 5)
     var first = Part(id: UUID(), name: "A", startTime: 1, endTime: 3.5)
@@ -1391,7 +1394,7 @@ print("TIMECODE_UNIFIED_PARENT_ORIGIN_CHILD_ENTRY_AND_MAIN_ONLY_SUBPLAY_PCM_OK")
 
 // Left extension starts at the source tail, runs forward to the front, then
 // repeats forward. Right extension continues from the front of the same source.
-do {
+try audioAutoreleasepool {
     let file = try AVAudioFile(forWriting: directory.appendingPathComponent("wrap.wav"), settings: format.settings)
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 88200)!
     buffer.frameLength = 88200
@@ -1436,7 +1439,7 @@ let scalarAudio = StemAudioPlayback(engine: scalarEngine, realtime: false)
 scalarAudio.open(directory: directory)
 var scalarProject = Project.empty(name: "Incremental mixer PCM")
 var group = Track(id: UUID(), name: "Group", role: .keys); group.volume = 0.5
-func scalarTrack(_ name: String, volume: Double, parent: UUID? = nil, onset: Double = 0) -> Track {
+@MainActor func scalarTrack(_ name: String, volume: Double, parent: UUID? = nil, onset: Double = 0) -> Track {
     var track = Track(id: UUID(), name: name, role: .keys)
     track.volume = volume; track.parentTrackID = parent
     track.clips = [AudioClip(id: UUID(), name: name, startTime: onset, duration: 10, audioFile: AudioFile(path: "tone.wav"))]
@@ -1450,7 +1453,7 @@ let scalarState = ShowSnapshot(project: scalarProject, transport: TransportState
 try scalarAudio.update(scalarState, revision: 1)
 let scalarNodes = scalarEngine.attachedNodes
 let scalarBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-func scalarCheck(_ expected: Float, _ message: String) throws {
+@MainActor func scalarCheck(_ expected: Float, _ message: String) throws {
     var peak: Float = 0
     for block in 0..<16 {
         let status = try scalarEngine.renderOffline(512, to: scalarBuffer)
@@ -1580,7 +1583,7 @@ futureState.project.songs[0].tracks[0].clips[0].gain = 0.25
 futureState.project.songs[0].tracks[0].clips[0].muted = true
 futureState.transport.position = 2; futureState.transport.subPlay.position = 2
 try scalarAudio.update(futureState, revision: 1)
-func futurePeak() throws -> Float {
+@MainActor func futurePeak() throws -> Float {
     var result: Float = 0
     for block in 0..<16 {
         let status = try scalarEngine.renderOffline(512, to: scalarBuffer)
@@ -1620,12 +1623,12 @@ print("PREPARE_ONLY_QUEUE_SILENCE_AND_EXPLICIT_PLAY_PCM_OK")
 
 // Reusing an offline engine must clear converter state between documents.
 // 44.1 kHz sources also exercise conversion when the suite renders at 48 kHz.
-do {
+try audioAutoreleasepool {
     let engine = AVAudioEngine()
     try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
     let audio = StemAudioPlayback(engine: engine, realtime: false)
     let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-    func peak() throws -> Float {
+    @MainActor func peak() throws -> Float {
         var result: Float = 0
         for block in 0..<16 {
             let status = try engine.renderOffline(512, to: buffer)
@@ -1636,13 +1639,14 @@ do {
         }
         return result
     }
-    func track(_ onset: Double, _ volume: Double) -> Track {
+    @MainActor func track(_ onset: Double, _ volume: Double) -> Track {
         var track = Track(id: UUID(), name: "Test", role: .keys)
         track.volume = volume
         track.clips = [AudioClip(id: UUID(), name: "tone", startTime: onset, duration: 10, audioFile: AudioFile(path: "tone.wav"))]
         return track
     }
     for iteration in 0..<64 {
+      try audioAutoreleasepool {
         audio.open(directory: directory)
         var project = Project.empty(name: "Prepare after project swap")
         let current = UUID(), incoming = UUID()
@@ -1661,6 +1665,18 @@ do {
         state.transport.playing = true
         try audio.update(state, revision: 1)
         let sound = try peak()
+        if silent >= 0.000001 || abs(sound - 0.1) >= 0.003 {
+            print("OFFLINE_GRAPH_DIAGNOSTIC iteration=\(iteration) outputRate=\(outputFormat.sampleRate) sample=\(engine.manualRenderingSampleTime) mixerGain=\(engine.mainMixerNode.outputVolume) nodes=\(engine.attachedNodes.count)")
+            for node in engine.attachedNodes {
+                if let player = node as? AVAudioPlayerNode {
+                    let nodeTime = player.lastRenderTime
+                    let playerTime = nodeTime.flatMap { player.playerTime(forNodeTime: $0) }
+                    print("PLAYER playing=\(player.isPlaying) volume=\(player.volume) nodeTime=\(String(describing: nodeTime)) playerTime=\(String(describing: playerTime)) offline=\(player.auAudioUnit.isRenderingOffline)")
+                }
+                if let pitch = node as? AVAudioUnitTimePitch { print("PITCH offline=\(pitch.auAudioUnit.isRenderingOffline) bypass=\(pitch.auAudioUnit.shouldBypassEffect) rate=\(pitch.rate) pitch=\(pitch.pitch)") }
+            }
+            print("OFFLINE_EXTENDED_PEAK \(try peak())")
+        }
         precondition(silent < 0.000001 && abs(sound - 0.1) < 0.003,
                      "offline project swap \(iteration) must preserve prepare silence and explicit Play: silence=\(silent), sound=\(sound)")
         audio.stop(); audio.open(directory: directory)
@@ -1673,6 +1689,7 @@ do {
         precondition(abs(future - 0.05) < 0.003,
                      "offline project swap \(iteration) must not pull a future item before its onset: \(future)")
         audio.stop()
+      }
     }
     print("OFFLINE_PROJECT_SWAP_RESAMPLING_PREPARE_AND_FUTURE_ONSET_PCM_OK")
 }
@@ -1729,7 +1746,7 @@ print("UNIFIED_DRAWER_MAIN_SUBPLAY_OWNERSHIP_AND_PROMOTION_PCM_OK")
 // Exercise the real C++ -> Objective-C -> Swift transport path. The UI's region
 // is the parent after a grid seek, so a synthetic selected-child snapshot alone
 // cannot reproduce the reported leak. Rounded onsets reproduce the silent B.
-do {
+try audioAutoreleasepool {
     var project = drawerProject
     project.songs[0].regionOwnershipInitialized = true
     project.songs[0].regionOwnershipVersion = 2
@@ -1744,7 +1761,7 @@ do {
     audio.open(directory: directory)
     defer { audio.prepareForClosing() }
     let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-    func checkPCM(_ expected: Float, _ message: String) throws {
+    @MainActor func checkPCM(_ expected: Float, _ message: String) throws {
         let snapshot = try JSONDecoder().decode(ShowSnapshot.self, from: core.snapshot())
         try audio.update(snapshot, revision: 1)
         var peak: Float = 0
@@ -1809,7 +1826,7 @@ let directState = ShowSnapshot(project: directProject, transport: TransportState
 try directAudio.update(directState, revision: 1)
 let directBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
 var directStep = 0
-func directCheck(_ expected: Float) throws {
+@MainActor func directCheck(_ expected: Float) throws {
     directStep += 1
     var result: Float = 0
     for iteration in 0..<24 {
@@ -1837,7 +1854,7 @@ orderedTrack.fx = orderedFX; orderedProject.songs[0].tracks = [orderedTrack]
 let orderedState = ShowSnapshot(project: orderedProject, transport: TransportState(playing: true, songId: orderedProject.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: true, position: 0)))
 try orderedAudio.update(orderedState, revision: 1)
 let orderedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-func checkOrderedPlayers() throws {
+@MainActor func checkOrderedPlayers() throws {
     for _ in 0..<32 {
         let status = try orderedEngine.renderOffline(512, to: orderedBuffer)
         precondition(status == .success)
@@ -1863,7 +1880,7 @@ secondCompressor.threshold = 0; secondCompressor.ratio = 1; secondCompressor.mak
 repeated = repeated.merging(effect: compressorTwo, from: secondCompressor)
 orderedAudio.previewFX(nil, settings: NativeFXSettings())
 orderedAudio.previewFX(orderedTrack.id, settings: repeated)
-func repeatedPeak(_ expected: Float) throws {
+@MainActor func repeatedPeak(_ expected: Float) throws {
     for _ in 0..<32 { let status = try orderedEngine.renderOffline(512, to: orderedBuffer); precondition(status == .success) }
     let sample = orderedBuffer.floatChannelData![0][128]
     precondition(abs(sample - expected) < 0.01, "independent repeated processors must both process PCM: \(sample) vs \(expected)")
@@ -1911,7 +1928,7 @@ pitchProject.songs[0].tracks = [pitchTrack]; pitchProject.songs[0].parts = [pitc
 var pitchState = ShowSnapshot(project: pitchProject, transport: TransportState(playing: true, songId: pitchProject.songs[0].id, position: 0, regionId: pitchRegion.id, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
 try pitchAudio.update(pitchState, revision: 1)
 let pitchBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-func frequency() throws -> Double {
+@MainActor func frequency() throws -> Double {
     var crossings = 0, samples = 0; var previous: Float = 0
     for iteration in 0..<96 {
         guard try pitchEngine.renderOffline(512, to: pitchBuffer) == .success else { continue }
@@ -1923,7 +1940,7 @@ func frequency() throws -> Double {
     }
     return Double(crossings) * outputFormat.sampleRate / Double(samples)
 }
-func expectFrequency(_ value: Double) throws {
+@MainActor func expectFrequency(_ value: Double) throws {
     let measured = try frequency()
     precondition(abs(measured - value) < 5, "pitch PCM frequency \(measured), expected \(value)")
 }
@@ -2009,7 +2026,7 @@ var videoSnapshot = ShowSnapshot(project: videoProject, transport: TransportStat
 try videoAudio.update(videoSnapshot, revision: 1)
 try videoEngine.start()
 let videoBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-func videoPeak() throws -> Float {
+@MainActor func videoPeak() throws -> Float {
     for _ in 0..<40 { _ = try videoEngine.renderOffline(512, to: videoBuffer) }
     return (0..<512).map { abs(videoBuffer.floatChannelData![0][$0]) }.max()!
 }
@@ -2093,7 +2110,7 @@ if let path = ProcessInfo.processInfo.environment["JARAS_TEST_SF2"] {
     }
     precondition(instrumentAudio.isInstrumentReady(instrumentTrack.id), "both independent SF2 instances finish loading")
     let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-    func instrumentPeak() throws -> Float {
+    @MainActor func instrumentPeak() throws -> Float {
         var peak: Float = 0
         for _ in 0..<32 {
             let status = try instrumentEngine.renderOffline(512, to: buffer); precondition(status == .success)
@@ -2171,7 +2188,7 @@ for route in [0, 1, 2] {
     }
     liveAudio.setInputMonitor(inputTrack.id, source: source, format: sourceFormat)
     let pcm = AVAudioPCMBuffer(pcmFormat: liveFormat, frameCapacity: 512)!
-    func livePeaks() throws -> [Float] {
+    @MainActor func livePeaks() throws -> [Float] {
         var peaks = [Float](repeating: 0, count: 4)
         for _ in 0..<48 {
             let rendered = try liveEngine.renderOffline(512, to: pcm); precondition(rendered == .success)
@@ -2210,7 +2227,7 @@ print("INPUT_MONITOR_MASTER_GROUP_HARDWARE_OFF_RECORDED_AUDIO_AND_MIDI_CAPTURE_O
 
 // Folder inside folder: every gain stage is audible, and child Solo keeps the
 // complete path alive without admitting siblings outside the selected subtree.
-do {
+try audioAutoreleasepool {
     let engine = AVAudioEngine()
     try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
     let audio = StemAudioPlayback(engine: engine, realtime: false)
@@ -2226,7 +2243,7 @@ do {
         queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
     try audio.update(snapshot, revision: 1)
     let pcm = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-    func check(_ expected: Float) throws {
+    @MainActor func check(_ expected: Float) throws {
         var peak: Float = 0
         for block in 0..<16 {
             let status = try engine.renderOffline(512, to: pcm)
