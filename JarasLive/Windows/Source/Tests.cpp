@@ -632,6 +632,12 @@ int runTests(const File &directory) {
         const auto video=fixtures.getChildFile("tone-video.mp4"),silent=fixtures.getChildFile("silent.mp4");
         auto info=inspectMediaSource(video);expect(info.audio&&info.video&&std::abs(info.duration-2)<.05,"Video with audio streams and duration");
         info=inspectMediaSource(silent);expect(info.video&&!info.audio,"Silent video is valid projection media");
+        double firstTime=0,laterTime=0;
+        auto firstFrame=decodeVideoFrame(video,.1,&firstTime),laterFrame=decodeVideoFrame(video,1.5,&laterTime);
+        expect(firstFrame.isValid()&&laterFrame.isValid()&&firstFrame.getWidth()==64&&firstFrame.getHeight()==64,"Stopped video decodes an exact still frame");
+        expect(std::abs(firstTime-.1)<.1&&std::abs(laterTime-1.5)<.1,
+               "Stopped video selected incorrect timestamps: "+String(firstTime)+" / "+String(laterTime));
+        expect(laterTime>firstTime+1,"Moving the edit cursor seeks to the later frame");
         AudioFormatManager formats;registerAudioFormats(formats);std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(video));
         expect(reader&&reader->numChannels==2&&reader->sampleRate>0,"Read embedded stereo audio");
         AudioBuffer<float> first(2,2048),afterSeek(2,2048),middle(2,2048);

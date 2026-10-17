@@ -1,4 +1,5 @@
 #include "ProjectionSelection.h"
+#include "MediaSource.h"
 #include "Projection.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
@@ -33,10 +34,33 @@ Projection::Projection(Session &value, String target, StageState *state)
         textView.setFont(theme::font(textSize, true));
     };
     video.setAudioVolume(0);
+    Component::SafePointer<Projection> safe(this);
+    stillWorker=std::thread([this,safe] {
+        for(;;) {
+            StillRequest request;
+            {
+                std::unique_lock<std::mutex> lock(stillMutex);
+                stillSignal.wait(lock,[this]{return stopStillWorker||pendingStill.has_value();});
+                if(stopStillWorker)return;
+                request=*pendingStill;pendingStill.reset();
+            }
+            Image frame;
+            try {frame=decodeVideoFrame(request.file,request.source);}catch(...){}
+            MessageManager::callAsync([safe,
+                                       serial=request.serial,file=request.file,frame=std::move(frame)]() mutable {
+                if(!safe||serial!=safe->stillSerial||file!=safe->stillFile||!frame.isValid())return;
+                safe->stillFrame=std::move(frame);
+                if(!safe->session.transport().playing)safe->video.setVisible(false);
+                safe->repaint();
+            });
+        }
+    });
     startTimerHz(role == "video" ? 60 : 20);
 }
 Projection::~Projection() {
     stopTimer();
+    {std::lock_guard<std::mutex> lock(stillMutex);stopStillWorker=true;pendingStill.reset();}
+    stillSignal.notify_one();if(stillWorker.joinable())stillWorker.join();
     video.stop();
     video.closeVideo();
 }
@@ -58,6 +82,18 @@ void Projection::paint(Graphics &g) {
                           bounds.getHeight(),
                           stretch ? RectanglePlacement::stretchToFit : RectanglePlacement::centred);
     }
+    if(stillFrame.isValid()&&!session.transport().playing) {
+        g.setOpacity(mediaOpacity);
+        const auto bounds=mediaBounds();
+        g.drawImageWithin(stillFrame,bounds.getX(),bounds.getY(),bounds.getWidth(),bounds.getHeight(),RectanglePlacement::centred);
+    }
+}
+void Projection::requestStillFrame(const File &file,double source) {
+    if(file==stillFile&&std::abs(requestedStillTime-source)<.015)return;
+    if(file!=stillFile){stillFrame={};stillFile=file;}
+    requestedStillTime=source;
+    {std::lock_guard<std::mutex> lock(stillMutex);pendingStill=StillRequest{file,source,++stillSerial};}
+    stillSignal.notify_one();
 }
 juce::Rectangle<int> Projection::mediaBounds() const {
     if (role == "video") return getLocalBounds();
@@ -128,6 +164,7 @@ void Projection::timerCallback() {
     if (auto *song = session.song()) clip = firstProjectionItem(*song,at,role);
     if (!clip) {
         videoFade.hide();
+        stillFrame={};stillFile={};requestedStillTime=-1;++stillSerial;
         video.stop();
         video.setVisible(false);
         textView.setVisible(false);
@@ -149,6 +186,7 @@ void Projection::timerCallback() {
         itemStart = clip->startTime;
         itemDuration = clip->duration;
         loaded = false;
+        stillFrame={};stillFile={};requestedStillTime=-1;++stillSerial;
         image = {};
         video.stop();
         video.closeVideo();
@@ -187,14 +225,16 @@ void Projection::timerCallback() {
     itemDuration = clip->duration;
     if (loaded) {
         double source = clip->sourceOffset + (at - clip->startTime) * clip->playbackRate;
-        if (std::abs(video.getPlayPosition() - source) > .1 ||
-            (!session.transport().playing && std::abs(video.getPlayPosition() - source) > .01))
-            video.setPlayPosition(source);
-        video.setPlaySpeed(clip->playbackRate);
-        if (session.transport().playing && !video.isPlaying())
-            video.play();
-        if (!session.transport().playing && video.isPlaying())
-            video.stop();
+        if(session.transport().playing) {
+            if(!video.isVisible())video.setVisible(true);
+            if(std::abs(video.getPlayPosition()-source)>.1)video.setPlayPosition(source);
+            video.setPlaySpeed(clip->playbackRate);
+            if(!video.isPlaying())video.play();
+        } else {
+            if(video.isPlaying())video.stop();
+            requestStillFrame(ProjectCodec::resolveMedia(session.mediaDirectory,clip->audioFile->path),source);
+            if(stillFrame.isValid())video.setVisible(false);
+        }
     }
     status.setText(text(clip->name) + "  " + clockText(at, true), dontSendNotification);
     videoFade.update(video,mediaOpacity);

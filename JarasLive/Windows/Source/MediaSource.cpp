@@ -89,5 +89,59 @@ class MediaFormat final : public AudioFormat {
 };
 }
 MediaSourceInfo inspectMediaSource(const File &file) {Apartment apartment;auto reader=openSource(file);return {duration(reader.Get()),hasStream(reader.Get(),MF_SOURCE_READER_FIRST_AUDIO_STREAM),hasStream(reader.Get(),MF_SOURCE_READER_FIRST_VIDEO_STREAM)};}
+Image decodeVideoFrame(const File &file, double seconds, double *actualSeconds) {
+    Apartment apartment;
+    static const HRESULT startup=MFStartup(MF_VERSION);check(startup);
+    ComPtr<IMFAttributes> attributes;check(MFCreateAttributes(&attributes,1));
+    check(attributes->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,TRUE));
+    ComPtr<IMFSourceReader> reader;
+    check(MFCreateSourceReaderFromURL(file.getFullPathName().toWideCharPointer(),attributes.Get(),&reader));
+    check(reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS,FALSE));
+    check(reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM,TRUE));
+    ComPtr<IMFMediaType> format;check(MFCreateMediaType(&format));
+    check(format->SetGUID(MF_MT_MAJOR_TYPE,MFMediaType_Video));
+    check(format->SetGUID(MF_MT_SUBTYPE,MFVideoFormat_RGB32));
+    check(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM,nullptr,format.Get()));
+    format.Reset();check(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM,&format));
+    UINT32 width=0,height=0;check(MFGetAttributeSize(format.Get(),MF_MT_FRAME_SIZE,&width,&height));
+    if(!width||!height||width>8192||height>8192)throw std::runtime_error("Invalid video size.");
+    LONG stride=0;
+    if(FAILED(MFGetStrideForBitmapInfoHeader(MFVideoFormat_RGB32.Data1,width,&stride)))
+        stride=(LONG)(width*4);
+    PROPVARIANT at;PropVariantInit(&at);at.vt=VT_I8;
+    at.hVal.QuadPart=(LONGLONG)std::llround(std::max(0.,seconds)*1e7);
+    check(reader->SetCurrentPosition(GUID_NULL,at));
+    ComPtr<IMFSample> sample;LONGLONG timestamp=0;
+    for(int attempt=0;attempt<100;++attempt) {
+        DWORD flags=0;ComPtr<IMFSample> next;LONGLONG stamp=0;
+        check(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,0,nullptr,&flags,&stamp,&next));
+        if(flags&static_cast<DWORD>(MF_SOURCE_READERF_ENDOFSTREAM))break;
+        if(!next)continue;
+        sample=std::move(next);timestamp=stamp;
+        if(timestamp>=at.hVal.QuadPart)break;
+    }
+    if(!sample)return {};
+    ComPtr<IMFMediaBuffer> buffer;check(sample->ConvertToContiguousBuffer(&buffer));
+    BYTE *bytes=nullptr;DWORD size=0;check(buffer->Lock(&bytes,nullptr,&size));
+    Image frame(Image::ARGB,(int)width,(int)height,true);
+    const size_t rowBytes=(size_t)std::abs(stride);
+    if(rowBytes>=(size_t)width*4&&rowBytes*height<=size) {
+        Image::BitmapData pixels(frame,Image::BitmapData::writeOnly);
+        for(UINT32 y=0;y<height;++y) {
+            // Media Foundation's RGB32 buffer is bottom-up for a positive
+            // stride; JUCE's bitmap rows are top-down.
+            const BYTE *source=bytes+rowBytes*(stride<0?y:height-1-y);
+            auto *dest=pixels.getLinePointer((int)y);
+            for(UINT32 x=0;x<width;++x) {
+                const auto *src=source+x*4;
+                PixelARGB rgba;rgba.setARGB(255,src[2],src[1],src[0]);rgba.premultiply();
+                *reinterpret_cast<PixelARGB*>(dest+x*pixels.pixelStride)=rgba;
+            }
+        }
+    } else frame={};
+    buffer->Unlock();
+    if(actualSeconds)*actualSeconds=(double)timestamp/1e7;
+    return frame;
+}
 void registerMediaSourceFormat(AudioFormatManager &formats){formats.registerFormat(new MediaFormat(),false);}
 }
