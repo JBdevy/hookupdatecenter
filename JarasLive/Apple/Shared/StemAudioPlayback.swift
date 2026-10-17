@@ -3526,7 +3526,14 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
                 let commands = startCommands
                 DispatchQueue.concurrentPerform(iterations: commands.count) { commands[$0]() }
             } else { for command in startCommands { command() } }
-            if !realtime { for (_, voice, _, _, _) in scheduled { voice.player.play() } }
+            if !realtime {
+                for (_, voice, _, _, _) in scheduled {
+                    // Manual rendering can outrun the file player's reader.
+                    // Prime the scheduled continuation before pulling PCM.
+                    voice.player.prepare(withFrameCount: 8192)
+                    voice.player.play()
+                }
+            }
         }
         if let jump = preparedJump {
             // The generator deduplicates this deadline. Retry until its previous
