@@ -14,5 +14,9 @@ clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasSoundFont.mm -o "$build_dir/s
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasTimecode.mm -o "$build_dir/timecode.o"
 cp "${JARAS_AUDIO_TEST_SOURCE:-Tests/Apple/AudioRenderTests.swift}" "$build_dir/main.swift"
 swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift Apple/Shared/AudioDeviceSettings.swift Apple/Shared/NativeTooltips.swift Apple/Shared/NativeEffectsChain.swift Apple/Shared/CatStemRealtimeRuntime.swift Apple/Shared/VideoMediaSettings.swift Application/Project/ClickTrack.swift Apple/Shared/ClickAudioSample.swift Application/Project/AudioFileRead.swift Apple/Shared/StemAudioPlayback.swift Apple/Shared/Theme.swift Apple/Shared/InstrumentLibrary.swift "$build_dir/main.swift" "$build_dir/bridge.o" "$build_dir/models.o" "$build_dir/engine.o" "$build_dir/taxonomy.o" "$build_dir/effects.o" "$build_dir/stemseparator.o" "$build_dir/soundfont.o" "$build_dir/timecode.o" "$build_dir"/vst3*.o -framework Accelerate -lc++ -o "$build_dir/test"
-"$build_dir/test"
-JARAS_TEST_SAMPLE_RATE=48000 "$build_dir/test"
+repeats="${JARAS_AUDIO_TEST_REPEATS:-1}"
+[[ "$repeats" =~ ^[1-9][0-9]*$ ]] || { echo 'JARAS_AUDIO_TEST_REPEATS must be a positive integer.' >&2; exit 1; }
+for ((pass=1; pass<=repeats; ++pass)); do
+    "$build_dir/test"
+    JARAS_TEST_SAMPLE_RATE=48000 "$build_dir/test"
+done

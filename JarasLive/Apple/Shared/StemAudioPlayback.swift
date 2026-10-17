@@ -1209,8 +1209,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         #endif
         // prepare/start can resolve the system's default route again. Keep
         // output silent until its physical device is confirmed after both.
-        if realtime { engine.mainMixerNode.outputVolume = 0 }
-        else { engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0 }
+        engine.mainMixerNode.outputVolume = 0
         do {
             engine.prepare()
             #if os(macOS)
@@ -1221,7 +1220,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             #if os(macOS)
             if usesSelectedHardware { try AudioDeviceSettings.shared.validateOutputBinding() }
             #endif
-            if realtime { engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0 }
+            engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0
         } catch {
             engine.mainMixerNode.outputVolume = 0; engine.stop()
             throw error
@@ -1468,6 +1467,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // live graph so a BPM edit cannot exceed a processor's default slice.
         for node in [player, stretch, rateClock, gain] as [AVAudioNode] {
             node.auAudioUnit.maximumFramesToRender = 8192
+            // New voices may join an already-running manual graph. Tell their
+            // workers to wait for PCM instead of dropping it at a realtime
+            // deadline; prepare/start does not revisit a running graph.
+            node.auAudioUnit.isRenderingOffline = engine.isInManualRenderingMode && engine.manualRenderingMode == .offline
         }
         player.volume = 0
         let pitch = clipPitches[clip.id] ?? 0
