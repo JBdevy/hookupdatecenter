@@ -54,3 +54,42 @@ precondition(!third.isProjectionFullscreen && third.frame == smallFrame, "window
 third.close()
 for suffix in [".frame", ".fullscreen", ".screen"] { UserDefaults.standard.removeObject(forKey: key + suffix) }
 print("PROJECTION_PERSISTENT_MONITOR_FRAME_AND_FULLSCREEN_OK")
+
+// Exercise native z-order, including a fullscreen projection and three peers.
+main.title = "CatLive"
+let tools = NSWindow(contentRect: mainFrame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+tools.isReleasedWhenClosed = false; tools.title = "FX"
+let projections = (0..<3).map { _ in
+    let w = ProjectionWindow(contentRect: originalFrame, styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    w.isReleasedWhenClosed = false; w.followApplicationWindowOrder(); return w
+}
+func pump() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+func activate(_ window: NSWindow) {
+    window.makeKeyAndOrderFront(nil)
+    // Command-line AppKit tests are not the frontmost application. Deliver the
+    // native focus notification explicitly, then inspect real WindowServer order.
+    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+    pump()
+}
+func front(_ a: NSWindow, _ b: NSWindow) -> Bool {
+    let ids = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []).compactMap { $0[kCGWindowNumber as String] as? Int }
+    guard let x = ids.firstIndex(of: a.windowNumber), let y = ids.firstIndex(of: b.windowNumber) else { return false }
+    return x < y
+}
+activate(main)
+for w in projections { activate(w) }
+main.addChildWindow(tools, ordered: .above)
+activate(tools); pump()
+precondition(projections.allSatisfy { front(tools, $0) }, "FX opened last stays above video and both teleprompters")
+activate(projections[0]); pump()
+precondition(front(projections[0], tools), "clicking a projection raises it normally")
+activate(tools); pump()
+activate(main)
+NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: main); pump()
+precondition(projections.allSatisfy { front($0, main) && front(tools, $0) }, "main stays below projections without raising them over FX")
+projections[1].toggleProjectionFullscreen(); activate(tools); pump()
+precondition(projections[1].level == .normal && front(tools, projections[1]), "fullscreen does not pin video over editing windows")
+main.removeChildWindow(tools); activate(tools); activate(main)
+precondition(projections.allSatisfy { front(tools, $0) }, "independent configuration windows retain priority after clicking the main workspace")
+projections.forEach { $0.close() }; tools.close(); main.close()
+print("PROJECTION_LAST_CLICKED_WINDOW_ORDER_OK")

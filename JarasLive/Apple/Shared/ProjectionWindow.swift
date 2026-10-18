@@ -23,6 +23,43 @@ final class ProjectionWindow: NSWindow {
     private var saved: SavedState?
     private var placementKey: String?
     private var placementObservers: [NSObjectProtocol] = []
+    private static weak var lastFocusedTool: NSWindow?
+    private var orderingObserver: NSObjectProtocol?
+    private var orderingMonitor: Any?
+    private static func clicked(_ window: NSWindow) {
+        guard let main = NSApp.windows.first(where: { !($0 is ProjectionWindow) && $0.title == "CatLive" }) else { return }
+        if window === main {
+            // Independent editors/configuration panels must not be buried by
+            // the main window's owned projection/FX group when resuming edits.
+            DispatchQueue.main.async {
+                if let tool = lastFocusedTool, tool.isVisible, tool.parent == nil, tool !== main {
+                    tool.orderFront(nil)
+                }
+            }
+            return
+        }
+        lastFocusedTool = window
+        var top = window
+        while let parent = top.parent, parent !== main { top = parent }
+        if top.parent === main, main.childWindows?.last !== top {
+            main.removeChildWindow(top); main.addChildWindow(top, ordered: .above)
+        }
+    }
+    func followApplicationWindowOrder() {
+        level = .normal
+        hidesOnDeactivate = false
+        if let main = NSApp.windows.first(where: { !($0 is ProjectionWindow) && $0.title == "CatLive" }) {
+            main.addChildWindow(self, ordered: .above)
+        }
+        guard orderingObserver == nil else { return }
+        orderingObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { notice in
+            if let window = notice.object as? NSWindow { Self.clicked(window) }
+        }
+        orderingMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+            if let window = event.window { Self.clicked(window) }
+            return event
+        }
+    }
     private var changingPresentation = false
     private func savePlacement() {
         guard !changingPresentation, !inLiveResize, let placementKey else { return }
@@ -57,7 +94,11 @@ final class ProjectionWindow: NSWindow {
             NotificationCenter.default.addObserver(forName: name, object: self, queue: .main) { [weak self] _ in self?.savePlacement() }
         }
     }
-    deinit { placementObservers.forEach(NotificationCenter.default.removeObserver) }
+    deinit {
+        placementObservers.forEach(NotificationCenter.default.removeObserver)
+        if let orderingObserver { NotificationCenter.default.removeObserver(orderingObserver) }
+        if let orderingMonitor { NSEvent.removeMonitor(orderingMonitor) }
+    }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { !isProjectionFullscreen }
@@ -96,7 +137,7 @@ final class ProjectionWindow: NSWindow {
         styleMask = .borderless; titleVisibility = .hidden; titlebarAppearsTransparent = true
         isMovable = false; isMovableByWindowBackground = false; hasShadow = false
         canHide = false; hidesOnDeactivate = false
-        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.screenSaverWindow)))
+        level = .normal
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         setFrame(display.frame, display: true, animate: false)
         makeKeyAndOrderFront(nil)
@@ -105,6 +146,7 @@ final class ProjectionWindow: NSWindow {
         savePlacement()
         changingPresentation = true
         if isProjectionFullscreen { toggleProjectionFullscreen() }
+        parent?.removeChildWindow(self)
         super.close()
     }
 }

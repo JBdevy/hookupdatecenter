@@ -84,6 +84,7 @@ class SettingsPanel final : public Component, private Timer {
     SafePointer<Label> accountTitle, accountEmail, accountMessage;
     OwnedArray<Component> deviceFields;
     String deviceSnapshot;
+    SafePointer<Label> scanningPlugin;
     uint64 pluginRevision = ~uint64(0);
     std::unique_ptr<FileChooser> pluginFolderChooser;
     void timerCallback() override {
@@ -161,7 +162,10 @@ class SettingsPanel final : public Component, private Timer {
     }
     void updatePlugins() {
         auto &catalog = VST3Catalog::shared();
-        if (catalog.revision == pluginRevision) return;
+        if (catalog.revision == pluginRevision) {
+            if (scanningPlugin) { scanningPlugin->setText(catalog.progressText(),dontSendNotification); scanningPlugin->setTooltip(catalog.currentPlugin); }
+            return;
+        }
         pluginRevision = catalog.revision; deviceFields.clear();
         auto addLabel = [this](String value,int y,int height=26) {
             auto *field=new Label();deviceFields.add(field);page.addAndMakeVisible(field);
@@ -188,6 +192,13 @@ class SettingsPanel final : public Component, private Timer {
         });
         addButton("Escanear plugins",204,y,160,[] { VST3Catalog::shared().scan(); });y+=44;
         addLabel(catalog.status,y,64);y+=72;
+        if (catalog.scanning) {
+            auto *label = new Label(); deviceFields.add(label); page.addAndMakeVisible(label); scanningPlugin = label;
+            label->setText(catalog.progressText(),dontSendNotification); label->setFont(theme::font(12));
+            label->setColour(Label::textColourId,theme::secondary); label->setBounds(24,y,580,26); y+=32;
+            auto *bar = new ProgressBar(catalog.scanProgress); deviceFields.add(bar); page.addAndMakeVisible(bar);
+            bar->setBounds(24,y,580,16); bar->setPercentageDisplay(true); y+=36;
+        }
         for(const auto &plugin:catalog.plugins){addLabel(str(plugin,"name")+" · "+str(plugin,"vendor"),y);y+=30;}
         contentHeight=y+36;localization::panel(page);resized();
     }

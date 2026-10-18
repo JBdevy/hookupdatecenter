@@ -1,3 +1,9 @@
+2026-10-18 — Scan progress and macOS projection order
+- VST3 discovery exposes real completed/total progress and the current bundle name in Settings and the external browser. Progress updates do not rebuild the plugin list.
+- Windows: 156 integration tests pass, including duplicate scan prevention, duplicate paths, invalid plugin continuation, current names, monotonic progress and empty scans.
+- Mac: arm64 Release compiled; native WindowServer tests cover video/TP sibling focus, owned FX, independent configuration panels and borderless fullscreen at normal window level.
+- macOS effect chooser/browser explicitly display External (VST3), localized as Externo (VST3).
+
 ATUALIZAÇÃO — 18/10/2026 — ABERTURA E PARIDADE DE IMPORTAÇÃO
 Abertura pelos Recentes assíncrona: Carregando projeto, Preparando waveforms
 (com progresso real por arquivo) e Preparando áudio. Cliques repetidos não

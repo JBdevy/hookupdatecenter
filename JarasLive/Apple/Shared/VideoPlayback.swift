@@ -97,7 +97,7 @@ typealias ProjectionImage = UIImage
         window.closesOnRightDoubleClick = true
         window.title = "CatLive Video"; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 320,height: 180)
-        window.level = .floating; window.hidesOnDeactivate = false; window.delegate = self
+        window.followApplicationWindowOrder(); window.delegate = self
         let host = NSHostingView(rootView: VideoSurface(controller: self))
         if #available(macOS 13, *) { host.sizingOptions = [] }
         window.contentView = host

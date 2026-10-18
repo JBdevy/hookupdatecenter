@@ -1671,3 +1671,5 @@
 "Use the same key or MIDI control again to cancel Fadeout and restore the volumes." = "Use a mesma tecla ou controle MIDI novamente para cancelar o Fadeout e restaurar os volumes.";
 
 "Press a MIDI note or controller button." = "Pressione uma nota MIDI ou um botão do controlador.";
+
+"External (VST3)" = "Externo (VST3)";

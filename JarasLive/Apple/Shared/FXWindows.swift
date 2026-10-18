@@ -63,7 +63,7 @@ struct FXInsertEditor: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Insert effect").font(.jarasHeadline)
                     Picker("Effect", selection: $effect) {
-                        ForEach(availableEffects, id: \.self) { Text(LocalizedStringKey($0 == "Limiter" ? "CatLive Limiter" : $0)).tag($0) }
+                        ForEach(availableEffects, id: \.self) { Text(LocalizedStringKey($0 == "Limiter" ? "CatLive Limiter" : $0 == "External" ? "External (VST3)" : $0)).tag($0) }
                     }.pickerStyle(.menu)
                     #if os(iOS)
                     .padding(12).frame(maxWidth: .infinity)
@@ -84,6 +84,7 @@ struct FXInsertEditor: View {
                             }.frame(maxWidth: .infinity).padding(8)
                         }.buttonStyle(.bordered)
                         HStack { Button("Scan plugins") { plugins.scan() }.disabled(plugins.scanning); if plugins.scanning { ProgressView().controlSize(.small) } }
+                        if plugins.scanning { PluginScanProgress(catalog: plugins) }
                         if !externalError.isEmpty { Text(verbatim: externalError).font(.jarasCaption).foregroundStyle(.red) }
                     }
                     #endif
@@ -180,6 +181,7 @@ struct FXInsertEditor: View {
         .onChange(of: effect) { value in resize(value == "Instruments" ? 500 : value == "External" ? 310 : 210) }
         #if os(macOS)
         .onChange(of: effect) { value in if value == "External" { browsingExternal = true } }
+        .onChange(of: plugins.scanning) { scanning in if effect == "External" { resize(scanning ? 370 : 310) } }
         .background(ExternalPluginBrowserPresenter(isPresented: $browsingExternal, selected: $external,
                                                   allowsInstruments: clip.map { FXModelLookup.clip($0, in: show.snapshot.project)?.midi != nil } ?? (targets.count == 1 && track != nil)))
         #endif
@@ -262,7 +264,7 @@ import Combine
         windows[key] = panel
         // A normal-level child stays above the DAW when the timeline is clicked,
         // while application deactivation and attached editing sheets retain priority.
-        if let parent = NSApp.mainWindow ?? NSApp.windows.first(where: { !($0 is NSPanel) && $0.isVisible && $0.canBecomeMain }) {
+        if let parent = NSApp.windows.first(where: { !($0 is NSPanel) && $0.isVisible && $0.title == "CatLive" }) {
             parent.addChildWindow(panel, ordered: .above)
         }
         panel.makeKeyAndOrderFront(nil)

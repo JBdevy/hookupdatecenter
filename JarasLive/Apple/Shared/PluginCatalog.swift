@@ -13,6 +13,10 @@ struct RecognizedPlugin: Codable, Identifiable, Sendable {
     @Published private(set) var plugins: [RecognizedPlugin]
     @Published private(set) var scanning = false
     @Published private(set) var status = ""
+    @Published private(set) var scanProgress: Double? = nil
+    @Published private(set) var currentPlugin = ""
+    @Published private(set) var completedPlugins = 0
+    @Published private(set) var totalPlugins = 0
     init() {
         paths = UserDefaults.standard.stringArray(forKey: "jaras.plugins.paths") ?? ["/Library/Audio/Plug-Ins/VST3", NSHomeDirectory() + "/Library/Audio/Plug-Ins/VST3"]
         plugins = UserDefaults.standard.data(forKey: "jaras.plugins.catalog").flatMap { try? JSONDecoder().decode([RecognizedPlugin].self, from: $0) } ?? []
@@ -35,6 +39,7 @@ struct RecognizedPlugin: Codable, Identifiable, Sendable {
     func scan() {
         guard !scanning, let executable = Bundle.main.executableURL else { return }
         scanning = true; status = "Scanning plugins…"
+        scanProgress = nil; currentPlugin = ""; completedPlugins = 0; totalPlugins = 0
         let paths = self.paths
         Task {
             let result = await Task.detached(priority: .utility) { () -> ([RecognizedPlugin], [String]) in
@@ -46,7 +51,10 @@ struct RecognizedPlugin: Codable, Identifiable, Sendable {
                     }
                 }
                 struct Scan: Decodable { var plugins: [RecognizedPlugin]; var error: String }
-                for file in files.sorted(by: { $0.path < $1.path }) {
+                let candidates = files.sorted(by: { $0.path < $1.path })
+                await MainActor.run { self.totalPlugins = candidates.count; self.scanProgress = 0 }
+                for (index, file) in candidates.enumerated() {
+                    await MainActor.run { self.currentPlugin = file.deletingPathExtension().lastPathComponent }
                     let output = fm.temporaryDirectory.appendingPathComponent("jaras-plugin-scan-" + UUID().uuidString + ".json")
                     let process = Process(); process.executableURL = executable; process.arguments = ["--scan-vst3", file.path, output.path]
                     process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
@@ -60,10 +68,14 @@ struct RecognizedPlugin: Codable, Identifiable, Sendable {
                         } else { errors.append(file.lastPathComponent + ": " + JarasLocalization.string("Plugin scan failed.")) }
                     } catch { errors.append(file.lastPathComponent + ": " + error.localizedDescription) }
                     try? fm.removeItem(at: output)
+                    await MainActor.run {
+                        self.completedPlugins = index + 1
+                        self.scanProgress = Double(index + 1) / Double(candidates.count)
+                    }
                 }
                 return (found.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }, errors)
             }.value
-            plugins = result.0; saveCatalog(); scanning = false
+            plugins = result.0; saveCatalog(); scanning = false; scanProgress = 1; currentPlugin = ""
             status = result.1.isEmpty ? JarasLocalization.string("Scan complete.") : result.1.joined(separator: "\n")
         }
     }
@@ -194,7 +206,7 @@ struct ExternalPluginBrowser: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("External").font(.jarasHeadline)
+                Text("External (VST3)").font(.jarasHeadline)
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
@@ -220,8 +232,9 @@ struct ExternalPluginBrowser: View {
                         }.buttonStyle(.plain).jarasHelp(plugin.name + " · " + plugin.vendor)
                     }
                 }
-            }.frame(height: 344)
+            }.frame(height: catalog.scanning ? 294 : 344)
                 .overlay { if matches.isEmpty { Text(catalog.scanning ? "Scanning plugins…" : "No plugins found").foregroundStyle(JarasTheme.secondary) } }
+            if catalog.scanning { PluginScanProgress(catalog: catalog) }
             HStack {
                 Button("Scan plugins") { catalog.scan() }.disabled(catalog.scanning)
                 if catalog.scanning { ProgressView().controlSize(.small) }
@@ -230,6 +243,22 @@ struct ExternalPluginBrowser: View {
             }
         }.padding(20).frame(width: 760).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear { searching = true }
+    }
+}
+
+/// Shared by both scan entry points; all values are published on the main actor.
+struct PluginScanProgress: View {
+    @ObservedObject var catalog: PluginCatalog
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(verbatim: catalog.currentPlugin).lineLimit(1).help(catalog.currentPlugin)
+                Spacer()
+                Text(verbatim: "\(catalog.completedPlugins) / \(catalog.totalPlugins)").monospacedDigit()
+            }.font(.jarasCaption)
+            if let progress = catalog.scanProgress { ProgressView(value: progress).progressViewStyle(.linear) }
+            else { ProgressView().progressViewStyle(.linear) }
+        }.frame(maxWidth: .infinity)
     }
 }
 
@@ -242,6 +271,7 @@ struct PluginSettings: View {
                 HStack { Text(verbatim: path).lineLimit(2).font(.jarasCaption); Spacer(); Button { catalog.removePath(path) } label: { Image(systemName: "minus.circle") }.disabled(catalog.scanning) }
             }
             HStack { Button("Add path") { catalog.addPath() }; Button("Scan plugins") { catalog.scan() }.disabled(catalog.scanning); if catalog.scanning { ProgressView().controlSize(.small) } }
+            if catalog.scanning { PluginScanProgress(catalog: catalog) }
             if !catalog.status.isEmpty { Text(verbatim: JarasLocalization.string(catalog.status)).font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
             ForEach(catalog.plugins) { plugin in HStack { Text(verbatim: plugin.name); Spacer(); Text(verbatim: plugin.vendor).foregroundStyle(JarasTheme.secondary) }.font(.jarasCaption) }
         }
@@ -268,7 +298,7 @@ struct ExternalPluginBrowserPresenter: NSViewRepresentable {
                 coordinator.opening = false
                 let panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 760, height: 490),
                                     styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-                panel.title = JarasLocalization.string("External")
+                panel.title = JarasLocalization.string("External (VST3)")
                 panel.isFloatingPanel = true
                 panel.hidesOnDeactivate = false
                 panel.minSize = CGSize(width: 680, height: 390)

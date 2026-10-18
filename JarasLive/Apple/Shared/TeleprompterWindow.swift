@@ -288,7 +288,7 @@ private struct LocalizedTeleprompterConfig: View {
             MainActor.assumeIsolated {
                 guard let self, self.minimizedWithMain else { return }
                 self.minimizedWithMain = false
-                self.window?.orderFrontRegardless()
+                self.window?.order(.above, relativeTo: parent.windowNumber)
             }
         }
         preferenceObservation = preferences.$settings.dropFirst().sink { [weak self] _ in
@@ -308,7 +308,7 @@ private struct LocalizedTeleprompterConfig: View {
         let window = ProjectionWindow(contentRect: NSRect(x: 0,y: 0,width: 800,height: 450),styleMask: [.titled,.closable,.resizable,.miniaturizable],backing: .buffered,defer: false)
         window.title = "Teleprompter \(index)"; window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 320,height: 180)
-        window.level = .floating; window.hidesOnDeactivate = false; window.delegate = self
+        window.followApplicationWindowOrder(); window.delegate = self
         let host = NSHostingView(rootView: TeleprompterProjectionView(index: index, display: display, preferences: preferences, video: video))
         if #available(macOS 13, *) { host.sizingOptions = [] }
         window.contentView = host

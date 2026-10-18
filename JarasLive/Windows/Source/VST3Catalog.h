@@ -9,6 +9,13 @@ class VST3Catalog final {
     Array<var> plugins;
     String status;
     bool scanning = false;
+    double scanProgress = -1.0;
+    String currentPlugin;
+    int completedPlugins = 0, totalPlugins = 0;
+    String progressText() const {
+        if (totalPlugins == 0) return String::fromUTF8("Localizando plugins…");
+        return String(completedPlugins) + " / " + String(totalPlugins) + " — " + currentPlugin;
+    }
     uint64 revision = 0;
     void addPath(const File &folder) {
         if (scanning || !folder.isDirectory()) return;
@@ -28,15 +35,34 @@ class VST3Catalog final {
     }
     void scan() {
         if (scanning) return;
-        scanning = true; status = String::fromUTF8("Escaneando plugins…"); ++revision;
+        scanning = true; status = String::fromUTF8("Escaneando plugins…");
+        scanProgress = -1.0; currentPlugin.clear(); completedPlugins = totalPlugins = 0; ++revision;
         auto roots = paths; auto weak = std::weak_ptr<int>(alive);
         worker.addJob([this, roots, weak] {
             Array<var> found; StringArray failures; std::set<String> seen;
+            Array<File> candidates;
             std::function<void(File)> visit = [&](File folder) {
                 if (stopping.load()) return;
                 if (folder.hasFileExtension("vst3")) {
+                    if (seen.insert(folder.getFullPathName().toLowerCase()).second) candidates.add(folder);
+                    return;
+                }
+                if (folder.isSymbolicLink() || !folder.isDirectory()) return;
+                for (const auto &entry : folder.findChildFiles(File::findFilesAndDirectories,false)) visit(entry);
+            };
+            for (const auto &path : roots) visit(File(path));
+            auto report = [this, weak, total=candidates.size()](int completed, String name) {
+                MessageManager::callAsync([this, weak, total, completed, name] {
+                    if (weak.expired()) return;
+                    totalPlugins = total; completedPlugins = completed; currentPlugin = name;
+                    scanProgress = total > 0 ? double(completed) / total : 1.0;
+                });
+            };
+            int completed = 0;
+            for (const auto &folder : candidates) {
+                    if (stopping.load()) break;
                     const auto path = folder.getFullPathName();
-                    if (!seen.insert(path.toLowerCase()).second) return;
+                    report(completed, folder.getFileNameWithoutExtension());
                     auto output = File::getSpecialLocation(File::tempDirectory).getNonexistentChildFile("catlive-vst3", ".json");
                     try {
                         ChildProcess process;
@@ -49,26 +75,25 @@ class VST3Catalog final {
                         if (!flag(result,"success")) throw std::runtime_error(utf8(str(result,"error","Falha ao verificar plugin.")));
                         for (auto plugin : list(get(result,"plugins"))) { put(plugin,"path",path); found.add(plugin); }
                     } catch (const std::exception &e) { failures.add(folder.getFileName() + ": " + String::fromUTF8(e.what())); }
-                    output.deleteFile(); return;
-                }
-                if (folder.isSymbolicLink() || !folder.isDirectory()) return;
-                for (const auto &entry : folder.findChildFiles(File::findFilesAndDirectories,false)) visit(entry);
-            };
-            for (const auto &path : roots) visit(File(path));
+                    output.deleteFile();
+                    report(++completed, folder.getFileNameWithoutExtension());
+            }
             MessageManager::callAsync([this, weak, found, failures] {
                 if (weak.expired()) return;
-                plugins = found; scanning = false;
+                plugins = found; scanning = false; scanProgress = 1.0; currentPlugin.clear();
                 status = String(plugins.size()) + " plugins encontrados" + (failures.isEmpty() ? "." : "; " + String(failures.size()) + " falha(s). " + failures.joinIntoString("\n"));
                 ++revision; save();
             });
         });
     }
   private:
-    File file = File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/vst3-catalog.json");
+    File file;
     ThreadPool worker{1};
     std::shared_ptr<int> alive = std::make_shared<int>(0);
     std::atomic<bool> stopping{false};
-    VST3Catalog() {
+    VST3Catalog() : VST3Catalog(File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/vst3-catalog.json")) {}
+  public:
+    explicit VST3Catalog(File storage) : file(std::move(storage)) {
         const auto saved = JSON::parse(file);
         if (get(saved,"paths").isArray()) for (const auto &path : list(get(saved,"paths"))) paths.add(path.toString());
         else { paths.add("C:\\Program Files\\Common Files\\VST3");
@@ -76,6 +101,7 @@ class VST3Catalog final {
         plugins = list(get(saved,"plugins"));
     }
     ~VST3Catalog() { stopping = true; alive.reset(); worker.removeAllJobs(true,25000); }
+  private:
     void save() {
         auto saved = object(); Array<var> values; for (const auto &path : paths) values.add(path);
         put(saved,"paths",values); put(saved,"plugins",plugins);
@@ -93,17 +119,22 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
         addAndMakeVisible(scan); scan.onClick=[] { VST3Catalog::shared().scan(); }; scan.getProperties().set("flat",true);
         addAndMakeVisible(cancel); cancel.onClick=dismiss; cancel.getProperties().set("flat",true);
         addAndMakeVisible(message); message.setFont(theme::font(11)); message.setColour(Label::textColourId,theme::secondary);
-        refresh(); startTimerHz(4);
+        addAndMakeVisible(progress); progress.setPercentageDisplay(true);
+        addAndMakeVisible(current); current.setFont(theme::font(12)); current.setColour(Label::textColourId,theme::secondary);
+        refresh(); startTimerHz(10);
     }
     void paint(Graphics &g) override { g.fillAll(theme::panel); }
     void resized() override {
-        search.setBounds(20,16,getWidth()-40,30); list.setBounds(16,58,getWidth()-32,getHeight()-124);
+        search.setBounds(20,16,getWidth()-40,30); list.setBounds(16,58,getWidth()-32,getHeight()-(VST3Catalog::shared().scanning ? 184 : 124));
+        current.setBounds(20,getHeight()-116,getWidth()-40,26);
+        progress.setBounds(20,getHeight()-84,getWidth()-40,16);
         scan.setBounds(20,getHeight()-46,150,28); cancel.setBounds(getWidth()-110,getHeight()-46,90,28);
         message.setBounds(182,getHeight()-46,std::max(20,getWidth()-306),28);
     }
   private:
     std::function<void(var)> picked; std::function<void()> dismiss;
     TextEditor search; ListBox list; TextButton scan{"Escanear plugins"},cancel{"Fechar"}; Label message;
+    ProgressBar progress{VST3Catalog::shared().scanProgress}; Label current;
     Array<var> matches; String selected; uint64 revision = ~uint64(0);
     bool instrumentsAllowed = true;
     void refresh() {
@@ -116,8 +147,14 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
         list.updateContent(); list.repaint();
         message.setText(catalog.scanning ? catalog.status : String(matches.size()) + " plugins",dontSendNotification);
         scan.setEnabled(!catalog.scanning); revision=catalog.revision;
+        progress.setVisible(catalog.scanning); current.setVisible(catalog.scanning); resized();
+        updateScanProgress();
     }
-    void timerCallback() override { if(revision!=VST3Catalog::shared().revision)refresh(); }
+    void updateScanProgress() {
+        auto &catalog = VST3Catalog::shared();
+        if (catalog.scanning) { current.setText(catalog.progressText(),dontSendNotification); current.setTooltip(catalog.currentPlugin); }
+    }
+    void timerCallback() override { if(revision!=VST3Catalog::shared().revision)refresh(); else updateScanProgress(); }
     int getNumRows() override { return (matches.size()+3)/4; }
     void paintListBoxItem(int row,Graphics &g,int width,int,bool) override {
         const int cell=width/4;
