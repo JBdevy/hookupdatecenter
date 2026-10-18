@@ -1,5 +1,6 @@
 #pragma once
 #include "AudioEngine.h"
+#include "MediaDropLayout.h"
 #include "ProjectCodec.h"
 #include "AudioExport.h"
 #include "TransportPresentation.h"
@@ -62,13 +63,15 @@ class Session final : private Timer {
     bool canUndo() const { return !undoHistory.empty(); }
     bool canRedo() const { return !redoHistory.empty(); }
     void importAudio(const Array<File> &, double at = 0);
-    void importMedia(const Array<File> &, double at, ID targetTrack, bool sameTrack, double gap,
+    void importMedia(const Array<File> &, double at, ID targetTrack, MediaDropLayout layout, double gap,
                      std::function<void(String)> completion = {}, bool deferWaveform = false);
     void exportMix(const File &, int bits = 24);
     void exportAudio(ExportRequest);
     void renderItems(std::set<ID>, bool glue = false, int midiChannels = 0);
     void detectRegionBPM(std::set<ID>);
-    void cancelExport() { exportCancelled = true; }
+    bool isDetectingBPM() const { return bpmCancellation != nullptr; }
+    void cancelBPMDetection();
+    void cancelExport() { exportCancelled = true; if(loadCancellation)loadCancellation->store(true); }
     void toggleRecording();
     int recordArm(const ID &id) const {
         auto at = recordArms.find(id);
@@ -107,10 +110,16 @@ class Session final : private Timer {
     struct TimeSelection { ID project, song; double start, end; };
     std::optional<TimeSelection> timeSelection;
     void focusTimelineRegion(double position, bool force = false);
+    void focusSetlistRegion(std::optional<ID>, bool force = false);
+    struct MarkerHistory { ID song; std::optional<std::vector<jaras::TimelineMarker>> markers; };
+    MarkerHistory markerHistory(const ID &) const;
+    void applyMarkerHistory(const MarkerHistory &, bool recordHistory);
     struct HistoryEntry {
         var project;
+        std::optional<MarkerHistory> markers;
         std::optional<std::map<ID, var>> effects;
         HistoryEntry(var value) : project(std::move(value)) {}
+        HistoryEntry(MarkerHistory value) : markers(std::move(value)) {}
         HistoryEntry(std::map<ID, var> value) : effects(std::move(value)) {}
     };
     std::vector<HistoryEntry> undoHistory, redoHistory;
@@ -122,6 +131,9 @@ class Session final : private Timer {
     std::set<ID> fadeoutTracks;
     void warnTransportFadeout(String);
     ThreadPool worker{1};
+    ThreadPool bpmWorker{1};
+    std::shared_ptr<std::atomic<bool>> bpmCancellation;
+    std::shared_ptr<std::atomic<bool>> loadCancellation;
     std::shared_ptr<int> alive = std::make_shared<int>(0);
     ID preparedSong;
     File recordingFile;

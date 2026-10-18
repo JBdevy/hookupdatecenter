@@ -60,8 +60,6 @@ try {
  Click ($rect.Left+203) ($rect.Top+195)
  Click ($rect.Left+203) ($rect.Top+195) -Right
  ScreenCapture 'track-record-context';Key 0x1b
- $padsButton=$small.controls.railSections
- Click ($rect.Left+$padsButton.x+14) ($rect.Top+$padsButton.y+14)
  $tuner=$small.tuner
  Click ($rect.Left+$tuner.x+106) ($rect.Top+$tuner.y+13)
  $tuned=Capture 'tuner-up'
@@ -74,33 +72,53 @@ try {
  Click ($rect.Left+700) ($rect.Top+570)
  $tunerCancel=Capture 'tuner-cancel'
  if(@($tunerCancel.modals).Count -ne 0){throw 'Tuner Cancel did not dismiss the target editor.'}
- $pads=Capture 'pads'
- if(-not $pads.partsVisible -or $pads.pads.current.count -ne 3){throw 'Pads did not expose the selected region and its sections.'}
- Click ($rect.Left+191) ($rect.Top+560)
- $padSeek=Capture 'pads-select-section'
- if([Math]::Abs($padSeek.editPosition-20) -gt .001){throw 'Pad selection did not seek to the section.'}
- Click ($rect.Left+90) ($rect.Top+560)
- $padStart=Capture 'pads-select-start'
- if([Math]::Abs($padStart.editPosition) -gt .001){throw 'Start pad did not return to the region start.'}
- Click ($rect.Left+$padsButton.x+14) ($rect.Top+$padsButton.y+14)
+ # Parts now occupy independent sidebars; opening them must preserve the lower docks.
  $mixerButton=$small.controls.railMixer
- $partsButton=$small.setlist.partsButton
- Click ($rect.Left+$partsButton.x+20) ($rect.Top+$partsButton.y+10)
- $partsList=Capture 'parts-sidebar'
- if(-not $partsList.partsListVisible -or $partsList.partsVisible -or -not $partsList.partsSidebar.vertical){throw 'Setlist Parts did not open the vertical section list.'}
- $sectionBounds=$partsList.partsSidebarBounds
- Click ($rect.Left+$sectionBounds.x+40) ($rect.Top+$sectionBounds.y+140)
- $sectionSeek=Capture 'parts-sidebar-seek'
- if([Math]::Abs($sectionSeek.editPosition-20) -gt .001){throw 'Vertical section click did not seek.'}
- Click ($rect.Left+$sectionBounds.x+40) ($rect.Top+$sectionBounds.y+100)
- Click ($rect.Left+$sectionBounds.x+$sectionBounds.width-40) ($rect.Top+$sectionBounds.y+55)
- $sectionQueued=Capture 'parts-sidebar-queued'
- if(-not $sectionQueued.partsSidebar.secondaryTab){throw 'Queued sections tab did not open.'}
- $partsButton=$sectionQueued.setlist.partsButton
- Click ($rect.Left+$partsButton.x+20) ($rect.Top+$partsButton.y+10)
- $partsClosed=Capture 'parts-sidebar-closed'
- if($partsClosed.partsListVisible){throw 'Parts did not close the vertical section list.'}
+ $keyboardButton=$small.controls.railKeyboard
  Click ($rect.Left+$mixerButton.x+14) ($rect.Top+$mixerButton.y+14)
+ Click ($rect.Left+$keyboardButton.x+14) ($rect.Top+$keyboardButton.y+14)
+ $partsDocks=Capture 'parts-docks-open'
+ if(-not $partsDocks.mixerVisible -or -not $partsDocks.keyboardVisible){throw 'Mixer and keyboard did not open before the Parts sidebar check.'}
+ $leftPartsButton=$partsDocks.controls.railParts
+ if($null -eq $leftPartsButton){throw 'The left Parts button was not exposed in diagnostics.'}
+ Click ($rect.Left+$leftPartsButton.x+14) ($rect.Top+$leftPartsButton.y+14)
+ $partsLeft=Capture 'parts-left'
+ if(-not $partsLeft.partsLeftVisible -or $partsLeft.partsRightVisible -or $partsLeft.partsLeft.current.count -ne 3){throw 'Left Parts did not expose the selected region and its sections.'}
+ if(-not $partsLeft.mixerVisible -or -not $partsLeft.keyboardVisible){throw 'Opening left Parts closed the mixer or keyboard.'}
+ $leftBounds=$partsLeft.partsLeftBounds
+ if($leftBounds.width -le 0 -or $leftBounds.height -le 140){throw 'Left Parts has no usable sidebar bounds.'}
+ Click ($rect.Left+$leftBounds.x+40) ($rect.Top+$leftBounds.y+140)
+ $leftSeek=Capture 'parts-left-select-section'
+ if([Math]::Abs($leftSeek.editPosition-20) -gt .001){throw 'Left Parts selection did not seek to the section.'}
+ Click ($rect.Left+$leftBounds.x+40) ($rect.Top+$leftBounds.y+100)
+ $leftStart=Capture 'parts-left-select-start'
+ if([Math]::Abs($leftStart.editPosition) -gt .001){throw 'Left Parts start did not return to the region start.'}
+ $rightPartsButton=$leftStart.setlist.partsButton
+ Click ($rect.Left+$rightPartsButton.x+20) ($rect.Top+$rightPartsButton.y+10)
+ $partsBoth=Capture 'parts-both-sidebars'
+ if(-not $partsBoth.partsLeftVisible -or -not $partsBoth.partsRightVisible -or $partsBoth.partsSidebar.current.count -ne 3){throw 'Setlist Parts did not open the right sidebar alongside the left sidebar.'}
+ if(-not $partsBoth.mixerVisible -or -not $partsBoth.keyboardVisible){throw 'Opening both Parts sidebars changed the lower docks.'}
+ $rightBounds=$partsBoth.partsSidebarBounds
+ if($rightBounds.width -le 0 -or $rightBounds.height -le 140){throw 'Right Parts has no usable sidebar bounds.'}
+ Click ($rect.Left+$rightBounds.x+40) ($rect.Top+$rightBounds.y+140)
+ $rightSeek=Capture 'parts-right-select-section'
+ if([Math]::Abs($rightSeek.editPosition-20) -gt .001){throw 'Right Parts selection did not seek to the section.'}
+ Click ($rect.Left+$rightBounds.x+40) ($rect.Top+$rightBounds.y+100)
+ Click ($rect.Left+$rightBounds.x+$rightBounds.width-40) ($rect.Top+$rightBounds.y+55)
+ $rightQueued=Capture 'parts-right-queued'
+ if(-not $rightQueued.partsSidebar.secondaryTab -or $rightQueued.partsLeft.secondaryTab){throw 'The right queued tab did not stay independent of the left current tab.'}
+ $leftPartsButton=$rightQueued.controls.railParts
+ Click ($rect.Left+$leftPartsButton.x+14) ($rect.Top+$leftPartsButton.y+14)
+ $leftClosed=Capture 'parts-left-closed'
+ if($leftClosed.partsLeftVisible -or -not $leftClosed.partsRightVisible){throw 'Closing left Parts changed the right sidebar.'}
+ $rightPartsButton=$leftClosed.setlist.partsButton
+ Click ($rect.Left+$rightPartsButton.x+20) ($rect.Top+$rightPartsButton.y+10)
+ $partsClosed=Capture 'parts-sidebars-closed'
+ if($partsClosed.partsLeftVisible -or $partsClosed.partsRightVisible){throw 'Parts sidebars did not close independently.'}
+ if(-not $partsClosed.mixerVisible -or -not $partsClosed.keyboardVisible){throw 'Closing Parts changed the lower docks.'}
+ $keyboardButton=$partsClosed.controls.railKeyboard
+ $mixerButton=$partsClosed.controls.railMixer
+ Click ($rect.Left+$keyboardButton.x+14) ($rect.Top+$keyboardButton.y+14)
  $mixerOpen=Capture 'mixer'
  if(-not $mixerOpen.mixerVisible){throw 'Lower mixer did not open.'}
  Wheel ($rect.Left+650) ($rect.Top+600) -480

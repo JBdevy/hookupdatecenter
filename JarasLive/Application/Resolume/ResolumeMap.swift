@@ -1,5 +1,31 @@
 import Foundation
 
+/// Names sent to lighting/video applications use the same ASCII subset on Mac and Windows.
+/// Project names and UUID assignments remain untouched; only export labels are normalized.
+public enum LightingExportName {
+    public static func clean(_ value: String, fallback: String = "Marcador") -> String {
+        var result = "", pendingSpace = false
+        for scalar in value.decomposedStringWithCompatibilityMapping.unicodeScalars {
+            var code = scalar.value
+            if (0x300...0x36f).contains(code) { continue }
+            if (0x2010...0x2015).contains(code) || code == 0x2212 { code = 45 }
+            if (65...90).contains(code) || (97...122).contains(code) || (48...57).contains(code) || code == 45 || code == 95 {
+                if pendingSpace && !result.isEmpty { result.append(" ") }
+                result.unicodeScalars.append(Unicode.Scalar(code)!)
+                pendingSpace = false
+            } else { pendingSpace = true }
+        }
+        if result.isEmpty { return fallback.isEmpty ? "" : clean(fallback, fallback: "") }
+        return String(result.prefix(96)).trimmingCharacters(in: .whitespaces)
+    }
+    public static func fileStem(_ value: String) -> String {
+        let stem = clean(value, fallback: "Projeto CatLive"), lower = stem.lowercased()
+        let reserved = ["con", "prn", "aux", "nul"].contains(lower) ||
+            (lower.count == 4 && (lower.hasPrefix("com") || lower.hasPrefix("lpt")) && "123456789".contains(lower.last!))
+        return String((reserved ? "_" + stem : stem).prefix(96))
+    }
+}
+
 public struct ResolumeCue: Equatable, Sendable {
     public var key: String
     public var song: UUID
@@ -30,15 +56,15 @@ public struct ResolumeMap: Equatable, Sendable {
             for region in regions {
                 sources.append(ResolumeCue(key: "region:\(region.id.uuidString)", song: song.id, region: region.id,
                     start: region.startTime, end: region.endTime, position: region.startTime,
-                    name: "Start", deckName: region.name, deck: 0, column: 1))
+                    name: "Inicio", deckName: LightingExportName.clean(region.name, fallback: "Musica"), deck: 0, column: 1))
             }
             if settings.includeMarkers {
-                for marker in song.markers ?? [] where !marker.isTempo && marker.sourceRegionID == nil {
+                for marker in song.markers ?? [] where !marker.isTempo && marker.sourceRegionID == nil && marker.unifiedRegionID == nil {
                     guard let region = regions.filter({ marker.position > $0.startTime + 0.0005 && marker.position < $0.endTime - 0.0005 })
                         .min(by: { $0.endTime - $0.startTime < $1.endTime - $1.startTime }) else { continue }
                     sources.append(ResolumeCue(key: "marker:\(marker.id.uuidString)", song: song.id, region: region.id,
                         start: region.startTime, end: region.endTime, position: marker.position,
-                        name: marker.name, deckName: region.name, deck: 0, column: 0))
+                        name: LightingExportName.clean(marker.name), deckName: LightingExportName.clean(region.name, fallback: "Musica"), deck: 0, column: 0))
                 }
             }
         }

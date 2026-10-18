@@ -21,6 +21,7 @@
 #include "MacPopupMenuLook.h"
 #include "ExternalMediaDrop.h"
 #include "TapTempo.h"
+#include "TrackVisibility.h"
 namespace catlive {
 namespace native { class TransportButtons; }
 namespace remote { class Host; class Presentation; }
@@ -91,7 +92,7 @@ class Workspace final : public Component,
     void detectRegions(std::set<ID>);
     void editMultiLoops(ID);
     void deleteRegions(std::set<ID>, bool withContents = false);
-    void editMarker(ID, double);
+    void editMarker(ID, double, bool section = false);
     void showMarkerMenu(ID, Point<int>);
     void editTempoMarker(ID, double);
     void runUIRegression();
@@ -101,11 +102,13 @@ class Workspace final : public Component,
     void showError(const String &);
     void showProjectBrowser();
     void projectOpened(bool fitTimeline = true);
+    bool isLoginShowing() const { return loginPanel != nullptr; }
     bool isProjectBrowserShowing() const { return browserVisible; }
     static void showPanel(const String &, std::unique_ptr<Component>, int width, int height);
 
   private:
     std::set<int> heldShortcutKeys;
+    std::unique_ptr<Component> masterPeakReadout;
     std::unique_ptr<native::TransportButtons> nativeTransport;
     void syncNativeTransport();
     std::map<String, int> actionInvocations;
@@ -125,15 +128,24 @@ class Workspace final : public Component,
     std::unique_ptr<TrackHeightHandle> trackHeightHandle;
     std::optional<std::pair<ID,double>> trackHeightPreview;
     class Setlist;
+    friend struct WorkspaceSetlistPresentationTests;
+    friend struct PartsDividerTests;
+    friend struct TrackVisibilityTests;
+    friend struct MasterMixerTests;
     class Caption;
     Session &session;
     Auth &auth;
     Lighting &lighting;
     MacLook look;
     Appearance appearance;
+    TrackVisibility trackVisibility;
+    void openTrackVisibility();
+    void setTrackVisibility(TrackVisibility::Panel,const ID &,bool);
+    void pruneTrackVisibilitySelection(bool footer);
+    void refreshTrackVisibility();
     ActionBindings actions;
     EditorSelectionAreas selectionAreas;
-    bool selectAllTracks();
+    bool selectAllTracks(bool footer = false);
     bool selectAllGridItems();
     void openTransportFadeout();
     void triggerTransportFadeout();
@@ -147,7 +159,7 @@ class Workspace final : public Component,
     std::unique_ptr<StageTimerControl> stageTimer;
     std::unique_ptr<TempoControl> tempoControl;
     std::unique_ptr<MixerPanel> footerMixer;
-    std::unique_ptr<PartsPanel> partsPanel;
+    std::unique_ptr<PartsPanel> partsLeft;
     std::unique_ptr<PartsPanel> partsSidebar;
     std::unique_ptr<TunerControl> tuner;
     std::unique_ptr<Caption> caption;
@@ -169,22 +181,32 @@ class Workspace final : public Component,
     ParameterSlider masterPan, zoom;
     SongDisplayLabel songDisplay;
     Label transportTime, transportInfo, footer, tempo;
-    DragDivider mixerDivider, setlistDivider;
+    DragDivider mixerDivider, setlistDivider, partsLeftDivider, partsRightDivider;
     DragDivider footerHeightDivider{false}, mixerHeightDivider{false};
     int resizeStart = 0, footerHeightSetting = 27, mixerHeightSetting = 300;
     int footerLeftWidth = 155, footerRightWidth = 230;
     juce::Rectangle<int> footerSongBounds;
     bool mixerDetached = false;
+    enum class SetlistPlacement { right, left, detached };
+    SetlistPlacement setlistPlacement = SetlistPlacement::right;
+    SetlistPlacement setlistDockSide = SetlistPlacement::right;
+    class DetachedSetlistPanel;
+    std::unique_ptr<DocumentWindow> setlistWindow;
+    void setSetlistPlacement(SetlistPlacement);
+    void setlistMenu(Point<int>);
+    void layoutDetachedSetlist();
+    void resizePartsWidth(bool left, int delta);
     void showDetachedMixer();
     void mixerMenu(Point<int>);
     ResourceUsage resourceUsage;
-    TextButton addTrack{"+"}, timelineLock;
+    TextButton addTrack{"+"}, timelineLock, trackVisibilityButton;
     std::unique_ptr<FileChooser> chooser;
     std::unique_ptr<FileLogger> logger;
     bool mixerVisible = true, setlistVisible = true, keyboardVisible = false,
-         footerMixerVisible = false, partsVisible = false, partsListVisible = false;
+         footerMixerVisible = false, partsLeftVisible = false, partsRightVisible = false;
     std::optional<bool> lastEditorVisible;
     int mixerWidth = 281, setlistWidth = 336, trackHeight = 64, verticalOffset = 0;
+    int partsLeftWidth = 260, partsRightWidth = 0; // Zero keeps the original automatic right width until resized.
     double pixelsPerSecond = 20;
     ID selectedTrack, selectedClip;
     std::set<ID> selectedClips;
@@ -196,7 +218,8 @@ class Workspace final : public Component,
     std::set<ID> selectedTracks;
     ID trackSelectionAnchor;
     bool trackSelected(const ID &id) const { return selectedTracks.empty() ? selectedTrack == id : selectedTracks.count(id) != 0; }
-    void selectMixerTrack(const ID &, ModifierKeys, bool clearItems = true);
+    void selectMixerTrack(const ID &, ModifierKeys, bool clearItems = true, bool footer = false);
+    bool trackSelectionFromFooter = false;
     void changeMixerFX(const ID &, bool remove);
     ID recordVisualSelection;
     std::optional<GridItemClipboard> itemClipboard;
@@ -241,9 +264,13 @@ class Workspace final : public Component,
     void chooseMigration(bool logic);
     void newSong();
     void showShortcuts();
-    void openRegions();
-    void openPartsList();
-    void showMasterMenu(Point<int>);
+    void toggleLeftParts();
+    void toggleRightParts();
+    PopupMenu masterMenu(bool barMixer) const;
+    void showMasterMenu(Point<int>, bool barMixer = false);
+    void handleMasterMenu(int choice, bool barMixer);
+    void setBarMixerMasterRight(bool);
+    void syncBarMixerMasterSide();
     void editMasterColour();
     void showTrackMenu(ID, Point<int>);
     void createTrack();

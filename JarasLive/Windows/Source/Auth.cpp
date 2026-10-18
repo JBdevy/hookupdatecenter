@@ -4,10 +4,6 @@
 #include <windows.h>
 namespace catlive {
 namespace {
-struct BackendFailure final : std::runtime_error {
-    String code;
-    BackendFailure(String value, String message) : std::runtime_error(utf8(message)), code(std::move(value)) {}
-};
 String hardwareID(const String& fallback) {
     auto machine=WindowsRegistry::getValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\\MachineGuid").trim();
     if(machine.isEmpty())machine=fallback;
@@ -45,6 +41,7 @@ MemoryBlock dpapi(const MemoryBlock &bytes, bool encrypt) {
 MemoryBlock Auth::protect(const MemoryBlock &b) { return dpapi(b, true); }
 MemoryBlock Auth::unprotect(const MemoryBlock &b) { return dpapi(b, false); }
 File Auth::dataDirectory() const {
+    if (storageDirectory != File()) return storageDirectory;
     return File::getSpecialLocation(File::userApplicationDataDirectory)
         .getChildFile("Hook Developer/CatLive");
 }
@@ -55,7 +52,7 @@ String Auth::canonicalInstallationID(const String &value) {
         throw std::runtime_error("Installation identity is damaged.");
     return Uuid(compact).toDashedString().toUpperCase();
 }
-Auth::Auth() {
+Auth::Auth(File directory,Request requester) : storageDirectory(std::move(directory)),transport(std::move(requester)) {
     auto dir = dataDirectory();
     dir.createDirectory();
     auto file = dir.getChildFile("installation.dat");
@@ -123,7 +120,7 @@ var Auth::request(const String &route, const var &body, const String &token) {
     if (JSON::parse(bytes.toString(), response).failed())
         throw std::runtime_error("Resposta inválida do serviço.");
     if (status < 200 || status >= 300)
-        throw BackendFailure(str(response, "error"), failure(str(response, "error")));
+        throw ServiceFailure(str(response, "error"), failure(str(response, "error")));
     return response;
 }
 bool Auth::verifyEntitlement(const var &entitlement, const String &account, const String &installation) {
@@ -155,8 +152,7 @@ void Auth::accept(var data, bool online) {
         !list(get(entitlement, "features")).contains(var("desktop")))
         throw std::runtime_error("A licença não permite acesso ao CatLive desktop.");
     const auto nextOffline = Time::fromISO8601(str(entitlement, "offlineValidUntil"));
-    if (!online && now >= nextOffline)
-        throw std::runtime_error("Conecte à internet para revalidar sua licença.");
+    // Match Mac: a verified saved activation lasts until the plan/trial expiry.
     const auto previousLogin = loginData;
     const auto previousExpiry = expiry, previousOffline = offlineUntil, previousWall = lastWall;
     const auto previousTitle = title, previousMessage = message;
@@ -175,10 +171,8 @@ void Auth::accept(var data, bool online) {
                             : str(get(data, "account"), "name") + String::fromUTF8(" — ") +
                                   (plan == "vitalicio" ? String(String::fromUTF8("Acesso Vitalício"))
                                                        : "Acesso " + String(days) + " dias");
-    if (!online)
-        title += String::fromUTF8(" · Offline");
     message.clear();
-    try { persist(); }
+    try { persist(); if(online)dataDirectory().getChildFile("quarantine.dat").deleteFile(); }
     catch (...) {
         loginData = previousLogin; expiry = previousExpiry; offlineUntil = previousOffline; lastWall = previousWall;
         title = previousTitle; message = previousMessage; validatedMonotonic = previousMonotonic;
@@ -329,6 +323,9 @@ void Auth::trial(String name) {
     begin("trial", body);
 }
 void Auth::restore() {
+    if(dataDirectory().getChildFile("quarantine.dat").existsAsFile()) {
+        authorised=false;message=failure("quarantined");return;
+    }
     auto file = dataDirectory().getChildFile("session.dat");
     if (!file.existsAsFile())
         return;
@@ -347,56 +344,39 @@ void Auth::restore() {
                         (str(entitlement, "status") != "active" ||
                          Time::getCurrentTime() >= Time::fromISO8601(str(entitlement, "expiresAt")));
         accept(saved, false);
-        validate();
+        // Startup restores the signed activation without rotating server tokens.
     } catch (const std::exception &e) {
         authorised = false;
         message = String::fromUTF8(e.what());
     }
 }
-void Auth::validate() {
-    if (busy || !loginData.isObject())
-        return;
-    busy = true;
-    if (changed) changed();
-    auto saved = loginData.clone();
-    auto weak = std::weak_ptr<int>(alive);
-    worker.addJob([this, weak, saved] {
-        var updated = saved;
-        String error;
-        bool networkFailure = false;
+void Auth::checkOnlineAccess() {
+    if (busy || !loginData.isObject()) return;
+    busy=true;
+    validatedMonotonic=Time::getMillisecondCounterHiRes();
+    const auto saved=loginData.clone();
+    auto weak=std::weak_ptr<int>(alive);
+    worker.addJob([this,weak,saved] {
+        String denied;
         try {
-            auto body = object();
-            put(body, "refreshToken", str(get(saved, "session"), "refreshToken"));
-            put(body, "activationProof", get(get(saved, "entitlement"), "proof"));
-            request("access-status", body);
-            auto session = request("refresh", body);
-            put(updated, "session", session);
-            put(updated, "entitlement", request("entitlement", {}, str(session, "accessToken")));
-            auto d = object();
-            put(d, "installationId", installationId);
-            put(updated, "device", request("device", d, str(session, "accessToken")));
-        } catch (const std::exception &e) {
-            error = String::fromUTF8(e.what());
-            networkFailure = error == String::fromUTF8("Não foi possível conectar ao serviço.");
-        }
-        MessageManager::callAsync([this, weak, updated, error, networkFailure] {
-            if (weak.expired())
-                return;
-            busy = false;
-            try {
-                if (error.isNotEmpty() && !networkFailure)
-                    throw std::runtime_error(utf8(error));
-                accept(updated, !networkFailure);
-            } catch (const std::exception &e) {
-                message = String::fromUTF8(e.what());
+            auto body=object();put(body,"refreshToken",str(get(saved,"session"),"refreshToken"));
+            put(body,"activationProof",get(get(saved,"entitlement"),"proof"));
+            call("access-status",body);
+        } catch(const ServiceFailure &e) {
+            // Same automatic policy as Mac AuthService.checkOnlineAccess:
+            // token expiry must not erase a valid, signed device activation.
+            if(e.code=="quarantined") denied=String::fromUTF8(e.what());
+        } catch(const std::exception &) { /* An offline check leaves the signed lease intact. */ }
+        MessageManager::callAsync([this,weak,denied] {
+            if(weak.expired())return;
+            busy=false;
+            if(denied.isNotEmpty()) {
+                authorised=false;pendingRevocation=false;loginData=var();devices=var();title="Sem acesso";
+                message=denied;
+                dataDirectory().getChildFile("quarantine.dat").replaceWithText("quarantined");
                 dataDirectory().getChildFile("session.dat").deleteFile();
-                if (isPlaying && isPlaying())
-                    pendingRevocation = true;
-                else
-                    authorised = false;
             }
-            if (changed)
-                changed();
+            if(changed)changed();
         });
     });
 }
@@ -415,7 +395,7 @@ void Auth::logout() {
             auto b = object();
             put(b, "refreshToken", str(get(saved, "session"), "refreshToken"));
             request("logout", b);
-        } catch (const BackendFailure &e) {
+        } catch (const ServiceFailure &e) {
             if (e.code != "invalidSession") error = String::fromUTF8(e.what());
         } catch (const std::exception &e) {
             error = String::fromUTF8(e.what());
@@ -550,6 +530,6 @@ void Auth::timerCallback() {
     }
     lastWall = now;
     if (authorised && Time::getMillisecondCounterHiRes() - validatedMonotonic > 120000)
-        validate();
+        checkOnlineAccess();
 }
 } // namespace catlive

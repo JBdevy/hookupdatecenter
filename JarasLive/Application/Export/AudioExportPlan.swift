@@ -123,6 +123,7 @@ public struct MediaProcessingFormat: Sendable {
         default: return recordingKey
         }
     }
+    public var recordingDisplayName: String { format.rawValue + (format == .mp3 ? " \(bitrate) kbps" : " \(bitDepth)bit") }
     public var recordingKey: String { format == .mp3 ? "mp3-\(bitrate)" : format.fileExtension + "\(bitDepth)pcm" }
     public static func load(_ scope: String, preferences: UserDefaults = .standard) -> Self {
         let root = "jaras.media." + scope + "."

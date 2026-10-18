@@ -123,6 +123,11 @@ foreach(name Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership Reg
     target_compile_options(${name}Tests PRIVATE /utf-8)
     add_test(NAME ${name}Tests COMMAND ${name}Tests)
 endforeach()
+# Exercise the production native decoder, including exact MP3 seeking, in CI.
+add_executable(AudioFileTests "${CATLIVEROOT}/WindowsNative/Tests/AudioFileTests.cpp"
+    "${CATLIVEROOT}/WindowsNative/Source/AudioFile.cpp")
+target_compile_options(AudioFileTests PRIVATE /utf-8)
+add_test(NAME AudioFileTests COMMAND AudioFileTests "${CATLIVEROOT}/Apple/Resources/Click.mp3")
 add_test(NAME WindowsIntegration COMMAND CatLive --self-test "${CMAKE_BINARY_DIR}/test-results")
 set_tests_properties(WindowsIntegration PROPERTIES TIMEOUT 90)
 find_program(CATLIVE_NODE node)

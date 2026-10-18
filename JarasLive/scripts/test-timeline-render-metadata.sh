@@ -13,7 +13,7 @@ import sys
 folder = Path(sys.argv[1])
 source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 start = source.index('private final class TimelineRenderMetadata {')
-end = source.index('/// During a gain gesture', start)
+end = source.index('/// During a gain or fade gesture', start)
 key = source.index('struct TimelineRenderKey:')
 key_end = source.index('\n}', key) + 2
 tests = Path('Tests/Apple/TimelineRenderMetadataTests.swift').read_text()

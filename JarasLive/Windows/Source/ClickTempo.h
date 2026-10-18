@@ -8,7 +8,7 @@ inline double median(std::vector<double> values) {
     std::sort(values.begin(),values.end()); const auto n=values.size();
     return n%2 ? values[n/2] : (values[n/2-1]+values[n/2])*.5;
 }
-inline std::optional<int> meter(const std::vector<Transient> &input) {
+inline std::optional<int> meter(const std::vector<Transient> &input, const std::atomic<bool> *cancel = nullptr) {
     std::vector<Transient> pulses;
     for(const auto &p:input)if(std::isfinite(p.peak)&&p.peak>0&&std::all_of(p.shape.begin(),p.shape.end(),[](double v){return std::isfinite(v);}))pulses.push_back(p);
     if(pulses.size()<6)return {};
@@ -17,6 +17,7 @@ inline std::optional<int> meter(const std::vector<Transient> &input) {
     for(const auto &p:pulses){std::vector<double> f{std::log2(std::max(.000001,p.peak))};f.insert(f.end(),p.shape.begin(),p.shape.begin()+dimensions);features.push_back(std::move(f));}
     const auto distance=[](const auto &a,const auto &b){double sum=0;for(size_t d=0;d<a.size();++d)sum+=(a[d]-b[d])*(a[d]-b[d]);return std::sqrt(sum);};
     for(size_t period=2;period<=12&&pulses.size()>=period*3;++period)for(size_t phase=0;phase<period;++phase){
+        if (cancel && cancel->load()) return {};
         std::vector<double>a(dimensions+1),b(dimensions+1);int na=0,nb=0;
         for(size_t i=0;i<features.size();++i){auto &sum=i%period==phase?a:b;if(i%period==phase)++na;else ++nb;for(size_t d=0;d<=dimensions;++d)sum[d]+=features[i][d];}
         for(auto &v:a)v/=na;for(auto &v:b)v/=nb;
@@ -77,9 +78,11 @@ inline std::vector<Section> sections(std::vector<double> input,int beatsPerBar=4
     }
     std::vector<Section> result;
     for(size_t index=0;index<pieces.size();){
+        if (cancel && cancel->load()) return {};
         const int first=(int)(std::lower_bound(times.begin(),times.end(),pieces[index].position)-times.begin());
         size_t lastSection=index;auto chosen=pieces[index];
         while(lastSection+1<pieces.size()){
+            if (cancel && cancel->load()) return {};
             const int last=lastSection+2<pieces.size()?(int)(std::lower_bound(times.begin(),times.end(),pieces[lastSection+2].position)-times.begin()):(int)times.size()-1;
             const double bpm=60*(beats[last]-beats[first])/(times[last]-times[first]);
             auto fits=[&](double value){if(value<60||value>300)return false;for(int i=first;i<=last;++i)if(std::abs(times[i]-times[first]-(beats[i]-beats[first])*60/value)>.020)return false;return true;};
@@ -121,7 +124,7 @@ class SequentialPCM final {
 inline std::vector<Transient> transients(const File &file,const std::atomic<bool> *cancel=nullptr) {
     AudioFormatManager formats;registerAudioFormats(formats);std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
     require(reader!=nullptr,"Could not read Click audio: "+utf8(file.getFileName()));
-    auto peaks=WaveformCache::analyse(*reader,cancel);require(peaks!=nullptr,"Could not analyse Click audio");
+    auto peaks=WaveformCache::forAnalysis(file,*reader,cancel);require(peaks!=nullptr,"Could not analyse Click audio");
     double maximum=0;std::vector<double> values(peaks->levels[0].count);
     for(size_t i=0;i<values.size();++i)for(int c=0;c<peaks->sourceChannels;++c){const auto p=peaks->at(0,c,i);values[i]=std::max(values[i],(double)std::max(std::abs(WaveformCache::decode(p.low)),std::abs(WaveformCache::decode(p.high))));maximum=std::max(maximum,values[i]);}
     if(maximum<=.00001)return {};
@@ -166,13 +169,42 @@ inline std::vector<jaras::TimelineMarker> markers(const jaras::Song &song,const 
     std::sort(pulses.begin(),pulses.end(),[](const auto &a,const auto &b){return a.position<b.position;});std::vector<Transient> unique;
     for(const auto &p:pulses)if(unique.empty()||p.position-unique.back().position>.08)unique.push_back(p);
     std::vector<double> positions;for(const auto &p:unique)positions.push_back(p.position);
-    const auto spans=sections(positions,meter(unique).value_or(song.beatsPerBar),cancel);std::vector<jaras::TimelineMarker> result;
+    const auto spans=sections(positions,meter(unique,cancel).value_or(song.beatsPerBar),cancel);std::vector<jaras::TimelineMarker> result;
     for(size_t i=0;i<spans.size();++i){const auto &span=spans[i];const double end=i+1<spans.size()?spans[i+1].position:region.endTime;
         std::vector<Transient> local;for(const auto &p:unique)if(p.position>=span.position&&p.position<end)local.push_back(p);
-        const auto signature=meter(local);jaras::TimelineMarker m;m.id=uuid();m.name="TEMPO";m.position=span.position;m.color=0x999999;m.tempoBPM=span.bpm;m.tempoBeats=signature.value_or(song.beatsPerBar);m.tempoUnit=signature?4:song.beatUnit;m.tempoTimebase="global";m.tempoReferenceBPM=span.bpm;result.push_back(m);
+        const auto signature=meter(local,cancel);jaras::TimelineMarker m;m.id=uuid();m.name="TEMPO";m.position=span.position;m.color=0x999999;m.tempoBPM=span.bpm;m.tempoBeats=signature.value_or(song.beatsPerBar);m.tempoUnit=signature?4:song.beatUnit;m.tempoTimebase="global";m.tempoReferenceBPM=span.bpm;result.push_back(m);
     }
     if(!result.empty()&&result.front().position>region.startTime){auto m=result.front();m.id=uuid();m.position=region.startTime;result.insert(result.begin(),m);}
     return result;
+}
+// Only analysis inputs belong in this signature: moving the edit cursor,
+// selecting a track or adjusting a fader must not invalidate background work.
+inline std::string inputSignature(const jaras::Song &song, const std::set<ID> &regions) {
+    MemoryOutputStream out;
+    out.writeString(text(song.id)); out.writeDouble(song.bpm); out.writeInt(song.beatsPerBar); out.writeInt(song.beatUnit);
+    for (const auto &part : song.parts) if (regions.count(part.id)) {
+        out.writeString(text(part.id)); out.writeDouble(part.startTime); out.writeDouble(part.endTime);
+        out.writeString(text(part.parentRegionID.value_or("")));
+    }
+    for (const auto &track : song.tracks)
+        if (track.role.id == "click" || text(track.name).trim().equalsIgnoreCase("click")) {
+            out.writeString(text(track.id));
+            for (const auto &clip : track.clips) {
+                out.writeString(text(clip.id)); out.writeDouble(clip.startTime); out.writeDouble(clip.duration);
+                out.writeDouble(clip.sourceOffset); out.writeDouble(clip.playbackRate);
+                out.writeDouble(clip.loopStart.value_or(0)); out.writeDouble(clip.loopLength.value_or(0));
+                const auto &file = clip.audioFile ? clip.audioFile : track.audioFile;
+                out.writeString(file ? text(file->path) : String());
+                out.writeString(file ? text(file->sha256.value_or("")) : String());
+            }
+        }
+    // A manual tempo edit while analysing wins over the pending result.
+    if (song.markers) for (const auto &marker : *song.markers) if (marker.tempoBPM) {
+        out.writeString(text(marker.id)); out.writeDouble(marker.position); out.writeDouble(*marker.tempoBPM);
+        out.writeInt(marker.tempoBeats.value_or(song.beatsPerBar)); out.writeInt(marker.tempoUnit.value_or(song.beatUnit));
+        out.writeDouble(marker.tempoReferenceBPM.value_or(0)); out.writeString(text(marker.tempoTimebase.value_or("")));
+    }
+    return std::string(static_cast<const char *>(out.getData()), out.getDataSize());
 }
 inline void insert(jaras::Song &song,const jaras::Part &region,const std::vector<jaras::TimelineMarker> &detected) {
     if(!song.markers)song.markers.emplace();

@@ -14,8 +14,9 @@ static Project fixture() {
     return p;
 }
 int main() {
-    // Moving to another song carries the edit cursor to the exact target,
-    // even when the playback tick has overshoot. Arming alone cannot move it.
+    // Arming immediately previews the exact target with the editing head.
+    // Audio keeps its current position until the next section boundary, even
+    // when the destination is another song or an internal song in a family.
     for (bool drawer : {false, true}) for (bool beginning : {false, true}) {
         auto project = fixture();
         if (drawer) {
@@ -27,14 +28,105 @@ int main() {
         jump.execute({CommandKind::seek,"",5}); jump.execute({CommandKind::play});
         jump.execute({CommandKind::editSeek,"",2});
         jump.execute({CommandKind::queueSection,beginning ? "r2" : "d"});
-        jump.advance(4.75);
-        assert(near(jump.transport().editPosition,2));
-        jump.advance(0.5);
         const double destination = beginning ? 35 : 40;
+        assert(near(jump.transport().editPosition,destination));
+        assert(jump.transport().playing && near(jump.transport().position,5));
+        jump.advance(4.75);
+        assert(near(jump.transport().editPosition,destination));
+        assert(jump.transport().playing && near(jump.transport().position,9.75));
+        jump.advance(0.5);
         assert(jump.transport().playing && near(jump.transport().position,destination + 0.25));
         assert(near(jump.transport().editPosition,destination));
         jump.advance(0.5);
         assert(near(jump.transport().editPosition,destination)); // Editing head stays at the jump target.
+    }
+    // Replacing an armed destination updates only the editing head immediately.
+    // The eventual jump must use the replacement, not the abandoned target.
+    {
+        Engine replace; replace.loadProject(fixture());
+        replace.execute({CommandKind::seek,"",2}); replace.execute({CommandKind::play});
+        replace.execute({CommandKind::editSeek,"",1});
+        replace.execute({CommandKind::queueSection,"d"});
+        assert(near(replace.transport().editPosition,40) && near(replace.transport().position,2));
+        replace.advance(2);
+        replace.execute({CommandKind::queueSection,"c"});
+        assert(near(replace.transport().editPosition,20) && near(replace.transport().position,4));
+        assert(replace.transport().queuedSectionMarkerId=="c" && near(replace.transport().sectionQueueStartedAt,4));
+        replace.advance(5.75);
+        assert(replace.transport().playing && near(replace.transport().position,9.75));
+        assert(near(replace.transport().editPosition,20) && replace.transport().sectionJumpSerial==0);
+        replace.advance(.5);
+        assert(replace.transport().playing && near(replace.transport().position,20.25));
+        assert(near(replace.transport().editPosition,20) && !replace.transport().queuedSectionMarkerId);
+        assert(replace.transport().sectionJumpSerial==1);
+    }
+    // Cancel previews the next section to the right of playback. It never seeks
+    // audio: cross the former boundary without a late jump by all three routes.
+    for (int cancelMode=0; cancelMode<3; ++cancelMode) {
+        Engine cancel; cancel.loadProject(fixture());
+        cancel.execute({CommandKind::seek,"",2}); cancel.execute({CommandKind::play});
+        cancel.execute({CommandKind::queueSection,"c"});
+        assert(near(cancel.transport().editPosition,20) && near(cancel.transport().position,2));
+        cancel.advance(1);
+        cancel.execute({cancelMode==0 ? CommandKind::cancelSection :
+                        cancelMode==1 ? CommandKind::queueSection : CommandKind::escape,
+                        cancelMode==1 ? "c" : ""});
+        assert(cancel.transport().playing && !cancel.transport().queuedSectionMarkerId);
+        assert(near(cancel.transport().position,3) && near(cancel.transport().editPosition,10));
+        cancel.advance(8);
+        assert(cancel.transport().playing && near(cancel.transport().position,11));
+        assert(near(cancel.transport().editPosition,10) && cancel.transport().sectionJumpSerial==0);
+    }
+    // Ordinary and tempo cues are not section destinations. Paused audio keeps
+    // its clock and resume state when the editing head moves to the next flag.
+    for (int mode=0; mode<3; ++mode) for (bool paused : {false,true}) {
+        auto project=fixture();
+        project.songs[0].markers->push_back({"ordinary","Ordinary",4,0});
+        TimelineMarker tempo{"tempo","Tempo",6,0}; tempo.tempoBPM=120; tempo.section=true;
+        project.songs[0].markers->push_back(tempo);
+        Engine cancel; cancel.loadProject(project);
+        cancel.execute({CommandKind::seek,"",2}); cancel.execute({CommandKind::play});
+        cancel.execute({CommandKind::queueSection,"c"});
+        if(paused) cancel.execute({CommandKind::pause});
+        cancel.execute({mode==0 ? CommandKind::cancelSection : mode==1 ? CommandKind::queueSection : CommandKind::escape,
+                        mode==1 ? "c" : ""});
+        assert(near(cancel.transport().editPosition,10) && near(cancel.transport().position,2));
+        assert(cancel.transport().playing==!paused && cancel.transport().paused==paused);
+        assert(!cancel.transport().queuedSectionMarkerId && !cancel.transport().sectionQueueStartedAt);
+    }
+    // Without a later section, cancellation previews this song's end, including
+    // children inside a unified region and arrangements with no marker list.
+    for (int mode=0; mode<3; ++mode) for (bool paused : {false,true})
+    for (bool drawer : {false,true}) for (int markerList=0; markerList<3; ++markerList) {
+        auto project=fixture();
+        auto& song=project.songs[0];
+        if (drawer) {
+            song.parts.push_back({"parent","Unified",0,60});
+            song.parts[0].parentRegionID="parent";
+            song.parts[1].parentRegionID="parent";
+        }
+        if (markerList==0) {
+            auto& markers=*song.markers;
+            markers.erase(std::remove_if(markers.begin(),markers.end(),[](const auto& marker){return marker.id=="z";}),markers.end());
+        } else if (markerList==1) song.markers.reset();
+        else song.markers=std::vector<TimelineMarker>{};
+        const std::string target=markerList==0 ? "b" : "r1";
+        Engine cancel; cancel.loadProject(project);
+        cancel.execute({CommandKind::seek,"",25}); cancel.execute({CommandKind::play});
+        cancel.execute({CommandKind::queueSection,target});
+        if (paused) cancel.execute({CommandKind::pause});
+        cancel.execute({mode==0 ? CommandKind::cancelSection : mode==1 ? CommandKind::queueSection : CommandKind::escape,
+                        mode==1 ? target : ""});
+        assert(near(cancel.transport().editPosition,30) && near(cancel.transport().position,25));
+        assert(cancel.transport().playing==!paused && cancel.transport().paused==paused);
+        assert(!cancel.transport().queuedSectionMarkerId && !cancel.transport().sectionQueueStartedAt);
+        assert(cancel.transport().sectionJumpSerial==0);
+        if (!paused) cancel.execute({CommandKind::editSeek,"",17});
+        cancel.execute({CommandKind::cancelSection}); // No armed section: keep the editing head.
+        assert(near(cancel.transport().editPosition,paused ? 30 : 17) && near(cancel.transport().position,25));
+        assert(cancel.transport().playing==!paused && cancel.transport().paused==paused);
+        cancel.advance(1);
+        assert(near(cancel.transport().position,paused ? 25 : 26) && cancel.transport().sectionJumpSerial==0);
     }
     Engine e; e.loadProject(fixture());
     e.execute({CommandKind::editSeek,"",1});e.execute({CommandKind::toggleLoop});
@@ -78,14 +170,17 @@ int main() {
         assert(!cancel.transport().queuedSectionMarkerId && cancel.transport().loop.enabled);
         assert(cancel.transport().queuedRegionId == "r2" && cancel.project().regionSetlist->autoAdvance);
         cancel.execute({CommandKind::queueSection,"c"});
+        const auto loopStart=cancel.transport().loop.start, loopEnd=cancel.transport().loop.end;
         cancel.execute({CommandKind::escape,"",selection});
-        assert(cancel.transport().queuedSectionMarkerId == "c" && near(cancel.transport().sectionQueueStartedAt,2));
-        assert(!cancel.transport().loop.enabled && !cancel.transport().loop.start && !cancel.transport().loop.end);
+        assert(!cancel.transport().queuedSectionMarkerId && !cancel.transport().sectionQueueStartedAt);
+        assert(cancel.transport().loop.enabled && cancel.transport().loop.start==loopStart && cancel.transport().loop.end==loopEnd);
+        assert(cancel.transport().playing && near(cancel.transport().position,2) && near(cancel.transport().editPosition,10));
         assert(cancel.transport().queuedRegionId == "r2");
         assert(cancel.transport().queue.songId == "song");
         assert(cancel.project().regionSetlist->autoAdvance);
         cancel.execute({CommandKind::escape,"",selection});
         assert(!cancel.transport().queuedSectionMarkerId && !cancel.transport().sectionQueueStartedAt);
+        assert(!cancel.transport().loop.enabled && !cancel.transport().loop.start && !cancel.transport().loop.end);
         assert(cancel.transport().queuedRegionId == "r2" && cancel.project().regionSetlist->autoAdvance);
         assert(cancel.transport().queue.songId == "song");
         cancel.execute({CommandKind::escape,"",selection});
@@ -95,8 +190,8 @@ int main() {
         cancel.advance(9); assert(near(cancel.transport().position,11)); // No late jump or repeated loop.
         assert(!cancel.transport().queuedRegionId); // Auto cannot silently re-arm the canceled song.
     }
-    // Releasing a multiloop keeps its fader release and the armed section. Auto
-    // remains active until the song queue is explicitly reached by Escape.
+    // Cancelling the section cannot start the multiloop fader release. A second
+    // press releases it; Auto remains active until the third press clears its queue.
     {
         Engine cancel; auto project = loopProject;
         project.regionSetlist = RegionSetlist{}; project.regionSetlist->autoAdvance = true;
@@ -104,10 +199,11 @@ int main() {
         cancel.execute({CommandKind::queueSection,"a"});
         assert(cancel.transport().multiLoop && cancel.transport().loop.enabled);
         cancel.execute({CommandKind::escape});
-        assert(!cancel.transport().loop.enabled && cancel.transport().multiLoop->released);
-        assert(cancel.transport().queuedSectionMarkerId == "a" && cancel.transport().queuedRegionId == "r2");
+        assert(cancel.transport().loop.enabled && !cancel.transport().multiLoop->released);
+        assert(!cancel.transport().queuedSectionMarkerId && cancel.transport().queuedRegionId == "r2");
         assert(cancel.project().regionSetlist->autoAdvance);
         cancel.execute({CommandKind::escape});
+        assert(!cancel.transport().loop.enabled && cancel.transport().multiLoop->released);
         assert(!cancel.transport().queuedSectionMarkerId && cancel.transport().queuedRegionId == "r2");
         assert(cancel.project().regionSetlist->autoAdvance);
         cancel.execute({CommandKind::escape});

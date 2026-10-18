@@ -1,6 +1,7 @@
 #include "../../Core/Transport/Engine.hpp"
 #include "../../Core/Import/TrackTaxonomy.hpp"
 #include <iostream>
+#include <set>
 #include <limits>
 #include <stdexcept>
 using namespace jaras;
@@ -480,44 +481,72 @@ int main() {
     deletedSpecialOrder.songs[0].tracks.erase(deletedSpecialOrder.songs[0].tracks.begin() + 1);
     fixedTrackOrder.applyProjectEdit(deletedSpecialOrder);
     expect(trackIDs(fixedTrackOrder)[1] == "video-first", "deleting a special track leaves no empty prefix slot");
+    Engine completeSpecialOrder; completeSpecialOrder.loadProject(trackOrderProject);
+    const std::vector<ID> specialRoles{"timecode", "teleprompt", "teleprompt2", "chords", "generatedClick"};
+    std::set<ID> createdRoles;
+    for (auto role = specialRoles.rbegin(); role != specialRoles.rend(); ++role) {
+        completeSpecialOrder.addTrack(*role, "Ignored", {*role});
+        createdRoles.insert(*role);
+        std::vector<ID> expected;
+        for (const auto& kind : specialRoles) if (createdRoles.count(kind)) expected.push_back(kind);
+        expected.insert(expected.end(), {"track", "second-normal"});
+        expect(trackIDs(completeSpecialOrder) == expected, "missing special tracks enter Timecode, TP1, TP2, Chords, Click order without gaps");
+    }
+    const auto completeOrder = trackIDs(completeSpecialOrder);
+    for (const auto& role : specialRoles) {
+        completeSpecialOrder.reorderTrack(role, "second-normal");
+        expect(trackIDs(completeSpecialOrder) == completeOrder, "every special track stays before normal tracks when reordered");
+    }
+    auto withoutTP1 = completeSpecialOrder.project();
+    withoutTP1.songs[0].tracks.erase(withoutTP1.songs[0].tracks.begin() + 1);
+    completeSpecialOrder.applyProjectEdit(withoutTP1);
+    expect(trackIDs(completeSpecialOrder) == std::vector<ID>({"timecode", "teleprompt2", "chords", "generatedClick", "track", "second-normal"}), "deleting TP1 leaves no empty slot before TP2");
+    completeSpecialOrder.addTrack("teleprompt", "Ignored", {"teleprompt"});
+    expect(trackIDs(completeSpecialOrder) == completeOrder, "recreating TP1 restores its canonical position");
+    Engine reopenedSpecialOrder; reopenedSpecialOrder.loadProject(completeSpecialOrder.project());
+    expect(trackIDs(reopenedSpecialOrder) == completeOrder, "special track order survives cross-platform project reopening");
     Engine textTracks; textTracks.loadProject(editable);
     textTracks.addTrack("chords-one", "Ignored", {"chords"});
     textTracks.addTrack("lyrics", "Ignored", {"teleprompt"});
     textTracks.addTrack("chords-two", "Ignored", {"chords"});
     textTracks.addTrack("text-video", "Ignored", {"video"});
-    expect(trackIDs(textTracks) == std::vector<ID>({"chords-one", "chords-two", "lyrics", "text-video", "track"}), "Chords tracks precede teleprompter and video and allow multiple instances");
+    expect(trackIDs(textTracks) == std::vector<ID>({"lyrics", "chords-one", "chords-two", "text-video", "track"}), "Chords tracks follow teleprompter, precede legacy video and retain duplicate order");
+    const auto textTrack = [&](const ID& id) -> const Track& {
+        const auto& tracks = textTracks.project().songs[0].tracks;
+        return *std::find_if(tracks.begin(), tracks.end(), [&](const auto& track) { return track.id == id; });
+    };
     AudioClip textItem{"text-item", {}, "Chords", 2, 10}; textItem.text = u8"C♯m / G♭ — Refrão 🎵";
     textTracks.addRecordedClip("chords-one", textItem);
     textTracks.execute({CommandKind::play}); textTracks.advance(0.5);
     textTracks.execute({CommandKind::subSeek, "", 4}); textTracks.execute({CommandKind::subPlay});
     std::string maximumEmoji; for (int n = 0; n < 10000; ++n) maximumEmoji += u8"🎤";
     textTracks.setClipText("text-item", maximumEmoji);
-    expect(textTracks.project().songs[0].tracks[0].clips[0].text == maximumEmoji, "Chords text permits long Unicode content without a character limit");
+    expect(textTrack("chords-one").clips[0].text == maximumEmoji, "Chords text permits long Unicode content without a character limit");
     for (const auto& invalidText : {std::string("\xc0\xaf"), std::string("\xed\xa0\x80"), std::string("\xf4\x90\x80\x80")}) {
         bool rejectedText = false; try { textTracks.setClipText("text-item", invalidText); } catch (...) { rejectedText = true; }
-        expect(rejectedText && textTracks.project().songs[0].tracks[0].clips[0].text == maximumEmoji, "malformed Unicode text edits are atomic");
+        expect(rejectedText && textTrack("chords-one").clips[0].text == maximumEmoji, "malformed Unicode text edits are atomic");
     }
     for (const auto* id : {"missing", "clip"}) {
         bool rejectedText = false; try { textTracks.setClipText(id, "invalid"); } catch (...) { rejectedText = true; }
-        expect(rejectedText && textTracks.project().songs[0].tracks[0].clips[0].text == maximumEmoji, "text setter rejects unknown or audio items atomically");
+        expect(rejectedText && textTrack("chords-one").clips[0].text == maximumEmoji, "text setter rejects unknown or audio items atomically");
     }
     bool crossedTextTrack = false; try { textTracks.moveClip("text-item", 3, "chords-two"); } catch (...) { crossedTextTrack = true; }
-    expect(crossedTextTrack && textTracks.project().songs[0].tracks[0].clips[0].text == maximumEmoji && textTracks.project().songs[0].tracks[1].clips.empty(), "text item stays on its own Chords track even when destination kind matches");
+    expect(crossedTextTrack && textTrack("chords-one").clips[0].text == maximumEmoji && textTrack("chords-two").clips.empty(), "text item stays on its own Chords track even when destination kind matches");
     textTracks.moveClip("text-item", 3, "chords-one");
     bool crossedTextKind = false; try { textTracks.moveClip("text-item", 4, "lyrics"); } catch (...) { crossedTextKind = true; }
-    expect(crossedTextKind && textTracks.project().songs[0].tracks[0].clips[0].startTime == 3, "text item cannot cross into a different special kind");
+    expect(crossedTextKind && textTrack("chords-one").clips[0].startTime == 3, "text item cannot cross into a different special kind");
     bool textMediaRejected = false; Track textMedia{"chords-one", "Chords", {"chords"}}; textMedia.clips.push_back({"invalid-media", {}, "Audio", 0, 1});
     try { textTracks.insertAudioTracks("one", {textMedia}); } catch (...) { textMediaRejected = true; }
-    expect(textMediaRejected && textTracks.project().songs[0].tracks[0].clips.size() == 1, "media import cannot populate a Chords text track");
+    expect(textMediaRejected && textTrack("chords-one").clips.size() == 1, "media import cannot populate a Chords text track");
     auto textAudio = textItem; textAudio.id = "text-audio"; textAudio.audioFile = AudioFile{"Steams/invalid.wav", {}};
     textMediaRejected = false; try { textTracks.addRecordedClip("lyrics", textAudio); } catch (...) { textMediaRejected = true; }
-    expect(textMediaRejected && textTracks.project().songs[0].tracks[2].clips.empty(), "text insertion rejects audio metadata before committing");
+    expect(textMediaRejected && textTrack("lyrics").clips.empty(), "text insertion rejects audio metadata before committing");
     std::string lyricsMaximum; for (int n=0; n<10000; ++n) lyricsMaximum += u8"🎵";
     AudioClip lyricsItem{"lyrics-item", {}, "Teleprompter",2,10}; lyricsItem.text=lyricsMaximum;
     textTracks.addRecordedClip("lyrics",lyricsItem);
-    expect(textTracks.project().songs[0].tracks[2].clips[0].text==lyricsMaximum,"Teleprompter permits long Unicode content without a character limit");
+    expect(textTrack("lyrics").clips[0].text==lyricsMaximum,"Teleprompter permits long Unicode content without a character limit");
     textTracks.setClipText("lyrics-item", lyricsMaximum + "A");
-    expect(textTracks.project().songs[0].tracks[2].clips[0].text == lyricsMaximum + "A", "Teleprompter edits retain the entire long text");
+    expect(textTrack("lyrics").clips[0].text == lyricsMaximum + "A", "Teleprompter edits retain the entire long text");
     for (const auto kind : {CommandKind::mute, CommandKind::solo, CommandKind::volume, CommandKind::pan}) {
         bool rejectedControl = false; try { textTracks.execute({kind, "chords-one", 0.5}); } catch (...) { rejectedControl = true; }
         expect(rejectedControl, "audio controls are unavailable on Chords tracks");
@@ -527,11 +556,11 @@ int main() {
     {
         auto repeatedText = textTracks.project();
         repeatedText.songs[0].duration = std::max(repeatedText.songs[0].duration, 26.0);
-        auto& repeated = repeatedText.songs[0].tracks[2].clips[0];
+        auto& repeated = repeatedText.songs[0].tracks[0].clips[0];
         repeated.startTime = 0; repeated.duration = 26;
         repeated.loopStart = 0; repeated.loopLength = 10; repeated.sourceOffset = 8;
         Engine textRepeat; textRepeat.loadProject(repeatedText);
-        expect(textRepeat.project().songs[0].tracks[2].clips[0].loopLength == 10 && textRepeat.project().songs[0].tracks[2].clips[0].sourceOffset == 8,
+        expect(textRepeat.project().songs[0].tracks[0].clips[0].loopLength == 10 && textRepeat.project().songs[0].tracks[0].clips[0].sourceOffset == 8,
                "stretched lyrics retain visual repeat timing through core project load");
         repeated.audioFile = AudioFile{"Stems/not-text.wav", {}};
         bool rejected = false; try { validate(repeatedText); } catch (...) { rejected = true; }

@@ -370,7 +370,11 @@ class Presentation final {
         const auto found = commands.find(a);
         if (found == commands.end())
             return false;
-        session.command(found->second, target, c.value);
+        // Region taps use the same selection path as the desktop: while playing
+        // they arm the next song and must not seek the currently running audio.
+        const auto kind = a == "selectRegion" && session.transport().playing
+                              ? jaras::CommandKind::queueRegion : found->second;
+        session.command(kind, target, c.value);
         return true;
     }
     Bytes image(const Command &c) {

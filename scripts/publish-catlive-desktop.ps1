@@ -15,9 +15,9 @@ if(-not (Test-Path -LiteralPath $githubCLI) -and (Test-Path -LiteralPath $github
 if(-not (Test-Path -LiteralPath $githubCLI)){throw 'Instale GitHub CLI (gh) e entre com gh auth login antes de publicar.'}
 $branch=(& git branch --show-current).Trim()
 if($LASTEXITCODE -or -not $branch){throw 'Selecione uma branch antes de publicar.'}
-if(-not $Version){$Version=Read-Host 'Versão do CatLive [1.01]';if(-not $Version){$Version='1.01'}}
+if(-not $Version){$Version=Read-Host 'Versão do CatLive [1.02]';if(-not $Version){$Version='1.02'}}
 $Version=$Version -replace '^v',''
-if($Version -notmatch '^[0-9]+\.[0-9]{2}$'){throw 'Use a versão X.XX, por exemplo 1.01.'}
+if($Version -notmatch '^[0-9]+\.[0-9]{2}$'){throw 'Use a versão X.XX, por exemplo 1.02.'}
 $repository='JBdevy/hookupdatecenter'
 $workflow='catlive-macos-pkg.yml'
 $files=@('JarasLive','.github/workflows/catlive-macos-pkg.yml','build catlive.bat','build catlive windows.bat','build catlive macos.command','scripts/publish-catlive-desktop.ps1','scripts/test-catlive-desktop-release.cjs')
@@ -36,7 +36,7 @@ if(-not $Message){$Message=Read-Host 'Mensagem do commit'}
 if([string]::IsNullOrWhiteSpace($Message)){throw 'Informe uma mensagem para o commit.'}
 & git add -A -- @files
 if($LASTEXITCODE){throw 'Falha ao preparar as alterações.'}
-& git diff --cached --check -- @files
+& git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol diff --cached --check -- @files
 if($LASTEXITCODE){throw 'Corrija os erros de formatação indicados pelo Git.'}
 & git diff --cached --quiet -- @files
 if($LASTEXITCODE -eq 1){

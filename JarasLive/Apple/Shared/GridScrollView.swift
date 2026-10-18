@@ -271,6 +271,8 @@ struct NativeWorkspaceSplit<Leading: View, Trailing: View>: NSViewRepresentable 
     let restoreWidth: CGFloat
     let minimum: CGFloat
     let scrollController: SidebarScrollController
+    var sidebarLeading = false
+    var sidebarDetached = false
     var contentIdentity: AnyHashable? = nil
     let onToggle: () -> Void
     let onEnd: (CGFloat) -> Void
@@ -300,6 +302,7 @@ struct NativeWorkspaceSplit<Leading: View, Trailing: View>: NSViewRepresentable 
         let view = WorkspaceSplitView(actions: actions, leading: hosted(leading(), actions: actions),
                                       trailing: hosted(trailing(), actions: actions))
         view.configure(width: width, restoreWidth: restoreWidth, minimum: minimum,
+                       sidebarLeading: sidebarLeading, sidebarDetached: sidebarDetached,
                        scrollController: scrollController, onToggle: onToggle, onEnd: onEnd)
         return view
     }
@@ -311,6 +314,7 @@ struct NativeWorkspaceSplit<Leading: View, Trailing: View>: NSViewRepresentable 
         view.updateContent(leading: hosted(leading(), actions: view.actions),
                            trailing: hosted(trailing(), actions: view.actions), identity: identity)
         view.configure(width: width, restoreWidth: restoreWidth, minimum: minimum,
+                       sidebarLeading: sidebarLeading, sidebarDetached: sidebarDetached,
                        scrollController: scrollController, onToggle: onToggle, onEnd: onEnd)
     }
     @available(macOS 13, *)
@@ -349,6 +353,8 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
     private var savedWidth: CGFloat = 0
     private var restoreWidth: CGFloat = 277
     private var minimum: CGFloat = 277
+    private var sidebarLeading = false
+    private var sidebarDetached = false
     private var liveWidth: CGFloat?
     private var pendingSavedWidth: CGFloat?
     private var resizing = false
@@ -409,12 +415,18 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         self.leading.rootView = leading; self.trailing.rootView = trailing
     }
     func configure(width: CGFloat, restoreWidth: CGFloat, minimum: CGFloat,
+                   sidebarLeading: Bool, sidebarDetached: Bool,
                    scrollController: SidebarScrollController, onToggle: @escaping () -> Void,
                    onEnd: @escaping (CGFloat) -> Void) {
         // An unrelated parent update during tracking still carries the last
         // saved width. Only acknowledge the final value or a newer external edit.
         if let pendingSavedWidth, width == pendingSavedWidth || width != savedWidth { self.pendingSavedWidth = nil }
         savedWidth = width; self.restoreWidth = restoreWidth; self.minimum = minimum
+        if self.sidebarLeading != sidebarLeading || self.sidebarDetached != sidebarDetached {
+            resizing = false; liveWidth = nil; pendingSavedWidth = nil
+        }
+        self.sidebarLeading = sidebarLeading; self.sidebarDetached = sidebarDetached
+        divider.direction = sidebarLeading ? 1 : -1
         self.onEnd = onEnd
         divider.scrollController = scrollController; divider.onToggle = onToggle
         applyFrames(layoutHosts: false)
@@ -444,13 +456,19 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         let available = bounds.size
         let maximum = max(0, min(486.5, available.width - 420))
         func bounded(_ width: CGFloat) -> CGFloat { width <= 0 ? 0 : min(maximum, max(minimum, width)) }
-        let visibleWidth = bounded((resizing ? liveWidth : nil) ?? pendingSavedWidth ?? savedWidth)
-        let leftWidth = max(0, available.width - visibleWidth - dividerWidth)
+        let visibleWidth = sidebarDetached ? 0 : bounded((resizing ? liveWidth : nil) ?? pendingSavedWidth ?? savedWidth)
+        let barWidth = sidebarDetached ? 0 : dividerWidth
+        let primaryWidth = max(0, available.width - visibleWidth - barWidth)
         let mountedWidth = visibleWidth > 0 ? visibleWidth : bounded(max(minimum, restoreWidth))
         divider.minimum = minimum; divider.maximum = maximum; divider.columnWidth = visibleWidth
-        let leftFrame = CGRect(x: 0, y: 0, width: leftWidth, height: available.height)
-        let barFrame = CGRect(x: leftWidth, y: 0, width: dividerWidth, height: available.height)
-        let rightFrame = CGRect(x: leftWidth + dividerWidth, y: 0, width: mountedWidth, height: available.height)
+        // The hosts retain their identities when changing sides. Only native
+        // sibling frames move, so Setlist selection and timeline focus survive.
+        let leftFrame = CGRect(x: sidebarLeading ? visibleWidth + barWidth : 0, y: 0,
+                               width: primaryWidth, height: available.height)
+        let barFrame = CGRect(x: sidebarLeading ? visibleWidth : primaryWidth, y: 0,
+                              width: barWidth, height: available.height)
+        let rightFrame = CGRect(x: sidebarLeading ? 0 : primaryWidth + barWidth, y: 0,
+                                width: mountedWidth, height: available.height)
         if leading.frame != leftFrame {
             leading.layoutProfile?.sizeChanged(leading, from: leading.frame.size, to: leftFrame.size)
             leading.frame = leftFrame
@@ -463,6 +481,7 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
             trailing.needsLayout = true
         }
         trailing.isHidden = visibleWidth <= 0
+        divider.isHidden = sidebarDetached
         if layoutHosts {
             leading.layoutSubtreeIfNeeded()
             if !trailing.isHidden { trailing.layoutSubtreeIfNeeded() }

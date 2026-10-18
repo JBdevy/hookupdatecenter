@@ -45,9 +45,8 @@ class TransportPresentationQueues {
         if (kind == Kind::escape) {
             // Match the core's one-action-per-Escape priority. Cancelling a
             // loop must not hide a still-pending section or region jump.
-            if (before.loop.enabled) return;
             if (before.queuedSectionMarkerId) section.clear();
-            else { region.clear(); song.clear(); }
+            else if (!before.loop.enabled) { region.clear(); song.clear(); }
             return;
         }
         if (kind == Kind::queueSection || kind == Kind::cancelSection) section.clear();

@@ -37,7 +37,7 @@
   "PISTAS": "TRACKS",
   "Criar pista": "Create track",
   "Nome da pista": "Track name",
-  "Tipo": "Role",
+  "Tipo": "Type",
   "Cancelar": "Cancel",
   "Criar": "Create",
   "Agulha Sub Play": "Sub Play cursor",
@@ -920,7 +920,6 @@
   "Section markers can only be created inside a song.": "Section markers can only be created inside a song.",
   "Playing / Selected": "Playing / Selected",
   "Queued": "Queued",
-  "Section manager": "Section manager",
   "Now playing": "Playing",
   "Selected song": "Selected",
   "Next song label": "Next",
@@ -1230,5 +1229,13 @@
   "Parts show/hide": "Parts show/hide",
   "Loading waveforms…": "Loading waveforms…",
   "%ld REAPER items before the project start were ignored.": "%ld REAPER items before the project start were ignored.",
-  "Interface scale": "Interface scale"
+  "Interface scale": "Interface scale",
+  "Na mesma pista, em sequência": "Same track, in sequence",
+  "Na mesma pista, iniciando juntos": "Same track, same start time",
+  "Empresa": "Company",
+  "Cancelar escaneamento": "Cancel scan",
+  "Escaneamento cancelado.": "Scan cancelled.",
+  "Destacar Setlist": "Undock Setlist",
+  "Setlist à direita": "Setlist on the right",
+  "Setlist à esquerda": "Setlist on the left"
 }

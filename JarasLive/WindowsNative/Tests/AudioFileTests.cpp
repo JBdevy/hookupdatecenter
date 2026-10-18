@@ -211,6 +211,11 @@ void fixtureChecks(const TemporaryDirectory& temporary, const std::string& name,
     require(info.format == format && info.channels == fixture.channels && info.sampleRate == fixture.rate &&
             info.bitsPerSample == fixture.bits && info.frameCount == fixture.frames &&
             info.encodedBytes == fixture.bytes.size(), "Wrong source audio metadata.");
+    const auto metadata = AudioFile::inspect(file);
+    require(metadata.format == info.format && metadata.channels == info.channels &&
+            metadata.sampleRate == info.sampleRate && metadata.frameCount == info.frameCount &&
+            metadata.bitsPerSample == info.bitsPerSample && metadata.encodedBytes == info.encodedBytes,
+            "Lightweight inspection changed source audio metadata.");
     std::vector<float> actual(fixture.expected.size());
     require(reader.readInterleaved(0, actual.data(), fixture.frames) == fixture.frames, "Short full PCM read.");
     compare(actual.data(), fixture.expected.data(), actual.size());
@@ -317,13 +322,22 @@ int main(int argc, char** argv) {
                 "A valid prefix could not be read after a rejected block.");
         compare(output.data(), fixture.expected.data(), 32 * fixture.channels);
     });
-    if (argc > 1) test("real MP3 random seeking equals continuous decode including priming and EOF", [&] {
-        const auto file = std::filesystem::u8path(argv[1]);
+    for (int argument = 1; argument < argc; ++argument) test("real MP3 random seeking equals continuous decode including priming and EOF", [&] {
+        const auto file = std::filesystem::u8path(argv[argument]);
+        const auto started = std::chrono::steady_clock::now();
+        const auto metadata = AudioFile::inspect(file);
+        const auto inspected = std::chrono::steady_clock::now();
         AudioFile sequential(file), random(file);
         require(sequential.info().format == AudioFileFormat::mp3 && sequential.info().bitsPerSample == 0,
                 "MP3 metadata reported an invented PCM bit depth.");
         const auto frames = sequential.info().frameCount;
         const auto channels = sequential.info().channels;
+        require(metadata.format == AudioFileFormat::mp3 && metadata.bitsPerSample == 0 &&
+                metadata.sampleRate == sequential.info().sampleRate && metadata.channels == channels &&
+                metadata.frameCount == frames, "MP3 inspection changed gapless sample count or format.");
+        std::cout << "MP3 metadata " << std::chrono::duration<double, std::milli>(inspected - started).count()
+                  << " ms; two exact seek readers " << std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - inspected).count() << " ms\n";
         require(frames <= 64000000 / channels, "MP3 test fixture is too large for bounded baseline memory.");
         // The oracle starts at the upstream decoder's original position and
         // never seeks or creates checkpoints. This detects a common offset in
@@ -351,9 +365,16 @@ int main(int argc, char** argv) {
         require(std::any_of(baseline.begin(), baseline.end(), [](float value) { return std::abs(value) > .001f; }),
                 "MP3 fixture is not audible.");
         seekChecks(random, baseline, 0.f);
+        const auto tailFrames = static_cast<std::size_t>(std::min<std::uint64_t>(31, frames));
+        std::vector<float> tail(1024 * channels, 1.f);
+        require(random.readInterleaved(frames - tailFrames, tail.data(), 1024) == tailFrames,
+                "MP3 tail changed its gapless EOF after progressive seeking.");
+        compare(tail.data(), baseline.data() + (frames - tailFrames) * channels, tailFrames * channels, 0.f);
+        require(std::all_of(tail.begin() + tailFrames * channels, tail.end(), [](float value) { return value == 0.f; }),
+                "MP3 samples after gapless EOF were not cleared.");
         std::cout << "MP3 " << frames << " frames, " << sequential.info().sampleRate << " Hz, " << channels << " channels\n";
     });
-    else { ++skipped; std::cout << "SKIP real MP3: pass an existing local .mp3 as the first argument.\n"; }
+    if (argc <= 1) { ++skipped; std::cout << "SKIP real MP3: pass existing local .mp3 fixtures as arguments.\n"; }
     std::cout << passed << " passed, " << failed << " failed, " << skipped << " skipped\n";
     return failed == 0 ? 0 : 1;
 }

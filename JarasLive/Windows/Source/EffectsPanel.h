@@ -1,6 +1,7 @@
 #include "NativePluginShortcuts.h"
 #pragma once
 #include "Session.h"
+#include "ExternalEffectEditor.h"
 #include "Localization.h"
 #include "EffectInsertPanel.h"
 #include "FXPresets.h"
@@ -391,23 +392,6 @@ class EQGraph final : public Component {
 
 };
 } // namespace fxui
-class ExternalEffectWindow final : public DocumentWindow {
-    std::shared_ptr<native::vst3::Processor> processor;
-    std::unique_ptr<native::vst3::Editor> editor;
-    std::unique_ptr<NativePluginShortcuts> shortcuts;
-public:
-    ExternalEffectWindow(String title,std::shared_ptr<native::vst3::Processor> plugin,
-                         std::function<bool(const KeyPress &)> key, std::function<void(bool)> keyState)
-        :DocumentWindow(title,theme::panel,DocumentWindow::closeButton),processor(std::move(plugin)) {
-        setUsingNativeTitleBar(true);setContentOwned(new Component(),true);centreWithSize(800,600);setVisible(true);
-        shortcuts=std::make_unique<NativePluginShortcuts>(static_cast<HWND>(getPeer()->getNativeHandle()),std::move(key),std::move(keyState));
-        editor=processor->openEditor(getPeer()->getNativeHandle(),[this](int w,int h){setContentComponentSize(w,h);});
-        setContentComponentSize(editor->width(),editor->height());toFront(true);
-    }
-    ~ExternalEffectWindow() override {editor.reset();}
-    void closeButtonPressed() override {setVisible(false);}
-    bool uses(const std::shared_ptr<native::vst3::Processor> &plugin) const{return processor==plugin;}
-};
 class EffectsPanel final : public Component, private ListBoxModel, private Timer {
   public:
     std::function<bool(const KeyPress &)> globalKey;
@@ -431,7 +415,6 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         remove.setButtonText("Excluir");
         removeEffect.setButtonText("Remover efeito");
         add.setComponentID("addEffect");
-        addAndMakeVisible(openExternal);openExternal.onClick=[this]{openExternalEditor();};
         remove.setComponentID("removeEffect");
         add.onClick = [this] { addMenu(); };
         remove.onClick = [this] { erase(); };
@@ -491,7 +474,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         g.setColour(Colour(0xff202020));
         g.fillRect(0, getHeight() - 40, 190, 40);
         auto r = content();
-        if(kind()=="CatStemSeparation 5")return;
+        if(kind()=="CatStemSeparation 5"||kind()=="External")return;
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(14));
         if (kind().isEmpty()) {
@@ -532,7 +515,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         rackY = headerY + 118;
         removeEffect.setBounds(r.getRight() - 100, headerY + 42, 100, 22);
         enabled.setBounds(eq ? r.getX() : r.getCentreX() - 55, headerY + 76, 110, 24);
-        openExternal.setBounds(r.getX()+150,rackY+60,std::max(180,r.getWidth()-180),30);
+        if(externalEditor)externalEditor->setBounds(190,40,std::max(1,getWidth()-190),std::max(1,getHeight()-40));
         if(stemEditor)stemEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
         graph.setBounds(r.getX(), headerY + 102, r.getWidth(),
                         std::max(40, getHeight() - headerY - 141));
@@ -558,17 +541,18 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     uint64 loadedRevision = ~uint64(0);
     ListBox chain;
     TextButton add, remove, removeEffect, savePreset, defaultPreset;
-    TextButton openExternal{"Abrir interface do plugin"};
-    std::unique_ptr<ExternalEffectWindow> externalWindow;
-    String externalWindowKey;
+    std::unique_ptr<ExternalEffectEditor> externalEditor;
+    String externalEditorKey;
     void openExternalEditor() {
-        try {
-            auto plugin=session.audio.externalEffect(track,key());
-            if(!plugin)throw std::runtime_error("O processador VST3 não está disponível.");
-            if(externalWindow&&externalWindow->uses(plugin)){externalWindow->setVisible(true);externalWindow->toFront(true);return;}
-            externalWindow.reset();externalWindowKey=key();
-            externalWindow=std::make_unique<ExternalEffectWindow>(str(current(),"name"),std::move(plugin),globalKey,globalKeyState);
-        }catch(const std::exception &e){error(String::fromUTF8(e.what()));}
+        if(kind()!="External")return;
+        auto plugin=session.audio.externalEffect(track,key());
+        if(!plugin)return;
+        if(externalEditor && externalEditorKey==key() && externalEditor->uses(plugin))return;
+        externalEditor.reset();externalEditorKey=key();
+        externalEditor=std::make_unique<ExternalEffectEditor>(std::move(plugin),
+            [this](const KeyPress &press){return globalKey && globalKey(press);},
+            [this](bool down){if(globalKeyState)globalKeyState(down);});
+        addAndMakeVisible(*externalEditor);resized();
     }
     ComboBox presets;
     Array<var> presetEntries;
@@ -678,10 +662,10 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         knobs.clear();
         refreshPresets();
         const auto k = kind();
-        openExternal.setVisible(k=="External");
+        if(k=="External")openExternalEditor();else externalEditor.reset();
         const bool available = k.isNotEmpty() && fxui::enabledKey(k).isNotEmpty();
-        enabled.setVisible(available&&k!="CatStemSeparation 5");
-        removeEffect.setVisible(k.isNotEmpty());
+        enabled.setVisible(available&&k!="CatStemSeparation 5"&&k!="External");
+        removeEffect.setVisible(k.isNotEmpty()&&k!="External");
         remove.setEnabled(k.isNotEmpty());
         for (int i = 0; i < rooms.size(); ++i) {
             rooms[i]->setVisible(k == "Reverb");
@@ -797,7 +781,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             [safe] {
                 if (safe && safe->insertWindow)
                     safe->insertWindow->setVisible(false);
-            }, !item && insertionTargets.size() <= 1);
+            }, !item && !track.empty() && insertionTargets.size() <= 1, item || !track.empty());
         panel->setSize(460, 214);
         insertWindow->setContentOwned(panel, true);
         panel->updateLayout();
@@ -808,6 +792,10 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     bool insert(const String &kind, const String &instrument) {
         try {
             if (session.busy) return false;
+            if (!item && track.empty() &&
+                (kind == "Instruments" || kind == "CatStemSeparation 5" ||
+                 (kind == "External" && str(JSON::parse(instrument), "category").containsIgnoreCase("Instrument"))))
+                return false;
             if(kind=="CatStemSeparation 5") {
                 if(insertionTargets.size()>1)throw std::runtime_error("Selecione uma pista para inserir CatStemSeparation 5.");
             }
@@ -870,7 +858,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         auto plugins=list(get(settings,"externalPlugins"));
         for(int i=plugins.size();--i>=0;)if("External:"+str(plugins[i],"id")==removed)plugins.remove(i);
         put(settings,"externalPlugins",plugins);
-        if(removed==externalWindowKey)externalWindow.reset();
+        if(removed==externalEditorKey)externalEditor.reset();
         auto instances = list(get(settings, "instances"));
         for (int i = instances.size(); --i >= 0;)
             if ("Native:" + str(instances[i], "id") == removed ||
@@ -970,7 +958,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         } catch (const std::exception &e) { error(String::fromUTF8(e.what())); }
     }
     void timerCallback() override {
-        if(externalWindow&&!externalWindow->uses(session.audio.externalEffect(track,externalWindowKey)))externalWindow.reset();
+        if(externalEditor&&!externalEditor->uses(session.audio.externalEffect(track,externalEditorKey))) {externalEditor.reset();openExternalEditor();}
         for(auto plugin:list(get(settings,"externalPlugins")))if(auto processor=session.audio.externalEffect(track,"External:"+str(plugin,"id")))
             if(processor->consumeEdited())session.dirty=true;
         if (loadedRevision != session.revision) {

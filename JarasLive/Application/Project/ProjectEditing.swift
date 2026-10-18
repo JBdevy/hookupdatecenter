@@ -5,6 +5,16 @@ public enum GridDeleteTarget: Equatable {
     public init(items: Set<UUID>, tracks: Set<UUID>) {
         self = !items.isEmpty ? .items(items) : !tracks.isEmpty ? .tracks(tracks) : .none
     }
+    public init(items: Set<UUID>, tracks: Set<UUID>, song: Song, visibility: TrackVisibilityState) {
+        let gridTracks = visibility.visibleTracks(in: song.tracks, area: .trackMixer)
+        let mixerTracks = visibility.visibleTracks(in: song.tracks, area: .barMixer)
+            .filter { $0.kind == .standard || $0.kind == .click }
+        // Both mixers share the track selection. A track selected in the bottom
+        // mixer remains the delete target even when its grid row is hidden.
+        let selectable = Set(gridTracks.map(\.id)).union(mixerTracks.map(\.id))
+        self.init(items: items.intersection(gridTracks.flatMap(\.clips).map(\.id)),
+                  tracks: tracks.intersection(selectable))
+    }
 }
 
 public enum TimelineBulkDeletion: String, CaseIterable, Identifiable {
@@ -329,7 +339,7 @@ public extension Project {
     }
     /// Special tracks keep a stable prefix; normal tracks and their groups retain their order.
     mutating func orderSpecialTracks() {
-        let order: [TrackKind] = [.timecode, .click, .chords, .teleprompt, .teleprompt2, .video, .standard]
+        let order: [TrackKind] = [.timecode, .teleprompt, .teleprompt2, .chords, .click, .video, .standard]
         for song in songs.indices {
             let tracks = songs[song].tracks
             let ranks = tracks.map { order.firstIndex(of: $0.kind)! }

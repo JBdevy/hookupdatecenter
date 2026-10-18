@@ -582,7 +582,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     var editMIDI: ((UUID) -> Void)?
     var createMIDI: ((CGPoint, CGFloat?) -> Void)?
     private var midiStart: CGPoint?
-    private var midiContextPoint: CGPoint?
     var timelineOrigin = CGPoint.zero
     var headerHeight: CGFloat = 0 { didSet {
         if headerHeight != oldValue { updateCursorCoverage() }
@@ -1166,12 +1165,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 NSMenu.popUpContextMenu(menu, with: event, for: self)
             } else {
                 if !additive { selected.removeAll(); selectionChanged?([]) }
-                if createMIDI != nil {
-                    midiContextPoint = anchor
-                    let menu = NSMenu()
-                    let entry = NSMenuItem(title: "Criar item MIDI", action: #selector(createContextMIDI), keyEquivalent: "")
-                    entry.target = self; menu.addItem(entry); NSMenu.popUpContextMenu(menu, with: event, for: self)
-                }
             }
         }
         self.anchor = nil; selectionRect = nil; needsDisplay = true
@@ -1228,7 +1221,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         menu.autoenablesItems = false
         return menu
     }
-    @objc private func createContextMIDI() { if let point = midiContextPoint { createMIDI?(point, nil) } }
     @objc private func editContextMIDI() { if let contextItem { editMIDI?(contextItem) } }
     @objc private func openContextFX() { if let contextItem { fx?(contextItem, false) } }
     private var selectedMIDIItems: [GridSelectionItem] {

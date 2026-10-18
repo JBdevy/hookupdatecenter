@@ -15,7 +15,7 @@ import pathlib,sys
 catalog=pathlib.Path('Apple/Shared/PluginCatalog.swift').read_text()
 model=pathlib.Path('Application/Project/NativeFXSettings.swift').read_text()
 importer=pathlib.Path('Application/Project/ReaperProjectImporter.swift').read_text()
-parts=['import Foundation\n', 'enum ProjectError: Error { case invalid(String) }\n']
+parts=['import Foundation\nimport CryptoKit\n', 'enum ProjectError: Error { case invalid(String) }\n']
 parts.append(model[model.index('public struct ExternalPlugin:'):model.index('public struct NativeFXInstance:')])
 parts.append(catalog[catalog.index('struct RecognizedPlugin:'):catalog.index('@MainActor final class PluginCatalog:')])
 parts.append('enum ReaperProjectImporter {\n'+importer[importer.index('    public struct VST3Request:'):importer.index('    private struct ImportedFX {')]+'}\n')

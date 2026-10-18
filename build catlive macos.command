@@ -28,8 +28,8 @@ BRANCH="$(git branch --show-current)"
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
-  read -r -p 'Versão do CatLive [1.01]: ' VERSION
-  VERSION="${VERSION:-1.01}"
+  read -r -p 'Versão do CatLive [1.02]: ' VERSION
+  VERSION="${VERSION:-1.02}"
 fi
 VERSION="${VERSION#v}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]{2}$ ]] || { echo 'Use a versão no formato X.XX (ex.: 1.00).' >&2; exit 1; }
@@ -39,7 +39,9 @@ echo 'Alterações do CatLive que serão enviadas:'
 git status --short -- "${FILES[@]}"
 
 git add -A -- "${FILES[@]}"
-git diff --cached --check -- "${FILES[@]}"
+# Existing Core sources use CRLF. Check real trailing spaces without treating
+# the preserved carriage return at the end of each line as whitespace damage.
+git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol diff --cached --check -- "${FILES[@]}"
 if ! git diff --cached --quiet -- "${FILES[@]}"; then
   MESSAGE="${2:-}"
   if [[ -z "$MESSAGE" ]]; then

@@ -1,6 +1,77 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import Combine
+#if os(macOS)
+/// A single detached host owns the Setlist and its optional Parts sidebar.
+/// Dock placement remains in MainView so closing this window restores that side.
+@MainActor final class DetachedSetlistWindow: NSObject, ObservableObject, NSWindowDelegate {
+    @Published private(set) var isDetached = false
+    @Published private(set) var isVisible = false
+    private(set) var window: NSWindow?
+    private var host: NSHostingView<AnyView>?
+    private var onDock: () -> Void = {}
+    private var partsVisible = false
+
+    func open<Content: View>(onDock: @escaping () -> Void = {}, @ViewBuilder content: () -> Content) {
+        self.onDock = onDock
+        if let window {
+            update(content: content)
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil); isVisible = true
+            return
+        }
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        panel.title = "CatLive · Setlist"
+        panel.minSize = NSSize(width: 320, height: 300)
+        panel.isReleasedWhenClosed = false
+        panel.delegate = self
+        let view = NSHostingView(rootView: AnyView(content().interfaceScaled()))
+        if #available(macOS 13, *) { view.sizingOptions = [] }
+        panel.contentView = view
+        InterfaceScaling.shared.register(panel)
+        panel.setFrameAutosaveName("CatLiveDetachedSetlist")
+        if !panel.setFrameUsingName("CatLiveDetachedSetlist") { panel.center() }
+        host = view; window = panel
+        setPartsVisible(partsVisible)
+        isDetached = true; isVisible = true
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    func update<Content: View>(@ViewBuilder content: () -> Content) {
+        host?.rootView = AnyView(content().interfaceScaled())
+    }
+    func setPartsVisible(_ visible: Bool) {
+        partsVisible = visible
+        guard let window else { return }
+        let factor = InterfaceScaling.shared.factor
+        window.minSize.width = (visible ? 560 : 320) * factor
+        guard visible, let content = window.contentView, content.frame.width < 600 * factor else { return }
+        window.setContentSize(NSSize(width: 600 * factor, height: content.frame.height))
+    }
+    func hide() { window?.orderOut(nil); isVisible = false }
+    /// Programmatic teardown must not re-dock an outgoing project's Setlist.
+    func close() {
+        window?.delegate = nil
+        window?.close(); window?.contentView = nil
+        window = nil; host = nil; onDock = {}
+        isVisible = false; isDetached = false
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        let restoreDock = onDock
+        close()
+        restoreDock()
+        return false
+    }
+    func windowDidMiniaturize(_ notification: Notification) { isVisible = false }
+    func windowDidDeminiaturize(_ notification: Notification) { isVisible = true }
+    func windowDidResize(_ notification: Notification) {
+        // InterfaceScaling resizes registered windows when the scale changes.
+        // Reapply the active panel's minimum after that resize as well.
+        window?.minSize.width = (partsVisible ? 560 : 320) * InterfaceScaling.shared.factor
+    }
+}
+#endif
 /// Focus follows the visible parent without changing a drawer's manual state.
 private func setlistVisibleRegionID(_ id: UUID, parent: UUID?, expanded: Set<UUID>) -> UUID {
     if let parent, !expanded.contains(parent) { return parent }
@@ -373,7 +444,7 @@ struct SongListView: View {
             guard let request, !creatingPlaylist && !choosingPlaylist else { return }
             show.stepRegion(request.direction, entries: visible)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color(hex: 0x151b22))
+        .frame(maxWidth: .infinity, maxHeight: .infinity).background(JarasTheme.background)
         .alert(Text(verbatim: JarasLocalization.string(playlistCopySucceeded ? "Playlist copied successfully" : "Could not copy playlist")), isPresented: $showingPlaylistCopyResult) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -1643,11 +1714,19 @@ private struct RegionStopButton: View {
 #if os(macOS)
 /// AppKit may restore the scroller while SwiftUI updates a ScrollView. Suppress
 /// it during layout, without polling or leaving a reserved strip beside songs.
-private struct SetlistScrollbarsHidden: NSViewRepresentable {
+struct SetlistScrollbarsHidden: NSViewRepresentable {
     func makeNSView(context: Context) -> SetlistScrollbarSuppressionView { SetlistScrollbarSuppressionView() }
     func updateNSView(_ view: SetlistScrollbarSuppressionView, context: Context) { view.suppressScrollbars() }
 }
-private final class SetlistScrollbarSuppressionView: NSView {
+final class SetlistScrollbarSuppressionView: NSView {
+    private weak var observedScroll: NSScrollView?
+    private var observations: [NSKeyValueObservation] = []
+    private var suppressing = false
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        suppressScrollbars()
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         suppressScrollbars()
@@ -1655,7 +1734,25 @@ private final class SetlistScrollbarSuppressionView: NSView {
     }
     override func layout() { super.layout(); suppressScrollbars() }
     func suppressScrollbars() {
-        guard let scroll = enclosingScrollView else { return }
+        let enclosing = enclosingScrollView
+        if observedScroll !== enclosing {
+            observations.removeAll()
+            observedScroll = enclosing
+            if let scroll = enclosing {
+                // SwiftUI/AppKit can recreate indicators after the background
+                // has laid out. Observe this scroll view instead of waiting for
+                // another layout or polling the entire workspace.
+                observations = [
+                    scroll.observe(\.hasVerticalScroller) { [weak self] _, _ in self?.suppressScrollbars() },
+                    scroll.observe(\.hasHorizontalScroller) { [weak self] _, _ in self?.suppressScrollbars() },
+                    scroll.observe(\.verticalScroller) { [weak self] _, _ in self?.suppressScrollbars() },
+                    scroll.observe(\.horizontalScroller) { [weak self] _, _ in self?.suppressScrollbars() }
+                ]
+            }
+        }
+        guard let scroll = enclosing, !suppressing else { return }
+        suppressing = true
+        defer { suppressing = false }
         if scroll.hasVerticalScroller { scroll.hasVerticalScroller = false }
         if scroll.hasHorizontalScroller { scroll.hasHorizontalScroller = false }
         if scroll.verticalScroller != nil { scroll.verticalScroller = nil }

@@ -59,6 +59,93 @@ struct FXInsertEditor: View {
         if let inserted { inserted(key) }
         else if clip == nil { open(target, key) }
     }
+    @State private var applying = false
+    private func applyEffect() {
+        guard !applying else { return }
+        applying = true
+        defer { applying = false }
+
+        guard targetIsCurrent else { dismiss(); return }
+        guard availableEffects.contains(effect) else { return }
+        #if os(macOS)
+        if effect == "External" {
+            guard let chosen = plugins.plugins.first(where: { $0.id == external }) else { return }
+            if let clip {
+                // A MIDI take has no audio instance before its first
+                // instrument. Validate the chosen plugin separately,
+                // then let the normal item update build its live voice.
+                let preparation = NativeEffectsChain()
+                defer { preparation.releaseExternal() }
+                do {
+                    var settings = show.clipFXSettings(clip)
+                    var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
+                    settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
+                    settings.inserted.append(instance.effectKey)
+                    try settings.validateForClip()
+                    let node = try preparation.prepareExternal(instance)
+                    if let state = JarasVST3.state(node, identifier: instance.id) {
+                        instance.componentState = state["componentState"] as? String
+                        instance.controllerState = state["controllerState"] as? String
+                        if let index = settings.externalPlugins?.firstIndex(where: { $0.id == instance.id }) {
+                            settings.externalPlugins?[index] = instance
+                        }
+                    }
+                    show.previewClipFX(clip, settings: settings); show.commitFX()
+                    guard show.clipFXSettings(clip).inserted.contains(instance.effectKey) else {
+                        externalError = show.message
+                        return
+                    }
+                    finishInsertion(instance.effectKey, track: nil)
+                } catch { externalError = error.localizedDescription }
+                return
+            }
+            var prepared: [(UUID?, NativeFXSettings, String)] = []
+            do {
+                for target in targets {
+                    guard let chain = StemAudioPlayback.shared.effects(for: target) else { continue }
+                    var settings = show.fxSettings(target)
+                    var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
+                    settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
+                    settings.inserted.append(instance.effectKey)
+                    try settings.validate()
+                    let node = try chain.prepareExternal(instance)
+                    if let state = JarasVST3.state(node, identifier: instance.id) {
+                        instance.componentState = state["componentState"] as? String; instance.controllerState = state["controllerState"] as? String
+                        let index = settings.externalPlugins!.count - 1
+                        settings.externalPlugins?[index] = instance
+                    }
+                    prepared.append((target, settings, instance.effectKey))
+                }
+                for (target, settings, _) in prepared { show.previewFX(target, settings: settings) }
+                show.commitFX()
+                if let own = prepared.first(where: { $0.0 == track }) ?? prepared.first { finishInsertion(own.2, track: own.0) }
+            } catch {
+                for target in targets {
+                    StemAudioPlayback.shared.effects(for: target)?.apply(show.fxSettings(target))
+                }
+                externalError = error.localizedDescription
+            }
+            return
+        }
+        #endif
+        var insertedKey: String?
+        if let clip {
+            insertedKey = show.insertClipFX(clip, effect: effect)
+        } else if effect == "Instruments" {
+            guard targets.count == 1, let instrument, library.downloaded.contains(instrument) else { return }
+            var settings = show.fxSettings(track)
+            insertedKey = settings.appendNative(effect, instrument: instrument, parameters: InstrumentLibrary.parameters(instrument))
+            do { settings = try FXPresetStore.shared.applyingDefault(to: settings, effect: insertedKey!) }
+            catch { show.message = error.localizedDescription; return }
+            show.previewFX(track, settings: settings); show.commitFX()
+        } else {
+            insertedKey = show.insertFX(targets, effect: effect)[track]
+        }
+        let settings = clip.map(show.clipFXSettings) ?? show.fxSettings(track)
+        guard let insertedKey, settings.inserted.contains(insertedKey) else { return }
+        finishInsertion(insertedKey, track: track)
+
+    }
     var body: some View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Insert effect").font(.jarasHeadline)
@@ -91,87 +178,10 @@ struct FXInsertEditor: View {
                     HStack {
                         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                         Spacer()
-                        Button("Apply") {
-                            guard targetIsCurrent else { dismiss(); return }
-                            guard availableEffects.contains(effect) else { return }
-                            #if os(macOS)
-                            if effect == "External" {
-                                guard let chosen = plugins.plugins.first(where: { $0.id == external }) else { return }
-                                if let clip {
-                                    // A MIDI take has no audio instance before its first
-                                    // instrument. Validate the chosen plugin separately,
-                                    // then let the normal item update build its live voice.
-                                    let preparation = NativeEffectsChain()
-                                    defer { preparation.releaseExternal() }
-                                    do {
-                                        var settings = show.clipFXSettings(clip)
-                                        var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
-                                        settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
-                                        settings.inserted.append(instance.effectKey)
-                                        try settings.validateForClip()
-                                        let node = try preparation.prepareExternal(instance)
-                                        if let state = JarasVST3.state(node, identifier: instance.id) {
-                                            instance.componentState = state["componentState"] as? String
-                                            instance.controllerState = state["controllerState"] as? String
-                                            if let index = settings.externalPlugins?.firstIndex(where: { $0.id == instance.id }) {
-                                                settings.externalPlugins?[index] = instance
-                                            }
-                                        }
-                                        show.previewClipFX(clip, settings: settings); show.commitFX()
-                                        guard show.clipFXSettings(clip).inserted.contains(instance.effectKey) else {
-                                            externalError = show.message
-                                            return
-                                        }
-                                        finishInsertion(instance.effectKey, track: nil)
-                                    } catch { externalError = error.localizedDescription }
-                                    return
-                                }
-                                var prepared: [(UUID?, NativeFXSettings, String)] = []
-                                do {
-                                    for target in targets {
-                                        guard let chain = StemAudioPlayback.shared.effects(for: target) else { continue }
-                                        var settings = show.fxSettings(target)
-                                        var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
-                                        settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
-                                        settings.inserted.append(instance.effectKey)
-                                        try settings.validate()
-                                        let node = try chain.prepareExternal(instance)
-                                        if let state = JarasVST3.state(node, identifier: instance.id) {
-                                            instance.componentState = state["componentState"] as? String; instance.controllerState = state["controllerState"] as? String
-                                            let index = settings.externalPlugins!.count - 1
-                                            settings.externalPlugins?[index] = instance
-                                        }
-                                        prepared.append((target, settings, instance.effectKey))
-                                    }
-                                    for (target, settings, _) in prepared { show.previewFX(target, settings: settings) }
-                                    show.commitFX()
-                                    if let own = prepared.first(where: { $0.0 == track }) ?? prepared.first { finishInsertion(own.2, track: own.0) }
-                                } catch {
-                                    for target in targets {
-                                        StemAudioPlayback.shared.effects(for: target)?.apply(show.fxSettings(target))
-                                    }
-                                    externalError = error.localizedDescription
-                                }
-                                return
-                            }
-                            #endif
-                            var insertedKey: String?
-                            if let clip {
-                                insertedKey = show.insertClipFX(clip, effect: effect)
-                            } else if effect == "Instruments" {
-                                guard targets.count == 1, let instrument, library.downloaded.contains(instrument) else { return }
-                                var settings = show.fxSettings(track)
-                                insertedKey = settings.appendNative(effect, instrument: instrument, parameters: InstrumentLibrary.parameters(instrument))
-                                do { settings = try FXPresetStore.shared.applyingDefault(to: settings, effect: insertedKey!) }
-                                catch { show.message = error.localizedDescription; return }
-                                show.previewFX(track, settings: settings); show.commitFX()
-                            } else {
-                                insertedKey = show.insertFX(targets, effect: effect)[track]
-                            }
-                            let settings = clip.map(show.clipFXSettings) ?? show.fxSettings(track)
-                            guard let insertedKey, settings.inserted.contains(insertedKey) else { return }
-                            finishInsertion(insertedKey, track: track)
-                        }.keyboardShortcut(.defaultAction).disabled(cannotApply)
+                        if effect != "External" {
+                            Button("Apply", action: applyEffect).keyboardShortcut(.defaultAction).disabled(cannotApply)
+                        }
+
                     }
                     #if os(iOS)
                     .buttonStyle(StageButtonStyle(color: JarasTheme.green))
@@ -181,6 +191,7 @@ struct FXInsertEditor: View {
         .onChange(of: effect) { value in resize(value == "Instruments" ? 500 : value == "External" ? 310 : 210) }
         #if os(macOS)
         .onChange(of: effect) { value in if value == "External" { browsingExternal = true } }
+        .onChange(of: external) { value in if value != nil && effect == "External" { applyEffect() } }
         .onChange(of: plugins.scanning) { scanning in if effect == "External" { resize(scanning ? 370 : 310) } }
         .background(ExternalPluginBrowserPresenter(isPresented: $browsingExternal, selected: $external,
                                                   allowsInstruments: clip.map { FXModelLookup.clip($0, in: show.snapshot.project)?.midi != nil } ?? (targets.count == 1 && track != nil)))

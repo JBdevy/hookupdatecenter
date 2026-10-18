@@ -1,6 +1,7 @@
 #pragma once
 #include "Session.h"
 #include "MP3Writer.h"
+#include "ItemLayout.h"
 
 namespace catlive::mediaImportTests {
 inline void require(bool condition, const String &message) {
@@ -80,7 +81,7 @@ void registerTests(const File &directory, Test &test) {
         Session session; initialise(session, folder.getChildFile("project"));
         const auto before = JSON::toString(ProjectCodec::encode(session.project()));
         int completions = 0; String completionError = "pending";
-        session.importMedia({input}, 3, {}, false, 0, [&](String error) { ++completions; completionError = error; }); wait(session);
+        session.importMedia({input}, 3, {}, MediaDropLayout::separateTracks, 0, [&](String error) { ++completions; completionError = error; }); wait(session);
         require(completions == 1 && completionError.isEmpty(), "Successful import must complete once without an error");
         require(session.song()->tracks.size() == 1, "Empty timeline rejected the drop: " + session.message);
         const auto &track = session.song()->tracks.front();
@@ -106,7 +107,7 @@ void registerTests(const File &directory, Test &test) {
             const auto folder = directory.getChildFile("batch-media-drop-" + text(uuid()));
             const Array<File> files{source(folder, "one.wav", 480), source(folder, "two.wav", 960)};
             Session session; initialise(session, folder.getChildFile("project"));
-            session.importMedia(files, 4, {}, sequential, 2); wait(session);
+            session.importMedia(files, 4, {}, sequential ? MediaDropLayout::sameTrack : MediaDropLayout::separateTracks, 2); wait(session);
             require(session.song()->tracks.size() == (sequential ? 1u : 2u), "Wrong track count: " + session.message);
             const auto &first = session.song()->tracks.front();
             require(first.clips.front().startTime == 4, "The first item must use the drop position");
@@ -116,6 +117,28 @@ void registerTests(const File &directory, Test &test) {
             session.undo(); require(session.song()->tracks.empty(), "The whole drop must undo in one step");
         });
     }
+    for (bool existing : {false, true}) test(existing ? "Stacked import stays aligned on an occupied track with undo and redo" : "Stacked import creates one track with independent visual lanes", [&, existing] {
+        const auto folder=directory.getChildFile("stacked-import-"+text(uuid()));
+        const Array<File> files{source(folder,"one.wav",480),source(folder,"two.wav",960)};
+        Session session; initialise(session,folder.getChildFile("project")); ID target;
+        if(existing) {
+            session.importMedia({files[0]},4,{},MediaDropLayout::separateTracks,0); wait(session);
+            target=session.song()->tracks.front().id;
+        }
+        const auto before=JSON::toString(session.snapshot()); String error="pending";
+        session.importMedia(files,4,target,MediaDropLayout::stacked,12,[&](String e){error=e;},true); wait(session);
+        require(error.isEmpty(),"Stacked import failed: "+error);
+        require(session.song()->tracks.size()==1,"Stacked import created separate tracks");
+        const auto &track=session.song()->tracks.front();
+        require(track.clips.size()==(existing?3u:2u),"Stacked import lost media");
+        for(const auto &clip:track.clips)require(clip.startTime==4,"Stacked import shifted an aligned item");
+        const ItemLanes lanes(track);require(lanes.count==(int)track.clips.size(),"Simultaneous items must have separate visual lanes");
+        std::set<int> assigned;for(const auto &clip:track.clips)assigned.insert(lanes.lanes.at(clip.id));
+        require(assigned.size()==track.clips.size(),"Two aligned items share a visual lane");
+        const auto after=JSON::toString(session.snapshot()); session.undo();
+        require(JSON::toString(session.snapshot())==before,"Stacked batch did not undo as one edit");
+        session.redo();require(JSON::toString(session.snapshot())==after,"Redo did not restore the whole aligned batch");
+    });
     test("Invalid external media batch leaves an empty timeline and its media directory unchanged", [&] {
         const auto folder = directory.getChildFile("invalid-media-drop-" + text(uuid()));
         const auto valid = source(folder, "valid.wav", 480), invalid = folder.getChildFile("broken.wav");
@@ -123,7 +146,7 @@ void registerTests(const File &directory, Test &test) {
         Session session; initialise(session, folder.getChildFile("project"));
         const auto before = JSON::toString(ProjectCodec::encode(session.project()));
         int completions = 0; String completionError;
-        session.importMedia({valid, invalid}, 0, {}, false, 0, [&](String error) { ++completions; completionError = error; }); wait(session);
+        session.importMedia({valid, invalid}, 0, {}, MediaDropLayout::separateTracks, 0, [&](String error) { ++completions; completionError = error; }); wait(session);
         require(JSON::toString(ProjectCodec::encode(session.project())) == before && !session.canUndo(),
                 "Validation failure must not create partial tracks or undo entries");
         require(session.message.isNotEmpty(), "Validation failure must provide an explanation");
@@ -137,7 +160,7 @@ void registerTests(const File &directory, Test &test) {
         const auto input = floatingSource(folder);
         Session session; initialise(session, folder.getChildFile("project"));
         String completionError = "pending"; int completions = 0;
-        session.importMedia({input}, 0, {}, false, 0, [&](String error) { ++completions; completionError = error; }); wait(session);
+        session.importMedia({input}, 0, {}, MediaDropLayout::separateTracks, 0, [&](String error) { ++completions; completionError = error; }); wait(session);
         require(completions == 1 && completionError.isEmpty() && session.song()->tracks.size() == 1,
                 "Overfull float media was rejected: " + completionError);
         const auto &clip = session.song()->tracks.front().clips.front();
@@ -177,7 +200,7 @@ void registerTests(const File &directory, Test &test) {
         require(sourcePeak > .5f, "MP3 fixture must contain audible audio");
         Session session; initialise(session, folder.getChildFile("project"));
         String completionError = "pending";
-        session.importMedia({input}, 0, {}, false, 0, [&](String error) { completionError = error; }); wait(session);
+        session.importMedia({input}, 0, {}, MediaDropLayout::separateTracks, 0, [&](String error) { completionError = error; }); wait(session);
         require(completionError.isEmpty() && session.song()->tracks.size() == 1, "MP3 import failed: " + completionError);
         const auto &clip = session.song()->tracks.front().clips.front();
         require(!clip.waveform.empty() && std::all_of(clip.waveform.begin(), clip.waveform.end(),
@@ -217,7 +240,7 @@ void registerTests(const File &directory, Test &test) {
         Session session; initialise(session, folder);
         const auto before = JSON::toString(ProjectCodec::encode(session.project()));
         String completionError = "pending"; int completions = 0;
-        session.importMedia(sources, 0, {}, false, 0, [&](String error) { ++completions; completionError = error; });
+        session.importMedia(sources, 0, {}, MediaDropLayout::separateTracks, 0, [&](String error) { ++completions; completionError = error; });
         wait(session, 120000);
         require(completions == 1 && completionError.isEmpty(), "Real media import failed: " + completionError);
         require(session.song()->tracks.size() == (size_t)sources.size(), "Real media drop did not create one track per source");

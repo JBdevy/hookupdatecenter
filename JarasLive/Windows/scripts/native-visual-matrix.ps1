@@ -82,7 +82,7 @@ try {
         Start-Sleep -Milliseconds 300
         [void](Check-Layout ("main-{0}x{1}" -f $size[0],$size[1]))
     }
-    foreach($id in @('railMixer','railSections','railKeyboard')) {
+    foreach($id in @('railMixer','railKeyboard')) {
         Click-Control $id
         [void](Snapshot ('dock-' + $id))
     }
@@ -94,13 +94,32 @@ try {
     $d = Snapshot 'dock-scrolled'
     if($d.dockScrollY -le 0){throw 'Lower panel scrollbar did not move.'}
     ScreenCapture 'dock-scrolled-screen'
-    foreach($id in @('railMixer','railSections','railKeyboard')) {
+    foreach($id in @('railMixer','railKeyboard')) {
         Click-Control $id
         [void](Snapshot ('dock-close-' + $id))
     }
     [void][CatNativeUI]::SetWindowPos($process.MainWindowHandle,[IntPtr]::Zero,($testArea.Left+8),($testArea.Top+8),1280,740,0x0040)
     Start-Sleep -Milliseconds 250
-    [void](Snapshot 'panels-base')
+    $partsBase = Snapshot 'panels-base'
+    Click-Control 'railParts'
+    $partsLeft = Snapshot 'parts-left-sidebar'
+    if(-not $partsLeft.partsLeftVisible -or $partsLeft.partsRightVisible){throw 'The rail Parts button did not open only the left sidebar.'}
+    if($partsLeft.mixerVisible -ne $partsBase.mixerVisible -or $partsLeft.keyboardVisible -ne $partsBase.keyboardVisible -or $partsLeft.dockVisibleHeight -ne $partsBase.dockVisibleHeight){throw 'Left Parts changed the lower docks.'}
+    $button = $partsLeft.setlist.partsButton
+    Click-Logical ($button.x + $button.width / 2) ($button.y + $button.height / 2)
+    $partsBoth = Snapshot 'parts-both-sidebars'
+    if(-not $partsBoth.partsLeftVisible -or -not $partsBoth.partsRightVisible){throw 'The two Parts sidebars did not remain open together.'}
+    foreach($bounds in @($partsBoth.partsLeftBounds,$partsBoth.partsSidebarBounds)) {
+        if($bounds.width -le 0 -or $bounds.height -le 0){throw 'A Parts sidebar has no visible area.'}
+    }
+    if($partsBoth.mixerVisible -ne $partsBase.mixerVisible -or $partsBoth.keyboardVisible -ne $partsBase.keyboardVisible -or $partsBoth.dockVisibleHeight -ne $partsBase.dockVisibleHeight){throw 'Right Parts changed the lower docks.'}
+    $button = $partsBoth.setlist.partsButton
+    Click-Logical ($button.x + $button.width / 2) ($button.y + $button.height / 2)
+    $partsRightClosed = Snapshot 'parts-right-closed'
+    if(-not $partsRightClosed.partsLeftVisible -or $partsRightClosed.partsRightVisible){throw 'Closing right Parts changed the left sidebar.'}
+    Click-Control 'railParts'
+    $partsClosed = Snapshot 'parts-sidebars-closed'
+    if($partsClosed.partsLeftVisible -or $partsClosed.partsRightVisible){throw 'Left Parts did not close.'}
     Click-Control 'menu'
     $d = Snapshot 'navigation-open'
     if(-not $d.navigationVisible){throw 'Hamburger did not open the navigation drawer.'}

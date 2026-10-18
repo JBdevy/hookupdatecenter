@@ -19,7 +19,9 @@ private struct WorkspaceProjectIdentity: Hashable {
     let document: URL?
     let missingAudioPaths: Set<String>
     let remotePresentation: Bool
-    let sectionsListOpen: Bool
+    let partsLeftOpen: Bool
+    let partsRightOpen: Bool
+    let setlistPlacement: SetlistPlacement
 }
 struct MainView: View {
     @ObservedObject private var recording = TrackRecording.shared
@@ -56,18 +58,19 @@ struct MainView: View {
     @State private var footerMixerOpen = false
     #if os(macOS)
     @StateObject private var detachedMixer = DetachedMixerWindow()
+    @StateObject private var detachedSetlist = DetachedSetlistWindow()
     #endif
     @State private var keyboardOpen = false
-    private enum SectionsPresentation { case list, footer }
-    @State private var sectionsPresentation: SectionsPresentation?
-    private var horizontalSectionsVisible: Bool { sectionsPresentation == .footer && setlistWidth > 0 }
+    @State private var partsLeftOpen = false
+    @State private var partsRightOpen = false
+    @State private var setlistPlacement: SetlistPlacement = .right
+    @State private var setlistDockPlacement: SetlistPlacement = .right
     @State private var keyboardSettings = false
     @AppStorage("catlive.footerDisplayHeight") private var storedFooterHeight = 27.0
     @AppStorage("jaras.footerMixerHeight") private var footerMixerHeight = 232.0
     @State private var footerResizeCoordinator = FooterVerticalResizeCoordinator()
     private func maximumFooterHeight(workspaceHeight: CGFloat) -> CGFloat {
         min(161.046875, max(27, workspaceHeight - 150 - (keyboardOpen ? 108 : 0)
-            - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0)
             - (footerMixerOpen ? min(723.55859375, max(232, footerMixerHeight)) : 0)))
     }
     @AppStorage("jaras.trackColumnWidth") private var mixerWidth = Double(SidebarWidthLimits.trackMixer)
@@ -89,21 +92,45 @@ struct MainView: View {
     private func toggleMixer() {
         Self.togglePanel(width: $mixerWidth, restore: $mixerRestoreWidth, minimum: SidebarWidthLimits.trackMixer)
     }
+    private var setlistCollapsed: Bool {
+        #if os(macOS)
+        if setlistPlacement == .detached { return !detachedSetlist.isVisible }
+        #endif
+        return setlistWidth <= 0
+    }
     private func toggleSetlist() {
+        #if os(macOS)
+        if setlistPlacement == .detached {
+            if detachedSetlist.isVisible { detachedSetlist.hide() }
+            else { openDetachedSetlist() }
+            return
+        }
+        #endif
         Self.togglePanel(width: $setlistWidth, restore: $setlistRestoreWidth, minimum: SidebarWidthLimits.setlist)
     }
-    private func toggleSections(_ presentation: SectionsPresentation) {
-        sectionsPresentation = sectionsPresentation == presentation ? nil : presentation
-        if sectionsPresentation != nil {
-            footerMixerOpen = false
-            #if os(macOS)
-            detachedMixer.hide()
-            #endif
+    private func placeSetlist(_ placement: SetlistPlacement) {
+        #if os(macOS)
+        if placement == .left { partsLeftOpen = false }
+        if placement == .detached {
+            setlistPlacement = .detached
+            openDetachedSetlist()
+        } else {
+            detachedSetlist.close()
+            setlistPlacement = placement; setlistDockPlacement = placement
+            if setlistWidth <= 0 { setlistWidth = max(Double(SidebarWidthLimits.setlist), setlistRestoreWidth) }
         }
+        #endif
     }
     #if os(macOS)
+    private func openDetachedSetlist() {
+        detachedSetlist.setPartsVisible(partsRightOpen)
+        detachedSetlist.open(onDock: { placeSetlist(setlistDockPlacement) }) {
+            DetachedSetlistContent(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
+                                   partsOpen: $partsRightOpen)
+        }
+    }
     private func showDetachedMixer() {
-        footerMixerOpen = false; sectionsPresentation = nil
+        footerMixerOpen = false
         detachedMixer.open(show: show, openFX: { track, effect in
             FXWindows.shared.open(show: show, track: track, effect: effect, language: language)
         }, editTrack: { request in
@@ -125,8 +152,9 @@ struct MainView: View {
             mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
             toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } },
             openSettings: { navigationOpen = false; panel = .settings },
-            mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistWidth <= 0,
-            toggleMixer: toggleMixer, toggleSetlist: toggleSetlist)
+            mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistCollapsed,
+            toggleMixer: toggleMixer, toggleSetlist: toggleSetlist,
+            setlistPlacement: setlistPlacement, placeSetlist: placeSetlist)
         #if os(macOS)
         let tools = leftToolRail
         #else
@@ -146,52 +174,56 @@ struct MainView: View {
                 transport
                     #if os(macOS)
                     GeometryReader { geometry in
-                        SectionListDock(visible: sectionsPresentation == .list && setlistWidth > 0, storageKey: "catlive.sections.width", minimumPrimaryWidth: 620, defaultFraction: 0.22) {
+                        SectionListDock(visible: partsRightOpen && setlistWidth > 0 && setlistPlacement != .detached, storageKey: "catlive.sections.width", minimumPrimaryWidth: 620, defaultFraction: 0.22) {
                         NativeWorkspaceSplit(width: CGFloat(setlistWidth), restoreWidth: CGFloat(setlistRestoreWidth),
                             minimum: SidebarWidthLimits.setlist, scrollController: setlistScrollController,
+                            sidebarLeading: setlistPlacement == .left, sidebarDetached: setlistPlacement == .detached,
                             contentIdentity: WorkspaceProjectIdentity(project: show.snapshot.project.id, document: documents.currentURL,
                                 missingAudioPaths: documents.missingAudioPaths, remotePresentation: remotePresentation,
-                                sectionsListOpen: sectionsPresentation == .list),
+                                partsLeftOpen: partsLeftOpen, partsRightOpen: partsRightOpen, setlistPlacement: setlistPlacement),
                             onToggle: toggleSetlist, onEnd: { finalWidth in
                                 if finalWidth > 0 { setlistRestoreWidth = finalWidth }
                                 setlistWidth = finalWidth
                             }) {
-                            TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
-                                .foregroundStyle(JarasTheme.text)
+                            SectionListDock(visible: partsLeftOpen, storageKey: "catlive.parts.left.width",
+                                            minimumPrimaryWidth: 260 + max(0, CGFloat(mixerWidth)), defaultFraction: 0.24, leading: true) {
+                                TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation,
+                                                 toggleMixer: toggleMixer)
+                                    .foregroundStyle(JarasTheme.text)
+                            } sections: { SmoothSeekPanel(show: show) }
                         } trailing: {
                             SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), sidebarScrollController: setlistScrollController,
-                                partsOpen: sectionsPresentation == .list, toggleParts: { toggleSections(.list) })
+                                partsOpen: partsRightOpen, toggleParts: { partsRightOpen.toggle() })
                                 .foregroundStyle(JarasTheme.text)
                         }
-                        } sections: { SmoothSeekPanel(show: show, verticalList: true) }
+                        } sections: { SmoothSeekPanel(show: show) }
                         .frame(width: geometry.size.width, height: geometry.size.height)
                     }.overlay(alignment: .topLeading) { navigationLayer }
                     #else
-                    SectionListDock(visible: sectionsPresentation == .list, storageKey: "catlive.local.sections.width",
+                    SectionListDock(visible: partsRightOpen, storageKey: "catlive.local.sections.width",
                                     minimumPrimaryWidth: 480, defaultFraction: 0.22) {
                         HStack(spacing: 1) {
                             TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
-                            SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), partsOpen: sectionsPresentation == .list,
-                                toggleParts: { toggleSections(.list) }).frame(width: 220)
+                            SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), partsOpen: partsRightOpen,
+                                toggleParts: { partsRightOpen.toggle() }).frame(width: 220)
                         }
                     } sections: {
-                        SmoothSeekPanel(show: show, verticalList: true)
+                        SmoothSeekPanel(show: show)
                     }.overlay(alignment: .topLeading) { navigationLayer }
                     #endif
                 // Preserve the mixer's established expansion range while leaving
                 // space for the transport and the top of the timeline/Setlist.
                 if desktopExtras {
                 FooterMixerPanel(show: show, active: footerMixerOpen,
-                    maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0) - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0)),
+                    maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0)),
                     resizeCoordinator: footerResizeCoordinator)
-                if horizontalSectionsVisible { SmoothSeekPanel(show: show).frame(height: SmoothSeekPanelLayout.height) }
                 if keyboardOpen { FooterPianoKeyboard().frame(height: 108) }
                 }
                 #if os(macOS)
                 FooterNativeHeightHost(storedHeight: CGFloat(storedFooterHeight), minimum: 27, maximum: 161.046875,
                     active: true, identity: AnyHashable(ObjectIdentifier(show)), role: .display,
                     resizeCoordinator: footerResizeCoordinator,
-                    displayAvailableHeight: workspaceHeight - 150 - (keyboardOpen ? 108 : 0) - (horizontalSectionsVisible ? SmoothSeekPanelLayout.height : 0),
+                    displayAvailableHeight: workspaceHeight - 150 - (keyboardOpen ? 108 : 0),
                     fallbackMixerHeight: footerMixerOpen ? min(723.55859375, max(232, footerMixerHeight)) : 0) {
                     GeometryReader { geometry in
                         HStack(spacing: 14) {
@@ -309,10 +341,14 @@ struct MainView: View {
                 guard request.project == show.snapshot.project.id, !request.tracks.isEmpty else { return }
                 trackEdit = request
             })
+            #if os(macOS)
+            .onChange(of: partsRightOpen) { visible in detachedSetlist.setPartsVisible(visible) }
+            #endif
             .onChange(of: show.snapshot.project.id) { _ in
                 trackEdit = nil
                 #if os(macOS)
-                detachedMixer.close()
+                detachedMixer.close(); detachedSetlist.close()
+                setlistPlacement = setlistDockPlacement
                 #endif
             }
             .overlay {
@@ -356,13 +392,9 @@ struct MainView: View {
                 ResolumeController.shared.bind(show)
                 #endif
                 mappings.bind(show)
-                show.togglePartsPanel = { toggleSections(.list) }
-                show.toggleTracksPanel = { [width = $mixerWidth, restore = $mixerRestoreWidth] in
-                    Self.togglePanel(width: width, restore: restore, minimum: SidebarWidthLimits.trackMixer)
-                }
-                show.toggleSetlistPanel = { [width = $setlistWidth, restore = $setlistRestoreWidth] in
-                    Self.togglePanel(width: width, restore: restore, minimum: SidebarWidthLimits.setlist)
-                }
+                show.togglePartsPanel = { partsRightOpen.toggle() }
+                show.toggleTracksPanel = { toggleMixer() }
+                show.toggleSetlistPanel = { toggleSetlist() }
             }
             .onChange(of: textItemTarget != nil || trackEdit != nil || mappings.editing != nil) { blocked in
                 #if os(macOS)
@@ -372,7 +404,7 @@ struct MainView: View {
             .onDisappear {
                 guard !remotePresentation else { return }
                 #if os(macOS)
-                detachedMixer.close()
+                detachedMixer.close(); detachedSetlist.close()
                 #endif
                 // SwiftUI presents the replacement .id before removing the old
                 // workspace. The old view must not erase the new callbacks.
@@ -457,7 +489,6 @@ struct MainView: View {
                     else { showDetachedMixer() }
                 } else {
                     footerMixerOpen.toggle()
-                    if footerMixerOpen { sectionsPresentation = nil }
                 }
             } label: {
                 Image(systemName: "slider.vertical.3")
@@ -471,7 +502,7 @@ struct MainView: View {
             .contextMenu {
                 Button(detachedMixer.isDetached ? "Dock mixer" : "Undock mixer") {
                     if detachedMixer.isDetached {
-                        detachedMixer.close(); footerMixerOpen = true; sectionsPresentation = nil
+                        detachedMixer.close(); footerMixerOpen = true
                     } else { showDetachedMixer() }
                 }
             }
@@ -487,13 +518,13 @@ struct MainView: View {
             .immediateRightClick { keyboardSettings = true }
             .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
             Button {
-                toggleSections(.footer)
+                partsLeftOpen.toggle()
             } label: {
-                SectionButtonsIcon()
+                PartsListIcon()
                     .font(.jarasSystem(size: 16, weight: .semibold)).frame(width: 30, height: 32)
                     .contentShape(Rectangle())
-            }.foregroundStyle(sectionsPresentation == .footer ? JarasTheme.green : JarasTheme.text)
-                .accessibilityLabel("Smooth Seek").jarasHelp("Smooth Seek")
+            }.foregroundStyle(partsLeftOpen ? JarasTheme.green : JarasTheme.text)
+                .accessibilityLabel("Parts à esquerda").jarasHelp("Parts à esquerda")
             }
         }
         .buttonStyle(.plain)
@@ -522,6 +553,22 @@ struct MainPreview: PreviewProvider { static var previews: some View { let conta
 
 #if os(macOS)
 import AppKit
+
+private struct DetachedSetlistContent: View {
+    let show: ShowController
+    let mediaDirectory: URL?
+    @Binding var partsOpen: Bool
+    @AppStorage("jaras.language") private var language = "en"
+    var body: some View {
+        SectionListDock(visible: partsOpen, storageKey: "catlive.parts.detached.width",
+                        minimumPrimaryWidth: SidebarWidthLimits.setlist, defaultFraction: 0.42) {
+            SongListView(show: show, mediaDirectory: mediaDirectory, partsOpen: partsOpen,
+                         toggleParts: { partsOpen.toggle() })
+        } sections: { SmoothSeekPanel(show: show) }
+            .environment(\.locale, Locale(identifier: language))
+            .preferredColorScheme(.dark).foregroundStyle(JarasTheme.text).background(JarasTheme.panel)
+    }
+}
 
 /// Hover redraws only the divider, without publishing changes to the timeline.
 class ResizeHoverIndicatorView: NSView {
@@ -580,7 +627,8 @@ private struct AudioDropOptions: View {
             Text("Import audio").font(.jarasHeadline)
             Picker("Placement", selection: $layout) {
                 Text("One track per item").tag(AudioDropLayout.separateTracks)
-                Text("All items on the same track").tag(AudioDropLayout.sameTrack)
+                Text("Same track, in sequence").tag(AudioDropLayout.sameTrack)
+                Text("Same track, same start time").tag(AudioDropLayout.stacked)
             }
             #if os(macOS)
             .pickerStyle(.radioGroup)

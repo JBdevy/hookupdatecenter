@@ -5,6 +5,7 @@ import AppKit
     var projectSessionID = UUID()
     var toggleTracksPanel: () -> Void = {}
     var toggleSetlistPanel: () -> Void = {}
+    var togglePartsPanel: () -> Void = {}
 }
 @MainActor final class WorkspaceSession: ObservableObject {
     @Published var opened = UUID()
@@ -12,6 +13,11 @@ import AppKit
     func replace() { show.projectSessionID = UUID(); opened = UUID() }
 }
 @MainActor enum DAWRemoteHostBridge { static func bind(_ show: FixtureShow) {} }
+@MainActor final class ResolumeController {
+    static let shared = ResolumeController()
+    func bind(_ show: FixtureShow) {}
+    func stop() {}
+}
 @MainActor final class MappingFixture { func bind(_ show: FixtureShow) {} }
 @MainActor final class FXWindows {
     static let shared = FXWindows()
@@ -19,6 +25,10 @@ import AppKit
     func closeAll() { closes += 1 }
 }
 @MainActor final class DetachedMixerFixture: ObservableObject {
+    static var closes = 0
+    func close() { Self.closes += 1 }
+}
+@MainActor final class DetachedSetlistFixture: ObservableObject {
     static var closes = 0
     func close() { Self.closes += 1 }
 }
@@ -38,6 +48,10 @@ import AppKit
     @State private var setlistWidth = 300.0
     @State private var setlistRestoreWidth = 300.0
     @StateObject private var detachedMixer = DetachedMixerFixture()
+    @StateObject private var detachedSetlist = DetachedSetlistFixture()
+    @State private var partsRightOpen = false
+    private func toggleMixer() { Self.togglePanel(width: $mixerWidth, restore: $mixerRestoreWidth, minimum: SidebarWidthLimits.trackMixer) }
+    private func toggleSetlist() { Self.togglePanel(width: $setlistWidth, restore: $setlistRestoreWidth, minimum: SidebarWidthLimits.setlist) }
     static func togglePanel(width: Binding<Double>, restore: Binding<Double>, minimum: Double) {
         PanelInvocation.count += 1
         width.wrappedValue = width.wrappedValue > 0 ? 0 : max(minimum, restore.wrappedValue)
@@ -83,6 +97,7 @@ import AppKit
               "Previous workspace must not change the new session's interaction gate")
     }
     check(DetachedMixerFixture.closes == 11, "Every outgoing workspace must still close its own detached mixer")
+    check(DetachedSetlistFixture.closes == 11, "Every outgoing workspace must close its own detached Setlist")
     window.orderOut(nil)
     if failures == 0 { print("MAIN_VIEW_SESSION_REPLACEMENT_RETAINS_CURRENT_CALLBACKS_AND_EDITORS_OK") }
     exit(failures == 0 ? 0 : 1)

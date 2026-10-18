@@ -249,6 +249,30 @@ final class StemImportTests: XCTestCase {
         XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([one,two], start: 0, destinationTracks: [], destination: destination, layout: .sameTrack, gap: 61))
     }
 
+    func testStackedImportUsesOneTrackOneStartAndSeparateLanes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let one = try fixture(root, folder: "Source", file: "One.wav", seconds: 0.2).appendingPathComponent("One.wav")
+        let two = try fixture(root, folder: "Source", file: "Two.wav", seconds: 0.3).appendingPathComponent("Two.wav")
+        let destination = root.appendingPathComponent("Project/Show.jl")
+        for target in [nil, UUID()] as [UUID?] {
+            let result = try StemProjectImporter.prepareDroppedAudio([one, two], start: 30, destinationTracks: target.map { [$0] } ?? [], destination: destination, layout: .stacked, gap: 12, deferWaveform: true)
+            XCTAssertEqual(result.tracks.count, 1)
+            let track = result.tracks[0]
+            if let target { XCTAssertEqual(track.id, target) }
+            XCTAssertEqual(track.clips.map(\.startTime), [30, 30])
+            XCTAssertEqual(track.clips.map(\.name), ["One", "Two"])
+            XCTAssertTrue(track.clips.allSatisfy { $0.waveform.isEmpty })
+            let lanes = TrackLanes(track: track)
+            XCTAssertEqual(lanes.count, 2)
+            XCTAssertNotEqual(lanes.lanes[track.clips[0].id], lanes.lanes[track.clips[1].id])
+            let restored = try JSONDecoder().decode(Track.self, from: JSONEncoder().encode(track))
+            XCTAssertEqual(TrackLanes(track: restored), lanes)
+            XCTAssertEqual(restored.clips.map(\.startTime), [30, 30])
+        }
+        XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([one, two], start: 0, destinationTracks: [UUID()], destination: destination, layout: .stacked, destinationKind: .teleprompt))
+    }
+
     func testVectorOverviewMatchesSamplePeaks() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -1,6 +1,10 @@
 import SwiftUI
 import AppKit
 
+// The selection adapter is not mounted by this layout/focus fixture.
+struct GridSelectionInput { func apply(to view: GridSelectionView) {} }
+final class GridSelectionView: NSView {}
+
 enum WorkspaceRootUpdateProbe { static var count = 0 }
 
 private let editRequest = TrackDetailsEditRequest(project: UUID(), tracks: [UUID(), UUID()], name: "Track", color: 0x123456, nameEditable: false)
@@ -8,6 +12,8 @@ private let editRequest = TrackDetailsEditRequest(project: UUID(), tracks: [UUID
     @Published var width: CGFloat = 320
     @Published var revision = 0
     @Published var pulse = 0
+    @Published var sidebarLeading = false
+    @Published var sidebarDetached = false
     var restore: CGFloat = 320
     var commits: [CGFloat] = []
     var actions: [String] = []
@@ -95,7 +101,7 @@ private struct WorkspaceFixture: View {
             Text("Transport").frame(height: 60)
             GeometryReader { geometry in
                 NativeWorkspaceSplit(width: state.width, restoreWidth: state.restore, minimum: 277,
-                    scrollController: state.scroll, contentIdentity: state.revision, onToggle: state.toggle, onEnd: { width in
+                    scrollController: state.scroll, sidebarLeading: state.sidebarLeading, sidebarDetached: state.sidebarDetached, contentIdentity: state.revision, onToggle: state.toggle, onEnd: { width in
                         state.width = width; state.restore = width; state.commits.append(width)
                     }) {
                     LeadingPane(revision: revision).foregroundStyle(.white)
@@ -240,6 +246,35 @@ MainActor.assumeIsolated {
     embedded.mouseDown(with: inner(.leftMouseDown, x: 0)); embedded.mouseDragged(with: inner(.leftMouseDragged, x: 20)); embedded.mouseUp(with: inner(.leftMouseUp, x: 20))
     precondition(root.layouts == layoutCount, "mixer commits stop at the workspace boundary rather than the app root")
     embedded.removeFromSuperview()
+
+    // Moving Setlist to the left preserves its host/state and mirrors resize direction.
+    state.sidebarLeading = true; settle(root)
+    precondition(rightHost.frame.minX == 0 && rightHost.frame.width == 365 && leftHost.frame.minX == 379)
+    precondition(divider.frame.minX == 365 && divider.direction == 1)
+    precondition(descendants(WorkspaceControl.self, in: root).contains { $0 === rightControl } && rightControl.count == 1)
+    let leftDown = divider.convert(CGPoint(x: 7, y: 50), to: nil)
+    func leftSide(_ type: NSEvent.EventType, delta: CGFloat) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: CGPoint(x: leftDown.x + delta, y: leftDown.y), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+    divider.mouseDown(with: leftSide(.leftMouseDown, delta: 0))
+    divider.mouseDragged(with: leftSide(.leftMouseDragged, delta: 35))
+    precondition(rightHost.frame.width == 400 && leftHost.frame.minX == 414 && state.width == 365,
+                 "left Setlist grows when the divider moves right without publishing during drag")
+    divider.mouseUp(with: leftSide(.leftMouseUp, delta: 35)); settle(root)
+    precondition(state.width == 400 && state.commits.last == 400)
+    state.sidebarDetached = true; settle(root)
+    precondition(rightHost.isHidden && divider.isHidden && leftHost.frame.minX == 0 && leftHost.frame.width == 1200,
+                 "detached Setlist must release its whole dock and divider width")
+    precondition(state.width == 400 && state.restore == 400, "detaching must preserve dock width")
+    state.sidebarDetached = false; settle(root)
+    precondition(!rightHost.isHidden && !divider.isHidden && rightHost.frame.width == 400 && rightHost.frame.minX == 0,
+                 "docking restores the previous side and width")
+    state.sidebarLeading = false; settle(root)
+    precondition(rightHost.frame.maxX == 1200 && leftHost.frame.minX == 0 && divider.direction == -1)
+    precondition(rightControl.count == 1 && leftControl.count == 1,
+                 "placement changes must not remount either native host")
+    print("WORKSPACE_SETLIST_LEFT_RESIZE_DETACH_AND_DOCK_PRESERVE_STATE_OK")
+
     let beforeDetach = state.commits
     divider.mouseDown(with: event(.leftMouseDown, delta: 0))
     divider.mouseDragged(with: event(.leftMouseDragged, delta: -20))

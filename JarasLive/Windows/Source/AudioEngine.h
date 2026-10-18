@@ -1,6 +1,7 @@
 #pragma once
 #include "../../Core/Tracks/ItemFade.hpp"
 #include "Common.h"
+#include "MeterDisplay.h"
 #include "../../Core/Transport/PlaybackScope.hpp"
 #include "NativeFX.h"
 #include "../../WindowsNative/Source/AudioLatency.h"
@@ -26,7 +27,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         int timecodePreferred = -1;
         double end = std::numeric_limits<double>::infinity();
     };
-    AudioEngine();
+    AudioEngine(double preparationRate = 48000, bool preparingOffline = false);
     ~AudioEngine() override;
     AudioDeviceManager devices;
     AudioFormatManager formats;
@@ -60,8 +61,17 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void closeDevice();
     void refreshTiming(const jaras::Song &song);
     void refreshRegionPitch(const jaras::Song &, const ID &);
+    struct PreparationControl {
+        std::function<void()> checkpoint;
+        std::function<void(int, int)> progress;
+        NativeFX::Dispatcher pluginDispatcher;
+    };
     void prepareSong(const jaras::Song &, const File &directory, const var &masterSettings = {},
-                     const jaras::Project *project = nullptr);
+                     const jaras::Project *project = nullptr, const PreparationControl *control = nullptr);
+    bool preparesOffline() const { return offlineMode; }
+    // Message thread only: swaps a fully prepared, unattached engine's graph.
+    // The argument receives the retired graph and must be disposed off the UI.
+    void adoptPreparedSong(AudioEngine &);
     void transport(const State &);
     int timecodePreferred(const std::optional<ID>& region) const { return timecodeProgram.preferred(region); }
     void previewMIDIItem(const jaras::Song &,const jaras::AudioClip &);
@@ -134,6 +144,15 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
             return {bus->levels[0].load(), bus->levels[1].load()};
         return {};
     }
+    float heldPeak(const ID &id = {})const {
+        if(id.empty())return masterPeakHold.amplitude();
+        for(const auto &bus:buses)if(bus->id==id)return bus->held.amplitude();
+        return 0;
+    }
+    void clearPeak(const ID &id = {}) {
+        if(id.empty())masterPeakHold.clear();
+        else for(auto &bus:buses)if(bus->id==id){bus->held.clear();break;}
+    }
     uint64 getUnderruns() const { return underruns.load(); }
     int residentStreams() const {
         std::set<const StreamingReader*> active;
@@ -166,10 +185,15 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     NativeFX *effects(const ID &, int head = 0) const;
     int lastPrimedSources = 0;
     double lastPrimeWaitMilliseconds = 0;
+    struct ReaderContext;
+    std::shared_ptr<ReaderContext> readerContext;
     struct Source {
         File file;
         int64 fileSize = 0;
         Time modified;
+        // Declared before readers: their thread/format references outlive them,
+        // including after an isolated graph moves into the active device.
+        std::shared_ptr<ReaderContext> context;
         std::unique_ptr<StreamingReader> readers[2];
     };
     struct Voice {
@@ -199,6 +223,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::vector<jaras::OutputPatch> outputs;
         std::vector<int> sends;
         std::atomic<float> peak{0};
+        meterDisplay::PeakHold held;
         std::array<std::atomic<float>, 2> levels{};
         std::atomic<float> fxInput{0}, fxOutput{0};
         AudioBuffer<float> buffer{2, 4096};
@@ -278,13 +303,14 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     int metronomeMode = 0, metronomeOutput = 1, metronomeChannels = 2;
     float metronomeGainA = 1, metronomeGainB = 1;
     std::vector<jaras::OutputPatch> masterOutputs{{1, 2}};
-    TimeSliceThread readAhead{"CatLive media read-ahead"};
     std::vector<std::unique_ptr<Voice>> voices;
     std::array<int, 128> outputMapping{};
     std::atomic<double> rate{48000}, position{0}, subPosition{0};
     std::atomic<bool> playing{false}, subPlaying{false};
     std::atomic<uint64> elapsedSamples{0}, underruns{0};
     std::atomic<float> meter{0};
+    meterDisplay::PeakHold masterPeakHold;
+    ID peakProject;
     std::array<std::atomic<float>, 2> masterLevels{};
     std::atomic<float> masterFXInput{0}, masterFXOutput{0};
     struct Update {

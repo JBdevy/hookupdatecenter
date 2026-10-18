@@ -1,6 +1,36 @@
 #pragma once
 #include "Common.h"
 namespace catlive::meterDisplay {
+class PeakHold {
+    std::atomic<float> maximum{0};
+public:
+    void record(float amplitude) noexcept {
+        if(!std::isfinite(amplitude)||amplitude<std::pow(10.f,-24.f/20))return;
+        auto previous=maximum.load(std::memory_order_relaxed);
+        while(amplitude>previous&&!maximum.compare_exchange_weak(previous,amplitude,std::memory_order_relaxed)){}
+    }
+    float amplitude()const noexcept{return maximum.load(std::memory_order_relaxed);}
+    void clear()noexcept{maximum.store(0,std::memory_order_relaxed);}
+};
+class PeakReadout final : public Component, private Timer {
+    std::function<float()> read;
+    std::function<void()> clear;
+    std::function<Colour()> colour;
+    float shown=-1;
+    void timerCallback()override{const auto value=read();if(value!=shown){shown=value;repaint();}}
+public:
+    PeakReadout(std::function<float()> get,std::function<void()> reset,std::function<Colour()> foreground=[] {return Colours::white;})
+        :read(std::move(get)),clear(std::move(reset)),colour(std::move(foreground)){
+        setComponentID("peakReadout");setTitle("Reset peak");startTimerHz(20);
+    }
+    void paint(Graphics &g)override{
+        const auto amplitude=read();if(amplitude<=0)return;
+        const auto db=std::round(20*std::log10(amplitude)*100)/100;
+        g.setColour(colour());g.setFont(theme::semiboldFont(8));
+        g.drawText((db>=0?"+":"")+String(db,2),getLocalBounds(),Justification::centred,false);
+    }
+    void mouseDown(const MouseEvent &e)override{if(e.mods.isLeftButtonDown()){clear();repaint();}}
+};
 // TrackMeterLevel: instantaneous attack, 48 dB/s release, silence below -60 dB.
 inline float envelope(float previous, float input, double elapsed) {
     input = std::isfinite(input) ? std::max(0.f, input) : 0.f;

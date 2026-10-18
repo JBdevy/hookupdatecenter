@@ -965,6 +965,9 @@
 "No backups found" = "Nenhum backup encontrado";
 
 "Invert polarity" = "Inverter fase";
+"Phase inverted — restore phase" = "Fase invertida — restaurar fase";
+"Mono — switch to Stereo" = "Mono — alternar para Estéreo";
+"Stereo — switch to Mono" = "Estéreo — alternar para Mono";
 
 "Timeline" = "Timeline";
 
@@ -1673,3 +1676,27 @@
 "Press a MIDI note or controller button." = "Pressione uma nota MIDI ou um botão do controlador.";
 
 "External (VST3)" = "Externo (VST3)";
+
+"Same track, in sequence" = "Na mesma pista, em sequência";
+
+"Same track, same start time" = "Na mesma pista, iniciando juntos";
+
+"Company" = "Empresa";
+
+"Cancel scan" = "Cancelar escaneamento";
+
+"Scan cancelled." = "Escaneamento cancelado.";
+
+"Destacar Setlist" = "Destacar Setlist";
+
+"Setlist à direita" = "Setlist à direita";
+
+"Setlist à esquerda" = "Setlist à esquerda";
+
+"Parts à esquerda" = "Parts à esquerda";
+"Visibilidade das pistas" = "Visibilidade das pistas";
+"Painel" = "Painel";
+
+"Mostrar Master à direita" = "Mostrar Master à direita";
+
+"Mostrar Master à esquerda" = "Mostrar Master à esquerda";

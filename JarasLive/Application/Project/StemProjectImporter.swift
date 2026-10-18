@@ -21,7 +21,7 @@ struct ImportAudit: Decodable {
 }
 
 /// Runs on a worker task. Audio is read in bounded buffers, never on the UI or audio thread.
-enum AudioDropLayout: String, CaseIterable, Sendable { case separateTracks, sameTrack }
+enum AudioDropLayout: String, CaseIterable, Sendable { case separateTracks, sameTrack, stacked }
 
 enum StemProjectImporter {
     struct DroppedAudio: Sendable { let tracks: [Track]; let folders: [URL]; var folder: URL { folders[0] } }
@@ -74,7 +74,7 @@ enum StemProjectImporter {
         let sources = try droppedSources(urls)
         guard let kind = sources.first?.kind else { throw ProjectError.invalid("No media files to import") }
         guard sources.allSatisfy({ $0.kind == kind }) else { throw ProjectError.invalid("Drop audio and video separately") }
-        if kind != .video {
+        if kind != .video || layout == .stacked {
             guard destinationKind == nil || destinationKind == .standard else { throw ProjectError.invalid("Audio files must be dropped on a standard audio track") }
         }
         let fm = FileManager.default
@@ -117,7 +117,7 @@ enum StemProjectImporter {
                 let itemName = url.deletingPathExtension().lastPathComponent
                 let clip = AudioClip(id: UUID(), name: itemName, startTime: layout == .sameTrack ? cursor : start, duration: source.duration,
                                      waveform: overview.waveform, audioFile: AudioFile(path: mediaPath), waveformChannels: overview.channels)
-                if layout == .sameTrack, !tracks.isEmpty { tracks[0].clips.append(clip) }
+                if layout != .separateTracks, !tracks.isEmpty { tracks[0].clips.append(clip) }
                 else {
                     let trackID = tracks.count < destinationTracks.count ? destinationTracks[tracks.count] : UUID()
                     var track = Track(id: trackID, name: isVideo && destinationKind?.isText == true ? destinationKind!.title : itemName, role: TrackRole(rawValue: isVideo && !destinationTracks.isEmpty && destinationKind != .video ? (destinationKind?.rawValue ?? "other") : "other"), color: Track.defaultStandardColor)

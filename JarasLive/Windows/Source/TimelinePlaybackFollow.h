@@ -1,6 +1,14 @@
 #pragma once
 #include "Common.h"
 namespace catlive {
+inline double timelineZoomPosition(const jaras::TransportState &state) {
+    const double position = state.subPlay.playing ? state.subPlay.position
+                          : state.playing ? state.position : state.editPosition;
+    return std::isfinite(position) ? std::max(0., position) : 0.;
+}
+inline double timelineCenteredZoomOffset(double position, double scale, double contentWidth, double viewportWidth) {
+    return jlimit(0., std::max(0., contentWidth - viewportWidth), position * scale - viewportWidth / 2);
+}
 // Mirrors TimelinePlaybackFollowPolicy.swift, including SubPlay handoffs and
 // backward jumps. Only the presentation scrolls; the transport is never changed.
 struct TimelinePlaybackFollowPolicy {

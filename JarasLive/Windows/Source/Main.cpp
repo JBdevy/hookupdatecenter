@@ -28,7 +28,9 @@ class CatLiveApplication final : public JUCEApplication {
             setBackgroundColour(theme::background);
             setIcon(ImageCache::getFromMemory(BinaryData::icon2561x_png,
                                               BinaryData::icon2561x_pngSize));
-            if (content->isProjectBrowserShowing()) {
+            if (content->isLoginShowing()) {
+                fitLoginWindow(*this);
+            } else if (content->isProjectBrowserShowing()) {
                 fitProjectBrowserWindow(*this);
             } else {
                 fitEditorWindow(*this);
@@ -106,6 +108,7 @@ class CatLiveApplication final : public JUCEApplication {
         }
         try {
             const bool previewHome = args.contains("--home-preview");
+            tooltips = std::make_unique<TooltipWindow>(nullptr, 650);
             const bool projectPreview = args.contains("--project-preview");
             const bool gridImportTest = args.contains("--grid-import-test");
             const bool visualTest = args.contains("--visual-test") || projectPreview || gridImportTest;
@@ -218,6 +221,7 @@ class CatLiveApplication final : public JUCEApplication {
         }
     }
     void shutdown() override {
+        tooltips.reset();
         splash.reset();
         window.reset();
         lighting.reset();
@@ -299,6 +303,7 @@ class CatLiveApplication final : public JUCEApplication {
     std::unique_ptr<Lighting> lighting;
     std::unique_ptr<Window> window;
     std::unique_ptr<StartupSplash> splash;
+    std::unique_ptr<TooltipWindow> tooltips;
 };
 } // namespace catlive
 START_JUCE_APPLICATION(catlive::CatLiveApplication)

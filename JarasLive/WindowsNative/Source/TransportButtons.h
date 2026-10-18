@@ -134,7 +134,21 @@ class TransportButtons final {
         }else if(s.icon==L"pause"){rect(2,1,4.5f,11);rect(7.5f,1,10,11);}
         else if(s.icon==L"stopall")rect(1.5f,1.5f,10.5f,10.5f);
         else if(s.icon==L"record")t->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x+6,y+6),4,4),brush.Get(),1.2f);
-        else if(s.icon==L"loop"){line(1,3,10,3);line(10,3,10,7);line(8,1,10,3);line(8,5,10,3);line(11,9,2,9);line(2,9,2,5);line(4,7,2,9);line(4,11,2,9);}
+        else if(s.icon==L"loop"){
+            Ptr<ID2D1PathGeometry> path;factory->CreatePathGeometry(&path);Ptr<ID2D1GeometrySink> sink;
+            if(path&&SUCCEEDED(path->Open(&sink))){
+                sink->BeginFigure(D2D1::Point2F(x+1,y+7),D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddLine(D2D1::Point2F(x+1,y+5));
+                sink->AddBezier(D2D1::BezierSegment(D2D1::Point2F(x+1,y+3),D2D1::Point2F(x+2,y+2.5f),D2D1::Point2F(x+4,y+2.5f)));
+                sink->AddLine(D2D1::Point2F(x+10,y+2.5f));sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->BeginFigure(D2D1::Point2F(x+11,y+5),D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddLine(D2D1::Point2F(x+11,y+7));
+                sink->AddBezier(D2D1::BezierSegment(D2D1::Point2F(x+11,y+9),D2D1::Point2F(x+10,y+9.5f),D2D1::Point2F(x+8,y+9.5f)));
+                sink->AddLine(D2D1::Point2F(x+2,y+9.5f));sink->EndFigure(D2D1_FIGURE_END_OPEN);sink->Close();
+                t->DrawGeometry(path.Get(),brush.Get(),1.3f);
+            }
+            line(8,0.5f,10,2.5f);line(8,4.5f,10,2.5f);line(4,7.5f,2,9.5f);line(4,11.5f,2,9.5f);
+        }
         else if(s.icon==L"metronome"){line(3,1,0,11);line(0,11,11,11);line(11,11,8,1);line(8,1,3,1);line(6,9,2,3);line(2,3,0,3);}
         if(layout)t->DrawTextLayout(D2D1::Point2F(x+iconSize+3,0),layout.Get(),brush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
         if(s.dimming>0){brush->SetColor(D2D1::ColorF(0,0,0,s.dimming));t->FillRectangle(D2D1::RectF(0,0,width,height),brush.Get());}

@@ -110,11 +110,20 @@ int main() {
     escape.execute({CommandKind::toggleLoop});
     assert(escape.transport().loop.start == 0 && escape.transport().loop.end == 10);
     escape.advance(12); assert(near(escape.transport().position, 2));
+    escape.execute({CommandKind::queueSection,"b"});
+    assert(escape.transport().queuedSectionMarkerId=="b" && near(escape.transport().editPosition,20));
+    const auto escapeSerial=escape.transport().sectionJumpSerial;
+    escape.execute({CommandKind::escape,"",1});
+    assert(!escape.transport().queuedSectionMarkerId && !escape.transport().sectionQueueStartedAt);
+    assert(escape.transport().loop.enabled && escape.transport().loop.start==0 && escape.transport().loop.end==10);
+    assert(escape.transport().queuedRegionId=="next" && escape.project().regionSetlist->autoAdvance);
+    assert(escape.transport().playing && near(escape.transport().position,2) && near(escape.transport().editPosition,10));
     escape.execute({CommandKind::escape,"",1});
     assert(!escape.transport().loop.enabled && escape.project().regionSetlist->autoAdvance);
     assert(escape.transport().queuedRegionId == "next");
     escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);
     assert(!escape.project().regionSetlist->autoAdvance);
+    assert(escape.transport().sectionJumpSerial==escapeSerial && near(escape.transport().position,2));
     escape.execute({CommandKind::queueRegion,"next"}); escape.execute({CommandKind::escape,"",1});
     assert(!escape.transport().queuedRegionId); // Queue cancellation wins over an area selection.
     escape.execute({CommandKind::escape}); assert(!escape.transport().queuedRegionId);

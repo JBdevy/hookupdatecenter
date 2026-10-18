@@ -120,13 +120,14 @@ final class TrackCreationTests: XCTestCase {
         XCTAssertEqual(show.addTracks(name: "Ignored", role: TrackRole(rawValue: "teleprompt2"), count: 1, after: child.id).count, 1)
         XCTAssertEqual(show.addTracks(name: "Ignored", role: TrackRole(rawValue: "timecode"), count: 1, after: child.id).count, 1)
         XCTAssertEqual(show.addTracks(name: "Ignored", role: .chords, count: 1, after: child.id).count, 1)
-        XCTAssertEqual(show.current?.tracks.map(\.name), ["Timecode", "Chords", "Teleprompter 1", "Teleprompter 2", "Video", "Folder", "Child"])
+        XCTAssertEqual(show.addTracks(name: "Ignored", role: TrackRole(rawValue: "generatedClick"), count: 1, after: child.id).count, 1)
+        XCTAssertEqual(show.current?.tracks.map(\.name), ["Timecode", "Teleprompter 1", "Teleprompter 2", "Chords", "Click", "Video", "Folder", "Child"])
         XCTAssertEqual(show.current?.tracks[0].patch, OutputPatch.none)
         XCTAssertNotNil(show.current?.tracks[0].timecode)
         XCTAssertTrue(show.addTracks(name: "Timecode", role: TrackRole(rawValue: "timecode"), count: 1).isEmpty)
         XCTAssertTrue(show.addTracks(name: "Video", role: TrackRole(rawValue: "video"), count: 2).isEmpty)
         let editsBeforeDuplicates = (show.current?.tracks.count ?? 0)
-        for kind: TrackKind in [.timecode, .chords, .teleprompt, .teleprompt2, .video] {
+        for kind: TrackKind in [.timecode, .teleprompt, .teleprompt2, .chords, .click, .video] {
             XCTAssertTrue(show.addTracks(name: kind.title, role: TrackRole(rawValue: kind.rawValue), count: 1).isEmpty, "Duplicated \(kind.title)")
             XCTAssertEqual(show.message, "A \(kind.title) track already exists.")
             XCTAssertNil(show.addTrack(name: kind.title, role: TrackRole(rawValue: kind.rawValue)), "Legacy creation also rejects duplicated \(kind.title)")

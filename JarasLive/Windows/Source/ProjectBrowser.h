@@ -36,7 +36,7 @@ struct RecentProjects {
     }
 };
 
-class ProjectBrowser final : public Component, private ListBoxModel {
+class ProjectBrowser final : public Component, private ListBoxModel, private Timer {
   public:
     ProjectBrowser();
     void paint(Graphics &) override;
@@ -46,6 +46,12 @@ class ProjectBrowser final : public Component, private ListBoxModel {
         browse, resume;
     std::function<void(File)> open, deleteProject;
     void setProjectOpen(bool);
+    void beginLoading(const File &);
+    void updateLoading(const String &);
+    void finishLoading(const String &error = {});
+    bool isLoading() const { return loading; }
+    String loadingMessage() const { return loadingStatus.getText(); }
+    String loadingFailure() const { return loadingError.getText(); }
 
   private:
     class Action final : public Button {
@@ -70,13 +76,18 @@ class ProjectBrowser final : public Component, private ListBoxModel {
     TextButton browseButton{String::fromUTF8("Procurar…")};
     TextEditor search;
     ListBox recents;
+    Label loadingStatus, loadingError;
+    juce::Rectangle<int> spinnerBounds;
     StringArray filtered;
     enum Mode { none, creating, adding, opening } mode = none;
     bool projectOpen = false;
+    bool loading = false;
     int getNumRows() override { return filtered.size(); }
     void paintListBoxItem(int, Graphics &, int, int, bool) override;
     void listBoxItemClicked(int, const MouseEvent &) override;
     void returnKeyPressed(int) override;
     void selectMode(Mode);
+    void updateEnabled();
+    void timerCallback() override { repaint(spinnerBounds); }
 };
 } // namespace catlive

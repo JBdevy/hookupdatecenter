@@ -7,9 +7,16 @@ namespace catlive {
 inline bool stemDevelopmentTesting = false;
 class NativeFX {
 public:
+    struct PreparationCancelled : std::runtime_error {
+        PreparationCancelled() : std::runtime_error("Abertura do projeto cancelada.") {}
+    };
+    // Project preparation can run off the UI thread, but VST3 controllers must
+    // be constructed on it. The dispatcher completes the operation or throws.
+    using Dispatcher = std::function<void(std::function<void()>)>;
     NativeFX();~NativeFX();
     void swap(NativeFX &) noexcept;
-    void prepare(const var& settings,double sampleRate,const NativeFX *previous=nullptr,bool offline=false,bool prewarm=true);
+    void prepare(const var& settings,double sampleRate,const NativeFX *previous=nullptr,bool offline=false,bool prewarm=true,
+                 const Dispatcher &pluginDispatcher = {});
     void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN());
     bool hasExternal() const;
     unsigned latencyFrames() const;

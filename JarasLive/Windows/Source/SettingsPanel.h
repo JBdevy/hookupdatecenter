@@ -190,7 +190,8 @@ class SettingsPanel final : public Component, private Timer {
                     if(safe && chooser.getResult().isDirectory()) VST3Catalog::shared().addPath(chooser.getResult());
                 });
         });
-        addButton("Escanear plugins",204,y,160,[] { VST3Catalog::shared().scan(); });y+=44;
+        addButton(catalog.scanning?"Cancelar escaneamento":"Escanear plugins",204,y,180,[] { auto &catalog=VST3Catalog::shared(); if(catalog.scanning)catalog.cancelScan();else catalog.scan(); });
+        deviceFields.getLast()->setEnabled(true); y+=44;
         addLabel(catalog.status,y,64);y+=72;
         if (catalog.scanning) {
             auto *label = new Label(); deviceFields.add(label); page.addAndMakeVisible(label); scanningPlugin = label;
@@ -199,7 +200,6 @@ class SettingsPanel final : public Component, private Timer {
             auto *bar = new ProgressBar(catalog.scanProgress); deviceFields.add(bar); page.addAndMakeVisible(bar);
             bar->setBounds(24,y,580,16); bar->setPercentageDisplay(true); y+=36;
         }
-        for(const auto &plugin:catalog.plugins){addLabel(str(plugin,"name")+" · "+str(plugin,"vendor"),y);y+=30;}
         contentHeight=y+36;localization::panel(page);resized();
     }
     void updateDevices() {

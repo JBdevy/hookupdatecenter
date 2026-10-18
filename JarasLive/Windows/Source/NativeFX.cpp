@@ -27,7 +27,8 @@ void NativeFX::swap(NativeFX &other)noexcept {
     effects.swap(other.effects);
     unsupported.swapWith(other.unsupported);
 }
-void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *previous,bool offline,bool prewarm) {
+void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *previous,bool offline,bool prewarm,
+                       const Dispatcher &pluginDispatcher) {
     effects.clear();
     unsupported.clear();
     auto append = [&](String kind, const String &key, const var &value) {
@@ -205,12 +206,31 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                         if(stream.getDataSize())bytes.assign(data,data+stream.getDataSize());
                     };
                     decode("componentState",state.component);decode("controllerState",state.controller);
-                    e->plugin=std::make_shared<native::vst3::Processor>(description,state,sampleRate,4096);
+                    // A queued constructor may finish after its load was
+                    // cancelled. Own its result independently of this Effect.
+                    auto result=std::make_shared<std::shared_ptr<native::vst3::Processor>>();
+                    const auto *manager=MessageManager::getInstanceWithoutCreating();
+                    const bool affine=bool(pluginDispatcher)||(manager&&manager->isThisTheMessageThread());
+                    auto create=[result,description=std::move(description),state=std::move(state),sampleRate,affine] {
+                        auto *processor=new native::vst3::Processor(description,state,sampleRate,4096);
+                        *result=std::shared_ptr<native::vst3::Processor>(processor,[affine](auto *value) {
+                            auto *manager=MessageManager::getInstanceWithoutCreating();
+                            if(affine&&manager&&!manager->isThisTheMessageThread()) {
+                                // Controller termination (including native child
+                                // windows) follows construction's UI affinity.
+                                if(MessageManager::callAsync([value]{delete value;}))return;
+                            }
+                            delete value;
+                        });
+                    };
+                    if(pluginDispatcher)pluginDispatcher(std::move(create));else create();
+                    e->plugin=std::move(*result);
                 }
                 effects.push_back(std::move(e));
                 break;
             }
-            }catch(const std::exception &e){if(previous)throw;unsupported.addIfNotAlreadyThere(key+": "+String::fromUTF8(e.what()));}
+            }catch(const PreparationCancelled &){throw;}
+            catch(const std::exception &e){if(previous)throw;unsupported.addIfNotAlreadyThere(key+": "+String::fromUTF8(e.what()));}
             continue;
         }
         auto value = settings;

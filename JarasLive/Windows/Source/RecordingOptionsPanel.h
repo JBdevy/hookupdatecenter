@@ -32,10 +32,12 @@ class RecordingOptionsPanel final : public Component, private Timer {
         };
         addAndMakeVisible(format);
         format.setComponentID("recordingFormat");
-        format.addItem(localization::english ? "Use Advanced setting" : String::fromUTF8("Usar configuração do Advanced"), 1);
+        const Appearance settings;
+        const auto inheritedFormat=settings.value("jaras.media.record.format","WAV").toString();
+        const auto inheritedQuality=inheritedFormat=="MP3" ? String((int)settings.value("jaras.media.record.bitrate",320))+" kbps" : String((int)settings.value("jaras.media.record.bits",24))+"bit";
+        format.addItem("Default - "+inheritedFormat+" "+inheritedQuality, 1);
         format.addItem(String::fromUTF8("WAV · 24-bit PCM"), 2);
         format.addItem(String::fromUTF8("WAV · 32-bit float"), 3);
-        const Appearance settings;
         format.addItem(String::fromUTF8("MP3 · ") + String((int)settings.value("jaras.media.record.bitrate", 320)) + " kbps", 4);
         format.onChange = [this] {
             const int choice = format.getSelectedId();

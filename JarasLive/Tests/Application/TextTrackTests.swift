@@ -37,7 +37,7 @@ final class TextTrackTests: XCTestCase {
         let second = Track(id: UUID(), name: "Chords", role: .chords)
         project.songs[0].tracks.insert(second, at: 0)
         project.orderSpecialTracks()
-        XCTAssertEqual(project.songs[0].tracks.map(\.kind), [.chords, .chords, .teleprompt, .standard])
+        XCTAssertEqual(project.songs[0].tracks.map(\.kind), [.teleprompt, .chords, .chords, .standard])
         XCTAssertEqual(project.songs[0].tracks.filter { $0.kind == .chords }.map(\.id), [second.id, fixtureChordsID(project)])
         XCTAssertEqual(TrackRole.chords.rawValue, "chords")
         XCTAssertEqual(TrackKind.chords.title, "Chords")

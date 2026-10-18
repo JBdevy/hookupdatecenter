@@ -1,6 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import Combine
+
+enum SetlistPlacement: String { case left, right, detached }
+
 struct TransportView: View {
     @State private var showingPortableExport = false
     @State private var showingExport = false
@@ -18,15 +21,24 @@ struct TransportView: View {
     var setlistCollapsed = false
     var toggleMixer: () -> Void = {}
     var toggleSetlist: () -> Void = {}
+    var setlistPlacement: SetlistPlacement = .right
+    var placeSetlist: (SetlistPlacement) -> Void = { _ in }
     init(show: ShowController, documents: ProjectDocuments? = nil, remotePresentation: Bool = false,
          mediaDirectory: URL? = nil, toggleNavigation: @escaping () -> Void = {}, openSettings: @escaping () -> Void = {},
          mixerCollapsed: Bool = false, setlistCollapsed: Bool = false,
-         toggleMixer: @escaping () -> Void = {}, toggleSetlist: @escaping () -> Void = {}) {
+         toggleMixer: @escaping () -> Void = {}, toggleSetlist: @escaping () -> Void = {},
+         setlistPlacement: SetlistPlacement = .right, placeSetlist: @escaping (SetlistPlacement) -> Void = { _ in }) {
         self.show = show; self.documents = documents; self.remotePresentation = remotePresentation
         self.mediaDirectory = mediaDirectory; self.toggleNavigation = toggleNavigation; self.openSettings = openSettings
         self.mixerCollapsed = mixerCollapsed; self.setlistCollapsed = setlistCollapsed
         self.toggleMixer = toggleMixer; self.toggleSetlist = toggleSetlist
+        self.setlistPlacement = setlistPlacement; self.placeSetlist = placeSetlist
         _updates = StateObject(wrappedValue: show.presentationObserver)
+    }
+    @ViewBuilder private func setlistPositionOption(_ title: String, _ placement: SetlistPlacement) -> some View {
+        Toggle(LocalizedStringKey(title), isOn: Binding(
+            get: { setlistPlacement == placement },
+            set: { selected in if selected { placeSetlist(placement) } }))
     }
     var body: some View {
         GeometryReader { geometry in
@@ -151,6 +163,15 @@ struct TransportView: View {
                     Spacer(minLength: 0)
                     PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist", tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
                         .frame(width: buttonWidth, height: TransportControlMetrics.height)
+                        #if os(macOS)
+                        .contextMenu {
+                            if !remotePresentation {
+                                setlistPositionOption("Destacar Setlist", .detached)
+                                setlistPositionOption("Setlist à direita", .right)
+                                setlistPositionOption("Setlist à esquerda", .left)
+                            }
+                        }
+                        #endif
                 }
             }.frame(maxWidth: .infinity)
 

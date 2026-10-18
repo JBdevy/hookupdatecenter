@@ -181,6 +181,9 @@ void Lighting::saveSettings() {
 void Lighting::refresh(bool assignMissing) {
     regions.clear();
     resolumeCues.clear();
+    // Both exporters use the same leaf-song scope. Unified parent blocks and
+    // markers in gaps never become a song, executor, deck or cue.
+    resolumeRegions = buildResolumeRegions(session.project());
     if (!mapCommitted)
         starts = object();
     double nextStart = 0;
@@ -207,32 +210,16 @@ void Lighting::refresh(bool assignMissing) {
                 nextStart = num(reserve, "end") + 60;
             }
         }
-        auto append = [&](ID id, String name, double start, double end) {
-            LightingRegion r;
-            r.id = id;
-            r.songId = song.id;
-            r.name = name;
-            r.start = base + start;
-            r.end = base + end;
-            r.localStart = start;
-            r.cues.push_back({"region-" + id, "Inicio", r.start, true});
-            if (song.markers)
-                for (const auto &m : *song.markers)
-                    if (!m.tempoBPM && m.position > start + .0005 && m.position < end - .0005)
-                        r.cues.push_back({m.id, text(m.name), base + m.position, false});
-            std::stable_sort(r.cues.begin(), r.cues.end(),
-                             [](const auto &a, const auto &b) { return a.position < b.position; });
-            regions.push_back(std::move(r));
-        };
-        if (song.parts.empty())
-            append(song.id, text(song.name), 0, song.duration);
-        else
-            for (const auto &p : song.parts)
-                if (!p.parentRegionID)
-                    append(p.id, text(p.name), p.startTime, p.endTime);
+        for (const auto &source : resolumeRegions) if (source.songId == song.id) {
+            auto region = source;
+            region.start += base; region.end += base;
+            for (auto &cue : region.cues) {
+                cue.position += base;
+            }
+            regions.push_back(std::move(region));
+        }
     }
     assignments = buildAssignments(regions, assignments, assignMissing);
-    resolumeRegions = buildResolumeRegions(session.project());
     resolumeAssignments = buildResolumeAssignments(resolumeRegions, resolumeAssignments, true);
     resolumeRegionsOnly = buildResolumeAssignments(resolumeRegions, resolumeRegionsOnly, false);
     for (auto &r : regions) {
@@ -472,10 +459,10 @@ std::vector<LightingRegion> Lighting::buildResolumeRegions(const jaras::Project 
                 LightingRegion r;
                 r.id = part.id;
                 r.songId = song.id;
-                r.name = text(part.name);
+                r.name = cleanName(text(part.name), "Musica");
                 r.start = r.localStart = part.startTime;
                 r.end = part.endTime;
-                r.cues.push_back({"region-" + part.id, "Start", part.startTime, true});
+                r.cues.push_back({"region-" + part.id, "Inicio", part.startTime, true});
                 regions.push_back(std::move(r));
             }
         std::sort(regions.begin(), regions.end(), [](const auto &a, const auto &b) {
@@ -483,7 +470,7 @@ std::vector<LightingRegion> Lighting::buildResolumeRegions(const jaras::Project 
         });
         if (song.markers)
             for (const auto &marker : *song.markers)
-                if (!marker.tempoBPM && !marker.sourceRegionID) {
+                if (!marker.tempoBPM && !marker.sourceRegionID && !marker.unifiedRegionID) {
                     LightingRegion *owner = nullptr;
                     for (auto &r : regions)
                         if (marker.position > r.start + .0005 && marker.position < r.end - .0005 &&
@@ -491,7 +478,7 @@ std::vector<LightingRegion> Lighting::buildResolumeRegions(const jaras::Project 
                             owner = &r;
                     if (owner)
                         owner->cues.push_back(
-                            {marker.id, text(marker.name), marker.position, false});
+                            {marker.id, cleanName(text(marker.name)), marker.position, false});
                 }
         for (auto &region : regions) {
             std::sort(region.cues.begin() + 1, region.cues.end(), [](const auto &a, const auto &b) {

@@ -6,19 +6,21 @@ namespace catlive {
 class EffectInsertPanel final : public Component, private ListBoxModel, private Timer {
   public:
     EffectInsertPanel(File directory, std::function<bool(String, String)> insert,
-                      std::function<void()> close, bool allowInstruments = true)
+                      std::function<void()> close, bool allowInstruments = true, bool allowStemSeparator = true)
         : projectDirectory(std::move(directory)), apply(std::move(insert)),
           dismiss(std::move(close)), list("Instrument catalog", this), allowsInstruments(allowInstruments) {
         setComponentID("effectInsertPanel");
-        addAndMakeVisible(effect);
+        addAndMakeVisible(effect); effect.setComponentID("effectKind");
         effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"}, 1);
         if (allowInstruments) effect.addItem(String::fromUTF8("Instrumentos"), 7);
-        effect.addItem("CatStemSeparation 5", 9);
+        if (allowStemSeparator) effect.addItem("CatStemSeparation 5", 9);
         effect.addItem("Externo (VST3)", 8);
         effect.setSelectedId(1, dontSendNotification);
-        effect.onChange = [this] { selected.clear();browse.setButtonText("Escolher um plugin");refresh();updateLayout(); };
-        addAndMakeVisible(browse); browse.setButtonText("Escolher um plugin"); browse.onClick=[this]{chooseExternal();};
-        addAndMakeVisible(scanPlugins); scanPlugins.onClick=[] { VST3Catalog::shared().scan(); }; scanPlugins.getProperties().set("flat",true);
+        effect.onChange = [this] {
+            selected.clear();
+            if (external()) { chooseExternal(); return; }
+            refresh(); updateLayout();
+        };
         const StringArray names{String::fromUTF8("Piano de cauda"),
                                 "Piano vertical",
                                 String::fromUTF8("Pianos elétricos"),
@@ -52,7 +54,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         list.setColour(ListBox::backgroundColourId, theme::panel);
         list.setOutlineThickness(0);
         addAndMakeVisible(cancel);
-        addAndMakeVisible(confirm);
+        addAndMakeVisible(confirm); confirm.setComponentID("effectInsertApply");
         addAndMakeVisible(status);
         status.setFont(theme::font(10));
         status.setColour(Label::textColourId, theme::yellow);
@@ -85,12 +87,10 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
     }
     void resized() override {
         effect.setBounds(72, catalog() ? 56 : 82, 230, 26);
-        browse.setBounds(28,96,180,28);
         const int cell = (getWidth() - 56) / 4;
         for (int i = 0; i < categories.size(); ++i)
             categories[i]->setBounds(28 + i % 4 * cell, 96 + i / 4 * 33, cell - 5, 28);
         list.setBounds(28, 233, getWidth() - 56, std::max(40, getHeight() - 300));
-        if(external()) { browse.setBounds(28,100,getWidth()-56,32); scanPlugins.setBounds(28,146,160,28); }
         const int bottom = getHeight() - (catalog() ? 40 : 58);
         cancel.setBounds(28, bottom, 80, 25);
         confirm.setBounds(getWidth() - 94, bottom, 66, 25);
@@ -100,13 +100,11 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         const bool show = instruments();
         for (auto *b : categories)
             b->setVisible(show);
-        browse.setVisible(external());
         list.setVisible(instruments());
-        scanPlugins.setVisible(external());
         status.setVisible(catalog());
-        setSize(460, external() ? 310 : instruments() ? 500 : 214);
+        setSize(460, instruments() ? 500 : 214);
         if (auto *window = findParentComponentOfClass<DocumentWindow>())
-            window->setContentComponentSize(460, external() ? 310 : instruments() ? 500 : 214);
+            window->setContentComponentSize(460, instruments() ? 500 : 214);
         resized();
         updateConfirm();
         repaint();
@@ -136,14 +134,15 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
     ListBox list;
     Label status;
     TextButton cancel{"Cancelar"}, confirm{"Aplicar"};
-    TextButton browse{"Escolher VST3..."};
     class BrowserWindow final : public DocumentWindow {
       public:
-        BrowserWindow() : DocumentWindow("Externo", theme::panel, DocumentWindow::closeButton) { setUsingNativeTitleBar(false); setResizable(true,true); setResizeLimits(680,390,1400,1000); }
-        void closeButtonPressed() override { setVisible(false); }
+        explicit BrowserWindow(std::function<void()> close) : DocumentWindow("Externo (VST3)", theme::panel, DocumentWindow::closeButton), dismiss(std::move(close)) { setUsingNativeTitleBar(false); setResizable(true,true); setResizeLimits(620,390,1400,1000); setComponentID("externalPluginBrowserWindow"); }
+        void closeButtonPressed() override { dismiss(); }
+      private:
+        std::function<void()> dismiss;
     };
     std::unique_ptr<BrowserWindow> browser;
-    TextButton scanPlugins{"Escanear plugins"};
+    bool insertingExternal = false;
     std::vector<var> items;
     int category = 0;
     bool allowsInstruments=true;
@@ -151,17 +150,34 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
     std::shared_ptr<Download> job;
     bool instruments() const { return effect.getSelectedId() == 7; }
     bool external() const { return effect.getSelectedId() == 8; }
-    bool catalog() const { return instruments()||external(); }
+    bool catalog() const { return instruments(); }
     void chooseExternal() {
         if (browser && browser->isVisible()) { browser->toFront(true); return; }
-        browser = std::make_unique<BrowserWindow>(); browser->setLookAndFeel(&getLookAndFeel());
         auto safe = SafePointer<EffectInsertPanel>(this);
+        auto close = [safe] {
+            if (!safe || safe->insertingExternal) return;
+            if (safe->browser) safe->browser->setVisible(false);
+            auto dismiss = safe->dismiss;
+            dismiss();
+        };
+        browser = std::make_unique<BrowserWindow>(close); browser->setLookAndFeel(&getLookAndFeel());
         auto *content = new ExternalPluginBrowser([safe](var plugin) {
+            if (!safe || safe->insertingExternal) return;
+            safe->insertingExternal = true;
+            // Selection is the insertion action. The EffectsPanel callback also
+            // opens the plugin editor; keep the catalog available if it fails.
+            auto insert = safe->apply;
+            const bool inserted = insert("External", JSON::toString(plugin,true));
             if (!safe) return;
-            safe->selected = JSON::toString(plugin,true);
-            safe->browse.setButtonText(str(plugin,"name")); safe->updateConfirm();
-        }, [safe] { if(safe && safe->browser) safe->browser->setVisible(false); },allowsInstruments);
-        browser->setContentOwned(content,true); browser->centreAroundComponent(getTopLevelComponent(),760,490);
+            if (!inserted) { safe->insertingExternal = false; return; }
+            if (safe->browser) safe->browser->setVisible(false);
+            auto dismiss = safe->dismiss;
+            dismiss();
+        }, close, allowsInstruments);
+        browser->setContentOwned(content,true); browser->setContentComponentSize(680,VST3Catalog::shared().scanning?482:422);
+        browser->centreAroundComponent(getTopLevelComponent(),browser->getWidth(),browser->getHeight());
+        // Replace the insertion chooser instead of leaving an extra Apply window.
+        if (auto *window = findParentComponentOfClass<DocumentWindow>()) window->setVisible(false);
         browser->setVisible(true); browser->toFront(true);
     }
     static String categoryID(int index) {
@@ -185,7 +201,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
     }
     void updateConfirm() {
         confirm.setEnabled(
-            external()?selected.isNotEmpty():!instruments() ||
+            !instruments() ||
             selected.isNotEmpty() &&
                 instrumentAssets::resolve(selected, projectDirectory).existsAsFile());
     }
@@ -297,11 +313,6 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         });
     }
     void timerCallback() override {
-        if(external()) {
-            const auto &catalog = VST3Catalog::shared();
-            scanPlugins.setEnabled(!catalog.scanning);
-            status.setText(catalog.status,dontSendNotification);
-        }
         if (!job)
             return;
         const int state = job->state.load(std::memory_order_acquire);

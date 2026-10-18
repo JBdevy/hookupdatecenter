@@ -19,6 +19,24 @@ struct SectionButtonsIcon: View {
     }
 }
 
+struct PartsListIcon: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Capsule().frame(width: 17, height: 2)
+            Capsule().frame(width: 12, height: 2)
+            Capsule().frame(width: 7, height: 2)
+        }.frame(width: 17, height: 16).accessibilityHidden(true)
+    }
+}
+
+private struct SectionCancelButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        // Keep the explicit yellow treatment while .disabled still blocks the
+        // action and exposes the unavailable state to accessibility.
+        configuration.label
+    }
+}
+
 /// Button layout changes at section boundaries, never for each position sample.
 /// The small native progress layers read the same authoritative clock directly.
 @MainActor private final class SectionPanelObserver: ObservableObject {
@@ -65,6 +83,61 @@ struct SectionButtonsIcon: View {
 }
 
 #if os(macOS)
+private struct PartsScrollbar: NSViewRepresentable {
+    let controller: SidebarScrollController
+    func makeNSView(context: Context) -> PartsScrollbarView { PartsScrollbarView() }
+    func updateNSView(_ view: PartsScrollbarView, context: Context) { view.attach(controller) }
+    static func dismantleNSView(_ view: PartsScrollbarView, coordinator: ()) { view.attach(nil) }
+}
+private final class PartsScrollbarView: NSView {
+    private var controller: SidebarScrollController?
+    private var observation: UUID?
+    private var dragY: CGFloat?
+    private var dragOffset: CGFloat = 0
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard controller?.metrics.canScroll == true else { return nil }
+        return super.hitTest(point)
+    }
+    func attach(_ controller: SidebarScrollController?) {
+        guard self.controller !== controller else { return }
+        if let observation { self.controller?.removeObserver(observation) }
+        self.controller = controller
+        observation = controller?.observe { [weak self] in self?.needsDisplay = true }
+        needsDisplay = true
+    }
+    private var thumb: NSRect {
+        guard let metrics = controller?.metrics, metrics.canScroll else { return .zero }
+        let height = max(0, bounds.height - 6)
+        let length = min(height, max(20, height * metrics.viewportHeight / metrics.documentHeight))
+        let y = 3 + (height - length) * metrics.offset / metrics.maximumOffset
+        return NSRect(x: bounds.midX - 2, y: y, width: 4, height: length)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        guard controller?.metrics.canScroll == true else { return }
+        NSColor(white: 0.22, alpha: 1).setFill()
+        NSBezierPath(roundedRect: NSRect(x: bounds.midX - 1, y: 3, width: 2, height: max(0, bounds.height - 6)), xRadius: 1, yRadius: 1).fill()
+        NSColor(calibratedRed: 84.0 / 255, green: 1, blue: 147.0 / 255, alpha: 1).setFill()
+        NSBezierPath(roundedRect: thumb, xRadius: 2, yRadius: 2).fill()
+    }
+    override func mouseDown(with event: NSEvent) {
+        guard let controller, controller.metrics.canScroll else { return }
+        let y = convert(event.locationInWindow, from: nil).y
+        let travel = max(1, bounds.height - 6 - thumb.height)
+        if y < thumb.minY || y > thumb.maxY {
+            controller.scroll(to: (y - 3 - thumb.height / 2) / travel * controller.metrics.maximumOffset)
+        }
+        dragY = y; dragOffset = controller.metrics.offset
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let controller, let dragY else { return }
+        let delta = convert(event.locationInWindow, from: nil).y - dragY
+        let travel = max(1, bounds.height - 6 - thumb.height)
+        controller.scroll(to: dragOffset + delta / travel * controller.metrics.maximumOffset)
+    }
+    override func mouseUp(with event: NSEvent) { dragY = nil }
+}
+
 private struct NativeSectionProgressBar: NSViewRepresentable {
     let running: Bool
     let countdown: Bool
@@ -131,9 +204,7 @@ struct SmoothSeekPanel: View {
     #else
     @ObservedObject var show: ShowController
     #endif
-    var verticalList = false
-    init(show: ShowController, verticalList: Bool = false) {
-        self.verticalList = verticalList
+    init(show: ShowController) {
         #if os(macOS)
         self.show = show
         _updates = StateObject(wrappedValue: SectionPanelObserver(show: show))
@@ -151,32 +222,24 @@ struct SmoothSeekPanel: View {
             transport.subPlay.playing ? song.sectionRegion(at: transport.subPlay.position) :
                 song.parts.first(where: { $0.id == transport.queuedRegionId })
         }
-        if verticalList {
-            VStack(spacing: 0) {
-                #if os(macOS)
-                Button { show.send(.cancelSection) } label: {
-                    Text("Cancel").font(.jarasSystem(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.black)
-                        .frame(maxWidth: .infinity).frame(height: 26)
-                        .background(Color(hex: 0xffd600))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                    .disabled(transport.queuedSectionMarkerId == nil)
-                    .accessibilityLabel("Cancel queued section")
-                    .padding(4)
-                #endif
-                SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing) { secondary in
-                    bank(region: secondary ? queued : current, secondary: secondary)
-                }
-            }.background(JarasTheme.panel)
-        } else {
-            HStack(spacing: 1) {
-                bank(region: current, secondary: false)
-                Rectangle().fill(JarasTheme.secondary.opacity(0.35)).frame(width: 1)
-                bank(region: queued, secondary: true)
-            }.padding(5).background(JarasTheme.panel)
-        }
+        VStack(spacing: 0) {
+            #if os(macOS)
+            Button { show.send(.cancelSection) } label: {
+                Text("Cancel").font(.jarasSystem(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.black)
+                    .frame(maxWidth: .infinity).frame(height: 26)
+                    .background(Color(hex: 0xffd600))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .contentShape(Rectangle())
+            }.buttonStyle(SectionCancelButtonStyle())
+                .disabled(transport.queuedSectionMarkerId == nil)
+                .accessibilityLabel("Cancel queued section")
+                .padding(4)
+            #endif
+            SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing) { secondary in
+                bank(region: secondary ? queued : current, secondary: secondary)
+            }
+        }.background(JarasTheme.panel)
     }
     private func bank(region: Part?, secondary: Bool) -> some View {
         let markers = region.flatMap { part in show.current?.sectionMarkers(in: part) } ?? []
@@ -188,7 +251,7 @@ struct SmoothSeekPanel: View {
             position: secondary && transport.subPlay.playing ? transport.subPlay.position : transport.playing ? transport.position : transport.editPosition ?? transport.position,
             showsPosition: !secondary || transport.subPlay.playing, positionRunning: secondary ? transport.subPlay.playing : transport.playing, queued: transport.queuedSectionMarkerId,
             trigger: trigger, queueStartedAt: transport.sectionQueueStartedAt, playbackPosition: transport.position, playbackRunning: transport.playing,
-            select: { show.send(.queueSection, target: $0) }, verticalList: verticalList,
+            select: { show.send(.queueSection, target: $0) }, verticalList: true,
             regionID: region?.id, regionStart: region?.startTime ?? 0,
             livePosition: { [weak show] in
                 guard let show else { return (0, ProcessInfo.processInfo.systemUptime) }
@@ -220,6 +283,9 @@ struct SmoothSeekBankView: View {
     var regionStart: Double = 0
     var livePosition: (() -> (position: Double, time: Double))? = nil
     var livePlayback: (() -> (position: Double, time: Double))? = nil
+    #if os(macOS)
+    @State private var scrollController = SidebarScrollController()
+    #endif
     private var displayMarkers: [TimelineMarker] {
         guard let regionID else { return markers }
         return [TimelineMarker(id: regionID, name: "INÍCIO", position: regionStart, color: 0x409cff, section: true)] + markers
@@ -234,11 +300,19 @@ struct SmoothSeekBankView: View {
 
     var body: some View {
         if verticalList {
-            ScrollView(.vertical) {
+            ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 5) {
                     ForEach(displayMarkers) { marker in sectionButton(marker).frame(height: buttonHeight) }
                 }.padding(5)
+                    #if os(macOS)
+                    .padding(.trailing, 8)
+                    .background(SidebarScrollProbe(controller: scrollController))
+                    .background(SetlistScrollbarsHidden())
+                    #endif
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                #if os(macOS)
+                .overlay(alignment: .trailing) { PartsScrollbar(controller: scrollController).frame(width: 10) }
+                #endif
         } else {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
@@ -406,15 +480,16 @@ struct SectionListTabs<Content: View>: View {
 /// the handle moves, so a drag never feeds its own layout changes back as input.
 struct SectionListDock<Primary: View, Sections: View>: View {
     let visible: Bool
+    let leading: Bool
     let minimumPrimaryWidth: CGFloat
     @AppStorage private var savedFraction: Double
     @State private var liveWidth: CGFloat?
     @State private var dragStart: CGFloat?
     @ViewBuilder let primary: () -> Primary
     @ViewBuilder let sections: () -> Sections
-    init(visible: Bool, storageKey: String, minimumPrimaryWidth: CGFloat = 140, defaultFraction: Double = 0.45,
+    init(visible: Bool, storageKey: String, minimumPrimaryWidth: CGFloat = 140, defaultFraction: Double = 0.45, leading: Bool = false,
          @ViewBuilder primary: @escaping () -> Primary, @ViewBuilder sections: @escaping () -> Sections) {
-        self.visible = visible; self.minimumPrimaryWidth = minimumPrimaryWidth
+        self.visible = visible; self.leading = leading; self.minimumPrimaryWidth = minimumPrimaryWidth
         _savedFraction = AppStorage(wrappedValue: defaultFraction, storageKey)
         self.primary = primary; self.sections = sections
     }
@@ -422,36 +497,48 @@ struct SectionListDock<Primary: View, Sections: View>: View {
         GeometryReader { geometry in
             let total = max(0, geometry.size.width)
             let handle: CGFloat = 12
-            let available = max(0, total - handle)
+            let available = total
             let width = SmoothSeekPanelLayout.sidebarWidth(available: available,
                 requested: liveWidth ?? available * (savedFraction.isFinite ? savedFraction : 0.45), minimumPrimary: minimumPrimaryWidth)
             HStack(spacing: 0) {
-                primary().frame(width: visible ? max(0, available - width) : total).clipped()
-                if visible {
-                    Rectangle().fill(JarasTheme.line)
-                        .overlay(Capsule().fill(JarasTheme.secondary).frame(width: 2, height: 32))
-                        .frame(width: handle).contentShape(Rectangle())
-                        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                            .onChanged { value in
-                                if dragStart == nil { dragStart = width }
-                                liveWidth = SmoothSeekPanelLayout.sidebarWidth(available: available,
-                                    requested: (dragStart ?? width) - value.translation.width, minimumPrimary: minimumPrimaryWidth)
-                            }.onEnded { _ in
-                                savedFraction = (liveWidth ?? width) / max(1, available)
-                                liveWidth = nil; dragStart = nil
-                            })
-                        .accessibilityLabel("Resize sections")
-                        .accessibilityAdjustableAction { direction in
-                            savedFraction = SmoothSeekPanelLayout.sidebarWidth(available: available,
-                                requested: width + (direction == .increment ? 24 : -24), minimumPrimary: minimumPrimaryWidth) / max(1, available)
-                        }
-                        #if os(macOS)
-                        .onHover { inside in (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
-                        .onDisappear { NSCursor.arrow.set() }
-                        #endif
+                if visible && leading {
                     sections().frame(width: width).clipped()
+                }
+                primary().frame(width: visible ? max(0, available - width) : total).clipped()
+                if visible && !leading {
+                    sections().frame(width: width).clipped()
+                }
+            }.overlay(alignment: .leading) {
+                if visible {
+                    resizeHandle(width: width, available: available, handle: handle)
+                        .offset(x: (leading ? width : total - width) - handle / 2)
                 }
             }
         }.onChange(of: visible) { _ in liveWidth = nil; dragStart = nil }
     }
+    private func resizeHandle(width: CGFloat, available: CGFloat, handle: CGFloat) -> some View {
+        Color.clear
+            .overlay(Rectangle().fill(JarasTheme.line).frame(width: 2))
+            .overlay(Capsule().fill(JarasTheme.secondary).frame(width: 2, height: 32))
+            .frame(width: handle).contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { value in
+                    if dragStart == nil { dragStart = width }
+                    liveWidth = SmoothSeekPanelLayout.sidebarWidth(available: available,
+                        requested: (dragStart ?? width) + value.translation.width * (leading ? 1 : -1), minimumPrimary: minimumPrimaryWidth)
+                }.onEnded { _ in
+                    savedFraction = (liveWidth ?? width) / max(1, available)
+                    liveWidth = nil; dragStart = nil
+                })
+            .accessibilityLabel("Resize sections")
+            .accessibilityAdjustableAction { direction in
+                savedFraction = SmoothSeekPanelLayout.sidebarWidth(available: available,
+                    requested: width + (direction == .increment ? 24 : -24), minimumPrimary: minimumPrimaryWidth) / max(1, available)
+            }
+            #if os(macOS)
+            .onHover { inside in (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
+            .onDisappear { NSCursor.arrow.set() }
+            #endif
+    }
+
 }

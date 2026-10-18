@@ -168,6 +168,14 @@ class WaveformCache final {
     }
     // Project opening performs the same analysis/cache validation as the grid,
     // on its worker. The viewport can then map the prepared peaks immediately.
+    static std::shared_ptr<const Data> cachedMetadata(const File &requested) {
+        const auto file = existingMediaPath(requested);
+        if (!file.existsAsFile()) return {};
+        const auto size = file.getSize(), modified = file.getLastModificationTime().toMilliseconds();
+        auto data = readCache(cacheFile(file, size, modified), size, modified);
+        if (!data) data = readCache(macCacheFile(file), size, modified);
+        return data;
+    }
     static void preload(const File &requested, const std::atomic<bool> *cancel = nullptr) {
         if (cancel && cancel->load()) return;
         const auto file = existingMediaPath(requested);
@@ -178,6 +186,25 @@ class WaveformCache final {
         AudioFormatManager formats; registerAudioFormats(formats);
         std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
         if (reader) if (auto data = analyse(*reader, cancel)) writeCache(*data, target, size, modified);
+    }
+    // BPM detection uses the same validated peak hierarchy as the timeline.
+    // Reopening a decoder must not decode the complete show a second time just
+    // to locate attacks that are already present in a prepared waveform cache.
+    static std::shared_ptr<Data> forAnalysis(const File &requested, AudioFormatReader &reader,
+                                              const std::atomic<bool> *cancel = nullptr) {
+        if (cancel && cancel->load()) return {};
+        const auto file = existingMediaPath(requested);
+        const auto size = file.getSize(), modified = file.getLastModificationTime().toMilliseconds();
+        const auto destination = cacheFile(file, size, modified);
+        auto data = readCache(destination, size, modified);
+        if (!data) data = readCache(macCacheFile(file), size, modified);
+        if (data && (data->frames != reader.lengthInSamples || data->sampleRate != reader.sampleRate ||
+                     data->sourceChannels != (int)reader.numChannels)) data.reset();
+        if (!data) {
+            data = analyse(reader, cancel);
+            if (data && !(cancel && cancel->load())) writeCache(*data, destination, size, modified);
+        }
+        return data;
     }
     static std::shared_ptr<Data> analyse(AudioFormatReader &reader, const std::atomic<bool> *cancel = nullptr) {
         if (reader.lengthInSamples <= 0 || reader.sampleRate <= 0 || reader.numChannels == 0 || reader.numChannels > 64) return {};

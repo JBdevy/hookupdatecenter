@@ -4,7 +4,7 @@ namespace catlive {
 void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
     g.setColour(theme::panel.brighter(down ? .12f : over ? .06f : 0.f));
     g.fillRoundedRectangle(getLocalBounds().toFloat(), 6);
-    g.setColour(Colours::white);
+    g.setColour(Colours::white.withAlpha(isEnabled() ? 1.f : .45f));
     auto font = theme::mediumFont(12);
     g.setFont(font);
     const float textWidth = GlyphArrangement::getStringWidth(font, getName());
@@ -60,6 +60,15 @@ ProjectBrowser::ProjectBrowser() {
     addAndMakeVisible(browseButton);
     addAndMakeVisible(search);
     addAndMakeVisible(recents);
+    for (auto *label : {&loadingStatus, &loadingError}) {
+        addChildComponent(*label);
+        label->setFont(theme::font(11));
+        label->setJustificationType(Justification::centredLeft);
+        label->setBorderSize({});
+    }
+    loadingStatus.setComponentID("projectLoadingStatus");
+    loadingError.setComponentID("projectLoadingError");
+    loadingError.setColour(Label::textColourId, Colours::red);
     create.onClick = [this] { selectMode(mode == creating ? none : creating); };
     add.onClick = [this] { selectMode(mode == adding ? none : adding); };
     recent.onClick = [this] { selectMode(opening); };
@@ -109,10 +118,50 @@ void ProjectBrowser::setProjectOpen(bool value) {
     resized();
 }
 void ProjectBrowser::selectMode(Mode value) {
+    if (loading) return;
     mode = value;
     refresh();
     resized();
     repaint();
+}
+void ProjectBrowser::beginLoading(const File &file) {
+    if (loading) return;
+    loading = true;
+    mode = opening;
+    loadingError.setText({}, dontSendNotification);
+    loadingStatus.setText(String::fromUTF8("Carregando projeto…"), dontSendNotification);
+    // Preserve the recent list and its selected row throughout preparation.
+    // A file chosen through Browse can still show progress without being added
+    // to Recents until it has opened successfully.
+    for (int row = 0; row < filtered.size(); ++row)
+        if (File(filtered[row]) == file) {
+            recents.selectRow(row);
+            break;
+        }
+    updateEnabled();
+    startTimerHz(24);
+    resized();
+    repaint();
+}
+void ProjectBrowser::updateLoading(const String &status) {
+    if (loading) loadingStatus.setText(status, dontSendNotification);
+}
+void ProjectBrowser::finishLoading(const String &error) {
+    loading = false;
+    stopTimer();
+    loadingStatus.setText({}, dontSendNotification);
+    loadingError.setText(error, dontSendNotification);
+    updateEnabled();
+    resized();
+    repaint();
+}
+void ProjectBrowser::updateEnabled() {
+    for (auto *button : {&create, &add, &recent, &empty, &stems, &reaper,
+                         &logic, &recording, &package, &back})
+        button->setEnabled(!loading);
+    browseButton.setEnabled(!loading);
+    search.setEnabled(!loading);
+    recents.setEnabled(!loading);
 }
 void ProjectBrowser::refresh() {
     filtered.clear();
@@ -135,6 +184,9 @@ void ProjectBrowser::paint(Graphics &g) {
             g.drawText("Nenhum projeto recente encontrado.", 24, 202, getWidth() - 48, 24,
                        Justification::centredLeft);
     }
+    if (loading)
+        getLookAndFeel().drawSpinningWaitAnimation(g, theme::secondary,
+            spinnerBounds.getX(), spinnerBounds.getY(), spinnerBounds.getWidth(), spinnerBounds.getHeight());
 }
 void ProjectBrowser::resized() {
     int width = getWidth() - 48, cell = (width - 20) / 3;
@@ -167,7 +219,17 @@ void ProjectBrowser::resized() {
     recents.setVisible(mode == opening);
     browseButton.setBounds(getWidth() - 100, 114, 76, 24);
     search.setBounds(24, 148, width, 35);
-    recents.setBounds(24, 193, width, std::min(170, std::max(0, getHeight() - 249)));
+    const bool hasError = loadingError.getText().isNotEmpty();
+    const int statusHeight = loading ? 32 : hasError ? 44 : 0;
+    const int contentBottom = projectOpen ? getHeight() - 64 : getHeight() - 24;
+    const int listHeight = std::min(170, std::max(0, contentBottom - 193 - statusHeight));
+    recents.setBounds(24, 193, width, listHeight);
+    const int statusY = recents.getBottom() + 10;
+    spinnerBounds = {24, statusY + 2, 16, 16};
+    loadingStatus.setBounds(48, statusY, std::max(0, width - 24), 20);
+    loadingError.setBounds(24, statusY, width, 34);
+    loadingStatus.setVisible(loading);
+    loadingError.setVisible(hasError);
     back.setVisible(projectOpen);
     back.setBounds(24, getHeight() - 52, 150, 28);
 }
@@ -192,11 +254,12 @@ void ProjectBrowser::paintListBoxItem(int row, Graphics &g, int width, int heigh
     g.strokePath(chevron, PathStrokeType(1.3f));
 }
 void ProjectBrowser::returnKeyPressed(int row) {
+    if (loading) return;
     if (isPositiveAndBelow(row, filtered.size()) && open)
         open(File(filtered[row]));
 }
 void ProjectBrowser::listBoxItemClicked(int row, const MouseEvent &event) {
-    if (!isPositiveAndBelow(row, filtered.size()))
+    if (loading || !isPositiveAndBelow(row, filtered.size()))
         return;
     if (!event.mods.isPopupMenu()) {
         returnKeyPressed(row);
@@ -207,7 +270,7 @@ void ProjectBrowser::listBoxItemClicked(int row, const MouseEvent &event) {
     const bool missing=!file.existsAsFile();
     menu.addItem(1,missing?"Remove from recents":"Delete project");
     menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&recents),[safe=Component::SafePointer<ProjectBrowser>(this),file,missing](int result){
-        if(!safe || result!=1)return;
+        if(!safe || safe->loading || result!=1)return;
         if(missing){RecentProjects::forget(file);safe->refresh();}
         else if(safe->deleteProject)safe->deleteProject(file);
     });

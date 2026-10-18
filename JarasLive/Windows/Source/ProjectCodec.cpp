@@ -1,6 +1,7 @@
 #include "ProjectCodec.h"
 #include "MediaPath.h"
 #include "FXSchema.h"
+#include "MarkerEditing.h"
 #include <bcrypt.h>
 #include <stdexcept>
 #include <windows.h>
@@ -684,6 +685,18 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 optionalText(rm, "unifiedRegionID", m.unifiedRegionID);
                 optionalText(rm, "sourceRegionID", m.sourceRegionID);
                 optionalText(rm, "regionOwnerID", m.regionOwnerID);
+                // Earlier Windows editors saved typed $/* cues as plain names.
+                // Repair only those non-linked markers inside a song; native
+                // typed markers already store their clean name and flags.
+                if (!m.tempoBPM && !m.section.value_or(false) && !m.unifiedRegionID && !m.sourceRegionID &&
+                    markerEditing::canCreateSection(song, m.position, true)) {
+                    auto typed = m;
+                    markerEditing::applyPrefix(typed);
+                    if (markerEditing::isSection(typed) && text(typed.name).trim().isNotEmpty()) {
+                        typed.name = utf8(unicodeCase(text(typed.name)).substring(0, 256));
+                        m = std::move(typed);
+                    }
+                }
                 song.markers->push_back(std::move(m));
             }
         }

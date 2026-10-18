@@ -826,22 +826,42 @@ void Engine::execute(const Command& c) {
     if (!std::isfinite(c.value)) throw std::invalid_argument("Non-finite control value");
     if (c.kind == CommandKind::stop || c.kind == CommandKind::stopAll || c.kind == CommandKind::seek || c.kind == CommandKind::select || c.kind == CommandKind::selectRegion || c.kind == CommandKind::next || c.kind == CommandKind::previous) resetMultiLoop();
     if (c.kind == CommandKind::stop || c.kind == CommandKind::stopAll || c.kind == CommandKind::seek || c.kind == CommandKind::select || c.kind == CommandKind::selectRegion || c.kind == CommandKind::next || c.kind == CommandKind::previous) transport_.queuedSectionMarkerId.reset();
+    const auto cancelQueuedSection = [&] {
+        if (!transport_.queuedSectionMarkerId) return;
+        transport_.queuedSectionMarkerId.reset();
+        transport_.sectionQueueStartedAt = 0;
+        const auto* song = currentSong();
+        const auto* part = sectionPlaybackRegion();
+        if (!song || !part) return;
+        std::optional<double> next;
+        if (song->markers) for (const auto& marker : *song->markers) {
+            if (!marker.section.value_or(false) || marker.tempoBPM) continue;
+            if (transport_.ignoreNextAfter && marker.position >= *transport_.ignoreNextAfter && marker.regionOwnerID != part->id) continue;
+            if (marker.position > transport_.position + 1e-9 && marker.position <= part->endTime && (!next || marker.position < *next)) next = marker.position;
+        }
+        // Cancel previews the next section or the current song's end,
+        // without seeking audio or restarting paused playback.
+        transport_.editPosition = next.value_or(part->endTime);
+    };
     switch (c.kind) {
     case CommandKind::toggleMultiLoopBypass:
         transport_.multiLoopsBypassed = !transport_.multiLoopsBypassed;
         refreshMultiLoop();
         break;
     case CommandKind::cancelSection:
-        transport_.queuedSectionMarkerId.reset(); transport_.sectionQueueStartedAt = 0;
+        cancelQueuedSection();
         break;
     case CommandKind::queueSection: {
         const auto target = sectionDestination(c.target);
         if (!target) throw std::invalid_argument("Unknown section marker");
+        if (transport_.queuedSectionMarkerId == target->id) { cancelQueuedSection(); break; }
         if (!transport_.playing) { transport_.queuedSectionMarkerId.reset(); execute({CommandKind::editSeek, {}, target->position}); break; }
         const auto* part = sectionPlaybackRegion();
         if (!part) throw std::invalid_argument("Choose a section while a song is playing.");
-        if (transport_.queuedSectionMarkerId == target->id) transport_.queuedSectionMarkerId.reset();
-        else { transport_.queuedSectionMarkerId = target->id; transport_.sectionQueueStartedAt = transport_.position; }
+        transport_.queuedSectionMarkerId = target->id;
+        transport_.sectionQueueStartedAt = transport_.position;
+        // Preview the destination immediately; playback still jumps at its section boundary.
+        execute({CommandKind::editSeek, {}, target->position});
         break;
     }
     case CommandKind::tempo:
@@ -1044,8 +1064,12 @@ void Engine::execute(const Command& c) {
         if (!std::isfinite(c.value) || c.value < 0) throw std::invalid_argument("Invalid loop end");
         transport_.loop.end = c.value; break;
     case CommandKind::escape: {
-        // One cancellation per key press: loop, section jump, then song queue
+        // One cancellation per key press: section jump, loop, then song queue
         // together with Auto. Lower-priority actions stay armed until their turn.
+        if (transport_.queuedSectionMarkerId) {
+            cancelQueuedSection();
+            break;
+        }
         if (transport_.loop.enabled) {
             transport_.loop.enabled = false;
             if (transport_.multiLoop && transport_.multiLoop->gates) {
@@ -1055,11 +1079,6 @@ void Engine::execute(const Command& c) {
                 loop.amount = 1;
             }
             transport_.loop.start.reset(); transport_.loop.end.reset();
-            break;
-        }
-        if (transport_.queuedSectionMarkerId) {
-            transport_.queuedSectionMarkerId.reset();
-            transport_.sectionQueueStartedAt = 0;
             break;
         }
         transport_.loop.start.reset(); transport_.loop.end.reset();

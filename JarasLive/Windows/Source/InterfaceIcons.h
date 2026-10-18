@@ -33,6 +33,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         if (name == "lock") { p.cubicTo(8, 1, 16, 1, 16, 7); p.lineTo(16, 11); }
         else { p.cubicTo(8, 1, 17, 1, 17, 7); }
         line(12, 15, 12, 18);
+    } else if (name == "visibility") {
+        p.startNewSubPath(2,12);p.cubicTo(7,3,17,3,22,12);p.cubicTo(17,21,7,21,2,12);p.closeSubPath();
+        p.addEllipse(8.5f,8.5f,7,7);
     } else if (name == "menu") {
         for (int y : {6, 12, 18})
             line(3, (float)y, 21, (float)y);
@@ -66,13 +69,10 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.addRectangle(5, 4, 4, 9);
         p.addRectangle(10, 4, 4, 9);
         p.addRectangle(15, 4, 4, 9);
-    } else if (name == "railSections") {
-        p.addRoundedRectangle(2, 12, 8, 9, 1);
-        p.addRoundedRectangle(14, 12, 8, 9, 1);
-        line(2, 5, 10, 5);
-        line(14, 5, 22, 5);
-        line(2, 8, 10, 8);
-        line(14, 8, 22, 8);
+    } else if (name == "railParts") {
+        line(3,6,21,6);
+        line(3,12,16,12);
+        line(3,18,11,18);
     } else if (name == "settings" || name == "railSettings") {
         for (int i = 0; i < 16; ++i) {
             const float a = (float)i * MathConstants<float>::twoPi / 16;
@@ -191,14 +191,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.addRoundedRectangle(5, 5, 14, 14, 1);
         fill = true;
     } else if (name == "loop") {
-        line(6, 6, 20, 6);
-        line(17, 3, 20, 6);
-        line(20, 6, 17, 9);
-        line(20, 6, 20, 13);
-        line(18, 18, 4, 18);
-        line(7, 15, 4, 18);
-        line(4, 18, 7, 21);
-        line(4, 18, 4, 11);
+        p.startNewSubPath(2,14);p.lineTo(2,10);p.cubicTo(2,6,4,5,8,5);p.lineTo(20,5);
+        p.startNewSubPath(22,10);p.lineTo(22,14);p.cubicTo(22,18,20,19,16,19);p.lineTo(4,19);
+        line(16,1,20,5);line(16,9,20,5);line(8,15,4,19);line(8,23,4,19);
     } else if (name == "video") {
         p.addRoundedRectangle(2, 5, 14, 14, 2);
         p.startNewSubPath(16, 9);

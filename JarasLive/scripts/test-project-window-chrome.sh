@@ -11,6 +11,11 @@ start = source.index('/// Keep project controls in AppKit')
 end = source.index('\n#endif', start)
 stubs = '''import AppKit
 import SwiftUI
+extension NSFont {
+    static func jarasSystemFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+        .systemFont(ofSize: size, weight: weight)
+    }
+}
 extension Notification.Name {
     static let catliveTrialTitleChanged = Notification.Name("catliveTrialTitleChanged")
 }
@@ -25,5 +30,5 @@ final class ProjectCloseGuard {
 '''
 Path(sys.argv[1]).write_text(stubs + source[start:end] + '\n' + Path('Tests/Apple/ProjectWindowChromeTests.swift').read_text())
 PYTHON
-swiftc -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -swift-version 5 Application/Project/InterfaceScale.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

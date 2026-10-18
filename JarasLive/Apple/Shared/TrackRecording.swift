@@ -791,7 +791,7 @@ struct TrackRecordButton: View {
                     Picker("Format", selection: Binding(get: { track.recordingFormat ?? "" }, set: {
                         show.setRecordingFormat(track.id, format: $0.isEmpty ? nil : $0)
                     })) {
-                        Text("Use Advanced setting").tag("")
+                        Text(verbatim: "Default - " + MediaProcessingFormat.load("record").recordingDisplayName).tag("")
                         Text(verbatim: "WAV · 24-bit PCM").tag("wav")
                         Text(verbatim: "WAV · 32-bit float").tag("wav32")
                         Text(verbatim: "MP3 · \(MediaProcessingFormat.load("record").bitrate) kbps").tag("mp3")

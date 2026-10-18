@@ -212,3 +212,176 @@ print("FOOTER_NATIVE_METERS_CONSTANT_SIGNAL_SCROLL_RESIZE_AND_REVEAL_OK")
 
 }
 MainActor.assumeIsolated { verifyFooterMeters() }
+
+// The same native container is used by the docked and detached mixer. Master
+// lives outside its scrolling document, including an empty song and resizes.
+view.updateMaster(content: AnyView(Color.yellow.frame(width: 83 * 1.25).padding(5)), width: 83 * 1.25, version: 1)
+view.update(width: 100 * 86 + 7, stride: 86, count: 100) { _ in
+    AnyView(Color.green.frame(width: 83).padding(5))
+}
+window.setContentSize(NSSize(width: 640, height: 350)); view.layoutSubtreeIfNeeded()
+private let master = view.subviews.compactMap { $0 as? FooterMixerHostingView }.first!
+let fixedMaster = master.frame
+precondition(abs((master.frame.width - 10) / 83 - 1.25) < 0.001, "Master is 25 percent wider than a track")
+precondition(scroll.frame.minX == 83 * 1.25 + 3 && bar.frame.minX >= scroll.frame.minX,
+             "the scrolling tracks and scrollbar begin to the right of Master")
+for fraction in [0.0, 0.5, 1.0, 0.1] {
+    bar.doubleValue = fraction; bar.sendAction(bar.action, to: bar.target)
+    precondition(master.frame == fixedMaster && master.superview === view,
+                 "horizontal scroll never moves or recycles Master")
+}
+for size in [NSSize(width: 360, height: 240), NSSize(width: 1100, height: 480)] {
+    window.setContentSize(size); view.layoutSubtreeIfNeeded()
+    precondition(master.frame.minX == 0 && master.frame.width == fixedMaster.width &&
+                 master.frame.height == scroll.frame.height && bar.frame.minX >= scroll.frame.minX,
+                 "docked/detached resizing retains Master and excludes it from the scrollbar")
+}
+view.update(width: 7, stride: 86, count: 0) { _ in AnyView(EmptyView()) }
+view.layoutSubtreeIfNeeded()
+precondition(master.superview === view && !master.isHidden && scroll.documentView!.subviews.isEmpty && !bar.isEnabled,
+             "a song without tracks keeps the global Master visible")
+print("MIXER_FIXED_MASTER_WIDER_THAN_TRACKS_AND_PRESERVED_ACROSS_SCROLL_RESIZE_EMPTY_SONG_OK")
+
+view.update(width: 100 * 86 + 7, stride: 86, count: 100) { _ in
+    AnyView(Color.green.frame(width: 83).padding(5))
+}
+view.updateMaster(content: AnyView(Color.yellow.frame(width: 83 * 1.25).padding(5)), width: 83 * 1.25, version: 2, right: true)
+view.layoutSubtreeIfNeeded()
+precondition(view.subviews.compactMap { $0 as? FooterMixerHostingView }.first === master,
+             "Changing sides reuses the same fixed Master host")
+for size in [NSSize(width: 640, height: 350), NSSize(width: 360, height: 240), NSSize(width: 1100, height: 480)] {
+    window.setContentSize(size); view.layoutSubtreeIfNeeded()
+    for fraction in [0.0, 0.5, 1.0] {
+        bar.doubleValue = fraction; bar.sendAction(bar.action, to: bar.target)
+        precondition(abs(master.frame.maxX - view.bounds.width) < 0.001 && master.frame.width == fixedMaster.width,
+                     "Right-side Master stays pinned at every size and scroll position")
+        precondition(scroll.frame.minX == 0 && scroll.frame.maxX <= master.frame.minX + 7.001 &&
+                     bar.frame.maxX <= scroll.frame.maxX,
+                     "Only tracks occupy the scrolling area on the left")
+    }
+}
+view.update(width: 7, stride: 86, count: 0) { _ in AnyView(EmptyView()) }
+view.layoutSubtreeIfNeeded()
+precondition(!master.isHidden && master.frame.maxX == view.bounds.width && !bar.isEnabled)
+view.updateMaster(content: AnyView(Color.yellow.frame(width: 83 * 1.25).padding(5)), width: 83 * 1.25, version: 3, right: false)
+view.layoutSubtreeIfNeeded()
+precondition(master.frame.minX == 0 && scroll.frame.minX == 83 * 1.25 + 3 && master.superview === view,
+             "Returning to the left restores the original layout without recreating Master")
+print("MIXER_MASTER_SIDE_SWITCH_PRESERVES_HOST_SCROLL_BOUNDS_RESIZE_AND_EMPTY_SONG_OK")
+
+view.update(width: 1000 * 86 + 7, stride: 86, count: 1000) { _ in
+    AnyView(Color.green.frame(width: 83).padding(5))
+}
+window.setContentSize(NSSize(width: 640, height: 350)); view.layoutSubtreeIfNeeded()
+var scrollDurations: [Double] = []
+for right in [false, true] {
+    view.updateMaster(content: AnyView(Color.yellow.frame(width: 83 * 1.25).padding(5)), width: 83 * 1.25, version: right ? 5 : 4, right: right)
+    view.layoutSubtreeIfNeeded()
+    for fraction in [0.1, 0.5, 0.9, 0.11] {
+        FooterScrollLayoutProbe.forced = 0
+        let began = ProcessInfo.processInfo.systemUptime
+        bar.doubleValue = fraction; bar.sendAction(bar.action, to: bar.target)
+        scrollDurations.append(ProcessInfo.processInfo.systemUptime - began)
+        let x = scroll.contentView.bounds.minX
+        let visible = Int(x / 86)..<Int(ceil((x + scroll.contentSize.width) / 86))
+        precondition(view.pendingStripLayout.isDisjoint(with: visible), "Every visible destination is laid out before scrolling")
+        precondition(!view.pendingStripLayout.isEmpty, "Offscreen overscan is deferred beyond the input event")
+        precondition(FooterScrollLayoutProbe.forced <= visible.count,
+                     "Wheel/bar handling does not force layout of offscreen prefetched columns")
+        precondition(abs(bar.doubleValue - fraction) < 0.002, "Virtualization does not reset the requested offset")
+    }
+}
+print("MIXER_VISIBLE_DESTINATION_READY_OVERSCAN_DEFERRED_BOTH_MASTER_SIDES_OK max_ms=\(scrollDurations.max()! * 1000)")
+
+private final class FooterWheelFixture: NSEvent {
+    weak var fixtureWindow: NSWindow?
+    var point = NSPoint.zero
+    var dx: CGFloat = 0, dy: CGFloat = 0
+    var flags: NSEvent.ModifierFlags = []
+    override var window: NSWindow? { fixtureWindow }
+    override var locationInWindow: NSPoint { point }
+    override var scrollingDeltaX: CGFloat { dx }
+    override var scrollingDeltaY: CGFloat { dy }
+    override var hasPreciseScrollingDeltas: Bool { true }
+    override var modifierFlags: NSEvent.ModifierFlags { flags }
+}
+window.orderFront(nil)
+let slotScroll = NSScrollView(frame: NSRect(x: 5, y: 12, width: 80, height: 80))
+let slotDocument = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 500))
+slotScroll.documentView = slotDocument
+master.addSubview(slotScroll)
+private let wheel = FooterWheelFixture()
+wheel.fixtureWindow = window
+for right in [false, true] {
+    view.updateMaster(content: AnyView(Color.yellow.frame(width: 83 * 1.25).padding(5)), width: 83 * 1.25, version: 5, right: right)
+    view.layoutSubtreeIfNeeded()
+    // A nested list may contain wide content, but it never owns horizontal input.
+    slotScroll.frame = NSRect(x: 5, y: 12, width: 80, height: 80)
+    slotScroll.contentView.scroll(to: .zero)
+    bar.doubleValue = 0.3; bar.sendAction(bar.action, to: bar.target)
+    wheel.point = slotScroll.contentView.convert(NSPoint(x: 30, y: 30), to: nil)
+    wheel.dx = -30; wheel.dy = -2
+    let trackBefore = scroll.contentView.bounds.minX
+    let fxBefore = slotScroll.contentView.bounds.origin
+    precondition(view.routeWheel(wheel))
+    precondition(scroll.contentView.bounds.minX == trackBefore + 30 && slotScroll.contentView.bounds.origin == fxBefore,
+                 "Horizontal gestures over FX move whole channels, never the slot document")
+    wheel.dx = -2; wheel.dy = 30
+    let verticalBefore = scroll.contentView.bounds.minX
+    precondition(view.routeWheel(wheel))
+    precondition(slotScroll.contentView.bounds.minY > fxBefore.y && slotScroll.contentView.bounds.minX == 0 &&
+                 scroll.contentView.bounds.minX == verticalBefore,
+                 "Vertical gestures inside overflowing FX only move that list vertically")
+    wheel.point = master.convert(NSPoint(x: 30, y: 150), to: nil)
+    wheel.dx = 0; wheel.dy = -24
+    let slotOffset = slotScroll.contentView.bounds.origin
+    precondition(view.routeWheel(wheel))
+    precondition(scroll.contentView.bounds.minX == verticalBefore + 24 && slotScroll.contentView.bounds.origin == slotOffset,
+                 "Empty space outside the FX viewport scrolls channels without moving slots")
+    wheel.point = slotScroll.contentView.convert(NSPoint(x: 30, y: 30), to: nil)
+    wheel.flags = .shift
+    let shiftedBefore = scroll.contentView.bounds.minX
+    precondition(view.routeWheel(wheel))
+    precondition(scroll.contentView.bounds.minX == shiftedBefore + 24 && slotScroll.contentView.bounds.origin == slotOffset,
+                 "Shift routes the vertical wheel to channel scrolling even over FX")
+    wheel.flags = []
+}
+window.orderOut(nil)
+print("MIXER_WHEEL_FX_VERTICAL_ONLY_INSIDE_VISIBLE_VIEWPORT_HORIZONTAL_AND_EMPTY_SPACE_ROUTE_TO_TRACKS_OK")
+
+slotScroll.removeFromSuperview()
+var cacheVersions = (0..<1000).map { UInt64($0 + 100) }
+var cacheMakes: [Int: Int] = [:]
+func updateCacheFixture(count: Int = 1000) {
+    view.update(width: CGFloat(count) * 86 + 7, stride: 86, count: count, versions: Array(cacheVersions.prefix(count))) { range in
+        cacheMakes[range.lowerBound, default: 0] += 1
+        return AnyView(Text("Channel \(range.lowerBound) version \(cacheVersions[range.lowerBound])").frame(width: 83).padding(5))
+    }
+}
+func cacheMove(_ index: Int) {
+    bar.doubleValue = Double(index * 86) / max(1, Double(scroll.documentView!.frame.width - scroll.contentSize.width))
+    bar.sendAction(bar.action, to: bar.target)
+}
+window.orderFront(nil)
+updateCacheFixture(); view.layoutSubtreeIfNeeded(); cacheMove(0)
+private let initialFirst = scroll.documentView!.subviews.compactMap { $0 as? FooterMixerHostingView }.first { $0.frame.minX == 0 }!
+let initialBuilds = cacheMakes[0]!
+cacheMove(20)
+precondition(view.cachedStrips[0]?.view === initialFirst && initialFirst.window == nil,
+             "Offscreen hosts are reused from a detached cache without window layout or meter drawing")
+cacheMove(0)
+precondition(initialFirst.superview === scroll.documentView && cacheMakes[0] == initialBuilds,
+             "Warm reversal reuses the same host and SwiftUI root without rebuilding its controls")
+cacheMove(20)
+cacheVersions[0] = 90001
+updateCacheFixture()
+cacheMove(0)
+precondition(initialFirst.superview === scroll.documentView && cacheMakes[0] == initialBuilds + 1,
+             "Cached roots validate the latest identity/FX version on normal scroll after offscreen edits")
+for index in stride(from: 0, to: 900, by: 20) { cacheMove(index) }
+precondition(view.cachedStrips.count <= 24 && view.cachedStrips.values.allSatisfy { $0.view.window == nil },
+             "1000-track browsing retains at most 24 detached cache entries")
+updateCacheFixture(count: 0)
+precondition(view.cachedStrips.isEmpty, "Deleting the track list releases detached roots")
+window.orderOut(nil)
+print("MIXER_WARM_REVERSAL_REUSES_DETACHED_BOUNDED_HOSTS_AND_INVALIDATES_OFFSCREEN_VERSIONS_OK")

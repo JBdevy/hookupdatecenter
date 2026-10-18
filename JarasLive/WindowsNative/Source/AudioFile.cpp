@@ -57,6 +57,7 @@ struct AudioFile::Impl {
         unsigned char header[4]{}, reservoirBytes[511]{};
     };
     std::vector<MP3Checkpoint> mp3Checkpoints;
+    std::uint64_t mp3Position = 0, checkpointSpacing = 0;
     std::vector<float> scratch;
     std::vector<unsigned char> pcm8;
     std::uint64_t position = 0;
@@ -143,6 +144,7 @@ struct AudioFile::Impl {
         mp3.decoder.free_format_bytes = point.freeFormatBytes;
         std::memcpy(mp3.decoder.header, point.header, sizeof point.header);
         std::memcpy(mp3.decoder.reserv_buf, point.reservoirBytes, sizeof point.reservoirBytes);
+        mp3Position = point.frame;
         return true;
     }
 
@@ -158,12 +160,19 @@ struct AudioFile::Impl {
             if (mp3.mp3FrameSampleRate != info.sampleRate || mp3.mp3FrameChannels != info.channels)
                 throw std::runtime_error("MP3 changes sample rate or channels inside the file.");
             count += got;
+            mp3Position += got;
+            // Keep exact synthesis state as the worker visits new audio. A
+            // first Play only decodes the required prefix, not the entire song.
+            if (got && checkpointSpacing && mp3.pcmFramesRemainingInMP3Frame == 0 &&
+                mp3Checkpoints.size() < 4096 &&
+                mp3Position >= mp3Checkpoints.back().frame + checkpointSpacing)
+                mp3Checkpoints.push_back(checkpoint(mp3Position));
             if (got != request) break;
         }
         return count;
     }
 
-    void openMP3() {
+    void openMP3(bool prepareSeeking) {
 #if defined(_WIN32)
         mp3Open = drmp3_init_file_w(&mp3, path.c_str(), nullptr) != 0;
 #else
@@ -174,33 +183,19 @@ struct AudioFile::Impl {
         info.sampleRate = mp3.sampleRate;
         info.channels = mp3.channels;
         const auto expected = drmp3_get_pcm_frame_count(&mp3);
+        info.frameCount = expected;
         validInfo(info);
         if (expected == 0) throw std::runtime_error("MP3 has no decodable audio frames.");
+        if (!prepareSeeking) return;
         if (!drmp3_seek_to_pcm_frame(&mp3, 0))
             throw std::runtime_error("Unable to rewind MP3 audio.");
         // The compressed seek table does not preserve synthesis/bit-reservoir
         // history. Capture the real decoder state instead, at frame boundaries,
-        // for sample-identical random access. Indexing runs only on this worker.
+        // for sample-identical random access, progressively on this worker.
         // ~6.6 KiB per two seconds, capped to 4096 checkpoints per open reader.
-        const auto spacing = std::max<std::uint64_t>(2 * info.sampleRate, expected / 4095 + 1);
-        mp3Checkpoints.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(4096, expected / spacing + 2)));
+        checkpointSpacing = std::max<std::uint64_t>(2 * info.sampleRate, expected / 4095 + 1);
+        mp3Checkpoints.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(4096, expected / checkpointSpacing + 2)));
         mp3Checkpoints.push_back(checkpoint(0));
-        std::uint64_t measured = 0, nextPoint = spacing;
-        for (;;) {
-            const auto request = std::max<drmp3_uint32>(1, mp3.pcmFramesRemainingInMP3Frame);
-            const auto got = readMP3(nullptr, request);
-            measured += got;
-            if (got != request) break;
-            if (mp3.pcmFramesRemainingInMP3Frame == 0 && measured >= nextPoint && mp3Checkpoints.size() < 4096) {
-                mp3Checkpoints.push_back(checkpoint(measured));
-                nextPoint = measured + spacing;
-            }
-        }
-        if (mp3.totalPCMFrameCount != DRMP3_UINT64_MAX && measured != expected)
-            throw std::runtime_error("MP3 ended before its declared PCM frame count.");
-        info.frameCount = measured;
-        if (measured == 0 || !restore(mp3Checkpoints.front()))
-            throw std::runtime_error("Unable to prepare MP3 audio seeking.");
     }
 
     void openFlac() {
@@ -246,7 +241,8 @@ struct AudioFile::Impl {
             const auto after = std::upper_bound(mp3Checkpoints.begin(), mp3Checkpoints.end(), frame,
                 [](std::uint64_t at, const MP3Checkpoint& point) { return at < point.frame; });
             const auto& point = *std::prev(after);
-            ok = restore(point) && readMP3(nullptr, frame - point.frame) == frame - point.frame;
+            const auto distance = frame - point.frame;
+            ok = restore(point) && readMP3(nullptr, distance) == distance;
         }
         if (!ok) {
             position = unknownPosition;
@@ -288,7 +284,8 @@ struct AudioFile::Impl {
     }
 };
 
-AudioFile::AudioFile(const std::filesystem::path& path) : impl(std::make_unique<Impl>()) {
+AudioFile::AudioFile(const std::filesystem::path& path) : AudioFile(path, true) {}
+AudioFile::AudioFile(const std::filesystem::path& path, bool prepareSeeking) : impl(std::make_unique<Impl>()) {
     impl->path = path;
     impl->info.encodedBytes = std::filesystem::file_size(path);
     std::array<char, 16> header{};
@@ -300,9 +297,10 @@ AudioFile::AudioFile(const std::filesystem::path& path) : impl(std::make_unique<
     else if (starts(header, "fLaC", 4) || starts(header, "OggS", 4)) impl->openFlac();
     else if (starts(header, "ID3", 3) ||
              (static_cast<unsigned char>(header[0]) == 0xff &&
-              (static_cast<unsigned char>(header[1]) & 0xe0) == 0xe0)) impl->openMP3();
+              (static_cast<unsigned char>(header[1]) & 0xe0) == 0xe0)) impl->openMP3(prepareSeeking);
     else throw std::runtime_error("Unsupported audio container.");
     validInfo(impl->info);
+    if (!prepareSeeking) return;
     impl->scratch.resize(decodeBlock * impl->info.channels);
     if (impl->wavOpen && impl->wav.bitsPerSample == 8)
         impl->pcm8.resize(decodeBlock * impl->info.channels);
@@ -310,6 +308,7 @@ AudioFile::AudioFile(const std::filesystem::path& path) : impl(std::make_unique<
 AudioFile::~AudioFile() = default;
 const AudioFileInfo& AudioFile::info() const noexcept { return impl->info; }
 const std::filesystem::path& AudioFile::path() const noexcept { return impl->path; }
+AudioFileInfo AudioFile::inspect(const std::filesystem::path& path) { return AudioFile(path, false).info(); }
 
 std::size_t AudioFile::readInterleaved(std::uint64_t first, float* destination, std::size_t frames) {
     const auto channels = impl->info.channels;

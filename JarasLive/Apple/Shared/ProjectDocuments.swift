@@ -1511,7 +1511,8 @@ private final class ProjectTitlebarHostingView<Content: View>: NSHostingView<Con
 }
 
 private final class ProjectTitlebarVersionView: NSView {
-    static let text = text(for: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.01")
+    static let text = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+        .map { text(for: $0) } ?? "CatLive"
     static func text(for version: String) -> String {
         let components = version.split(separator: ".")
         guard components.count >= 2, let major = Int(components[0]), let minor = Int(components[1]) else {

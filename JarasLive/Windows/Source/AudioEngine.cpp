@@ -4,9 +4,19 @@
 #include "AudioEngine.h"
 #include "ProjectCodec.h"
 #include "ClipAudio.h"
+#include "WaveformCache.h"
+#include "../../WindowsNative/Source/AudioFile.h"
 #include <BinaryData.h>
 namespace catlive {
-AudioEngine::AudioEngine() {
+struct AudioEngine::ReaderContext {
+    AudioFormatManager formats;
+    TimeSliceThread thread{"CatLive media read-ahead"};
+    ReaderContext() { registerAudioFormats(formats); thread.startThread(Thread::Priority::high); }
+    ~ReaderContext() { thread.stopThread(5000); }
+};
+AudioEngine::AudioEngine(double preparationRate, bool preparingOffline) {
+    rate = preparationRate;
+    offlineMode = preparingOffline;
     for (int i = 0; i < 128; ++i)
         inputMapping[(size_t)i] = outputMapping[(size_t)i] = i;
     liveMidi.ensureSize(32768);
@@ -19,7 +29,6 @@ AudioEngine::AudioEngine() {
     registerAudioFormats(formats);
     metronome.a = ClickProgram::tone("Digital", true);
     metronome.b = ClickProgram::tone("Digital", false);
-    readAhead.startThread(Thread::Priority::high);
 }
 AudioEngine::~AudioEngine() {
     timecodeMIDI.stop();
@@ -27,7 +36,6 @@ AudioEngine::~AudioEngine() {
     stopRecording();
     closeDevice();
     voices.clear();
-    readAhead.stopThread(5000);
 }
 void AudioEngine::startRecording(const File &file, int channels, int bits) {
     if (recording.load())
@@ -447,8 +455,21 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
     }
 }
 void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
-                              const var &masterSettings, const jaras::Project *project) {
+                              const var &masterSettings, const jaras::Project *project,
+                              const PreparationControl *control) {
+    const auto checkpoint=[&] { if(control&&control->checkpoint)control->checkpoint(); };
+    if(control&&attached)throw std::runtime_error("Background preparation requires an isolated audio engine.");
+    const int workTotal=2+int(song.tracks.size())*2;
+    int workDone=0;
+    const auto progress=[&] {
+        checkpoint();
+        if(control&&control->progress)control->progress(workDone,workTotal);
+    };
+    const NativeFX::Dispatcher pluginDispatcher=control?control->pluginDispatcher:NativeFX::Dispatcher{};
+    progress();
     preparationDiagnostics = object();
+    const auto *messageManager=MessageManager::getInstanceWithoutCreating();
+    put(preparationDiagnostics,"preparedOffMessageThread",messageManager&&!messageManager->isThisTheMessageThread());
     const auto preparationStart = Time::getMillisecondCounterHiRes();
     auto stageStart = preparationStart;
     const auto stage = [&](const char *name) {
@@ -475,6 +496,11 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     latencyPlan.reset();
     instrumentDirectory = directory;
     masterMIDI.reset();
+    std::map<ID,float> heldPeaks;
+    const auto nextPeakProject=project?project->id:song.id;
+    if(peakProject==nextPeakProject){for(const auto &bus:buses)heldPeaks[bus->id]=bus->held.amplitude();}
+    else masterPeakHold.clear();
+    peakProject=nextPeakProject;
     buses.clear();
     stage("releaseMilliseconds");
     busOrder.clear();
@@ -503,7 +529,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             throw std::runtime_error("O projeto excede 512 pistas.");
         masterAutomation.prepare(project && project->masterAutomationJSON ? JSON::parse(text(*project->masterAutomationJSON)) : var());
         masterFXSettings = masterSettings;
-        masterFX.prepare(masterSettings, rate.load(),nullptr,offlineMode);
+        masterFX.prepare(masterSettings, rate.load(),nullptr,offlineMode,true,pluginDispatcher);
         try {
             masterMIDI = std::make_unique<MIDIPlayback>(std::vector<PlaybackNote>{}, masterSettings,
                                                         directory, rate.load());
@@ -512,9 +538,12 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             missingFiles.addIfNotAlreadyThere(String::fromUTF8(e.what()));
         }
         unsupported.addArray(masterFX.unsupported);
+        ++workDone;progress();
         for (const auto &track : song.tracks) {
+            checkpoint();
             auto bus = std::make_unique<Bus>();
             bus->id = track.id;
+            bus->held.record(heldPeaks[track.id]);
             bus->timecode = track.role.id == "timecode";
             if (bus->timecode) {
                 timecodeProgram = jaras::TimecodeProgram(song, track);
@@ -544,7 +573,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 missingFiles.addIfNotAlreadyThere(String::fromUTF8(e.what()));
             }
             for (int h=0;h<2;h++)
-                bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0);
+                bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0,pluginDispatcher);
             bus->fx[1].shareStems(bus->fx[0]);
             bus->automation.prepare(track.automationJSON ? JSON::parse(text(*track.automationJSON))
                                                          : var());
@@ -564,6 +593,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 bus->click->b = bus->click->a;
             }
             buses.push_back(std::move(bus));
+            ++workDone;progress();
         }
         for (size_t i = 0; i < song.tracks.size(); ++i) {
             if (song.tracks[i].parentTrackID)
@@ -614,12 +644,17 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
         std::reverse(busOrder.begin(), busOrder.end());
         stage("busesMilliseconds");
         std::map<std::string, std::shared_ptr<Source>> sources;
-        int reusedSources = 0, reusedProcessors = 0;
+        int reusedSources = 0, reusedProcessors = 0, cachedMetadataSources = 0, lightweightMetadataSources = 0;
+        double metadataMilliseconds = 0;
         for (const auto &track : song.tracks) {
+            checkpoint();
             if (track.role.id == "video" || jaras::isTeleprompterRole(track.role) ||
-                track.role.id == "chords")
+                track.role.id == "chords") {
+                ++workDone;progress();
                 continue;
+            }
             for (const auto &clip : track.clips) {
+                checkpoint();
                 const auto &sourceFile = clip.audioFile ? clip.audioFile : track.audioFile;
                 if (!sourceFile || clip.duration <= 0 ||
                     (clip.midi && !clip.frozenMIDI.value_or(false)))
@@ -643,9 +678,32 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                         voice->source = previous->second;
                         ++reusedSources;
                     } else {
-                        std::unique_ptr<AudioFormatReader> metadata(formats.createReaderFor(file));
-                        if (!metadata || metadata->sampleRate <= 0 || metadata->sampleRate > 384000 ||
-                            metadata->numChannels == 0) {
+                        const auto metadataStart = Time::getMillisecondCounterHiRes();
+                        StreamingReader::Metadata metadata;
+                        if (file.hasFileExtension("mp3")) {
+                            try {
+                                // MP3 caches may originate in another decoder/platform.
+                                // Inspect the actual gapless clock without building its
+                                // expensive synthesis/seek index for an inactive source.
+                                const auto info = native::AudioFile::inspect(std::filesystem::path(file.getFullPathName().toWideCharPointer()));
+                                metadata.format = "MP3";metadata.sampleRate = info.sampleRate;
+                                metadata.frames = (int64)info.frameCount;metadata.channels = info.channels;
+                                ++lightweightMetadataSources;
+                            } catch (...) {} // Retain the registered format fallback for unsupported containers.
+                        } else if (const auto cached = WaveformCache::cachedMetadata(file)) {
+                            metadata.format = file.getFileExtension();
+                            metadata.sampleRate = cached->sampleRate;
+                            metadata.frames = cached->frames;
+                            metadata.channels = (unsigned int)cached->sourceChannels;
+                            ++cachedMetadataSources;
+                        }
+                        if (metadata.sampleRate == 0) {
+                            std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
+                            if (reader) metadata = StreamingReader::Metadata(*reader);
+                        }
+                        metadataMilliseconds += Time::getMillisecondCounterHiRes() - metadataStart;
+                        if (metadata.sampleRate <= 0 || metadata.sampleRate > 384000 ||
+                            metadata.channels == 0 || metadata.frames <= 0) {
                             missingFiles.addIfNotAlreadyThere(file.getFullPathName());
                             continue;
                         }
@@ -653,14 +711,17 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                         voice->source->file = file;
                         voice->source->fileSize = file.getSize();
                         voice->source->modified = file.getLastModificationTime();
+                        if(!readerContext)readerContext=std::make_shared<ReaderContext>();
+                        voice->source->context=readerContext;
                         for (int h = 0; h < 2; ++h)
-                            voice->source->readers[h] = std::make_unique<StreamingReader>(file, *metadata, formats, readAhead);
+                            voice->source->readers[h] = std::make_unique<StreamingReader>(
+                                file, metadata, readerContext->formats, readerContext->thread);
                     }
                 }
                 for (int h = 0; h < 2; ++h) {
                     voice->processed[h].setSize(2, 4096);
                     voice->fxSettings = clip.fxJSON ? JSON::parse(text(*clip.fxJSON)) : var();
-                    voice->fx[h].prepare(voice->fxSettings,rate.load(),nullptr,offlineMode,h==0);
+                    voice->fx[h].prepare(voice->fxSettings,rate.load(),nullptr,offlineMode,h==0,pluginDispatcher);
                     for (auto value : voice->fx[h].unsupported)
                         unsupported.addIfNotAlreadyThere(text(clip.name) + ": " + value);
                 }
@@ -699,12 +760,23 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                         voice->bus = i;
                 voices.push_back(std::move(voice));
             }
+            ++workDone;progress();
         }
         put(preparationDiagnostics, "reusedSources", reusedSources);
         put(preparationDiagnostics, "reusedProcessors", reusedProcessors);
         put(preparationDiagnostics, "sources", (int)sources.size());
+        put(preparationDiagnostics, "cachedMetadataSources", cachedMetadataSources);
+        put(preparationDiagnostics, "lightweightMetadataSources", lightweightMetadataSources);
+        put(preparationDiagnostics, "metadataMilliseconds", metadataMilliseconds);
         stage("voicesMilliseconds");
         activateStemLatency();latencyPlan=makeLatencyPlan();publishLatency();
+        if(control&&project) {
+            // Finish mixer setup on the isolated engine too. No queued command
+            // may refer to the retiring graph when it is adopted.
+            setMixer(*project,song);
+            applyUpdates();
+        }
+        ++workDone;progress();
     } catch (...) {
         if (resume)
             devices.addAudioCallback(this);
@@ -716,6 +788,54 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     previousSources.clear();
     previousProcessors.clear();
     put(preparationDiagnostics, "totalMilliseconds", Time::getMillisecondCounterHiRes() - preparationStart);
+}
+void AudioEngine::adoptPreparedSong(AudioEngine &prepared) {
+    const auto started=Time::getMillisecondCounterHiRes();
+    if(&prepared==this||prepared.attached||prepared.recording.load())
+        throw std::runtime_error("Invalid prepared audio graph.");
+    prepared.applyUpdates();
+    auto mtc=prepared.timecodeProgram;
+    bool timecodeMuted=false;
+    for(const auto &bus:prepared.buses)if(bus->timecode)timecodeMuted=bus->mute;
+    {
+        const ScopedLock lock(devices.getAudioCallbackLock());
+        if(rate.load()!=prepared.rate.load()||offlineMode!=prepared.offlineMode)
+            throw std::runtime_error("A configuração de áudio mudou durante a abertura. Abra o projeto novamente.");
+        if(recording.load()||playing.load()||subPlaying.load())
+            throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
+        cancelTrackFadeout();
+        voices.swap(prepared.voices);buses.swap(prepared.buses);busOrder.swap(prepared.busOrder);
+        readerContext.swap(prepared.readerContext);latencyPlan.swap(prepared.latencyPlan);
+        masterFX.swap(prepared.masterFX);masterMIDI.swap(prepared.masterMIDI);
+        std::swap(masterAutomation,prepared.masterAutomation);
+        std::swap(instrumentDirectory,prepared.instrumentDirectory);
+        std::swap(masterFXSettings,prepared.masterFXSettings);
+        std::swap(timecodeProgram,prepared.timecodeProgram);
+        std::swap(timecodeGain,prepared.timecodeGain);
+        // The click samples/output are user preferences; only its timeline is
+        // project-owned. Preserve the configured metronome sound and routing.
+        metronome.sections.swap(prepared.metronome.sections);
+        masterOutputs.swap(prepared.masterOutputs);
+        std::swap(duration,prepared.duration);
+        std::swap(masterVolume,prepared.masterVolume);std::swap(masterPan,prepared.masterPan);
+        std::swap(masterMute,prepared.masterMute);std::swap(masterMono,prepared.masterMono);
+        std::swap(masterPhase,prepared.masterPhase);std::swap(masterSolo,prepared.masterSolo);
+        std::swap(peakProject,prepared.peakProject);
+        std::swap(stemLatencyFingerprint,prepared.stemLatencyFingerprint);
+        missingFiles.swapWith(prepared.missingFiles);unsupported.swapWith(prepared.unsupported);
+        std::swap(preparationDiagnostics,prepared.preparationDiagnostics);
+        fifo.reset();current={};position=0;subPosition=0;playing=false;subPlaying=false;elapsedSamples=0;
+        keyboardTarget=-1;meter=0;masterPeakHold.clear();masterFXInput=0;masterFXOutput=0;
+        presentationTailing=false;presentationDelay=latencyPlan?latencyPlan->total:0;
+        for(int h=0;h<2;++h) {
+            masterLevels[h]=0;presentedPosition[h]=0;presentedPlaying[h]=false;
+            tailFrames[h]=0;tailCursor[h]=0;
+        }
+        lastPrimedSources=0;lastPrimeWaitMilliseconds=0;renderClock=0;
+        timecodeMIDI.publishAudioClock(0,false,false,0);
+    }
+    timecodeMIDI.prepare(std::move(mtc),duration,timecodeMuted);
+    put(preparationDiagnostics,"commitMilliseconds",Time::getMillisecondCounterHiRes()-started);
 }
 void AudioEngine::enqueue(const Update &update) {
     int a, n, b, m;
@@ -1255,6 +1375,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             if (fadeSelected) for (int ch = 0; ch < 2; ++ch)
                 FloatVectorOperations::multiply(bus.buffer.getWritePointer(ch), trackFadeoutGains.data(), samples);
             const float peak = bus.mute ? 0.f : bus.buffer.getMagnitude(0, samples);
+            bus.held.record(peak);
             bus.peak.store(peak, std::memory_order_relaxed);
             for (int ch = 0; ch < 2; ++ch)
                 bus.levels[(size_t)ch].store(bus.mute ? 0.f : bus.buffer.getMagnitude(ch, 0, samples));
@@ -1395,6 +1516,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         bus.fxInput.store(std::max(fxInput, bus.fxInput.load() * .85f));
         bus.fxOutput.store(std::max(fxOutput, bus.fxOutput.load() * .85f));
         const double elapsed = samples / rate.load();
+        bus.held.record(peak);
         bus.peak.store(meterDisplay::envelope(bus.peak.load(), peak, elapsed), std::memory_order_relaxed);
         for (int ch = 0; ch < 2; ++ch)
             bus.levels[(size_t)ch].store(meterDisplay::envelope(bus.levels[(size_t)ch].load(), stereoPeak[(size_t)ch], elapsed), std::memory_order_relaxed);
@@ -1475,6 +1597,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             maxPeak =
                 std::max(maxPeak, std::max(std::abs(range.getStart()), std::abs(range.getEnd())));
         }
+    masterPeakHold.record(masterBuffer.getMagnitude(0,samples));
     meter.store(meterDisplay::envelope(meter.load(), maxPeak, samples / rate.load()), std::memory_order_relaxed);
     for (int ch = 0; ch < 2; ++ch)
         masterLevels[(size_t)ch].store(meterDisplay::envelope(masterLevels[(size_t)ch].load(),

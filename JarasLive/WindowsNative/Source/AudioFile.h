@@ -37,6 +37,11 @@ class AudioFile final {
     const AudioFileInfo& info() const noexcept;
     const std::filesystem::path& path() const noexcept;
 
+    // Container metadata for preparing an inactive timeline source. MP3 length
+    // retains gapless trimming, but no synthesis/checkpoint index is built.
+    // The playback reader still validates decoded audio and exact seeking.
+    static AudioFileInfo inspect(const std::filesystem::path&);
+
     // Float PCM in source channel order, without resampling or downmixing.
     // firstFrame indexes decoded PCM; MP3 priming/padding declared by the
     // source's gapless metadata is excluded.
@@ -49,6 +54,7 @@ class AudioFile final {
                            std::size_t destinationChannels, std::size_t frames);
 
   private:
+    AudioFile(const std::filesystem::path&, bool prepareSeeking);
     struct Impl;
     std::unique_ptr<Impl> impl;
 };

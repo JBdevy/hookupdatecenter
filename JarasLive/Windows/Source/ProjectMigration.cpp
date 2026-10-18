@@ -64,6 +64,9 @@ File saveMigratedProject(const MigratedProject &result, const File &selection) {
                 "Could not copy media: " + entry.second.getFileName());
     }
     auto raw = ProjectCodec::encode(result.project, object());
+    // Imported connection assignments use the same original-document storage
+    // as Lighting, so later user edits are not overwritten by a stale core copy.
+    if (result.project.resolumeJSON) put(raw, "resolume", JSON::parse(text(*result.project.resolumeJSON)));
     put(raw, "importedTimeline", true);
     auto document = folder.getChildFile(selected.getFileName());
     ProjectCodec::write(document, raw);
@@ -362,7 +365,7 @@ MigratedProject readReaperProject(const File &file) {
     migration::VSHookMigration hook;
     if (auto *ext = root->child("EXTSTATE")) for (const auto &section : ext->children) {
         const auto name = section->header[0];
-        if (name != "CHATGPT_REGION_PLAYLIST" && name != "VS_HOOK_MULTILOOPS") continue;
+        if (name != "CHATGPT_REGION_PLAYLIST" && name != "VS_HOOK_MULTILOOPS" && name != "VS_HOOK_LOADER") continue;
         auto &values = hook.state[name];
         for (const auto &row : section->lines) if (row.size() >= 2) values[row[0]] = row.joinIntoString(" ", 1);
         for (const auto &binary : section->children) if (binary->header[0] == "BIN" && binary->header.size() == 2) {

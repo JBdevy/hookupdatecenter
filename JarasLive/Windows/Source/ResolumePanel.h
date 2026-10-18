@@ -153,7 +153,7 @@ class ResolumePanel final : public Component {
         chooser = std::make_unique<FileChooser>(
             String::fromUTF8("Salvar composição Resolume"),
             session.mediaDirectory.getChildFile(
-                File::createLegalFileName(text(session.project().name)) + ".avc"),
+                Lighting::safeStem(Lighting::cleanName(text(session.project().name), "Projeto CatLive")) + ".avc"),
             "*.avc");
         auto safe = SafePointer<ResolumePanel>(this);
         chooser->launchAsync(

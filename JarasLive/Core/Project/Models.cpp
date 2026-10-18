@@ -95,7 +95,7 @@ void orderSpecialTracks(Project& project) {
         for (auto& marker : *song.markers) if (!marker.tempoBPM && endpoints.count(marker.id)) { marker.section = true; marker.loopSection = true; }
     }
     const auto rank = [](const Track& track) {
-        return track.role.id == "timecode" ? 0 : track.role.id == "generatedClick" ? 1 : track.role.id == "chords" ? 2 : track.role.id == "teleprompt" ? 3 : track.role.id == "teleprompt2" ? 4 : track.role.id == "video" ? 5 : 6;
+        return track.role.id == "timecode" ? 0 : track.role.id == "teleprompt" ? 1 : track.role.id == "teleprompt2" ? 2 : track.role.id == "chords" ? 3 : track.role.id == "generatedClick" ? 4 : track.role.id == "video" ? 5 : 6;
     };
     for (auto& song : project.songs) {
         const auto earlier = [&](const Track& a, const Track& b) { return rank(a) < rank(b); };

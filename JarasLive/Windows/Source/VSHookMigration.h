@@ -182,6 +182,44 @@ struct VSHookMigration {
         for(const auto &r:rows(value("CHATGPT_REGION_PLAYLIST","PLAYLISTS_DB_V3"))){if(r[0]=="PLAYLIST"){finish();entries.clear();active=true;name=unescape(r[1]).trim();if(name.isEmpty())name="Repertório "+String(setlist.playlists.size()+1);}
             else if(r[0]=="END"){finish();active=false;entries.clear();}else if(r[0]=="ITEM"&&active)entries.push_back(r);}
         finish();if(!setlist.playlists.empty()){auto selected=value("CHATGPT_REGION_PLAYLIST","LAST_PLAYLIST_NAME_V1").trim();setlist.selectedId.reset();if(selected.isEmpty())setlist.selectedId=setlist.playlists.front().id;else for(const auto &p:setlist.playlists)if(text(p.name)==selected)setlist.selectedId=p.id;project.regionSetlist=setlist;}
+        auto assignments = [&](const String &key) {
+            auto mapped = object();
+            const auto source = JSON::parse(value("VS_HOOK_LOADER", key));
+            if (auto *properties = source.getDynamicObject()) for (const auto &entry : properties->getProperties()) {
+                if (!entry.value.isString()) continue;
+                const auto assignment = entry.value.toString();
+                const auto pair = StringArray::fromTokens(assignment, ":", "");
+                const auto validIndex = [](const String &part) {
+                    const auto trimmed = part.trim();
+                    return trimmed.isNotEmpty() && trimmed.containsOnly("0123456789") &&
+                           trimmed.length() <= 5 && trimmed.getIntValue() < 99999;
+                };
+                if (pair.size() != 2 || !validIndex(pair[0]) || !validIndex(pair[1])) continue;
+                const auto name = entry.name.toString();
+                if (name.startsWith("region:")) {
+                    if (auto found = regions.find(name.substring(7)); found != regions.end())
+                        put(mapped, "region:" + text(found->second), assignment);
+                } else if (name.startsWith("marker:")) {
+                    for (const auto &marker : markers) if (marker.number == name.substring(7)) {
+                        if (auto part = markerPart(marker, song)) {
+                            if (pair[1].getIntValue() == 0) put(mapped, "region:" + text(part->id), assignment);
+                        } else if (song.markers && std::any_of(song.markers->begin(), song.markers->end(),
+                                               [&](const auto &current) { return current.id == marker.marker.id; }))
+                            put(mapped, "marker:" + text(marker.marker.id), assignment);
+                    }
+                }
+            }
+            return mapped;
+        };
+        auto withMarkers = assignments("RESOLUME_MAP_ASSIGNMENTS_WITH_MARKERS_V1");
+        auto regionsOnly = assignments("RESOLUME_MAP_ASSIGNMENTS_REGIONS_ONLY_V1");
+        if (withMarkers.getDynamicObject()->getProperties().size() || regionsOnly.getDynamicObject()->getProperties().size()) {
+            auto settings = object();
+            put(settings, "enabled", false); put(settings, "host", "127.0.0.1");
+            put(settings, "oscPort", 7000); put(settings, "webPort", 8080); put(settings, "includeMarkers", true);
+            put(settings, "withMarkers", withMarkers); put(settings, "regionsOnly", regionsOnly);
+            project.resolumeJSON = utf8(JSON::toString(settings, true));
+        }
     }
 };
 }

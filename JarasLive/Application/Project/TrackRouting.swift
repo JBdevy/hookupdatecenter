@@ -1,4 +1,73 @@
 import Foundation
+import Combine
+
+public enum TrackVisibilityArea: String, CaseIterable, Sendable {
+    case trackMixer, barMixer
+}
+
+/// Local presentation only. Hiding a folder derives its descendants each time,
+/// so showing it again restores each child's independent visibility choice.
+public struct TrackVisibilityState: Equatable, Sendable {
+    public var trackMixer: Set<UUID> = []
+    public var barMixer: Set<UUID> = []
+    public init(trackMixer: Set<UUID> = [], barMixer: Set<UUID> = []) {
+        self.trackMixer = trackMixer; self.barMixer = barMixer
+    }
+    public func hidden(in area: TrackVisibilityArea) -> Set<UUID> {
+        area == .trackMixer ? trackMixer : barMixer
+    }
+    public mutating func setVisible(_ visible: Bool, track: UUID, in area: TrackVisibilityArea) {
+        if area == .trackMixer {
+            if visible { trackMixer.remove(track) } else { trackMixer.insert(track) }
+        } else {
+            if visible { barMixer.remove(track) } else { barMixer.insert(track) }
+        }
+    }
+    public func effectiveHidden(in tracks: [Track], area: TrackVisibilityArea) -> Set<UUID> {
+        let selected = hidden(in: area)
+        guard !selected.isEmpty else { return [] }
+        let hierarchy = TrackHierarchy(tracks)
+        return tracks.reduce(into: selected) { result, track in
+            if hierarchy.ancestors(of: track.id).contains(where: selected.contains) { result.insert(track.id) }
+        }
+    }
+    public func visibleTracks(in tracks: [Track], area: TrackVisibilityArea) -> [Track] {
+        let hidden = effectiveHidden(in: tracks, area: area)
+        guard !hidden.isEmpty else { return tracks }
+        return tracks.filter { !hidden.contains($0.id) }
+    }
+}
+
+@MainActor public final class TrackVisibilityPreferences: ObservableObject {
+    public static let shared = TrackVisibilityPreferences()
+    @Published public private(set) var revision: UInt64 = 0
+    private let defaults: UserDefaults
+    private var cached: [UUID: TrackVisibilityState] = [:]
+    public init(defaults: UserDefaults = UserDefaults(suiteName: "com.hookdeveloper.catlive.track-visibility")!) {
+        self.defaults = defaults
+    }
+    private func key(_ project: UUID, _ area: TrackVisibilityArea) -> String {
+        "trackVisibility.\(project.uuidString).\(area.rawValue)"
+    }
+    public func state(for project: UUID) -> TrackVisibilityState {
+        if let state = cached[project] { return state }
+        func read(_ area: TrackVisibilityArea) -> Set<UUID> {
+            Set((defaults.stringArray(forKey: key(project, area)) ?? []).compactMap(UUID.init(uuidString:)))
+        }
+        let state = TrackVisibilityState(trackMixer: read(.trackMixer), barMixer: read(.barMixer))
+        cached[project] = state
+        return state
+    }
+    public func setVisible(_ visible: Bool, track: UUID, in area: TrackVisibilityArea, project: UUID) {
+        var state = state(for: project)
+        let previous = state
+        state.setVisible(visible, track: track, in: area)
+        guard state != previous else { return }
+        cached[project] = state
+        defaults.set(state.hidden(in: area).map(\.uuidString).sorted(), forKey: key(project, area))
+        revision &+= 1
+    }
+}
 
 public struct TrackRouting: Codable, Equatable, Sendable {
     public var receives: [UUID?] = []

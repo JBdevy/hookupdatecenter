@@ -25,6 +25,16 @@ inline void fitEditorWindow(DocumentWindow &window, juce::Rectangle<int> restore
                                     : jlimit(area.getY(), area.getBottom() - height, restored.getY());
     window.setBounds(x, y, width, height);
 }
+inline void fitLoginWindow(DocumentWindow &window) {
+    const auto &displays=Desktop::getInstance().getDisplays();
+    auto *display=displays.getDisplayForRect(window.getBounds());
+    if(!display)display=displays.getPrimaryDisplay();
+    if(!display)return;
+    const auto area=display->userArea.reduced(8);
+    const int width=std::min(600,area.getWidth()),height=std::min(640,area.getHeight());
+    window.setFullScreen(false);window.setResizeLimits(width,height,7680,4320);
+    window.setBounds(area.getCentreX()-width/2,area.getCentreY()-height/2,width,height);
+}
 inline void fitProjectBrowserWindow(DocumentWindow &window) {
     const auto *display = Desktop::getInstance().getDisplays().getDisplayForRect(window.getBounds());
     if (!display)

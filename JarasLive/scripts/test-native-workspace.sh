@@ -19,7 +19,15 @@ workspace=Path('Apple/Shared/GridScrollView.swift').read_text()
 workspace=workspace.replace('self.leading.rootView = leading; self.trailing.rootView = trailing',
                             'WorkspaceRootUpdateProbe.count += 1; self.leading.rootView = leading; self.trailing.rootView = trailing')
 (folder/'workspace.swift').write_text(workspace)
+setlist=Path('Apple/Shared/SongListView.swift').read_text()
+window=setlist[:setlist.index('/// Focus follows')].replace('CatLiveDetachedSetlist', 'CatLiveDetachedSetlistTest')
+(folder/'setlist-window.swift').write_text(window)
+(folder/'window-test').mkdir()
+(folder/'window-test/main.swift').write_text(Path('Tests/Apple/DetachedSetlistWindowTests.swift').read_text())
 
 PY
-swiftc -O -swift-version 5 "$test_dir/workspace.swift" "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -O -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$test_dir/workspace.swift" "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"
+
+swiftc -O -swift-version 5 "$test_dir/setlist-window.swift" "$test_dir/window-test/main.swift" -o "$test_dir/window-test/test"
+"$test_dir/window-test/test"

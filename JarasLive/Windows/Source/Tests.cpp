@@ -6,6 +6,7 @@
 #include "TrackTree.h"
 #include "ClipAudio.h"
 #include "ResolumeComposition.h"
+#include "LightingRegionTests.h"
 #include "ClipEditing.h"
 #include "Normalization.h"
 #include "MIDIEditing.h"
@@ -24,6 +25,9 @@
 #include "TeleprompterHTTP.h"
 #include "TempoEditing.h"
 #include "MeterDisplay.h"
+#include "StageTimerSettings.h"
+#include "MixerPanel.h"
+#include "DesktopLayout.h"
 #include "EffectsPanel.h"
 #include "FXChain.h"
 #include "ItemRender.h"
@@ -44,6 +48,16 @@
 #include "GridMediaClipboardTests.h"
 #include "FloatingControlTests.h"
 #include "ProjectOpenTests.h"
+#include "NavigationParityTests.h"
+#include "ProjectBrowserLoadingTests.h"
+#include "BPMDetectionTests.h"
+#include "SectionMarkerTests.h"
+#include "RegionLaneTests.h"
+#include "MasterMixerTests.h"
+#include "WorkspaceSetlistPresentationTests.h"
+#include "SetlistSearchTests.h"
+#include "RemoteSetlistSelectionTests.h"
+#include "TrackVisibilityTests.h"
 namespace catlive {
 namespace {
 void expect(bool condition, const String &message) {
@@ -103,18 +117,117 @@ int runTests(const File &directory) {
             failed += name + ": " + String::fromUTF8(e.what()) + "\n";
         }
     };
+    test("Automatic access checks preserve activation on token expiry and enforce quarantine",[&]{
+        for(const String code:{String(),String("invalidSession"),String("unavailable"),String("quarantined")}) {
+            const auto folder=directory.getNonexistentChildFile("access-policy-"+code,"");folder.createDirectory();
+            std::atomic<int> calls{0};std::atomic<bool> correctRoute{true};
+            Auth auth(folder,[&](const String &route,const var &body,const String &)->var {
+                ++calls;if(route!="access-status" || str(body,"refreshToken")!="test-refresh")correctRoute=false;
+                if(code.isNotEmpty())throw Auth::ServiceFailure(code,"Test "+code);
+                return object();
+            });
+            auto saved=object(),session=object();put(session,"refreshToken","test-refresh");put(saved,"session",session);auth.loginData=saved;
+            const auto cache=folder.getChildFile("session.dat");expect(cache.replaceWithText("preserved-encrypted-cache"),"Cannot write fixture");
+            auth.checkOnlineAccess();
+            for(int i=0;i<200 && auth.busy;++i)floatingControlTests::pump();
+            expect(!auth.busy && calls==1 && correctRoute,"Automatic check rotated tokens or failed to finish");
+            if(code=="quarantined") {
+                expect(!cache.existsAsFile() && !auth.loginData.isObject() && folder.getChildFile("quarantine.dat").existsAsFile(),"Quarantine did not revoke and persist the block");
+                Auth restarted(folder);restarted.restore();expect(!restarted.allowed() && restarted.message.isNotEmpty(),"Quarantine disappeared on restart");
+            } else expect(cache.loadFileAsString()=="preserved-encrypted-cache" && auth.loginData.isObject(),"Expired tokens or network errors erased device activation");
+        }
+    });
+    test("Login window is compact and clamped inside Windows work area",[]{
+        DocumentWindow window("Login",Colours::black,0);window.setBounds(0,0,1600,1000);fitLoginWindow(window);
+        expect(window.getWidth()<=600 && window.getHeight()<=640,"Login inherited editor dimensions");
+        const auto *display=Desktop::getInstance().getDisplays().getDisplayForRect(window.getBounds());
+        expect(display && display->userArea.contains(window.getBounds()),"Login overlaps taskbar or screen edge");
+    });
+    test("Sidebar rail scroll and width gestures stay on their initial axis",[]{
+        DragDivider rail;rail.setBounds(0,0,6,400);
+        int offset=0,width=300,starts=0,ends=0;
+        rail.scrollMetrics=[&]{return DragDivider::ScrollMetrics{offset,400,1600};};
+        rail.scrollTo=[&](int y){offset=jlimit(0,1200,y);};
+        rail.started=[&]{++starts;};rail.ended=[&]{++ends;};rail.moved=[&](int delta){width=300+delta;};
+        const Point<float> origin{3,100};
+        auto event=[&](Point<float> at){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(ModifierKeys::leftButtonModifier),1,0,0,0,0,&rail,&rail,Time::getCurrentTime(),origin,Time::getCurrentTime(),1,false);};
+        rail.mouseDown(event(origin));rail.mouseDrag(event({3,150}));rail.mouseUp(event({3,150}));
+        expect(offset>0 && width==300 && starts==0 && ends==0,"Scroll gesture resized the sidebar");
+        const int savedOffset=offset;
+        rail.mouseDown(event(origin));rail.mouseDrag(event({33,101}));rail.mouseDrag(event({43,180}));rail.mouseUp(event({43,180}));
+        expect(width==340 && offset==savedOffset && starts==1 && ends==1,"Resize gesture switched axes or failed to persist once");
+    });
+    test("Mixer slot Shift bypass and Alt remove affect one effect and support undo",[&]{
+        auto project=projectFixture();Session session;session.inspection=true;session.restoreSnapshot(ProjectCodec::encode(project));
+        const auto id=session.song()->tracks[0].id;
+        auto settings=object();Array<var> chain;chain.add("EQ");chain.add("Compressor");put(settings,"inserted",chain);put(settings,"eqEnabled",true);put(settings,"compressorEnabled",true);
+        session.configureEffects(id,settings);
+        int opens=0;String error;
+        MixerPanel mixer(session,[&](ID,String){++opens;},[](ID,ModifierKeys){},[&](String value){error=value;},[](ID,bool){},[](ID){return false;},[](ID,Point<int>){});
+        mixer.setSize(600,350);
+        auto *strip=uiFeatureTests::find(mixer,"mixerStrip:"+text(id));expect(strip,"Mixer strip missing");
+        auto click=[&](int modifiers){Point<float> at{20,20};auto event=MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(modifiers|ModifierKeys::leftButtonModifier),1,0,0,0,0,strip,strip,Time::getCurrentTime(),at,Time::getCurrentTime(),1,false);strip->mouseDown(event);strip->mouseUp(event);};
+        click(ModifierKeys::shiftModifier);
+        expect(!fxchain::enabled(fxchain::settings(session,id),"EQ") && fxchain::enabled(fxchain::settings(session,id),"Compressor"),"Shift bypass affected the wrong effects");
+        session.undo();expect(fxchain::enabled(fxchain::settings(session,id),"EQ"),"Bypass undo failed");
+        click(ModifierKeys::altModifier);
+        expect(list(get(fxchain::settings(session,id),"inserted")).size()==1,"Alt failed to remove only one FX");
+        session.undo();expect(list(get(fxchain::settings(session,id),"inserted")).size()==2 && fxchain::enabled(fxchain::settings(session,id),"EQ"),"Removal undo failed");
+        expect(opens==0 && error.isEmpty(),"Modified click opened FX manager or failed");
+    });
+    test("Peak readouts retain maxima through silence, ignore invalid values and reset explicitly",[]{
+        meterDisplay::PeakHold peak;
+        peak.record(.01f);expect(peak.amplitude()==0,"Noise below -24 dB displayed a peak");
+        peak.record(.5f);peak.record(.1f);peak.record(0);peak.record(std::numeric_limits<float>::infinity());
+        expect(peak.amplitude()==.5f,"Silence, decay or invalid input changed held peak");
+        peak.record(1.25f);expect(peak.amplitude()==1.25f,"Overload peak was clamped");
+        peak.clear();expect(peak.amplitude()==0,"Reset failed");peak.record(.25f);expect(peak.amplitude()==.25f,"Peak did not resume after reset");
+    });
+    const auto editorFixture=SystemStats::getEnvironmentVariable("CATLIVE_TEST_VST3_EDITOR",{});
+    if(editorFixture.isNotEmpty())test("Native VST3 editor stays inside FX manager across resizing and disposal",[&]{
+        auto descriptions=native::vst3::scan(std::filesystem::u8path(utf8(editorFixture)));
+        expect(!descriptions.empty(),"Editor fixture is empty");
+        auto processor=std::make_shared<native::vst3::Processor>(descriptions.front(),native::vst3::State{},48000);
+        DocumentWindow manager("FX embedded regression",Colours::black,DocumentWindow::closeButton);
+        manager.setUsingNativeTitleBar(true);
+        auto embedded=std::make_unique<ExternalEffectEditor>(processor,[](const KeyPress&){return false;},[](bool){});
+        manager.setContentNonOwned(embedded.get(),false);manager.centreWithSize(740,560);manager.setVisible(true);
+        floatingControlTests::pump();
+        auto *host=dynamic_cast<HWNDComponent*>(embedded->getChildComponent(0));
+        expect(host&&host->getHWND(),"Native view was not attached to manager");
+        const auto hwnd=static_cast<HWND>(host->getHWND());
+        expect(GetAncestor(hwnd,GA_ROOT)==manager.getPeer()->getNativeHandle(),"Plugin opened in a separate window");
+        expect(GetWindow(hwnd,GW_CHILD)!=nullptr,"Plugin canvas missing");
+        manager.setContentComponentSize(120,80);floatingControlTests::pump();
+        RECT client{};GetClientRect(hwnd,&client);
+        expect(client.right>0&&client.bottom>0&&client.right<200,"Host did not follow manager bounds");
+        manager.clearContentComponent();embedded.reset();expect(!IsWindow(hwnd),"Native editor survived disposal");
+        AudioBuffer<float> buffer(2,64);buffer.clear();native::vst3::Transport transport;
+        expect(processor->process(buffer.getWritePointer(0),buffer.getWritePointer(1),64,transport),"Closing editor interrupted processor");
+    });
     trackDuplicationTests::run(test);
     trackDuplicationTests::runSession<Session>(test);
     recordingCaptureTests::registerTests(directory, test);
     transportFadeoutTests::registerTests(directory, test);
     addActionBindingsTests(directory, test);
     addUIFeatureTests(directory, test);
-    addPartsPanelTests(test);
+    addPartsPanelTests(directory, test);
     stemGraphTests::registerTests(directory, test, skipped);
     mediaImportTests::registerTests(directory, test);
     gridMediaClipboardTests::registerTests(test);
     floatingControlTests::registerTests(directory,test);
     projectOpenTests::registerTests(directory,test);
+    navigationParityTests::registerTests(directory,test);
+    projectBrowserLoadingTests::registerTests(directory,test);
+    bpmDetectionTests::registerTests(directory,test);
+    lightingRegionTests::registerTests(directory,test);
+    sectionMarkerTests::registerTests(directory,test);
+    regionLaneTests::registerTests(directory,test);
+    setlistSearchTests::registerTests(directory,test);
+    remoteSetlistSelectionTests::registerTests(directory,test);
+    addTrackVisibilityTests(directory,test);
+    addWorkspaceSetlistPresentationTests(directory,test);
+    masterMixerTests::registerTests(directory,test);
     test("Transport Fadeout waits for silence, cancels and blocks Subplay without changing saved faders", [&] {
         Session session; session.inspection = true;
         auto p = projectFixture();
@@ -725,7 +838,7 @@ int runTests(const File &directory) {
             auto project=projectFixture();auto &song=project.songs.front();song.parts.clear();song.markers.reset();song.tracks.resize(1);song.tracks.front().role.id="other";song.tracks.front().clips.clear();
             Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);session.mediaDirectory=folder.getChildFile(same?"same":"separate");session.mediaDirectory.createDirectory();
             auto before=JSON::toString(ProjectCodec::encode(session.project()));const auto id=session.song()->tracks.front().id;
-            session.importMedia(files,3,id,same,2);wait(session);
+            session.importMedia(files,3,id,same ? MediaDropLayout::sameTrack : MediaDropLayout::separateTracks,2);wait(session);
             expect(session.song()->tracks.size()==(same?1u:2u),utf8(session.message).c_str());
             const auto &first=session.song()->tracks.front();expect(first.id==id&&first.role.id=="other","Dropped item preserves destination track type");
             expect(first.clips.front().startTime==3&&first.clips.front().duration==10,"Drop time and image duration match Mac");
@@ -2835,6 +2948,49 @@ int runTests(const File &directory) {
         expect(session.song()->beatsPerBar == 3 && session.song()->bpm == oldBpm * 1.5,
                "Timing redo did not restore signature");
     });
+    test("Timer keypad matches Mac field editing, countdown lock and saved auto start", [&] {
+        const auto file = directory.getChildFile("timer-keypad-preferences.json");
+        file.replaceWithText("{}");
+        Appearance preferences(file);
+        StageState state(preferences);
+        StageTimerSettings panel(state);
+        panel.setSize(380, 348);
+        auto press = [&](const String &name) {
+            for (auto *child : panel.getChildren())
+                if (auto *button = dynamic_cast<Button *>(child);
+                    button && (button->getName() == name || button->getButtonText() == name)) {
+                    expect(button->isEnabled(), "Timer button unexpectedly disabled: " + name);
+                    button->onClick(); return;
+                }
+            expect(false, "Timer button missing: " + name);
+        };
+        press("Minutos"); press("1"); press("2");
+        expect(state.target == 720, "Keypad did not replace both digits of the selected field");
+        press(String::fromUTF8("⌫"));
+        expect(state.target == 600, "Backspace did not clear the previous digit");
+        press("Limpar"); press("9"); press("9");
+        expect(state.target == 3540, "Minutes exceeded 59");
+        press("Segundos"); press("3"); press("4");
+        press("INIT AUTO");
+        Appearance restored(file);
+        StageState reopened(restored);
+        expect(reopened.target == 3574 && reopened.autoStart, "Keypad changes were not persisted");
+        press("Iniciar");
+        expect(state.running, "Timer did not start");
+        for (auto *child : panel.getChildren())
+            if (child->getName() == "1" || child->getName() == "Horas")
+                expect(!child->isEnabled(), "Duration remained editable while counting down");
+        int contextCount = 0;
+        StageTimerControl control(state, [&] { ++contextCount; });
+        control.setSize(164, 43);
+        for (auto *child : control.getChildren())
+            if (auto *button = dynamic_cast<QuietButton *>(child)) {
+                const auto before = contextCount;
+                button->context({});
+                expect(contextCount == before + 1 && state.running,
+                       "Timer button context did not configure without stopping the timer");
+            }
+    });
     test("Stage clock, notices and independent teleprompter profiles", [&] {
         const auto file = directory.getChildFile("stage-preferences.json");
         file.replaceWithText("{}");
@@ -3147,8 +3303,8 @@ int runTests(const File &directory) {
             "Resolume reused a duplicate column");
         ResolumeComposition::Plan plan;
         plan.name = "Test Show";
-        plan.decks[1] = {1, "One", {{1, "Start"}}};
-        plan.decks[2] = {2, "Two", {{1, "Start"}}};
+        plan.decks[1] = {1, "One", {{1, "Inicio"}}};
+        plan.decks[2] = {2, "Two", {{1, "Inicio"}}};
         const auto destination = directory.getChildFile("resolume-" + text(uuid()) + ".avc");
         StringArray names{"Empty", "Empty 2"};
         int selected = 1, posts = 0, saves = 0, destructive = 0;

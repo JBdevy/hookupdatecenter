@@ -6,11 +6,23 @@ namespace catlive {
 // and cache retirement run on the read-ahead thread, never the device callback.
 class StreamingReader final : public AudioFormatReader, private TimeSliceClient {
   public:
+    struct Metadata {
+        String format;
+        double sampleRate = 0;
+        int64 frames = 0;
+        unsigned int channels = 0;
+        Metadata() = default;
+        Metadata(const AudioFormatReader& reader) : format(reader.getFormatName()),
+            sampleRate(reader.sampleRate), frames(reader.lengthInSamples), channels(reader.numChannels) {}
+    };
     StreamingReader(const File& path, const AudioFormatReader& metadata,
                     AudioFormatManager& manager, TimeSliceThread& worker)
-        : AudioFormatReader(nullptr, metadata.getFormatName()), file(path), formats(manager), thread(worker) {
-        sampleRate = metadata.sampleRate; lengthInSamples = metadata.lengthInSamples;
-        numChannels = metadata.numChannels; bitsPerSample = 32; usesFloatingPointData = true;
+        : StreamingReader(path, Metadata(metadata), manager, worker) {}
+    StreamingReader(const File& path, const Metadata& metadata,
+                    AudioFormatManager& manager, TimeSliceThread& worker)
+        : AudioFormatReader(nullptr, metadata.format), file(path), formats(manager), thread(worker) {
+        sampleRate = metadata.sampleRate; lengthInSamples = metadata.frames;
+        numChannels = metadata.channels; bitsPerSample = 32; usesFloatingPointData = true;
         thread.addTimeSliceClient(this);
     }
     ~StreamingReader() override { thread.removeTimeSliceClient(this); }

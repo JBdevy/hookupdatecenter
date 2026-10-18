@@ -171,7 +171,7 @@ struct ResolumeSettingsView: View {
     private func create() {
         guard !busy, saveMap() else { return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: "avc") ?? .data]
-        panel.nameFieldStringValue = show.snapshot.project.name + ".avc"
+        panel.nameFieldStringValue = LightingExportName.fileStem(show.snapshot.project.name) + ".avc"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let project = show.snapshot.project, config = settings
         busy = true; status = "Creating Resolume composition…"; runtime.stop()

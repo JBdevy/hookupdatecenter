@@ -58,10 +58,10 @@ final class SectionBoundaryTests: XCTestCase {
             return
         }
         if command == .escape {
-            if transport.loop.enabled {
-                transport.loop.enabled = false; transport.loop.start = nil; transport.loop.end = nil
-            } else if transport.queuedSectionMarkerId != nil {
+            if transport.queuedSectionMarkerId != nil {
                 transport.queuedSectionMarkerId = nil; transport.sectionQueueStartedAt = nil
+            } else if transport.loop.enabled {
+                transport.loop.enabled = false; transport.loop.start = nil; transport.loop.end = nil
             } else {
                 transport.queuedRegionId = nil; transport.queue.songId = nil
                 project.regionSetlist?.autoAdvance = false
@@ -97,6 +97,14 @@ final class SectionBoundaryTests: XCTestCase {
         }
     }
     func applyProjectEdit(_ project: Project) throws { self.project = project }
+    func setMarker(_ marker: TimelineMarker) throws {
+        guard let song = project.songs.firstIndex(where: { $0.id == transport.songId }) else { return }
+        if let index = project.songs[song].markers?.firstIndex(where: { $0.id == marker.id }) {
+            project.songs[song].markers![index] = marker
+        } else {
+            project.songs[song].markers = (project.songs[song].markers ?? []) + [marker]
+        }
+    }
     func addTrack(id: UUID, name: String, role: TrackRole) throws {}
     func advance(_ elapsed: Double) {}
     func finishCurrentSong(_ enabled: Bool) {}
@@ -128,7 +136,7 @@ final class SmoothSeekTests: XCTestCase {
         XCTAssertNil(song.sectionDestinationPosition(region.id))
         XCTAssertEqual(song.markers?.count, 2)
     }
-    @MainActor func testEscapeCancelsLoopThenSectionThenSongAndAuto() throws {
+    @MainActor func testEscapeCancelsSectionThenLoopThenSongAndAuto() throws {
         var project = Project.demo()
         project.regionSetlist = RegionSetlist()
         project.regionSetlist?.autoAdvance = true
@@ -143,17 +151,19 @@ final class SmoothSeekTests: XCTestCase {
         show.tick()
         let revision = show.projectRevision
         show.send(.escape)
-        XCTAssertFalse(show.snapshot.transport.loop.enabled)
-        XCTAssertEqual(show.snapshot.transport.queuedSectionMarkerId, section)
-        XCTAssertEqual(show.snapshot.transport.queuedRegionId, queuedSong)
-        XCTAssertEqual(show.snapshot.project.regionSetlist?.autoAdvance, true)
-        XCTAssertEqual(show.projectRevision, revision, "loop release is a transport change only")
-        show.send(.escape)
+        XCTAssertTrue(show.snapshot.transport.loop.enabled)
         XCTAssertNil(show.snapshot.transport.queuedSectionMarkerId)
         XCTAssertNil(show.snapshot.transport.sectionQueueStartedAt)
         XCTAssertEqual(show.snapshot.transport.queuedRegionId, queuedSong)
         XCTAssertEqual(show.snapshot.project.regionSetlist?.autoAdvance, true)
         XCTAssertEqual(show.projectRevision, revision, "cancelled section is a transport change only")
+        show.send(.escape)
+        XCTAssertFalse(show.snapshot.transport.loop.enabled)
+        XCTAssertNil(show.snapshot.transport.queuedSectionMarkerId)
+        XCTAssertNil(show.snapshot.transport.sectionQueueStartedAt)
+        XCTAssertEqual(show.snapshot.transport.queuedRegionId, queuedSong)
+        XCTAssertEqual(show.snapshot.project.regionSetlist?.autoAdvance, true)
+        XCTAssertEqual(show.projectRevision, revision, "loop release is a transport change only")
         show.send(.escape)
         XCTAssertNil(show.snapshot.transport.queuedRegionId)
         XCTAssertEqual(show.snapshot.project.regionSetlist?.autoAdvance, false)
@@ -190,6 +200,59 @@ final class SmoothSeekTests: XCTestCase {
         XCTAssertNil(copy.songs[0].sectionRegion(at: 4.99))
         XCTAssertNotNil(copy.songs[0].sectionRegion(at: 5))
         XCTAssertNil(copy.songs[0].sectionRegion(at: 20))
+    }
+    @MainActor func testSectionOrderFollowsTimelineAfterReverseCreationMoveRenameUndoAndRedo() throws {
+        var project = Project.empty(name: "Section ordering")
+        let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 120)
+        project.songs[0].duration = 120
+        project.songs[0].parts = [region]
+        let backend = SectionExecutor()
+        backend.transport.playing = false
+        let show = try ShowController(executor: backend, persistence: MemoryProjectStore(), initialProject: project)
+        let chronological = (1...20).map { index in
+            TimelineMarker(id: UUID(), name: index == 10 ? "TESTE" : "TETE",
+                position: Double(index * 5), color: 0x51ef93, section: true)
+        }
+        let originalIDs = chronological.map(\.id)
+        for marker in chronological.reversed() { show.setMarker(marker) }
+
+        func ordered() -> [TimelineMarker] { show.current!.sectionMarkers(in: region) }
+        XCTAssertEqual(show.current?.markers?.map(\.id), Array(originalIDs.reversed()),
+            "Storage retains creation order, independently of presentation order")
+        XCTAssertEqual(ordered().map(\.id), originalIDs,
+            "Both section panels and keyboard navigation consume timeline order")
+
+        var moved = chronological.last!
+        moved.position = 2
+        let movedIDs = [moved.id] + Array(originalIDs.dropLast())
+        let revision = show.projectRevision
+        show.setMarker(moved)
+        XCTAssertEqual(ordered().map(\.id), movedIDs)
+        XCTAssertGreaterThan(show.projectRevision, revision, "Section observers must invalidate after a committed move")
+
+        moved.name = "ZZZ RENAMED"
+        show.setMarker(moved)
+        XCTAssertEqual(ordered().map(\.id), movedIDs, "Names and repeated labels do not define order")
+        XCTAssertEqual(ordered().first?.name, "ZZZ RENAMED")
+        show.undo()
+        XCTAssertEqual(ordered().map(\.id), movedIDs)
+        XCTAssertEqual(ordered().first?.name, "TETE")
+        show.undo()
+        XCTAssertEqual(ordered().map(\.id), originalIDs)
+        show.redo()
+        show.redo()
+        XCTAssertEqual(ordered().map(\.id), movedIDs)
+        XCTAssertEqual(ordered().first?.name, "ZZZ RENAMED")
+
+        let restored = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(show.snapshot.project))
+        XCTAssertEqual(restored.songs[0].sectionMarkers(in: region).map(\.id), movedIDs)
+        backend.transport.position = 0
+        backend.transport.editPosition = 0
+        show.tick()
+        show.performAction(.partsDown)
+        XCTAssertEqual(backend.scalarWrites.last?.0, .queueSection)
+        XCTAssertEqual(backend.scalarWrites.last?.1, moved.id,
+            "Keyboard selection uses the same first destination as the panels")
     }
     func testDrawerSectionOwnershipAndPanelCapacity() {
         var song = Project.demo().songs[0]

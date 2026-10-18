@@ -8,9 +8,10 @@ class Workspace::Setlist final : public Component,
     explicit Setlist(Workspace &owner) : w(owner) {
         w.appearance.addChangeListener(this);
         addAndMakeVisible(list);
+        list.setComponentID("setlistRows");
         list.setModel(this);
         list.setRowHeight(38);
-        list.setColour(ListBox::backgroundColourId, Colour(0xff151b22));
+        list.setColour(ListBox::backgroundColourId, theme::background);
         list.setMultipleSelectionEnabled(true);
         list.setOutlineThickness(0);
         list.getViewport()->setScrollBarsShown(false, false, true, false);
@@ -71,29 +72,21 @@ class Workspace::Setlist final : public Component,
         live.setColour(TextButton::buttonOnColourId, theme::green);
         live.setColour(TextButton::textColourOffId, Colours::black);
         live.setColour(TextButton::textColourOnId, Colours::black);
+        parts.setComponentID("setlistParts");
         parts.onClick = [this] {
-            w.openPartsList();
+            w.toggleRightParts();
         };
         addPlaylist.onClick = [this] { createPlaylist(); };
         searchButton.setTooltip("Search songs");
-        searchButton.onClick = [this] {
-            searching = !searching;
-            search.setVisible(searching);
-            if (!searching)
-                search.setText({}, true);
-            else
-                search.grabKeyboardFocus();
-            resized();
-        };
+        searchButton.setComponentID("setlistSearchToggle");
+        searchButton.onClick = [this] { setSearching(!searching); };
         addChildComponent(search);
+        search.setComponentID("setlistSearchField");
         search.setFont(theme::font(13));
         search.setTextToShowWhenEmpty("Search songs", theme::secondary);
         search.onTextChange = [this] { refresh(); };
-        search.onEscapeKey = [this] {
-            searching = false;
-            search.setText({});
-            resized();
-        };
+        search.onEscapeKey = [this] { setSearching(false); };
+        search.onReturnKey = [this] { if (!entries.empty()) chooseSearchResult(entries.front().id); };
         automatic.setTooltip("Queue the next song automatically");
         automatic.onClick = [this] {
             auto state = currentState();
@@ -174,7 +167,7 @@ class Workspace::Setlist final : public Component,
             playlistEditor->setBounds(getLocalBounds());
     }
     void paint(Graphics &g) override {
-        g.fillAll(Colour(0xff151b22));
+        g.fillAll(theme::background);
         g.setColour(theme::line);
         g.drawVerticalLine(0, 0, (float)getHeight());
         g.setColour(Colours::white.withAlpha(.12f));
@@ -193,6 +186,9 @@ class Workspace::Setlist final : public Component,
         if (reveal) {
             selection.clear();
             if (w.session.focusedRegion) selection.insert(*w.session.focusedRegion);
+            if (searching) {
+                searching=false;search.setText({},false);resized();
+            }
         }
         // Rows move when a unified region opens. Keep selection attached to IDs,
         // including multi-selection, instead of ListBox's previous row indices.
@@ -212,7 +208,7 @@ class Workspace::Setlist final : public Component,
         stop.setToggleState(state.stopAtRegionEnd.value_or(false), dontSendNotification);
         live.setToggleState(state.liveEnabled.value_or(false), dontSendNotification);
         const auto *playlist = selectedPlaylist();
-        blocks.setEnabled(playlist != nullptr);
+        blocks.setEnabled(playlist != nullptr && !searching);
         entries.clear();
         regionCount = 0;
         totalDuration = 0;
@@ -220,15 +216,14 @@ class Workspace::Setlist final : public Component,
         if (song) {
             std::vector<const jaras::Part *> roots;
             std::map<ID, int> ids;
+            for (size_t index=0;index<song->parts.size();++index)
+                ids[song->parts[index].id]=(int)index+1;
             auto sorted = song->parts;
             std::stable_sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) {
                 if (a.startTime != b.startTime)
                     return a.startTime < b.startTime;
                 return a.endTime > b.endTime;
             });
-            int index = 0;
-            for (const auto &part : sorted)
-                ids[part.id] = ++index;
             if (playlist) {
                 for (const auto &id : playlist->regionIds)
                     for (const auto &part : song->parts)
@@ -241,7 +236,6 @@ class Workspace::Setlist final : public Component,
                 std::stable_sort(roots.begin(), roots.end(),
                                  [](auto *a, auto *b) { return a->startTime < b->startTime; });
             }
-            const auto query = search.getText().trim();
             auto addBlocks = [&](const std::optional<ID> &before) {
                 if (!state.blocks)
                     return;
@@ -249,8 +243,7 @@ class Workspace::Setlist final : public Component,
                     if (block.songId == song->id &&
                         block.playlistId ==
                             (playlist ? std::optional<ID>(playlist->id) : std::nullopt) &&
-                        block.beforeRegionId == before &&
-                        (query.isEmpty() || text(block.name).containsIgnoreCase(query))) {
+                        block.beforeRegionId == before) {
                         Entry entry;
                         entry.block = true;
                         entry.id = block.id;
@@ -259,42 +252,36 @@ class Workspace::Setlist final : public Component,
                         entries.push_back(entry);
                     }
             };
-            index = 0;
-            for (auto *part : roots) {
-                ++index;
-                ++regionCount;
+            regionCount=(int)roots.size();
+            for (auto *part : roots)
                 totalDuration += part->endTime - part->startTime;
-                addBlocks(part->id);
-                const bool children =
-                    std::any_of(song->parts.begin(), song->parts.end(),
-                                [&](const auto &p) { return p.parentRegionID == part->id; });
-                auto addPart = [&](const jaras::Part &p, int number) {
-                    auto name = text(p.name);
-                    if (p.uppercaseName.value_or(true))
-                        name = unicodeCase(name);
-                    if (query.isNotEmpty() && !name.containsIgnoreCase(query))
-                        return;
-                    Entry entry;
-                    entry.id = p.id;
-                    entry.name = name;
-                    entry.start = p.startTime;
-                    entry.end = p.endTime;
-                    entry.child = p.parentRegionID.has_value();
-                    entry.number = number;
-                    entry.regionNumber = ids[p.id];
-                    entry.colour = Colour(0xff000000u | p.color.value_or(0x777777));
-                    entry.hasChildren = !entry.child && children;
-                    entries.push_back(entry);
-                };
-                addPart(*part, index);
-                if (children && (expanded.count(part->id) || query.isNotEmpty())) {
-                    int childNumber = 0;
-                    for (const auto &child : sorted)
-                        if (child.parentRegionID == part->id)
-                            addPart(child, ++childNumber);
+            const auto parents=timelineRegionLabels::parents(*song);
+            auto addPart = [&](const jaras::Part &part, int number) {
+                Entry entry;
+                entry.id=part.id;entry.name=timelineRegionLabels::displayName(part);
+                entry.start=part.startTime;entry.end=part.endTime;
+                entry.child=part.parentRegionID.has_value();entry.number=number;
+                entry.regionNumber=ids[part.id];
+                entry.colour=Colour(0xff000000u|part.color.value_or(0x777777));
+                entry.hasChildren=!searching && !entry.child && parents.count(part.id);
+                entries.push_back(entry);
+            };
+            if (searching) {
+                int index=0;
+                for (auto *part:setlistSearch::results(*song,search.getText(),w.appearance.regionIDs()))
+                    addPart(*part,++index);
+            } else {
+                int index=0;
+                for (auto *part:roots) {
+                    addBlocks(part->id);addPart(*part,++index);
+                    if (parents.count(part->id) && expanded.count(part->id)) {
+                        int childNumber=0;
+                        for (const auto &child:sorted)
+                            if (child.parentRegionID==part->id) addPart(child,++childNumber);
+                    }
                 }
+                addBlocks(std::nullopt);
             }
-            addBlocks(std::nullopt);
         }
         list.updateContent();
         list.deselectAllRows();
@@ -334,6 +321,11 @@ class Workspace::Setlist final : public Component,
         }
         return result;
     }
+    DragDivider::ScrollMetrics scrollMetrics() const {
+        auto *view=list.getViewport();auto *document=view->getViewedComponent();
+        return {view->getViewPositionY(),view->getViewHeight(),document?document->getHeight():0};
+    }
+    void scrollTo(int y) { auto *view=list.getViewport();const auto m=scrollMetrics();view->setViewPosition(0,jlimit(0,std::max(0,m.document-m.viewport),y)); }
     int scrollY() const { return list.getViewport()->getViewPositionY(); }
     var diagnostics() const {
         auto result = object();
@@ -345,13 +337,19 @@ class Workspace::Setlist final : public Component,
         put(bounds, "height", button.getHeight());
         put(result, "partsButton", bounds);
         put(result, "rows", (int)entries.size());
-        Array<var> selected, visibleSelected, rowNumbers;
+        Array<var> selected, visibleSelected, rowNumbers, rowRegionNumbers, rowIDs;
         for (const auto &id : selection) selected.add(text(id));
         for (const auto &id : selectedEntryIDs()) visibleSelected.add(text(id));
-        for (const auto &entry : entries) rowNumbers.add(entry.number);
+        for (const auto &entry : entries) {
+            rowNumbers.add(entry.number);rowRegionNumbers.add(entry.regionNumber);rowIDs.add(text(entry.id));
+        }
         put(result, "selectedEntries", selected);
         put(result, "visibleSelectedEntries", visibleSelected);
         put(result, "rowNumbers", rowNumbers);
+        put(result, "rowRegionNumbers", rowRegionNumbers);
+        put(result, "rowIDs", rowIDs);
+        put(result, "searching", searching);
+        put(result, "searchQuery", search.getText());
         put(result, "footerVisible", footerVisible);
         put(result, "fontStyle", w.appearance.fontStyle());
         put(result, "fontFace", w.appearance.setlistFont().getTypefaceStyle());
@@ -475,7 +473,7 @@ class Workspace::Setlist final : public Component,
     BypassButton bypass;
     QuietButton automatic{"AUTO"};
     TextEditor search;
-    bool refreshing = false, searching = false, footerVisible = true;
+    bool refreshing = false, searching = false, footerVisible = true, ignoreSearchDoubleClick = false;
     uint64 focusRevision = 0;
     DrawerButton footerToggle;
     std::vector<Entry> entries;
@@ -484,6 +482,37 @@ class Workspace::Setlist final : public Component,
     ID selectedEntry;
     int regionCount = 0;
     double totalDuration = 0;
+    void setSearching(bool value) {
+        searching=value;
+        if (!searching) search.setText({},false);
+        resized();refresh();
+        if (searching && search.isShowing()) search.grabKeyboardFocus();
+    }
+    void chooseSearchResult(ID id) {
+        const auto *song=w.session.song();
+        if (!searching || !song || w.session.busy) return;
+        const auto found=std::find_if(song->parts.begin(),song->parts.end(),[&](const auto &part){return part.id==id;});
+        if (found==song->parts.end()) return;
+        const auto parent=found->parentRegionID;
+        const auto listedID=parent.value_or(id);
+        w.perform([&] {
+            if (const auto *playlist=selectedPlaylist(); playlist &&
+                std::find(playlist->regionIds.begin(),playlist->regionIds.end(),listedID)==playlist->regionIds.end()) {
+                auto state=currentState();state.selectedId.reset();
+                w.session.configureSetlist(std::move(state));
+            }
+            if (parent) expanded.insert(*parent);
+            w.session.command(w.session.transport().playing ? jaras::CommandKind::queueRegion
+                                                            : jaras::CommandKind::selectRegion,id);
+            selection={id};selectedEntry=id;
+            // The normal list replaces the results immediately. The remainder
+            // of this double-click must not activate its new row at that index.
+            ignoreSearchDoubleClick=true;
+            setSearching(false);
+            for (int row=0;row<getNumRows();++row)
+                if (entries[(size_t)row].id==id) {list.scrollToEnsureRowIsOnscreen(row);break;}
+        });
+    }
     std::set<ID> selectedEntryIDs() const {
         std::set<ID> result;
         const auto rows = list.getSelectedRows();
@@ -508,7 +537,7 @@ class Workspace::Setlist final : public Component,
     }
     void changeListenerCallback(ChangeBroadcaster *) override {
         footerVisible = (bool)w.appearance.value("catlive.setlist.footerVisible", true);
-        resized(); repaint(); list.repaint();
+        resized();refresh();
     }
     int getNumRows() override { return (int)entries.size(); }
     void selectedRowsChanged(int) override {
@@ -544,7 +573,7 @@ class Workspace::Setlist final : public Component,
         const bool played = state.playedLiveRegionIDs &&
             std::find(state.playedLiveRegionIDs->begin(), state.playedLiveRegionIDs->end(), entry.id) != state.playedLiveRegionIDs->end();
         const bool prepareOnly = state.prepareWithoutPlayback.value_or(false);
-        const int left = entry.child ? 18 : 0;
+        const int left = !searching && entry.child ? 18 : 0;
         auto bounds = juce::Rectangle<float>((float)left, 0, (float)width - left - (entry.block ? 0 : 14), 34);
         g.setColour(played ? Colour(0xff451010) : theme::panel);
         g.fillRoundedRectangle(bounds, 5);
@@ -564,10 +593,11 @@ class Workspace::Setlist final : public Component,
         g.setFont(theme::font(9));
         g.setColour(theme::secondary);
         const int number = w.appearance.regionIDs() ? entry.regionNumber : entry.number;
-        if (!entry.block)
+        const bool showNumber=!entry.block && (!searching || w.appearance.regionIDs());
+        if (showNumber)
             g.drawText(String(number).paddedLeft('0', 2), left + 17, 0, 22, 34,
                        Justification::centredLeft);
-        const int nameX = left + (entry.block ? 18 : 23 + std::max(2, String(number).length()) * 6),
+        const int nameX = left + (showNumber ? 23 + std::max(2, String(number).length()) * 6 : 18),
                   right = (int)bounds.getRight() - 8;
         const int seconds = (int)std::max(0.0, active ? std::ceil(entry.end - t.position)
                                                    : std::round(entry.end - entry.start));
@@ -580,7 +610,7 @@ class Workspace::Setlist final : public Component,
         if (!entry.block)
             g.drawText(duration, right - durationWidth, 0, durationWidth, 34, Justification::centredRight);
         g.setFont(w.appearance.setlistFont());
-        g.setColour(entry.block
+        g.setColour(entry.block || searching
                         ? Colours::white
                         : w.appearance.setlistColour(selectedPlaylist() != nullptr, entry.child));
         const int nameWidth = std::max(0, right - nameX - (entry.block ? 0 : durationWidth + 6));
@@ -597,6 +627,8 @@ class Workspace::Setlist final : public Component,
         }
     }
     void listBoxItemClicked(int row, const MouseEvent &event) override {
+        if (event.getNumberOfClicks()>1 && ignoreSearchDoubleClick) return;
+        if (event.getNumberOfClicks()==1) ignoreSearchDoubleClick=false;
         if (row < 0 || row >= getNumRows())
             return;
         auto entry = entries[(size_t)row];
@@ -608,6 +640,7 @@ class Workspace::Setlist final : public Component,
         }
         if (entry.block || event.mods.isCtrlDown() || event.mods.isShiftDown())
             return;
+        if (searching) {chooseSearchResult(entry.id);return;}
         w.perform([&] {
             w.session.command(w.session.transport().playing ? jaras::CommandKind::queueRegion
                                                             : jaras::CommandKind::selectRegion,
@@ -615,6 +648,8 @@ class Workspace::Setlist final : public Component,
         });
     }
     void listBoxItemDoubleClicked(int row, const MouseEvent &) override {
+        if (ignoreSearchDoubleClick) return;
+        if (searching && row>=0 && row<getNumRows()) {chooseSearchResult(entries[(size_t)row].id);return;}
         if (row >= 0 && row < getNumRows() && !entries[(size_t)row].block)
             w.perform([&] {
                 w.session.command(jaras::CommandKind::selectRegion, entries[(size_t)row].id);
@@ -700,7 +735,7 @@ class Workspace::Setlist final : public Component,
             });
     }
     var getDragSourceDescription(const SparseSet<int> &rows) override {
-        if (!selectedPlaylist())
+        if (searching || !selectedPlaylist())
             return {};
         Array<var> ids;
         for (int i = 0; i < rows.size(); ++i) {
@@ -717,7 +752,7 @@ class Workspace::Setlist final : public Component,
         return payload;
     }
     bool isInterestedInDragSource(const SourceDetails &details) override {
-        return selectedPlaylist() && str(details.description, "type") == "catlive-playlist-regions";
+        return !searching && selectedPlaylist() && str(details.description, "type") == "catlive-playlist-regions";
     }
     void itemDragMove(const SourceDetails &details) override {
         auto local = details.localPosition - list.getPosition();
@@ -730,7 +765,7 @@ class Workspace::Setlist final : public Component,
         repaint();
     }
     void itemDropped(const SourceDetails &details) override {
-        if (!selectedPlaylist())
+        if (searching || !selectedPlaylist())
             return;
         const auto payload = listValues(details.description);
         auto state = currentState();

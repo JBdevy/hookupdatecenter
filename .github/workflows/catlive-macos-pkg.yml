@@ -135,6 +135,7 @@ jobs:
           swift test --jobs 2
           bash scripts/test-bridge.sh
           bash scripts/test-control-mappings.sh
+          bash scripts/test-plugin-catalog.sh
           bash scripts/test-daw-remote.sh
 
       - name: Prepare CatStemSeparation runtime
@@ -389,20 +390,40 @@ jobs:
           files: |
             dist/Catlive-*.pkg
             dist/Catlive-*.exe
-      - name: Remove the old checksum attachments from this release
+      - name: Finalize release installers and source tag
         uses: actions/github-script@v7
         env:
           CATLIVE_RELEASE_VERSION: ${{ inputs.version }}
         with:
           script: |
             const version = process.env.CATLIVE_RELEASE_VERSION;
+            if (!/^[0-9]+\.[0-9]{2}$/.test(version) || !/^[0-9a-f]{40}$/.test(context.sha)) {
+              throw new Error('Invalid release version or source commit');
+            }
             const { owner, repo } = context.repo;
-            const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag: `catlive-v${version}` });
-            const obsolete = new Set([`Catlive-${version}.pkg.sha256`, `Catlive-${version}.exe.sha256`]);
+            const tag = `catlive-v${version}`;
+            const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            const installers = new Set([`Catlive-${version}.pkg`, `Catlive-${version}.exe`]);
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id: release.id });
+            for (const name of installers) {
+              const matches = assets.filter(asset => asset.name === name);
+              if (matches.length !== 1 || matches[0].state !== 'uploaded' || matches[0].size <= 0) {
+                throw new Error(`Release installer missing or incomplete: ${name}`);
+              }
+            }
             for (const asset of assets) {
-              if (obsolete.has(asset.name)) {
+              if (!installers.has(asset.name)) {
                 await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: asset.id });
                 core.info(`Removed obsolete release attachment: ${asset.name}`);
               }
             }
+            // Rebuilding the same public version replaces its installers. Point
+            // the matching tag at their tested source only after both uploads.
+            const { data: sourceTag } = await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+            if (sourceTag.object.sha !== context.sha) {
+              await github.rest.git.updateRef({ owner, repo, ref: `tags/${tag}`, sha: context.sha, force: true });
+            }
+            if (release.target_commitish !== context.sha) {
+              await github.rest.repos.updateRelease({ owner, repo, release_id: release.id, target_commitish: context.sha });
+            }
+            core.info(`Release ${tag} contains only its two installers, built from ${context.sha}`);

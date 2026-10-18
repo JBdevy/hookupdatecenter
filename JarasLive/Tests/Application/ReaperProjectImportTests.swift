@@ -330,7 +330,7 @@ final class ReaperProjectImportTests: XCTestCase {
         let original = try Data(contentsOf: source)
         let result = try ReaperProjectImporter.read(source)
         let imported = result.project.songs[0].tracks
-        XCTAssertEqual(imported.map(\.kind), [.chords, .teleprompt, .teleprompt2])
+        XCTAssertEqual(imported.map(\.kind), [.teleprompt, .teleprompt2, .chords])
         XCTAssertEqual(imported.compactMap { $0.clips.first?.text }, [text, text, text])
         XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
         XCTAssertEqual(try Data(contentsOf: source), original)
@@ -421,12 +421,12 @@ final class ReaperProjectImportTests: XCTestCase {
         """, in: directory)
         let result = try ReaperProjectImporter.read(source)
         let tracks = result.project.songs[0].tracks
-        XCTAssertEqual(tracks.map(\.kind), [.timecode, .chords, .teleprompt, .teleprompt2, .standard])
-        XCTAssertEqual(tracks[2].clips.count, 2, "remove only empty placeholders overlapping actual content")
-        XCTAssertEqual(tracks[2].clips[0].text, "Primeira linha\nSegunda linha")
-        XCTAssertEqual(tracks[3].clips[0].text, "Texto do segundo TP")
-        XCTAssertEqual(tracks[1].clips[0].text, "C#m7")
-        XCTAssertTrue(tracks[2].clips[1].isProjectionMedia)
+        XCTAssertEqual(tracks.map(\.kind), [.timecode, .teleprompt, .teleprompt2, .chords, .standard])
+        XCTAssertEqual(tracks[1].clips.count, 2, "remove only empty placeholders overlapping actual content")
+        XCTAssertEqual(tracks[1].clips[0].text, "Primeira linha\nSegunda linha")
+        XCTAssertEqual(tracks[2].clips[0].text, "Texto do segundo TP")
+        XCTAssertEqual(tracks[3].clips[0].text, "C#m7")
+        XCTAssertTrue(tracks[1].clips[1].isProjectionMedia)
         XCTAssertTrue(tracks[4].clips[0].isProjectionMedia)
         XCTAssertEqual(tracks[4].clips[0].sourceOffset, 1.5)
         let timecode = tracks[0]

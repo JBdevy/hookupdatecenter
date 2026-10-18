@@ -156,9 +156,10 @@ class StageTimerControl final : public Component, private Timer {
                                    jlimit(0, 59, digits[2].getText().getIntValue());
             };
             digits[i].onFocusLost = [this] { state.saveTimer(); };
-            digits[i].addMouseListener(this, false);
+            digits[i].addMouseListener(this, true);
         }
         addAndMakeVisible(start);
+        start.context = [this](Point<int>) { if (settings) settings(); };
         start.setColour(TextButton::textColourOffId, theme::green);
         start.onClick = [this] {
             if (state.running) {
@@ -205,7 +206,7 @@ class StageTimerControl final : public Component, private Timer {
     StageState &state;
     std::function<void()> settings;
     TextEditor digits[3];
-    TextButton start{"Iniciar"};
+    QuietButton start{"Iniciar"};
     void timerCallback() override {
         auto parts = StringArray::fromTokens(
             state.timeText().removeCharacters(String::fromUTF8("−")), ":", {});

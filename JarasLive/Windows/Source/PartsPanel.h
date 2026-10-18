@@ -39,8 +39,8 @@ inline std::optional<double> trigger(const jaras::Song &song, const jaras::Part 
 } // namespace partsPresentation
 class PartsPanel final : public Component, private Timer {
   public:
-    PartsPanel(Session &owner, std::function<void(String)> failure, bool verticalList = false)
-        : session(owner), error(std::move(failure)), vertical(verticalList), current(*this, false),
+    PartsPanel(Session &owner, std::function<void(String)> failure)
+        : session(owner), error(std::move(failure)), current(*this, false),
           queued(*this, true) {
         addAndMakeVisible(current);
         addAndMakeVisible(queued);
@@ -48,6 +48,9 @@ class PartsPanel final : public Component, private Timer {
             addChildComponent(button);
             button->setWantsKeyboardFocus(false);
         }
+        cancel.setComponentID("partsCancel");
+        currentTab.setComponentID("partsCurrentTab");
+        queuedTab.setComponentID("partsQueuedTab");
         cancel.onClick = [this] {
             try {
                 session.command(jaras::CommandKind::cancelSection);
@@ -68,57 +71,46 @@ class PartsPanel final : public Component, private Timer {
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         g.setColour(theme::secondary.withAlpha(.35f));
-        if (!vertical)
-            g.drawVerticalLine(getWidth() / 2, 5.f, (float)getHeight() - 5);
-        else {
-            g.drawVerticalLine(0, 0.f, (float)getHeight());
-            for (int i = 0; i < 2; ++i) {
-                auto r = (i ? queuedTab : currentTab).getBounds();
-                const bool selected = secondaryTab == (i != 0);
-                g.setColour(selected ? (i ? Colours::orange : theme::green).withAlpha(.55f)
-                                     : theme::display);
-                g.fillRoundedRectangle(r.toFloat(), 5);
-                g.setColour(selected ? Colours::white : theme::secondary);
-                g.setFont(theme::font(9));
-                g.drawText(i ? (session.presentationTransport().subPlay.playing ? "Sub Play" : "Fila de espera")
-                             : "Tocando / Selecionada",
-                           r.removeFromTop(15), Justification::centred);
-                g.setFont(theme::semiboldFont(12));
-                g.drawFittedText(i ? queued.title() : current.title(), r.reduced(3, 1),
-                                 Justification::centred, 2, .45f);
-            }
+        g.drawVerticalLine(0, 0.f, (float)getHeight());
+        for (int i = 0; i < 2; ++i) {
+            auto r = (i ? queuedTab : currentTab).getBounds();
+            const bool selected = secondaryTab == (i != 0);
+            g.setColour(selected ? (i ? Colours::orange : theme::green).withAlpha(.55f)
+                                 : theme::display);
+            g.fillRoundedRectangle(r.toFloat(), 5);
+            g.setColour(selected ? Colours::white : theme::secondary);
+            g.setFont(theme::font(9));
+            g.drawText(i ? (session.presentationTransport().subPlay.playing ? "Sub Play" : "Fila de espera")
+                         : "Tocando / Selecionada",
+                       r.removeFromTop(15), Justification::centred);
+            g.setFont(theme::semiboldFont(12));
+            g.drawFittedText(i ? queued.title() : current.title(), r.reduced(3, 1),
+                             Justification::centred, 2, .45f);
         }
     }
     void resized() override {
         const int half = getWidth() / 2;
         for (auto *button : std::initializer_list<Button *>{&cancel, &currentTab, &queuedTab})
-            button->setVisible(vertical);
-        if (vertical) {
-            cancel.setBounds(4, 4, getWidth() - 8, 26);
-            currentTab.setBounds(4, 38, half - 6, 42);
-            queuedTab.setBounds(half + 2, 38, getWidth() - half - 6, 42);
-            current.setBounds(5, 85, getWidth() - 10, std::max(1, getHeight() - 90));
-            queued.setBounds(current.getBounds());
-            current.setVisible(!secondaryTab);
-            queued.setVisible(secondaryTab);
-        } else {
-            current.setBounds(5, 5, half - 10, getHeight() - 10);
-            queued.setBounds(half + 5, 5, getWidth() - half - 10, getHeight() - 10);
-        }
+            button->setVisible(true);
+        cancel.setBounds(4, 4, getWidth() - 8, 26);
+        currentTab.setBounds(4, 38, half - 6, 42);
+        queuedTab.setBounds(half + 2, 38, getWidth() - half - 6, 42);
+        current.setBounds(5, 85, getWidth() - 10, std::max(1, getHeight() - 90));
+        queued.setBounds(current.getBounds());
+        current.setVisible(!secondaryTab);
+        queued.setVisible(secondaryTab);
         refresh();
     }
     void refresh() {
         current.refresh();
         queued.refresh();
         cancel.setEnabled(session.transport().queuedSectionMarkerId.has_value());
-        if (vertical)
-            repaint();
+        repaint();
     }
     var diagnostics() const {
         auto result = object();
         put(result, "current", current.diagnostics());
         put(result, "queued", queued.diagnostics());
-        put(result, "vertical", vertical);
         put(result, "secondaryTab", secondaryTab);
         return result;
     }
@@ -131,26 +123,14 @@ class PartsPanel final : public Component, private Timer {
             view.setViewedComponent(&content, false);
             view.setScrollBarsShown(true, false);
             view.setScrollBarThickness(8);
+            auto &scroll=view.getVerticalScrollBar();
+            scroll.setComponentID(second?"partsQueuedScroll":"partsCurrentScroll");
+            scroll.setLookAndFeel(&scrollLook);
         }
-        ~Bank() override { view.setViewedComponent(nullptr, false); }
+        ~Bank() override { view.getVerticalScrollBar().setLookAndFeel(nullptr);view.setViewedComponent(nullptr, false); }
         String title() const { return name; }
-        void paint(Graphics &g) override {
-            if (panel.vertical)
-                return;
-            g.setFont(theme::semiboldFont(11));
-            g.setColour(theme::secondary);
-            auto title = secondary ? (panel.session.presentationTransport().subPlay.playing
-                                          ? String("Sub Play")
-                                          : String::fromUTF8("Fila de espera"))
-                                   : String::fromUTF8("Tocando / Selecionada");
-            const int width = secondary ? 95 : 122;
-            g.drawText(title, 0, 0, width, 17, Justification::centredLeft);
-            g.setColour(Colours::white);
-            g.drawText(name, width + 4, 0, getWidth() - width - 4, 17, Justification::centredLeft);
-        }
         void resized() override {
-            const int header = panel.vertical ? 0 : 20;
-            view.setBounds(0, header, getWidth(), std::max(1, getHeight() - header));
+            view.setBounds(getLocalBounds());
             layout();
         }
         var diagnostics() const {
@@ -341,6 +321,18 @@ class PartsPanel final : public Component, private Timer {
         };
         PartsPanel &panel;
         bool secondary;
+        struct ScrollLook final : LookAndFeel_V4 {
+            bool areScrollbarButtonsVisible() override { return false; }
+            void drawScrollbar(Graphics &g,ScrollBar &,int x,int y,int width,int height,bool vertical,
+                               int thumbStart,int thumbSize,bool,bool) override {
+                if(!vertical)return;
+                const float centre=x+width*.5f;
+                g.setColour(Colour::fromFloatRGBA(.18f,.18f,.18f,1));
+                g.fillRect(centre-2,(float)y,4.f,(float)height);
+                g.setColour(Colour::fromFloatRGBA(.22f,1,.55f,1));
+                g.fillRoundedRectangle(centre-3,(float)thumbStart,6.f,(float)thumbSize,3.f);
+            }
+        } scrollLook;
         Viewport view;
         Component content;
         OwnedArray<Pad> buttons;
@@ -348,18 +340,15 @@ class PartsPanel final : public Component, private Timer {
         ID region;
         String name;
         void layout() {
-            const int columns = panel.vertical ? 1 : 6;
-            const int width = std::max(1, view.getWidth() - 8),
-                      cell = std::max(1, (width - 4 * (columns - 1)) / columns);
-            content.setSize(
-                width, std::max(view.getHeight(), ((buttons.size() + columns - 1) / columns) * 38));
+            const int width = std::max(1, view.getWidth() - 8);
+            content.setSize(width, std::max(view.getHeight(), buttons.size() * 38));
             for (int i = 0; i < buttons.size(); ++i)
-                buttons[i]->setBounds((i % columns) * (cell + 4), (i / columns) * 38, cell, 34);
+                buttons[i]->setBounds(0, i * 38, width, 34);
         }
     };
     Session &session;
     std::function<void(String)> error;
-    bool vertical = false, secondaryTab = false;
+    bool secondaryTab = false;
     // Tab faces are painted by the panel so their two font sizes match the Mac.
     struct Tab final : public TextButton {
         void paintButton(Graphics &, bool, bool) override {}

@@ -3,7 +3,12 @@
 namespace catlive {
 class Auth final : private Timer {
   public:
-    Auth();
+    struct ServiceFailure final : std::runtime_error {
+        String code;
+        ServiceFailure(String value,String message) : std::runtime_error(utf8(message)),code(std::move(value)) {}
+    };
+    using Request = std::function<var(const String &,const var &,const String &)>;
+    explicit Auth(File storageDirectory = {},Request transport = {});
     ~Auth() override;
     std::function<void()> changed;
     bool allowed() const { return authorised && (expiry > Time::getCurrentTime() || pendingRevocation); }
@@ -24,7 +29,7 @@ class Auth final : private Timer {
     void trial(String name);
     void restore();
     void logout();
-    void validate();
+    void checkOnlineAccess();
     void credentialDevices(String email, String cpf, std::function<void(var, String)>);
     void revokeCredentialDevice(String email, String cpf, String id, std::function<void(String)>);
     static bool verifyEntitlement(const var &, const String &account, const String &installation);
@@ -35,6 +40,9 @@ class Auth final : private Timer {
     File dataDirectory() const;
 
   private:
+    File storageDirectory;
+    Request transport;
+    var call(const String &route,const var &body = {},const String &token = {}) { return transport ? transport(route,body,token) : request(route,body,token); }
     ThreadPool worker{1};
     bool authorised = false;
     bool hasChosenDeviceName = false;

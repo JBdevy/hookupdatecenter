@@ -12,9 +12,11 @@ def native_class(name):
     start = scroll.index('final class ' + name)
     return scroll[start:scroll.index('\n#endif', start)]
 router = Path('Apple/Shared/TrackMixerRow.swift').read_text()
-router = router[router.index('struct EditorSelectionArea: NSViewRepresentable {'):].rsplit('#endif', 1)[0]
+start = router.index('struct EditorSelectionArea: NSViewRepresentable {')
+router = router[start:router.index('\n#endif', start)]
 controls = '@MainActor final class ControlMappings { static let shared = ControlMappings(); var editing: Int? }\n'
-Path(sys.argv[1]).write_text('import SwiftUI\n' + controls + router + diagnostics + '\n' + native_class('GridNativeScrollView') + '\n' + native_class('NativeTimelinePinnedView') + '\n' + Path('Tests/Apple/GridSelectionTests.swift').read_text())
+typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]
+Path(sys.argv[1]).write_text('import SwiftUI\n' + typography + '\n' + controls + router + '\n' + diagnostics + '\n' + native_class('GridNativeScrollView') + '\n' + native_class('NativeTimelinePinnedView') + '\n' + Path('Tests/Apple/GridSelectionTests.swift').read_text())
 PY
 swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/GridSelectionInput.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"
