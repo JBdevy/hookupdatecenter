@@ -104,7 +104,10 @@ if(NOT CATLIVE_FFMPEG_INCLUDE_DIR)
     endif()
     set(CATLIVE_FFMPEG_INCLUDE_DIR "${catlive_ffmpeg_headers_SOURCE_DIR}")
 endif()
-target_include_directories(CatLive PRIVATE ThirdParty/FFmpeg/include "${CATLIVE_FFMPEG_INCLUDE_DIR}")
+include(cmake/FFmpegHeaders.cmake)
+set(CATLIVE_FFMPEG_PUBLIC_HEADERS "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-include")
+catlive_prepare_ffmpeg_headers("${CATLIVE_FFMPEG_INCLUDE_DIR}" "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
+target_include_directories(CatLive PRIVATE ThirdParty/FFmpeg/include "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
 target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets CatLiveVST3 juce::juce_audio_utils
     juce::juce_dsp juce::juce_osc juce::juce_cryptography d2d1 dwrite bcrypt crypt32 normaliz dnsapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
