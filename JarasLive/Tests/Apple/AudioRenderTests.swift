@@ -1629,7 +1629,7 @@ try scalarAudio.update(readyAudioState, revision: 1)
 readyAudioState.transport.playing = true
 try scalarAudio.update(readyAudioState, revision: 1)
 let readyPlayed = try futurePeak()
-precondition(abs(readyPlayed - 0.1) < 0.003, "prepared song begins sounding when Play is explicitly pressed")
+precondition(abs(readyPlayed - 0.1) < 0.003, "prepared song begins sounding when Play is explicitly pressed: \(readyPlayed)")
 scalarAudio.stop()
 print("PREPARE_ONLY_QUEUE_SILENCE_AND_EXPLICIT_PLAY_PCM_OK")
 
