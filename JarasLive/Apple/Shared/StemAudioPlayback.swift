@@ -720,7 +720,7 @@ struct TimecodePlaybackSpan {
         if clock.rate != remainder { clock.rate = remainder }
         // Keep offline identity playback sample-transparent. Retain the node
         // so a later tempo/pitch edit can enable processing without reconnecting.
-        let bypass = !realtime && abs(coarseRate - 1) < 0.000001 && abs(tuning) < 0.000001
+        let bypass = !realtime && !allowsTempoChanges && abs(coarseRate - 1) < 0.000001 && abs(tuning) < 0.000001
         if stretch.bypass != bypass { stretch.bypass = bypass }
     }
     private var lastUpdate = ProcessInfo.processInfo.systemUptime
