@@ -40,6 +40,8 @@ class Session final : private Timer {
     void newProject(String name = "Untitled");
     void createRecordingProject(String name, int channels, const File &target);
     void load(const File &);
+    void loadAsync(const File &, std::function<void(String, double)> progress,
+                   std::function<void()> beforeCommit, std::function<void(String)> completed);
     void save(const File &);
     void cleanTimelineMedia(std::function<void(String)> completed);
     void command(jaras::CommandKind, const ID &target = {}, double value = 0);
@@ -101,6 +103,7 @@ class Session final : private Timer {
     void notify();
 
   private:
+    void loadPrepared(const File &, var, jaras::Project);
     struct TimeSelection { ID project, song; double start, end; };
     std::optional<TimeSelection> timeSelection;
     void focusTimelineRegion(double position, bool force = false);

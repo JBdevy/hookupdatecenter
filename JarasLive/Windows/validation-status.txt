@@ -1,3 +1,28 @@
+ATUALIZAÇÃO — 18/10/2026 — ABERTURA E PARIDADE DE IMPORTAÇÃO
+Abertura pelos Recentes assíncrona: Carregando projeto, Preparando waveforms
+(com progresso real por arquivo) e Preparando áudio. Cliques repetidos não
+iniciam outra abertura; arquivo inválido preserva o projeto atual. Editores de
+FX do projeto anterior são fechados antes de substituir seus processadores.
+A linha selecionada nos Recentes e seu título escurecem ao clicar.
+Na inicialização por arquivo, a abertura começa após a entrega da splash à
+janela principal para não esconder o status quando os peaks já estão em cache.
+GUI: projeto real Guilherme abriu, foi reaberto pelos Recentes e Espaço
+iniciou/parou o transporte com o gerenciador de FX em foco.
+Atalhos encaminhados dos HWNDs filhos de editores VST3 ao transporte/histórico;
+repetição de Espaço bloqueada, campos de texto e comandos locais preservados.
+Importação VS Hook: playlists/blocos, tuner, regiões unificadas, trechos e
+quatro multiloops com regras de mixer. Logic: MUSICAS, cores padrão e flags.
+12 entradas idênticas REAPER/VS Hook/Logic comparadas semanticamente contra o
+importador atual do Mac; todas equivalentes nos campos verificados. Casos
+malformados também rejeitados nas duas versões. Actions exige essa comparação.
+Validação local: 155 testes de integração Windows passaram; 2 testes opcionais
+(SF2 real e worker CatStem de identidade) não foram solicitados nesta execução.
+11 grupos Core passaram. Mac: 711 testes, 8 condicionais não executados,
+nenhuma falha. CatStem Windows permanece Em desenvolvimento, por solicitação.
+Este registro descreve os casos verificados, não uma certificação de todas
+as combinações de plugins, dispositivos e arquivos de terceiros.
+Evidências locais: Documents/CatLive-Mac-Validation/batch17.
+
 INTERAÇÃO — BUILD15, 16/10/2026
 Escala padrão de primeira instalação: 100%; preferências já salvas são preservadas.
 Arraste direito no corpo do grid seleciona itens por interseção, incluindo início

@@ -1,3 +1,4 @@
+#include "ProjectLoadingPanel.h"
 #include "MeterDisplay.h"
 #include "SpecialTrackControls.h"
 #include "MarkerRegionConversion.h"
@@ -3103,8 +3104,10 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     window->globalKeyState = [safe = SafePointer<Workspace>(this)](bool down) {
         if (safe) safe->keyStateChanged(down);
     };
-    if (dynamic_cast<EffectsPanel *>(panel.get()))
+    if (auto *effects = dynamic_cast<EffectsPanel *>(panel.get())) {
+        effects->globalKey = window->globalKey; effects->globalKeyState = window->globalKeyState;
         window->shortcuts = std::make_unique<FloatingShortcuts>(*window, window->globalKey, window->globalKeyState);
+    }
     // Projection windows participate in normal window ordering so settings,
     // FX and plug-in windows can come to the front when opened.
     window->setAlwaysOnTop(false);
@@ -4161,14 +4164,34 @@ void Workspace::projectOpened(bool fitTimeline) {
     grabKeyboardFocus();
 }
 void Workspace::openProject(const File &file) {
+    if (session.busy) return;
     if (file.hasFileExtension("ziplive;zip")) { choosePackageDestination(file); return; }
     auto action = [safe = Component::SafePointer<Workspace>(this), file] {
-        if (safe)
-            safe->perform([&] {
-                safe->session.load(file);
-                safe->lighting.loadSettings();
-                safe->projectOpened();
-            });
+        if (!safe || safe->session.busy) return;
+        safe->perform([&] {
+            if (safe->session.audio.isRecording() || safe->session.transport().playing || safe->session.transport().subPlay.playing)
+                throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
+            auto panel = std::make_unique<ProjectLoadingPanel>(file.getFileNameWithoutExtension());
+            const auto loading = Component::SafePointer<ProjectLoadingPanel>(panel.get());
+            ModalSheet::open(*safe, "Abrir projeto", std::move(panel), 420, 112);
+            ModalSheet::blockDismiss(*loading, true);
+            safe->session.loadAsync(file,
+                [loading](String status, double progress) { if (loading) loading->update(status, progress); },
+                [safe] {
+                    if (!safe) return;
+                    // Close project-bound editors while their outgoing processors
+                    // and document still exist (including native plug-in HWNDs).
+                    safe->floatingWindows.clear();
+                    safe->selectedTracks.clear(); safe->selectedTrack.clear();
+                    safe->trackSelectionAnchor.clear(); safe->collapsedGroups.clear();
+                },
+                [safe, loading](String error) {
+                    if (loading) { ModalSheet::blockDismiss(*loading, false); ModalSheet::dismiss(*loading); }
+                    if (!safe) return;
+                    if (error.isNotEmpty()) safe->showError(error);
+                    else { safe->lighting.loadSettings(); safe->projectOpened(); }
+                });
+        });
     };
     if (session.dirty && projectReady)
         confirm("Open another project?", "The current project has unsaved changes.", action);

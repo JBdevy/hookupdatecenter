@@ -166,6 +166,19 @@ class WaveformCache final {
         }
         return std::atomic_load(&entry->data);
     }
+    // Project opening performs the same analysis/cache validation as the grid,
+    // on its worker. The viewport can then map the prepared peaks immediately.
+    static void preload(const File &requested, const std::atomic<bool> *cancel = nullptr) {
+        if (cancel && cancel->load()) return;
+        const auto file = existingMediaPath(requested);
+        if (!file.existsAsFile()) return;
+        const auto size = file.getSize(), modified = file.getLastModificationTime().toMilliseconds();
+        const auto target = cacheFile(file, size, modified);
+        if (readCache(target, size, modified) || readCache(macCacheFile(file), size, modified)) return;
+        AudioFormatManager formats; registerAudioFormats(formats);
+        std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
+        if (reader) if (auto data = analyse(*reader, cancel)) writeCache(*data, target, size, modified);
+    }
     static std::shared_ptr<Data> analyse(AudioFormatReader &reader, const std::atomic<bool> *cancel = nullptr) {
         if (reader.lengthInSamples <= 0 || reader.sampleRate <= 0 || reader.numChannels == 0 || reader.numChannels > 64) return {};
         auto data = std::make_shared<Data>();

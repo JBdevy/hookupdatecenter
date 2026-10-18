@@ -1,3 +1,4 @@
+#include "NativePluginShortcuts.h"
 #pragma once
 #include "Session.h"
 #include "Localization.h"
@@ -393,10 +394,13 @@ class EQGraph final : public Component {
 class ExternalEffectWindow final : public DocumentWindow {
     std::shared_ptr<native::vst3::Processor> processor;
     std::unique_ptr<native::vst3::Editor> editor;
+    std::unique_ptr<NativePluginShortcuts> shortcuts;
 public:
-    ExternalEffectWindow(String title,std::shared_ptr<native::vst3::Processor> plugin)
+    ExternalEffectWindow(String title,std::shared_ptr<native::vst3::Processor> plugin,
+                         std::function<bool(const KeyPress &)> key, std::function<void(bool)> keyState)
         :DocumentWindow(title,theme::panel,DocumentWindow::closeButton),processor(std::move(plugin)) {
         setUsingNativeTitleBar(true);setContentOwned(new Component(),true);centreWithSize(800,600);setVisible(true);
+        shortcuts=std::make_unique<NativePluginShortcuts>(static_cast<HWND>(getPeer()->getNativeHandle()),std::move(key),std::move(keyState));
         editor=processor->openEditor(getPeer()->getNativeHandle(),[this](int w,int h){setContentComponentSize(w,h);});
         setContentComponentSize(editor->width(),editor->height());toFront(true);
     }
@@ -406,6 +410,8 @@ public:
 };
 class EffectsPanel final : public Component, private ListBoxModel, private Timer {
   public:
+    std::function<bool(const KeyPress &)> globalKey;
+    std::function<void(bool)> globalKeyState;
     EffectsPanel(Session &s, ID target, std::function<void(String)> report, bool itemTarget = false, std::vector<ID> batchTargets = {})
         : session(s), track(std::move(target)), item(itemTarget), insertionTargets(std::move(batchTargets)), error(std::move(report)), chain("FX", this) {
         setComponentID("effectsPanel");
@@ -561,7 +567,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             if(!plugin)throw std::runtime_error("O processador VST3 não está disponível.");
             if(externalWindow&&externalWindow->uses(plugin)){externalWindow->setVisible(true);externalWindow->toFront(true);return;}
             externalWindow.reset();externalWindowKey=key();
-            externalWindow=std::make_unique<ExternalEffectWindow>(str(current(),"name"),std::move(plugin));
+            externalWindow=std::make_unique<ExternalEffectWindow>(str(current(),"name"),std::move(plugin),globalKey,globalKeyState);
         }catch(const std::exception &e){error(String::fromUTF8(e.what()));}
     }
     ComboBox presets;

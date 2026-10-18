@@ -1,5 +1,6 @@
 #include "ProjectMigration.h"
 #include "MediaPath.h"
+#include "VSHookMigration.h"
 #include <deque>
 namespace catlive {
 namespace migration {
@@ -358,6 +359,22 @@ jaras::MIDIItem rppMIDI(const RppChunk &source, const RppChunk &take, const RppC
 } // namespace
 MigratedProject readReaperProject(const File &file) {
     auto root = parseRpp(file);
+    migration::VSHookMigration hook;
+    if (auto *ext = root->child("EXTSTATE")) for (const auto &section : ext->children) {
+        const auto name = section->header[0];
+        if (name != "CHATGPT_REGION_PLAYLIST" && name != "VS_HOOK_MULTILOOPS") continue;
+        auto &values = hook.state[name];
+        for (const auto &row : section->lines) if (row.size() >= 2) values[row[0]] = row.joinIntoString(" ", 1);
+        for (const auto &binary : section->children) if (binary->header[0] == "BIN" && binary->header.size() == 2) {
+            MemoryOutputStream decoded;
+            require(Base64::convertFromBase64(decoded, binary->notes.joinIntoString("")), "Invalid VS Hook project metadata.");
+            const auto *bytes = static_cast<const char *>(decoded.getData());
+            auto size = decoded.getDataSize();
+            while (size && bytes[size-1] == 0) --size;
+            require(CharPointer_UTF8::isValidString(bytes, (int)size), "Invalid VS Hook project metadata UTF-8.");
+            values[binary->header[1]] = String::fromUTF8(bytes, (int)size);
+        }
+    }
     MigratedProject result;
     result.project = migration::emptyProject(file.getFileNameWithoutExtension());
     auto &project = result.project;
@@ -399,6 +416,7 @@ MigratedProject readReaperProject(const File &file) {
             continue;
         jaras::Track track;
         track.id = uuid();
+        if (node.header[1].isNotEmpty()) hook.tracks[node.header[1].toUpperCase()] = track.id;
         track.name = utf8(node.value("NAME", 1, "Track " + String(song.tracks.size() + 1)));
         track.volume = std::clamp(node.number("VOLPAN", 1, 1), 0., std::pow(10., .6));
         track.pan = node.number("VOLPAN", 2);
@@ -545,6 +563,7 @@ MigratedProject readReaperProject(const File &file) {
                     if (time > 0) {
                         require(time > part.startTime, "REAPER: invalid region length.");
                         song.parts.push_back(part);
+                        hook.regions[row[1]] = part.id;
                     }
                 }
             } else if (time >= 0) {
@@ -554,32 +573,38 @@ MigratedProject readReaperProject(const File &file) {
                 marker.position = time;
                 marker.color = color.value_or(0xc7ab40);
                 song.markers->push_back(marker);
+                hook.markers.push_back({row[1], marker});
             }
         }
     require(pending.empty(), "REAPER: incomplete region.");
-    for (auto &point : tempo.points)
-        if (point.time >= 0) {
-            jaras::TimelineMarker marker;
-            marker.id = uuid();
-            marker.name = utf8(String(point.bpm));
-            marker.position = point.time;
-            marker.color = 0xaaaaaa;
-            marker.tempoBPM = point.bpm;
-            marker.tempoBeats = song.beatsPerBar;
-            marker.tempoUnit = song.beatUnit;
-            song.markers->push_back(marker);
-        }
-    std::stable_sort(song.parts.begin(), song.parts.end(), [](auto &a, auto &b) {
-        return a.startTime == b.startTime ? a.endTime > b.endTime : a.startTime < b.startTime;
-    });
-    for (size_t i = 0; i < song.parts.size(); ++i)
-        for (size_t j = 0; j < i; ++j)
-            if (!song.parts[j].parentRegionID &&
-                song.parts[j].startTime <= song.parts[i].startTime &&
-                song.parts[j].endTime >= song.parts[i].endTime) {
-                song.parts[i].parentRegionID = song.parts[j].id;
-                break;
+    hook.convertSpecial(song, result.warnings);
+    if (const auto *envelope = root->child("TEMPOENVEX")) {
+        int beats = song.beatsPerBar, unit = song.beatUnit;
+        std::optional<jaras::TimelineMarker> initial;
+        for (const auto &row : envelope->lines) if (row[0] == "PT") {
+            require(row.size() >= 3, "REAPER: invalid tempo point.");
+            const double position = row[1].getDoubleValue(), bpm = row[2].getDoubleValue();
+            if (bpm < 60 || bpm > 300 || !std::isfinite(bpm)) {
+                result.warnings.addIfNotAlreadyThere("Tempo points outside the CatLive tempo range were omitted; item positions in seconds are unchanged."); continue;
             }
+            const auto signature = row[4].getIntValue();
+            if (signature) { beats = signature & 0xffff; unit = (unsigned)signature >> 16; }
+            jaras::TimelineMarker marker; marker.id=uuid(); marker.name=utf8(String::formatted("%g", bpm));
+            marker.position=std::max(0.,position);marker.color=0xaaaaaa;marker.tempoBPM=bpm;
+            marker.tempoBeats=beats;marker.tempoUnit=unit;marker.tempoTimebase="global";marker.tempoReferenceBPM=bpm;
+            if(position<0)initial=marker;else song.markers->push_back(marker);
+            if(row.size()>3&&row[3]!="1")result.warnings.addIfNotAlreadyThere("REAPER tempo ramps were imported as discrete tempo points; item positions in seconds are unchanged.");
+        }
+        if(initial&&!std::any_of(song.markers->begin(),song.markers->end(),[](const auto &m){return m.tempoBPM&&m.position==0;}))song.markers->push_back(*initial);
+    }
+    // Supply the fallback region before applying VS Hook's song-level settings.
+    if (song.parts.empty()) {
+        double end = 1;
+        for (const auto &t : song.tracks) for (const auto &c : t.clips) end = std::max(end, c.startTime+c.duration);
+        for (const auto &m : *song.markers) end = std::max(end, m.position);
+        jaras::Part p; p.id=uuid();p.name=song.name;p.endTime=end;song.parts.push_back(p);
+    }
+    hook.apply(project, result.warnings);
     migration::finish(result);
     return result;
 }

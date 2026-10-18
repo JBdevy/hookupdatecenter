@@ -11,6 +11,7 @@
 #include "TimelineMovementLock.h"
 #include "FXPresets.h"
 #include "FXSchema.h"
+#include "WaveformCache.h"
 namespace catlive {
 namespace {
 jaras::Song emptySong(const String &name) {
@@ -134,7 +135,9 @@ void Session::load(const File &file) {
     if (busy || audio.isRecording() || transport().playing || transport().subPlay.playing)
         throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
     auto raw = ProjectCodec::read(file);
-    auto p = ProjectCodec::decode(raw);
+    loadPrepared(file, raw, ProjectCodec::decode(raw));
+}
+void Session::loadPrepared(const File &file, var raw, jaras::Project p) {
     auto previous = snapshot();
     auto previousFile = document, previousMedia = mediaDirectory;
     try {
@@ -151,6 +154,7 @@ void Session::load(const File &file) {
         document = file;
         mediaDirectory = file.getParentDirectory();
         original = raw;
+        message.clear();
         prepare();
     } catch (...) {
         document = previousFile;
@@ -163,6 +167,59 @@ void Session::load(const File &file) {
     observedMedia = mediaCleanup::references(project());
     dirty = false;
     notify();
+}
+void Session::loadAsync(const File &file, std::function<void(String, double)> progress,
+                        std::function<void()> beforeCommit, std::function<void(String)> completed) {
+    if (busy) return; // Single flight, including queued clicks on Recent Projects.
+    if (audio.isRecording() || transport().playing || transport().subPlay.playing)
+        throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
+    busy = true; exportCancelled = false;
+    message = String::fromUTF8("Carregando projeto…"); importProgress = 0;
+    if (progress) progress(message, -1);
+    const auto weak = std::weak_ptr<int>(alive);
+    worker.addJob([this, weak, file, progress, beforeCommit, completed] {
+        var raw; jaras::Project incoming; String failure;
+        const auto report = [this, weak, progress](String text, double amount) {
+            MessageManager::callAsync([this, weak, progress, text, amount] {
+                if (weak.expired()) return;
+                message = text; importProgress = amount;
+                if (progress) progress(text, amount);
+            });
+        };
+        try {
+            raw = ProjectCodec::read(file);
+            incoming = ProjectCodec::decode(raw);
+            std::set<String> files;
+            for (const auto &song : incoming.songs) for (const auto &track : song.tracks)
+                for (const auto &clip : track.clips) {
+                    const auto source = clip.audioFile ? clip.audioFile : track.audioFile;
+                    if (source && !clip.midi && !jaras::isTeleprompterRole(track.role))
+                        files.insert(ProjectCodec::resolveMedia(file.getParentDirectory(), source->path, false).getFullPathName());
+                }
+            int done = 0; const auto total = (int)files.size();
+            report(String::fromUTF8("Preparando waveforms… ") + "0/" + String(total), total ? 0 : 1);
+            for (const auto &path : files) {
+                if (weak.expired() || exportCancelled.load()) return;
+                WaveformCache::preload(File(path), &exportCancelled);
+                ++done;
+                report(String::fromUTF8("Preparando waveforms… ") + String(done) + "/" + String(total), double(done) / total);
+            }
+            report(String::fromUTF8("Preparando áudio…"), -1);
+        } catch (const std::exception &e) { failure = String::fromUTF8(e.what()); }
+        Timer::callAfterDelay(30, [this, weak, file, raw, incoming = std::move(incoming), failure, beforeCommit, completed]() mutable {
+            if (weak.expired()) return;
+            String error = failure;
+            try {
+                if (error.isEmpty()) {
+                    if (beforeCommit) beforeCommit();
+                    loadPrepared(file, raw, std::move(incoming));
+                }
+            } catch (const std::exception &e) { error = String::fromUTF8(e.what()); }
+            busy = false;
+            if (error.isNotEmpty()) message = error;
+            if (completed) completed(error);
+        });
+    });
 }
 static void captureExternalProjectState(const AudioEngine &audio,jaras::Project &p) {
     auto capture=[&](const ID &id,std::optional<std::string> &json){

@@ -86,6 +86,11 @@ jobs:
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
+          name: CatLive-Windows-Import-Fixtures
+          path: ${{ runner.temp }}/catlive-windows/migration-tests/parity-fixtures/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
           name: Catlive-${{ inputs.version }}-Windows
           path: |
             ${{ runner.temp }}/catlive-windows/installer/Catlive-*.exe
@@ -293,15 +298,22 @@ jobs:
         with:
           name: CatLive-Windows-Fixtures
           path: ${{ runner.temp }}/catlive-windows-fixtures
+      - uses: actions/download-artifact@v4
+        with:
+          name: CatLive-Windows-Import-Fixtures
+          path: ${{ runner.temp }}/catlive-windows-import-fixtures
       - name: Validate Windows projects and Remote with the Mac implementation
         working-directory: JarasLive
         env:
           CATLIVE_COMPATIBILITY_INPUT: ${{ runner.temp }}/catlive-windows-fixtures
           CATLIVE_COMPATIBILITY_OUTPUT: ${{ runner.temp }}/catlive-mac-fixtures
           CATLIVE_WINDOWS_FX_FIXTURE: ${{ runner.temp }}/catlive-windows-fixtures/fx-portability.json
+          CATLIVE_WINDOWS_IMPORT_FIXTURES: ${{ runner.temp }}/catlive-windows-import-fixtures
         run: |
           swift test --jobs 2 --filter ProjectEncryptionTests/testCrossPlatformReleaseFixtures
           swift test --jobs 2 --filter WindowsFXPortabilityTests
+          swift test --jobs 2 --filter WindowsDAWImportParityTests
+          python3 scripts/verify-daw-import-parity.py "$CATLIVE_WINDOWS_IMPORT_FIXTURES"
           bash scripts/test-daw-remote.sh
       - uses: actions/upload-artifact@v4
         with:

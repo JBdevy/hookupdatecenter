@@ -1,4 +1,5 @@
 #include "ProjectMigration.h"
+#include "VSHookMigration.h"
 namespace catlive {
 namespace {
 using migration::require;
@@ -450,10 +451,13 @@ MigratedProject readLogicProject(const File &bundle) {
             if (r.version == 12 && b.count == 463 + ((b.integer(158, 2) + 1) & ~uint64(1)))
                 identifiers[r.owner] = b.slice(b.count - 16, 16).key();
         } else if (r.tag == "OCuA" && r.version == 7 && b.count >= 169) {
-            auto key = b.slice(153 + 4 * (size_t)b.integer(26, 2), 16).key();
+            auto identifier = b.slice(153 + 4 * (size_t)b.integer(26, 2), 16);
+            if (std::all_of(identifier.data(), identifier.data()+identifier.count, [](uint8 byte){return byte==0;})) continue;
+            auto key = identifier.key();
             double position = b.integer(116) / 16777216.;
             int pan = (int)b.integer(89, 1), mute = (int)b.integer(90, 1);
             require(position <= 127 && pan <= 127 && mute <= 1, "Logic: invalid mixer controls.");
+            require(!mixers.count(key), "Logic: duplicate mixer channel identifier.");
             mixers[key] = {std::pow(position / 90, 2), (pan - 64.) / (pan < 64 ? 64 : 63),
                            mute == 1};
         } else if (r.tag == "qeSM" && r.kind == 23)
@@ -487,6 +491,7 @@ MigratedProject readLogicProject(const File &bundle) {
         int depth = (int)row->body.integer(14, 2);
         jaras::Track track;
         track.id = uuid();
+        track.color = 0x828282;
         track.name =
             utf8(names.count(channel) ? names[channel] : "Track " + String((int)row->index + 1));
         if (identifiers.count(channel) && mixers.count(identifiers[channel])) {
@@ -519,8 +524,8 @@ MigratedProject readLogicProject(const File &bundle) {
                 require(tracks.count(row), "Logic: item references an unknown track.");
                 auto &track = song.tracks[tracks[row]];
                 bool isMusic =
-                    text(track.name).trim().toLowerCase().replace(String::fromUTF8("ú"), "u") ==
-                    "musicas";
+                    migration::VSHookMigration::uppercase(text(track.name).trim()).replace(String::fromUTF8("Ú"), "U") ==
+                    "MUSICAS";
                 double tick =
                     (double)event.integer(4) - 34560 + (event.integer(0) >> 8) / 16777216.;
                 double start = seconds(tick);
@@ -674,6 +679,7 @@ MigratedProject readLogicProject(const File &bundle) {
                     [](auto &a, auto &b) { return std::abs(a.startTime - b.startTime) < 1e-6; }),
         music.end());
     auto rootsCopy = song.parts;
+    std::vector<jaras::TimelineMarker> linked;
     std::set<ID> assigned;
     for (size_t i = 0; i < rootsCopy.size(); ++i) {
         auto &rootPart = rootsCopy[i];
@@ -699,12 +705,24 @@ MigratedProject readLogicProject(const File &bundle) {
                 m.color = 0xc7ab40;
                 m.unifiedRegionID = rootPart.id;
                 m.sourceRegionID = p.id;
-                song.markers->push_back(m);
+                linked.push_back(m);
             }
     }
     for (auto p : music)
-        if (!assigned.count(p.id))
+        if (!assigned.count(p.id)) {
             song.parts.push_back(p);
+            jaras::TimelineMarker marker; marker.id=uuid(); marker.name=utf8(text(p.name).substring(0,256));
+            marker.position=p.startTime; marker.color=p.color.value_or(0xc7ab40); linked.push_back(marker);
+        }
+    if (!music.empty()) {
+        std::vector<jaras::TimelineMarker> tempos;
+        for (const auto &marker : *song.markers) {
+            if (marker.tempoBPM) tempos.push_back(marker); else linked.push_back(marker);
+        }
+        auto flags = migration::VSHookMigration::uniqueFlags(std::move(linked));
+        tempos.insert(tempos.end(), flags.begin(), flags.end()); song.markers=std::move(tempos);
+        migration::VSHookMigration::sortParts(song);
+    }
     migration::finish(result);
     return result;
 }

@@ -202,9 +202,10 @@ class CatLiveApplication final : public JUCEApplication {
             for (auto &arg : args)
                 if (!projectPreview && File::isAbsolutePath(arg) && File(arg).hasFileExtension("jl;bkjl;ziplive;zip")) {
                     const File source(arg);
-                    if (source.hasFileExtension("ziplive;zip"))
-                        Timer::callAfterDelay(1700, [safe=Component::SafePointer<Workspace>(content),source]{if(safe)safe->openProject(source);});
-                    else content->openProject(source);
+                    // Let the startup splash hand over to the workspace first.
+                    // Cached peaks can otherwise reach the UI-thread audio/FX
+                    // preparation before the progress sheet is visible.
+                    Timer::callAfterDelay(1700, [safe=Component::SafePointer<Workspace>(content),source]{if(safe)safe->openProject(source);});
                     break;
                 }
         } catch (const std::exception &e) {

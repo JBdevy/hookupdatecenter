@@ -17,7 +17,11 @@ function document(file) {
   decipher.setAAD(header); decipher.setAuthTag(bytes.subarray(-16));
   return JSON.parse(Buffer.concat([decipher.update(bytes.subarray(header.length + 12, -16)), decipher.final()]).toString());
 }
+const parityCases = [];
 function migrate(source, name, success = true) {
+  const caseRoot=path.join(root,'parity',name);fs.mkdirSync(caseRoot,{recursive:true});
+  const copy=path.join(caseRoot,path.basename(source));fs.cpSync(source,copy,{recursive:true});
+  const parity={name,source:path.relative(root,copy).split(path.sep).join('/'),success};parityCases.push(parity);
   const target = path.join(root, name + '.jl');
   const result = spawnSync(exe, ['--migrate-project', source, target], { timeout: 30000, windowsHide: true });
   assert(!result.error, String(result.error));
@@ -25,8 +29,9 @@ function migrate(source, name, success = true) {
   const report = fs.existsSync(reportFile) ? fs.readFileSync(reportFile, 'utf8') : 'No import report';
   assert.equal(result.status === 0, success, report);
   if (!success) return;
-  const metadata = JSON.parse(report);
-  return { project: document(metadata.document), file: metadata.document, warnings: metadata.warnings };
+  const metadata = JSON.parse(report), project = document(metadata.document);
+  parity.project=project;
+  return { project, file: metadata.document, warnings: metadata.warnings };
 }
 // Independent binary-plist writer: exercise the same Apple metadata format as the Swift fixtures.
 function plist(dictionary) {
@@ -146,5 +151,59 @@ fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({Ac
 fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:true}));migrate(logic,'BooleanAlternative',false);
 fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:2}));fs.writeFileSync(path.join(alternative,'ProjectData'),Buffer.from([0x23,0x47]));migrate(logic,'TruncatedLogic',false);
 fs.writeFileSync(path.join(root,'Broken.rpp'),'<REAPER_PROJECT\n<TRACK\n');migrate(path.join(root,'Broken.rpp'),'TruncatedReaper',false);
+// VS Hook project ExtState: same migration contract as the current Mac importer.
+const rgn=(id,a,b,name)=>`MARKER ${id} ${a} "${name}" 1\nMARKER ${id} ${b} "" 1`;
+const mark=(id,at,name)=>`MARKER ${id} ${at} "${name}" 0`;
+const bin=(key,value)=>`<BIN ${key}\n${Buffer.from(value+'\0').toString('base64')}\n>`;
+const ext=(playlist='',loops='')=>`<EXTSTATE\n<CHATGPT_REGION_PLAYLIST\n${playlist}\n>\n<VS_HOOK_MULTILOOPS\n${loops}\n>\n>`;
+const escapeHook=s=>s.replaceAll('\\','\\\\').replaceAll('|','\\p').replaceAll('\t','\\t').replaceAll('\n','\\n');
+const entry=(id,a,b,title,kind='region',options={})=>['ITEM',kind,id,a,b,escapeHook(title),options.color||'',options.source||'', '',options.child?'1':'0',options.marker||'', '', '',options.center?'1':'0'].join('\t');
+function hookCase(name,content,success=true){const source=path.join(root,name+'.rpp');fs.writeFileSync(source,`<REAPER_PROJECT 0.1 7.0 1\nTEMPO 120 4 4\n${content}\n>\n`);return migrate(source,name,success);}
+const listName='Domingo | Noite\tFinal\nBis\\Ao vivo';
+const playlistText=['PLAYLIST\tAbertura',entry('-1',0,0,'Introdução | banda','block',{color:'green'}),entry('7',20,30,'Segundo'),entry('-2',0,0,'Louvor','block',{color:'purple',center:true}),entry('0',0,10,'Primeiro'),entry('-3',0,0,'Fim','block',{color:'orange'}),'END','PLAYLIST\t'+escapeHook(listName),entry('0',0,10,'Primeiro'),entry('7',20,30,'Segundo'),'END'].join('\n');
+const playlists=hookCase('HookPlaylists',[rgn(0,0,10,'Primeiro'),rgn(7,20,30,'Segundo'),ext(bin('PLAYLISTS_DB_V3',playlistText)+'\n'+bin('LAST_PLAYLIST_NAME_V1',listName))].join('\n')).project;
+const lists=playlists.regionSetlist, partsByName=Object.fromEntries(playlists.songs[0].parts.map(p=>[p.name,p.id]));
+assert.deepEqual(lists.playlists.map(p=>p.name),['Abertura',listName]);assert.equal(lists.selectedId,lists.playlists[1].id);
+assert.deepEqual(lists.playlists[0].regionIds,[partsByName.Segundo,partsByName.Primeiro]);assert.deepEqual(lists.blocks.map(b=>b.beforeRegionId??null),[partsByName.Segundo,partsByName.Primeiro,null]);
+assert.deepEqual(lists.blocks.map(b=>b.color),[0x2ebd5c,0x8f57f0,0xf58f29]);assert.deepEqual(lists.blocks.map(b=>b.symbol),[true,false,true]);
+const four=hookCase('HookFourSlots',[rgn(10,0,100,'Canção'),...[1,2,3,4].flatMap(slot=>[mark(100+slot*2,slot*20-15,`*${slot} entrada`),mark(101+slot*2,slot*20-10,`*${slot} saída`)]),mark(199,90,'*Ponte'),'<TRACK {KEYS}\nNAME " # Keys"\n>',ext('TUNER_OFFSETS_V1 "10=-12"','STATE_V2 "E\t10\t1\t0\t0\t1\t1\t0\t1\t0"')].join('\n')).project.songs[0];
+assert.equal(four.parts.length,1);assert.equal(four.parts[0].pitchSemitones,-12);assert.deepEqual(four.parts[0].pitchTrackIDs,[four.tracks[0].id]);
+assert.deepEqual(four.parts[0].multiLoops.map(l=>l.name),['*1','*2','*3','*4']);assert.deepEqual(four.parts[0].multiLoops.map(l=>l.enabled),[true,false,true,false]);assert.deepEqual(four.parts[0].multiLoops.map(l=>l.mixerEnabled),[false,true,true,false]);
+assert.equal(four.markers.filter(m=>!m.tempoBPM).length,9);assert(four.markers.filter(m=>!m.tempoBPM).every(m=>m.section&&!m.name.startsWith('*')&&!m.sourceRegionID));
+const guitar='{AAAAAAAA-1111-1111-1111-111111111111}', keys='{BBBBBBBB-2222-2222-2222-222222222222}';
+const loopMix=[['T','5','1','2','0','0'],['P','5','1',guitar.toLowerCase(),'1','0'],['F','5','1',keys,'1','1'],['L','5','1',keys,'-9','0']].map(r=>r.join('\t')).join('\n');
+const mix=hookCase('HookLoopMixer',[rgn(5,0,20,'Canção'),mark(20,3,'*1'),mark(21,10,'*1'),`<TRACK ${guitar}\nNAME "Guitar"\n>`,`<TRACK ${keys}\nNAME "Keys"\n>`,ext('',bin('STATE_V2','E\t5\t1\t0\t1\t0\t0\t0\t0\t0')+'\n'+bin('MS_STATE_V1',loopMix))].join('\n')).project.songs[0];
+const ml=mix.parts[0].multiLoops[0];assert.equal(ml.fadeSeconds,2);assert.deepEqual(ml.tracks.map(t=>t.id),mix.tracks.map(t=>t.id));assert(ml.tracks[0].mute&&!ml.tracks[0].solo);assert(ml.tracks[1].autoFader);assert(Math.abs(ml.tracks[1].gain-Math.pow(10,-9/20))<1e-7);
+const familyList=['PLAYLIST\tShow',entry('100',0,20,'Filha A','region',{source:'marker',child:true,marker:'7'}),entry('7',50,70,'Solta'),entry('100',0,40,'Família'),entry('999',50,70,'Removida'),'END'].join('\n');
+const family=hookCase('HookFamily',[rgn(100,0,40,'-- Família'),rgn(7,50,70,'Solta'),mark(7,0,'Filha A'),mark(8,20,'Filha B'),mark(30,22,'*2'),mark(31,27,'*2'),ext(bin('PLAYLISTS_DB_V3',familyList)+'\nTUNER_OFFSETS_V1 "7=3|8=-7|100=12"','STATE_V2 "E\t8\t0\t1\t0\t0\t0\t0\t0\t0"')].join('\n'));
+const familySong=family.project.songs[0],parent=familySong.parts.find(p=>p.name==='Família'),solo=familySong.parts.find(p=>p.name==='Solta'),children=familySong.parts.filter(p=>p.parentRegionID===parent.id);
+assert.deepEqual(children.map(p=>p.name),['Filha A','Filha B']);assert.deepEqual(children.map(p=>p.pitchSemitones),[3,-7]);assert.equal(parent.pitchSemitones??0,0);assert.equal(solo.pitchSemitones,3);assert.deepEqual(family.project.regionSetlist.playlists[0].regionIds,[parent.id,solo.id]);assert.equal(children[1].multiLoops[0].enabled,true);assert(family.warnings.some(w=>w.includes('removidas')));
+const noState=hookCase('HookLoopNoState',[rgn(1,0,20,'Canção'),mark(4,2,'*1'),mark(5,20.0004,'*1')].join('\n')).project.songs[0];
+assert.equal(noState.parts[0].multiLoops[0].enabled,false);assert.equal(noState.markers.find(m=>m.id===noState.parts[0].multiLoops[0].marker2).position,20);
+const cues=hookCase('HookOrdinaryCue',[rgn(1,0,20,'Canção'),mark(2,7,'Refrão'),ext('TUNER_OFFSETS_V1 "1=9|2=-7"')].join('\n')).project.songs[0];assert.equal(cues.parts.length,1);assert.equal(cues.parts[0].pitchSemitones,9);assert.deepEqual(cues.parts[0].pitchTrackIDs,[]);assert.equal(cues.markers.find(m=>m.name==='Refrão').sourceRegionID,undefined);
+const split=hookCase('ReaperNestedSplit',[rgn(100,0,40,'Family'),rgn(10,0,20,'First'),mark(10,0,'Duplicate'),mark(11,10,'Second')].join('\n')).project.songs[0];assert.deepEqual(split.parts.filter(p=>p.parentRegionID).map(p=>[p.name,p.startTime,p.endTime]),[['First',0,10],['Second',10,20]]);assert.equal(split.markers.filter(m=>!m.tempoBPM&&m.position===0).length,1);
+hookCase('HookMalformed',rgn(1,0,20,'Song')+'\n'+ext('<BIN PLAYLISTS_DB_V3\nnot-base64!!\n>'),false);
+assert(imported.project.songs[0].tracks.every(t=>t.color===0x828282));
+// Build Logic MUSICAS MIDI-region metadata, including a standalone song and
+// duplicate ordinary flags at child starts. Match Mac's linked-flag priority.
+function logicContainer(records){const b=Buffer.concat(records),h=Buffer.alloc(24);put(h,0,0xabc04723);put(h,16,b.length);return Buffer.concat([h,b]);}
+const musicRecords=[];let musicRoot=Buffer.alloc(100);text(musicRoot,16,'Show');musicRecords.push(record('qeSM',musicRoot,0x40000));
+let musicEnv=Buffer.alloc(200);text(musicEnv,158,'MUSICAS');musicRecords.push(record('ivnE',musicEnv,0x40000,0,20));let musicTrack=Buffer.alloc(58);musicTrack[0]=1;put(musicTrack,6,0x40000);musicRecords.push(record('karT',musicTrack,0x40000,0));
+for(const [index,[name,start,length]] of [['First',0,4],['Second',4,4],['Outside',12,4]].entries()){
+ const owner=(10+index)<<16,seq=Buffer.alloc(160),padded=(name.length+1)&~1;text(seq,16,name);put(seq,16+62+padded,length*960);musicRecords.push(record('qeSM',seq,owner));
+ const e=Buffer.alloc(80);e[0]=0x20;put(e,4,34560+start*960);put(e,20,1);put(e,32,10+index);for(const o of [23,39,55,71])e[o]=0x88;musicRecords.push(record('qSvE',e,0x40000));
+}
+const musicMarker=Buffer.alloc(48);musicMarker[0]=0x12;musicMarker[23]=0x88;musicMarker[39]=0x88;put(musicMarker,4,38400);put(musicMarker,16,4);put(musicMarker,28,8*960);musicRecords.push(record('qSvE',musicMarker,0,0,22));musicRecords.push(record('qSxT',Buffer.from('{\\rtf1\\ansi Family}'),4<<16,0,32));
+fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:2}));fs.writeFileSync(path.join(alternative,'MetaData.plist'),plist({SampleRate:48000,BeatsPerMinute:60,SongSignatureNumerator:4,SongSignatureDenominator:4}));fs.writeFileSync(path.join(alternative,'ProjectData'),logicContainer(musicRecords));
+const logicMusic=migrate(logic,'LogicMusic').project.songs[0];assert.deepEqual(logicMusic.parts.map(p=>p.name),['Family','First','Second','Outside']);
+const normalFlags=logicMusic.markers.filter(m=>!m.tempoBPM);assert.deepEqual(normalFlags.map(m=>m.name),['First','Second','Outside']);assert(normalFlags[0].sourceRegionID&&normalFlags[1].sourceRegionID);assert(!normalFlags[2].sourceRegionID);
+const duplicateMixer=Buffer.alloc(180);duplicateMixer[89]=64;put(duplicateMixer,116,90*16777216);Buffer.alloc(16,7).copy(duplicateMixer,153);
+fs.writeFileSync(path.join(alternative,'ProjectData'),logicContainer([...musicRecords,record('OCuA',duplicateMixer,0,0,0,7),record('OCuA',duplicateMixer,0,0,0,7)]));migrate(logic,'LogicDuplicateMixer',false);
+console.log('VS Hook playlists/blocks/tuner/four loops/linked songs and Logic MUSICAS/standalone/duplicate-mixer parity passed.');
+
 console.log('DAW imports passed: independent REAPER and binary Logic fixtures, audio copy, MIDI, tempo, regions, folder routing and malformed inputs.');
+fs.writeFileSync(path.join(root,'parity-cases.json'),JSON.stringify(parityCases,null,2));
+const exchange=path.join(output,'parity-fixtures');fs.mkdirSync(exchange,{recursive:true});
+fs.cpSync(path.join(root,'parity'),path.join(exchange,'parity'),{recursive:true});
+fs.copyFileSync(path.join(root,'parity-cases.json'),path.join(exchange,'parity-cases.json'));
 console.log(root);

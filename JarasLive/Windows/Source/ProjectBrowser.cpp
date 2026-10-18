@@ -175,9 +175,9 @@ void ProjectBrowser::paintListBoxItem(int row, Graphics &g, int width, int heigh
     if (!isPositiveAndBelow(row, filtered.size()))
         return;
     File file(filtered[row]);
-    g.setColour(selected ? theme::panel.brighter(.07f) : theme::panel);
+    g.setColour(selected ? theme::panel.darker(.12f) : theme::panel);
     g.fillRect(0, 0, width, height - 6);
-    g.setColour(Colours::white);
+    g.setColour(selected ? Colours::white.darker(.18f) : Colours::white);
     g.setFont(theme::font(14, true));
     g.drawText(file.getFileNameWithoutExtension(), 10, 6, width - 40, 19,
                Justification::centredLeft);

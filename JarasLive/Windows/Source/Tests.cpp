@@ -43,6 +43,7 @@
 #include "MediaImportTests.h"
 #include "GridMediaClipboardTests.h"
 #include "FloatingControlTests.h"
+#include "ProjectOpenTests.h"
 namespace catlive {
 namespace {
 void expect(bool condition, const String &message) {
@@ -113,6 +114,7 @@ int runTests(const File &directory) {
     mediaImportTests::registerTests(directory, test);
     gridMediaClipboardTests::registerTests(test);
     floatingControlTests::registerTests(directory,test);
+    projectOpenTests::registerTests(directory,test);
     test("Transport Fadeout waits for silence, cancels and blocks Subplay without changing saved faders", [&] {
         Session session; session.inspection = true;
         auto p = projectFixture();
