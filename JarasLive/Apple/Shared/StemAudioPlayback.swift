@@ -874,10 +874,6 @@ struct TimecodePlaybackSpan {
         appliedRoutes.removeAll()
         // A project swap rebuilds the graph before it is warmed again by update.
         engine.stop()
-        // Manual-rendering format converters retain buffered PCM and their
-        // sample clocks across stop/start. A new offline graph must not inherit
-        // that state when its source rate differs from the output rate.
-        if !realtime { engine.reset() }
         discardMIDITakeVoices()
         discardNativeMeterPeaks()
         instrumentGeneration = UUID(); instrumentRequests.removeAll(); instrumentNames.removeAll()
@@ -1386,7 +1382,13 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         resetEffectTails()
         instrumentRenderPending = !armedInstrumentTracks.isEmpty
         setGraphRenderEnabled(instrumentRenderPending)
-        if !realtime { engine.pause() }
+        if !realtime {
+            engine.pause()
+            // Pause retains the manual sample clock. Reused/new players start
+            // at zero after Stop, so rebase the offline graph with them before
+            // the next Play and its sample-timed scheduling commands.
+            engine.reset()
+        }
         preparedJump = nil
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for (voice, _) in boundaryTails { recycle(voice) }; boundaryTails.removeAll()
