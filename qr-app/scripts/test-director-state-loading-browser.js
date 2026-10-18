@@ -19,14 +19,15 @@ const full = {
 const html = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/stylediretor-app.css"></head><body><div id="app"></div><script src="/vsdiretor.js"></script></body></html>'
 
 async function fixture(browser, role, initial, options = {}) {
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  const page = await browser.newPage({ viewport: options.tablet ? { width: 1024, height: 768 } : { width: 390, height: 844 } })
   let payload = initial, polls = 0
   const commands = [], errors = []
   page.on('pageerror', error => errors.push(error.message))
-  await page.addInitScript(({ role, base }) => {
+  await page.addInitScript(({ role, base, tuner, tablet }) => {
     localStorage.setItem('vshook_selected_mode', role)
+    if (tuner) localStorage.setItem('vshook_director_tuner_open', '1')
     localStorage.setItem('vshook_director_url', base)
-  }, { role, base })
+  }, { role, base, tuner: !!options.tuner, tablet: !!options.tablet })
   await page.route('**/*', async route => {
     const request = route.request()
     const url = new URL(request.url())
@@ -34,7 +35,7 @@ async function fixture(browser, role, initial, options = {}) {
     if (url.origin !== base) return route.abort()
     if (url.pathname === '/') return route.fulfill({
       contentType: 'text/html',
-      body: options.shell ? fs.readFileSync(path.join(root, 'index.html')) : html,
+      body: options.shell ? fs.readFileSync(path.join(root, 'index.html')) : (options.tablet ? html.replace('<html>', '<html data-director-device="tablet">') : html),
     })
     if (url.pathname === '/projects' || url.pathname === '/discovery') {
       return route.fulfill({ json: {
@@ -111,6 +112,47 @@ async function run() {
       }
     }
 
+    // The same production client serves both QR roles and both screen sizes.
+    for (const role of ['director', 'musician']) {
+      for (const tablet of [false, true]) {
+        const payload = { ...full, currentPage: 'regions', currentSongStart: 0,
+          currentSongEnd: 120, playPosition: 24,
+          markers: [{ id: 'verse', name: '$Verso', pos: 30 }] }
+        const f = await fixture(browser, role, payload, { tablet })
+        try {
+          await waitFor(() => f.polls() >= 3, 'countdown state loaded')
+          assert.equal(await f.page.locator('.directorPopup').count(), 0, 'no early popup at six seconds')
+          f.set({ ...payload, playPosition: 25.1 })
+          await f.page.locator('.directorPopup').filter({ hasText: 'VERSO' }).waitFor({ state: 'visible' })
+          await f.page.locator('.directorPopup').waitFor({ state: 'hidden', timeout: 4000 })
+          const polls = f.polls()
+          await waitFor(() => f.polls() >= polls + 3, 'repeated snapshots observed')
+          assert.equal(await f.page.locator('.directorPopup').count(), 0, 'same part is announced once')
+          if (role === 'musician') assert.equal(f.commands.length, 0, 'announcement must not send control commands')
+          assert.deepEqual(f.errors, [])
+          console.log(`DOM_OK: ${role} ${tablet ? 'tablet' : 'phone'} next-part popup, five-second lead, no repeats`)
+        } finally { await f.page.close() }
+      }
+    }
+
+    const tunerSong = { id: 'song-1', name: 'Música fixture', sourceNumber: 7, startPos: 0, endPos: 120 }
+    const tunerData = { ...full, playing: false, currentPage: 'playlist', activePlaylistId: 'pl',
+      regions: [{ ...tunerSong, tunerValue: 3 }],
+      playlists: [{ id: 'pl', name: 'Playlist fixture', songs: [{ ...tunerSong, tunerValue: 0 }] }] }
+    const tuner = await fixture(browser, 'director', tunerData, { tuner: true })
+    try {
+      const value = tuner.page.locator('[data-tuner-value-for="song-1"]')
+      await value.waitFor({ state: 'visible' })
+      await waitFor(async () => (await value.innerText()).includes('+3'), 'playlist must use current region pitch, not stale zero')
+      tuner.set({ ...tunerData, regions: [{ ...tunerSong, tunerValue: -2 }] })
+      await waitFor(async () => (await value.innerText()).includes('-2'), 'external pitch change must update the visible row')
+      tuner.set({ ...tunerData, regions: [tunerSong] })
+      await waitFor(async () => (await value.innerText()).includes('—'), 'missing pitch is unavailable, not a false zero')
+      assert(await tuner.page.locator('[data-action="tuner-plus"][data-tuner-song-id="song-1"]').isDisabled())
+      assert.deepEqual(tuner.errors, [])
+      console.log('DOM_OK: Tuner uses live region value, refreshes external edits, disables unavailable pitch')
+    } finally { await tuner.page.close() }
+
     // A newly opened password-protected Director must not claim ownership
     // before a valid login, even though GET /state succeeds.
     const hashStart = source.indexOf('  function simpleHash(')
@@ -158,7 +200,7 @@ async function run() {
         if (role === 'musician') assert.equal(shell.commands.length, 0)
         else assert(shell.commands.some(command => command.type === 'set_project_tab'))
         const loadedScript = await shell.page.locator('script[data-vshook-mode-script]').getAttribute('src')
-        assert(loadedScript.includes('state-loading-v1'), 'QR shell must request the refreshed client asset')
+        assert(loadedScript.includes('tuner-parts-v1'), 'QR shell must request the refreshed client asset')
         console.log(`DOM_OK: QR index -> project discovery -> ${role} -> visible music, refreshed script loaded`)
       } finally { await shell.page.close() }
     }

@@ -326,8 +326,8 @@
     pendingMultiLoopBypassUntil: 0,
     tabletMultiLoopBypassWarningKey: '',
     tabletMultiLoopBypassWarningLastPosition: null,
-    tabletPartCountdownKey: '',
-    tabletPartCountdownLastPosition: null,
+    partCountdownKey: '',
+    partCountdownLastPosition: null,
     playlistSelectionClearedUntil: 0,
     regionSelectionClearedUntil: 0,
     playlistSelectionLocalUntil: 0,
@@ -2366,12 +2366,18 @@
     return null
   }
 
-  function getTunerValue(item) {
+  function getTunerValue(item, data = state.snapshot) {
     const key = getTunerItemKey(item)
     const pending = key ? state.tunerOptimisticValues?.[key] : null
     if (pending && Number(pending.until || 0) > now()) return clampTunerValue(pending.value)
     if (pending && key) delete state.tunerOptimisticValues[key]
-    return clampTunerValue(item?.tunerValue ?? item?.tunerSemitones ?? item?.semitones ?? 0)
+    const id = String(getId(item) || '')
+    const region = getRegions(data).find((candidate) => {
+      const candidateKey = getTunerItemKey(candidate)
+      return (key && candidateKey === key) || (id && String(getId(candidate)) === id)
+    })
+    const value = region?.tunerValue ?? region?.tunerSemitones ?? region?.semitones
+    return value == null ? null : clampTunerValue(value)
   }
 
   function formatTunerValue(value) {
@@ -2507,7 +2513,8 @@
     const source = state.showTunerScreen ? getMobileTunerSourceItems(data) : getTunerSourceItems(data)
     return source.map((item) => {
       if (isBlock(item)) return `b:${getId(item)}:${getName(item)}`
-      return `${getTunerItemKey(item)}:${getTunerValue(item)}`
+      const value = getTunerValue(item, data)
+      return `${getTunerItemKey(item)}:${value == null ? '?' : value}`
     }).join('|')
   }
 
@@ -6558,10 +6565,10 @@
         syncPartsSourceOnPlayingChange(state.snapshot)
         syncPartsTakeoverFromSnapshot(state.snapshot)
         syncPartsMarkerStateFromSnapshot(state.snapshot)
-        processTabletPartCountdownPopup(state.snapshot)
         processTabletMultiLoopBypassWarning(state.snapshot)
         syncDirectorRecadosFromSnapshot(state.snapshot)
       }
+      processPartCountdownPopup(state.snapshot)
       if (gainedRenderableListContent) {
         // Ao abrir durante a reprodução, o loop visual pode rodar entre o
         // snapshot completo e o próximo frame. A lista ainda está vazia nesse
@@ -7043,10 +7050,12 @@
         if (isBlockRow || knownFamilyParent) {
           tabletTunerControls = '<div class="tabletTunerInlineControls tabletTunerInlineControlsEmpty"></div>'
         } else {
-          const value = getTunerValue(item)
+          const tunerValue = getTunerValue(item, state.snapshot)
+          const value = tunerValue ?? 0
           const sourceNumber = getTunerSourceNumber(item)
           const sourceAttr = sourceNumber == null ? '' : ` data-tuner-source-number="${sourceNumber}"`
-          tabletTunerControls = `<div class="tabletTunerInlineControls"><button class="tunerStepBtn" data-action="tuner-minus" data-tuner-song-id="${id}"${sourceAttr}${value <= -12 ? ' disabled' : ''}>−</button><button class="tabletTunerZero" data-action="tuner-reset" data-tuner-song-id="${id}"${sourceAttr}>${escapeHtml(formatTunerValue(value))}st</button><button class="tunerStepBtn" data-action="tuner-plus" data-tuner-song-id="${id}"${sourceAttr}${value >= 12 ? ' disabled' : ''}>+</button></div>`
+          const unavailable = tunerValue == null ? ' disabled aria-disabled="true"' : ''
+          tabletTunerControls = `<div class="tabletTunerInlineControls"><button class="tunerStepBtn" data-action="tuner-minus" data-tuner-song-id="${id}"${sourceAttr}${unavailable || (value <= -12 ? ' disabled' : '')}>−</button><button class="tabletTunerZero" data-action="tuner-reset" data-tuner-song-id="${id}"${sourceAttr}${unavailable}>${tunerValue == null ? '—' : `${escapeHtml(formatTunerValue(value))}st`}</button><button class="tunerStepBtn" data-action="tuner-plus" data-tuner-song-id="${id}"${sourceAttr}${unavailable || (value >= 12 ? ' disabled' : '')}>+</button></div>`
         }
       } else if (options.tabletBpm && (type === 'playlist' || type === 'region')) {
         const bpmUnavailable = isBlockRow || isHashParent(item)
@@ -7556,11 +7565,10 @@
     return visualPosition
   }
 
-  function processTabletPartCountdownPopup(data = state.snapshot) {
-    if (document.documentElement.dataset.directorDevice !== 'tablet' ||
-        !isPlaying(data) || getLoopActive(data)) {
-      state.tabletPartCountdownKey = ''
-      state.tabletPartCountdownLastPosition = null
+  function processPartCountdownPopup(data = state.snapshot) {
+    if (!isPlaying(data) || getLoopActive(data)) {
+      state.partCountdownKey = ''
+      state.partCountdownLastPosition = null
       return
     }
 
@@ -7568,9 +7576,9 @@
     const playingRegion = getPartsSongTarget('playing', data)
     if (playPos === null || !playingRegion.available) return
 
-    const previousPos = Number(state.tabletPartCountdownLastPosition)
-    if (Number.isFinite(previousPos) && playPos < previousPos - 0.05) state.tabletPartCountdownKey = ''
-    state.tabletPartCountdownLastPosition = playPos
+    const previousPos = Number(state.partCountdownLastPosition)
+    if (Number.isFinite(previousPos) && playPos < previousPos - 0.05) state.partCountdownKey = ''
+    state.partCountdownLastPosition = playPos
 
     const regionStart = Number(playingRegion.start)
     const regionEnd = Number(playingRegion.end)
@@ -7607,8 +7615,8 @@
 
     if (!Number.isFinite(Number(announcePos))) return
     const remaining = Number(announcePos) - playPos
-    if (remaining < -0.05 || remaining > 5.05 || !announceKey || announceKey === state.tabletPartCountdownKey) return
-    state.tabletPartCountdownKey = announceKey
+    if (remaining < -0.05 || remaining > 5.05 || !announceKey || announceKey === state.partCountdownKey) return
+    state.partCountdownKey = announceKey
     showPopup(upperText(announceName || 'PART'), 'info', 1600)
   }
 
@@ -9091,17 +9099,19 @@
         `
       }
 
-      const value = getTunerValue(item)
+      const tunerValue = getTunerValue(item, data)
+      const value = tunerValue ?? 0
       const sourceNumber = getTunerSourceNumber(item)
-      const minDisabled = value <= -12 ? ' disabled aria-disabled="true"' : ''
-      const maxDisabled = value >= 12 ? ' disabled aria-disabled="true"' : ''
+      const unavailable = tunerValue == null ? ' disabled aria-disabled="true"' : ''
+      const minDisabled = unavailable || (value <= -12 ? ' disabled aria-disabled="true"' : '')
+      const maxDisabled = unavailable || (value >= 12 ? ' disabled aria-disabled="true"' : '')
       return `
         <div class="${rowCls} numberedItem tunerFullRow" data-tuner-row-id="${id}" ${selectAttrs}>
           ${rowProgress}
           <div class="rowNumberCol"><span class="rowNumberText"${numberColorStyle}>${escapeHtml(rowNumber)}</span></div>
           <button class="tunerStepBtn tunerMinusBtn" data-action="tuner-minus" data-tuner-song-id="${id}"${sourceNumber == null ? '' : ` data-tuner-source-number="${sourceNumber}"`}${minDisabled}>−</button>
           <div class="leftCol tunerFullSongName"><span class="${rowTextCls}"${colorStyle}>${name}</span></div>
-          <div class="tunerFullValue" data-tuner-value-for="${id}">${escapeHtml(formatTunerValue(value))}<small> ST</small></div>
+          <div class="tunerFullValue" data-tuner-value-for="${id}">${tunerValue == null ? '—' : `${escapeHtml(formatTunerValue(value))}<small> ST</small>`}</div>
           <button class="tunerStepBtn tunerPlusBtn" data-action="tuner-plus" data-tuner-song-id="${id}"${sourceNumber == null ? '' : ` data-tuner-source-number="${sourceNumber}"`}${maxDisabled}>+</button>
         </div>
       `
@@ -9156,7 +9166,9 @@
     const item = items.find((candidate) => String(getId(candidate)) === id)
     if (!item || isBlock(item) || isHashParent(item)) return
     const key = getTunerItemKey(item)
-    const next = clampTunerValue(absoluteValue === null ? getTunerValue(item) + Number(delta || 0) : absoluteValue)
+    const current = getTunerValue(item)
+    if (current == null) return
+    const next = clampTunerValue(absoluteValue === null ? current + Number(delta || 0) : absoluteValue)
     if (key) state.tunerOptimisticValues[key] = { value: next, until: now() + 4000 }
     const sourceNumberAttr = el.getAttribute('data-tuner-source-number')
     const sourceNumber = sourceNumberAttr !== null && sourceNumberAttr !== '' ? Number(sourceNumberAttr) : getTunerSourceNumber(item)
@@ -12486,10 +12498,12 @@
     const rows = items.map((item) => {
       const id = escapeHtml(String(getId(item)))
       if (isBlock(item)) return `<div class="tabletTunerRow tabletTunerBlockRow" aria-hidden="true"></div>`
-      const value = getTunerValue(item)
+      const tunerValue = getTunerValue(item, data)
+      const value = tunerValue ?? 0
       const sourceNumber = getTunerSourceNumber(item)
       const sourceAttr = sourceNumber == null ? '' : ` data-tuner-source-number="${sourceNumber}"`
-      return `<div class="tabletTunerRow"><div class="tabletTunerControls"><button class="tunerStepBtn" data-action="tuner-minus" data-tuner-song-id="${id}"${sourceAttr}${value <= -12 ? ' disabled' : ''}>−</button><button class="tabletTunerZero" data-action="tuner-reset" data-tuner-song-id="${id}"${sourceAttr}>${escapeHtml(formatTunerValue(value))}st</button><button class="tunerStepBtn" data-action="tuner-plus" data-tuner-song-id="${id}"${sourceAttr}${value >= 12 ? ' disabled' : ''}>+</button></div></div>`
+      const unavailable = tunerValue == null ? ' disabled aria-disabled="true"' : ''
+      return `<div class="tabletTunerRow"><div class="tabletTunerControls"><button class="tunerStepBtn" data-action="tuner-minus" data-tuner-song-id="${id}"${sourceAttr}${unavailable || (value <= -12 ? ' disabled' : '')}>−</button><button class="tabletTunerZero" data-action="tuner-reset" data-tuner-song-id="${id}"${sourceAttr}${unavailable}>${tunerValue == null ? '—' : `${escapeHtml(formatTunerValue(value))}st`}</button><button class="tunerStepBtn" data-action="tuner-plus" data-tuner-song-id="${id}"${sourceAttr}${unavailable || (value >= 12 ? ' disabled' : '')}>+</button></div></div>`
     }).join('') || '<div class="emptyBox">NENHUMA MÚSICA ENCONTRADA</div>'
     return `<div class="contentPanel tabletTunerContent"><div class="tabletTunerTopSpacer"></div><div class="listBox tabletTunerList" aria-label="Controles do Tuner">${rows}</div></div>`
   }
