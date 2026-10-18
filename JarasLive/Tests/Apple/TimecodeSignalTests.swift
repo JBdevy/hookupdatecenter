@@ -118,7 +118,14 @@ final class ReceivedMTC: @unchecked Sendable {
 }
 let receiver = ReceivedMTC()
 var client: MIDIClientRef = 0, destination: MIDIEndpointRef = 0
-precondition(MIDIClientCreateWithBlock("CatLive Test Receiver" as CFString,&client,nil) == noErr)
+var clientStatus: OSStatus = noErr
+for attempt in 0..<12 {
+    clientStatus = MIDIClientCreateWithBlock("CatLive Test Receiver" as CFString,&client,nil)
+    if clientStatus == noErr { break }
+    if client != 0 { MIDIClientDispose(client); client = 0 }
+    if attempt < 11 { Thread.sleep(forTimeInterval: 0.25) }
+}
+precondition(clientStatus == noErr, "CoreMIDI test client creation failed: OSStatus \(clientStatus)")
 precondition(MIDIDestinationCreateWithBlock(client,"CatLive Test MTC" as CFString,&destination,{ packets,_ in receiver.accept(packets) }) == noErr)
 defer { MIDIEndpointDispose(destination); MIDIClientDispose(client) }
 var uid: Int32 = 0
