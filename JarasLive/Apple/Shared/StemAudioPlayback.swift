@@ -1382,10 +1382,13 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         resetEffectTails()
         instrumentRenderPending = !armedInstrumentTracks.isEmpty
         setGraphRenderEnabled(instrumentRenderPending)
-        // Offline players are recreated/reused on the next Play. Stop releases
-        // the converters' render resources so they cannot retain a paused
-        // timeline while the new source starts at sample zero.
-        if !realtime { engine.stop() }
+        if !realtime {
+            // Stop releases the converters' render resources but retains the
+            // manual sample counter. Reset it as well: the next Play's players
+            // and converter clocks must all begin on the same timeline.
+            engine.stop()
+            engine.reset()
+        }
         preparedJump = nil
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for (voice, _) in boundaryTails { recycle(voice) }; boundaryTails.removeAll()
