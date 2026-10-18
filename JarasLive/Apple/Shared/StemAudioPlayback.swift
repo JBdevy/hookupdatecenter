@@ -718,10 +718,7 @@ struct TimecodePlaybackSpan {
         if stretch.rate != coarseRate { stretch.rate = coarseRate }
         if stretch.pitch != tuning { stretch.pitch = tuning }
         if clock.rate != remainder { clock.rate = remainder }
-        // Keep offline identity playback sample-transparent. Retain the node
-        // so a later tempo/pitch edit can enable processing without reconnecting.
-        let bypass = !realtime && !allowsTempoChanges && abs(coarseRate - 1) < 0.000001 && abs(tuning) < 0.000001
-        if stretch.bypass != bypass { stretch.bypass = bypass }
+        if stretch.bypass { stretch.bypass = false }
     }
     private var lastUpdate = ProcessInfo.processInfo.systemUptime
     private var lastMeterUpdate = 0.0
@@ -1385,13 +1382,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         resetEffectTails()
         instrumentRenderPending = !armedInstrumentTracks.isEmpty
         setGraphRenderEnabled(instrumentRenderPending)
-        if !realtime {
-            engine.pause()
-            // Pause retains the manual sample clock. Reused/new players start
-            // at zero after Stop, so rebase the offline graph with them before
-            // the next Play and its sample-timed scheduling commands.
-            engine.reset()
-        }
+        // Offline players are recreated/reused on the next Play. Stop releases
+        // the converters' render resources so they cannot retain a paused
+        // timeline while the new source starts at sample zero.
+        if !realtime { engine.stop() }
         preparedJump = nil
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for (voice, _) in boundaryTails { recycle(voice) }; boundaryTails.removeAll()
@@ -1472,10 +1466,6 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // live graph so a BPM edit cannot exceed a processor's default slice.
         for node in [player, stretch, rateClock, gain] as [AVAudioNode] {
             node.auAudioUnit.maximumFramesToRender = 8192
-            // New voices may join an already-running manual graph. Tell their
-            // workers to wait for PCM instead of dropping it at a realtime
-            // deadline; prepare/start does not revisit a running graph.
-            node.auAudioUnit.isRenderingOffline = engine.isInManualRenderingMode && engine.manualRenderingMode == .offline
         }
         player.volume = 0
         let pitch = clipPitches[clip.id] ?? 0
@@ -2727,13 +2717,6 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
         return onset
     }
     private func startCommand(file: AVAudioFile, player: AVAudioPlayerNode, first: AVAudioFramePosition, count: AVAudioFrameCount, rampSeek: Bool = true) throws -> @Sendable (AVAudioTime?) -> Void {
-        if !realtime {
-            // Manual rendering can consume the whole segment before the file
-            // player's asynchronous reader runs. Supply deterministic PCM to
-            // this graph; realtime playback keeps its small-onset/file queue.
-            let pcm = try readOnset(file: file, first: first, frames: count, rampSeek: rampSeek)
-            return { time in player.scheduleBuffer(pcm, at: time, options: .interrupts, completionHandler: nil) }
-        }
         let frames = min(count, AVAudioFrameCount(ceil(file.processingFormat.sampleRate * 0.1)))
         let key = OnsetKey(path: file.url.path, first: first, frames: frames)
         let onset = try rampSeek ? (preparedOnsets[key] ?? readOnset(file: file, first: first, frames: frames))
@@ -3538,14 +3521,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
                 let commands = startCommands
                 DispatchQueue.concurrentPerform(iterations: commands.count) { commands[$0]() }
             } else { for command in startCommands { command() } }
-            if !realtime {
-                for (_, voice, _, _, _) in scheduled {
-                    // Manual rendering can outrun the file player's reader.
-                    // Prime the scheduled continuation before pulling PCM.
-                    voice.player.prepare(withFrameCount: 8192)
-                    voice.player.play()
-                }
-            }
+            if !realtime { for (_, voice, _, _, _) in scheduled { voice.player.play() } }
         }
         if let jump = preparedJump {
             // The generator deduplicates this deadline. Retry until its previous
