@@ -2727,6 +2727,13 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
         return onset
     }
     private func startCommand(file: AVAudioFile, player: AVAudioPlayerNode, first: AVAudioFramePosition, count: AVAudioFrameCount, rampSeek: Bool = true) throws -> @Sendable (AVAudioTime?) -> Void {
+        if !realtime {
+            // Manual rendering can consume the whole segment before the file
+            // player's asynchronous reader runs. Supply deterministic PCM to
+            // this graph; realtime playback keeps its small-onset/file queue.
+            let pcm = try readOnset(file: file, first: first, frames: count, rampSeek: rampSeek)
+            return { time in player.scheduleBuffer(pcm, at: time, options: .interrupts, completionHandler: nil) }
+        }
         let frames = min(count, AVAudioFrameCount(ceil(file.processingFormat.sampleRate * 0.1)))
         let key = OnsetKey(path: file.url.path, first: first, frames: frames)
         let onset = try rampSeek ? (preparedOnsets[key] ?? readOnset(file: file, first: first, frames: frames))
