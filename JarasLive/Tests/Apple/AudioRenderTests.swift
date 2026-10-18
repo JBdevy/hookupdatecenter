@@ -5,6 +5,25 @@ setbuf(stdout, nil)
 @MainActor func audioAutoreleasepool(_ body: @MainActor () throws -> Void) rethrows {
     try autoreleasepool { try MainActor.assumeIsolated { try body() } }
 }
+// These assertions compare settled PCM levels, not the stretcher's startup
+// transient. Prime its reported latency and two maximum input slices before
+// sampling; the resulting window stays before the fixtures' future onset.
+@MainActor func settledPCMPeak(_ engine: AVAudioEngine, _ buffer: AVAudioPCMBuffer) throws -> Float {
+    let rate = buffer.format.sampleRate
+    let latency = engine.attachedNodes.map { max($0.auAudioUnit.latency, $0.outputPresentationLatency) }.max() ?? 0
+    let slice = engine.attachedNodes.map { Int($0.auAudioUnit.maximumFramesToRender) }.max() ?? 8192
+    let warmup = (max(16384, Int(ceil(latency * rate)) + 2 * slice) + 511) / 512
+    precondition(Double((warmup + 6) * 512) / rate < 2, "measurement must precede the future item's two-second onset")
+    var peak: Float = 0
+    for block in 0..<(warmup + 6) {
+        let status = try engine.renderOffline(512, to: buffer)
+        precondition(status == .success)
+        if block >= warmup {
+            for frame in 0..<Int(buffer.frameLength) { peak = max(peak, abs(buffer.floatChannelData![0][frame])) }
+        }
+    }
+    return peak
+}
 @MainActor func run() throws {
 let meter = TrackMeterLevel()
 meter.update(peak: 0.01, elapsed: 1.0 / 30)
@@ -1583,15 +1602,8 @@ futureState.project.songs[0].tracks[0].clips[0].gain = 0.25
 futureState.project.songs[0].tracks[0].clips[0].muted = true
 futureState.transport.position = 2; futureState.transport.subPlay.position = 2
 try scalarAudio.update(futureState, revision: 1)
-@MainActor func futurePeak() throws -> Float {
-    var result: Float = 0
-    for block in 0..<16 {
-        let status = try scalarEngine.renderOffline(512, to: scalarBuffer)
-        precondition(status == .success)
-        if block >= 10 { for frame in 0..<Int(scalarBuffer.frameLength) { result = max(result, abs(scalarBuffer.floatChannelData![0][frame])) } }
-    }
-    return result
-}
+@MainActor func futurePeak() throws -> Float { try settledPCMPeak(scalarEngine, scalarBuffer) }
+
 let futureMuted = try futurePeak()
 precondition(futureMuted < 0.000001, "future muted onset must use scalar clip cache on both heads")
 scalarAudio.previewClipMute(futureTrack.clips[0].id, muted: false)
@@ -1628,17 +1640,7 @@ try audioAutoreleasepool {
     try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
     let audio = StemAudioPlayback(engine: engine, realtime: false)
     let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
-    @MainActor func peak() throws -> Float {
-        var result: Float = 0
-        for block in 0..<16 {
-            let status = try engine.renderOffline(512, to: buffer)
-            precondition(status == .success)
-            if block >= 10 {
-                for frame in 0..<Int(buffer.frameLength) { result = max(result, abs(buffer.floatChannelData![0][frame])) }
-            }
-        }
-        return result
-    }
+    @MainActor func peak() throws -> Float { try settledPCMPeak(engine, buffer) }
     @MainActor func track(_ onset: Double, _ volume: Double) -> Track {
         var track = Track(id: UUID(), name: "Test", role: .keys)
         track.volume = volume
