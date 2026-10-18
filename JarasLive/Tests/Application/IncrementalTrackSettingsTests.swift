@@ -152,6 +152,64 @@ private actor PresentationSaveStore: ProjectPersistence {
 }
 
 final class IncrementalTrackSettingsTests: XCTestCase {
+    @MainActor func testMixerSlotCopiesNativeParametersAndBypassWithoutMovingSource() throws {
+        var project = fixture()
+        var sourceFX = NativeFXSettings(); sourceFX.appendNative("EQ"); sourceFX.bands[2].gain = -9
+        sourceFX.setEnabled("EQ", enabled: false)
+        project.songs[0].tracks[1].fx = sourceFX
+        var destination = Track(id: UUID(), name: "Destination", role: .other)
+        var targetFX = NativeFXSettings(); targetFX.appendNative("Delay"); targetFX.delayTime = 1.7
+        destination.fx = targetFX; project.songs[0].tracks.append(destination)
+        let source = project.songs[0].tracks[1].id
+        let (show, executor) = try show(project)
+        let copied = try XCTUnwrap(show.copyFX(from: source, effect: "EQ", to: destination.id, before: "Delay"))
+        XCTAssertNotEqual(copied, "EQ")
+        XCTAssertEqual(show.fxSettings(source), sourceFX)
+        XCTAssertEqual(show.fxSettings(destination.id).effectKeys, [copied, "Delay"])
+        XCTAssertEqual(show.fxSettings(destination.id).settings(for: copied).bands, sourceFX.bands)
+        XCTAssertFalse(show.fxSettings(destination.id).isEnabled(copied))
+        XCTAssertEqual(show.fxSettings(destination.id).delayTime, 1.7)
+        XCTAssertEqual(executor.fullEdits, 0, "Slot copies must preserve live readers")
+        show.undo(); XCTAssertEqual(show.fxSettings(destination.id), targetFX)
+        show.redo(); XCTAssertEqual(show.fxSettings(destination.id).effectKeys, [copied, "Delay"])
+        let sameTrackCopy = try XCTUnwrap(show.copyFX(from: destination.id, effect: copied, to: destination.id, before: nil))
+        XCTAssertNotEqual(sameTrackCopy, copied)
+        XCTAssertEqual(show.fxSettings(destination.id).effectKeys, [copied, "Delay", sameTrackCopy])
+        XCTAssertEqual(show.fxSettings(destination.id).settings(for: sameTrackCopy), show.fxSettings(destination.id).settings(for: copied))
+        show.undo(); XCTAssertEqual(show.fxSettings(destination.id).effectKeys, [copied, "Delay"])
+    }
+    @MainActor func testMixerSlotCopiesLiveExternalLibraryAndControllerStateAndUndoesOnce() throws {
+        var project = fixture()
+        var sourceFX = NativeFXSettings()
+        var kontakt = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "Kontakt", path: "/test/Kontakt.vst3", category: "Instrument")
+        kontakt.componentState = "b2xk"; kontakt.controllerState = "b2xk"; kontakt.bypassed = true
+        sourceFX.externalPlugins = [kontakt]; sourceFX.inserted = [kontakt.effectKey]
+        project.songs[0].tracks[1].fx = sourceFX
+        let destination = Track(id: UUID(), name: "Destination", role: .other)
+        project.songs[0].tracks.append(destination)
+        let source = project.songs[0].tracks[1].id
+        let (show, _) = try show(project)
+        show.prepareForFXChange = { [weak show] track, clip, effects in
+            XCTAssertNil(clip)
+            if track == source && effects.contains(kontakt.effectKey) {
+                _ = try show?.storeCapturedPluginState(source, identifier: kontakt.id,
+                    componentState: "bGlicmFyeS1lZGl0ZWQ=", controllerState: "dWktc3RhdGU=")
+            }
+        }
+        let key = try XCTUnwrap(show.copyFX(from: source, effect: kontakt.effectKey, to: destination.id, before: nil))
+        let plugin = try XCTUnwrap(show.fxSettings(destination.id).externalPlugins?.first)
+        XCTAssertNotEqual(plugin.id, kontakt.id); XCTAssertEqual(key, plugin.effectKey)
+        XCTAssertEqual(plugin.componentState, "bGlicmFyeS1lZGl0ZWQ=")
+        XCTAssertEqual(plugin.controllerState, "dWktc3RhdGU=")
+        XCTAssertTrue(plugin.bypassed); XCTAssertEqual(plugin.path, kontakt.path)
+        XCTAssertEqual(show.fxSettings(source).inserted, [kontakt.effectKey])
+        show.undo(); XCTAssertTrue(show.fxSettings(destination.id).inserted.isEmpty)
+        XCTAssertEqual(show.fxSettings(source).externalPlugins?[0].componentState, plugin.componentState)
+        show.redo(); XCTAssertEqual(show.fxSettings(destination.id).externalPlugins, [plugin])
+        show.prepareForFXChange = { _, _, _ in throw ProjectError.invalid("Capture failed") }
+        XCTAssertNil(show.copyFX(from: source, effect: kontakt.effectKey, to: destination.id, before: key))
+        XCTAssertEqual(show.fxSettings(destination.id).externalPlugins, [plugin])
+    }
     @MainActor func testMixerFXBatchBypassRemovalAndLivePluginStateUndo() throws {
         var project = fixture()
         project.songs[0].tracks.append(Track(id: UUID(), name: "Second", role: .other))

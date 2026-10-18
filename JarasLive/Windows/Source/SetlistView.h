@@ -537,7 +537,7 @@ class Workspace::Setlist final : public Component,
         if (row < 0 || row >= getNumRows())
             return;
         const auto &entry = entries[(size_t)row];
-        const auto &t = w.session.transport();
+        const auto t = w.session.presentationTransport();
         const bool active = t.playing && t.regionId == entry.id,
                    queued = t.playing && t.queuedRegionId == entry.id;
         const auto state = currentState();

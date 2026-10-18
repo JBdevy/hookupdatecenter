@@ -456,13 +456,17 @@ import Combine
     @objc private func addEffect() {
         guard targetIsCurrent else { return }
         if let insertionPanel, insertionPanel.isVisible { insertionPanel.makeKeyAndOrderFront(nil); return }
+        let insertionTargets: [UUID?]
+        if clip == nil, let track {
+            insertionTargets = show.mixerControlTargets(track).filter { $0.kind == .standard }.map { Optional($0.id) }
+        } else { insertionTargets = [track] }
         let insert = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 500),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
         insert.title = JarasLocalization.string("Insert effect")
         insert.isFloatingPanel = true
         insert.hidesOnDeactivate = false
         insert.contentView = NSHostingView(rootView:
-            FXInsertEditor(show: show, track: track, targets: [track], clip: clip, inserted: { [weak self] effect in
+            FXInsertEditor(show: show, track: track, targets: insertionTargets, clip: clip, inserted: { [weak self] effect in
                 guard let self, self.targetIsCurrent else { return }
                 self.refresh(self.settings, preferred: effect)
                 self.panel?.makeKeyAndOrderFront(nil)

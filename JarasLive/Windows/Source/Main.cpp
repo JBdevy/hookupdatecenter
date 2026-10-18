@@ -12,6 +12,7 @@ class CatLiveApplication final : public JUCEApplication {
     bool moreThanOneInstanceAllowed() override {
         auto args = getCommandLineParameters();
         return args.contains("--self-test") || args.contains("--visual-test") ||
+               args.contains("--grid-import-test") ||
                args.contains("--home-preview") || args.contains("--project-preview") || args.contains("--roundtrip-project") ||
                args.contains("--migrate-project");
     }
@@ -106,7 +107,8 @@ class CatLiveApplication final : public JUCEApplication {
         try {
             const bool previewHome = args.contains("--home-preview");
             const bool projectPreview = args.contains("--project-preview");
-            const bool visualTest = args.contains("--visual-test") || projectPreview;
+            const bool gridImportTest = args.contains("--grid-import-test");
+            const bool visualTest = args.contains("--visual-test") || projectPreview || gridImportTest;
             File appearanceFile;
             const int appearanceArgument = args.indexOf("--appearance-file");
             if ((visualTest || previewHome) && appearanceArgument >= 0 && appearanceArgument + 1 < args.size())
@@ -130,7 +132,11 @@ class CatLiveApplication final : public JUCEApplication {
             session->playbackUpdate = [this](const jaras::TransportState &state) {
                 lighting->update(state);
             };
-            if (args.contains("--visual-test")) {
+            if (gridImportTest) {
+                session->inspection = true;
+                session->audio.prepareOffline(48000);
+                session->audio.setOffline(true);
+            } else if (args.contains("--visual-test")) {
                 session->makeInspectionProject(args.contains("--audio-fixture"));
                 lighting->loadSettings();
             } else if (projectPreview) {
@@ -170,6 +176,17 @@ class CatLiveApplication final : public JUCEApplication {
                 });
             if (args.contains("--visual-test"))
                 content->runUIRegression();
+            if (gridImportTest) {
+                const int i = args.indexOf("--grid-import-test");
+                if (i + 1 >= args.size()) throw std::runtime_error("Expected grid import test results directory");
+                const File results(args[i + 1]);
+                Timer::callAfterDelay(300, [this, content, results] {
+                    content->runMediaImportRegression(results, [this](bool passed) {
+                        testResult = passed ? 0 : 1;
+                        quit();
+                    });
+                });
+            }
             if (args.contains("--capture")) {
                 auto i = args.indexOf("--capture");
                 if (i + 1 < args.size()) {

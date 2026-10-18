@@ -8,10 +8,19 @@ class Auth final : private Timer {
     std::function<void()> changed;
     bool allowed() const { return authorised && (expiry > Time::getCurrentTime() || pendingRevocation); }
     bool busy = false, pendingRevocation = false, trialFinished = false;
+    bool requiresDeviceName = false;
+    uint64 loginRevision = 0;
+    var devices;
     String message, title = "Sem acesso", installationId, deviceName;
     var loginData;
     std::function<bool()> isPlaying;
     void login(String email, String cpf, String name);
+    void beginLogin(String email, String cpf);
+    void completeDeviceNaming(String name);
+    void cancelDeviceNaming();
+    static String validatedDeviceName(String name);
+    void refreshDevices();
+    void removeDevice(String installation);
     void trial(String name);
     void restore();
     void logout();
@@ -28,6 +37,8 @@ class Auth final : private Timer {
   private:
     ThreadPool worker{1};
     bool authorised = false;
+    bool hasChosenDeviceName = false;
+    String pendingEmail, pendingCPF;
     Time expiry, offlineUntil, lastWall;
     double validatedMonotonic = 0;
     std::shared_ptr<int> alive = std::make_shared<int>(0);
@@ -35,6 +46,7 @@ class Auth final : private Timer {
     void begin(const String &route, var body);
     void accept(var, bool online);
     void persist();
+    void loadDevices(String removal = {});
     var device() const;
 };
 } // namespace catlive

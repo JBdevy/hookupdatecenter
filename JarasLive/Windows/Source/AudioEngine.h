@@ -3,6 +3,7 @@
 #include "Common.h"
 #include "../../Core/Transport/PlaybackScope.hpp"
 #include "NativeFX.h"
+#include "../../WindowsNative/Source/AudioLatency.h"
 #include "StreamingReader.h"
 #include "Instrument.h"
 #include "Automation.h"
@@ -19,6 +20,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     struct State {
         double position = 0, subPosition = 0;
         bool playing = false, subPlaying = false, loop = false;
+        bool preserveLatency = false; // scheduled musical transition, not a manual seek
         double loopStart = 0, loopEnd = 0;
         jaras::PlaybackScope scope[2];
         int timecodePreferred = -1;
@@ -38,6 +40,12 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void setEffects(const ID &, const var &);
     std::shared_ptr<native::vst3::Processor> externalEffect(const ID &, const String &) const;
     void captureExternalEffects(const ID &, var &) const;
+    native::stem::Status stemStatus(const ID &,const String &)const;
+    void waitForStems();
+    void previewStemMix(const ID &,const String &,const native::stem::Mix &);
+    void checkStemErrors()const;
+    void refreshStemLatency();
+    unsigned exportLatencyFrames()const;
     void setMIDISlot(int, const String &);
     void setKeyboardTarget(const ID &id) {
         int index = -1;
@@ -51,6 +59,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::atomic<bool> metronomeEnabled{false};
     void closeDevice();
     void refreshTiming(const jaras::Song &song);
+    void refreshRegionPitch(const jaras::Song &, const ID &);
     void prepareSong(const jaras::Song &, const File &directory, const var &masterSettings = {},
                      const jaras::Project *project = nullptr);
     void transport(const State &);
@@ -68,6 +77,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         if (attached || !std::isfinite(sampleRate) || sampleRate < 32000 || sampleRate > 192000)
             throw std::runtime_error("Invalid offline sample rate.");
         rate = sampleRate;
+        offlineMode=true;
     }
     void setExportCapture(const ID &track = {}) {
         exportCapture = true;
@@ -100,6 +110,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     bool trackFadeoutComplete() const noexcept;
     bool trackFadeoutActive() const noexcept;
     State state() const;
+    State presentationState() const;
+    unsigned presentationLatencyFrames()const{return presentationDelay.load();}
     double takeElapsed();
     float peak() const { return meter.load(std::memory_order_relaxed); }
     std::pair<float, float> fxLevels(const ID &id) const {
@@ -169,6 +181,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         int channelMode = 0;
         std::shared_ptr<Source> source;
         AudioBuffer<float> processed[2];
+        AudioBuffer<float> stemInput[2]{{2,4096},{2,4096}};
         std::unique_ptr<ClipAudio> clipAudio;
         NativeFX fx[2];
         var fxSettings;
@@ -191,6 +204,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         AudioBuffer<float> buffer{2, 4096};
         AudioBuffer<float> subBuffer{2, 4096};
         AudioBuffer<float> frozen[2]{{2,4096},{2,4096}};
+        AudioBuffer<float> clips[2]{{2,4096},{2,4096}};
         AudioBuffer<float> &head(int index) { return index == 0 ? buffer : subBuffer; }
         NativeFX fx[2];
         AutomationProgram automation;
@@ -210,6 +224,36 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::atomic<bool> armed{false};
         std::atomic<bool> fadeoutSelected{false};
     };
+    struct LatencyPlan {
+        struct Route { int target=-1;native::StereoDelay delay[2]; };
+        struct Channel {
+            unsigned own=0,input=0,output=0;
+            native::StereoDelay direct[2],inputDelay[2],master[2],hardware[2],frozen[2];
+            AudioBuffer<float> routed[2];
+            std::vector<Route> routes;
+        };
+        std::vector<Channel> buses;
+        std::map<ID,std::array<native::StereoDelay,2>> clips,clipBypass;
+        unsigned masterInput=0,total=0;
+        native::TimelineDelay timeline[2];
+        native::StereoDelay masterLive,masterHardware,metronome;
+        AudioBuffer<float> scratch{2,4096},hardwareScratch{2,4096},metronomeBuffer{2,4096};
+    };
+    std::unique_ptr<LatencyPlan> latencyPlan;
+    std::unique_ptr<LatencyPlan> makeLatencyPlan(const ID *replacement=nullptr,const NativeFX *prepared=nullptr)const;
+    bool offlineMode=false;
+    uint64 stemLatencyFingerprint=0;
+    std::atomic<bool> presentationTailing{false};
+    std::atomic<unsigned> presentationDelay{0};
+    std::atomic<double> presentedPosition[2]{};
+    std::atomic<bool> presentedPlaying[2]{};
+    unsigned tailFrames[2]{};
+    double tailCursor[2]{};
+    uint64_t renderClock=0;
+    void resetLatencyHead(int head,double at)noexcept;
+    void publishLatency()noexcept;
+    uint64 stemFingerprint()const;
+    void activateStemLatency();
     std::vector<std::unique_ptr<Bus>> buses;
     std::vector<int> busOrder;
     TransportFadeout transportFadeout;
@@ -224,6 +268,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     AudioBuffer<float> readScratch[2]{{2, 131080}, {2, 131080}};
     AudioBuffer<float> liveRecordBuffer{2, 4096};
     std::array<std::array<double, 4096>, 2> timelinePositions{};
+    std::array<std::array<bool,4096>,2> timelineRunning{};
     jaras::TimecodeProgram timecodeProgram;
     jaras::LTCWaveform timecodeWaveform;
     TimecodeMIDI timecodeMIDI;
@@ -244,6 +289,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::atomic<float> masterFXInput{0}, masterFXOutput{0};
     struct Update {
         enum Kind { transport, mixer, item } kind = transport;
+        bool inputMonitoring=true;
+        int midiSlot=0,midiChannel=0;
         State state;
         double itemGain=1, itemPan=0, fadeIn=0, fadeOut=0;
         jaras::FadeCurve fadeInShape, fadeOutShape;

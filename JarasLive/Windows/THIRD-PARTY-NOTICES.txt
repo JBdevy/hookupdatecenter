@@ -70,3 +70,17 @@ https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz (SHA-256:
 464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c).
 The app does not restrict reverse engineering for debugging modifications to
 these libraries.
+
+CatStemSeparation 5 (Windows and Mac model parity)
+Demucs 4.0.1 / HTDemucs6, Meta Platforms, MIT license.
+The isolated Windows Python / PyTorch runtime, exact model SHA256 manifest,
+pinned dependency list and redistribution notices accompany the application
+in StemSeparationRuntime. No model or runtime downloads happen during playback.
+https://github.com/facebookresearch/demucs
+
+OpenVINO 2025.4.0, Intel, Apache License 2.0.
+The Windows CatStem runtime runs the same HTDemucs6 weights through an FP32
+OpenVINO neural graph with PyTorch CPU spectral transforms. Its installed wheel
+licenses and bundled-component notices are retained in StemSeparationRuntime/
+Licenses and python/Lib/site-packages. Telemetry is opted out by the backend.
+https://github.com/openvinotoolkit/openvino

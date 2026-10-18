@@ -3,6 +3,9 @@
 #include "Localization.h"
 #include "EffectInsertPanel.h"
 #include "FXPresets.h"
+#include "FXChain.h"
+#include "FXSchema.h"
+#include "CatStemEditor.h"
 namespace catlive {
 namespace fxui {
 class EnableButton final : public ToggleButton {
@@ -26,7 +29,8 @@ class EnableButton final : public ToggleButton {
     }
 };
 inline String enabledKey(const String &kind) {
-    return kind == "EQ"            ? "eqEnabled"
+    return kind == "CatStemSeparation 5" ? "stemSeparatorEnabled"
+           : kind == "EQ"            ? "eqEnabled"
            : kind == "Compressor"  ? "compressorEnabled"
            : kind == "Delay"       ? "delayEnabled"
            : kind == "Reverb"      ? "reverbEnabled"
@@ -47,41 +51,14 @@ inline void enable(const String &kind, var &settings, bool value) {
         put(settings, Identifier(key), (kind == "Instruments" || kind == "External") ? !value : value);
 }
 inline void defaults(var &s) {
-    if (!s.isObject())
-        s = object();
-    const std::map<String, double> values{
-        {"threshold", -20},       {"ratio", 4},         {"attack", .005},
-        {"release", .1},          {"makeup", 0},        {"delayTime", .25},
-        {"feedback", 25},         {"delayMix", 20},     {"reverbMix", 20},
-        {"reverbRoom", 1},        {"reverbDecay", 2},   {"reverbLowCut", 80},
-        {"reverbHighCut", 12000}, {"pitchSemitones", 0}};
-    for (auto &v : values)
-        if (get(s, Identifier(v.first)).isVoid())
-            put(s, Identifier(v.first), v.second);
+    s = s.isObject() ? fxschema::complete(s, true) : fxschema::defaults(true);
+    if (get(s, "pitchSemitones").isVoid()) put(s, "pitchSemitones", 0.);
     if (!get(s, "limiter").isObject()) {
         auto l = object();
         put(l, "ceiling", -.1);
         put(l, "release", .1);
         put(l, "inputGain", 0);
         put(s, "limiter", l);
-    }
-    if (!get(s, "inserted").isArray())
-        put(s, "inserted", Array<var>{});
-    if (!get(s, "bands").isArray()) {
-        Array<var> bands;
-        const double frequencies[]{30, 200, 1000, 5000, 18000};
-        for (int i = 0; i < 5; ++i) {
-            auto b = object();
-            put(b, "id", text(uuid()));
-            put(b, "frequency", frequencies[i]);
-            put(b, "gain", 0);
-            put(b, "q", .707);
-            put(b, "type", i == 0 ? "lowCut" : i == 4 ? "highCut" : "bell");
-            put(b, "slope", 12);
-            put(b, "enabled", true);
-            bands.add(b);
-        }
-        put(s, "bands", bands);
     }
 }
 inline var instrumentParameters(const String &instrument) {
@@ -429,8 +406,8 @@ public:
 };
 class EffectsPanel final : public Component, private ListBoxModel, private Timer {
   public:
-    EffectsPanel(Session &s, ID target, std::function<void(String)> report, bool itemTarget = false)
-        : session(s), track(std::move(target)), item(itemTarget), error(std::move(report)), chain("FX", this) {
+    EffectsPanel(Session &s, ID target, std::function<void(String)> report, bool itemTarget = false, std::vector<ID> batchTargets = {})
+        : session(s), track(std::move(target)), item(itemTarget), insertionTargets(std::move(batchTargets)), error(std::move(report)), chain("FX", this) {
         setComponentID("effectsPanel");
         load();
         fxui::defaults(settings);
@@ -495,6 +472,12 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         refreshPresets(); resized();
         startTimerHz(20);
     }
+    void selectEffect(const String &preferred) {
+        const int index = list(get(settings, "inserted")).indexOf(var(preferred));
+        if (index < 0) return;
+        chain.selectRow(index);
+        if (kind() == "External") openExternalEditor();
+    }
     void paint(Graphics &g) override {
         g.fillAll(Colour(0xff242424));
         g.setColour(Colour(0xff181818));
@@ -502,6 +485,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         g.setColour(Colour(0xff202020));
         g.fillRect(0, getHeight() - 40, 190, 40);
         auto r = content();
+        if(kind()=="CatStemSeparation 5")return;
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(14));
         if (kind().isEmpty()) {
@@ -543,6 +527,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         removeEffect.setBounds(r.getRight() - 100, headerY + 42, 100, 22);
         enabled.setBounds(eq ? r.getX() : r.getCentreX() - 55, headerY + 76, 110, 24);
         openExternal.setBounds(r.getX()+150,rackY+60,std::max(180,r.getWidth()-180),30);
+        if(stemEditor)stemEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
         graph.setBounds(r.getX(), headerY + 102, r.getWidth(),
                         std::max(40, getHeight() - headerY - 141));
         for (int i = 0; i < rooms.size(); ++i)
@@ -558,6 +543,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
 
   private:
     Session &session;
+    std::vector<ID> insertionTargets;
     ID track;
     bool item = false;
     String trackName = "Master";
@@ -588,6 +574,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     OwnedArray<TextButton> rooms;
     OwnedArray<fxui::Knob> knobs;
     fxui::EQGraph graph;
+    std::unique_ptr<CatStemEditor> stemEditor;
     int selected = -1, headerY = 24, rackY = 140, rackHeight = 180;
     juce::Rectangle<int> content() const {
         return {210, 0, std::max(200, getWidth() - 230), getHeight()};
@@ -681,12 +668,13 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     }
 
     void show() {
+        stemEditor.reset();
         knobs.clear();
         refreshPresets();
         const auto k = kind();
         openExternal.setVisible(k=="External");
         const bool available = k.isNotEmpty() && fxui::enabledKey(k).isNotEmpty();
-        enabled.setVisible(available);
+        enabled.setVisible(available&&k!="CatStemSeparation 5");
         removeEffect.setVisible(k.isNotEmpty());
         remove.setEnabled(k.isNotEmpty());
         for (int i = 0; i < rooms.size(); ++i) {
@@ -705,6 +693,14 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         if(k!="External")fxui::defaults(s);
         enabled.setToggleState(fxui::isEnabled(k, s), dontSendNotification);
         graph.settings = s;
+        if(k=="CatStemSeparation 5") {
+            auto stemKey=key();
+            stemEditor=std::make_unique<CatStemEditor>(trackName,[this]{return current();},[this,stemKey](var value,bool save){
+                session.audio.previewStemMix(track,stemKey,stemMix::decode(value));
+                if(save){commit();chain.repaint();}
+            },[this,stemKey]{return session.audio.stemStatus(track,stemKey);});
+            addAndMakeVisible(*stemEditor);
+        }
         if (k == "Compressor") {
             knob("Threshold", "threshold", -60, 0, .1, " dB");
             knob("Ratio", "ratio", 1, 20, .1, " :1");
@@ -795,7 +791,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             [safe] {
                 if (safe && safe->insertWindow)
                     safe->insertWindow->setVisible(false);
-            }, !item);
+            }, !item && insertionTargets.size() <= 1);
         panel->setSize(460, 214);
         insertWindow->setContentOwned(panel, true);
         panel->updateLayout();
@@ -805,62 +801,57 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     }
     bool insert(const String &kind, const String &instrument) {
         try {
-            if(kind=="External") {
-                auto plugin=JSON::parse(instrument);
-                if(!plugin.isObject()||str(plugin,"classID").isEmpty())throw std::runtime_error("Selecione um plugin VST3.");
-                put(plugin,"id",text(uuid()));put(plugin,"bypassed",false);
-                auto plugins=list(get(settings,"externalPlugins"));plugins.add(plugin);put(settings,"externalPlugins",plugins);
-                auto inserted=list(get(settings,"inserted"));inserted.add("External:"+str(plugin,"id"));put(settings,"inserted",inserted);
-                if(!commit())return false;chain.updateContent();chain.selectRow(inserted.size()-1);openExternalEditor();return true;
+            if (session.busy) return false;
+            if(kind=="CatStemSeparation 5") {
+                if(insertionTargets.size()>1)throw std::runtime_error("Selecione uma pista para inserir CatStemSeparation 5.");
             }
             if (kind == "Instruments") {
-                auto source = instrumentAssets::resolve(instrument, session.mediaDirectory),
-                     target =
-                         session.mediaDirectory.getChildFile("Instruments/" + instrument + ".sf2");
-                if (!instrumentAssets::validBank(source))
-                    throw std::runtime_error("Download the instrument before applying it.");
+                auto source = instrumentAssets::resolve(instrument, session.mediaDirectory);
+                auto target = session.mediaDirectory.getChildFile("Instruments/" + instrument + ".sf2");
+                if (!instrumentAssets::validBank(source)) throw std::runtime_error("Download the instrument before applying it.");
                 target.getParentDirectory().createDirectory();
-                if (source != target && !source.copyFileTo(target))
-                    throw std::runtime_error("Could not copy the instrument to the project.");
+                if (source != target && !source.copyFileTo(target)) throw std::runtime_error("Could not copy the instrument to the project.");
             }
-            auto initialize = [&](var &s) {
-                fxui::reset(kind, s);
-                fxui::defaults(s);
-                fxui::enable(kind, s, true);
-                if (kind == "Instruments") {
-                    put(s, "instrumentID", instrument);
-                    put(s, "instrumentParameters", fxui::instrumentParameters(instrument));
+            auto targets = item || insertionTargets.empty() ? std::vector<ID>{track} : insertionTargets;
+            if (kind == "Instruments" && targets.size() != 1) throw std::runtime_error("Escolha apenas uma pista para inserir um instrumento.");
+            std::map<ID, var> changes;
+            String ownKey;
+            for (const auto &target : targets) {
+                auto next = target == track ? settings.clone() : fxchain::settings(session, target).clone();
+                fxui::defaults(next);
+                auto inserted = list(get(next, "inserted"));
+                String key = kind;
+                if (kind == "External") {
+                    auto plugin = JSON::parse(instrument);
+                    if (!plugin.isObject() || str(plugin, "classID").isEmpty()) throw std::runtime_error("Selecione um plugin VST3.");
+                    put(plugin, "id", text(uuid())); put(plugin, "bypassed", false);
+                    auto plugins = list(get(next, "externalPlugins")); plugins.add(plugin); put(next, "externalPlugins", plugins);
+                    key = "External:" + str(plugin, "id");
+                } else {
+                    if ((item||kind=="CatStemSeparation 5") && inserted.contains(var(kind))) { chain.selectRow(inserted.indexOf(var(kind))); return true; }
+                    auto initialize = [&](var &value) {
+                        fxui::reset(kind, value); fxui::defaults(value); fxui::enable(kind, value, true);
+                        if(kind=="CatStemSeparation 5")put(value,"stemMix",stemMix::defaults());
+                        if (kind == "Instruments") { put(value, "instrumentID", instrument); put(value, "instrumentParameters", fxui::instrumentParameters(instrument)); }
+                        fxpresets::Store().applyDefault(kind, value);
+                    };
+                    if (inserted.contains(var(kind))) {
+                        auto instance = object(), value = object(); initialize(value);
+                        put(value, "inserted", Array<var>{kind});
+                        const auto id = text(uuid()); put(instance, "id", id); put(instance, "kind", kind); put(instance, "settings", value);
+                        auto instances = list(get(next, "instances")); instances.add(instance); put(next, "instances", instances);
+                        key = "Native:" + id;
+                    } else initialize(next);
                 }
-                fxpresets::Store().applyDefault(kind, s);
-            };
-            auto inserted = list(get(settings, "inserted"));
-            String key = kind;
-            if (item && inserted.contains(var(kind))) {chain.selectRow(inserted.indexOf(var(kind))); return true;}
-            if (inserted.contains(var(kind))) {
-                auto instance = object(), s = object();
-                initialize(s);
-                put(s, "inserted", Array<var>{kind});
-                const auto id = text(uuid());
-                put(instance, "id", id);
-                put(instance, "kind", kind);
-                put(instance, "settings", s);
-                auto instances = list(get(settings, "instances"));
-                instances.add(instance);
-                put(settings, "instances", instances);
-                key = "Native:" + id;
-            } else
-                initialize(settings);
-            inserted.add(key);
-            put(settings, "inserted", inserted);
-            if (!commit())
-                return false;
-            chain.updateContent();
-            chain.selectRow(inserted.size() - 1);
+                inserted.add(key); put(next, "inserted", inserted); changes.emplace(target, next);
+                if (target == track) ownKey = key;
+            }
+            session.configureEffects(changes);
+            load(); fxui::defaults(settings); refreshPresets(); chain.updateContent();
+            chain.selectRow(list(get(settings, "inserted")).indexOf(var(ownKey)));
+            if (kind == "External") openExternalEditor();
             return true;
-        } catch (const std::exception &e) {
-            error(String::fromUTF8(e.what()));
-            return false;
-        }
+        } catch (const std::exception &e) { error(String::fromUTF8(e.what())); return false; }
     }
     void erase() {
         if (selected < 0)

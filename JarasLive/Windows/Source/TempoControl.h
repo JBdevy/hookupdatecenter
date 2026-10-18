@@ -4,8 +4,8 @@ namespace catlive {
 class TempoControl final : public Component {
   public:
     TempoControl(Session &owner, std::function<void(String)> report,
-                 std::function<void()> tap, std::function<void(String)> map)
-        : session(owner), error(std::move(report)) {
+                 std::function<void()> tap, std::function<void(String)> map, std::function<void()> reset = {})
+        : session(owner), error(std::move(report)), resetTap(std::move(reset)) {
         for (auto *b : {&up, &down}) {
             addAndMakeVisible(b);
             b->getProperties().set("plain", true);
@@ -41,7 +41,7 @@ class TempoControl final : public Component {
     }
     void refresh() {
         const auto value = session.tempoBPM();
-        bpm.setButtonText(String(value, value == std::floor(value) ? 0 : 1));
+        bpm.setButtonText(String::formatted("%g", value));
         if (!beats.hasKeyboardFocus(false) && !unit.hasKeyboardFocus(false)) refreshMeter();
         repaint();
     }
@@ -74,6 +74,7 @@ class TempoControl final : public Component {
   private:
     Session &session;
     std::function<void(String)> error;
+    std::function<void()> resetTap;
     QuietButton up{"+"}, down{String::fromUTF8("−")}, bpm;
     TextEditor beats, unit;
     void refreshMeter() {
@@ -113,11 +114,10 @@ class TempoControl final : public Component {
     }
     void apply(double value, int beats, int unit) {
         try {
+            if (resetTap) resetTap();
             if (beats == 0 && unit == 0) session.setTempo(value);
             else if (const auto *song = session.song())
-                session.configureTiming(song->bpm, beats ? beats : song->beatsPerBar,
-                                        unit ? unit : song->beatUnit,
-                                        song->timeSettings.value_or(jaras::ProjectTimeSettings{}));
+                session.setMeter(beats ? beats : song->beatsPerBar, unit ? unit : song->beatUnit);
         } catch (const std::exception &e) {
             if (error)
                 error(String::fromUTF8(e.what()));

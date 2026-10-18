@@ -67,6 +67,7 @@ Auth::Auth() {
         const auto savedID = str(v, "id");
         installationId = canonicalInstallationID(savedID);
         deviceName = str(v, "name");
+        hasChosenDeviceName = (bool)get(v, "nameChosen");
         if (installationId != savedID) {
             put(v, "id", installationId);
             const auto json = JSON::toString(v, true);
@@ -141,7 +142,7 @@ void Auth::accept(var data, bool online) {
     auto serverTime = Time::fromISO8601(str(entitlement, "serverTime"));
     if (now < serverTime - RelativeTime::minutes(5))
         throw std::runtime_error("Corrija a data do Windows e valide sua licença.");
-    expiry = Time::fromISO8601(str(entitlement, "expiresAt"));
+    auto nextExpiry = Time::fromISO8601(str(entitlement, "expiresAt"));
     const auto graceStart = Time::fromISO8601(str(entitlement, "graceStartsAt")),
                graceEnd = Time::fromISO8601(str(entitlement, "graceUntil"));
     const auto status = str(entitlement, "status"), plan = str(entitlement, "planId");
@@ -149,13 +150,20 @@ void Auth::accept(var data, bool online) {
                  graceEnd > graceStart && (graceEnd - graceStart) <= RelativeTime::days(7) &&
                  now >= graceStart && now < graceEnd;
     if (grace)
-        expiry = graceEnd;
-    if ((status != "active" && !grace) || now >= expiry ||
+        nextExpiry = graceEnd;
+    if ((status != "active" && !grace) || now >= nextExpiry ||
         !list(get(entitlement, "features")).contains(var("desktop")))
         throw std::runtime_error("A licença não permite acesso ao CatLive desktop.");
-    offlineUntil = Time::fromISO8601(str(entitlement, "offlineValidUntil"));
-    if (!online && now >= offlineUntil)
+    const auto nextOffline = Time::fromISO8601(str(entitlement, "offlineValidUntil"));
+    if (!online && now >= nextOffline)
         throw std::runtime_error("Conecte à internet para revalidar sua licença.");
+    const auto previousLogin = loginData;
+    const auto previousExpiry = expiry, previousOffline = offlineUntil, previousWall = lastWall;
+    const auto previousTitle = title, previousMessage = message;
+    const auto previousMonotonic = validatedMonotonic;
+    const bool previousTrial = trialFinished, previousAuthorised = authorised, previousPending = pendingRevocation;
+    expiry = nextExpiry;
+    offlineUntil = nextOffline;
     loginData = data;
     trialFinished = false;
     authorised = true;
@@ -170,18 +178,44 @@ void Auth::accept(var data, bool online) {
     if (!online)
         title += String::fromUTF8(" · Offline");
     message.clear();
-    persist();
+    try { persist(); }
+    catch (...) {
+        loginData = previousLogin; expiry = previousExpiry; offlineUntil = previousOffline; lastWall = previousWall;
+        title = previousTitle; message = previousMessage; validatedMonotonic = previousMonotonic;
+        trialFinished = previousTrial; authorised = previousAuthorised; pendingRevocation = previousPending;
+        throw;
+    }
 }
 void Auth::persist() {
-    auto identity=object();put(identity,"id",installationId);put(identity,"name",deviceName);auto identityJSON=JSON::toString(identity,true);auto protectedIdentity=protect(MemoryBlock(identityJSON.toRawUTF8(),identityJSON.getNumBytesAsUTF8()));
-    if(!dataDirectory().getChildFile("installation.dat").replaceWithData(protectedIdentity.getData(),protectedIdentity.getSize()))throw std::runtime_error("Could not save device name.");
+    auto identity=object();put(identity,"id",installationId);put(identity,"name",deviceName);put(identity,"nameChosen",hasChosenDeviceName);auto identityJSON=JSON::toString(identity,true);auto protectedIdentity=protect(MemoryBlock(identityJSON.toRawUTF8(),identityJSON.getNumBytesAsUTF8()));
     auto cache = object();
     put(cache, "login", loginData);
     put(cache, "lastWall", Time::getCurrentTime().toISO8601(true));
     auto json = JSON::toString(cache, true);
     auto b = protect(MemoryBlock(json.toRawUTF8(), json.getNumBytesAsUTF8()));
-    if (!dataDirectory().getChildFile("session.dat").replaceWithData(b.getData(), b.getSize()))
+    const auto identityFile = dataDirectory().getChildFile("installation.dat"), sessionFile = dataDirectory().getChildFile("session.dat");
+    const bool hadIdentity = identityFile.existsAsFile(), hadSession = sessionFile.existsAsFile();
+    MemoryBlock oldIdentity, oldSession;
+    if ((hadIdentity && !identityFile.loadFileAsData(oldIdentity)) || (hadSession && !sessionFile.loadFileAsData(oldSession)))
+        throw std::runtime_error("Não foi possível preservar a sessão anterior no Windows.");
+    // Prepare both encrypted files before replacing either one. In particular,
+    // a full disk must not commit a new device name with the previous session.
+    TemporaryFile nextIdentity(identityFile), nextSession(sessionFile);
+    if (!nextIdentity.getFile().replaceWithData(protectedIdentity.getData(), protectedIdentity.getSize()) ||
+        !nextSession.getFile().replaceWithData(b.getData(), b.getSize()))
         throw std::runtime_error("Não foi possível guardar a sessão no Windows.");
+    if (nextIdentity.overwriteTargetFileWithTemporary() && nextSession.overwriteTargetFileWithTemporary()) return;
+    const auto restore = [](const File &file, bool existed, const MemoryBlock &bytes) {
+        if (!existed) return !file.existsAsFile() || file.deleteFile();
+        MemoryBlock current;
+        if (file.loadFileAsData(current) && current == bytes) return true;
+        return file.replaceWithData(bytes.getData(), bytes.getSize());
+    };
+    const bool identityRestored = restore(identityFile, hadIdentity, oldIdentity);
+    const bool sessionRestored = restore(sessionFile, hadSession, oldSession);
+    if (!identityRestored || !sessionRestored)
+        throw std::runtime_error("Não foi possível restaurar a sessão anterior. Libere espaço no disco e entre novamente.");
+    throw std::runtime_error("Não foi possível guardar a sessão no Windows; a sessão anterior foi preservada.");
 }
 void Auth::begin(const String &route, var body) {
     if (busy)
@@ -191,7 +225,8 @@ void Auth::begin(const String &route, var body) {
     if (changed)
         changed();
     auto weak = std::weak_ptr<int>(alive);
-    worker.addJob([this, weak, route, body] {
+    const bool previouslyAuthorised = authorised;
+    worker.addJob([this, weak, route, body, previouslyAuthorised] {
         var response;
         String error;
         try {
@@ -199,35 +234,90 @@ void Auth::begin(const String &route, var body) {
         } catch (const std::exception &e) {
             error = String::fromUTF8(e.what());
         }
-        MessageManager::callAsync([this, weak, response, error] {
+        const auto requestedName = str(get(body, "device"), "deviceName");
+        MessageManager::callAsync([this, weak, response, error, previouslyAuthorised, requestedName] {
             if (weak.expired())
                 return;
             busy = false;
+            bool signedIn = false;
             try {
                 if (error.isNotEmpty())
                     throw std::runtime_error(utf8(error));
-                accept(response, true);
+                if (requiresDeviceName && str(get(response, "device"), "deviceName") != requestedName)
+                    throw std::runtime_error("O serviço não confirmou o nome deste dispositivo.");
+                const bool chosen = hasChosenDeviceName;
+                const auto previousName = deviceName;
+                deviceName = requestedName;
+                hasChosenDeviceName = hasChosenDeviceName || requiresDeviceName;
+                try { accept(response, true); }
+                catch (...) { hasChosenDeviceName = chosen; deviceName = previousName; throw; }
+                requiresDeviceName = false;
+                pendingEmail.clear(); pendingCPF.clear();
+                devices = var(Array<var>{get(response, "device")});
+                ++loginRevision; signedIn = true;
             } catch (const std::exception &e) {
-                authorised = false;
+                authorised = previouslyAuthorised && expiry > Time::getCurrentTime();
                 message = String::fromUTF8(e.what());
             }
             if (changed)
                 changed();
+            if (signedIn) refreshDevices();
         });
     });
 }
+String Auth::validatedDeviceName(String name) {
+    name = name.trim();
+    if (name.isEmpty() || name.getNumBytesAsUTF8() > 63) return {};
+    bool readable = false;
+    for (auto character : name) {
+        if (character < 32 || (character >= 127 && character <= 159)) return {};
+        readable |= CharacterFunctions::isLetterOrDigit(character) || character >= 0x1f000;
+    }
+    return readable ? name : String();
+}
+void Auth::beginLogin(String email, String cpf) {
+    if (busy) return;
+    if (hasChosenDeviceName) { login(email, cpf, deviceName); return; }
+    busy = true; message.clear();
+    if (changed) changed();
+    credentialDevices(email, cpf, [this, email, cpf](var, String error) {
+        busy = false;
+        message = error;
+        if (error.isEmpty()) {
+            pendingEmail = email; pendingCPF = cpf;
+            requiresDeviceName = true;
+        }
+        if (changed) changed();
+    });
+}
+void Auth::completeDeviceNaming(String name) {
+    if (busy || !requiresDeviceName) return;
+    name = validatedDeviceName(name);
+    if (name.isEmpty()) {
+        message = String::fromUTF8("Digite um nome válido e curto para o dispositivo, sem quebras de linha.");
+        if (changed) changed();
+        return;
+    }
+    login(pendingEmail, pendingCPF, name);
+}
+void Auth::cancelDeviceNaming() {
+    if (busy) return;
+    pendingEmail.clear(); pendingCPF.clear();
+    requiresDeviceName = false; message.clear();
+}
 void Auth::login(String email, String cpf, String name) {
-    if (name.trim().isEmpty()) {
+    if (busy) return;
+    if (validatedDeviceName(name).isEmpty()) {
         message = "Informe o nome deste computador.";
         if (changed)
             changed();
         return;
     }
-    deviceName = name.trim().substring(0, 64);
     auto body = object();
     put(body, "email", email.trim());
     put(body, "cpf", cpf);
-    put(body, "device", device());
+    auto details = device(); put(details, "deviceName", validatedDeviceName(name));
+    put(body, "device", details);
     put(body, "hardwareID", hardwareID(installationId));
     begin("login", body);
 }
@@ -337,6 +427,7 @@ void Auth::logout() {
             if (error.isEmpty()) {
                 authorised = false;
                 loginData = var();
+                devices = var();
                 pendingRevocation = false;
                 message.clear();
                 title = "Sem acesso";
@@ -345,6 +436,57 @@ void Auth::logout() {
                 message = error;
             if (changed)
                 changed();
+        });
+    });
+}
+void Auth::refreshDevices() { loadDevices(); }
+void Auth::removeDevice(String installation) {
+    if (installation.equalsIgnoreCase(installationId) && isPlaying && isPlaying()) return;
+    loadDevices(installation);
+}
+void Auth::loadDevices(String removal) {
+    if (busy || !loginData.isObject()) return;
+    busy = true; message.clear();
+    if (changed) changed();
+    auto saved = loginData.clone();
+    auto weak = std::weak_ptr<int>(alive);
+    worker.addJob([this, weak, saved, removal]() mutable {
+        var result; String error;
+        bool removed = false;
+        try {
+            auto session = get(saved, "session");
+            if (Time::fromISO8601(str(session, "expiresAt")) <= Time::getCurrentTime() + RelativeTime::seconds(60)) {
+                auto body = object(); put(body, "refreshToken", str(session, "refreshToken"));
+                session = request("refresh", body); put(saved, "session", session);
+            }
+            if (removal.isNotEmpty()) {
+                auto body = object(); put(body, "refreshToken", str(session, "refreshToken"));
+                put(body, "installationId", removal);
+                request("revoke-device", body); removed = true;
+            }
+            if (!removal.equalsIgnoreCase(installationId))
+                result = request("devices", {}, str(session, "accessToken"));
+        } catch (const std::exception &e) { error = String::fromUTF8(e.what()); }
+        MessageManager::callAsync([this, weak, saved, result, error, removal, removed] {
+            if (weak.expired()) return;
+            busy = false;
+            if (removed && removal.equalsIgnoreCase(installationId)) {
+                authorised = false; pendingRevocation = false;
+                loginData = var(); devices = var(); title = "Sem acesso";
+                dataDirectory().getChildFile("session.dat").deleteFile();
+            } else {
+                loginData = saved;
+                try { persist(); } catch (const std::exception &e) { message = String::fromUTF8(e.what()); }
+                if (result.isArray()) devices = result;
+                else if (removed) {
+                    Array<var> remaining;
+                    for (const auto &device : list(devices))
+                        if (!str(device, "installationId").equalsIgnoreCase(removal)) remaining.add(device);
+                    devices = var(remaining);
+                }
+            }
+            if (error.isNotEmpty()) message = error;
+            if (changed) changed();
         });
     });
 }

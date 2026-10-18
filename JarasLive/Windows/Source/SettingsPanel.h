@@ -2,6 +2,7 @@
 #include "ActionsPage.h"
 #include "Auth.h"
 #include "Lighting.h"
+#include "VST3Catalog.h"
 namespace catlive {
 class SettingsPanel final : public Component, private Timer {
   public:
@@ -48,6 +49,11 @@ class SettingsPanel final : public Component, private Timer {
         for (int i = 0; i < tabs.size(); ++i)
             tabs[i]->setBounds(10, 10 + i * tabStep, 124, tabStep - 6);
         viewport.setBounds(145, 0, getWidth() - 145, getHeight());
+        if (selected == 6) {
+            page.setSize(std::max(360, viewport.getWidth()), contentHeight);
+            layoutAccount();
+            return;
+        }
         int contentWidth = selected == 0 ? 240 : 620;
         if (selected == 0)
             for (auto *field : fields)
@@ -74,21 +80,157 @@ class SettingsPanel final : public Component, private Timer {
     Component page;
     OwnedArray<Component> fields;
     ActionsPage *actionPage = nullptr;
-    SafePointer<TextButton> accountLogin, accountLogout, accountValidate;
+    SafePointer<TextButton> accountLogin, accountLogout;
     SafePointer<Label> accountTitle, accountEmail, accountMessage;
+    OwnedArray<Component> deviceFields;
+    String deviceSnapshot;
+    uint64 pluginRevision = ~uint64(0);
+    std::unique_ptr<FileChooser> pluginFolderChooser;
     void timerCallback() override {
+        if (selected == 5) { updatePlugins(); return; }
         if (selected != 6 || !accountLogin) return;
         accountLogin->setEnabled(!auth.busy && !locked());
         accountLogout->setEnabled(!auth.busy && !locked() && auth.loginData.isObject());
-        accountValidate->setEnabled(!auth.busy && auth.loginData.isObject());
         accountLogout->setButtonText(auth.busy ? String::fromUTF8("Aguarde…") : "Sair e liberar dispositivo");
         accountTitle->setText(auth.title, dontSendNotification);
         accountEmail->setText(str(get(auth.loginData, "account"), "email"), dontSendNotification);
+        accountEmail->setVisible(auth.loginData.isObject() && str(get(auth.loginData, "entitlement"), "planId") != "trial");
         accountMessage->setText(auth.message, dontSendNotification);
+        updateDevices();
     }
     bool locked() const {
         return session.transport().playing || session.transport().subPlay.playing ||
                session.audio.isRecording();
+    }
+    class DeviceAccountCard final : public Component {
+      public:
+        DeviceAccountCard(var value, bool thisComputer, std::function<void()> action)
+            : device(std::move(value)), current(thisComputer), remove(localization::translate("Remover")) {
+            setName(str(device, "deviceName"));
+            addAndMakeVisible(remove);
+            remove.getProperties().set("fontSize", 12.f);
+            remove.getProperties().set("flat", true);
+            remove.setColour(TextButton::buttonColourId, Colours::transparentBlack);
+            remove.setColour(TextButton::textColourOffId, Colour(0xffff6868));
+            remove.onClick = std::move(action);
+        }
+        void paint(Graphics &g) override {
+            g.setColour(theme::panel);
+            g.fillRoundedRectangle(getLocalBounds().toFloat(), 8.f);
+            g.setColour(Colours::white.withMultipliedAlpha(isEnabled() ? 1.f : .35f));
+            const float iconY = (getHeight() - 18.f) / 2.f;
+            const bool desktop = str(device, "platform") == "macOS";
+            g.drawRoundedRectangle(12.f, iconY, 25.f, 16.f, 2.f, 1.5f);
+            if (desktop) {
+                g.drawLine(24.5f, iconY + 16.f, 24.5f, iconY + 21.f, 1.5f);
+                g.drawLine(18.5f, iconY + 21.f, 30.5f, iconY + 21.f, 1.5f);
+            } else {
+                g.drawLine(9.f, iconY + 19.f, 40.f, iconY + 19.f, 1.5f);
+                g.drawLine(9.f, iconY + 19.f, 12.f, iconY + 16.f, 1.5f);
+                g.drawLine(37.f, iconY + 16.f, 40.f, iconY + 19.f, 1.5f);
+            }
+            const int textWidth = std::max(0, remove.getX() - 60);
+            g.setFont(theme::font(13.f, true));
+            g.drawText(str(device, "deviceName"), 49, 11, textWidth, 22, Justification::centredLeft, true);
+            g.setColour(theme::secondary.withMultipliedAlpha(isEnabled() ? 1.f : .35f));
+            g.setFont(theme::font(11.f));
+            g.drawText(str(device, "platform") + (current ? String::fromUTF8(" · ") + localization::translate("Este computador") : String()),
+                       49, 35, textWidth, 17, Justification::centredLeft, true);
+            const auto lastSeen = Time::fromISO8601(str(device, "lastSeenAt"));
+            g.setFont(theme::font(10.f));
+            g.drawText(localization::translate(String::fromUTF8("Último acesso:")) + " " +
+                           (lastSeen.toMilliseconds() > 0 ? lastSeen.formatted("%d/%m/%Y %H:%M") : String::fromUTF8("—")),
+                       49, 55, textWidth, 16, Justification::centredLeft, true);
+        }
+        void resized() override { remove.setBounds(getWidth() - 99, (getHeight() - 28) / 2, 87, 28); }
+      private:
+        var device;
+        bool current;
+        TextButton remove;
+    };
+    void layoutAccount() {
+        if (!accountLogin || !accountTitle || !accountEmail || !accountLogout || !accountMessage) return;
+        const int width = std::max(0, page.getWidth() - 48);
+        accountTitle->setBounds(24, 66, width, 22);
+        accountEmail->setBounds(24, 108, width, 20);
+        accountLogin->setBounds(24, accountEmail->isVisible() ? 148 : 108, 190, 40);
+        accountMessage->setSize(width, accountMessage->getHeight());
+        for (auto *field : deviceFields)
+            if (dynamic_cast<DeviceAccountCard *>(field) || dynamic_cast<Label *>(field))
+                field->setSize(width, field->getHeight());
+    }
+    void updatePlugins() {
+        auto &catalog = VST3Catalog::shared();
+        if (catalog.revision == pluginRevision) return;
+        pluginRevision = catalog.revision; deviceFields.clear();
+        auto addLabel = [this](String value,int y,int height=26) {
+            auto *field=new Label();deviceFields.add(field);page.addAndMakeVisible(field);
+            field->setText(value,dontSendNotification);field->setFont(theme::font(12));field->setBounds(24,y,526,height);
+            field->setColour(Label::textColourId,theme::secondary);
+        };
+        auto addButton = [this](String title,int x,int y,int width,std::function<void()> click) {
+            auto *button=new TextButton(title);deviceFields.add(button);page.addAndMakeVisible(button);
+            button->setBounds(x,y,width,30);button->getProperties().set("flat",true);button->onClick=std::move(click);
+            button->setEnabled(!VST3Catalog::shared().scanning);
+        };
+        addLabel("Caminhos VST3",66);int y=106;
+        for (const auto &path : catalog.paths) {
+            addLabel(path,y,38);
+            addButton("Remover",550,y,86,[path] { VST3Catalog::shared().removePath(path); });y+=50;
+        }
+        addButton("Adicionar caminho",24,y,166,[safe=SafePointer<SettingsPanel>(this)] {
+            if (!safe) return;
+            safe->pluginFolderChooser=std::make_unique<FileChooser>("Adicionar caminho VST3",File("C:\\Program Files\\Common Files\\VST3"));
+            safe->pluginFolderChooser->launchAsync(FileBrowserComponent::openMode|FileBrowserComponent::canSelectDirectories,
+                [safe](const FileChooser &chooser) {
+                    if(safe && chooser.getResult().isDirectory()) VST3Catalog::shared().addPath(chooser.getResult());
+                });
+        });
+        addButton("Escanear plugins",204,y,160,[] { VST3Catalog::shared().scan(); });y+=44;
+        addLabel(catalog.status,y,64);y+=72;
+        for(const auto &plugin:catalog.plugins){addLabel(str(plugin,"name")+" · "+str(plugin,"vendor"),y);y+=30;}
+        contentHeight=y+36;localization::panel(page);resized();
+    }
+    void updateDevices() {
+        const auto snapshot = JSON::toString(auth.devices) + JSON::toString(get(auth.loginData, "entitlement")) +
+                              String((int)auth.busy) + String((int)locked()) + String((int)accountEmail->isVisible()) + auth.message;
+        if (snapshot == deviceSnapshot) return;
+        deviceSnapshot = snapshot;
+        deviceFields.clear();
+        Array<var> active;
+        for (const auto &device : list(auth.devices))
+            if (str(device, "status") == "active") active.add(device);
+        auto *count = new Label(); deviceFields.add(count); page.addAndMakeVisible(count);
+        count->setText(String(active.size()) + " / " + String((int)get(get(auth.loginData, "entitlement"), "maxDevices", 4)) + " dispositivos", dontSendNotification);
+        count->setFont(theme::font(11.f));
+        count->setColour(Label::textColourId, theme::secondary);
+        const int countTop = accountEmail->isVisible() ? 208 : 168;
+        count->setBounds(24, countTop, 480, 16);
+        int y = countTop + 36;
+        for (const auto &device : active) {
+            const auto installation = str(device, "installationId");
+            const bool current = installation.equalsIgnoreCase(auth.installationId);
+            auto *card = new DeviceAccountCard(device, current, [safe = SafePointer<SettingsPanel>(this), installation, current, name = str(device, "deviceName")] {
+                if (!safe) return;
+                AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon, "Remover dispositivo?", current
+                    ? String::fromUTF8("Você sairá da conta neste computador e a licença ficará disponível.")
+                    : "Remover " + name + " e liberar sua licença para outro computador?", "Remover", "Cancelar",
+                    safe.getComponent(), ModalCallbackFunction::create([safe, installation](int accepted) { if (safe && accepted) safe->auth.removeDevice(installation); }));
+            });
+            deviceFields.add(card); page.addAndMakeVisible(card);
+            card->setBounds(24, y, 580, 86);
+            card->setEnabled(!auth.busy && (!current || !locked()));
+            y += 106;
+        }
+        auto *refresh = new TextButton("Atualizar dispositivos"); deviceFields.add(refresh); page.addAndMakeVisible(refresh);
+        refresh->setBounds(24, y, 184, 26); refresh->getProperties().set("flat", true);
+        refresh->getProperties().set("fontSize", 12.f);
+        refresh->setEnabled(!auth.busy && auth.loginData.isObject());
+        refresh->onClick = [this] { auth.refreshDevices(); };
+        accountLogout->setBounds(24, y + 46, 232, 40);
+        accountMessage->setBounds(24, y + 106, 580, auth.message.isEmpty() ? 0 : 64);
+        contentHeight = y + (auth.message.isEmpty() ? 110 : 194);
+        localization::panel(page); resized();
     }
     Label &label(String title, int y, int height = 26, bool bold = false,
                  Colour colour = Colours::white) {
@@ -155,7 +297,9 @@ class SettingsPanel final : public Component, private Timer {
         selected = index;
         localization::english = preferences.value("jaras.language", "pt-BR").toString() == "en";
         actionPage = nullptr;
+        deviceFields.clear(); deviceSnapshot.clear();
         fields.clear();
+        viewport.setScrollBarsShown(index != 6, index != 6, index == 6, false);
         contentHeight = std::max(450, getHeight());
         for (int i = 0; i < tabs.size(); ++i)
             tabs[i]->setToggleState(i == index, dontSendNotification);
@@ -206,32 +350,33 @@ class SettingsPanel final : public Component, private Timer {
             page.addAndMakeVisible(actionPage);
             contentHeight = std::max(450, getHeight());
         } else if (index == 5) {
-            label("Plugins VST3", 66, 26, true);
-            label(String::fromUTF8("Pasta de plugins"), 112);
-            const auto folder = File::getSpecialLocation(File::commonApplicationDataDirectory)
-                                    .getParentDirectory()
-                                    .getChildFile("Program Files/Common Files/VST3");
-            label(folder.getFullPathName(), 148, 26, false, theme::secondary);
-            button("Abrir pasta", 24, 196, 140, [folder] { folder.revealToUser(); });
-            label(String::fromUTF8(
-                      "O carregamento de VST3 externo ainda não está disponível neste build."),
-                  252, 56, false, theme::yellow);
+            pluginRevision = ~uint64(0); updatePlugins();
         } else {
             accountTitle = &label(auth.title, 66, 26, true);
+            accountTitle->setFont(theme::font(13.f, true));
             accountEmail = &label(str(get(auth.loginData, "account"), "email"), 104, 26, false, theme::secondary);
             auto &signin = button("Login / Trocar conta", 24, 146, 190, login);
             accountLogin = &signin;
+            signin.getProperties().set("fontSize", 13.f);
+            signin.getProperties().set("cornerRadius", 6.f);
+            signin.getProperties().set("flat", false);
+            signin.getProperties().set("borderAlpha", .12f);
+            signin.setColour(TextButton::buttonColourId, theme::panel.withAlpha(.45f));
             signin.setComponentID("settingsLogin");
             signin.setEnabled(!auth.busy && !locked());
-            label("Dispositivo: " + auth.deviceName, 194);
-            accountValidate = &button("Validar agora", 24, 242, 150, [this] { auth.validate(); });
             auto &logout =
                 button("Sair e liberar dispositivo", 24, 304, 210, [this] { auth.logout(); });
             accountLogout = &logout; logout.setComponentID("settingsLogout");
-            logout.setColour(TextButton::buttonColourId, Colour(0xff8d3033));
+            logout.getProperties().set("fontSize", 13.f);
+            logout.getProperties().set("cornerRadius", 6.f);
+            logout.getProperties().set("flat", false);
+            logout.getProperties().set("borderAlpha", .25f);
+            logout.setColour(TextButton::buttonColourId, Colours::red.withAlpha(.45f));
             logout.setEnabled(!auth.busy && !locked());
             accountMessage = &label(auth.message, 354, 80, false, theme::yellow);
+            accountMessage->setFont(theme::font(11.f));
             timerCallback();
+            auth.refreshDevices();
         }
         viewport.setViewPosition(0, 0);
         localization::panel(*this);
@@ -343,13 +488,6 @@ class SettingsPanel final : public Component, private Timer {
         label(String::fromUTF8("Buffers menores reduzem a latência e usam mais CPU."), 534, 26,
               false, theme::secondary);
         button("Atualizar dispositivos", 24, 574, 190, [this] { refreshLater(); });
-        button(String::fromUTF8("Canais de entrada e saída"), 230, 574, 230, [this] {
-            auto selector = std::make_unique<AudioDeviceSelectorComponent>(
-                session.audio.devices, 0, 32, 0, 32, false, false, true, false);
-            selector->setSize(600, 420);
-            CallOutBox::launchAsynchronously(
-                std::move(selector), getScreenBounds().withSizeKeepingCentre(50, 20), nullptr);
-        }).setEnabled(!locked());
         contentHeight = 740;
     }
     void midiPage() {

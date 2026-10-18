@@ -144,7 +144,7 @@ struct FXInsertEditor: View {
                                     }
                                     for (target, settings, _) in prepared { show.previewFX(target, settings: settings) }
                                     show.commitFX()
-                                    if let first = prepared.first { finishInsertion(first.2, track: first.0) }
+                                    if let own = prepared.first(where: { $0.0 == track }) ?? prepared.first { finishInsertion(own.2, track: own.0) }
                                 } catch {
                                     for target in targets {
                                         StemAudioPlayback.shared.effects(for: target)?.apply(show.fxSettings(target))

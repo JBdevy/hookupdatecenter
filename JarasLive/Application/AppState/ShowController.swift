@@ -2108,6 +2108,46 @@ public struct ShowTimelinePresentationState: Equatable {
         value.inserted.insert(effect, at: index)
         previewFX(track, settings: value); commitFX(); onProjectEdited()
     }
+    /// A mixer slot drag copies a processor, including its live editor state.
+    /// Capture before the history boundary so undo never restores a stale preset.
+    @discardableResult public func copyFX(from source: UUID?, effect: String, to destination: UUID?, before target: String?) -> String? {
+        guard canExecute(), !finishing,
+              source == nil || current?.tracks.contains(where: { $0.id == source && $0.kind == .standard }) == true,
+              destination == nil || current?.tracks.contains(where: { $0.id == destination && $0.kind == .standard }) == true,
+              fxSettings(source).inserted.contains(effect),
+              target == nil || fxSettings(destination).inserted.contains(target!) else { return nil }
+        commitFX()
+        do {
+            try prepareForFXChange(source, nil, [effect])
+            try prepareForFXChange(destination, nil, fxSettings(destination).inserted)
+            let original = fxSettings(source)
+            var result = fxSettings(destination)
+            let key: String
+            if var plugin = original.externalPlugins?.first(where: { $0.effectKey == effect }) {
+                plugin.id = UUID().uuidString
+                result.externalPlugins = (result.externalPlugins ?? []) + [plugin]
+                key = plugin.effectKey
+            } else {
+                let kind = original.kind(of: effect)
+                guard destination != nil || kind != "Instruments" else { return nil }
+                var parameters = NativeFXSettings().merging(effect: kind, from: original.settings(for: effect))
+                parameters.inserted = [kind]
+                parameters.setEnabled(kind, enabled: original.isEnabled(effect))
+                if kind == NativeFXSettings.stemSeparator {
+                    guard !result.inserted.contains(kind) else { throw ProjectError.invalid("This track already has CatStemSeparation 5") }
+                    result = result.merging(effect: kind, from: parameters); key = kind
+                } else {
+                    let instance = NativeFXInstance(kind: kind, settings: parameters)
+                    result.instances = (result.instances ?? []) + [instance]; key = instance.effectKey
+                }
+            }
+            let index = target.flatMap { result.inserted.firstIndex(of: $0) } ?? result.inserted.count
+            result.inserted.insert(key, at: index)
+            try result.validate()
+            previewFX(destination, settings: result); commitFX(); onProjectEdited()
+            return fxSettings(destination).inserted.contains(key) ? key : nil
+        } catch { message = error.localizedDescription; return nil }
+    }
     public func updateFX(_ track: UUID?, effect: String, settings: NativeFXSettings) {
         let current = fxSettings(track)
         guard current.inserted.contains(effect) else { return }

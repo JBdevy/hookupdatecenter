@@ -1,0 +1,144 @@
+#pragma once
+// Native Windows controls. No JUCE drawing, widgets or mouse dispatch in here.
+#include <windows.h>
+#include <windowsx.h>
+#include <commctrl.h>
+#include <d2d1.h>
+#include <dwrite_3.h>
+#include <wrl/client.h>
+#include <algorithm>
+#include <functional>
+#include <memory>
+#include <string>
+#include <stdexcept>
+#include <vector>
+namespace catlive::native {
+class TransportButtons final {
+    template<class T> using Ptr = Microsoft::WRL::ComPtr<T>;
+  public:
+    struct State {
+        RECT rect{};
+        float scale = 1, dimming = 0, fontSize = 9;
+        bool active = false, enabled = true, visible = true, blocked = false;
+        unsigned background = 0xff252525, foreground = 0xffffffff, activeBackground = 0xff6cbd4b;
+        unsigned accent = 0;
+        std::wstring text, icon, tooltip;
+        bool operator==(const State &b) const {
+            return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
+        }
+    };
+    using Click = std::function<void(bool)>;
+    explicit TransportButtons(const std::wstring &fontFile) {
+        check(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, factory.GetAddressOf()));
+        check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory3),reinterpret_cast<IUnknown**>(write.GetAddressOf())));
+        Ptr<IDWriteFontFaceReference> face;
+        Ptr<IDWriteFontSetBuilder> builder;
+        Ptr<IDWriteFontSet> set;
+        check(write->CreateFontFaceReference(fontFile.c_str(),nullptr,0,DWRITE_FONT_SIMULATIONS_NONE,&face));
+        check(write->CreateFontSetBuilder(&builder)); check(builder->AddFontFaceReference(face.Get()));
+        check(builder->CreateFontSet(&set)); check(write->CreateFontCollectionFromFontSet(set.Get(),&fonts));
+        // Use the same Inter SemiBold em size supplied by the Setlist button.
+        check(write->CreateTextFormat(L"Inter",fonts.Get(),DWRITE_FONT_WEIGHT_SEMI_BOLD,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,9.f,L"pt-BR",&format));
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+    ~TransportButtons() { buttons.clear(); }
+    void update(size_t index, HWND parent, const State &state, Click click) {
+        while(buttons.size()<=index) buttons.push_back(std::make_unique<Button>(*this));
+        auto &button=*buttons[index]; button.click=std::move(click);
+        if(button.window && (!IsWindow(button.window)||GetParent(button.window)!=parent)) button.destroy();
+        if(!button.window && parent) {
+            static const bool registered=[] { WNDCLASSW c{};c.lpfnWndProc=proc;c.hInstance=GetModuleHandleW(nullptr);c.lpszClassName=L"CatLiveTransportButton";c.hCursor=LoadCursorW(nullptr,MAKEINTRESOURCEW(32512));return RegisterClassW(&c)!=0||GetLastError()==ERROR_CLASS_ALREADY_EXISTS;}();
+            if(!registered) throw std::runtime_error("Não foi possível registrar os controles do transporte.");
+            button.window=CreateWindowExW(0,L"CatLiveTransportButton",L"",WS_CHILD|WS_CLIPSIBLINGS,0,0,1,1,parent,nullptr,GetModuleHandleW(nullptr),&button);
+            if(!button.window) throw std::runtime_error("Não foi possível criar os controles do transporte.");
+            button.tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,button.window,nullptr,GetModuleHandleW(nullptr),nullptr);
+            TOOLINFOW info{};info.cbSize=sizeof(info);info.hwnd=button.window;info.uId=(UINT_PTR)button.window;info.uFlags=TTF_IDISHWND|TTF_SUBCLASS;info.lpszText=const_cast<wchar_t*>(button.state.tooltip.c_str());
+            if(button.tooltip)SendMessageW(button.tooltip,TTM_ADDTOOLW,0,(LPARAM)&info);
+        }
+        if(!button.window) return;
+        if(!(button.state==state)) {
+            const bool resize=!EqualRect(&button.state.rect,&state.rect);
+            button.state=state;
+            if(resize) {
+                SetWindowPos(button.window,HWND_TOP,state.rect.left,state.rect.top,state.rect.right-state.rect.left,state.rect.bottom-state.rect.top,SWP_NOACTIVATE);
+                button.target.Reset();
+            }
+            ShowWindow(button.window,state.visible?SW_SHOWNOACTIVATE:SW_HIDE);
+            EnableWindow(button.window,state.enabled && !state.blocked);
+            SetWindowTextW(button.window,state.tooltip.c_str());
+            TOOLINFOW info{};info.cbSize=sizeof(info);info.hwnd=button.window;info.uId=(UINT_PTR)button.window;info.lpszText=const_cast<wchar_t*>(button.state.tooltip.c_str());
+            if(button.tooltip)SendMessageW(button.tooltip,TTM_UPDATETIPTEXTW,0,(LPARAM)&info);
+            InvalidateRect(button.window,nullptr,FALSE);
+        }
+    }
+    void hide() { for(auto &b:buttons) { if(b->window) ShowWindow(b->window,SW_HIDE);if(b->tooltip)SendMessageW(b->tooltip,TTM_POP,0,0);b->state.visible=false; } }
+  private:
+    static void check(HRESULT result) { if(FAILED(result)) throw std::runtime_error("Não foi possível inicializar o desenho nativo do transporte."); }
+    struct Button {
+        explicit Button(TransportButtons &v):owner(v){}
+        ~Button(){destroy();}
+        void destroy(){target.Reset();if(tooltip&&IsWindow(tooltip))DestroyWindow(tooltip);tooltip=nullptr;if(window&&IsWindow(window))DestroyWindow(window);window=nullptr;}
+        TransportButtons &owner; HWND window=nullptr,tooltip=nullptr; State state; Click click;
+        bool pressed=false,hover=false; Ptr<ID2D1HwndRenderTarget> target;
+    };
+    Ptr<ID2D1Factory> factory;
+    Ptr<IDWriteFactory3> write;
+    Ptr<IDWriteFontCollection1> fonts;
+    Ptr<IDWriteTextFormat> format;
+    std::vector<std::unique_ptr<Button>> buttons;
+    static LRESULT CALLBACK proc(HWND h,UINT m,WPARAM w,LPARAM l) {
+        auto *b=reinterpret_cast<Button*>(GetWindowLongPtrW(h,GWLP_USERDATA));
+        if(m==WM_NCCREATE){b=static_cast<Button*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);b->window=h;SetWindowLongPtrW(h,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(b));}
+        if(!b)return DefWindowProcW(h,m,w,l);
+        switch(m){
+        case WM_ERASEBKGND:return 1;
+        case WM_PAINT:{PAINTSTRUCT ps{};BeginPaint(h,&ps);b->owner.paint(*b);EndPaint(h,&ps);return 0;}
+        case WM_MOUSEMOVE:if(!b->hover){b->hover=true;TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,h,0};TrackMouseEvent(&t);InvalidateRect(h,nullptr,FALSE);}return 0;
+        case WM_MOUSELEAVE:b->hover=false;InvalidateRect(h,nullptr,FALSE);return 0;
+        case WM_LBUTTONDOWN:if(b->state.enabled&&!b->state.blocked){SetFocus(GetParent(h));b->pressed=true;SetCapture(h);InvalidateRect(h,nullptr,FALSE);}return 0;
+        case WM_LBUTTONUP:{const bool was=b->pressed;b->pressed=false;if(GetCapture()==h)ReleaseCapture();InvalidateRect(h,nullptr,FALSE);RECT r{};GetClientRect(h,&r);POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};auto action=b->click;if(was&&PtInRect(&r,p)&&action&&b->state.enabled&&!b->state.blocked)action(false);return 0;}
+        case WM_CAPTURECHANGED:b->pressed=false;InvalidateRect(h,nullptr,FALSE);return 0;
+        case WM_RBUTTONUP:{auto action=b->click;if(action&&b->state.enabled&&!b->state.blocked)action(true);return 0;}
+        case WM_NCDESTROY:SetWindowLongPtrW(h,GWLP_USERDATA,0);b->window=nullptr;return DefWindowProcW(h,m,w,l);
+        default:return DefWindowProcW(h,m,w,l);
+        }
+    }
+    static D2D1_COLOR_F colour(unsigned argb) { return D2D1::ColorF(((argb>>16)&255)/255.f,((argb>>8)&255)/255.f,(argb&255)/255.f,((argb>>24)&255)/255.f); }
+    void paint(Button &b) {
+        RECT r{};GetClientRect(b.window,&r);
+        const auto &s=b.state;const float scale=std::max(.1f,s.scale);
+        if(!b.target) {
+            auto properties=D2D1::RenderTargetProperties();properties.dpiX=properties.dpiY=96.f*scale;
+            if(FAILED(factory->CreateHwndRenderTarget(properties,D2D1::HwndRenderTargetProperties(b.window,D2D1::SizeU(r.right,r.bottom)),&b.target)))return;
+        }
+        auto *t=b.target.Get();t->SetDpi(96.f*scale,96.f*scale);t->BeginDraw();t->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);t->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+        t->Clear(colour(0xff252525));
+        const float width=r.right/scale,height=r.bottom/scale;
+        auto bg=colour(s.active?s.activeBackground:s.background);
+        if(s.accent){bg=colour(s.accent);bg.a=s.active?1.f:b.pressed?.7f:.45f;}
+        if(!s.enabled&&!s.accent)bg.a*=.35f;
+        Ptr<ID2D1SolidColorBrush> brush;t->CreateSolidColorBrush(bg,&brush);if(!brush){t->EndDraw();return;}
+        const auto bounds=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,width-.5f,height-.5f),6,6);
+        t->FillRoundedRectangle(bounds,brush.Get());
+        brush->SetColor(s.accent&&s.active?colour(s.accent):D2D1::ColorF(1,1,1,.45f));t->DrawRoundedRectangle(bounds,brush.Get(),.8f);
+        auto fg=colour(s.foreground);if(!s.enabled&&!s.accent)fg.a*=.35f;brush->SetColor(fg);
+        const bool text=!s.text.empty();float iconSize=12.f,textWidth=0;
+        Ptr<IDWriteTextLayout> layout;
+        if(text){write->CreateTextLayout(s.text.c_str(),(UINT32)s.text.size(),format.Get(),std::max(1.f,width-18.f),height,&layout);if(layout){layout->SetFontSize(s.fontSize,DWRITE_TEXT_RANGE{0,(UINT32)s.text.size()});DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);textWidth=metrics.width;}}
+        const float x=text?(width-iconSize-3-textWidth)*.5f:(width-iconSize)*.5f,y=(height-iconSize)*.5f;
+        auto rect=[&](float a,float c,float d,float e){t->FillRectangle(D2D1::RectF(x+a,y+c,x+d,y+e),brush.Get());};
+        auto line=[&](float a,float c,float d,float e){t->DrawLine(D2D1::Point2F(x+a,y+c),D2D1::Point2F(x+d,y+e),brush.Get(),1.1f);};
+        if(s.icon==L"play"){
+            Ptr<ID2D1PathGeometry> path;factory->CreatePathGeometry(&path);Ptr<ID2D1GeometrySink> sink;if(path&&SUCCEEDED(path->Open(&sink))){sink->BeginFigure(D2D1::Point2F(x+2,y+1),D2D1_FIGURE_BEGIN_FILLED);sink->AddLine(D2D1::Point2F(x+11,y+6));sink->AddLine(D2D1::Point2F(x+2,y+11));sink->EndFigure(D2D1_FIGURE_END_CLOSED);sink->Close();t->FillGeometry(path.Get(),brush.Get());}
+        }else if(s.icon==L"pause"){rect(2,1,4.5f,11);rect(7.5f,1,10,11);}
+        else if(s.icon==L"stopall")rect(1.5f,1.5f,10.5f,10.5f);
+        else if(s.icon==L"record")t->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x+6,y+6),4,4),brush.Get(),1.2f);
+        else if(s.icon==L"loop"){line(1,3,10,3);line(10,3,10,7);line(8,1,10,3);line(8,5,10,3);line(11,9,2,9);line(2,9,2,5);line(4,7,2,9);line(4,11,2,9);}
+        else if(s.icon==L"metronome"){line(3,1,0,11);line(0,11,11,11);line(11,11,8,1);line(8,1,3,1);line(6,9,2,3);line(2,3,0,3);}
+        if(layout)t->DrawTextLayout(D2D1::Point2F(x+iconSize+3,0),layout.Get(),brush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        if(s.dimming>0){brush->SetColor(D2D1::ColorF(0,0,0,s.dimming));t->FillRectangle(D2D1::RectF(0,0,width,height),brush.Get());}
+        if(t->EndDraw()==D2DERR_RECREATE_TARGET)b.target.Reset();
+    }
+};
+}

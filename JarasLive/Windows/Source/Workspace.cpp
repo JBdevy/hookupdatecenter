@@ -20,6 +20,7 @@
 #include "EnvelopeLane.h"
 #include "MetronomePanel.h"
 #include "EffectsPanel.h"
+#include "FloatingShortcuts.h"
 #include "FXChain.h"
 #include "PlaylistEditor.h"
 #include "SetlistShareText.h"
@@ -29,6 +30,7 @@
 #include "ClickSoundDesigner.h"
 #include "CreateTrackPanel.h"
 #include "MediaDropPanel.h"
+#include "GridMediaClipboard.h"
 #include "ExportPanel.h"
 #include "ModalSheet.h"
 #include "ResolumePanel.h"
@@ -47,11 +49,13 @@
 #include "MultiLoopsPanel.h"
 #include "CloseProjectSheet.h"
 #include "RecordingProjectStep.h"
+#include "RecordingOptionsPanel.h"
 #include "TransportFadeoutPanel.h"
 #include "TransportFadeoutOverlay.h"
 #include <BinaryData.h>
 #include <fstream>
 #include <windows.h>
+#include "../../WindowsNative/Source/TransportButtons.h"
 namespace catlive {
 void MacLook::fillTextEditorBackground(Graphics &g, int width, int height, TextEditor &editor) {
     g.setColour(editor.findColour(TextEditor::backgroundColourId));
@@ -328,6 +332,23 @@ Slider::SliderLayout MacLook::getSliderLayout(Slider &slider) {
     if (slider.getComponentID().endsWith("Volume"))
         layout.sliderBounds = slider.getLocalBounds().withTrimmedLeft(42).withTrimmedRight(8);
     return layout;
+}
+void MacLook::drawRotarySlider(Graphics &g, int x, int y, int w, int h, float fraction,
+                              float start, float end, Slider &slider) {
+    if (slider.getComponentID() != "mixerPan") {
+        LookAndFeel_V4::drawRotarySlider(g, x, y, w, h, fraction, start, end, slider);
+        return;
+    }
+    const auto bounds = slider.getLocalBounds().toFloat();
+    const auto centre = bounds.getCentre();
+    const float diameter = std::max(1.f, std::min(bounds.getWidth(), bounds.getHeight()) - 6);
+    const auto circle = juce::Rectangle<float>(diameter, diameter).withCentre(centre);
+    g.setColour(Colour::fromFloatRGBA(.18f, .18f, .18f, 1)); g.fillEllipse(circle);
+    g.setColour(Colours::white.withAlpha(.35f)); g.drawEllipse(circle, 1);
+    const float angle = (fraction * 270.f - 225.f) * MathConstants<float>::pi / 180.f;
+    g.setColour(Colour(0xff30d158));
+    g.drawLine(centre.x, centre.y, centre.x + std::cos(angle) * diameter * .4f,
+               centre.y + std::sin(angle) * diameter * .4f, 2);
 }
 void MacLook::drawScrollbar(Graphics &g, ScrollBar &, int x, int y, int w, int h, bool vertical,
                             int start, int size, bool over, bool down) {
@@ -643,7 +664,7 @@ class MAPanel final : public Panel, private TableListBoxModel {
 class LoginPanel final : public Panel {
   public:
     LoginPanel(Auth &a, bool offersTrial = true)
-        : Panel("Bem-vindo ao CatLive", "Use o e-mail e o CPF da sua compra."), auth(a) {
+        : Panel("Bem-vindo ao CatLive", "Use o e-mail e o CPF da sua compra."), auth(a), hasTrialOffer(offersTrial) {
         entering = !offersTrial;
         getProperties().set("selfContainedSheet", true);
         logo = ImageCache::getFromMemory(BinaryData::CatLiveSplash_png,
@@ -665,7 +686,9 @@ class LoginPanel final : public Panel {
             "Entrar", 30, 401, 380,
             [this] {
                 submitted = true;
-                auth.login(email->getText(), cpf->getText(), auth.deviceName);
+                submissionRevision = auth.loginRevision;
+                if (auth.requiresDeviceName) auth.completeDeviceNaming(deviceName->getText());
+                else auth.beginLogin(email->getText(), cpf->getText());
             },
             Colour(0xff32593e));
         stage = &button("Login", 30, 261, 184, [this] {
@@ -679,6 +702,15 @@ class LoginPanel final : public Panel {
                         [this, offersTrial] { if (offersTrial) auth.trial(auth.deviceName); else ModalSheet::dismiss(*this); });
         if (!offersTrial) trial->setButtonText("Fechar");
         manage = &button("Gerenciar dispositivos", 30, 443, 380, [this] { devices(); });
+        deviceName = &editor({}, 30, 325, 380, 30);
+        deviceName->setComponentID("loginDeviceName");
+        deviceName->setTextToShowWhenEmpty("Ex.: PC do palco", theme::secondary);
+        deviceName->setFont(theme::font(13));
+        deviceName->onTextChange = [this] { update(); };
+        deviceName->onReturnKey = [this] { login->triggerClick(); };
+        back = &button("Voltar", 30, 463, 80, [this] {
+            submitted = false; auth.cancelDeviceNaming(); cpf->clear(); update();
+        });
         for (auto *b : {stage, trial, login}) {
             b->getProperties().set("fontSize", 13.f);
             b->setColour(TextButton::buttonColourId, Colour(0xff4b845c));
@@ -701,6 +733,7 @@ class LoginPanel final : public Panel {
         email->onReturnKey = [this] { cpf->grabKeyboardFocus(); };
         update();
     }
+    ~LoginPanel() override { auth.cancelDeviceNaming(); }
     void paint(Graphics &g) override {
         g.setColour(theme::panel);
         g.fillRoundedRectangle(getLocalBounds().toFloat(), 16);
@@ -722,25 +755,53 @@ class LoginPanel final : public Panel {
                 component->setVisible(entering);
         subtitle.setBounds(30, entering ? 523 : 329, getWidth() - 60, 42);
         message.setBounds(30, entering ? 572 : 378, getWidth() - 60, 50);
+        if (auth.requiresDeviceName) {
+            stage->setVisible(false); trial->setVisible(false); email->setVisible(false);
+            cpf->setVisible(false); manage->setVisible(false);
+            title.setText("Nome deste dispositivo", dontSendNotification);
+            subtitle.setText(String::fromUTF8("Escolha um nome para identificar este PC na sua conta e na lista de conexão do iPad ou celular."), dontSendNotification);
+            subtitle.setBounds(30, 255, getWidth() - 60, 52);
+            deviceName->setBounds(30, 325, getWidth() - 60, 30);
+            login->setBounds(30, 383, 180, 42);
+            back->setBounds(222, 383, 80, 42);
+            message.setBounds(30, 443, getWidth() - 60, 76);
+        } else {
+            stage->setVisible(true); trial->setVisible(true);
+            title.setText("Bem-vindo ao CatLive", dontSendNotification);
+            subtitle.setText(hasTrialOffer ? String::fromUTF8("Use o e-mail e o CPF da sua compra.\nO trial começa no primeiro acesso neste dispositivo.") : "Use o e-mail e o CPF da sua compra.", dontSendNotification);
+        }
+        deviceName->setVisible(auth.requiresDeviceName);
+        back->setVisible(auth.requiresDeviceName);
     }
     void update() {
-        if (submitted && !auth.busy && auth.allowed()) { submitted = false; cpf->clear(); ModalSheet::dismiss(*this); }
+        ModalSheet::blockDismiss(*this, auth.busy || auth.requiresDeviceName);
+        const bool namingChanged = naming != auth.requiresDeviceName;
+        naming = auth.requiresDeviceName;
+        if (namingChanged && naming) { cpf->clear(); entering = true; }
+        if (submitted && auth.loginRevision != submissionRevision && !auth.busy && auth.allowed() && !naming) { submitted = false; cpf->clear(); ModalSheet::dismiss(*this); }
         const bool credentials = email->getText().isNotEmpty() && cpf->getText().isNotEmpty();
-        login->setEnabled(!auth.busy && credentials);
+        login->setEnabled(!auth.busy && (naming ? Auth::validatedDeviceName(deviceName->getText()).isNotEmpty() : credentials));
+        back->setEnabled(!auth.busy);
         manage->setEnabled(!auth.busy && credentials);
         trial->setEnabled(!auth.busy);
         stage->setEnabled(!auth.busy);
-        login->setButtonText(auth.busy ? String::fromUTF8("Aguarde…") : "Entrar");
+        login->setButtonText(auth.busy ? String::fromUTF8("Aguarde…") : naming ? "Salvar e continuar" : "Entrar");
         message.setText(auth.busy ? String::fromUTF8("Validando acesso…") : auth.message,
                         dontSendNotification);
+        if (namingChanged) {
+            if (layoutChanged) layoutChanged();
+            resized();
+            if (naming) deviceName->grabKeyboardFocus();
+        }
     }
 
   private:
     Auth &auth;
     Image logo;
-    TextEditor *email = nullptr, *cpf = nullptr;
-    TextButton *login = nullptr, *trial = nullptr, *stage = nullptr, *manage = nullptr;
-    bool entering = false, submitted = false;
+    TextEditor *email = nullptr, *cpf = nullptr, *deviceName = nullptr;
+    TextButton *login = nullptr, *trial = nullptr, *stage = nullptr, *manage = nullptr, *back = nullptr;
+    bool entering = false, submitted = false, naming = false, hasTrialOffer = true;
+    uint64 submissionRevision = 0;
     Label message;
     void devices() {
         auto mail = email->getText(), password = cpf->getText();
@@ -912,46 +973,10 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         record.setComponentID("trackRecord");
         record.setTooltip(String::fromUTF8("Gravação: desligada / armada / automática na pista "
                                            "selecionada. Clique direito: modo e monitoramento."));
-        record.onClick = [this] { w.perform([&] { w.session.cycleRecordArm(id); }); };
-        record.context = [this, weakSelf = SafePointer<TrackRow>(this)](Point<int>) {
-            if (auto *track = this->track()) {
-                PopupMenu menu, mode, format;
-                mode.addItem(1, "Mono", true, track->recordingChannels == 1);
-                mode.addItem(2, String::fromUTF8("Estéreo"), true,
-                             track->recordingChannels.value_or(2) == 2);
-                mode.addItem(3, "MIDI", true, track->recordingChannels == 0);
-                menu.addSubMenu(String::fromUTF8("Modo de gravação"), mode);
-                menu.addItem(4, String::fromUTF8("Monitorar entrada"), true,
-                             track->inputMonitoring.value_or(true));
-                format.addItem(5, "Advanced", true, !track->recordingFormat);
-                format.addItem(6, "WAV 24", true, track->recordingFormat == "wav");
-                format.addItem(7, "WAV 32", true, track->recordingFormat == "wav32");
-                format.addItem(8, "MP3", true, track->recordingFormat == "mp3");
-                menu.addSubMenu("Formato", format);
-                menu.showMenuAsync(
-                    PopupMenu::Options().withTargetComponent(&record),
-                    [safe = weakSelf](int result) {
-                        if (!safe || !result)
-                            return;
-                        safe->w.perform([&] {
-                            safe->w.session.edit([&](jaras::Project &p) {
-                                for (auto &s : p.songs)
-                                    for (auto &t : s.tracks)
-                                        if (t.id == safe->id) {
-                                            if (result <= 3)
-                                                t.recordingChannels = result == 3 ? 0 : result;
-                                            else if (result == 4)
-                                                t.inputMonitoring =
-                                                    !t.inputMonitoring.value_or(true);
-                                            else if (result == 5)
-                                                t.recordingFormat.reset();
-                                            else
-                                                t.recordingFormat = result == 6 ? "wav" : result == 7 ? "wav32" : "mp3";
-                                        }
-                            });
-                        });
-                    });
-            }
+        record.onClick = [this] { w.perform([&] { w.session.cycleRecordArm(id, w.trackSelected(id) ? w.selectedTracks : std::set<ID>{id}); }); };
+        record.context = [this](Point<int>) {
+            RecordingOptionsPanel::show(w.session, id, w.trackSelected(id) ? w.selectedTracks : std::set<ID>{id}, record,
+                [safe = SafePointer<Workspace>(&w)](String message) { if (safe) safe->showError(message); });
         };
         env.setButtonText("Env");
         env.getProperties().set("fontSize", 10);
@@ -984,13 +1009,13 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         }
         phase.setColour(TextButton::buttonOnColourId, theme::yellow);
         mute.onClick = [this] {
-            w.perform([&] { w.session.command(jaras::CommandKind::mute, id); });
+            w.perform([&] { w.session.mixerCommand(jaras::CommandKind::mute, id, w.trackSelected(id) ? w.selectedTracks : std::set<ID>{id}); });
         };
         solo.onClick = [this] {
-            w.perform([&] { w.session.command(jaras::CommandKind::solo, id); });
+            w.perform([&] { w.session.mixerCommand(jaras::CommandKind::solo, id, w.trackSelected(id) ? w.selectedTracks : std::set<ID>{id}); });
         };
         phase.onClick = [this] {
-            w.perform([&] { w.session.command(jaras::CommandKind::phase, id); });
+            w.perform([&] { w.session.mixerCommand(jaras::CommandKind::phase, id, w.trackSelected(id) ? w.selectedTracks : std::set<ID>{id}); });
         };
         fx.onClick = [this] { w.openFX(id); };
         fxchain::bind(fx, w.session, id, [this](bool remove) { w.changeMixerFX(id, remove); });
@@ -1015,11 +1040,13 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         volume.setTextBoxStyle(Slider::NoTextBox, false, 0, 0);
         volume.setDoubleClickReturnValue(true, 1);
         volume.setTooltip(String::fromUTF8("Volume · duplo clique = 0 dB"));
+        volume.onDragStart = [this] { w.session.beginMixerGesture(jaras::CommandKind::volume, id); };
+        volume.onDragEnd = [this] { w.session.endMixerGesture(); };
         volume.onValueChange = [this] {
             if (updating)
                 return;
             w.perform(
-                [&] { w.session.command(jaras::CommandKind::volume, id, volume.getValue()); });
+                [&] { w.session.mixerCommand(jaras::CommandKind::volume, id, w.trackSelected(id) ? w.selectedTracks : std::set<ID>{id}, volume.getValue()); });
         };
         addAndMakeVisible(pan);
         pan.setComponentID("trackPan");
@@ -1029,10 +1056,12 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         pan.setDoubleClickReturnValue(true, 0);
         pan.setTooltip(String::fromUTF8("Pan · duplo clique = centro"));
         pan.setColour(Slider::trackColourId, theme::secondary);
+        pan.onDragStart = [this] { w.session.beginMixerGesture(jaras::CommandKind::pan, id); };
+        pan.onDragEnd = [this] { w.session.endMixerGesture(); };
         pan.onValueChange = [this] {
             if (updating)
                 return;
-            w.perform([&] { w.session.command(jaras::CommandKind::pan, id, pan.getValue()); });
+            w.perform([&] { w.session.mixerCommand(jaras::CommandKind::pan, id, w.trackSelected(id) ? w.selectedTracks : std::set<ID>{id}, pan.getValue()); });
         };
         special=std::make_unique<SpecialTrackControls>(w.session,id,[this](ID target,String action){w.specialTrackAction(target,action);});addAndMakeVisible(*special);
         setRepaintsOnMouseActivity(true);
@@ -1180,7 +1209,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         if(solo.isVisible())place(solo,22);if(mute.isVisible())place(mute,22);
         if(special){special->setVisible(!standard);special->setBounds(std::max(22,x-(t&&t->role.id=="timecode"?116:108)),y,t&&t->role.id=="timecode"?116:108,textTrack?48:h);}
         pan.setVisible(expanded&&standard);
-        if (expanded&&standard) place(pan, 42);
+        if (expanded&&standard) place(pan, jlimit(42, 60, getWidth() - 221));
         if(standard){place(record,22);place(fx,22);place(env,28);place(output,34);}
         folder.setBounds(output.getX() - 31, y + (h - 20) / 2, 28, 20);
         folder.setVisible(expanded && isFolder());
@@ -1354,7 +1383,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             horizontal.setCurrentRangeStart(std::max(0.0, cursor - rightLimit), sendNotificationSync);
     }
     void followPlayback() {
-        const auto &state = w.session.transport();
+        const auto state = w.session.presentationTransport();
         if (!w.appearance.continuousScroll() || !(state.playing || state.subPlay.playing)) { followPolicy.reset(); return; }
         if (gestureMode != 0 || Component::isMouseButtonDownAnywhere() || Component::getNumCurrentlyModalComponents() != 0) return;
         const double position = state.subPlay.playing ? state.subPlay.position : state.position;
@@ -1365,7 +1394,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         if(next)horizontal.setCurrentRangeStart(*next,sendNotificationSync);
     }
     void animate() {
-        const auto &state = w.session.transport();
+        const auto state = w.session.presentationTransport();
         int a = (int)std::floor(xAt(state.position)),
             b = (int)std::floor(xAt(state.subPlay.position));
         if (state.loop.enabled != lastLoop) {
@@ -1593,7 +1622,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             auto *song = t.w.session.song();
             if (!song)
                 return;
-            auto bounds = getLocalBounds();
             const auto viewStart = t.timeAt(0), viewEnd = t.timeAt((float)getWidth());
             g.setColour(theme::panel);
             g.fillRect(0, 0, getWidth(), ruler);
@@ -1606,7 +1634,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 g.setColour(theme::green.withAlpha(.65f));
                 g.fillRect(x, 48.f, pixel, tick.primary ? 5.f : 3.f);
                 if (tick.label.isNotEmpty()) {
-                    g.setFont(Font(FontOptions(Font::getDefaultMonospacedFontName(), 9.f, Font::plain)));
+                    g.setFont(theme::mediumFont(9));
+                    g.setColour(Colour(0xff54ff93));
                     g.drawText(tick.label, (int)x + 3, 48, 124, 16, Justification::centredLeft);
                 }
             }
@@ -1614,9 +1643,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 (!song->timeSettings || song->timeSettings->divisions != 0);
             const auto drawGrid = [&](float top, float bottom) {
                 if (!showGrid || bottom <= top) return;
+                const auto primary = t.w.appearance.colour("jaras.timeline.primaryGrid", 0x535250);
+                const auto secondary = t.w.appearance.colour("jaras.timeline.secondaryGrid", 0x333235).withAlpha(.85f);
                 for (const auto &tick : grid) {
-                    g.setColour(tick.primary ? t.w.appearance.colour("jaras.timeline.primaryGrid", 0x535250)
-                        : t.w.appearance.colour("jaras.timeline.secondaryGrid", 0x333235).withAlpha(.85f));
+                    g.setColour(tick.primary ? primary : secondary);
                     g.fillRect(lineX(tick.time), top, pixel, bottom - top);
                 }
             };
@@ -1663,15 +1693,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     continue;
                 const auto &track = song->tracks[row];
                 const bool trackMuted=trackTree::silenced(*song,track);
-                auto background = t.w.appearance.colour("jaras.timeline.background", 0x1e1e1e);
+                const auto background = t.w.trackSelected(track.id) ? theme::panel
+                    : t.w.appearance.colour("jaras.timeline.background", 0x1e1e1e);
                 g.setColour(background);
                 g.fillRect(0, y, getWidth(), height);
-                if (t.w.trackSelected(track.id)) {
-                    g.setColour(theme::trackSurface(theme::track(track), true, false).withAlpha(.12f));
-                    g.fillRect(0, y, getWidth(), height);
-                    g.setColour(Colours::white.withAlpha(.025f));
-                    g.fillRect(0, y, getWidth(), height);
-                }
                 g.setColour(theme::line.withAlpha(.8f));
                 g.drawHorizontalLine(y + height - 1, 0, (float)getWidth());
                 drawGrid((float)y, (float)(y + height));
@@ -1832,16 +1857,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 } else g.fillRect(x, top, pixel, getHeight()-top);
             }
             stage();
-            if (song->tracks.empty()) {
-                g.setColour(theme::secondary);
-                g.setFont(theme::font(15));
-                g.drawText(String::fromUTF8("Arraste seus multitracks para cá"),
-                           bounds.withTrimmedTop(ruler), Justification::centred);
-                g.setFont(theme::font(11));
-                g.drawText(
-                    String::fromUTF8("WAV · AIFF · FLAC · MP3 · OGG   /   Ctrl+I para importar"),
-                    bounds.withTrimmedTop(ruler + 58), Justification::centred);
-            }
         }
         void paintOverChildren(Graphics &g) override {
             if (!dragClip.empty() && !timelineGrid::movementLocked(t.w.session.project())) {
@@ -1908,14 +1923,24 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             resizeEdge = 0;
             controlClip.reset(); controlKind=ItemHeader::none;
             t.w.grabKeyboardFocus();
+            // Match NativeTimelineNeedlesView.target(at:) on macOS, including
+            // the tip that extends just below the ruler into the first row.
+            const bool editHeadHit = e.y >= ruler - 16 && e.y <= ruler + 6 &&
+                std::abs(e.position.x - t.xAt(t.w.session.transport().editPosition)) <= 14.f;
+            if (editHeadHit && e.mods.isPopupMenu()) {
+                PopupMenu menu;menu.addItem(1,"Criar marcador");menu.addItem(2,"Criar marcador de tempo");
+                menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({e.getScreenX(),e.getScreenY(),1,1}),[safe=SafePointer<Canvas>(this)](int choice){
+                    if(!safe)return;const auto time=safe->t.w.session.transport().editPosition;
+                    if(choice==1)safe->t.w.editMarker({},time);if(choice==2)safe->t.w.editTempoMarker({},time);
+                });return;
+            }
+            if (editHeadHit && e.mods.isLeftButtonDown() && !e.mods.isAltDown()) {
+                mainDrag = true;
+                subDrag = false;
+                t.w.perform([&] { t.w.session.command(jaras::CommandKind::editSeek, {}, pointerPosition(startTime, e.mods, false)); });
+                return;
+            }
             if (e.y >= 16 && e.y < ruler) {
-                if(e.mods.isPopupMenu() && e.y>=46 && e.y<=56 && std::abs(e.position.x-t.xAt(t.w.session.transport().editPosition))<=6) {
-                    PopupMenu menu;menu.addItem(1,"Criar marcador");menu.addItem(2,"Criar marcador de tempo");
-                    menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({e.getScreenX(),e.getScreenY(),1,1}),[safe=SafePointer<Canvas>(this)](int choice){
-                        if(!safe)return;const auto time=safe->t.w.session.transport().editPosition;
-                        if(choice==1)safe->t.w.editMarker({},time);if(choice==2)safe->t.w.editTempoMarker({},time);
-                    });return;
-                }
                 if (e.y>=48 && (e.mods.isPopupMenu() || timeRangeEdge(e.position.x))) {
                     timeRangeGesture=true;timeRangeDragged=false;timeRangeRight=e.mods.isPopupMenu();
                     timeRangeResize=timeRangeEdge(e.position.x);
@@ -2348,28 +2373,33 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
       public:
         explicit Heads(Timeline &timeline) : t(timeline) {}
         void paint(Graphics &g) override {
-            const auto &state = t.w.session.transport();
-            auto head = [&](double position, Colour colour, int y) {
+            const auto state = t.w.session.presentationTransport();
+            auto head = [&](double position, Colour colour, bool playback) {
                 float x = t.xAt(position);
                 if (x < 0 || x > getWidth())
                     return;
+                // Current Mac native geometry: the edit tip crosses the ruler
+                // by one point; playback's head begins at the track boundary.
+                const float top = playback ? (float)ruler : ruler - 11.f;
+                const float tip = playback ? ruler + 9.f : ruler + 1.f;
+                const float lineStart = playback ? (float)ruler : tip;
                 g.setColour(colour.withMultipliedAlpha(.12f));
-                g.fillRect(x - 3, y + 9.f, 6.f, std::max(0.f, getHeight() - y - 9.f));
+                g.fillRect(x - 3, lineStart, 6.f, std::max(0.f, getHeight() - lineStart));
                 g.setColour(colour);
-                g.fillRect(x - .7f, y + 9.f, 1.4f, std::max(0.f, getHeight() - y - 9.f));
+                g.fillRect(x - .75f, lineStart, 1.5f, std::max(0.f, getHeight() - lineStart));
                 Path p;
-                p.addTriangle(x - 5, (float)y, x + 5, (float)y, x, y + 9.f);
+                p.addTriangle(x - 7, top, x + 7, top, x, tip);
                 g.fillPath(p);
             };
             head(state.editPosition, t.w.appearance.colour("jaras.timeline.editCursor", 0xb9e229),
-                 46);
+                 false);
             if (state.playing || state.paused)
                 head(state.position, t.w.appearance.colour("jaras.timeline.playCursor", 0x7548dd),
-                     46);
+                     true);
             if (t.w.session.subCursorVisible()) {
                 head(state.subPlay.position,
                      t.w.appearance.colour("jaras.timeline.subPlayCursor", 0xff6f00).withMultipliedAlpha(
-                         Session::subCursorOpacity(Time::getMillisecondCounterHiRes() / 1000)), 46);
+                         Session::subCursorOpacity(Time::getMillisecondCounterHiRes() / 1000)), false);
             }
             if (state.loop.enabled && t.w.session.song()) {
                 auto a = t.xAt(state.loop.start.value_or(0)),
@@ -2396,7 +2426,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
 TextButton &Workspace::button(String id, const String &title, std::function<void()> action,
                               Colour colour) {
     auto *b = buttons.add(new QuietButton(title));
-    addAndMakeVisible(b);
+    if (!StringArray{"play", "pause", "subplay", "loop", "record", "metronome"}.contains(id))
+        addAndMakeVisible(b);
     controls[id] = b;
     b->setComponentID(id);
     b->getProperties().set("fontSize", 10);
@@ -2451,12 +2482,36 @@ class Workspace::TrackHeightHandle final : public Component {
 };
 
 void Workspace::paintOverChildren(Graphics &g) {
-    if(externalDropPoint&&session.song()) {
+    if(externalDropPoint&&session.song()&&!externalDropFiles.empty()) {
         const auto local=timeline->getLocalPoint(this,*externalDropPoint);
         if(timeline->getLocalBounds().contains(local)&&local.y>=64){
             const auto at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),*session.song(),pixelsPerSecond,session.transport(),ModifierKeys::getCurrentModifiers().isShiftDown());
-            const int x=timeline->getX()+roundToInt(timeline->xAt(at));
-            Graphics::ScopedSaveState save(g);g.reduceClipRegion(timeline->getBounds().withTrimmedTop(64));g.setColour(theme::yellow);g.fillRect(x,timeline->getY()+64,2,timeline->getHeight()-64);
+            const float x=timeline->getX()+timeline->xAt(at);
+            const int row=rowAt(local.y-64+verticalOffset);
+            const int end=rowTop((int)session.song()->tracks.size());
+            const auto colour=row>=0?theme::track(session.song()->tracks[(size_t)row]):Colour(0xff828282);
+            const int top=timeline->getY()+64-verticalOffset;
+            Graphics::ScopedSaveState save(g);
+            g.reduceClipRegion(timeline->getBounds().withTrimmedTop(64));
+            for(size_t i=0;i<externalDropFiles.size();++i) {
+                const auto &file=externalDropFiles[i];
+                const int y=top+(i==0&&row>=0?rowTop(row):end+(int)(i-(row>=0&&i>0?1:0))*trackHeight);
+                const int height=i==0&&row>=0?itemLaneHeight(row):trackHeight;
+                const juce::Rectangle<float> rect(x,y+3.f,std::max(1.f,file.duration?(float)(*file.duration*pixelsPerSecond):100.f),std::max(12.f,height-6.f));
+                if(!rect.intersects(timeline->getBounds().toFloat()))continue;
+                g.setColour(colour.withAlpha(.32f));g.fillRect(rect);
+                const auto bar=rect.withHeight(std::min(15.f,rect.getHeight()));
+                g.setColour(colour.withAlpha(.9f));g.fillRect(bar);
+                Path edge,dashed;edge.addRectangle(rect);const float dash[]{4,2};
+                PathStrokeType(1).createDashedStroke(dashed,edge,dash,2);
+                g.setColour(Colours::white.withAlpha(.85f));g.fillPath(dashed);
+                g.saveState();g.reduceClipRegion(bar.getSmallestIntegerContainer());
+                g.setFont(theme::semiboldFont(10));g.setColour(Colours::white);
+                g.drawText(file.file.getFileNameWithoutExtension(),bar.withLeft(std::max(bar.getX()+4,(float)timeline->getX()+4)),Justification::centredLeft,true);
+                g.restoreState();
+            }
+            g.setColour(Colour::greyLevel(.9f).withAlpha(.6f));
+            g.fillRect(x,(float)timeline->getY()+64,1.f,(float)timeline->getHeight()-64);
         }
     }
     auto boundsFor=[&](const ID &id)->juce::Rectangle<int>{if(const auto *song=session.song()){auto i=trackTree::index(*song,id);if(i<(size_t)rows.size())return getLocalArea(rows[(int)i],rows[(int)i]->getLocalBounds());}return {};};
@@ -2472,6 +2527,12 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     setLookAndFeel(&look);
     remotePresentation = std::make_unique<remote::Presentation>(session, stage);
     remoteHost = std::make_unique<remote::Host>(appearance);
+    remoteHost->setHostName(auth.deviceName);
+    const auto transportFont = auth.dataDirectory().getChildFile("Fonts/Inter-SemiBold.ttf");
+    transportFont.getParentDirectory().createDirectory();
+    if (!transportFont.existsAsFile() && !transportFont.replaceWithData(BinaryData::InterSemiBold_ttf, BinaryData::InterSemiBold_ttfSize))
+        throw std::runtime_error("Não foi possível preparar a fonte do transporte.");
+    nativeTransport = std::make_unique<native::TransportButtons>(transportFont.getFullPathName().toWideCharPointer());
     remotePresentation->save = [this] { chooseSave(); };
     remoteHost->presentation = [this](int panel) -> var {
         return projectReady && !loginPanel ? remotePresentation->snapshot(panel) : var();
@@ -2517,10 +2578,10 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
                 auto page = std::make_unique<ActionsPage>(actions);
                 page->showAction(action);
                 ModalSheet::open(*this, "Mapear controle", std::move(page), 430, 280);
-            });
+            }, [this] { tempoTaps = {}; });
     addAndMakeVisible(*tempoControl);
     footerMixer = std::make_unique<MixerPanel>(
-        session, [this](ID id) { openFX(id); },
+        session, [this](ID id, String effect) { openFX(id, effect); },
         [this](ID id, ModifierKeys mods) { selectMixerTrack(id, mods); },
         [this](String error) { showError(error); },
         [this](ID id, bool remove) { changeMixerFX(id, remove); },
@@ -2879,6 +2940,8 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     };
     session.tick = [this] { updateState(); };
     auth.changed = [this] {
+        try { remoteHost->setHostName(auth.deviceName); }
+        catch (const std::exception &e) { session.message = String::fromUTF8(e.what()); }
         updateLogin();
         caption->repaint();
     };
@@ -2925,6 +2988,8 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     startTimerHz(30);
 }
 Workspace::~Workspace() {
+    if(externalDropCancelled)externalDropCancelled->store(true);
+    nativeTransport.reset();
     stopTimer();
     remoteHost->stop();
     appearance.removeChangeListener(this);
@@ -3000,6 +3065,9 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
         }
         std::function<void()> onClose;
         std::function<bool(const KeyPress &)> selectAll;
+        std::function<bool(const KeyPress &)> globalKey;
+        std::function<void(bool)> globalKeyState;
+        std::unique_ptr<FloatingShortcuts> shortcuts;
         BorderSize<int> getBorderThickness() const override {
             return getTitleBarHeight() == 0 ? BorderSize<int>(0) : DocumentWindow::getBorderThickness();
         }
@@ -3015,7 +3083,12 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
                 return true;
             if (selectAll && selectAll(key))
                 return true;
+            if (FloatingShortcuts::allows(key) && globalKey && globalKey(key)) return true;
             return DocumentWindow::keyPressed(key);
+        }
+        bool keyStateChanged(bool down) override {
+            if (globalKeyState) globalKeyState(down);
+            return DocumentWindow::keyStateChanged(down);
         }
         void closeButtonPressed() override {
             if (onClose)
@@ -3024,6 +3097,14 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
         }
     };
     auto window = std::make_unique<PanelWindow>(name);
+    window->globalKey = [safe = SafePointer<Workspace>(this)](const KeyPress &key) {
+        return safe && safe->keyPressed(key);
+    };
+    window->globalKeyState = [safe = SafePointer<Workspace>(this)](bool down) {
+        if (safe) safe->keyStateChanged(down);
+    };
+    if (dynamic_cast<EffectsPanel *>(panel.get()))
+        window->shortcuts = std::make_unique<FloatingShortcuts>(*window, window->globalKey, window->globalKeyState);
     // Projection windows participate in normal window ordering so settings,
     // FX and plug-in windows can come to the front when opened.
     window->setAlwaysOnTop(false);
@@ -3043,6 +3124,73 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     window->toFront(true);
     floatingWindows[name] = std::move(window);
 }
+void Workspace::syncNativeTransport() {
+    if (!nativeTransport) return;
+    auto *peer = getPeer();
+    const bool visible = isShowing() && peer && projectReady && !browserVisible && !loginPanel &&
+        !navigation->isVisible();
+    if (!visible) { nativeTransport->hide(); return; }
+    // Match ComponentPeer::handlePaint: the peer size includes the application
+    // scale, while getLocalArea is still in component coordinates. Monitor DPI
+    // alone is insufficient when General is set to 60–120%.
+    const auto peerBounds = peer->getBounds();
+    const auto componentBounds = peer->getComponent().getLocalBounds();
+    const float scaleX = (float)peer->getPlatformScaleFactor() * peerBounds.getWidth() / std::max(1, componentBounds.getWidth());
+    const float scaleY = (float)peer->getPlatformScaleFactor() * peerBounds.getHeight() / std::max(1, componentBounds.getHeight());
+    size_t index = 0;
+    for (auto id : {"play", "pause", "subplay", "loop", "record", "metronome"}) {
+        auto *model = controls[id];
+        const auto area = peer->getComponent().getLocalArea(this, model->getBounds()).toFloat()
+            .transformedBy(AffineTransform::scale(scaleX, scaleY)).getSmallestIntegerContainer();
+        native::TransportButtons::State state;
+        state.rect = {area.getX(), area.getY(), area.getRight(), area.getBottom()};
+        state.scale = scaleY;
+        state.fontSize = theme::semiboldFont((float)controls["setlist"]->getProperties().getWithDefault("fontSize", 10.f)).getHeightInPoints();
+        state.active = model->getToggleState(); state.enabled = model->isEnabled();
+        state.blocked = Component::getCurrentlyModalComponent() != nullptr;
+        // Native child HWNDs draw above the parent surface. Keep the same dim
+        // layer as the sheet, hiding only controls covered by its content.
+        for (auto *child : getChildren()) {
+            if (!child->isVisible()) continue;
+            juce::Rectangle<int> cover;
+            float dim = 0;
+            if (auto *sheet = dynamic_cast<ModalSheet *>(child)) { cover = sheet->contentFrame(); dim = .48f; }
+            else if (auto *sheet = dynamic_cast<CloseProjectSheet *>(child)) { cover = sheet->contentFrame(); dim = .18f; }
+            if (dim > 0) {
+                state.dimming = 1.f - (1.f - state.dimming) * (1.f - dim);
+                if (getLocalArea(child, cover.expanded(2)).intersects(model->getBounds())) state.visible = false;
+            }
+        }
+        if (auto *modal = Component::getCurrentlyModalComponent(); modal && modal->getPeer() == peer &&
+            !dynamic_cast<ModalSheet *>(modal) && !dynamic_cast<CloseProjectSheet *>(modal) &&
+            getLocalArea(modal, modal->getLocalBounds()).intersects(model->getBounds())) state.visible = false;
+        state.background = model->findColour(TextButton::buttonColourId).getARGB();
+        state.activeBackground = model->findColour(TextButton::buttonOnColourId).getARGB();
+        state.foreground = model->findColour(state.active ? TextButton::textColourOnId : TextButton::textColourOffId).getARGB();
+        state.accent = (uint32)(int64)model->getProperties()["transportColour"];
+        auto icon = model->getProperties()["leadingIcon"].toString();
+        if (icon.isEmpty()) icon = id;
+        state.icon = icon.toWideCharPointer();
+        if (StringArray{"play", "subplay", "record"}.contains(id)) state.text = model->getButtonText().toWideCharPointer();
+        state.tooltip = model->getTooltip().toWideCharPointer();
+        nativeTransport->update(index++, (HWND)peer->getNativeHandle(), state, [safe = SafePointer<Workspace>(this), id](bool right) {
+            if (!safe || Component::getCurrentlyModalComponent()) return;
+            auto *button = static_cast<QuietButton *>(safe->controls[id]);
+            if (right) { if (button->context) button->context(Desktop::getMousePosition()); }
+            else {
+                const auto modifiers = ModifierKeys::getCurrentModifiersRealtime();
+                if (button->modifiedClick && button->modifiedClick(modifiers)) return;
+                const auto action = button->onClick;
+                if (action) action();
+            }
+            if (safe) {
+                if (!Component::getCurrentlyModalComponent()) safe->grabKeyboardFocus();
+                safe->syncNativeTransport();
+            }
+        });
+    }
+}
+
 void Workspace::paint(Graphics &g) {
     g.fillAll(theme::background);
     if (browserVisible || loginPanel)
@@ -3053,7 +3201,7 @@ void Workspace::paint(Graphics &g) {
     g.fillRect(footerBounds);
     g.fillRect(tracksViewport.getX(), workspaceBounds.getY(), tracksViewport.getWidth(), workspaceBounds.getHeight());
     {
-        const auto &state = session.transport();
+        const auto state = session.presentationTransport();
         const auto cpu = footerBounds.withWidth(footerSongBounds.getX() - footerBounds.getX());
         const auto device = footerBounds.withLeft(footerSongBounds.getRight());
         const int totalWidth = roundToInt(footerSongBounds.getWidth() * .10);
@@ -3181,8 +3329,7 @@ void Workspace::resized() {
     for (auto *child : getChildren())
         if (dynamic_cast<ModalSheet *>(child))
             child->toFront(false);
-    if (!editorVisible)
-        return;
+    if (!editorVisible) { if (nativeTransport) nativeTransport->hide(); return; }
     transportBounds = {rail, title, getWidth() - rail, transport};
     footerBounds = {rail, getHeight() - footerHeight, getWidth() - rail, footerHeight};
     workspaceBounds = {rail, title + transport, getWidth() - rail,
@@ -3194,8 +3341,8 @@ void Workspace::resized() {
         partsListVisible ? jlimit(160, 360, (int)(workspaceBounds.getWidth() * .22)) : 0;
     // The master is independent of track mixer visibility, as in the Mac transport.
     masterVolume.setBounds(64, 86, 196, 20);
-    masterPan.setBounds(136, 45, 42, 25);
-    controls["masterMono"]->setBounds(62, 46, 60, 20);
+    masterPan.setBounds(114, 45, 60, 25);
+    controls["masterMono"]->setBounds(62, 46, 49, 20);
     controls["masterFX"]->setBounds(178, 46, 26, 20);
     controls["masterMute"]->setBounds(210, 46, 22, 20);
     controls["masterSolo"]->setBounds(240, 46, 22, 20);
@@ -3229,7 +3376,7 @@ void Workspace::resized() {
     struct TransportItem { const char *id; float width, stretch; };
     const TransportItem items[]{
         {"play", playbackWidth, 1}, {"pause", playbackWidth, 1},
-        {"subplay", std::max(58.f, playbackWidth), 1}, {"loop", iconWidth, .5f},
+        {"subplay", std::max(64.f, playbackWidth), 1}, {"loop", iconWidth, .5f},
         {"record", playbackWidth, 1}, {"metronome", iconWidth, .5f},
         {"tempo", 171, 0}, {"timer", 157, 0},
         {"tp1", buttonWidth, 1}, {"tp2", buttonWidth, 1},
@@ -3376,6 +3523,7 @@ void Workspace::toggleGroup(const ID &id) {
     timeline->updateRanges();
     for (auto *row : rows)
         row->refresh();
+    syncNativeTransport();
     repaint();
 }
 int Workspace::rowHeight(int index) const {
@@ -3474,14 +3622,15 @@ void Workspace::updateState() {
                                           : String::fromUTF8("Bloquear movimento de itens, regiões e marcadores"));
     timelineLock.setEnabled(!session.busy && !session.audio.isRecording());
     session.audio.setKeyboardTarget(selectedTrack);
-    session.setRecordingSelection(selectedTrack);
+    session.setRecordingSelection(selectedTrack, selectedTracks);
     if (recordVisualSelection != selectedTrack) {
         recordVisualSelection = selectedTrack;
         for (auto *row : rows)
             row->refresh();
     }
     const auto &t = session.transport();
-    stage.observe(t);
+    const auto audible = session.presentationTransport();
+    stage.observe(audible);
     for(int i=0;i<2;++i)if(teleprompterHTTP[(size_t)i]->enabled()) {
         const auto content=StageContent::make(session,stage,i+1);
         teleprompterHTTP[(size_t)i]->publish(content.payload,content.media);
@@ -3530,10 +3679,10 @@ void Workspace::updateState() {
     controls["masterMono"]->setColour(TextButton::buttonOnColourId, theme::display);
     if (auto *s = session.song()) {
         String selectedName = text(s->name);
-        if (t.regionId)
+        if (audible.regionId)
             for (const auto &part : s->parts)
-                if (part.id == *t.regionId)
-                    selectedName = regionCaption(*s, &part, t.playing ? std::optional<double>(t.position) : std::nullopt);
+                if (part.id == *audible.regionId)
+                    selectedName = regionCaption(*s, &part, audible.playing ? std::optional<double>(audible.position) : std::nullopt);
         songDisplay.setColour(Label::textColourId, t.playing ? theme::green : Colours::white);
         songDisplay.setText((t.playing ? String::fromUTF8("Reproduzindo  ›  ")
                                        : String::fromUTF8("Selecionada  ›  ")) +
@@ -3544,7 +3693,7 @@ void Workspace::updateState() {
                       dontSendNotification);
         tempoControl->refresh();
     }
-    transportTime.setText(clockText(t.position, true), dontSendNotification);
+    transportTime.setText(clockText(audible.position, true), dontSendNotification);
     const auto information = t.loop.enabled ? String("Loop Ativo") : t.ignoreNextAfter ? String("Ignore Next") : String();
     transportInfo.setText(information, dontSendNotification);
     const int phase = (int)(Time::getMillisecondCounterHiRes() / 500) % 4;
@@ -3626,6 +3775,9 @@ void Workspace::updateLogin() {
     if (hadLogin != (loginPanel != nullptr)) { resized(); repaint(); }
 }
 void Workspace::timerCallback() {
+    try { session.audio.refreshStemLatency(); }
+    catch (const std::exception &e) { session.message = String::fromUTF8(e.what()); }
+    syncNativeTransport();
     if (fadeoutOverlay) fadeoutOverlay->update();
     timeline->refreshWaveforms();
     timeline->followPlayback();
@@ -3640,7 +3792,7 @@ void Workspace::timerCallback() {
         resized();
     }
     const bool subVisible = session.subCursorVisible();
-    if (session.transport().playing || subVisible || subVisible != lastSubCursorVisible)
+    if (session.presentationTransport().playing || subVisible || subVisible != lastSubCursorVisible)
         timeline->animate();
     lastSubCursorVisible = subVisible;
 }
@@ -3783,42 +3935,107 @@ bool Workspace::keyPressed(const KeyPress &key) {
                 });
                 clearItemSelection();
             });
-        else if (!selectedTrack.empty())
-            confirm("Excluir pista?", String::fromUTF8("Esta ação pode ser desfeita."),
-                    [safe = Component::SafePointer<Workspace>(this), id = selectedTrack] {
+        else if (!selectedTrack.empty() || !selectedTracks.empty()) {
+            const auto ids = selectedTracks.empty() ? std::set<ID>{selectedTrack} : selectedTracks;
+            confirm(ids.size() == 1 ? "Excluir pista?" : "Excluir " + String((int)ids.size()) + " pistas?",
+                    String::fromUTF8("Esta ação pode ser desfeita."),
+                    [safe = Component::SafePointer<Workspace>(this), ids] {
                         if (safe)
                             safe->perform([&] {
-                                safe->session.removeTrack(id);
+                                safe->session.removeTracks(ids);
                                 safe->selectedTrack.clear();
+                                safe->selectedTracks.clear();
                             });
                     });
+        }
         return true;
     }
     return false;
 }
 bool Workspace::isInterestedInFileDrag(const StringArray &files) {
-    for(auto &path:files)if(File(path).hasFileExtension("jl;bkjl;ziplive;zip;wav;wave;aif;aiff;flac;mp3;ogg;m4a;aac;mp4;mov;m4v;avi;mkv;webm;wmv;png;jpg;jpeg;bmp;gif;tif;tiff"))return true;
+    for(auto &path:files)if(File(path).hasFileExtension("jl;bkjl;ziplive;zip")||externalMedia::supported(File(path)))return true;
     return false;
 }
+void Workspace::clearExternalDrop(){
+    if(externalDropCancelled)externalDropCancelled->store(true);
+    externalDropCancelled.reset();externalDropPoint.reset();externalDropFiles.clear();repaint();
+}
+void Workspace::fileDragEnter(const StringArray &files,int x,int y){
+    clearExternalDrop();
+    ++fileDragEntries;
+    fileDropStatus="drag entered";
+    if(loginPanel||session.busy||browserVisible||!projectReady||!session.song())return;
+    for(const auto &path:files)if(externalMedia::supported(File(path)))externalDropFiles.push_back({File(path),{}});
+    externalDropPoint=Point<int>{x,y};
+    auto cancelled=externalDropCancelled=std::make_shared<std::atomic<bool>>(false);
+    Thread::launch([safe=SafePointer<Workspace>(this),sources=externalDropFiles,cancelled]{
+        for(size_t i=0;i<sources.size();++i){
+            if(cancelled->load())return;
+            const auto duration=externalMedia::duration(sources[i].file);
+            if(cancelled->load())return;
+            MessageManager::callAsync([safe,cancelled,i,duration]{
+                if(safe&&!cancelled->load()&&safe->externalDropCancelled==cancelled&&i<safe->externalDropFiles.size()){
+                    safe->externalDropFiles[i].duration=duration;safe->repaint();
+                }
+            });
+        }
+    });
+    repaint();
+}
 void Workspace::fileDragMove(const StringArray &,int x,int y){externalDropPoint=Point<int>{x,y};repaint();}
-void Workspace::fileDragExit(const StringArray &){externalDropPoint.reset();repaint();}
+void Workspace::fileDragExit(const StringArray &){clearExternalDrop();}
 void Workspace::filesDropped(const StringArray &files,int x,int y) {
-    externalDropPoint.reset();repaint();if(loginPanel||session.busy)return;
+    clearExternalDrop();++fileDropCount;
+    fileDropStatus="drop received";
+    if(loginPanel||session.busy){fileDropStatus=loginPanel?"login required":"import busy";return;}
     for(auto &path:files)if(File(path).hasFileExtension("jl;bkjl;ziplive;zip")){perform([&]{openProject(File(path));});return;}
-    if(browserVisible||!projectReady||!session.song())return;
+    if(browserVisible||!projectReady||!session.song()){fileDropStatus="project not open";return;}
     const auto local=timeline->getLocalPoint(this,Point<int>{x,y});
-    if(!timeline->getLocalBounds().contains(local)||local.y<64)return;
+    if(!timeline->getLocalBounds().contains(local)||local.y<64){fileDropStatus="outside grid";return;}
     const int row=rowAt(local.y-64+tracksViewport.getViewPositionY());
     const ID target=row>=0&&row<(int)session.song()->tracks.size()?session.song()->tracks[(size_t)row].id:ID{};
     const double at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),*session.song(),pixelsPerSecond,session.transport(),ModifierKeys::getCurrentModifiers().isShiftDown());
-    const ID project=session.project().id,song=session.song()->id;
     Array<File> media;for(auto &path:files)media.add(File(path));
+    importMediaAt(media,at,target);
+    fileDropStatus=media.size()>1?"awaiting import options":"import submitted";
+}
+void Workspace::importMediaAt(const Array<File> &media,double at,ID target) {
+    if(loginPanel||session.busy||browserVisible||!projectReady||!session.song()||media.isEmpty())return;
+    const ID project=session.project().id,song=session.song()->id;
     auto submit=[safe=SafePointer<Workspace>(this),media,target,at,project,song](bool same,double gap){if(safe)safe->perform([&]{
         if(safe->session.project().id!=project||!safe->session.song()||safe->session.song()->id!=song)throw std::runtime_error("O projeto ou grid de destino mudou.");
-        safe->session.importMedia(media,at,target,same,gap);
+        safe->session.importMedia(media,at,target,same,gap,[safe](String error){
+            if(safe&&error.isNotEmpty())safe->showError(error);
+        }, true);
     });};
     if(media.size()>1)ModalSheet::open(*this,String::fromUTF8("Importar mídia"),std::make_unique<MediaDropPanel>(submit),400,155);
     else submit(false,0);
+}
+void Workspace::mouseDoubleClick(const MouseEvent &event) {
+    // The Mac shortcut belongs to the empty mixer area below the last track.
+    // Child controls, items and the ruler keep their own double-click actions.
+    if(event.eventComponent!=&tracksContent||!event.mods.isLeftButtonDown()||event.mods.isAnyModifierKeyDown())return;
+    const auto local=event.getEventRelativeTo(&tracksContent).getPosition();
+    if(session.song()&&local.y>=rowTop((int)session.song()->tracks.size()))addStandardTrackAtEnd();
+}
+void Workspace::addStandardTrackAtEnd() {
+    if(loginPanel||session.busy||browserVisible||!projectReady||!session.song())return;
+    perform([&]{
+        const auto songID=session.song()->id;
+        int number=(int)session.song()->tracks.size()+1;
+        String name;
+        do{name="Pista "+String(number++);}while(std::any_of(session.song()->tracks.begin(),session.song()->tracks.end(),[&](const auto &track){return text(track.name)==name;}));
+        int channels=0;
+        if(auto *device=session.audio.devices.getCurrentAudioDevice())channels=device->getInputChannelNames().size();
+        const auto id=uuid();
+        session.edit([&](jaras::Project &project){for(auto &song:project.songs)if(song.id==songID){
+            if(song.tracks.size()>=512)throw std::runtime_error("Limite de pistas atingido.");
+            jaras::Track track;track.id=id;track.name=utf8(name);track.role.id="other";track.color=0x828282;
+            if(channels>0)track.inputPatch=jaras::OutputPatch{1,std::min(2,channels)};
+            song.tracks.push_back(std::move(track));
+        }});
+        selectMixerTrack(id,ModifierKeys{});timeline->invalidate();
+    });
 }
 void Workspace::mouseDown(const MouseEvent &event) {
     if (event.eventComponent == this && event.mods.isPopupMenu() && !browserVisible && juce::Rectangle<int>(40,40,230,70).contains(event.getPosition()))
@@ -3922,8 +4139,10 @@ void Workspace::showProjectBrowser() {
     repaint();
 }
 void Workspace::projectOpened(bool fitTimeline) {
+    tempoTaps = {};
     clearItemSelection();
     itemClipboard.reset();
+    itemClipboardSequence.reset();
     for (auto *child : getChildren())
         if (auto *sheet = dynamic_cast<ModalSheet *>(child);
             sheet && sheet->getName() == "Projetos")
@@ -4783,11 +5002,27 @@ void Workspace::editTextItem(ID id) {
 void Workspace::copyGridItems(bool moving) {
     if (!session.song()) return;
     const auto selection = selectedClips.empty() ? std::set<ID>{selectedClip} : selectedClips;
-    if (auto copied = GridItemClipboard::copy(session.project(), session.song()->id, selection, moving))
+    if (auto copied = GridItemClipboard::copy(session.project(), session.song()->id, selection, moving)) {
         itemClipboard = std::move(copied);
+        itemClipboardSequence = GetClipboardSequenceNumber();
+    }
 }
 void Workspace::pasteGridItems(bool duplicate) {
     if (!session.song() || session.busy) return;
+    if (!duplicate && !gridMediaClipboard::ownsItems(itemClipboard.has_value(), itemClipboardSequence,
+                                                    GetClipboardSequenceNumber())) {
+        perform([&] {
+            const auto paths = gridMediaClipboard::files();
+            if (paths.isEmpty()) return;
+            Array<File> media;
+            for (const auto &path : paths) media.add(File(path));
+            auto target = selectedTrack;
+            if (std::none_of(session.song()->tracks.begin(), session.song()->tracks.end(),
+                             [&](const auto &track) { return track.id == target; })) target.clear();
+            importMediaAt(media, session.transport().editPosition, target);
+        });
+        return;
+    }
     const auto selection = selectedClips.empty() ? std::set<ID>{selectedClip} : selectedClips;
     const auto clipboard = duplicate ? GridItemClipboard::copy(session.project(), session.song()->id, selection) : itemClipboard;
     if (!clipboard || clipboard->song != session.song()->id) return;
@@ -4859,7 +5094,7 @@ bool Workspace::selectAllGridItems() {
 }
 void Workspace::showDetachedMixer() {
     mixerDetached = true; footerMixerVisible = false;
-    auto panel = std::make_unique<MixerPanel>(session, [this](ID id) { openFX(id); },
+    auto panel = std::make_unique<MixerPanel>(session, [this](ID id, String key) { openFX(id, key); },
         [this](ID id, ModifierKeys mods) { selectMixerTrack(id, mods); }, [this](String message) { showError(message); },
         [this](ID id, bool remove) { changeMixerFX(id, remove); },
         [this](ID id) { return trackSelected(id); }, [this](ID id,Point<int> point){showTrackMenu(id,point);},[this](ID id,String action){specialTrackAction(id,action);});
@@ -5046,6 +5281,11 @@ void Workspace::capture(const File &path) {
 }
 var Workspace::diagnostics() const {
     auto value = object();
+    auto drops = object();
+    put(drops,"entries",fileDragEntries);put(drops,"drops",fileDropCount);
+    put(drops,"status",fileDropStatus);put(drops,"previewItems",(int)externalDropFiles.size());
+    put(drops,"modalBlocked",isCurrentlyBlockedByAnotherModalComponent());
+    put(value,"externalMediaDrop",drops);
     put(value, "project", text(session.project().name));
     put(value, "authAllowed", auth.allowed());
     put(value, "authBusy", auth.busy);
@@ -5070,6 +5310,10 @@ var Workspace::diagnostics() const {
     put(value, "audioPeak", session.audio.peak());
     put(value, "playing", session.transport().playing);
     put(value, "position", session.transport().position);
+    const auto audible = session.presentationTransport();
+    put(value, "presentationPlaying", audible.playing);
+    put(value, "presentationPosition", audible.position);
+    put(value, "presentationLatencyFrames", (int64)session.audio.presentationLatencyFrames());
     put(value, "selectedTrack", text(selectedTrack));
     Array<var> selectedItemIDs;
     for (const auto &id : selectedClips) selectedItemIDs.add(text(id));
@@ -5249,6 +5493,9 @@ var Workspace::diagnostics() const {
     put(value, "uiRegressionPassed", uiRegressionPassed);
     auto layout = object();
     Array<var> clippedButtonLabels;
+    const StringArray nativeButtons{"play", "pause", "subplay", "loop", "record", "metronome"};
+    const auto transportFont = theme::semiboldFont((float)controls.at("setlist")->getProperties().getWithDefault("fontSize", 10.f));
+    put(value, "nativeTransportFontEmSize", transportFont.getHeightInPoints());
     for (const auto &entry : controls) {
         auto bounds = object();
         put(bounds, "x", entry.second->getX());
@@ -5256,7 +5503,10 @@ var Workspace::diagnostics() const {
         put(bounds, "width", entry.second->getWidth());
         put(bounds, "height", entry.second->getHeight());
         put(layout, Identifier(entry.first), bounds);
-        if (entry.second->isVisible() && (bool)entry.second->getProperties()["centredIconLabel"]) {
+        if (StringArray{"play", "subplay", "record"}.contains(entry.first)) {
+            if (GlyphArrangement::getStringWidth(transportFont, entry.second->getButtonText()) + 18.f > entry.second->getWidth() + .5f)
+                clippedButtonLabels.add(entry.first);
+        } else if (entry.second->isVisible() && (bool)entry.second->getProperties()["centredIconLabel"]) {
             const auto font = theme::semiboldFont((float)entry.second->getProperties().getWithDefault("fontSize", 12.f));
             const auto width = entry.second->getWidth();
             const float padding = width < 56 ? 2.f : 6.f, gap = width < 56 ? 2.f : 4.f;
@@ -5276,7 +5526,7 @@ var Workspace::diagnostics() const {
     std::vector<const Component *> transportItems{tempoControl.get(), stageTimer.get(),
                                                   tuner.get(), &songDisplay, &transportTime, &transportInfo};
     for (const auto &entry : controls)
-        if (entry.second->isVisible() && entry.second->getY() >= 32 &&
+        if ((entry.second->isVisible() || nativeButtons.contains(entry.first)) && entry.second->getY() >= 32 &&
             entry.second->getBottom() <= transportBounds.getBottom() && entry.second->getX() >= 40)
             transportItems.push_back(entry.second);
     for (size_t a = 0; a < transportItems.size(); ++a) {
@@ -5375,20 +5625,33 @@ void Workspace::chooseExport() {
                                       }),
         860, 510);
 }
-void Workspace::openFX(ID track) {
+void Workspace::openFX(ID track, String preferredEffect) {
+    std::vector<ID> targets;
+    if (trackSelected(track))
+        if (const auto *song = session.song())
+            for (const auto &t : song->tracks)
+                if (selectedTracks.count(t.id) && jaras::fixedTrackName(t.role).empty()) targets.push_back(t.id);
     String name = "Master";
     for (const auto &song : session.project().songs)
         for (const auto &t : song.tracks)
             if (t.id == track)
                 name = text(t.name);
-    openFloating("Gerenciador de FX - " + name,
-                 std::make_unique<EffectsPanel>(
-                     session, std::move(track),
+    const String windowName = "Gerenciador de FX - " + name;
+    if (const auto it = floatingWindows.find(windowName); it != floatingWindows.end() && it->second->isVisible()) {
+        it->second->toFront(true);
+        if (auto *panel = dynamic_cast<EffectsPanel *>(it->second->getContentComponent()); panel && preferredEffect.isNotEmpty())
+            panel->selectEffect(preferredEffect);
+        return;
+    }
+    auto panel = std::make_unique<EffectsPanel>(
+                     session, track,
                      [safe = Component::SafePointer<Workspace>(this)](String message) {
                          if (safe)
                              safe->showError(message);
-                     }),
-                 920, 560);
+                     }, false, targets);
+    const auto editor = SafePointer<EffectsPanel>(panel.get());
+    openFloating(windowName, std::move(panel), 920, 560);
+    if (editor && preferredEffect.isNotEmpty()) editor->selectEffect(preferredEffect);
 }
 void Workspace::openItemFX(ID id) {
     String name;
@@ -5420,3 +5683,4 @@ void Workspace::openVideo() {
 } // namespace catlive
 
 #include "WorkspaceActions.h"
+#include "WorkspaceMediaImportRegression.h"

@@ -1,5 +1,6 @@
 #include "ProjectCodec.h"
 #include "MediaPath.h"
+#include "FXSchema.h"
 #include <bcrypt.h>
 #include <stdexcept>
 #include <windows.h>
@@ -774,7 +775,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
         put(root, "savedCursor", cursor);
     }
     if (p.masterFXJSON)
-        put(root, "masterFX", JSON::parse(text(*p.masterFXJSON)));
+        put(root, "masterFX", fxschema::complete(JSON::parse(text(*p.masterFXJSON))));
     else remove(root, "masterFX");
     if (p.masterPatch)
         put(root, "masterPatch", patchJSON(*p.masterPatch));
@@ -846,7 +847,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
             } else
                 remove(rt, "routing");
             if (t.fxJSON)
-                put(rt, "fx", JSON::parse(text(*t.fxJSON)));
+                put(rt, "fx", fxschema::complete(JSON::parse(text(*t.fxJSON))));
             else remove(rt, "fx");
             if (t.color)
                 put(rt, "color", (int64)*t.color);
@@ -916,7 +917,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                     put(rc, "waveformChannels", channels);
                 }
                 if (c.fxJSON)
-                    put(rc, "fx", JSON::parse(text(*c.fxJSON)));
+                    put(rc, "fx", fxschema::complete(JSON::parse(text(*c.fxJSON))));
                 else remove(rc, "fx");
                 if (c.audioFile)
                     put(rc, "audioFile", audioJSON(*c.audioFile));
@@ -955,12 +956,12 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
             put(rp, "name", text(part.name));
             put(rp, "startTime", part.startTime);
             put(rp, "endTime", part.endTime);
-            if (part.color)
-                put(rp, "color", (int64)*part.color);
-            if (part.parentRegionID)
-                put(rp, "parentRegionID", text(*part.parentRegionID));
-            if (part.uppercaseName)
-                put(rp, "uppercaseName", *part.uppercaseName);
+            // The original carries unknown importer metadata. Optional fields
+            // owned by this model must also be removed after an explicit edit,
+            // especially parentRegionID when a saved family is disunified.
+            emit(rp, "color", part.color);
+            emit(rp, "parentRegionID", part.parentRegionID);
+            emit(rp, "uppercaseName", part.uppercaseName);
             emit(rp, "pitchSemitones", part.pitchSemitones);
             emit(rp, "totalLoop", part.totalLoop);
             if (part.pitchTrackIDs)
@@ -995,16 +996,13 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 emit(rm, "unifiedRegionID", m.unifiedRegionID);
                 emit(rm, "sourceRegionID", m.sourceRegionID);
                 emit(rm, "regionOwnerID", m.regionOwnerID);
-                if (m.tempoBPM)
-                    put(rm, "tempoBPM", *m.tempoBPM);
-                if (m.section)
-                    put(rm, "section", *m.section);
-                if (m.loopSection)
-                    put(rm, "loopSection", *m.loopSection);
+                emit(rm, "tempoBPM", m.tempoBPM);
+                emit(rm, "section", m.section);
+                emit(rm, "loopSection", m.loopSection);
                 markers.add(rm);
             }
             put(raw, "markers", markers);
-        }
+        } else remove(raw, "markers");
         songs.add(raw);
     }
     put(root, "songs", songs);

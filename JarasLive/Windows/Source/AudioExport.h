@@ -189,7 +189,8 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         engine.setOffline(true);
         engine.setMixer(project, song);
         engine.setExportCapture(job.track);
-        engine.extendOfflineDuration(job.end);
+        engine.extendOfflineDuration(job.end + engine.exportLatencyFrames()/encoding.rate);
+        engine.waitForStems();
         if (!engine.missingFiles.isEmpty() || !engine.unsupported.isEmpty())
             throw std::runtime_error(
                 "Corrija as mídias ausentes e os efeitos incompatíveis antes de exportar.");
@@ -223,7 +224,7 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         state.position = prerollStart;
         engine.transport(state);
         AudioBuffer<float> buffer(2, 1024);
-        const int64 warmup = (int64)std::llround((job.start - prerollStart) * encoding.rate);
+        const int64 warmup = (int64)std::llround((job.start - prerollStart) * encoding.rate) + engine.exportLatencyFrames();
         for (int64 at = 0; at < warmup; at += 1024) {
             if (cancel.load())
                 throw std::runtime_error("Exportação cancelada.");
@@ -236,6 +237,7 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
                 throw std::runtime_error("Exportação cancelada.");
             const int count = (int)std::min<int64>(1024, frames - at);
             engine.render(buffer.getArrayOfWritePointers(), 2, count);
+            engine.checkStemErrors();
             for (int n = 0; n < count; ++n) {
                 if (!std::isfinite(buffer.getSample(0, n)) ||
                     !std::isfinite(buffer.getSample(1, n)))

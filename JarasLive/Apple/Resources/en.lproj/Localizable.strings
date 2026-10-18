@@ -651,7 +651,7 @@
 "This routing would create an audio feedback loop." = "This routing would create an audio feedback loop.";
 
 "Plugins" = "Plugins";
-"External" = "External";
+"External" = "External (VST3)";
 "Plugin" = "Plugin";
 "VST3 paths" = "VST3 paths";
 "Add path" = "Add path";

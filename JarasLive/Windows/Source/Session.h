@@ -2,6 +2,7 @@
 #include "AudioEngine.h"
 #include "ProjectCodec.h"
 #include "AudioExport.h"
+#include "TransportPresentation.h"
 namespace catlive {
 class Session final : private Timer {
   public:
@@ -12,12 +13,13 @@ class Session final : private Timer {
     const jaras::Project &project() const { return core.project(); }
     const jaras::Song *song() const { return core.currentSong(); }
     const jaras::TransportState &transport() const { return core.transport(); }
+    jaras::TransportState presentationTransport() const;
     File document, mediaDirectory;
     var original;
     bool dirty = false, busy = false, inspection = false;
     double importProgress = 0;
     double subCursorPreviewUntil = 0;
-    bool subCursorVisible() const { return transport().subPlay.playing || Time::getMillisecondCounterHiRes() < subCursorPreviewUntil; }
+    bool subCursorVisible() const { return presentationTransport().subPlay.playing || Time::getMillisecondCounterHiRes() < subCursorPreviewUntil; }
     static float subCursorOpacity(double seconds) { return std::fmod(seconds, .9) < .45 ? 1.f : .3f; }
     std::optional<ID> focusedRegion;
     uint64 setlistFocusRevision = 0;
@@ -50,6 +52,7 @@ class Session final : private Timer {
     void configureTiming(double bpm, int beats, int unit, jaras::ProjectTimeSettings);
     void configureEffects(const ID &, const var &);
     void configureEffects(const std::map<ID, var> &);
+    String copyEffect(const ID &source, const String &effect, const ID &destination, const String &before = {});
     void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false);
     std::vector<ID> duplicateTracks(const std::set<ID> &);
     void undo();
@@ -57,7 +60,8 @@ class Session final : private Timer {
     bool canUndo() const { return !undoHistory.empty(); }
     bool canRedo() const { return !redoHistory.empty(); }
     void importAudio(const Array<File> &, double at = 0);
-    void importMedia(const Array<File> &, double at, ID targetTrack, bool sameTrack, double gap);
+    void importMedia(const Array<File> &, double at, ID targetTrack, bool sameTrack, double gap,
+                     std::function<void(String)> completion = {}, bool deferWaveform = false);
     void exportMix(const File &, int bits = 24);
     void exportAudio(ExportRequest);
     void renderItems(std::set<ID>, bool glue = false, int midiChannels = 0);
@@ -69,14 +73,23 @@ class Session final : private Timer {
         return at == recordArms.end() ? 0 : at->second;
     }
     bool recordingArmed(const ID &id) const {
-        return recordArm(id) == 1 || (recordArm(id) == 2 && recordSelection == id);
+        return recordArm(id) == 1 || (recordArm(id) == 2 && recordSelections.count(id) != 0);
     }
-    void cycleRecordArm(const ID &);
-    void setRecordingSelection(const ID &);
+    void cycleRecordArm(const ID &, const std::set<ID> &targets = {});
+    void mixerCommand(jaras::CommandKind, const ID &, const std::set<ID> &, double value = 0);
+    void beginMixerGesture(jaras::CommandKind kind, ID source) {
+        mixerGestureSource = std::move(source); mixerGestureProject = project().id; mixerGestureKind = kind;
+        mixerGestureTracks = song() ? song()->tracks : std::vector<jaras::Track>{};
+    }
+    void endMixerGesture() { mixerGestureSource.clear(); mixerGestureTracks.clear(); }
+    void setRecordingSelection(const ID &, const std::set<ID> &targets = {});
     void addTrack(String name = "Audio", String role = "other");
     void addSong(String);
     void renameTrack(ID, String);
     void removeTrack(ID);
+    void removeTracks(const std::set<ID> &);
+    void setRegionPitch(const ID &, int, std::vector<ID>, std::vector<ID>);
+    void setMeter(int beats, int unit);
     void removeClip(ID);
     void addMarker(String, double, bool section = false);
     void addRegion(String, double, double);
@@ -110,13 +123,18 @@ class Session final : private Timer {
     ID preparedSong;
     File recordingFile;
     std::map<ID, int> recordArms;
-    ID recordSelection, recordingSong;
+    std::set<ID> recordSelections;
+    ID recordingSong;
+    ID mixerGestureSource, mixerGestureProject;
+    jaras::CommandKind mixerGestureKind = jaras::CommandKind::volume;
+    std::vector<jaras::Track> mixerGestureTracks;
     void updateRecordArms();
     double recordingStart = 0;
     std::atomic<bool> exportCancelled{false};
+    TransportPresentationQueues presentationQueues;
     void timerCallback() override;
     void syncClock();
-    void publishTransport();
+    void publishTransport(bool preserveLatency = false);
     void prepare();
 };
 } // namespace catlive

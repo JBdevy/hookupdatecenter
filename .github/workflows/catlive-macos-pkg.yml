@@ -59,10 +59,20 @@ jobs:
           CATLIVE_RELEASE_VERSION: ${{ inputs.version }}
         run: |
           ./JarasLive/Windows/build.ps1 -Version $env:CATLIVE_RELEASE_VERSION -BuildDirectory "$env:RUNNER_TEMP/catlive-windows" -Installer
+      - name: Preserve test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-Windows-Test-Results
+          path: ${{ runner.temp }}/catlive-windows/test-results/
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: CatLive-Windows-Binary
-          path: ${{ runner.temp }}/catlive-windows/package/CatLive-Windows-x64/
+          path: |
+            ${{ runner.temp }}/catlive-windows/package/CatLive-Windows-x64/CatLive.exe
+            ${{ runner.temp }}/catlive-windows/package/CatLive-Windows-x64/CatLiveLame.dll
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
@@ -72,6 +82,7 @@ jobs:
             ${{ runner.temp }}/catlive-windows/test-results/fixture.json
             ${{ runner.temp }}/catlive-windows/test-results/remote-state.json
             ${{ runner.temp }}/catlive-windows/test-results/external-crypto.jl
+            ${{ runner.temp }}/catlive-windows/test-results/fx-portability.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
@@ -82,7 +93,7 @@ jobs:
           if-no-files-found: error
 
   macos-pkg:
-    needs: windows
+    if: ${{ !inputs.audio_only }}
     runs-on: macos-26
     timeout-minutes: 180
     env:
@@ -98,11 +109,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: CatLive-Windows-Fixtures
-          path: ${{ runner.temp }}/catlive-windows-fixtures
 
       - name: Validate version and signing credentials
         shell: bash
@@ -120,20 +126,11 @@ jobs:
 
       - name: Validate project and transport regressions
         working-directory: JarasLive
-        env:
-          CATLIVE_COMPATIBILITY_INPUT: ${{ runner.temp }}/catlive-windows-fixtures
-          CATLIVE_COMPATIBILITY_OUTPUT: ${{ runner.temp }}/catlive-mac-fixtures
         run: |
           swift test --jobs 2
           bash scripts/test-bridge.sh
           bash scripts/test-control-mappings.sh
           bash scripts/test-daw-remote.sh
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: CatLive-Mac-Fixtures
-          path: ${{ runner.temp }}/catlive-mac-fixtures/
-          if-no-files-found: error
 
       - name: Prepare CatStemSeparation runtime
         working-directory: JarasLive
@@ -188,7 +185,7 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           # This keychain exists only for this job. Avoid an invisible GUI access
-          # prompt when productbuild requests the Installer private key.
+          # prompt when productsign requests the Installer private key.
           import_identity() {
             local certificate="$1" password="$2"
             local output="$RUNNER_TEMP/catlive-identity-import.log"
@@ -238,9 +235,8 @@ jobs:
           set -euo pipefail
           APP="$RUNNER_TEMP/catlive-build/Build/Products/Release/CatLive.app"
           mkdir -p dist
-          pkgbuild --component "$APP" --install-location /Applications \
-            --compression latest --min-os-version 12.0 \
-            "$RUNNER_TEMP/CatLive-$VERSION-unsigned.pkg"
+          python3 JarasLive/scripts/build-catlive-pkg.py "$APP" \
+            "$RUNNER_TEMP/CatLive-$VERSION-unsigned.pkg" --version "$VERSION"
 
       - name: Sign installer PKG
         timeout-minutes: 18
@@ -285,8 +281,36 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Platform builds start together. The document exchange still gates publishing,
+  # but waiting for Windows fixtures must not delay the Mac app/notarization.
+  macos-compatibility:
+    needs: windows
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: CatLive-Windows-Fixtures
+          path: ${{ runner.temp }}/catlive-windows-fixtures
+      - name: Validate Windows projects and Remote with the Mac implementation
+        working-directory: JarasLive
+        env:
+          CATLIVE_COMPATIBILITY_INPUT: ${{ runner.temp }}/catlive-windows-fixtures
+          CATLIVE_COMPATIBILITY_OUTPUT: ${{ runner.temp }}/catlive-mac-fixtures
+          CATLIVE_WINDOWS_FX_FIXTURE: ${{ runner.temp }}/catlive-windows-fixtures/fx-portability.json
+        run: |
+          swift test --jobs 2 --filter ProjectEncryptionTests/testCrossPlatformReleaseFixtures
+          swift test --jobs 2 --filter WindowsFXPortabilityTests
+          bash scripts/test-daw-remote.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-Mac-Fixtures
+          path: ${{ runner.temp }}/catlive-mac-fixtures/
+          if-no-files-found: error
+
   compatibility:
-    needs: [windows, macos-pkg]
+    needs: [windows, macos-compatibility]
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -352,6 +376,21 @@ jobs:
             Instalador macOS assinado e notarizado. Instalador Windows sem assinatura Authenticode nesta configuração.
           files: |
             dist/Catlive-*.pkg
-            dist/Catlive-*.pkg.sha256
             dist/Catlive-*.exe
-            dist/Catlive-*.exe.sha256
+      - name: Remove the old checksum attachments from this release
+        uses: actions/github-script@v7
+        env:
+          CATLIVE_RELEASE_VERSION: ${{ inputs.version }}
+        with:
+          script: |
+            const version = process.env.CATLIVE_RELEASE_VERSION;
+            const { owner, repo } = context.repo;
+            const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag: `catlive-v${version}` });
+            const obsolete = new Set([`Catlive-${version}.pkg.sha256`, `Catlive-${version}.exe.sha256`]);
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id: release.id });
+            for (const asset of assets) {
+              if (obsolete.has(asset.name)) {
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: asset.id });
+                core.info(`Removed obsolete release attachment: ${asset.name}`);
+              }
+            }

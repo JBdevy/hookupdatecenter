@@ -29,6 +29,13 @@ def load_protocol():
 
 
 protocol = load_protocol()
+# The checkpoint, 1-second context, right context and overlap law are shared with
+# Mac. Windows uses a larger inference hop to sustain Intel GPU FP32 throughput.
+# This changes declared processing latency, never playback rate or model weights.
+protocol.HOP = 22050
+protocol.LATENCY = 3 * protocol.HOP
+protocol.MAX_PAYLOAD = protocol.HOP * protocol.CHANNELS * protocol.STEMS * 4
+protocol.COMPUTE_BUDGET = (protocol.LATENCY - protocol.HOP - protocol.RIGHT) / protocol.RATE
 
 
 class TorchBackend(protocol.StreamingBackend):
@@ -44,7 +51,8 @@ class TorchBackend(protocol.StreamingBackend):
         import torch
         from demucs.states import load_model
         torch.set_num_threads(max(1, min(4, (os.cpu_count() or 2) // 2)))
-        torch.set_num_interop_threads(1)
+        if torch.get_num_interop_threads() != 1:
+            torch.set_num_interop_threads(1)
         torch.manual_seed(0)
         self.device = 'cuda' if device == 'auto' and torch.cuda.is_available() else ('cpu' if device == 'auto' else device)
         if self.device == 'cuda' and not torch.cuda.is_available():
@@ -78,7 +86,7 @@ class TorchBackend(protocol.StreamingBackend):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', type=Path, required=True)
-    parser.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto')
+    parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'openvino-gpu', 'openvino-cpu'], default='auto')
     parser.add_argument('--crossfade-frames', type=int, default=1024)
     parser.add_argument('--offline', action='store_true')
     parser.add_argument('--benchmark', action='store_true')
@@ -86,7 +94,26 @@ def main():
     destination = sys.stdout.buffer
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            backend = TorchBackend(args.model, args.device, args.crossfade_frames)
+            backend_name = 'torch-htdemucs6'
+            backend = None
+            if args.device in ('auto', 'openvino-gpu', 'openvino-cpu'):
+                try:
+                    # Isolated mode does not search arbitrary working-directory
+                    # modules. Import only the sibling bundled backend by path.
+                    backend_path = Path(__file__).with_name('openvino_backend.py')
+                    spec = importlib.util.spec_from_file_location('catstem_openvino_backend', backend_path)
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[spec.name] = module
+                    spec.loader.exec_module(module)
+                    device = 'GPU' if args.device == 'openvino-gpu' else 'CPU' if args.device == 'openvino-cpu' else 'auto'
+                    backend = module.OpenVINOBackend(protocol, args.model, device=device, crossfade_frames=args.crossfade_frames)
+                    backend_name = 'openvino-htdemucs6-split-fp32'
+                except Exception as error:
+                    if args.device != 'auto':
+                        raise
+                    print(json.dumps({'event': 'backend_fallback', 'message': str(error)}), file=sys.stderr, flush=True)
+            if backend is None:
+                backend = TorchBackend(args.model, args.device, args.crossfade_frames)
             warmup = backend.warmup()
             # Include non-silent inference, not merely the silence fast path.
             rng = backend.np.random.default_rng(0)
@@ -99,9 +126,10 @@ def main():
             aligned = backend.context[:, start:start + protocol.HOP].T
             error = float(backend.np.max(backend.np.abs(stems.sum(axis=0) - aligned)))
             backend.reset()
-        report = {'backend': 'torch-htdemucs6', 'device': backend.device,
+        report = {'backend': backend_name, 'device': backend.device,
                   'modelSHA': backend.model_sha, 'warmupSeconds': warmup,
                   'nonSilentSeconds': elapsed, 'computeBudgetSeconds': protocol.COMPUTE_BUDGET,
+                  'hopFrames': protocol.HOP, 'latencySeconds': protocol.LATENCY / protocol.RATE,
                   'reconstructionMaximumError': error,
                   'realtimeEligible': max(warmup[-2:] + [elapsed]) <= protocol.COMPUTE_BUDGET
                       and sum(warmup[-2:] + [elapsed]) / 3 <= protocol.HOP / protocol.RATE}
@@ -111,7 +139,7 @@ def main():
             print(json.dumps(report, allow_nan=False))
             return 0
         if not args.offline and not report['realtimeEligible']:
-            raise RuntimeError('This device/runtime cannot process CatStem within the realtime audio deadline; offline rendering remains available')
+            raise RuntimeError('O CatStem levou %.2f s para processar blocos de %.2f s neste dispositivo. O áudio original foi preservado; a exportação offline continua disponível.' % (max(warmup[-2:] + [elapsed]), protocol.HOP / protocol.RATE))
         ready = dict(report, protocolVersion=protocol.VERSION, sampleRate=protocol.RATE,
                      channels=2, stems=5, hopFrames=protocol.HOP, contextFrames=protocol.CONTEXT,
                      rightContextFrames=protocol.RIGHT, latencyFrames=protocol.LATENCY,

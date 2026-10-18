@@ -11,7 +11,7 @@ class Presentation final {
     var snapshot(int panel) {
         const auto &p = session.project();
         const auto *song = session.song();
-        const auto &t = session.transport();
+        const auto t = session.presentationTransport();
         auto result = object();
         put(result, "sequence", (int64)0);
         put(result, "project", wireID(p.id));

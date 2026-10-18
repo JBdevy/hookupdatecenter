@@ -2900,6 +2900,7 @@ private struct FooterMixerStrip: View, Equatable {
             let slotsHeight = max(0, innerHeight - controlsHeight - 26)
             VStack(spacing: 0) {
                 slots.frame(height: slotsHeight).clipped().opacity(slotsHeight > 0 ? 1 : 0).allowsHitTesting(slotsHeight > 0)
+                    .trackControlSelectionExclusion()
                 ZStack(alignment: .topLeading) {
                     HStack(spacing: 3) {
                         buttons
@@ -2983,6 +2984,20 @@ private struct FooterMixerStrip: View, Equatable {
     }
 }
 
+private struct FooterEffectTransfer: Codable {
+    static let type = UTType(exportedAs: "com.catlive.mixer-effect", conformingTo: .data)
+    let project: UUID
+    let source: UUID?
+    let effect: String
+    var provider: NSItemProvider {
+        let provider = NSItemProvider()
+        let data = try? JSONEncoder().encode(self)
+        provider.registerDataRepresentation(forTypeIdentifier: Self.type.identifier, visibility: .ownProcess) { completion in
+            completion(data, nil); return nil
+        }
+        return provider
+    }
+}
 private struct FooterEffectSlot: View {
     let show: ShowController
     let track: UUID?
@@ -2990,7 +3005,6 @@ private struct FooterEffectSlot: View {
     let settings: NativeFXSettings
     @Environment(\.openFX) private var openFX
     @State private var targeted = false
-    private var scope: String { show.snapshot.project.id.uuidString + "|" + (track?.uuidString ?? "master") + "|" }
     private var title: String {
         guard let effect else { return "" }
         if settings.kind(of: effect) == "Instruments" { return InstrumentLibrary.displayName(settings.settings(for: effect).instrumentID) }
@@ -3003,7 +3017,7 @@ private struct FooterEffectSlot: View {
                     Text(verbatim: title).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain)
                     .foregroundStyle(Color.white)
-                    .onDrag { NSItemProvider(object: (scope + effect) as NSString) }
+                    .onDrag { FooterEffectTransfer(project: show.snapshot.project.id, source: track, effect: effect).provider }
                     #if os(macOS)
                     .overlay(FooterEffectContext(bypass: { show.toggleFXBypass(track, effect: effect) }, remove: { show.removeFX(track, effect: effect) }))
                     #else
@@ -3022,8 +3036,8 @@ private struct FooterEffectSlot: View {
             .overlay(alignment: .top) { if targeted { JarasTheme.green.frame(height: 2) } }
             .contentShape(Rectangle())
             .jarasHelp(effect == nil ? "Click to open FX Manager" : "Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (red slot).")
-            .onDrop(of: [UTType.text], delegate: FooterEffectDrop(show: show, track: track,
-                effect: effect, scope: scope, targeted: $targeted))
+            .onDrop(of: [FooterEffectTransfer.type], delegate: FooterEffectDrop(show: show, track: track,
+                effect: effect, targeted: $targeted))
             .trackControlSelectionExclusion()
     }
 }
@@ -3031,21 +3045,20 @@ private struct FooterEffectDrop: DropDelegate {
     let show: ShowController
     let track: UUID?
     let effect: String?
-    let scope: String
     @Binding var targeted: Bool
-    func validateDrop(info: DropInfo) -> Bool { !TrackReorderState.shared.active && info.hasItemsConforming(to: [UTType.text]) }
+    func validateDrop(info: DropInfo) -> Bool { !TrackReorderState.shared.active && info.hasItemsConforming(to: [FooterEffectTransfer.type]) }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .copy) }
     func dropEntered(info: DropInfo) { targeted = true }
     func dropExited(info: DropInfo) { targeted = false }
     func performDrop(info: DropInfo) -> Bool {
         targeted = false
-        guard !TrackReorderState.shared.active, let provider = info.itemProviders(for: [UTType.text]).first else { return false }
-        let project = show.snapshot.project.id
-        _ = provider.loadObject(ofClass: String.self) { value, _ in
-            guard let value, value.hasPrefix(scope) else { return }
-            let source = String(value.dropFirst(scope.count))
+        guard !TrackReorderState.shared.active, let provider = info.itemProviders(for: [FooterEffectTransfer.type]).first else { return false }
+        let project = show.snapshot.project.id, session = show.projectSessionID
+        _ = provider.loadDataRepresentation(forTypeIdentifier: FooterEffectTransfer.type.identifier) { data, _ in
+            guard let data, let transfer = try? JSONDecoder().decode(FooterEffectTransfer.self, from: data), transfer.project == project else { return }
             Task { @MainActor in
-                guard show.snapshot.project.id == project else { return }
-                show.reorderFX(track, effect: source, before: effect)
+                guard show.snapshot.project.id == project, show.projectSessionID == session else { return }
+                show.copyFX(from: transfer.source, effect: transfer.effect, to: track, before: effect)
             }
         }
         return true

@@ -1,14 +1,29 @@
 #pragma once
 #include "Common.h"
+#include "../../WindowsNative/Source/StemSeparator.h"
 #include "../../WindowsNative/Source/VST3Host.h"
 namespace catlive {
+// Enabled only by the isolated --self-test harness, never by the application.
+inline bool stemDevelopmentTesting = false;
 class NativeFX {
 public:
     NativeFX();~NativeFX();
     void swap(NativeFX &) noexcept;
-    void prepare(const var& settings,double sampleRate,const NativeFX *previous=nullptr);
-    void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr);
+    void prepare(const var& settings,double sampleRate,const NativeFX *previous=nullptr,bool offline=false,bool prewarm=true);
+    void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN());
     bool hasExternal() const;
+    unsigned latencyFrames() const;
+    void activateStemLatency(bool force=false);
+    bool pendingStemChange()const;
+    void holdRemovedStems(const NativeFX &);
+    void releaseRemovedStems();
+    void resetStems();
+    void shareStems(const NativeFX &);
+    bool hasActiveStem()const;
+    native::stem::Status stemStatus(const String &key) const;
+    void waitForStems();
+    void previewStemMix(const String &,const native::stem::Mix &);
+    void checkStemErrors() const;
     std::shared_ptr<native::vst3::Processor> external(const String &key) const;
     void captureExternalState(var &) const;
     StringArray unsupported;

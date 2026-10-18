@@ -67,7 +67,7 @@ enum StemProjectImporter {
         }
         return sources
     }
-    static func prepareDroppedAudio(_ urls: [URL], start: Double, destinationTracks: [UUID], destination: URL, layout: AudioDropLayout = .separateTracks, gap: Double = 0, destinationKind: TrackKind? = nil, videoTrackAvailable: Bool = false,
+    static func prepareDroppedAudio(_ urls: [URL], start: Double, destinationTracks: [UUID], destination: URL, layout: AudioDropLayout = .separateTracks, gap: Double = 0, destinationKind: TrackKind? = nil, videoTrackAvailable: Bool = false, deferWaveform: Bool = false,
                                     progress: (@Sendable (Int, Int, String) -> Void)? = nil) throws -> DroppedAudio {
         guard start.isFinite, start >= 0, gap.isFinite, (0...60).contains(gap), !urls.isEmpty else { throw ProjectError.invalid("No media files to import") }
         // Validate the entire batch before making any project directory or copying media.
@@ -113,7 +113,7 @@ enum StemProjectImporter {
                 guard copiedPath.hasPrefix(basePath + "/") else { throw ProjectError.invalid("Imported media must stay inside the project folder") }
                 let mediaPath = String(copiedPath.dropFirst(basePath.count + 1))
                 if isVideo && !AVURLAsset(url: copied).tracks(withMediaType: .audio).isEmpty { _ = try AudioFileRead.openMedia(copied) }
-                let overview = isVideo ? (waveform: [Double](), peak: 0.0, channels: [[Double]]()) : try audioOverview(copied, duration: source.duration)
+                let overview = (isVideo || deferWaveform) ? (waveform: [Double](), peak: 0.0, channels: [[Double]]()) : try audioOverview(copied, duration: source.duration)
                 let itemName = url.deletingPathExtension().lastPathComponent
                 let clip = AudioClip(id: UUID(), name: itemName, startTime: layout == .sameTrack ? cursor : start, duration: source.duration,
                                      waveform: overview.waveform, audioFile: AudioFile(path: mediaPath), waveformChannels: overview.channels)

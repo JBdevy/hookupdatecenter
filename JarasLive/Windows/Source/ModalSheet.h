@@ -108,6 +108,7 @@ class ModalSheet final : public Component {
             sheet->close.setEnabled(!value);
         }
     }
+    juce::Rectangle<int> contentFrame() const { return frame; }
 
   private:
     // Use the component painting hook solely to clip its children. An image

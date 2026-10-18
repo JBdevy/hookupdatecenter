@@ -15,10 +15,17 @@ class Host final : private Timer {
     int port = 0;
     bool enabled() const { return transport.running(); }
     DWORD discoveryStatus() const { return advertising ? discovery.status() : ERROR_CANCELLED; }
+    void setHostName(String name) {
+        name = name.trim();
+        if (name.isEmpty()) name = SystemStats::getComputerName();
+        if (name == hostName) return;
+        hostName = name;
+        if (enabled()) start(advertising);
+    }
     void start(bool discover = true) {
         stop();
         error.clear();
-        const auto name = SystemStats::getComputerName();
+        const auto name = hostName.isEmpty() ? SystemStats::getComputerName() : hostName;
         try {
             port = transport.start(name, discover ? "0.0.0.0" : "127.0.0.1");
             if (discover)
@@ -202,6 +209,7 @@ class Host final : private Timer {
         int panel = 0, failures = 0;
     };
     Appearance &preferences;
+    String hostName;
     Transport transport;
     Discovery discovery;
     std::map<ID, Client> clients;

@@ -3,6 +3,24 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testGridDropCanInsertPortableItemsBeforeWaveformAnalysis() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try fixture(root, folder: "Source", file: "Immediate.wav").appendingPathComponent("Immediate.wav")
+        let project = root.appendingPathComponent("Project/Show.jl")
+        let imported = try StemProjectImporter.prepareDroppedAudio([source], start: 3, destinationTracks: [], destination: project, deferWaveform: true)
+        let clip = try XCTUnwrap(imported.tracks.first?.clips.first)
+        XCTAssertEqual(clip.startTime, 3)
+        XCTAssertEqual(clip.duration, 0.1, accuracy: 0.001)
+        XCTAssertTrue(clip.waveform.isEmpty)
+        let relative = try XCTUnwrap(clip.audioFile?.path)
+        let copy = project.deletingLastPathComponent().appendingPathComponent(relative)
+        XCTAssertEqual(try Data(contentsOf: source), try Data(contentsOf: copy))
+        let overview = try StemProjectImporter.audioOverview(copy, duration: clip.duration)
+        XCTAssertGreaterThan(overview.peak, 0)
+        XCTAssertFalse(overview.waveform.isEmpty)
+        XCTAssertTrue(clip.waveform.isEmpty, "Cache analysis must not mutate a previously inserted or undone item")
+    }
     func testGridDropReusesOnlyMatchingNameAndContents() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

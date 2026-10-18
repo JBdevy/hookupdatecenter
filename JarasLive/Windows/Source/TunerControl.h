@@ -25,12 +25,20 @@ class TunerControl final : public Component, private Timer {
         const auto *song = session.song();
         if (!song)
             return nullptr;
-        if (session.transport().playing)
-            return regionPitch::at(*song, session.transport().position);
+        const auto &transport = session.transport();
+        if (transport.playing) {
+            for (const auto &part : song->parts) if (transport.ignoreNextRegionId == part.id) return &part;
+            if (const auto *part = regionPitch::at(*song, transport.position)) return part;
+        }
         for (const auto &part : song->parts)
-            if (session.transport().regionId == part.id)
-                return &part;
-        return regionPitch::at(*song, session.transport().editPosition);
+            if (transport.regionId == part.id) {
+                if (transport.playing) return &part;
+                const jaras::Part *first = nullptr;
+                for (const auto &child : song->parts)
+                    if (child.parentRegionID == part.id && (!first || child.startTime < first->startTime)) first = &child;
+                return first ? first : &part;
+            }
+        return nullptr;
     }
     void paint(Graphics &g) override {
         auto bounds = getLocalBounds().toFloat().reduced(.5f);
@@ -61,7 +69,7 @@ class TunerControl final : public Component, private Timer {
             return;
         auto *part = region();
         const bool allowed =
-            part && !session.transport().playing && !session.audio.isRecording() && !session.busy;
+            part && !session.busy;
         down.setEnabled(allowed && part->pitchSemitones.value_or(0) > -12);
         up.setEnabled(allowed && part->pitchSemitones.value_or(0) < 12);
         repaint();
@@ -233,14 +241,12 @@ class PitchTargetsPanel final : public Component {
     }
     void commit() {
         try {
-            session.edit([&](jaras::Project &p) {
-                for (auto &song : p.songs)
-                    for (auto &part : song.parts)
-                        if (part.id == region) {
-                            part.pitchTrackIDs = std::vector<ID>(tracks.begin(), tracks.end());
-                            part.pitchGroupIDs = std::vector<ID>(groups.begin(), groups.end());
-                        }
-            });
+            if (const auto *song = session.song()) for (const auto &part : song->parts)
+                if (part.id == region) {
+                    session.setRegionPitch(region, part.pitchSemitones.value_or(0),
+                        std::vector<ID>(tracks.begin(), tracks.end()), std::vector<ID>(groups.begin(), groups.end()));
+                    break;
+                }
             close();
         } catch (const std::exception &e) {
             error(String::fromUTF8(e.what()));

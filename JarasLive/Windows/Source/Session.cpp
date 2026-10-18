@@ -9,6 +9,8 @@
 #include "RecordingProject.h"
 #include "TrackEditing.h"
 #include "TimelineMovementLock.h"
+#include "FXPresets.h"
+#include "FXSchema.h"
 namespace catlive {
 namespace {
 jaras::Song emptySong(const String &name) {
@@ -31,8 +33,13 @@ std::vector<double> waveform(AudioFormatReader &reader) {
             throw std::runtime_error("Could not analyse audio.");
         for (int n = 0; n < count; ++n) {
             auto bin = (size_t)std::min<int64>(bins - 1, (pos + n) * bins / samples);
-            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-                peaks[bin] = std::max(peaks[bin], (double)std::abs(buffer.getSample(ch, n)));
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+                // Match the Mac overview: decoded MP3 and floating-point PCM
+                // may exceed full scale. Bound the drawing, never the audio.
+                const double peak = std::abs((double)buffer.getSample(ch, n));
+                if (std::isfinite(peak))
+                    peaks[bin] = std::max(peaks[bin], std::min(1., peak));
+            }
         }
     }
     return peaks;
@@ -78,7 +85,7 @@ void Session::newProject(String name) {
     undoHistory.clear();
     redoHistory.clear();
     recordArms.clear();
-    recordSelection.clear();
+    recordSelections.clear(); endMixerGesture();
     dirty = false;
     message.clear();
     prepare();
@@ -100,6 +107,7 @@ void Session::createRecordingProject(String name, int channels, const File &targ
     notify();
 }
 void Session::prepare() {
+    presentationQueues.reset();
     fadeoutRequested = false;
     fadeoutTracks.clear();
     audio.cancelTrackFadeout();
@@ -159,7 +167,7 @@ void Session::load(const File &file) {
 static void captureExternalProjectState(const AudioEngine &audio,jaras::Project &p) {
     auto capture=[&](const ID &id,std::optional<std::string> &json){
         if(!json)return;auto settings=JSON::parse(text(*json));audio.captureExternalEffects(id,settings);
-        json=utf8(JSON::toString(settings,true));
+        json=utf8(JSON::toString(settings,true,17));
     };
     capture({},p.masterFXJSON);
     for(auto &song:p.songs)for(auto &track:song.tracks){
@@ -297,14 +305,35 @@ void Session::cleanTimelineMedia(std::function<void(String)> completed) {
         });
     });
 }
+jaras::TransportState Session::presentationTransport() const {
+    auto value = transport();
+    if (audio.presentationLatencyFrames() == 0) return value;
+    const auto audible = audio.presentationState();
+    value.position = audible.position;
+    value.subPlay.position = audible.subPosition;
+    value.playing = audible.playing;
+    value.subPlay.playing = audible.subPlaying;
+    presentationQueues.apply(value);
+    if (value.playing && song()) {
+        const jaras::Part *current = nullptr;
+        for (const auto &part : song()->parts)
+            if (value.position >= part.startTime && value.position < part.endTime &&
+                (!current || part.endTime - part.startTime < current->endTime - current->startTime)) current = &part;
+        value.regionId = current ? std::optional<ID>(current->id) : std::nullopt;
+    }
+    return value;
+}
 void Session::syncClock() {
     auto elapsed = audio.takeElapsed();
     if (elapsed <= 0)
         return;
-    auto old = transport().songId;
-    const auto oldJump = transport().sectionJumpSerial;
-    const auto oldPromotion = transport().subPlayPromotion;
+    const auto before = transport();
+    const auto old = before.songId;
+    const auto oldJump = before.sectionJumpSerial;
+    const auto oldPromotion = before.subPlayPromotion;
     core.advance(elapsed);
+    presentationQueues.advance(elapsed, audio.presentationLatencyFrames() / audio.sampleRate(),
+                               before, transport());
     if (old != transport().songId && song())
         prepare();
     else {
@@ -318,12 +347,14 @@ void Session::syncClock() {
         if (expected.playing != actual.playing || expected.subPlay.playing != actual.subPlaying ||
             oldJump != expected.sectionJumpSerial || oldPromotion != expected.subPlayPromotion ||
             std::abs(expected.position - actual.position) > tolerance)
-            publishTransport();
+            publishTransport(oldJump != expected.sectionJumpSerial ||
+                             oldPromotion != expected.subPlayPromotion);
     }
 }
-void Session::publishTransport() {
+void Session::publishTransport(bool preserveLatency) {
     const auto &t = transport();
     AudioEngine::State state;
+    state.preserveLatency = preserveLatency;
     state.position = t.position;
     state.timecodePreferred = audio.timecodePreferred(t.regionId);
     state.playing = t.playing;
@@ -410,7 +441,7 @@ void Session::selectTimeRange(double from, double to) {
         syncClock();
         core.execute({jaras::CommandKind::loopStart,{},start});
         core.execute({jaras::CommandKind::loopEnd,{},end});
-        publishTransport();
+        publishTransport(true);
     }
 }
 void Session::command(jaras::CommandKind kind, const ID &target, double value) {
@@ -454,7 +485,9 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
             core.execute({jaras::CommandKind::loopStart,{},range->first});
             core.execute({jaras::CommandKind::loopEnd,{},range->second});
         }
+    const auto beforeCommand = transport();
     core.execute({kind, target, value});
+    presentationQueues.command(kind, beforeCommand, transport());
     if (kind == jaras::CommandKind::escape && !cancellingTransport) clearTimeRange();
     if (old != transport().songId) clearTimeRange();
     if (start && (transport().playing || transport().subPlay.playing) &&
@@ -476,8 +509,15 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
         dirty = true;
         if (song())
             audio.setMixer(project(), *song());
-    } else
-        publishTransport();
+    } else {
+        const auto &afterCommand = transport();
+        const bool unchangedHeads = beforeCommand.songId == afterCommand.songId &&
+            beforeCommand.position == afterCommand.position &&
+            beforeCommand.subPlay.position == afterCommand.subPlay.position &&
+            beforeCommand.playing == afterCommand.playing &&
+            beforeCommand.subPlay.playing == afterCommand.subPlay.playing;
+        publishTransport(unchangedHeads);
+    }
     startTimerHz(transport().playing || transport().subPlay.playing ? 60 : 8);
     if (fadeoutRequested && !completingFadeout && !transport().playing) cancelTransportFadeout();
     if (kind == jaras::CommandKind::selectRegion && old == transport().songId && selectionChanged)
@@ -519,25 +559,51 @@ void Session::updateRecordArms() {
         for (const auto &track : current->tracks)
             audio.armTrack(track.id, recordingArmed(track.id));
 }
-void Session::setRecordingSelection(const ID &id) {
+void Session::setRecordingSelection(const ID &id, const std::set<ID> &targets) {
     if (audio.isRecording())
         return;
-    if (recordSelection == id)
+    const auto selected = id.empty() ? std::set<ID>{} : targets.count(id) ? targets : std::set<ID>{id};
+    if (recordSelections == selected)
         return;
-    recordSelection = id;
+    recordSelections = selected;
     updateRecordArms();
 }
-void Session::cycleRecordArm(const ID &id) {
+void Session::cycleRecordArm(const ID &id, const std::set<ID> &targets) {
     if (audio.isRecording())
         throw std::runtime_error("Conclua a gravação antes de alterar as pistas armadas.");
-    if (const auto *current = song())
+    const int next = (recordArm(id) + 1) % 3;
+    if (const auto *current = song()) {
         for (const auto &track : current->tracks)
-            if (track.id == id && jaras::fixedTrackName(track.role).empty()) {
-                recordArms[id] = (recordArm(id) + 1) % 3;
-                updateRecordArms();
-                notify();
-                return;
-            }
+            if ((targets.count(id) ? targets.count(track.id) != 0 : track.id == id) && jaras::fixedTrackName(track.role).empty())
+                recordArms[track.id] = next;
+        updateRecordArms(); notify();
+    }
+}
+void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set<ID> &selection, double value) {
+    if (busy || !song()) return;
+    const auto tracks = mixerGestureSource == id && mixerGestureProject == project().id && mixerGestureKind == kind ? mixerGestureTracks : song()->tracks;
+    const auto source = std::find_if(tracks.begin(), tracks.end(), [&](const auto &t) { return t.id == id; });
+    if (source == tracks.end()) return;
+    const bool volume = kind == jaras::CommandKind::volume, pan = kind == jaras::CommandKind::pan;
+    auto state = [&](const auto &t) { return kind == jaras::CommandKind::mute ? t.mute : kind == jaras::CommandKind::solo ? t.solo : t.phaseInverted.value_or(false); };
+    const bool desired = !state(*source);
+    std::vector<ID> order{id};
+    for (const auto &t : tracks) if (selection.count(id) && selection.count(t.id) && t.id != id) order.push_back(t.id);
+    std::set<ID> applied;
+    for (const auto &target : order) {
+        if (applied.count(target) || (volume && trackFaderLocked(target))) continue;
+        const auto at = std::find_if(tracks.begin(), tracks.end(), [&](const auto &t) { return t.id == target; });
+        if (at == tracks.end()) continue;
+        if (jaras::fixedTrackName(at->role).size() && at->role.id != "click" && at->role.id != "timecode") continue;
+        if (volume || pan) {
+            const double next = volume ? jlimit(0., std::pow(10., 12./20), source->volume <= 0 || value <= 0 ? value : at->volume * value / source->volume)
+                                       : jlimit(-1., 1., at->pan + value - source->pan);
+            core.execute({kind, target, next});
+        } else if (state(*at) != desired) core.execute({kind, target});
+        applied.insert(target);
+        if ((volume || pan) && at->stereoLinkPartner) applied.insert(*at->stereoLinkPartner);
+    }
+    dirty = true; audio.setMixer(project(), *song()); notify();
 }
 void Session::toggleRecording() {
     if (audio.isRecording()) {
@@ -779,14 +845,69 @@ void Session::configureEffects(const std::map<ID, var> &changes) {
     for(auto &[id,settings]:live){settings=settings.clone();audio.captureExternalEffects(id,settings);}
     applyEffects(live, true);
 }
+String Session::copyEffect(const ID &source, const String &effect, const ID &destination, const String &before) {
+    if (busy || !song()) return {};
+    const auto valid = [&](const ID &id) {
+        return id.empty() || std::any_of(song()->tracks.begin(), song()->tracks.end(), [&](const auto &track) {
+            return track.id == id && jaras::fixedTrackName(track.role).empty();
+        });
+    };
+    if (!valid(source) || !valid(destination)) return {};
+    // This reads the live VST3 component/controller state, including libraries
+    // and edits made in the plugin window since the last project save.
+    const auto captured = currentEffects({{source, var()}, {destination, var()}});
+    const auto original = captured.at(source);
+    auto result = captured.at(destination).clone();
+    if (!result.isObject()) result = fxschema::defaults();
+    auto chain = list(get(result, "inserted"));
+    if (!list(get(original, "inserted")).contains(var(effect)) ||
+        (before.isNotEmpty() && !chain.contains(var(before)))) return {};
+    String key;
+    for (auto plugin : list(get(original, "externalPlugins"))) {
+        if ("External:" + str(plugin, "id") != effect) continue;
+        plugin = plugin.clone(); put(plugin, "id", text(uuid()));
+        auto plugins = list(get(result, "externalPlugins")); plugins.add(plugin); put(result, "externalPlugins", plugins);
+        key = "External:" + str(plugin, "id"); break;
+    }
+    if (key.isEmpty()) {
+        String kind = effect; var parameters = original;
+        for (const auto &instance : list(get(original, "instances"))) {
+            if (effect != "Native:" + str(instance, "id") && effect != "Instance:" + str(instance, "id")) continue;
+            kind = str(instance, "kind"); parameters = get(instance, "settings"); break;
+        }
+        if (kind == "Instruments" && destination.empty()) return {};
+        auto isolated = fxschema::defaults();
+        if (kind == "CatStemSeparation 5") {
+            if (chain.contains(var(kind))) throw std::runtime_error("Esta pista já possui CatStemSeparation 5.");
+            for (const auto property : {"stemSeparatorEnabled", "stemMix"})
+                if (!get(parameters, property).isVoid()) put(result, property, get(parameters, property).clone());
+            key = kind;
+        } else {
+            if (fxpresets::fields(kind).isEmpty()) return {};
+            for (const auto &property : fxpresets::fields(kind))
+                if (!get(parameters, Identifier(property)).isVoid()) put(isolated, Identifier(property), get(parameters, Identifier(property)).clone());
+            put(isolated, "inserted", Array<var>{kind});
+            auto instance = object(); const auto identifier = text(uuid());
+            put(instance, "id", identifier); put(instance, "kind", kind); put(instance, "settings", isolated);
+            auto instances = list(get(result, "instances")); instances.add(instance); put(result, "instances", instances);
+            key = "Native:" + identifier;
+        }
+    }
+    chain.insert(before.isEmpty() ? chain.size() : chain.indexOf(var(before)), key);
+    put(result, "inserted", chain);
+    configureEffects(destination, result);
+    return key;
+}
 void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory) {
     if (busy || changes.empty())
         return;
     syncClock();
     auto before = currentEffects(changes);
     auto p = project();
-    for (const auto &[id, settings] : changes) {
-        const std::optional<std::string> json = settings.isVoid() ? std::nullopt : std::optional<std::string>(utf8(JSON::toString(settings, true)));
+    auto canonical = changes;
+    for (auto &[id, settings] : canonical) settings = fxschema::complete(settings);
+    for (const auto &[id, settings] : canonical) {
+        const std::optional<std::string> json = settings.isVoid() ? std::nullopt : std::optional<std::string>(utf8(JSON::toString(settings, true, 17)));
         bool found = id.empty();
         if (id.empty()) p.masterFXJSON = json;
         else for (auto &song : p.songs) for (auto &track : song.tracks) {
@@ -797,7 +918,22 @@ void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory)
         if (!found) throw std::runtime_error("A faixa deste efeito não existe mais.");
     }
     jaras::validate(p);
-    for (const auto &[id, settings] : changes) audio.setEffects(id, settings);
+    try {
+        for (const auto &[id, settings] : canonical) audio.setEffects(id, settings);
+    } catch (...) {
+        const auto failure = std::current_exception();
+        bool restored = true;
+        // Preparation may reuse a live processor. Restore every destination,
+        // including the one that failed, before keeping the old project/Undo.
+        for (const auto &[id, settings] : before)
+            try { audio.setEffects(id, settings); } catch (...) { restored = false; }
+        if (!restored) {
+            core.execute({jaras::CommandKind::stopAll});
+            publishTransport();
+            throw std::runtime_error("Não foi possível aplicar os efeitos nem restaurar todo o áudio. A reprodução foi parada; reabra o projeto salvo.");
+        }
+        std::rethrow_exception(failure);
+    }
     core.applyProjectEdit(std::move(p));
     if (recordHistory) {
         undoHistory.emplace_back(std::move(before));
@@ -807,8 +943,30 @@ void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory)
     dirty = true;
     notify();
 }
+void Session::setRegionPitch(const ID &id, int semitones, std::vector<ID> tracks, std::vector<ID> groups) {
+    if (busy || !song()) return;
+    syncClock();
+    const auto before = snapshot();
+    auto next = core;
+    next.setRegionPitch(id, semitones, std::move(tracks), std::move(groups));
+    audio.refreshRegionPitch(*next.currentSong(), id);
+    core = std::move(next);
+    undoHistory.emplace_back(before);
+    if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
+    redoHistory.clear(); dirty = true; message.clear(); notify();
+}
 double Session::tempoBPM() const {
     return song() ? tempoEditing::bpm(*song(), tempoEditing::position(*song(), transport())) : 120;
+}
+void Session::setMeter(int beats, int unit) {
+    if (busy || !song() || (song()->beatsPerBar == beats && song()->beatUnit == unit)) return;
+    syncClock();
+    const auto before = snapshot();
+    core.setProjectTiming(song()->bpm, beats, unit, song()->timeSettings);
+    audio.refreshTiming(*song()); publishTransport();
+    undoHistory.emplace_back(before);
+    if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
+    redoHistory.clear(); dirty = true; message.clear(); notify();
 }
 void Session::setTempo(double value) {
     if (busy || !song() || !std::isfinite(value)) return;
@@ -891,7 +1049,8 @@ void Session::redo() {
     else restoreSnapshot(value.project);
 }
 void Session::importAudio(const Array<File> &files, double at) { importMedia(files,at,{},false,0); }
-void Session::importMedia(const Array<File> &files,double at,ID targetTrack,bool sameTrack,double gap) {
+void Session::importMedia(const Array<File> &files,double at,ID targetTrack,bool sameTrack,double gap,
+                          std::function<void(String)> completion, bool deferWaveform) {
     if(busy||files.isEmpty())return;
     if(transport().playing||transport().subPlay.playing)throw std::runtime_error("Pare antes de importar mídia.");
     if(!song()||!std::isfinite(at)||at<0||!std::isfinite(gap)||gap<0||gap>60)throw std::runtime_error("Posição ou intervalo de importação inválido.");
@@ -900,7 +1059,7 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,bool
     if(!targetTrack.empty()&&target==song()->tracks.end())throw std::runtime_error("A pista de destino não existe mais.");
     const auto targetRole=target==song()->tracks.end()?jaras::TrackRole{}:target->role;
     auto weak=std::weak_ptr<int>(alive);busy=true;importProgress=0;message=String::fromUTF8("Importando mídia…");notify();
-    worker.addJob([this,weak,files,at,targetTrack,sameTrack,gap,songID,projectID,directory,targetRole]{
+    worker.addJob([this,weak,files,at,targetTrack,sameTrack,gap,songID,projectID,directory,targetRole,completion,deferWaveform]{
         struct Source {File file;double duration;bool projection;};
         std::vector<Source> sources;std::vector<jaras::Track> tracks;Array<File> copied;String error;
         try {
@@ -934,13 +1093,13 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,bool
                 auto destination=directory.getChildFile(relative);destination.getParentDirectory().createDirectory();copied.add(destination);
                 if(!source.file.copyFileTo(destination))throw std::runtime_error("Não foi possível copiar a mídia para o projeto.");
                 clip.audioFile=jaras::AudioFile{utf8(relative),{}};
-                if(!source.projection){std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(source.file));if(!reader)throw std::runtime_error("Não foi possível ler o áudio.");clip.waveform=waveform(*reader);}
+                if(!source.projection&&!deferWaveform){std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(source.file));if(!reader)throw std::runtime_error("Não foi possível ler o áudio.");clip.waveform=waveform(*reader);}
                 if(!sameTrack||tracks.empty()){jaras::Track track;track.id=i==0&&!targetTrack.empty()?targetTrack:uuid();track.name=clip.name;track.role.id=i==0&&!targetTrack.empty()?targetRole.id:"other";track.color=0x828282;tracks.push_back(std::move(track));}
                 tracks.back().clips.push_back(std::move(clip));cursor+=source.duration+gap;
                 MessageManager::callAsync([this,weak,i,total=sources.size()]{if(!weak.expired()){importProgress=double(i+1)/total;if(changed)changed();}});
             }
         }catch(const std::exception &e){error=String::fromUTF8(e.what());}
-        MessageManager::callAsync([this,weak,tracks=std::move(tracks),copied,songID,projectID,targetTrack,error]()mutable{
+        MessageManager::callAsync([this,weak,tracks=std::move(tracks),copied,songID,projectID,targetTrack,error,completion]()mutable{
             if(weak.expired()){for(auto &f:copied)f.deleteFile();return;}
             busy=false;
             try {
@@ -968,8 +1127,9 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,bool
                     }
                 });
                 message=String::fromUTF8("Mídia importada.");
-            }catch(const std::exception &e){for(auto &f:copied)f.deleteFile();message=String::fromUTF8(e.what());}
+            }catch(const std::exception &e){for(auto &f:copied)f.deleteFile();error=String::fromUTF8(e.what());message=error;}
             notify();
+            if(!weak.expired()&&completion)completion(error);
         });
     });
 }
@@ -1085,9 +1245,13 @@ void Session::renameTrack(ID id, String name) {
         false);
 }
 void Session::removeTrack(ID id) {
+    removeTracks({id});
+}
+void Session::removeTracks(const std::set<ID> &ids) {
+    if (ids.empty()) return;
     edit([&](jaras::Project &p) {
         for (auto &s : p.songs)
-            trackTree::remove(s, id);
+            for (const auto &id : ids) trackTree::remove(s, id);
     });
 }
 void Session::removeClip(ID id) {
@@ -1162,7 +1326,7 @@ void Session::timerCallback() {
         syncClock();
         updateTransportFadeout();
         if (playbackUpdate)
-            playbackUpdate(transport());
+            playbackUpdate(presentationTransport());
         if (tick)
             tick();
     } catch (const std::exception &e) {

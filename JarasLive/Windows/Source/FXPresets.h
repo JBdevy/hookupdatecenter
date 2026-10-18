@@ -6,6 +6,7 @@ inline void erase(var &value, const Identifier &key) {
 }
 inline const StringArray &fields(const String &kind) {
     static const std::map<String, StringArray> values{
+        {"CatStemSeparation 5", {"stemSeparatorEnabled", "stemMix"}},
         {"EQ", {"eqEnabled", "bands"}},
         {"Compressor", {"compressorEnabled", "threshold", "ratio", "attack", "release", "makeup"}},
         {"Limiter", {"limiterEnabled", "limiter"}}, {"Pitch", {"pitchEnabled", "pitchSemitones"}},

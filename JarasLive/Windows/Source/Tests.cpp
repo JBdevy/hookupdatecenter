@@ -39,6 +39,10 @@
 #include "ActionBindingsTests.h"
 #include "UIFeatureTests.h"
 #include "PartsPanelTests.h"
+#include "StemGraphTests.h"
+#include "MediaImportTests.h"
+#include "GridMediaClipboardTests.h"
+#include "FloatingControlTests.h"
 namespace catlive {
 namespace {
 void expect(bool condition, const String &message) {
@@ -105,6 +109,10 @@ int runTests(const File &directory) {
     addActionBindingsTests(directory, test);
     addUIFeatureTests(directory, test);
     addPartsPanelTests(test);
+    stemGraphTests::registerTests(directory, test, skipped);
+    mediaImportTests::registerTests(directory, test);
+    gridMediaClipboardTests::registerTests(test);
+    floatingControlTests::registerTests(directory,test);
     test("Transport Fadeout waits for silence, cancels and blocks Subplay without changing saved faders", [&] {
         Session session; session.inspection = true;
         auto p = projectFixture();
@@ -336,17 +344,27 @@ int runTests(const File &directory) {
     test("Batch FX bypass and deletion undo every selected chain with exact plugin state", [&] {
         auto p = projectFixture();
         auto other = p.songs[0].tracks[0]; other.id = uuid(); other.clips.clear(); p.songs[0].tracks.push_back(other);
-        const auto fx = JSON::parse(R"({"inserted":["EQ","Native:repeat","External:kontakt"],"eqEnabled":true,"bands":[{"gain":7}],"instances":[{"id":"repeat","kind":"Compressor","settings":{"inserted":["Compressor"],"compressorEnabled":false,"threshold":-39}}],"externalPlugins":[{"id":"kontakt","classID":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","name":"Kontakt","path":"C:/test.vst3","bypassed":false,"componentState":"bGlicmFyeS1lZGl0ZWQ=","controllerState":"dWktc3RhdGU="}]})");
-        const auto encoded = utf8(JSON::toString(fx, true));
+        const auto fx = fxschema::complete(JSON::parse(R"({"inserted":["EQ","Native:repeat","External:kontakt"],"eqEnabled":true,"bands":[{"frequency":1000,"gain":7,"q":0.12345678901234567}],"instances":[{"id":"repeat","kind":"Compressor","settings":{"inserted":["Compressor"],"compressorEnabled":false,"threshold":-39}}],"externalPlugins":[{"id":"kontakt","classID":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","name":"Kontakt","path":"C:/test.vst3","bypassed":false,"componentState":"bGlicmFyeS1lZGl0ZWQ=","controllerState":"dWktc3RhdGU="}]})"));
+        const auto encoded = utf8(JSON::toString(fx, true, 17));
         for (auto &track : p.songs[0].tracks) track.fxJSON = encoded;
         p.masterFXJSON = encoded;
         Session session; session.inspection = true; session.restoreSnapshot(ProjectCodec::encode(p));
+        const auto captured = ProjectCodec::decode(session.snapshot());
+        const auto capturedFX = JSON::parse(text(*captured.songs[0].tracks[0].fxJSON));
+        expect(num(list(get(capturedFX, "bands"))[0], "q") == num(list(get(fx, "bands"))[0], "q"),
+               "Capturing live plugin state rounded an existing native parameter");
         const std::vector<ID> ids{p.songs[0].tracks[0].id, other.id};
         fxchain::change(session, ids, false);
         for (const auto &id : ids) expect(fxchain::allBypassed(fxchain::settings(session, id)), "Selected chain still enabled");
         expect(session.project().masterFXJSON == p.masterFXJSON, "Track action changed master");
         session.undo();
-        for (const auto &t : session.song()->tracks) expect(t.fxJSON == encoded, "Undo lost mixed bypass, settings or plugin state");
+        for (const auto &t : session.song()->tracks) {
+            if (t.fxJSON != encoded) {
+                directory.getChildFile("fx-undo-before.json").replaceWithText(text(encoded));
+                directory.getChildFile("fx-undo-after.json").replaceWithText(t.fxJSON ? text(*t.fxJSON) : "null");
+            }
+            expect(t.fxJSON == encoded, "Undo lost mixed bypass, settings or plugin state");
+        }
         session.redo();
         fxchain::change(session, ids, false);
         for (const auto &id : ids) for (auto key : list(get(fx, "inserted"))) expect(fxchain::enabled(fxchain::settings(session, id), key.toString()), "Unbypass left a stage disabled");
@@ -531,6 +549,43 @@ int runTests(const File &directory) {
         expect(tempoEditing::bpm(*session.song(),30)==120,"Following song preserved");
         session.command(jaras::CommandKind::stopAll);session.undo();
         expect(tempoEditing::bpm(*session.song(),10)==120,"Undo restores tempo");
+    });
+    test("Selected tracks share one neutral grid highlight and preserve grid colours", [&] {
+        const Colour base(0xff1e1e1e), selected(0xff252525), primary(0xff535250);
+        const auto secondary=Colour(0xff333235).withAlpha(.85f);
+        Image pixels(Image::RGB,96,64,true);
+        {
+            Graphics graphics(pixels);
+            graphics.fillAll(base);
+            int y=16;
+            for (const auto trackColour : {Colour(0xffffff00),Colour(0xff828282),Colour(0xff00ff00)}) {
+                graphics.setColour(trackColour);graphics.fillRect(0,y,96,16);
+                graphics.setColour(theme::panel);graphics.fillRect(0,y,96,16);
+                y+=16;
+            }
+            for(y=0;y<64;y+=16) {
+                graphics.setColour(primary);graphics.fillRect(16,y,1,16);
+                graphics.setColour(secondary);graphics.fillRect(48,y,1,16);
+            }
+        } // End the native Direct2D drawing batch before reading its pixels.
+        {
+            FileOutputStream output(directory.getChildFile("timeline-selected-grid.png"));
+            PNGImageFormat().writeImageToStream(pixels,output);
+        }
+        const auto luma=[](Colour c){return .2126f*c.getRed()+.7152f*c.getGreen()+.0722f*c.getBlue();};
+        // Direct2D alpha blending and Colour::overlaidWith round 8-bit channels
+        // differently. Permit that single level, but keep opaque pixels exact.
+        const auto sameBlend=[](Colour a,Colour b){
+            return a.getAlpha()==b.getAlpha() && std::abs((int)a.getRed()-(int)b.getRed())<=1 &&
+                std::abs((int)a.getGreen()-(int)b.getGreen())<=1 && std::abs((int)a.getBlue()-(int)b.getBlue())<=1;
+        };
+        for(int y=24;y<64;y+=16) {
+            expect(pixels.getPixelAt(47,y)==selected&&pixels.getPixelAt(49,y)==selected,"Yellow gray and green tracks must share the opaque neutral highlight");
+            expect(std::abs(luma(pixels.getPixelAt(48,y))-luma(selected))>=10.f,"Secondary line must remain visible and exactly one pixel wide");
+            expect(sameBlend(pixels.getPixelAt(48,y),selected.overlaidWith(secondary)),"Secondary colour and alpha must remain unchanged");
+            expect(pixels.getPixelAt(16,y)==primary,"Primary grid colour must remain unchanged");
+        }
+        expect(sameBlend(pixels.getPixelAt(48,8),base.overlaidWith(secondary)),"Unselected secondary grid colour must remain unchanged");
     });
     test("Timeline grid follows tempo markers, meter and visible subdivisions", [&] {
         jaras::Song song; song.duration = 60; song.bpm = 120;
@@ -745,7 +800,8 @@ int runTests(const File &directory) {
         const auto selectedCount=[&] {return list(get(workspace.diagnostics(),"selectedItems")).size();};
         const double edit=session.transport().editPosition;
         const int modals=Component::getNumCurrentlyModalComponents();
-        Point<float> anchor{0,65},end{(float)canvas->getWidth()-1,(float)canvas->getHeight()-1};
+        // Start in the track area, below the edit cursor head's hit target.
+        Point<float> anchor{0,72},end{(float)canvas->getWidth()-1,(float)canvas->getHeight()-1};
         canvas->mouseDown(event(anchor,anchor,ModifierKeys::rightButtonModifier,false));
         expect(Component::getNumCurrentlyModalComponents()==modals,"Right down defers menu");
         canvas->mouseDrag(event(end,anchor,ModifierKeys::rightButtonModifier,true));
@@ -985,6 +1041,106 @@ int runTests(const File &directory) {
         expect(project.regionSetlist->playlists[0].regionIds==std::vector<ID>{first,second,adjacent.id},"Unwrapped playlist expands chronologically");
         expect(song.tracks[0].clips[0].audioFile->path==media&&song.tracks[0].clips[0].startTime==10,"Region operations never move or replace audio");
         jaras::validate(project);
+    });
+    test("Disunifying an opened project survives save, reopen, undo and redo without stale parent IDs", [&] {
+        auto project = projectFixture(); auto &song = project.songs.front();
+        song.tracks.clear(); song.parts[1].startTime = 19; song.parts[1].endTime = 30;
+        const auto songID = song.id, childID = song.parts[0].id;
+        const auto groupID = regionEditing::unify(project, songID, childID, "Imported family");
+        auto original = ProjectCodec::encode(project);
+        auto originalSong = list(get(original, "songs"))[0];
+        for (auto part : list(get(originalSong, "parts")))
+            if (str(part, "id") == text(childID)) put(part, "futureImportMetadata", "retain-child-extension");
+        const auto file = directory.getChildFile("codec-disunify-" + text(uuid())).getChildFile("Show.jl");
+        ProjectCodec::write(file, original);
+        Session session; session.inspection = true; session.audio.setOffline(true); session.load(file);
+        session.edit([&](jaras::Project &value) { regionEditing::disunify(value, songID, groupID); });
+        const auto assertUnwrapped = [&](const var &raw) {
+            const auto decoded = ProjectCodec::decode(raw); // Rejects dangling parent IDs.
+            expect(decoded.songs.front().parts.size() == 2 &&
+                       std::all_of(decoded.songs.front().parts.begin(), decoded.songs.front().parts.end(),
+                                   [](const auto &part) { return !part.parentRegionID; }),
+                   "A removed parent came back from the opened document metadata");
+            bool extensionKept = false;
+            for (const auto &part : list(get(list(get(raw, "songs"))[0], "parts")))
+                if (str(part, "id") == text(childID))
+                    extensionKept = str(part, "futureImportMetadata") == "retain-child-extension" &&
+                                    get(part, "parentRegionID").isVoid();
+            expect(extensionKept, "Disunification removed unknown child data or retained its old parent field");
+        };
+        assertUnwrapped(session.snapshot());
+        session.undo();
+        expect(session.song()->parts.size() == 3 && regionEditing::hasChildren(*session.song(), groupID),
+               "Undo did not restore the opened family");
+        session.redo(); assertUnwrapped(session.snapshot());
+        session.save(file); assertUnwrapped(ProjectCodec::read(file));
+        session.load(file); assertUnwrapped(session.snapshot());
+    });
+    test("Cleared marker and region options stay cleared through original JSON, history and encrypted save", [&] {
+        auto project = projectFixture(); auto &song = project.songs.front(); song.tracks.clear();
+        auto &part = song.parts.front(); part.color = 0x123456; part.uppercaseName = true;
+        part.pitchSemitones = 3; part.totalLoop = true;
+        part.pitchTrackIDs = std::vector<ID>{}; part.pitchGroupIDs = std::vector<ID>{};
+        auto &section = song.markers->front(); section.section = true; section.loopSection = true;
+        jaras::TimelineMarker tempo{uuid(), "Tempo", 11, 0x999999};
+        tempo.tempoBPM = 130; tempo.tempoBeats = 3; tempo.tempoUnit = 4;
+        tempo.tempoReferenceBPM = 120; tempo.tempoTimebase = "free";
+        song.markers->push_back(tempo);
+        const auto sectionTemplate = song.markers->front();
+        auto original = ProjectCodec::encode(project);
+        auto originalSong = list(get(original, "songs"))[0];
+        for (auto marker : list(get(originalSong, "markers"))) put(marker, "futureImportMetadata", "retain-marker-extension");
+        auto originalPart = list(get(originalSong, "parts"))[0];
+        put(originalPart, "futureImportMetadata", "retain-part-extension");
+        Session session; session.inspection = true; session.audio.setOffline(true); session.restoreSnapshot(original);
+        session.edit([](jaras::Project &value) {
+            auto &song = value.songs.front(); auto &part = song.parts.front();
+            part.color.reset(); part.uppercaseName.reset(); part.pitchSemitones.reset(); part.totalLoop.reset();
+            part.pitchTrackIDs.reset(); part.pitchGroupIDs.reset();
+            for (auto &marker : *song.markers) {
+                marker.section.reset(); marker.loopSection.reset(); marker.tempoBPM.reset();
+                marker.tempoBeats.reset(); marker.tempoUnit.reset(); marker.tempoReferenceBPM.reset(); marker.tempoTimebase.reset();
+            }
+        });
+        const auto assertCleared = [&](const var &raw) {
+            const auto decoded = ProjectCodec::decode(raw);
+            expect(decoded.songs.front().markers->size() == 2, "Clearing marker types removed their positions");
+            const auto encodedSong = list(get(raw, "songs"))[0];
+            for (const auto &marker : list(get(encodedSong, "markers"))) {
+                for (const auto *key : {"section", "loopSection", "tempoBPM", "tempoBeats", "tempoUnit", "tempoReferenceBPM", "tempoTimebase"})
+                    expect(get(marker, key).isVoid(), String("Removed marker field returned: ") + key);
+                expect(str(marker, "futureImportMetadata") == "retain-marker-extension", "Unknown marker data was lost");
+            }
+            const auto region = list(get(encodedSong, "parts"))[0];
+            for (const auto *key : {"color", "uppercaseName", "pitchSemitones", "totalLoop", "pitchTrackIDs", "pitchGroupIDs"})
+                expect(get(region, key).isVoid(), String("Removed region field returned: ") + key);
+            expect(str(region, "futureImportMetadata") == "retain-part-extension", "Unknown region data was lost");
+        };
+        assertCleared(session.snapshot());
+        session.undo();
+        expect(session.song()->parts.front().color == 0x123456 && session.song()->markers->front().section == true &&
+                   session.song()->markers->back().tempoBPM == 130, "Undo lost the original optional fields");
+        session.redo(); assertCleared(session.snapshot());
+        const auto file = directory.getChildFile("codec-marker-options-" + text(uuid())).getChildFile("Show.jl");
+        session.save(file); assertCleared(ProjectCodec::read(file));
+        auto cleared = ProjectCodec::decode(session.snapshot());
+        cleared.songs.front().markers.reset();
+        const auto withoutMarkers = ProjectCodec::encode(cleared, original);
+        expect(!ProjectCodec::decode(withoutMarkers).songs.front().markers &&
+                   get(list(get(withoutMarkers, "songs"))[0], "markers").isVoid(),
+               "An absent marker collection reappeared from the original document");
+        // Explicit false/zero values are distinct from an absent option.
+        cleared.songs.front().markers = std::vector<jaras::TimelineMarker>{sectionTemplate};
+        cleared.songs.front().markers->front().section = false;
+        cleared.songs.front().markers->front().loopSection = false;
+        cleared.songs.front().parts.front().color = 0;
+        cleared.songs.front().parts.front().uppercaseName = false;
+        const auto explicitDefaults = ProjectCodec::decode(ProjectCodec::encode(cleared, original));
+        expect(explicitDefaults.songs.front().markers->front().section == false &&
+                   explicitDefaults.songs.front().markers->front().loopSection == false &&
+                   explicitDefaults.songs.front().parts.front().color == 0 &&
+                   explicitDefaults.songs.front().parts.front().uppercaseName == false,
+               "Explicit false or zero was mistaken for an absent option");
     });
     test("Region deletion preserves other songs, while timeline wrapper deletion restores children", [&] {
         auto project=projectFixture();auto &song=project.songs.front();song.regionOwnershipInitialized=true;
@@ -1352,6 +1508,56 @@ int runTests(const File &directory) {
                "Legacy installation UUID was not migrated without changing identity");
         expect(Auth::canonicalInstallationID(installation.toLowerCase()) == installation,
                "Existing installation identity was changed");
+    });
+    test("Windows device names follow the discovery UTF-8 byte limit", [&] {
+        expect(Auth::validatedDeviceName("  PC do palco  ") == "PC do palco", "Trim chosen name");
+        expect(Auth::validatedDeviceName(String::fromUTF8("João · Palco")) == String::fromUTF8("João · Palco"), "Accented device names");
+        expect(Auth::validatedDeviceName(String::repeatedString("a", 63)).isNotEmpty(), "63 bytes allowed");
+        expect(Auth::validatedDeviceName(String::repeatedString("a", 64)).isEmpty(), "64 bytes rejected");
+        expect(Auth::validatedDeviceName(String::repeatedString(String::fromUTF8("é"), 32)).isEmpty(), "Limit bytes, not characters");
+        for (auto value : {"", "   ", "---", "PC\nPalco", "PC\tPalco"}) expect(Auth::validatedDeviceName(value).isEmpty(), "Invalid display name rejected");
+    });
+    test("Selected tracks share REC, mixer buttons and relative fader/pan changes", [&] {
+        auto project = projectFixture(); auto &song = project.songs[0];
+        auto first = song.tracks[0]; first.clips.clear(); first.audioFile.reset(); first.id=uuid(); first.volume=.5;first.pan=-.2;first.mute=false;first.solo=false;
+        auto second=first;second.id=uuid();second.volume=.25;second.pan=.1;second.mute=true;
+        auto third=first;third.id=uuid();
+        song.tracks={first,second,third};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        const std::set<ID> selection{first.id,second.id};
+        session.cycleRecordArm(first.id,selection);
+        expect(session.recordArm(first.id)==1&&session.recordArm(second.id)==1&&session.recordArm(third.id)==0,"Arm every selected track");
+        session.cycleRecordArm(first.id,selection);
+        expect(session.recordArm(first.id)==2&&session.recordArm(second.id)==2,"Same next REC mode");
+        session.mixerCommand(jaras::CommandKind::mute,first.id,selection);
+        expect(session.song()->tracks[0].mute&&session.song()->tracks[1].mute&&!session.song()->tracks[2].mute,"Mute mixed selection consistently");
+        session.mixerCommand(jaras::CommandKind::solo,first.id,selection);
+        expect(session.song()->tracks[0].solo&&session.song()->tracks[1].solo&&!session.song()->tracks[2].solo,"Solo selection");
+        session.mixerCommand(jaras::CommandKind::volume,first.id,selection,1.);
+        expect(std::abs(session.song()->tracks[0].volume-1.)<1e-8&&std::abs(session.song()->tracks[1].volume-.5)<1e-8&&session.song()->tracks[2].volume==.5,"Keep relative levels");
+        session.mixerCommand(jaras::CommandKind::pan,first.id,selection,.2);
+        expect(std::abs(session.song()->tracks[0].pan-.2)<1e-8&&std::abs(session.song()->tracks[1].pan-.5)<1e-8,"Keep pan offsets");
+        session.beginMixerGesture(jaras::CommandKind::pan,first.id);
+        session.mixerCommand(jaras::CommandKind::pan,first.id,selection,1.);
+        session.mixerCommand(jaras::CommandKind::pan,first.id,selection,.2);
+        session.endMixerGesture();
+        expect(std::abs(session.song()->tracks[1].pan-.5)<1e-8,"Pan returns to its original offset after clipping");
+        session.setRecordingSelection(first.id,selection);
+        expect(session.recordingArmed(first.id)&&session.recordingArmed(second.id)&&!session.recordingArmed(third.id),"Automatic REC follows the whole selection");
+        session.setRecordingSelection(third.id);
+        expect(!session.recordingArmed(first.id)&&!session.recordingArmed(second.id),"Automatic REC disarms deselected tracks");
+        session.mixerCommand(jaras::CommandKind::mute,third.id,selection);
+        expect(session.song()->tracks[0].mute&&session.song()->tracks[1].mute&&session.song()->tracks[2].mute,"Unselected control acts independently");
+    });
+    test("Save and Save As require one project per folder", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        const auto root=directory.getNonexistentChildFile("project-folder-policy",{},false);
+        const auto first=root.getChildFile("One.jl"), second=root.getChildFile("Two.jl");
+        session.save(first); const auto before=first.loadFileAsString();
+        bool rejected=false;try{session.save(second);}catch(const std::exception &e){rejected=String::fromUTF8(e.what()).contains("pasta separada");}
+        expect(rejected&&!second.existsAsFile()&&first.loadFileAsString()==before&&session.document==first,"Reject second document before writing or changing active path");
+        session.save(first);expect(first.existsAsFile(),"Ordinary Save still works");
+        const auto separate=root.getChildFile("Separate/Two.jl");session.save(separate);expect(separate.existsAsFile(),"Save As in a separate folder works");
     });
     test("Native DSP delay timing, compressor gain and live piano rendering", [&] {
         NativeFX fx;
@@ -2133,6 +2339,97 @@ int runTests(const File &directory) {
         session.redo();
         session.audio.render(buffer.getArrayOfWritePointers(), 2, 480);
         expect(std::abs(buffer.getSample(0, 100) - .1f * Decibels::decibelsToGain(6.f)) < .002f, "Live FX redo did not restore processing");
+    });
+    test("Failed batch FX restores live audio and preserves the existing redo transaction", [&] {
+        // Exercise the dormant engine's validation failure without starting a worker.
+        const ScopedValueSetter<bool> developmentScope(stemDevelopmentTesting,true);
+        Session session;
+        session.inspection=true;session.mediaDirectory=directory.getChildFile("Audio");
+        auto project=projectFixture();
+        auto &song=project.songs[0];song.duration=3;song.tracks.clear();song.parts.clear();song.markers.reset();project.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+        jaras::Track first;first.id="00000000-0000-0000-0000-000000000001";first.name="First destination";
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Signal";clip.duration=1;clip.audioFile=jaras::AudioFile{"signal.wav",{}};first.clips={clip};
+        jaras::Track second;second.id="00000000-0000-0000-0000-000000000002";second.name="Failing destination";
+        song.tracks={first,second};project.savedCursor=jaras::SavedProjectCursor{song.id,0};
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        auto compressor=fxschema::defaults();put(compressor,"inserted",Array<var>{"Compressor"});
+        put(compressor,"compressorEnabled",true);put(compressor,"ratio",1);put(compressor,"threshold",0);put(compressor,"makeup",3);
+        session.configureEffects(first.id,compressor);session.undo();
+        expect(!session.canUndo()&&session.canRedo(),"Fixture did not create a single redoable FX edit");
+        session.dirty=false;session.command(jaras::CommandKind::play);
+        AudioBuffer<float> output(2,480);session.audio.render(output.getArrayOfWritePointers(),2,480);
+        const double cursor=session.audio.state().position;
+        auto malformed=fxschema::defaults(),mix=object();
+        put(malformed,"inserted",Array<var>{"CatStemSeparation 5"});put(malformed,"stemSeparatorEnabled",true);
+        put(mix,"sources",Array<var>{object()});put(malformed,"stemMix",mix);
+        put(compressor,"makeup",6);
+        // The first ordered destination installs successfully; NativeFX rejects
+        // the second chain's malformed source count before any model is spawned.
+        bool failed=false;
+        try {session.configureEffects({{first.id,compressor},{second.id,malformed}});}
+        catch(const std::exception &error){failed=String::fromUTF8(error.what()).contains("cinco stems");}
+        expect(failed,"Second FX destination did not exercise the preparation failure");
+        expect(!session.canUndo()&&session.canRedo()&&!session.dirty,"Failed batch changed history or saved-project dirty state");
+        expect(!session.song()->tracks[0].fxJSON&&!session.song()->tracks[1].fxJSON,"Failed batch changed project FX settings");
+        expect(session.audio.state().playing&&session.audio.state().position==cursor,"Failed batch interrupted or moved playback");
+        session.audio.render(output.getArrayOfWritePointers(),2,480);
+        expect(std::abs(output.getSample(0,100)-.1f)<.002f,"Failed batch left the first destination's prepared gain audible");
+        session.redo();session.audio.render(output.getArrayOfWritePointers(),2,480);
+        expect(std::abs(output.getSample(0,100)-.1f*Decibels::decibelsToGain(3.f))<.002f,"Failure discarded or replaced the prior redo transaction");
+    });
+    test("Mixer slot copies preserve independent native and external states with single-step undo", [&] {
+        Session session;
+        auto sourceSettings=object(); fxui::defaults(sourceSettings);
+        put(sourceSettings,"inserted",Array<var>{"Compressor"}); put(sourceSettings,"compressorEnabled",false);
+        put(sourceSettings,"threshold",-39.); put(sourceSettings,"ratio",9.); put(sourceSettings,"makeup",7.);
+        auto targetSettings=object(); fxui::defaults(targetSettings);
+        put(targetSettings,"inserted",Array<var>{"Delay"}); put(targetSettings,"delayEnabled",true); put(targetSettings,"delayTime",1.7);
+        auto plugin=object(); put(plugin,"id",text(uuid())); put(plugin,"classID",String::repeatedString("A",32));
+        put(plugin,"name","Kontakt"); put(plugin,"path","C:/CatLiveTests/Missing/Kontakt.vst3"); put(plugin,"category","Instrument");
+        put(plugin,"componentState","bGlicmFyeS1lZGl0ZWQ="); put(plugin,"controllerState","dWktc3RhdGU="); put(plugin,"bypassed",true);
+        const auto externalKey="External:"+str(plugin,"id");
+        put(sourceSettings,"externalPlugins",Array<var>{plugin}); put(sourceSettings,"inserted",Array<var>{var("Compressor"),var(externalKey)});
+        session.edit([&](jaras::Project &p) {
+            jaras::Track source; source.id=uuid(); source.name="Source"; source.fxJSON=utf8(JSON::toString(sourceSettings,true));
+            jaras::Track destination; destination.id=uuid(); destination.name="Destination"; destination.fxJSON=utf8(JSON::toString(targetSettings,true));
+            p.songs[0].tracks={source,destination};
+        });
+        const auto source=session.song()->tracks[0].id,destination=session.song()->tracks[1].id;
+        const auto copied=session.copyEffect(source,"Compressor",destination,"Delay");
+        expect(copied.startsWith("Native:"),"Copied native FX did not receive an independent identity");
+        auto value=fxchain::settings(session,destination);
+        expect(list(get(value,"inserted"))==Array<var>{copied,"Delay"},"Slot copy did not insert before destination");
+        const auto nested=get(list(get(value,"instances"))[0],"settings");
+        expect(num(nested,"threshold")==-39&&num(nested,"ratio")==9&&num(nested,"makeup")==7&&!flag(nested,"compressorEnabled"),"Native parameters or bypass changed during copy");
+        expect(JSON::toString(fxchain::settings(session,source),true)==JSON::toString(sourceSettings,true),"Copy mutated source FX");
+        session.undo(); expect(JSON::toString(fxchain::settings(session,destination),true)==JSON::toString(targetSettings,true),"Single undo did not restore destination chain");
+        session.redo(); expect(list(get(fxchain::settings(session,destination),"inserted"))[0].toString()==copied,"Redo changed copied processor identity");
+        const auto another=session.copyEffect(destination,copied,destination);
+        expect(another!=copied&&list(get(fxchain::settings(session,destination),"inserted")).size()==3,"Same-track slot copy moved or shared the source instance");
+        session.undo(); expect(list(get(fxchain::settings(session,destination),"inserted")).size()==2,"Same-track copy undo removed unrelated slots");
+        const auto newExternal=session.copyEffect(source,externalKey,destination,copied);
+        value=fxchain::settings(session,destination); auto duplicated=list(get(value,"externalPlugins"))[0];
+        expect(newExternal!=externalKey&&str(duplicated,"id")!=str(plugin,"id"),"VST3 copy reused source instance identity");
+        expect(str(duplicated,"componentState")==str(plugin,"componentState")&&str(duplicated,"controllerState")==str(plugin,"controllerState")&&flag(duplicated,"bypassed"),"VST3 copy lost opaque library/controller state or bypass");
+        expect(list(get(value,"inserted"))[0].toString()==newExternal,"VST3 copy did not occupy destination slot");
+        session.undo(); expect(list(get(fxchain::settings(session,destination),"externalPlugins")).isEmpty(),"VST3 copy undo retained the duplicate");
+        session.redo(); expect(str(list(get(fxchain::settings(session,destination),"externalPlugins"))[0],"componentState")==str(plugin,"componentState"),"VST3 redo lost library state");
+        const auto before=JSON::toString(fxchain::settings(session,destination),true);
+        expect(session.copyEffect(source,"missing",destination).isEmpty()&&JSON::toString(fxchain::settings(session,destination),true)==before,"Stale drag changed the destination");
+        // Feed the real Windows copy/save output into Swift's production
+        // ProjectDocumentCodec, including sparse legacy master and item chains.
+        auto portable = session.project();
+        auto master = object(); put(master,"inserted",Array<var>{externalKey});
+        put(master,"externalPlugins",Array<var>{plugin.clone()});
+        portable.masterFXJSON=utf8(JSON::toString(master,true));
+        auto itemFX=object(); put(itemFX,"inserted",Array<var>{"Delay"});
+        put(itemFX,"delayEnabled",true); put(itemFX,"delayTime",1.25); put(itemFX,"feedback",48.);
+        jaras::AudioClip item; item.id=uuid(); item.name="Windows item FX"; item.duration=1;
+        item.audioFile=jaras::AudioFile{"signal.wav",{}}; item.fxJSON=utf8(JSON::toString(itemFX,true));
+        portable.songs[0].tracks[0].clips.push_back(item);
+        const auto interchange = ProjectCodec::encode(portable);
+        expect(str(master,"threshold").isEmpty()&&str(itemFX,"ratio").isEmpty(),"Serialization modified the live sparse FX objects");
+        expect(directory.getChildFile("fx-portability.json").replaceWithText(JSON::toString(interchange,true,17)),"Could not write the Windows-to-Mac FX fixture");
     });
     test("Item FX insert remove undo and redo preserve live readers and sample position", [&] {
         Session session;
@@ -3026,7 +3323,7 @@ int runTests(const File &directory) {
     test("Timeline clipboard preserves complete items, relative positions and undo", [&] {
         auto p = projectFixture();
         auto &first = p.songs[0].tracks[0].clips[0];
-        first.fxJSON = utf8(JSON::toString(JSON::parse(R"({"inserted":["EQ"],"eqEnabled":true,"bands":[{"gain":5}]})"),true,17));
+        first.fxJSON = utf8(JSON::toString(fxschema::complete(JSON::parse(R"({"inserted":["EQ"],"eqEnabled":true,"bands":[{"frequency":1000,"gain":5}]})")),true,17));
         first.fadeInCurve = .4; first.fadeOutSCurve = -.2; first.pan = -.3;
         first.loopStart = 1; first.loopLength = 4; first.separatedStemTracks = {uuid()};
         auto other = p.songs[0].tracks[0]; other.id = uuid(); other.clips[0].id = uuid();

@@ -651,7 +651,7 @@
 "This routing would create an audio feedback loop." = "Esse roteamento criaria um ciclo de realimentação de áudio.";
 
 "Plugins" = "Plugins";
-"External" = "Externo";
+"External" = "Externo (VST3)";
 "Plugin" = "Plugin";
 "VST3 paths" = "Caminhos VST3";
 "Add path" = "Adicionar caminho";

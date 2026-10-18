@@ -65,6 +65,32 @@ foreach ($relativePath in $requiredRuntimeFiles) {
 }
 & (Join-Path $sourceDirectory 'scripts/prepare-ffmpeg-runtime.ps1') -BuildDirectory $BuildDirectory -PackageDirectory $packageDirectory -SourceDirectory $sourceDirectory
 if($LASTEXITCODE){throw 'Falha ao preparar o runtime FFmpeg do vídeo.'}
+# This payload is mandatory for both ZIP and installer. Preparation is isolated
+# in the build directory and verifies the same pinned checkpoint used on Mac.
+$stemPreparation=Join-Path $sourceDirectory '../WindowsNative/StemSeparation/prepare.py'
+$stemLock=Join-Path $sourceDirectory '../WindowsNative/StemSeparation/requirements.lock'
+$stemVersion=(Get-FileHash -LiteralPath $stemLock -Algorithm SHA256).Hash.Substring(0,12).ToLowerInvariant()
+$stemRuntime=Join-Path $BuildDirectory ("catstem-runtime-"+$stemVersion)
+$pythonCommand=Get-Command python -ErrorAction SilentlyContinue
+if(-not $pythonCommand){throw 'Python 3.11+ é necessário para preparar o pacote CatStem durante o build.'}
+& $pythonCommand.Source $stemPreparation --output $stemRuntime
+if($LASTEXITCODE){throw 'Falha ao preparar o CatStem. O pacote não foi gerado.'}
+$stemPackage=Join-Path $packageDirectory 'StemSeparationRuntime'
+if(Test-Path -LiteralPath $stemPackage){Remove-Item -LiteralPath $stemPackage -Recurse -Force}
+Copy-Item -LiteralPath $stemRuntime -Destination $stemPackage -Recurse -Force
+& $pythonCommand.Source $stemPreparation --output $stemPackage --verify
+if($LASTEXITCODE){throw 'O runtime CatStem do pacote falhou na verificação.'}
+if(-not $SkipTests) {
+    $stemProcessTest=Join-Path $BuildDirectory "$Configuration/CatStemProcessTests.exe"
+    if(-not (Test-Path -LiteralPath $stemProcessTest -PathType Leaf)) {
+        $stemProcessTest=Join-Path $BuildDirectory 'CatStemProcessTests.exe'
+    }
+    & (Join-Path $sourceDirectory 'scripts/test-catstem-runtime.ps1') `
+        -Executable (Join-Path $packageDirectory 'CatLive.exe') `
+        -ProcessTestExecutable $stemProcessTest -RuntimeDirectory $stemPackage `
+        -ResultsDirectory (Join-Path $BuildDirectory 'test-results/catstem-runtime') `
+        -SourceDirectory $sourceDirectory
+}
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'README.txt') -Destination $packageDirectory -Force
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'THIRD-PARTY-NOTICES.txt') -Destination $packageDirectory -Force
 Remove-Item -LiteralPath (Join-Path $packageDirectory 'Figtree-LICENSE.txt') -ErrorAction SilentlyContinue

@@ -4,8 +4,10 @@ namespace catlive {
 struct NativeFX::Effect {
     String kind;
     String key, externalConfiguration;
-    bool bypassed = false;
+    bool bypassed = false, retiredStem=false;
     std::shared_ptr<native::vst3::Processor> plugin;
+    std::shared_ptr<native::stem::Processor> stem;
+    native::stem::Mix stemMix;
     std::array<native::vst3::MIDIEvent,4096> midi{};
     std::vector<std::unique_ptr<dsp::IIR::Filter<float>>> eq[2];
     dsp::Compressor<float> compressor;
@@ -25,10 +27,28 @@ void NativeFX::swap(NativeFX &other)noexcept {
     effects.swap(other.effects);
     unsupported.swapWith(other.unsupported);
 }
-void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *previous) {
+void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *previous,bool offline,bool prewarm) {
     effects.clear();
     unsupported.clear();
-    auto append = [&](String kind, const var &value) {
+    auto append = [&](String kind, const String &key, const var &value) {
+        if(kind==native::stem::effectName) {
+            if(!stemDevelopmentTesting)return; // Windows: Em desenvolvimento; keep dry audio and saved state.
+            if(!get(value,"stemMix").isObject())return; // legacy offline-only Mac project
+            auto e=std::make_unique<Effect>();e->kind=kind;e->key=key;
+            e->stemMix.enabled=flag(value,"stemSeparatorEnabled");
+            const auto sources=list(get(get(value,"stemMix"),"sources"));
+            if(sources.size()!=5)throw std::runtime_error("CatStem requer cinco stems.");
+            for(int i=0;i<5;i++) {
+                e->stemMix.gains[(size_t)i]=(float)jlimit(0.,4.,num(sources[i],"gain",1));
+                if(flag(sources[i],"mute"))e->stemMix.muteMask|=1u<<i;
+                if(flag(sources[i],"solo"))e->stemMix.soloMask|=1u<<i;
+            }
+            if(previous)for(const auto &old:previous->effects)
+                if(old->key==key&&old->stem&&old->stem->sampleRate()==unsigned(sampleRate)&&old->stem->isOffline()==offline)e->stem=old->stem;
+            if(!e->stem)e->stem=std::make_shared<native::stem::Processor>(native::stem::Paths::bundled(),unsigned(sampleRate),offline,prewarm&&e->stemMix.enabled);
+            e->stem->configure(e->stemMix);
+            effects.push_back(std::move(e));return;
+        }
         String enabledKey = kind == "EQ"           ? "eqEnabled"
                             : kind == "Compressor" ? "compressorEnabled"
                             : kind == "Delay"      ? "delayEnabled"
@@ -202,7 +222,7 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                 value = get(instance, "settings");
                 break;
             }
-        append(kind, value);
+        append(kind, key, value);
     }
 }
 std::shared_ptr<native::vst3::Processor> NativeFX::external(const String &key) const {
@@ -219,10 +239,30 @@ void NativeFX::captureExternalState(var &settings) const {
         for(const auto &effect:effects)if(effect->plugin==processor)effect->externalConfiguration=JSON::toString(configuration,true);
     }
 }
+unsigned NativeFX::latencyFrames() const {unsigned value=0;for(const auto &e:effects)if(e->stem)value+=e->stem->availableLatency();return value;}
+void NativeFX::activateStemLatency(bool force){for(auto &e:effects)if(e->stem)e->stem->activate(force);}
+bool NativeFX::pendingStemChange()const {for(auto &e:effects)if(e->stem&&(e->retiredStem||e->stem->pending()))return true;return false;}
+void NativeFX::holdRemovedStems(const NativeFX &previous){
+    for(size_t index=0;index<previous.effects.size();index++){
+        const auto &old=previous.effects[index];
+        if(!old->stem||!old->stem->availableLatency()||std::any_of(effects.begin(),effects.end(),[&](const auto &e){return e->key==old->key;}))continue;
+        auto e=std::make_unique<Effect>();e->kind=old->kind;e->key=old->key;e->stem=old->stem;e->stemMix=old->stemMix;e->stemMix.enabled=false;e->retiredStem=true;
+        e->stem->configure(e->stemMix);effects.insert(effects.begin()+std::min(index,effects.size()),std::move(e));
+    }
+}
+void NativeFX::releaseRemovedStems(){effects.erase(std::remove_if(effects.begin(),effects.end(),[](const auto &e){return e->retiredStem;}),effects.end());}
+void NativeFX::shareStems(const NativeFX &source){for(auto &e:effects)if(e->stem)for(const auto &other:source.effects)if(e->key==other->key&&other->stem)e->stem=other->stem;}
+bool NativeFX::hasActiveStem()const {for(const auto &e:effects)if(e->stem&&e->stem->availableLatency())return true;return false;}
+void NativeFX::resetStems(){for(auto &e:effects)if(e->stem)e->stem->reset();}
+native::stem::Status NativeFX::stemStatus(const String &key)const {for(const auto &e:effects)if(e->key==key&&e->stem)return e->stem->status();return {};}
+void NativeFX::previewStemMix(const String &key,const native::stem::Mix &mix){for(auto &e:effects)if(e->key==key&&e->stem)e->stem->configure(mix);}
+void NativeFX::waitForStems(){for(auto &e:effects)if(e->stem&&e->stemMix.enabled)e->stem->waitReady();}
+void NativeFX::checkStemErrors()const {for(const auto &e:effects)if(e->stem&&e->stemMix.enabled){const auto s=e->stem->status();if(s.state=="fault")throw std::runtime_error(s.error);}}
 bool NativeFX::hasExternal() const {for(const auto &effect:effects)if(effect->plugin)return true;return false;}
-void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi) {
+void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds) {
     ScopedNoDenormals noDenormals;
     for (auto &e : effects) {
+        if(e->stem) { e->stem->process(buffer.getWritePointer(0),buffer.getWritePointer(1),unsigned(samples),std::isfinite(stemSeconds)?stemSeconds:seconds,playing); }
         if(e->plugin&&!e->bypassed) {
             native::vst3::Transport transport;transport.seconds=seconds;transport.quarterNotes=seconds*2;transport.playing=playing;
             int count=0;

@@ -381,7 +381,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
                 let scoped = sources.filter { $0.startAccessingSecurityScopedResource() }
                 defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
                 prepared = try await Task.detached(priority: .userInitiated) {
-                    try StemProjectImporter.prepareDroppedAudio(sources, start: start, destinationTracks: targets, destination: destination, layout: dropLayout, gap: gap, destinationKind: destinationKind, videoTrackAvailable: videoTrackAvailable) { [weak self] current, total, name in
+                    try StemProjectImporter.prepareDroppedAudio(sources, start: start, destinationTracks: targets, destination: destination, layout: dropLayout, gap: gap, destinationKind: destinationKind, videoTrackAvailable: videoTrackAvailable, deferWaveform: true) { [weak self] current, total, name in
                         Task { @MainActor [weak self] in
                             self?.status = "Importing \(current)/\(total): \(name)"
                             self?.audioImportProgress = total > 0 ? min(1, Double(current) / Double(total)) : nil
@@ -394,17 +394,9 @@ enum PortableProjectImportPrompt: String, Identifiable {
                             throw ProjectError.invalid("The destination Video track no longer exists")
                         }
                     }
-                    #if os(macOS)
-                    var waveProject = show.snapshot.project
-                    if let index = waveProject.songs.firstIndex(where: { $0.id == song }) {
-                        for track in prepared.tracks {
-                            if let existing = waveProject.songs[index].tracks.firstIndex(where: { $0.id == track.id }) {
-                                waveProject.songs[index].tracks[existing].clips += track.clips
-                            } else { waveProject.songs[index].tracks.append(track) }
-                        }
-                        await preloadTimelineWaveforms(waveProject, at: destination)
-                    }
-                    #endif
+                    // Visible items request their waveform cache asynchronously.
+                    // Insert first: analysis must never gate the drop or mutate
+                    // the project later (which could resurrect an undone item).
                     try show.insertAudioTracks(prepared.tracks, song: song, project: projectID)
                 }
             } catch {

@@ -86,6 +86,7 @@ target_sources(CatLive PRIVATE Source/Main.cpp Source/Session.cpp Source/Project
     Source/ProjectMigration.cpp Source/LogicProjectImporter.cpp Source/Typography.cpp Source/AdvancedPanel.cpp
     Source/AudioEngine.cpp Source/Instrument.cpp Source/Projection.cpp Source/native_video_decoder_ffmpeg.cpp Source/NativeFX.cpp Source/Lighting.cpp Source/Auth.cpp Source/Workspace.cpp Source/Tests.cpp Source/MP3Writer.cpp Source/AudioFormats.cpp Source/MediaSource.cpp
     "${CATLIVEROOT}/WindowsNative/Source/AudioFile.cpp"
+    "${CATLIVEROOT}/WindowsNative/Source/StemSeparator.cpp"
     ThirdParty/QRCode/qrcodegen.cpp
     ThirdParty/Monocypher/monocypher.c ThirdParty/Monocypher/monocypher-ed25519.c)
 target_include_directories(CatLive PRIVATE ThirdParty/Monocypher)
@@ -105,7 +106,7 @@ if(NOT CATLIVE_FFMPEG_INCLUDE_DIR)
 endif()
 target_include_directories(CatLive PRIVATE ThirdParty/FFmpeg/include "${CATLIVE_FFMPEG_INCLUDE_DIR}")
 target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets CatLiveVST3 juce::juce_audio_utils
-    juce::juce_dsp juce::juce_osc juce::juce_cryptography bcrypt crypt32 normaliz dnsapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32
+    juce::juce_dsp juce::juce_osc juce::juce_cryptography d2d1 dwrite bcrypt crypt32 normaliz dnsapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="CatLive" JUCE_APPLICATION_VERSION_STRING="${CATLIVE_VERSION}"
@@ -148,3 +149,13 @@ install(FILES "${CATLIVE_LAME_ROOT}/COPYING" "${CATLIVE_LAME_ROOT}/lame-3.100-so
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/config.h" "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/BUILD.txt" DESTINATION Licenses/LAME)
 install(FILES "${CATLIVEROOT}/WindowsNative/ThirdParty/dr_libs/LICENSE" DESTINATION Licenses/dr_libs)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt" DESTINATION .)
+
+# CatStem DSP/protocol tests do not load a model or require physical audio.
+add_executable(CatStemCoreTests "${CATLIVEROOT}/WindowsNative/Tests/StemSeparatorCoreTests.cpp")
+target_compile_options(CatStemCoreTests PRIVATE /utf-8)
+add_test(NAME CatStemCoreTests COMMAND CatStemCoreTests)
+
+add_executable(CatStemProcessTests "${CATLIVEROOT}/WindowsNative/Tests/StemSeparatorProcessTests.cpp"
+    "${CATLIVEROOT}/WindowsNative/Source/StemSeparator.cpp")
+target_compile_definitions(CatStemProcessTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+target_compile_options(CatStemProcessTests PRIVATE /utf-8)

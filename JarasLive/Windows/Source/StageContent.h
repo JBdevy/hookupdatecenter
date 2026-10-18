@@ -9,7 +9,7 @@ struct StageContent {
         StageContent result;
         auto &out=result.payload;
         const auto settings=stage.settings(index);
-        const auto &transport=session.transport();
+        const auto transport=session.presentationTransport();
         const double position=transport.playing?transport.position:transport.editPosition;
         const bool preview=stage.preview && flag(settings,"previewEnabled",true) && !flag(settings,"ignorePreview");
         put(out,"index",index);put(out,"settings",settings);put(out,"preview",preview);

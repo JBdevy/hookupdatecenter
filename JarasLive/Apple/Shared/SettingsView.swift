@@ -132,7 +132,6 @@ struct SettingsView: View {
                             DeviceAccountRow(device: device, current: device.id == auth.installation.id) { pendingDevice = device }.disabled(auth.busy)
                         }
                         Button("Atualizar dispositivos") { Task { await auth.refreshDevices() } }.disabled(auth.busy)
-                        Button("Validar agora") { Task { await auth.revalidate() } }.buttonStyle(StageButtonStyle()).disabled(auth.busy)
                         Button("Sair e liberar dispositivo") { Task { await auth.logout() } }.buttonStyle(StageButtonStyle(color: .red)).disabled(show.isPlaying || auth.busy)
                         if !auth.message.isEmpty { Text(LocalizedStringKey(auth.message)).font(.jarasCaption).foregroundStyle(JarasTheme.yellow) }
                     }

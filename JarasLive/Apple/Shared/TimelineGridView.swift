@@ -708,7 +708,7 @@ private struct TimelineGridContent: View, Equatable {
         let bands = song.tracks.enumerated().compactMap { index, track -> TimelineNativeGridBand? in
             guard track.kind == .standard, selectedTracks.contains(track.id) else { return nil }
             return TimelineNativeGridBand(rect: CGRect(x: 0, y: rulerHeight + rows.offsets[index], width: 0, height: rows.heights[index]),
-                color: NSColor(JarasTheme.track(track, emphasized: true).opacity(0.12)).cgColor)
+                color: NSColor(JarasTheme.panel).cgColor)
         }
         let originalParts = Dictionary(uniqueKeysWithValues: originalSong.parts.map { ($0.id, $0) })
         let unifiable = overlapCache.regions(song: originalSong, revision: revision)
@@ -4458,7 +4458,7 @@ private struct TimelineBackdrop: View {
                 guard track.kind == .standard, selectedTracks.contains(track.id) else { return nil }
                 let rect = CGRect(x: tile.minX, y: rulerHeight + rows.offsets[index], width: tile.width, height: rows.heights[index])
                 guard rect.intersects(tile) else { return nil }
-                return TimelineNativeGridBand(rect: rect, color: NSColor(JarasTheme.track(track, emphasized: true).opacity(0.12)).cgColor)
+                return TimelineNativeGridBand(rect: rect, color: NSColor(JarasTheme.panel).cgColor)
             }
             TimelineNativeGridBackdrop(viewport: tile, rulerHeight: rulerHeight, displayScale: displayScale,
                 primary: marks.filter(\.primary).map { $0.time * scale },
@@ -4496,8 +4496,7 @@ private struct TimelineBackdrop: View {
             for (index, track) in song.tracks.enumerated() where track.kind == .standard && selectedTracks.contains(track.id) {
                 let band = CGRect(x: tile.minX, y: rulerHeight + rows.offsets[index], width: tile.width, height: rows.heights[index])
                 guard band.intersects(tile) else { continue }
-                context.fill(Path(band), with: .color(JarasTheme.track(track, emphasized: true).opacity(0.12)))
-                context.fill(Path(band), with: .color(.white.opacity(0.025)))
+                context.fill(Path(band), with: .color(JarasTheme.panel))
             }
             let scale = size.width / extent
             if gridlines {
@@ -4585,19 +4584,17 @@ private final class TimelineNativeGridView: NSView {
         selections.frame = local
         // Keep selection layers through zoom; only changing selected tracks
         // changes their count. Empty grids allocate no selection layers.
-        while (selections.sublayers?.count ?? 0) > content.bands.count * 2 {
+        while (selections.sublayers?.count ?? 0) > content.bands.count {
             selections.sublayers?.last?.removeFromSuperlayer()
         }
-        while (selections.sublayers?.count ?? 0) < content.bands.count * 2 {
+        while (selections.sublayers?.count ?? 0) < content.bands.count {
             selections.addSublayer(CALayer())
         }
         for (index, band) in content.bands.enumerated() {
             let rect = band.rect.offsetBy(dx: -tile.minX, dy: -tile.minY)
             let layers = selections.sublayers!
-            layers[index * 2].frame = rect
-            layers[index * 2].backgroundColor = band.color
-            layers[index * 2 + 1].frame = rect
-            layers[index * 2 + 1].backgroundColor = CGColor(gray: 1, alpha: 0.025)
+            layers[index].frame = rect
+            layers[index].backgroundColor = band.color
         }
         func apply(_ layer: CAShapeLayer, positions: [CGFloat], color: CGColor) {
             let path = CGMutablePath()

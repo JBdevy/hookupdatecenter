@@ -116,6 +116,7 @@ class CreateTrackPanel final : public Component {
                             jaras::Track track;
                             track.id = uuid();
                             track.role.id = kind;
+                            if (kind == "other") track.color = 0x828282;
                             track.name =
                                 kind == "other"
                                     ? utf8(label + (quantity > 1 ? " " + String(i + 1) : String()))

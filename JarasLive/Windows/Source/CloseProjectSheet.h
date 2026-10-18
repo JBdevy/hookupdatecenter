@@ -31,6 +31,7 @@ class CloseProjectSheet final : public Component {
         if (key == KeyPress::returnKey) { exitModalState(1); return true; }
         return false;
     }
+    juce::Rectangle<int> contentFrame() const { return frame; }
     void resized() override {
         frame = juce::Rectangle<int>(260, 244).withCentre(getLocalBounds().getCentre());
         save.setBounds(frame.getX()+16, frame.getY()+132, 228, 28);

@@ -259,7 +259,8 @@ void Projection::timerCallback() {
         repaint();
     }
     const jaras::AudioClip *clip = nullptr;
-    auto at = session.transport().playing || session.transport().paused ? session.transport().position : session.transport().editPosition;
+    const auto transport = session.presentationTransport();
+    const auto at = transport.playing || transport.paused ? transport.position : transport.editPosition;
     if (auto *song = session.song()) clip = firstProjectionItem(*song,at,role);
     if (!clip) {
         if(videoFrame.pixels||videoFile.existsAsFile()) {
@@ -316,7 +317,7 @@ void Projection::timerCallback() {
     itemDuration = clip->duration;
     if (loaded) {
         double source = clip->sourceOffset + (at - clip->startTime) * clip->playbackRate;
-        updateVideoFrame(source,session.transport().playing,clip->playbackRate);
+        updateVideoFrame(source,transport.playing,clip->playbackRate);
     }
     status.setText(text(clip->name) + "  " + clockText(at, true), dontSendNotification);
 }

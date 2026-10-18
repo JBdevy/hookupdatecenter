@@ -694,8 +694,9 @@ void Lighting::run() {
         next += 1000.0 / 120;
         if (now - next > 100)
             next = now + 1000.0 / 120;
-        const bool active = mtcEnabled.load() && mtcPlaying.load();
-        const double position = mtcPlaying.load() ? session.audio.state().position + mtcBase.load()
+        const auto audible = session.audio.presentationState();
+        const bool active = mtcEnabled.load() && mtcPlaying.load() && audible.playing;
+        const double position = mtcPlaying.load() ? audible.position + mtcBase.load()
                                                   : mtcPosition.load();
         const ScopedLock lock(midiLock);
         if (midi && (active || std::abs(position - lastPosition) > .0001)) {

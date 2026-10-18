@@ -19,7 +19,10 @@
 #include "GridItemClipboard.h"
 #include "EditorSelectionAreas.h"
 #include "MacPopupMenuLook.h"
+#include "ExternalMediaDrop.h"
+#include "TapTempo.h"
 namespace catlive {
+namespace native { class TransportButtons; }
 namespace remote { class Host; class Presentation; }
 class TeleprompterHTTP;
 class TransportFadeoutOverlay;
@@ -31,6 +34,7 @@ class MacLook final : public MacPopupMenuLook {
     void drawToggleButton(Graphics &, ToggleButton &, bool, bool) override;
     void drawLinearSlider(Graphics &, int, int, int, int, float, float, float, Slider::SliderStyle,
                           Slider &) override;
+    void drawRotarySlider(Graphics &, int, int, int, int, float, float, float, Slider &) override;
     void drawScrollbar(Graphics &, ScrollBar &, int, int, int, int, bool, int, int, bool,
                        bool) override;
     Slider::SliderLayout getSliderLayout(Slider &) override;
@@ -57,10 +61,12 @@ class Workspace final : public Component,
     bool keyStateChanged(bool) override;
     void focusLost(FocusChangeType) override { heldShortcutKeys.clear(); }
     bool isInterestedInFileDrag(const StringArray &) override;
+    void fileDragEnter(const StringArray &, int, int) override;
     void fileDragMove(const StringArray &, int, int) override;
     void fileDragExit(const StringArray &) override;
     void filesDropped(const StringArray &, int, int) override;
     void mouseDown(const MouseEvent &) override;
+    void mouseDoubleClick(const MouseEvent &) override;
     void mouseWheelMove(const MouseEvent &, const MouseWheelDetails &) override;
     void requestClose(std::function<void()>);
     void capture(const File &);
@@ -70,7 +76,7 @@ class Workspace final : public Component,
     void openSettings();
     void openAdvanced();
     void openAudioSettings();
-    void openFX(ID track = {});
+    void openFX(ID track = {}, String preferredEffect = {});
     void openItemFX(ID clip);
     void chooseOpen();
     void openProject(const File &);
@@ -89,6 +95,7 @@ class Workspace final : public Component,
     void showMarkerMenu(ID, Point<int>);
     void editTempoMarker(ID, double);
     void runUIRegression();
+    void runMediaImportRegression(const File &, std::function<void(bool)>);
     void showLoginPreview();
     void showImportNoticePreview();
     void showError(const String &);
@@ -99,11 +106,19 @@ class Workspace final : public Component,
 
   private:
     std::set<int> heldShortcutKeys;
+    std::unique_ptr<native::TransportButtons> nativeTransport;
+    void syncNativeTransport();
     std::map<String, int> actionInvocations;
     class Timeline;
     std::optional<trackDrop::Destination> trackDropPreview;
     ID trackDropBlocked;
     std::optional<Point<int>> externalDropPoint;
+    std::vector<externalMedia::Preview> externalDropFiles;
+    std::shared_ptr<std::atomic<bool>> externalDropCancelled;
+    void clearExternalDrop();
+    void addStandardTrackAtEnd();
+    int fileDragEntries = 0, fileDropCount = 0;
+    String fileDropStatus;
     void paintOverChildren(Graphics &) override;
     class TrackRow;
     class TrackHeightHandle;
@@ -177,6 +192,7 @@ class Workspace final : public Component,
     void clearItemSelection() { selectedClip.clear(); selectedClips.clear(); }
     void copyGridItems(bool moving = false);
     void pasteGridItems(bool duplicate = false);
+    void importMediaAt(const Array<File> &, double at, ID target);
     std::set<ID> selectedTracks;
     ID trackSelectionAnchor;
     bool trackSelected(const ID &id) const { return selectedTracks.empty() ? selectedTrack == id : selectedTracks.count(id) != 0; }
@@ -184,6 +200,7 @@ class Workspace final : public Component,
     void changeMixerFX(const ID &, bool remove);
     ID recordVisualSelection;
     std::optional<GridItemClipboard> itemClipboard;
+    std::optional<DWORD> itemClipboardSequence;
     uint64 builtRevision = ~uint64(0);
     ID builtSong;
     std::vector<ID> builtTracks;
@@ -211,9 +228,8 @@ class Workspace final : public Component,
     void changeListenerCallback(ChangeBroadcaster *) override;
     void perform(std::function<void()>);
     void performAction(const String &, float, int);
-    double lastTap = 0;
+    TapTempo tempoTaps;
     bool lastSubCursorVisible = false;
-    std::vector<double> tapIntervals;
     void prompt(const String &, const String &, const String &, std::function<void(String)>);
     void confirm(const String &, const String &, std::function<void()>);
     void newProject();

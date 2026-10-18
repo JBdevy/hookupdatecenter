@@ -54,47 +54,20 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         command(jaras::CommandKind::toggleMultiLoopBypass);
     else if (action == "ignoreNext")
         command(jaras::CommandKind::ignoreNext);
-    else if (action == "tempoDown" || action == "tempoUp")
+    else if (action == "tempoDown" || action == "tempoUp") {
+        tempoTaps = {};
         session.setTempo(jlimit(60., 300., session.tempoBPM() + (action == "tempoUp" ? 1 : -1)));
-    else if (action == "tapTempo") {
-        const double now = Time::getMillisecondCounterHiRes() / 1000, interval = now - lastTap;
-        lastTap = now;
-        if (interval < .2 || interval > 2) {
-            tapIntervals.clear();
-            return;
-        }
-        tapIntervals.push_back(interval);
-        if (tapIntervals.size() > 6)
-            tapIntervals.erase(tapIntervals.begin());
-        double sum = 0;
-        for (auto x : tapIntervals)
-            sum += x;
-        session.setTempo(jlimit(60., 300., 60 * tapIntervals.size() / sum));
+    } else if (action == "tapTempo") {
+        if (auto bpm = tempoTaps.tap(Time::getMillisecondCounterHiRes() / 1000)) session.setTempo(*bpm);
     } else if (action == "tunerDown" || action == "tunerUp") {
         if (!tuner->region())
             return;
         const auto region = tuner->region()->id;
-        const auto songID = song->id;
         const int delta = action == "tunerUp" ? 1 : -1;
-        session.edit([&](jaras::Project &p) {
-            jaras::Engine edit;
-            edit.loadProject(p);
-            edit.execute({jaras::CommandKind::select, songID});
-            int current = 0;
-            for (const auto &part : edit.currentSong()->parts)
-                if (part.id == region)
-                    current = part.pitchSemitones.value_or(0);
-            const auto &parts = edit.currentSong()->parts;
-            auto selected = std::find_if(parts.begin(), parts.end(),
-                                         [&](const auto &p) { return p.id == region; });
-            auto tracks =
-                selected->pitchTrackIDs.value_or(regionPitch::defaults(*edit.currentSong(), false));
-            auto groups =
-                selected->pitchGroupIDs.value_or(regionPitch::defaults(*edit.currentSong(), true));
-            edit.setRegionPitch(region, jlimit(-12, 12, current + delta), std::move(tracks),
-                                std::move(groups));
-            p = edit.project();
-        });
+        const auto *selected = tuner->region();
+        session.setRegionPitch(region, jlimit(-12, 12, selected->pitchSemitones.value_or(0) + delta),
+            selected->pitchTrackIDs.value_or(regionPitch::defaults(*song, false)),
+            selected->pitchGroupIDs.value_or(regionPitch::defaults(*song, true)));
     } else if (action == "addTrack")
         createTrack();
     else if (action == "projectStart" || action == "projectEnd")
