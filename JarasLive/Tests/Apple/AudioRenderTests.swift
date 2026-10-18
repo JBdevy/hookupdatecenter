@@ -1457,6 +1457,7 @@ try scalarEngine.enableManualRenderingMode(.offline, format: outputFormat, maxim
 let scalarAudio = StemAudioPlayback(engine: scalarEngine, realtime: false)
 scalarAudio.open(directory: directory)
 var scalarProject = Project.empty(name: "Incremental mixer PCM")
+scalarProject.songs[0].timeSettings?.timebase = .free
 var group = Track(id: UUID(), name: "Group", role: .keys); group.volume = 0.5
 @MainActor func scalarTrack(_ name: String, volume: Double, parent: UUID? = nil, onset: Double = 0) -> Track {
     var track = Track(id: UUID(), name: name, role: .keys)
@@ -1592,6 +1593,7 @@ print("INCREMENTAL_MUTE_SOLO_CLIP_MUTE_GROUP_DUAL_PATCH_AND_FADERS_PCM_TOPOLOGY_
 // Preview before onset must reach the clip index used to schedule future voices.
 scalarAudio.open(directory: directory)
 var futureProject = Project.empty(name: "Future clip scalar cache")
+futureProject.songs[0].timeSettings?.timebase = .free
 let futureTrack = scalarTrack("Future", volume: 1, onset: 2)
 futureProject.songs[0].tracks = [futureTrack]
 var futureState = ShowSnapshot(project: futureProject, transport: TransportState(playing: true, songId: futureProject.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: true, position: 0)))
@@ -1615,6 +1617,7 @@ print("INCREMENTAL_CLIP_MUTE_AND_GAIN_BEFORE_FUTURE_ONSET_PCM_OK")
 // Prepare-only queues never pre-schedule the incoming PCM across the boundary.
 scalarAudio.open(directory: directory)
 var readyAudioProject = Project.empty(name: "Prepare queued song")
+readyAudioProject.songs[0].timeSettings?.timebase = .free
 let readyIncoming = scalarTrack("Queued", volume: 1, onset: 2)
 let readyCurrentID = UUID(), readyIncomingID = UUID()
 readyAudioProject.songs[0].tracks = [readyIncoming]
@@ -1651,6 +1654,7 @@ try audioAutoreleasepool {
       try audioAutoreleasepool {
         audio.open(directory: directory)
         var project = Project.empty(name: "Prepare after project swap")
+        project.songs[0].timeSettings?.timebase = .free
         let current = UUID(), incoming = UUID()
         project.songs[0].tracks = [track(2, 1)]
         project.songs[0].parts = [Part(id: current, name: "Current", startTime: 0, endTime: 2),
@@ -1683,6 +1687,7 @@ try audioAutoreleasepool {
                      "offline project swap \(iteration) must preserve prepare silence and explicit Play: silence=\(silent), sound=\(sound)")
         audio.stop(); audio.open(directory: directory)
         project = Project.empty(name: "Future onset after project swap")
+        project.songs[0].timeSettings?.timebase = .free
         project.songs[0].tracks = [track(0, 0.5), track(2, 1)]
         state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
             position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
@@ -1690,6 +1695,30 @@ try audioAutoreleasepool {
         let future = try peak()
         precondition(abs(future - 0.05) < 0.003,
                      "offline project swap \(iteration) must not pull a future item before its onset: \(future)")
+        audio.stop(); audio.open(directory: directory)
+        // Relative-time playback retains the stretcher for live BPM edits.
+        // Use the stereo sine fixture for DSP; DC amplitudes above isolate
+        // routing/ownership in free time without a phase-vocoder transient.
+        project = Project.empty(name: "Relative prepare after project swap")
+        var relativeTrack = track(2, 1)
+        relativeTrack.clips[0].audioFile = AudioFile(path: "tempo.wav")
+        project.songs[0].tracks = [relativeTrack]
+        project.songs[0].parts = [Part(id: current, name: "Current", startTime: 0, endTime: 2),
+                                  Part(id: incoming, name: "Next", startTime: 2, endTime: 10)]
+        project.regionSetlist = RegionSetlist(prepareWithoutPlayback: true)
+        state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+            position: 1.8, regionId: current, queuedRegionId: incoming, queue: QueueState(), loop: LoopState(enabled: false),
+            subPlay: SubPlayState(playing: false, position: 2)))
+        try audio.update(state, revision: 1)
+        let relativeSilence = try peak()
+        state.transport.playing = false; state.transport.regionId = incoming; state.transport.queuedRegionId = nil
+        state.transport.position = 2; state.transport.editPosition = 2
+        try audio.update(state, revision: 1)
+        state.transport.playing = true
+        try audio.update(state, revision: 1)
+        let relativeSound = try peak()
+        precondition(relativeSilence < 0.000001 && abs(relativeSound - 0.1) < 0.003,
+                     "relative prepare/Play after swap \(iteration): silence=\(relativeSilence), sound=\(relativeSound)")
         audio.stop()
       }
     }
@@ -1699,6 +1728,7 @@ try audioAutoreleasepool {
 // Overlapping songs in one drawer must not leak the previous song's PCM.
 scalarAudio.open(directory: directory)
 var drawerProject = Project.empty(name: "Unified song ownership")
+drawerProject.songs[0].timeSettings?.timebase = .free
 let previousSong = scalarTrack("Previous song", volume: 0.5)
 let incomingSong = scalarTrack("Incoming song", volume: 1, onset: 2)
 drawerProject.songs[0].tracks = [previousSong, incomingSong]
