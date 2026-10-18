@@ -6,13 +6,13 @@ setbuf(stdout, nil)
     try autoreleasepool { try MainActor.assumeIsolated { try body() } }
 }
 // These assertions compare settled PCM levels, not the stretcher's startup
-// transient. Prime its reported latency and two maximum input slices before
+// transient. Prime its reported latency and four maximum input slices before
 // sampling; the resulting window stays before the fixtures' future onset.
 @MainActor func settledPCMPeak(_ engine: AVAudioEngine, _ buffer: AVAudioPCMBuffer) throws -> Float {
     let rate = buffer.format.sampleRate
     let latency = engine.attachedNodes.map { max($0.auAudioUnit.latency, $0.outputPresentationLatency) }.max() ?? 0
     let slice = engine.attachedNodes.map { Int($0.auAudioUnit.maximumFramesToRender) }.max() ?? 8192
-    let warmup = (max(16384, Int(ceil(latency * rate)) + 2 * slice) + 511) / 512
+    let warmup = (max(32768, Int(ceil(latency * rate)) + 4 * slice) + 511) / 512
     precondition(Double((warmup + 6) * 512) / rate < 2, "measurement must precede the future item's two-second onset")
     var peak: Float = 0
     for block in 0..<(warmup + 6) {
