@@ -29,7 +29,7 @@
 #include "PlaylistEditor.h"
 #include "SetlistShareText.h"
 #include "SetlistSearch.h"
-#include "ProjectDeletion.h"
+#include "ProjectDeletionPanel.h"
 #include "TrackTree.h"
 #include "TrackVisibilityPanel.h"
 #include "TrackEditing.h"
@@ -4354,20 +4354,19 @@ void Workspace::deleteRecentProject(const File &file) {
     const auto owner=SafePointer<Workspace>(this);
     perform([&]{
         auto plan=std::make_shared<ProjectDeletion>(file);
-        auto *dialog=new AlertWindow("Excluir projeto?",String::fromUTF8("O projeto e suas mídias exclusivas serão excluídos. Arquivos compartilhados e a pasta serão preservados.\n\n")+file.getFullPathName(),MessageBoxIconType::WarningIcon,this);
-        dialog->addButton("Excluir projeto",1);dialog->addButton("Cancelar",0,KeyPress(KeyPress::escapeKey));dialog->getButton(0)->setEnabled(false);
-        auto safeDialog=SafePointer<AlertWindow>(dialog);
-        Timer::callAfterDelay(3100,[safeDialog]{if(safeDialog)safeDialog->getButton(0)->setEnabled(true);});
-        dialog->enterModalState(true,ModalCallbackFunction::create([safe=owner,plan](int choice){
-            if(!safe || choice!=1)return;
-            safe->perform([&]{auto &w=*safe;if(w.session.busy || w.session.transport().playing || w.session.transport().subPlay.playing || w.session.audio.isRecording())return;plan->validate();
+        auto panel=std::make_unique<ProjectDeletionPanel>(plan,[safe=owner,plan]{
+            if(!safe) return;
+            auto &w=*safe;
+            if(w.session.busy || w.session.transport().playing || w.session.transport().subPlay.playing || w.session.audio.isRecording())
+                throw std::runtime_error("Pare a reprodução e aguarde as operações antes de apagar o projeto.");
+            plan->validate();
                 if(w.session.document!=plan->document && w.session.dirty && w.projectReady){if(w.session.document==File{})throw std::runtime_error("Salve o projeto aberto antes de excluir outro projeto.");w.session.save(w.session.document);}
                 w.floatingWindows.clear();
                 plan->remove();w.session.newProject();w.projectReady=false;w.browserVisible=true;RecentProjects::forget(plan->document);w.projectBrowser->refresh();
                 for(auto *child:w.getChildren())if(auto *sheet=dynamic_cast<ModalSheet*>(child);sheet && sheet->getName()=="Projetos")sheet->exitModalState(0);
                 if(w.browserVisible)w.showProjectBrowser();w.resized();w.repaint();
-            });
-        }),true);
+        });
+        ModalSheet::open(*this,localization::translate("Delete project"),std::move(panel),460,298);
     });
 }
 void Workspace::newProject() { showProjectBrowser(); }

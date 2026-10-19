@@ -32,7 +32,7 @@
 #include "FXChain.h"
 #include "ItemRender.h"
 #include "SetlistShareText.h"
-#include "ProjectDeletion.h"
+#include "ProjectDeletionPanel.h"
 #include "PortablePackage.h"
 #include "TimelinePlaybackFollow.h"
 #include "RecordingProject.h"
@@ -451,9 +451,21 @@ int runTests(const File &directory) {
         auto recovery=make("backups/Media/Archive/recovery.wav"), foreign=make("backups/Media/Foreign/keep.wav");
         auto backup=p;backup.songs[0].tracks[0].clips.resize(1);backup.songs[0].tracks[0].clips[0].audioFile->path="backups/Media/Archive/recovery.wav";
         const auto backupFile=root.getChildFile("backups/Recovery.bkjl");ProjectCodec::write(backupFile,ProjectCodec::encode(backup,{}));
-        ProjectDeletion plan(document);bool rejected=false;try{plan.remove();}catch(...){rejected=true;}expect(rejected && document.existsAsFile(),"Deletion skipped the three-second confirmation");
+        ProjectDeletion plan(document);
+        bool invoked=false;
+        ProjectDeletionPanel confirmation(std::make_shared<ProjectDeletion>(plan),[&]{invoked=true;});
+        TextButton *deleteButton=nullptr;
+        for(auto *child:confirmation.getChildren())if(auto *button=dynamic_cast<TextButton*>(child);button && button->getButtonText().contains("3s"))deleteButton=button;
+        expect(deleteButton && !deleteButton->isEnabled() && !invoked,"Project confirmation must show its disabled three-second countdown");
+        auto saveConfirmation=[&](const char *name){auto out=directory.getChildFile(name).createOutputStream();expect(out && PNGImageFormat().writeImageToStream(confirmation.createComponentSnapshot(confirmation.getLocalBounds(),true,2),*out),"Cannot capture project confirmation");};
+        saveConfirmation("project-deletion-countdown.png");
+        bool rejected=false;try{plan.remove();}catch(...){rejected=true;}expect(rejected && document.existsAsFile(),"Deletion skipped the three-second confirmation");
         auto sibling=p;sibling.id=uuid();sibling.songs[0].tracks[0].clips.resize(1);auto siblingData=ProjectCodec::seal(JSON::toString(ProjectCodec::encode(sibling,{}),true));expect(root.getChildFile("Other.jl").replaceWithData(siblingData.getData(),siblingData.getSize()),"Cannot construct legacy sibling fixture");
-        Thread::sleep(3100);plan.remove();expect(!document.exists() && !exclusive.exists() && shared.existsAsFile() && unrelated.existsAsFile() && root.isDirectory(),"Deletion removed shared or unrelated files, or retained exclusive media");
+        Thread::sleep(3100);
+        Timer::callPendingTimersSynchronously();
+        expect(deleteButton && deleteButton->isEnabled() && deleteButton->getButtonText()==localization::translate("Delete project") && !invoked,"Confirmation must become available after three seconds without deleting anything automatically");
+        saveConfirmation("project-deletion-ready.png");
+        plan.remove();expect(!document.exists() && !exclusive.exists() && shared.existsAsFile() && unrelated.existsAsFile() && root.isDirectory(),"Deletion removed shared or unrelated files, or retained exclusive media");
         expect(!cache.exists() && sharedCache.existsAsFile() && !backupFile.exists() && !recovery.exists() && !recovery.getParentDirectory().exists() && foreign.existsAsFile(),"Deletion must remove owned waveform/recovery media and empty subfolders while preserving unrelated recovery files");
     });
     test("Batch FX bypass and deletion undo every selected chain with exact plugin state", [&] {

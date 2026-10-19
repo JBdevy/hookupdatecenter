@@ -1,3 +1,4 @@
+#include "Localization.h"
 #include "ProjectBrowser.h"
 #include "InterfaceIcons.h"
 namespace catlive {
@@ -268,7 +269,7 @@ void ProjectBrowser::listBoxItemClicked(int row, const MouseEvent &event) {
     File file(filtered[row]);
     PopupMenu menu;
     const bool missing=!file.existsAsFile();
-    menu.addItem(1,missing?"Remove from recents":"Delete project");
+    menu.addItem(1,localization::translate(missing?"Remove from recents":"Delete project"));
     menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&recents),[safe=Component::SafePointer<ProjectBrowser>(this),file,missing](int result){
         if(!safe || safe->loading || result!=1)return;
         if(missing){RecentProjects::forget(file);safe->refresh();}
