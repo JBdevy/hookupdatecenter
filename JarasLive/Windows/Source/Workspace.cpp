@@ -2903,7 +2903,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     static_cast<QuietButton &>(*controls["save"]).context = [this](Point<int>) {
         if (!projectReady || session.busy || session.audio.isRecording()) return;
         auto safe = SafePointer<Workspace>(this);
-        showPanel("Exportar projeto CatLive", std::make_unique<PortableExportPanel>(session,
+        showPanel("Exportar para CatLive iPadOS", std::make_unique<PortableExportPanel>(session,
             [safe](std::function<void()> saved) { if (safe) safe->chooseSave(false, std::move(saved)); }), 540, 376);
     };
     button("mixer", "Tracks", [this] {

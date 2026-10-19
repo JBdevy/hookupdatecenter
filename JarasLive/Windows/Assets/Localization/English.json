@@ -1246,5 +1246,6 @@
   "Unable to read the Windows lid settings.": "Unable to read the Windows lid settings.",
   "Show Mode was not changed. Administrator authorization is required.": "Show Mode was not changed. Administrator authorization is required.",
   "Unable to change Show Mode. The previous lid settings were restored.": "Unable to change Show Mode. The previous lid settings were restored.",
-  "Unable to change Show Mode. Check the system lid settings.": "Unable to change Show Mode. Check the system lid settings."
+  "Unable to change Show Mode. Check the system lid settings.": "Unable to change Show Mode. Check the system lid settings.",
+  "Exportar para CatLive iPadOS": "Export to CatLive iPadOS"
 }

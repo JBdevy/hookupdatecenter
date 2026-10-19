@@ -10,7 +10,7 @@ class PortableExportPanel final : public Component, private Timer {
     };
     Session &session;
     std::function<void(std::function<void()>)> save;
-    TextButton close{"Fechar"}, saveButton{"Salvar"}, exportButton{"Exportar"},
+    TextButton close{"Fechar"}, saveButton{"Salvar"}, exportButton{"Exportar para CatLive iPadOS"},
         reveal{"Mostrar na pasta"};
     std::unique_ptr<FileChooser> chooser;
     std::shared_ptr<Work> work;
@@ -101,7 +101,7 @@ class PortableExportPanel final : public Component, private Timer {
             const auto document = session.document;
             const auto identity = session.project().id;
             chooser = std::make_unique<FileChooser>(
-                "Exportar projeto CatLive", document.withFileExtension("ziplive"), "*.ziplive", true);
+                "Exportar para CatLive iPadOS", document.withFileExtension("ziplive"), "*.ziplive", true);
             chooser->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
                                      FileBrowserComponent::warnAboutOverwriting,
                                  [safe = owner, document, identity](const FileChooser &fc) {
@@ -121,7 +121,7 @@ class PortableExportPanel final : public Component, private Timer {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::font(18, true));
-        g.drawText("Exportar projeto CatLive", 24, 22, getWidth() - 48, 24, Justification::centredLeft);
+        g.drawText("Exportar para CatLive iPadOS", 24, 22, getWidth() - 48, 24, Justification::centredLeft);
         g.setColour(theme::secondary);
         g.setFont(theme::font(13));
         g.drawFittedText(
@@ -146,11 +146,18 @@ class PortableExportPanel final : public Component, private Timer {
             : requiresSave()          ? "Salve o projeto antes de exportar."
                                       : String{};
         g.drawFittedText(status, 24, 250, getWidth() - 48, 42, Justification::topLeft, 3, 1);
+        if (work) {
+            const Rectangle<float> bar(24.f, 298.f, (float)getWidth() - 48.f, 5.f);
+            g.setColour(theme::secondary.withAlpha(.2f));
+            g.fillRoundedRectangle(bar, 2.5f);
+            g.setColour(theme::green);
+            g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * (float)jlimit(0., 1., work->progress.load())), 2.5f);
+        }
     }
     void resized() override {
         close.setBounds(24, getHeight() - 50, 84, 26);
-        saveButton.setBounds(getWidth() - 222, getHeight() - 50, 80, 26);
-        exportButton.setBounds(getWidth() - 126, getHeight() - 50, 102, 26);
+        saveButton.setBounds(getWidth() - 338, getHeight() - 50, 80, 26);
+        exportButton.setBounds(getWidth() - 242, getHeight() - 50, 218, 26);
         reveal.setBounds(24, 296, 150, 24);
     }
     void timerCallback() override {
