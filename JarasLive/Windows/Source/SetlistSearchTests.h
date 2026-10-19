@@ -20,8 +20,8 @@ inline jaras::Project fixture() {
 inline std::vector<String> strings(const var &values) {
     std::vector<String> result;for (const auto &value:list(values)) result.push_back(value.toString());return result;
 }
-inline void click(ListBox &rows,int row) {
-    const Point<float> at{20.f,(float)row*38+15};
+inline void click(SetlistRows &rows,int row) {
+    const Point<float> at{20.f,(float)rows.rowTop(row)+15};
     rows.getModel()->listBoxItemClicked(row,MouseEvent(Desktop::getInstance().getMainMouseSource(),at,
         ModifierKeys(ModifierKeys::leftButtonModifier),1,0,0,0,0,&rows,&rows,Time::getCurrentTime(),at,
         Time::getCurrentTime(),1,false));
@@ -36,8 +36,10 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,preferences);workspace.setSize(1366,768);
         auto *toggle=dynamic_cast<TextButton *>(uiFeatureTests::find(workspace,"setlistSearchToggle"));
         auto *field=dynamic_cast<TextEditor *>(uiFeatureTests::find(workspace,"setlistSearchField"));
-        auto *rows=dynamic_cast<ListBox *>(uiFeatureTests::find(workspace,"setlistRows"));
+        auto *rows=dynamic_cast<SetlistRows *>(uiFeatureTests::find(workspace,"setlistRows"));
         require(toggle && field && rows,"Setlist search controls missing");
+        require(rows->getRowHeight(0)==28 && rows->getRowHeight(1)==38 && rows->rowTop(1)==28,
+                "Compact block rows must not reserve the height of a song");
         auto state=[&]{return get(workspace.diagnostics(),"setlist");};
         auto ids=[&]{return strings(get(state(),"rowIDs"));};
         auto query=[&](const String &text){field->setText(text,false);field->onTextChange();};
@@ -92,7 +94,7 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         workspace.setSize(1366,768);
         auto *toggle=dynamic_cast<TextButton *>(uiFeatureTests::find(workspace,"setlistSearchToggle"));
         auto *field=dynamic_cast<TextEditor *>(uiFeatureTests::find(workspace,"setlistSearchField"));
-        auto *rows=dynamic_cast<ListBox *>(uiFeatureTests::find(workspace,"setlistRows"));
+        auto *rows=dynamic_cast<SetlistRows *>(uiFeatureTests::find(workspace,"setlistRows"));
         require(toggle && field && rows,"Setlist search controls missing");
         auto state=[&]{return get(workspace.diagnostics(),"setlist");};
         auto query=[&](const String &text){field->setText(text,false);field->onTextChange();};

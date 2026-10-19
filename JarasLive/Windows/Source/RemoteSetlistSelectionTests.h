@@ -33,20 +33,20 @@ inline int rowFor(const Workspace &workspace,const ID &id) {
     const auto found=std::find(rows.begin(),rows.end(),text(id));
     return found==rows.end()?-1:(int)std::distance(rows.begin(),found);
 }
-inline void selectedAndRevealed(Workspace &workspace,ListBox &rows,const ID &id,const ID &visible={}) {
+inline void selectedAndRevealed(Workspace &workspace,SetlistRows &rows,const ID &id,const ID &visible={}) {
     const auto state=get(workspace.diagnostics(),"setlist");
     const auto visibleID=visible.empty()?id:visible;
     require(strings(get(state,"selectedEntries"))==std::vector<String>{text(id)} &&
             strings(get(state,"visibleSelectedEntries"))==std::vector<String>{text(visibleID)},
             "Remote did not select exactly the requested Setlist row");
     const auto row=rowFor(workspace,visibleID);require(row>=0,"Selected Remote song is absent from the list");
-    const auto top=row*rows.getRowHeight(),scroll=rows.getViewport()->getViewPositionY();
-    require(top>=scroll && top+rows.getRowHeight()<=scroll+rows.getViewport()->getViewHeight(),
+    const auto top=rows.rowTop(row),scroll=rows.getViewport()->getViewPositionY();
+    require(top>=scroll && top+rows.getRowHeight(row)<=scroll+rows.getViewport()->getViewHeight(),
             "Remote selection did not scroll its row fully into view");
 }
-inline void click(ListBox &rows,int row) {
+inline void click(SetlistRows &rows,int row) {
     rows.selectRow(row);
-    const Point<float> at{20.f,(float)(row*rows.getRowHeight()+15)};
+    const Point<float> at{20.f,(float)(rows.rowTop(row)+15)};
     rows.getModel()->listBoxItemClicked(row,MouseEvent(Desktop::getInstance().getMainMouseSource(),at,
         ModifierKeys(ModifierKeys::leftButtonModifier),1,0,0,0,0,&rows,&rows,Time::getCurrentTime(),at,
         Time::getCurrentTime(),1,false));
@@ -60,7 +60,7 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         const auto settings=directory.getNonexistentChildFile("remote-setlist-selection",".json");
         Workspace workspace(session,auth,lighting,false,settings);workspace.setSize(1366,768);
         Appearance preferences(settings);StageState stage(preferences);remote::Presentation presentation(session,stage);
-        auto *rows=dynamic_cast<ListBox *>(uiFeatureTests::find(workspace,"setlistRows"));
+        auto *rows=dynamic_cast<SetlistRows *>(uiFeatureTests::find(workspace,"setlistRows"));
         require(rows,"Setlist rows missing");
         // This is the same decode/apply path called by Host::perform after authentication.
         auto select=[&](const ID &id){require(presentation.apply(remote::Command::decode(request(session,id))),"Remote rejected a current region command");};
@@ -115,7 +115,7 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         const auto settings=directory.getNonexistentChildFile("remote-setlist-playback",".json");
         Workspace workspace(session,auth,lighting,false,settings);workspace.setSize(1366,768);
         Appearance preferences(settings);StageState stage(preferences);remote::Presentation presentation(session,stage);
-        auto *rows=dynamic_cast<ListBox *>(uiFeatureTests::find(workspace,"setlistRows"));require(rows,"Setlist rows missing");
+        auto *rows=dynamic_cast<SetlistRows *>(uiFeatureTests::find(workspace,"setlistRows"));require(rows,"Setlist rows missing");
         auto select=[&](const ID &id){require(presentation.apply(remote::Command::decode(request(session,id))),"Remote rejected selection during playback");};
         session.command(jaras::CommandKind::selectRegion,parts[0].id);session.command(jaras::CommandKind::play);
         uiFeatureTests::render(session,48000);session.command(jaras::CommandKind::editSeek,{},0);

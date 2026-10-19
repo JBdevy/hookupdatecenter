@@ -3,6 +3,7 @@
 #include "Lighting.h"
 #include "Session.h"
 #include "ProjectBrowser.h"
+#include "SetlistRows.h"
 #include "Appearance.h"
 #include "ActionBindings.h"
 #include "StageState.h"
