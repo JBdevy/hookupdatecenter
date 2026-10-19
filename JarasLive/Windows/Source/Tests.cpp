@@ -33,6 +33,7 @@
 #include "ItemRender.h"
 #include "SetlistShareText.h"
 #include "ProjectDeletionPanel.h"
+#include "ShowMode.h"
 #include "PortablePackage.h"
 #include "TimelinePlaybackFollow.h"
 #include "RecordingProject.h"
@@ -439,6 +440,42 @@ int runTests(const File &directory) {
         session.subCursorPreviewUntil=Time::getMillisecondCounterHiRes()-1;expect(!session.subCursorVisible(),"SubPlay needle persists after preview");
         session.command(jaras::CommandKind::play);session.command(jaras::CommandKind::subPlay);expect(session.subCursorVisible(),"SubPlay playing needle hidden");session.command(jaras::CommandKind::stopAll);
         expect(!session.subCursorVisible(),"Stopped SubPlay needle retained");
+    });
+    test("Show Mode preserves power-plan lid actions, handles denial and supports desktops", [&] {
+        Appearance preferences(directory.getChildFile("show-mode-test.json"));
+        ShowMode::State state{"plan-A",true,false,2,3};
+        int changes=0;
+        ShowMode::Backend backend{[&]{return state;},[&](const auto &,DWORD ac,DWORD dc){
+            const auto originals=preferences.value("originals");
+            expect(get(originals,Identifier(state.scheme)).isObject(),"Original lid actions must be saved before applying power changes");
+            ++changes;state.ac=ac;state.dc=dc;
+        }};
+        auto active=ShowMode::transition(preferences,backend,true);
+        expect(active.enabled && state.ac==0 && state.dc==0 && changes==1,"Show Mode must use do-nothing for both AC and battery");
+        ShowMode::transition(preferences,backend,true);
+        auto originals=get(preferences.value("originals"),Identifier("plan-A"));
+        expect((int)get(originals,"ac")==2 && (int)get(originals,"dc")==3,"Repeated activation must not replace original lid actions with zero");
+        active=ShowMode::transition(preferences,backend,false);
+        expect(!active.enabled && state.ac==2 && state.dc==3 && !get(preferences.value("originals"),Identifier("plan-A")).isObject(),"Disable must restore the saved AC/DC actions and clear only that plan backup");
+        backend.apply=[](const auto &,DWORD,DWORD){throw std::runtime_error("Authorization denied");};
+        bool denied=false;try{ShowMode::transition(preferences,backend,true);}catch(...){denied=true;}
+        expect(denied && !(bool)preferences.value("enabled") && state.ac==2 && state.dc==3,"Denied authorization must not claim activation or change the previous settings");
+        expect(get(preferences.value("originals"),Identifier("plan-A")).isObject(),"Keep the saved settings if authorization fails so a later retry can restore them");
+        backend.apply=[&](const auto &,DWORD,DWORD){++changes;};
+        bool mismatch=false;try{ShowMode::transition(preferences,backend,true);}catch(...){mismatch=true;}
+        expect(mismatch && !(bool)preferences.value("enabled"),"Do not report success when the system did not confirm the requested setting");
+        state.scheme="desktop";state.hasLid=false;
+        const int before=changes;
+        active=ShowMode::transition(preferences,backend,true);
+        expect(active.enabled && changes==before,"Desktop Show Mode must keep an app-level wake request without changing a nonexistent lid setting");
+        active=ShowMode::transition(preferences,backend,false);
+        expect(!active.enabled && changes==before,"Desktop Show Mode must be switchable off without powercfg");
+        const auto blocker=directory.getChildFile("show-mode-blocked-parent");
+        expect(blocker.replaceWithText("not a directory"),"Cannot create failed-preference fixture");
+        Appearance unavailable(blocker.getChildFile("show-mode.json"));
+        state={"plan-B",true,false,1,2};
+        bool unsaved=false;try{ShowMode::transition(unavailable,backend,true);}catch(...){unsaved=true;}
+        expect(unsaved && changes==before && state.ac==1 && state.dc==2,"Never change lid behavior if the original values could not be saved first");
     });
     test("Project deletion protects sibling media and rechecks inventory after confirmation", [&] {
         auto root=directory.getNonexistentChildFile("DeleteProject",{});root.getChildFile("Stems").createDirectory();
@@ -1732,6 +1769,30 @@ int runTests(const File &directory) {
         buffer.clear();
         piano.render(buffer, notes, 1024);
         expect(buffer.getMagnitude(0, 1024) == 0, "Piano panic left stuck notes");
+    });
+    test("Live MIDI REC gates new notes but preserves sustain and note releases after switching tracks", [&] {
+        MidiBuffer input, previous, current;
+        input.addEvent(MidiMessage::controllerEvent(2, 64, 127), 0);
+        input.addEvent(MidiMessage::noteOn(2, 60, (uint8)100), 10);
+        appendLiveTrackMIDI(previous, input, 128, true);
+        expect(previous.getNumEvents() == 2, "Armed track lost live notes or sustain");
+        input.clear(); previous.clear();
+        input.addEvent(MidiMessage::noteOff(2, 60), 5);
+        input.addEvent(MidiMessage::noteOn(2, 62, (uint8)100), 10);
+        input.addEvent(MidiMessage::controllerEvent(2, 64, 0), 20);
+        input.addEvent(MidiMessage::noteOn(2, 64, (uint8)0), 25);
+        input.addEvent(MidiMessage::allNotesOff(2), 30);
+        appendLiveTrackMIDI(previous, input, 128, false);
+        appendLiveTrackMIDI(current, input, 128, true);
+        expect(current.getNumEvents() == 5, "New armed track did not receive the performance");
+        expect(previous.getNumEvents() == 4, "Disarmed track lost note/pedal releases");
+        bool pedalReleased = false;
+        for (const auto event : previous) {
+            expect(!event.getMessage().isNoteOn(), "Disarmed track received a new note");
+            if (event.getMessage().isControllerOfType(64))
+                pedalReleased = event.getMessage().getControllerValue() == 0 && event.samplePosition == 20;
+        }
+        expect(pedalReleased, "Pedal release did not reach the previous track at its original sample");
     });
     test("MIDI clips preserve source offset, loops, rate, gain and frozen state", [&] {
         jaras::Track track;

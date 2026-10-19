@@ -1237,5 +1237,14 @@
   "Escaneamento cancelado.": "Scan cancelled.",
   "Destacar Setlist": "Undock Setlist",
   "Setlist à direita": "Setlist on the right",
-  "Setlist à esquerda": "Setlist on the left"
+  "Setlist à esquerda": "Setlist on the left",
+  "Show Mode": "Show Mode",
+  "When enabled, the Mac lid can be closed without stopping playback.": "When enabled, the Mac lid can be closed without stopping playback.",
+  "When enabled, the notebook lid can be closed without stopping playback.": "When enabled, the notebook lid can be closed without stopping playback.",
+  "The system did not confirm the Show Mode change.": "The system did not confirm the Show Mode change.",
+  "Unable to read the Windows power plan.": "Unable to read the Windows power plan.",
+  "Unable to read the Windows lid settings.": "Unable to read the Windows lid settings.",
+  "Show Mode was not changed. Administrator authorization is required.": "Show Mode was not changed. Administrator authorization is required.",
+  "Unable to change Show Mode. The previous lid settings were restored.": "Unable to change Show Mode. The previous lid settings were restored.",
+  "Unable to change Show Mode. Check the system lid settings.": "Unable to change Show Mode. Check the system lid settings."
 }

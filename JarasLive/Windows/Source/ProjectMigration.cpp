@@ -441,10 +441,30 @@ MigratedProject readReaperProject(const File &file) {
             track.role.id = "chords";
         if (key == "timecode")
             track.role.id = "timecode";
+        // Match the current Mac importer before validating special-track invariants.
+        const bool importedVideo = track.role.id == "video";
+        const auto specialName = jaras::fixedTrackName(track.role);
+        if (!specialName.empty()) {
+            track.name = specialName;
+            track.parentTrackID.reset();
+            track.color = track.role.id == "timecode" ? 0xffdc52u
+                        : track.role.id == "chords" ? 0x529effu
+                        : importedVideo ? 0xb47affu : 0x54ff93u;
+            if (!importedVideo) track.solo = false;
+            if (jaras::isTeleprompterRole(track.role) || track.role.id == "chords") track.mute = false;
+            if (track.role.id == "timecode") {
+                track.timecode.emplace(); track.importedTimecodeItems = true;
+                track.patch = jaras::OutputPatch{-1,2};
+            }
+            // Video is hosted by a standard track on both desktop platforms.
+            if (importedVideo) track.role.id = "other";
+        }
         int delta = (int)node.number("ISBUS", 2);
         require(delta <= 1 && delta >= -(int)folders.size(), "REAPER: invalid folder structure.");
-        if (delta > 0)
+        if (delta > 0) {
+            require(specialName.empty(), String::fromUTF8("Uma pista especial não pode ser uma pasta de áudio no projeto de origem."));
             folders.push_back(track.id);
+        }
         if (node.child("FXCHAIN"))
             result.warnings.addIfNotAlreadyThere(
                 "REAPER plug-ins require review in the imported project.");
@@ -494,6 +514,34 @@ MigratedProject readReaperProject(const File &file) {
                 int mode = (int)take->number("CHANMODE");
                 clip.channelMode = mode == 2 ? 3 : mode == 3 ? 1 : mode == 4 ? 2 : 0;
                 auto *source = take->child("SOURCE");
+                if (!specialName.empty()) {
+                    // Special items do not inherit audio-only take controls.
+                    // This is the same branch used by the current Mac importer.
+                    clip.gain.reset(); clip.pan.reset(); clip.phaseInverted.reset();
+                    clip.fadeIn.reset(); clip.fadeOut.reset(); clip.channelMode.reset();
+                    clip.pitchSemitones.reset(); clip.sourceOffset=0; clip.playbackRate=1;
+                    const bool muted=clip.muted; clip.muted=false;
+                    if (track.role.id == "timecode") {
+                        require(source && source->header[1] == "LTC", String::fromUTF8("O item da pista Timecode não contém as configurações do gerador SMPTE. Use o gerador LTC/MTC do REAPER para migrar esse item."));
+                        const int send=(int)source->number("SEND",1,1);
+                        require(send==1 || send==2, String::fromUTF8("O gerador Timecode deve usar LTC ou MTC individualmente para migrar."));
+                        require(take->number("PLAYRATE",1,1)==1, String::fromUTF8("Timecode com velocidade alterada não pode ser recriado com a mesma configuração."));
+                        const auto userData=source->line("USERDATA");
+                        for(int i=1;i<userData.size();++i) require(userData[i].getDoubleValue()==0, String::fromUTF8("Timecode com user bits personalizados ainda não é suportado pelo CatLive."));
+                        jaras::TimecodeSettings tc; tc.mode=send==2 ? "mtc" : "ltc";
+                        tc.frameRate=source->number("FRAMERATE",1,30); tc.offset=source->number("STARTTIME")+take->number("SOFFS");
+                        clip.timecode=tc; clip.name=tc.mode=="ltc" ? "LTC" : "MTC"; clip.muted=muted;
+                        if(track.clips.empty()) track.timecode=tc;
+                    } else if (source && source->value("FILE").isNotEmpty() && (importedVideo || jaras::isTeleprompterRole(track.role))) {
+                        clip.audioFile=jaras::AudioFile{reference(source->value("FILE"),true),{}};
+                        clip.sourceOffset=take->number("SOFFS"); clip.playbackRate=take->number("PLAYRATE",1,1);
+                    } else if (jaras::isTeleprompterRole(track.role) || track.role.id=="chords") {
+                        auto *notes=item.child("NOTES"); if(!notes)notes=take->child("NOTES");
+                        const auto value=notes ? notes->notes.joinIntoString("\n") : take->value("NAME");
+                        clip.text=utf8(value); clip.name=utf8(value.upToFirstOccurrenceOf("\n",false,false));
+                    }
+                    track.clips.push_back(clip); continue;
+                }
                 double sectionStart = 0, sectionLength = 0;
                 if (source && source->header[1] == "SECTION") {
                     sectionStart = source->number("STARTPOS");
@@ -502,7 +550,7 @@ MigratedProject readReaperProject(const File &file) {
                 }
                 if (source && source->value("FILE").isNotEmpty() && source->header[1] != "MIDI") {
                     auto path =
-                        reference(source->value("FILE"), track.role.id == "video" ||
+                        reference(source->value("FILE"), importedVideo ||
                                                              jaras::isTeleprompterRole(track.role));
                     clip.audioFile = jaras::AudioFile{path, {}};
                     clip.sourceOffset += sectionStart;

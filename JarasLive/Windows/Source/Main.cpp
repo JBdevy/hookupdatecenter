@@ -1,5 +1,6 @@
 #include "Workspace.h"
 #include "StartupSplash.h"
+#include "ShowMode.h"
 #include "ProjectMigration.h"
 #include "DesktopLayout.h"
 #include "NativeWindowBounds.h"
@@ -160,6 +161,7 @@ class CatLiveApplication final : public JUCEApplication {
                     session->message = error;
                 auth->restore();
             }
+            if (!visualTest && !previewHome) { showMode = ShowMode::shared(); showMode->start(); }
             auto *content = new Workspace(*session, *auth, *lighting, previewHome, appearanceFile);
             window = std::make_unique<Window>(content, visualTest);
             if (previewHome)
@@ -221,6 +223,7 @@ class CatLiveApplication final : public JUCEApplication {
         }
     }
     void shutdown() override {
+        if (showMode) { showMode->stop(); showMode.reset(); }
         tooltips.reset();
         splash.reset();
         window.reset();
@@ -298,6 +301,7 @@ class CatLiveApplication final : public JUCEApplication {
     bool closing = false;
     std::vector<Component::SafePointer<Component>> hiddenWindows;
     int testResult = 0;
+    std::shared_ptr<ShowMode> showMode;
     std::unique_ptr<Session> session;
     std::unique_ptr<Auth> auth;
     std::unique_ptr<Lighting> lighting;

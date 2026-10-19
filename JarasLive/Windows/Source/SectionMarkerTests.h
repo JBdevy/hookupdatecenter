@@ -21,6 +21,41 @@ inline jaras::TimelineMarker typed(const jaras::Song &song, const String &name, 
     return markerEditing::prepare(song, marker);
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("REAPER special tracks normalize names, solo and folders like the Mac importer", [&] {
+        auto result = read(directory,
+            "<TRACK {GROUP}\nNAME \"Audio Group\"\nISBUS 1 1\n>\n"
+            "<TRACK {TP1}\nNAME \"TELEPROMPT 1\"\nMUTESOLO 1 1\n<ITEM\nPOSITION 0\nLENGTH 2\nNAME \"Texto\"\nVOLPAN 0.5 0.3\nMUTE 1\n<NOTES\n|Primeira linha\n|Segunda linha\n>\n>\n>\n"
+            "<TRACK {TP2}\nNAME \"teleprompter2\"\nMUTESOLO 1 1\n>\n"
+            "<TRACK {CHORDS}\nNAME \"Cifras\"\nMUTESOLO 1 1\n>\n"
+            "<TRACK {TC}\nNAME \"TIME CODE\"\nMUTESOLO 0 1\n<ITEM\nPOSITION 0\nLENGTH 2\n<SOURCE LTC\nSEND 1\nFRAMERATE 25\nSTARTTIME 10\n>\n>\n>\n"
+            "<TRACK {AUDIO}\nNAME \"Voz\"\nISBUS 2 -1\nMUTESOLO 0 1\n>\n");
+        const auto &song=result.project.songs.front();
+        require(song.tracks.size()==6,"Imported special tracks were lost or duplicated");
+        require(song.tracks[0].role.id=="timecode" && song.tracks[1].role.id=="teleprompt" &&
+                song.tracks[2].role.id=="teleprompt2" && song.tracks[3].role.id=="chords","Fixed special-track order differs from Mac");
+        for(const auto &track:song.tracks) if(!jaras::fixedTrackName(track.role).empty()) {
+            require(track.name==jaras::fixedTrackName(track.role) && !track.solo && !track.parentTrackID,
+                    "Special track retained a noncanonical name, solo or audio-folder parent");
+            if(jaras::isTeleprompterRole(track.role)||track.role.id=="chords")require(!track.mute,"Text special tracks must not retain imported mute");
+        }
+        require(song.tracks.back().parentTrackID==song.tracks[4].id && song.tracks.back().solo,"Normal audio grouping and solo must be preserved");
+        require(song.tracks.front().timecode && song.tracks.front().patch && song.tracks.front().patch->firstChannel==-1,
+                "Timecode must initialize its settings without routing to Master");
+        const auto &textItem=song.tracks[1].clips.front();
+        require(textItem.text && *textItem.text=="Primeira linha\nSegunda linha" && !textItem.gain && !textItem.pan && !textItem.muted && textItem.sourceOffset==0,
+                "Teleprompter text retained incompatible audio controls after migration");
+        require(song.tracks.front().clips.front().timecode && song.tracks.front().timecode->frameRate==25 && song.tracks.front().timecode->offset==10,
+                "Imported SMPTE generator lost its actual frame rate or start offset");
+        jaras::validate(result.project);
+        auto video=read(directory,"<TRACK {MEDIA}\nNAME \"Media\"\nMUTESOLO 0 1\n<ITEM\nPOSITION 0\nLENGTH 1\n<SOURCE VIDEO\nFILE \"missing-video.mp4\"\n>\n>\n>\n");
+        const auto &videoTrack=video.project.songs.front().tracks.front();
+        require(videoTrack.role.id=="other" && videoTrack.name=="Video" && videoTrack.solo &&
+                videoTrack.clips.front().audioFile->path.rfind("Videos/",0)==0,"Media must import into a standard video-capable track, like Mac");
+        bool rejected=false;
+        try{read(directory,"<TRACK {TP_FOLDER}\nNAME \"Teleprompter 1\"\nISBUS 1 1\n>\n<TRACK {CLOSE}\nNAME \"Audio\"\nISBUS 2 -1\n>\n");}
+        catch(const std::exception &e){rejected=String::fromUTF8(e.what()).contains(String::fromUTF8("pista especial"));}
+        require(rejected,"A special audio-folder parent needs the same explicit import error as Mac");
+    });
     test("Typed section prefixes populate Parts, persist clean names and drive real queued section jumps", [&] {
         auto project = floatingControlTests::fixture();
         auto &song = project.songs.front(); song.parts.resize(1); song.parts.front().endTime = 30;

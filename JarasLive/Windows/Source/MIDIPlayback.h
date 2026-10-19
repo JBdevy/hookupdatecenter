@@ -6,6 +6,15 @@
 #include "../../Core/Tracks/ItemFade.hpp"
 #include "../../Core/Transport/PlaybackScope.hpp"
 namespace catlive {
+inline void appendLiveTrackMIDI(MidiBuffer &destination, const MidiBuffer &source,
+                                int samples, bool armed) {
+    // Disarming blocks new notes, while the original route must still receive
+    // note releases and pedal/controllers so an already sounding voice can end.
+    for (const auto event : source)
+        if (event.samplePosition >= 0 && event.samplePosition < samples &&
+            (armed || !event.getMessage().isNoteOn()))
+            destination.addEvent(event.getMessage(), event.samplePosition);
+}
 struct PlaybackNote {
     double start = 0, end = 0;
     int pitch = 60, velocity = 100, channel = 1;

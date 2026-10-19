@@ -137,6 +137,7 @@ jobs:
           bash scripts/test-control-mappings.sh
           bash scripts/test-plugin-catalog.sh
           bash scripts/test-daw-remote.sh
+          bash scripts/test-show-mode.sh
 
       - name: Prepare CatStemSeparation runtime
         working-directory: JarasLive

@@ -3,6 +3,7 @@
 #include "Auth.h"
 #include "Lighting.h"
 #include "VST3Catalog.h"
+#include "ShowMode.h"
 namespace catlive {
 class SettingsPanel final : public Component, private Timer {
   public:
@@ -84,10 +85,20 @@ class SettingsPanel final : public Component, private Timer {
     SafePointer<Label> accountTitle, accountEmail, accountMessage;
     OwnedArray<Component> deviceFields;
     String deviceSnapshot;
+    std::shared_ptr<ShowMode> showMode = ShowMode::shared();
+    SafePointer<ComboBox> showModeChoice;
+    SafePointer<Label> showModeStatus;
     SafePointer<Label> scanningPlugin;
     uint64 pluginRevision = ~uint64(0);
     std::unique_ptr<FileChooser> pluginFolderChooser;
     void timerCallback() override {
+        if (selected == 0 && showModeChoice && showModeStatus) {
+            showModeChoice->setEnabled(!showMode->busy && showMode->loaded);
+            showModeChoice->setSelectedId(showMode->enabled ? 2 : 1, dontSendNotification);
+            showModeStatus->setText(showMode->busy ? localization::translate(String::fromUTF8("Aguarde…")) : localization::translate(showMode->error), dontSendNotification);
+            showModeStatus->setColour(Label::textColourId, showMode->error.isEmpty() ? theme::secondary : Colour(0xffff454a));
+            return;
+        }
         if (selected == 5) { updatePlugins(); return; }
         if (selected != 6 || !accountLogin) return;
         accountLogin->setEnabled(!auth.busy && !locked());
@@ -317,7 +328,7 @@ class SettingsPanel final : public Component, private Timer {
         auto &title = label(tabs[index]->getButtonText(), 20, 30, true);
         title.setFont(theme::font(18, true));
         if (index == 0) {
-            contentHeight = 240;
+            contentHeight = 420;
             label(String::fromUTF8("Escala da interface"), 152, 26, true);
             StringArray scales;
             for (int percent = 60; percent <= 120; percent += 10) scales.add(String(percent) + "%");
@@ -326,6 +337,14 @@ class SettingsPanel final : public Component, private Timer {
                        auto result = preferences.set("jaras.interface.scale", (choice + 5) / 10.0);
                        if (result.failed()) error(result.getErrorMessage());
                    });
+            label(localization::translate("Show Mode"), 240, 26, true);
+            showModeChoice = &choice("showMode", {"Disabled", "Enabled"}, showMode->enabled ? 2 : 1, 24, 276, 176,
+                [this](int id) { showMode->setEnabled(id == 2); timerCallback(); });
+            auto &description = label(localization::translate("When enabled, the notebook lid can be closed without stopping playback."), 310, 48, false, theme::secondary);
+            description.setFont(theme::font(11));
+            showModeStatus = &label({}, 366, 38, false, theme::secondary);
+            showModeStatus->setFont(theme::font(11));
+            showMode->refresh(); timerCallback();
             label("Idioma", 66, 26, true);
             for (int language = 0; language < 2; ++language) {
                 auto &b = button(language == 0 ? "English" : String::fromUTF8("Português"),

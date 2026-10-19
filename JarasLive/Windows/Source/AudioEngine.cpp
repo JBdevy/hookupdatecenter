@@ -1390,9 +1390,9 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         }
         bus.midiMessages.clear();
         if (bus.midiSlot >= 1 && bus.midiSlot <= 3)
-            bus.midiMessages.addEvents(slotMessages[bus.midiSlot - 1], 0, samples, 0);
+            appendLiveTrackMIDI(bus.midiMessages, slotMessages[bus.midiSlot - 1], samples, bus.armed.load());
         if (index == keyboardTarget.load()) {
-            bus.midiMessages.addEvents(keyboardMidi, 0, samples, 0);
+            appendLiveTrackMIDI(bus.midiMessages, keyboardMidi, samples, bus.armed.load());
             routedKeyboard = true;
         }
         if (trackCapture)

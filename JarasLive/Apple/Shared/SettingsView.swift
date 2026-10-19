@@ -5,6 +5,9 @@ struct SettingsView: View {
     let backend: any BackendClient
     @AppStorage("jaras.language") private var language = "en"
     @AppStorage(InterfaceScale.key) private var interfaceScale = 1.0
+    #if os(macOS)
+    @ObservedObject private var showMode = MacShowMode.shared
+    #endif
     @ObservedObject private var audio = AudioDeviceSettings.shared
     @ObservedObject private var recorder = TrackRecording.shared
     private var audioConfigurationLocked: Bool { show.isPlaying || recorder.recording || recorder.busy }
@@ -54,6 +57,20 @@ struct SettingsView: View {
                         Picker("Interface scale", selection: Binding(get: { InterfaceScale.percent(interfaceScale) }, set: { interfaceScale = Double($0) / 100 })) {
                             ForEach(InterfaceScale.percentages, id: \.self) { percent in Text(verbatim: "\(percent)%").tag(percent) }
                         }.labelsHidden().frame(width: 176)
+                        Text("Show Mode").font(.jarasHeadline)
+                        Picker("Show Mode", selection: Binding(get: { showMode.enabled }, set: { showMode.setEnabled($0) })) {
+                            Text("Disabled").tag(false)
+                            Text("Enabled").tag(true)
+                        }.labelsHidden().frame(width: 176).disabled(showMode.busy || !showMode.loaded)
+                        Text("When enabled, the Mac lid can be closed without stopping playback.")
+                            .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if showMode.busy { ProgressView().controlSize(.small) }
+                        if !showMode.error.isEmpty {
+                            Text(verbatim: showMode.error).font(.jarasCaption).foregroundStyle(.red)
+                            Button("Retry") { showMode.refresh() }
+                        }
+                        Color.clear.frame(height: 0).task { showMode.refresh() }
                         #endif
                     case .audio:
                         if audioConfigurationLocked {
@@ -157,3 +174,56 @@ struct SettingsView: View {
         }
     }
 }
+
+#if os(macOS)
+/// The same persistent pmset switch used by Hook Center. Query first: another
+/// application may already have changed this computer-wide setting.
+@MainActor final class MacShowMode: ObservableObject {
+    static let shared = MacShowMode()
+    @Published private(set) var enabled = false
+    @Published private(set) var busy = false
+    @Published private(set) var loaded = false
+    @Published private(set) var error = ""
+    typealias Runner = @Sendable (String, [String]) throws -> String
+    private let run: Runner
+    init(run: @escaping Runner = { try MacShowMode.execute($0, $1) }) { self.run = run }
+    nonisolated static func isEnabled(_ output: String) -> Bool {
+        output.range(of: #"\b(?:SleepDisabled|disablesleep)\s+1\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    func refresh() { update(nil) }
+    func setEnabled(_ value: Bool) { update(value) }
+    private func update(_ desired: Bool?) {
+        guard !busy else { return }
+        busy = true; error = ""
+        let run = self.run
+        Task {
+            do {
+                let value = try await Task.detached(priority: .userInitiated) {
+                    if let desired {
+                        _ = try run("/usr/bin/osascript", ["-e", "do shell script \"/usr/bin/pmset -a disablesleep \(desired ? 1 : 0)\" with administrator privileges"])
+                    }
+                    let active = Self.isEnabled(try run("/usr/bin/pmset", ["-g"]))
+                    if let desired, active != desired {
+                        throw NSError(domain: "CatLive.ShowMode", code: 1, userInfo: [NSLocalizedDescriptionKey: JarasLocalization.string("The system did not confirm the Show Mode change.")])
+                    }
+                    return active
+                }.value
+                enabled = value; loaded = true
+            } catch { self.error = error.localizedDescription }
+            busy = false
+        }
+    }
+    nonisolated static func execute(_ executable: String, _ arguments: [String]) throws -> String {
+        let process = Process(), output = Pipe(), failure = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments
+        process.standardOutput = output; process.standardError = failure
+        try process.run(); process.waitUntilExit()
+        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let error = String(decoding: failure.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "CatLive.ShowMode", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: error.isEmpty ? "Unable to change Show Mode." : error])
+        }
+        return text
+    }
+}
+#endif

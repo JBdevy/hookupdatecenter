@@ -1249,5 +1249,14 @@
   "Parts show/hide": "Mostrar/ocultar Parts",
   "Loading waveforms…": "Carregando waveforms…",
   "%ld REAPER items before the project start were ignored.": "%ld itens do REAPER anteriores ao início do projeto foram ignorados.",
-  "Interface scale": "Escala da interface"
+  "Interface scale": "Escala da interface",
+  "Show Mode": "Modo Show",
+  "When enabled, the Mac lid can be closed without stopping playback.": "Quando ativo, a tampa do Mac pode ser fechada sem parar a reprodução.",
+  "When enabled, the notebook lid can be closed without stopping playback.": "Quando ativo, a tampa do notebook pode ser fechada sem parar a reprodução.",
+  "The system did not confirm the Show Mode change.": "O sistema não confirmou a alteração do Modo Show.",
+  "Unable to read the Windows power plan.": "Não foi possível consultar o plano de energia do Windows.",
+  "Unable to read the Windows lid settings.": "Não foi possível consultar a configuração da tampa do notebook.",
+  "Show Mode was not changed. Administrator authorization is required.": "O Modo Show não foi alterado. É necessária a autorização do administrador.",
+  "Unable to change Show Mode. The previous lid settings were restored.": "Não foi possível alterar o Modo Show. As configurações anteriores da tampa foram restauradas.",
+  "Unable to change Show Mode. Check the system lid settings.": "Não foi possível alterar o Modo Show. Confira a configuração de energia da tampa no sistema."
 }
