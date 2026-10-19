@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 
 def build_package(app: Path, destination: Path, version: str) -> None:
     if not re.fullmatch(r"[0-9]+\.[0-9]{2}", version):
-        raise ValueError("Use a public version X.XX, such as 1.02")
+        raise ValueError("Use a public version X.XX, such as 1.04")
     app = app.resolve(strict=True)
     if not (app / "Contents/Info.plist").is_file():
         raise ValueError("The payload must be a built CatLive.app bundle")
