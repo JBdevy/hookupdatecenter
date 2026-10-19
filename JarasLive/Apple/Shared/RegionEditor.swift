@@ -435,12 +435,13 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     }
 }
 struct MarkerEditAnchor: NSViewRepresentable {
+    var handCursor = false
     let edit: () -> Void
     let delete: () -> Void
     var seek: (() -> Void)? = nil
     var drag: ((CGFloat, Bool) -> Void)? = nil
     func makeNSView(context: Context) -> MarkerEditClickView { MarkerEditClickView() }
-    func updateNSView(_ view: MarkerEditClickView, context: Context) { view.action = edit; view.optionClick = delete; view.seek = seek; view.drag = drag }
+    func updateNSView(_ view: MarkerEditClickView, context: Context) { view.action = edit; view.optionClick = delete; view.seek = seek; view.drag = drag; view.handCursor = handCursor }
 }
 @MainActor private final class MarkerMenuActions: NSObject {
     let edit: () -> Void, convert: () -> Void
@@ -460,6 +461,8 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
         withExtendedLifetime(actions) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
     }
 
+    var handCursor = false { didSet { if handCursor != oldValue { window?.invalidateCursorRects(for: self) } } }
+    private var moveCursor: NSCursor { handCursor ? .openHand : .resizeLeftRight }
     private var nativeInputBounds: CGRect?
     var hasActiveProjectedGesture: Bool { startX != nil }
     override var isFlipped: Bool { nativeInputBounds != nil || super.isFlipped }
@@ -477,7 +480,7 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     func updateProjectedPointer(at point: CGPoint?) {
         guard startX == nil || point == nil else { return }
         let movable = point.map { inputAvailable && drag != nil && clickBounds.intersection(visibleRect).contains($0) } ?? false
-        let cursor = movable ? NSCursor.resizeLeftRight : NSCursor.arrow
+        let cursor = movable ? moveCursor : NSCursor.arrow
         if NSCursor.current !== cursor { cursor.set() }
     }
     private static let cursorTargets = NSHashTable<MarkerEditClickView>.weakObjects()
@@ -492,11 +495,12 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     func timelinePendingClickCancelled() {
         if !didDrag { timelineInputGateChanged(blocked: true) }
     }
-    static func usesMoveCursor(for event: NSEvent) -> Bool {
-        cursorTargets.allObjects.contains { view in
+    static func usesMoveCursor(for event: NSEvent) -> Bool { cursor(for: event) != nil }
+    static func cursor(for event: NSEvent) -> NSCursor? {
+        cursorTargets.allObjects.first { view in
             view.window?.windowNumber == event.windowNumber && view.drag != nil && view.inputAvailable
                 && view.clickBounds.intersection(view.visibleRect).contains(view.convert(event.locationInWindow, from: nil))
-        }
+        }?.moveCursor
     }
     var seek: (() -> Void)?
     var drag: ((CGFloat, Bool) -> Void)? { didSet {
@@ -512,7 +516,7 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
         !interactionBlocked && !RightClickRouter.shared.interactionBlocked && !NativeTimelineInputGate.shared.isBlocked(window) && window?.attachedSheet == nil && !isHiddenOrHasHiddenAncestor
     }
     override func resetCursorRects() {
-        if nativeInputBounds == nil, drag != nil, inputAvailable { addCursorRect(bounds, cursor: .resizeLeftRight) }
+        if nativeInputBounds == nil, drag != nil, inputAvailable { addCursorRect(bounds, cursor: moveCursor) }
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -523,7 +527,7 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
     override func cursorUpdate(with event: NSEvent) { mouseMoved(with: event) }
     override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
     override func mouseMoved(with event: NSEvent) {
-        if drag != nil, inputAvailable { NSCursor.resizeLeftRight.set() }
+        if drag != nil, inputAvailable { moveCursor.set() }
     }
     override func mouseExited(with event: NSEvent) {
         if drag != nil, startX == nil { NSCursor.arrow.set() }

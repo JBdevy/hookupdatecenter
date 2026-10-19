@@ -888,7 +888,7 @@ private final class TimelineDisplayLinkTarget: NSObject {
 }
 /// Limited to the numbered ruler. Clip clicks never enter this view.
 struct TimelineRulerInput: NSViewRepresentable {
-    var markerCursor: (NSEvent) -> Bool = { _ in false }
+    var markerCursor: (NSEvent) -> NSCursor? = { _ in nil }
     var extend: () -> Void = {}
     var selectTime: (Double, Double) -> Void = { _, _ in }
     var selectedTime: () -> (Double, Double)? = { nil }
@@ -902,7 +902,7 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
     // logical timeline width without resizing the cursor surface on zoom.
     var documentWidth: CGFloat?
     private var inputWidth: CGFloat { documentWidth ?? bounds.width }
-    var markerCursor: (NSEvent) -> Bool = { _ in false }
+    var markerCursor: (NSEvent) -> NSCursor? = { _ in nil }
     var seek: ((Double, Bool, Bool) -> Void)?
     var selectTime: ((Double, Double) -> Void)?
     var selectedTime: (() -> (Double, Double)?)?
@@ -941,7 +941,8 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
     override func mouseMoved(with event: NSEvent) { updatePointer(event) }
     private func updatePointer(_ event: NSEvent) {
         guard !NativeTimelineInputGate.shared.isBlocked(window) else { return }
-        if markerCursor(event) || selectionEdge != nil || areaEdge(event) != nil { NSCursor.resizeLeftRight.set() }
+        if let cursor = markerCursor(event) { cursor.set() }
+        else if selectionEdge != nil || areaEdge(event) != nil { NSCursor.resizeLeftRight.set() }
         else { (dragging ? NSCursor.closedHand : NSCursor.openHand).set() }
     }
     private func areaEdge(_ event: NSEvent) -> Bool? {

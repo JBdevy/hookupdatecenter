@@ -886,10 +886,10 @@ ruler.mouseUp(with: areaPointer(.leftMouseUp,x: 80))
 precondition(area.0 == 0.2 && area.1 == 0.75 && resizeRequests.last!.1, "left edge keeps right edge fixed")
 ruler.mouseEntered(with: areaPointer(.leftMouseUp,x: 180))
 precondition(NSCursor.current == NSCursor.openHand, "hand appears on entering ruler without a press")
-ruler.markerCursor = { _ in true }
+ruler.markerCursor = { _ in .resizeLeftRight }
 ruler.mouseMoved(with: areaPointer(.mouseMoved, x: 180))
 precondition(NSCursor.current == NSCursor.resizeLeftRight, "ruler tracking cannot overwrite the tempo display move cursor")
-ruler.markerCursor = { _ in false }
+ruler.markerCursor = { _ in nil }
 ruler.mouseMoved(with: areaPointer(.mouseMoved, x: 180))
 precondition(NSCursor.current == NSCursor.openHand, "leaving the tempo display restores the ruler hand")
 print("RULER_AREA_EXISTING_EDGES_AND_IMMEDIATE_HOVER_OK")

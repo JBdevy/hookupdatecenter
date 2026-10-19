@@ -589,7 +589,7 @@ private final class MarkerInputTestWindow: NSWindow {
     }
     let point=CGPoint(x:rect.midX,y:rect.midY)
     header.mouseMoved(with:mouse(.mouseMoved,point))
-    precondition(NSCursor.current === NSCursor.resizeLeftRight,"native marker band sets move cursor")
+    precondition(NSCursor.current === NSCursor.openHand,"native marker band sets move cursor")
     precondition(MarkerEditClickView.usesMoveCursor(for:mouse(.mouseMoved,point)))
     precondition(RightClickRouter.shared.handle(mouse(.rightMouseDown,point)))
     precondition(edits.last==markers[0].id)
@@ -606,7 +606,7 @@ private final class MarkerInputTestWindow: NSWindow {
     precondition(RightClickRouter.shared.handle(mouse(.rightMouseDown,point)) && editedNames.last == "Updated while pooled",
         "returning pooled input receives the latest immutable marker callback")
     header.mouseMoved(with:mouse(.mouseMoved,point))
-    precondition(NSCursor.current === NSCursor.resizeLeftRight)
+    precondition(NSCursor.current === NSCursor.openHand)
     window.keyForTest=false;NSCursor.pointingHand.set()
     header.mouseMoved(with:mouse(.mouseMoved,point))
     header.project(scale:10,viewport:CGRect(x:20000,y:0,width:700,height:240),layoutWidth:1000000,displayScale:2)
@@ -614,7 +614,7 @@ private final class MarkerInputTestWindow: NSWindow {
     window.keyForTest=true
     header.project(scale:10,viewport:viewport,layoutWidth:1000000,displayScale:2)
     header.mouseMoved(with:mouse(.mouseMoved,point))
-    precondition(NSCursor.current === NSCursor.resizeLeftRight)
+    precondition(NSCursor.current === NSCursor.openHand)
     song.markers?.removeAll{$0.id==markers[0].id};configure()
     precondition(NSCursor.current === NSCursor.arrow && header.markerForTest(markers[0].id)==nil,
         "structural deletion clears cursor before removing the hovered target")

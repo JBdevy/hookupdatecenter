@@ -18,6 +18,8 @@ parts = [between('/// The closed header owns no SwiftUI zoom graph.', '@MainActo
  between('private enum TimelineHeaderViewport', 'private struct TimelineStaticHeaderIdentity'),
  between('private final class MarkerTargetLabelWidths', 'private struct MarkerEditTargets'),
  between('private final class TimelineResolvedName', 'private struct RegionBoundaryOverlay')]
+conversion = Path('Application/Project/ProjectEditing.swift').read_text()
+parts.append(conversion[conversion.index('public struct MarkerRegionConversion {'):conversion.index('public extension Project {')])
 # Instrument the extracted fixture only; production carries no test counters.
 # Instrument layer properties only inside the header drawing class. Native
 # input shape layers keep their independent selection/hover lifecycle.
