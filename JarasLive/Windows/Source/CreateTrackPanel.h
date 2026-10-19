@@ -110,8 +110,6 @@ class CreateTrackPanel final : public Component {
             session.edit([&](jaras::Project &project) {
                 for (auto &song : project.songs)
                     if (song.id == songID) {
-                        if (song.tracks.size() + quantity > 512)
-                            throw std::runtime_error("Track limit reached.");
                         for (int i = 0; i < quantity; ++i) {
                             jaras::Track track;
                             track.id = uuid();

@@ -598,7 +598,7 @@ json applySessionAction(NativeSession& session, const json& request) {
     } else if (action == "pasteItems" || action == "insertAudioTracks") {
         if (action == "pasteItems") object(args, {"songId", "tracks", "moving"}); else object(args, {"songId", "tracks"});
         const auto id = identifier(field(args, "songId")); (void)song(session, id);
-        std::vector<Track> tracks; for (const auto& raw : array(field(args, "tracks"), 512)) tracks.push_back(importedTrack(raw));
+        std::vector<Track> tracks; for (const auto& raw : array(field(args, "tracks"), std::numeric_limits<std::size_t>::max())) tracks.push_back(importedTrack(raw));
         importedReferences(tracks, song(session, id));
         const auto moving = action == "pasteItems" ? boolean(field(args, "moving")) : false;
         if (moving) requireGridMovement(session);

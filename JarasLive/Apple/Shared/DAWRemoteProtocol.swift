@@ -120,7 +120,7 @@ enum DAWRemoteNoticeDelivery: Equatable {
 struct DAWRemoteCommand: Codable {
     enum Action: String, Codable {
         case play, pause, stop, subPlay, subStop, toggleLoop, seek, queueSection, cancelSection, toggleMultiLoopBypass, toggleSetlistLive
-        case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject
+        case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, selectProjectTab
         case remotePanel, noticeSend, noticeClear, noticePin, noticeDestination, noticeSaveTemplate
         case requestImage
         case timerStart, timerStop
@@ -160,7 +160,7 @@ struct DAWRemoteCommand: Codable {
         case .noticeClear: return target == nil && value == 0
         case .noticePin: return target == nil && (value == 0 || value == 1)
         case .noticeDestination: return target == nil && (value == 1 || value == 2) && enabled != nil
-        case .openRecentProject: return target != nil && value == 0
+        case .openRecentProject, .selectProjectTab: return target != nil && value == 0
         case .clipGain: return target != nil && (0...pow(10, 24.0 / 20)).contains(value)
         case .clipMute, .queueSection: return target != nil && value == 0
         case .volume: return (0...4).contains(value)
@@ -327,7 +327,13 @@ struct DAWRemoteState: Codable, Equatable {
     var selectedPlaylist: UUID? = nil
     var gridRegion: UUID? = nil
     var markers: [Marker]? = nil
+    struct ProjectTab: Codable, Identifiable, Equatable {
+        var id: UUID
+        var name: String
+        var selected: Bool
+    }
     var projects: ProjectBrowser? = nil
+    var projectTabs: [ProjectTab]? = nil
     // Legacy wire field only. Current clients choose list/footer using their buttons.
     var sectionListVertical: Bool? = nil
     var teleprompters: [DAWRemoteTeleprompter]? = nil
@@ -364,6 +370,9 @@ struct DAWRemoteState: Codable, Equatable {
         Set(playedLiveRegionIDs ?? []).count == (playedLiveRegionIDs ?? []).count &&
         (setlistBlocks ?? []).count <= 8192 && (setlistBlocks ?? []).allSatisfy(\.valid) &&
         Set((setlistBlocks ?? []).map(\.id)).count == (setlistBlocks ?? []).count &&
+        (projectTabs ?? []).count <= 1024 && (projectTabs ?? []).allSatisfy { $0.name.utf8.count <= 4096 } &&
+        Set((projectTabs ?? []).map(\.id)).count == (projectTabs ?? []).count &&
+        ((projectTabs ?? []).isEmpty || (projectTabs ?? []).filter(\.selected).count == 1) &&
         (songDisplays?.valid ?? true) && (sectionPlayback?.valid ?? true) && (projects?.valid ?? true) && (notices?.valid ?? true) && (timer?.valid ?? true) &&
         (teleprompters ?? []).count <= 2 && (teleprompters ?? []).allSatisfy(\.valid) &&
         (markers ?? []).count <= 16384 && (markers ?? []).allSatisfy { $0.position.isFinite && $0.position >= 0 } &&

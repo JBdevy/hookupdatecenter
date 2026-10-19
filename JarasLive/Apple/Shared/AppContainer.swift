@@ -22,6 +22,7 @@ enum AppStartupPresentation {
 @MainActor final class AppContainer: ObservableObject {
     let auth: AuthService, show: ShowController
     #if os(macOS)
+    let remoteProjectTabID = UUID()
     var desktopWorkspaceHost: NSHostingView<AnyView>?
     var desktopWorkspaceIdentity: UUID?
     var desktopWorkspaceEnvironment: String?
@@ -490,6 +491,16 @@ enum AppStartupPresentation {
     func install(_ initial: AppContainer) {
         guard projects.isEmpty else { return }
         projects = [initial]; configure(initial); selected = 0
+        DAWRemoteHostBridge.projectTabsProvider = { [weak self] in
+            guard let self else { return [] }
+            return self.projects.enumerated().map { index, container in
+                .init(id: container.remoteProjectTabID, name: container.documents.currentURL?.deletingPathExtension().lastPathComponent ?? container.show.snapshot.project.name, selected: index == self.selected)
+            }
+        }
+        DAWRemoteHostBridge.selectProjectTabHandler = { [weak self] id in
+            guard let self, let index = self.projects.firstIndex(where: { $0.remoteProjectTabID == id }) else { return }
+            self.select(index)
+        }
     }
     private func configure(_ container: AppContainer) {
         container.documents.activateExistingProjectTab = { [weak self, weak container] url in

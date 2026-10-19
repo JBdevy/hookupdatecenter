@@ -319,7 +319,6 @@ jaras::Project ProjectCodec::decode(const json &input) {
             time.affectsAutomationLength = flag(value, "affectsAutomationLength", true);
             song.timeSettings = time;
         }
-        require(list(get(raw, "tracks")).size() <= 512, "Too many tracks.");
         for (const auto &rt : list(get(raw, "tracks"))) {
             jaras::Track t;
             t.id = s(rt, "id");

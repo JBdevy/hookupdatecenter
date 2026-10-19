@@ -3200,10 +3200,24 @@ void Workspace::activateProjectTab() {
     session.audio.liveInputEnabled = true;
     actions.inputEnabled = true;
     remoteHost->presentation = [this](int panel) -> var {
-        return projectReady && !loginPanel ? remotePresentation->snapshot(panel) : var();
+        if (!projectReady || loginPanel) return var();
+        auto state = remotePresentation->snapshot(panel);
+        if (remoteProjectTabs) remote::put(state, "projectTabs", remoteProjectTabs());
+        return state;
     };
     remoteHost->perform = [this](const remote::Command &command) {
-        return projectReady && !loginPanel && !browserVisible && remotePresentation->apply(command);
+        if (!projectReady || loginPanel || browserVisible) return false;
+        if (command.action == "selectProjectTab") {
+            if (!selectRemoteProjectTab || remote::wireID(command.project) != remote::wireID(session.project().id)) return false;
+            // Activate after the current Remote callback returns: activation replaces
+            // that callback while keeping the existing clients connected.
+            MessageManager::callAsync([safe = SafePointer<Workspace>(this), project = session.project().id, target = command.target] {
+                if (safe && safe->session.project().id == project && safe->selectRemoteProjectTab)
+                    safe->selectRemoteProjectTab(remote::wireID(target));
+            });
+            return true;
+        }
+        return remotePresentation->apply(command);
     };
     remoteHost->image = [this](const remote::Command &command) {
         return projectReady && !loginPanel ? remotePresentation->image(command) : remote::Bytes{};
@@ -4349,7 +4363,6 @@ void Workspace::addStandardTrackAtEnd() {
         if(auto *device=session.audio.devices.getCurrentAudioDevice())channels=device->getInputChannelNames().size();
         const auto id=uuid();
         session.edit([&](jaras::Project &project){for(auto &song:project.songs)if(song.id==songID){
-            if(song.tracks.size()>=512)throw std::runtime_error("Limite de pistas atingido.");
             jaras::Track track;track.id=id;track.name=utf8(name);track.role.id="other";track.color=0x828282;
             if(channels>0)track.inputPatch=jaras::OutputPatch{1,std::min(2,channels)};
             song.tracks.push_back(std::move(track));

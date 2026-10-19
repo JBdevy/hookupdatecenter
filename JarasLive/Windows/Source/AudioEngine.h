@@ -222,6 +222,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         ID id;
         float volume = 1, pan = 0;
         bool mute = false, solo = false, phase = false;
+        // Audio-thread scratch state lives with the bus; no fixed track-count arrays.
+        bool renderAudible = false, renderRouteAudible = false;
         int parent = -1;
         std::vector<jaras::OutputPatch> outputs;
         std::vector<int> sends;

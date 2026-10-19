@@ -181,7 +181,6 @@ inline TrackDuplicationResult duplicateDocument(const var &document, const ID &s
         }
         if (before == selected) break;
     }
-    if (static_cast<size_t>(tracks.size()) + selected.size() > 512) throw std::invalid_argument("Limite de 512 pistas atingido.");
     FreshIDs fresh(document, makeID);
     for (const auto &track : tracks) if (selected.count(id(track))) result.trackIDMap[id(track)] = fresh.next();
     const auto &mapping = result.trackIDMap;

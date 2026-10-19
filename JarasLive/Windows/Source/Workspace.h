@@ -90,6 +90,9 @@ class Workspace final : public Component,
     std::function<void(String)> projectTabLoadFinished;
     std::function<void(File)> openInNewProjectTab;
     std::function<void(int)> navigateProjectTab;
+    const jaras::ID remoteProjectTabID = uuid();
+    std::function<var()> remoteProjectTabs;
+    std::function<void(const String &)> selectRemoteProjectTab;
     std::function<bool(int)> canNavigateProjectTab;
     void chooseOpen();
     void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false);

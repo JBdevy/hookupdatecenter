@@ -122,6 +122,22 @@ int main(int argc, char **argv) {
         };
         const auto model=fixture();
         const auto encoded=ProjectCodec::encode(model);
+        test("large projects keep every track beyond the old import ceiling",[&]{
+            for (const auto count : {513, 4097}) {
+                auto large = model;
+                auto& tracks = large.songs.front().tracks;
+                tracks.clear();
+                for (int index = 0; index < count; ++index) {
+                    jaras::Track track; track.id = id(10000 + index);
+                    track.name = "REAPER " + std::to_string(index + 1); track.role.id = "other";
+                    tracks.push_back(std::move(track));
+                }
+                const auto wire = ProjectCodec::encode(large);
+                const auto decoded = ProjectCodec::decode(json::parse(wire.dump()));
+                expect(decoded.songs.front().tracks.size() == (std::size_t)count, "Large project lost tracks");
+                expect(ProjectCodec::encode(decoded) == wire, "Large project roundtrip changed its tracks");
+            }
+        });
         test("all populated document fields survive model roundtrip",[&]{
             const auto decoded=ProjectCodec::decode(json::parse(encoded.dump()));
             expect(ProjectCodec::encode(decoded)==encoded,"Document/model roundtrip changed");

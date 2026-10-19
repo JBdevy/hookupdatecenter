@@ -200,8 +200,6 @@ TrackDuplicationResult duplicateTracks(const json& document, const std::string& 
         }
         if (before == selected) break;
     }
-    if (tracks.size() + selected.size() > 512)
-        throw std::invalid_argument("Track duplication would exceed the 512-track project limit.");
     FreshIDs fresh(document, makeID);
     for (const auto& track : tracks) if (selected.count(id(track))) result.trackIDMap[id(track)] = fresh.next();
     const auto& mapping = result.trackIDMap;

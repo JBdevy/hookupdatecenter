@@ -72,6 +72,7 @@ struct TestSnapshot { var project = TestProject() }
 }
 @MainActor final class TestAuth { var allowed = true }
 @MainActor final class AppContainer {
+    let remoteProjectTabID = UUID()
     var desktopWorkspaceHost: AnyObject?
     var desktopWorkspaceIdentity: UUID?
     var desktopWorkspaceEnvironment: String?
@@ -93,7 +94,13 @@ struct TestSnapshot { var project = TestProject() }
     func update(_ snapshot: TestSnapshot) {}
 }
 @MainActor enum TeleprompterRemote { static func setProjectDirectory(_ url: URL?) {} }
-@MainActor enum DAWRemoteHostBridge { static var documents: ProjectDocuments?; static func bind(_ show: ShowController) {} }
+enum DAWRemoteState { struct ProjectTab { var id: UUID; var name: String; var selected: Bool } }
+@MainActor enum DAWRemoteHostBridge {
+    static var documents: ProjectDocuments?
+    static var projectTabsProvider: () -> [DAWRemoteState.ProjectTab] = { [] }
+    static var selectProjectTabHandler: ((UUID) -> Void)?
+    static func bind(_ show: ShowController) {}
+}
 @MainActor final class ResolumeController { static let shared = ResolumeController(); func bind(_ show: ShowController) {} }
 @MainActor final class ControlMappings { static let shared = ControlMappings(); func bind(_ show: ShowController) {} }
 @MainActor final class AudioDeviceSettings { static let shared = AudioDeviceSettings(); var canChangeConfiguration: () -> Bool = { true } }
@@ -120,6 +127,16 @@ enum ProjectTabNavigation {
         precondition(first.show.isPlaying && first.show.hasUnsavedChanges && first.show.stops == 0)
         precondition(first.projectAudio !== second.projectAudio)
         second.show.hasUnsavedChanges = true; second.show.isPlaying = true
+        let remoteTabs = DAWRemoteHostBridge.projectTabsProvider()
+        precondition(remoteTabs.map(\.id) == [first.remoteProjectTabID, second.remoteProjectTabID])
+        precondition(remoteTabs.map(\.name) == ["first", "second"] && remoteTabs.map(\.selected) == [false, true])
+        DAWRemoteHostBridge.selectProjectTabHandler?(first.remoteProjectTabID)
+        precondition(tabs.active === first && first.show.isPlaying && second.show.isPlaying)
+        DAWRemoteHostBridge.selectProjectTabHandler?(UUID())
+        precondition(tabs.active === first)
+        DAWRemoteHostBridge.selectProjectTabHandler?(second.remoteProjectTabID)
+        precondition(tabs.active === second && DAWRemoteHostBridge.projectTabsProvider().map(\.selected) == [false, true])
+        print("PROJECT_TABS_REMOTE_SELECTION_AND_BACKGROUND_AUDIO_OK")
         tabs.navigate(-1)
         precondition(tabs.active === first && first.show.isPlaying && second.show.isPlaying)
         tabs.navigate(-1)

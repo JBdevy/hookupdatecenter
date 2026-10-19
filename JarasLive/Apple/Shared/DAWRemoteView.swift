@@ -89,6 +89,33 @@ struct PhoneRemoteHomeView: View {
             }
     }
 }
+private struct RemoteProjectTabStrip: View {
+    let tabs: [DAWRemoteState.ProjectTab]
+    let enabled: Bool
+    let select: (UUID) -> Void
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(tabs) { tab in
+                Button { select(tab.id) } label: {
+                    Text(verbatim: tab.name)
+                        .font(.jarasSystem(size: 13, weight: .semibold))
+                        .foregroundStyle(tab.selected ? Color.white : Color(hex: 0xa4a4a4))
+                        .lineLimit(1).truncationMode(.middle)
+                        .padding(.horizontal, 8)
+                        .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
+                        .background(Color(hex: tab.selected ? 0x333333 : 0x191919))
+                        .overlay(alignment: .bottom) {
+                            if tab.selected { Rectangle().fill(JarasTheme.green).frame(height: 3) }
+                        }
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .disabled(!enabled || tab.selected)
+                    .accessibilityIdentifier("remote-project-tab-\(tab.id.uuidString)")
+                    .accessibilityValue(tab.selected ? "Selected" : "")
+            }
+        }.background(Color(hex: 0x414141))
+    }
+}
 struct DAWRemoteClientView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var remote: DAWRemoteSession = .shared
@@ -314,6 +341,8 @@ struct DAWRemoteClientView: View {
 
 @MainActor enum DAWRemoteHostBridge {
     static weak var documents: ProjectDocuments?
+    static var projectTabsProvider: () -> [DAWRemoteState.ProjectTab] = { [] }
+    static var selectProjectTabHandler: ((UUID) -> Void)?
     private static var noticeImageDate = Date.distantPast
     private static var noticeImageData: Data?
     private static var lastTimerState: TeleprompterTimer?
@@ -466,6 +495,7 @@ struct DAWRemoteClientView: View {
                 gridRegion: transport.playing ? song?.playingSetlistRegion(transport.regionId, position: transport.position, expanded: [])?.id : (show.focusedRegion ?? transport.regionId),
                 markers: cachedMarkers,
                 projects: projectBrowser(documents),
+                projectTabs: projectTabsProvider(),
                 teleprompters: (1...2).contains(requestedPanel) ? [teleprompter(index: requestedPanel, snapshot: snapshot, directory: documents?.currentURL?.deletingLastPathComponent(), remote: remote)] : nil,
                 notices: requestedPanel == 0 ? nil : notices(project: snapshot.project.id, remote: remote), timer: timerState(),
                 gridTempo: cachedGridTempo, gridDivisions: song?.projectTime.divisions,
@@ -511,6 +541,10 @@ struct DAWRemoteClientView: View {
                 return
             }
             if command.action == .timerStop { TeleprompterTimerController.shared.stopAndReset(); return }
+            if command.action == .selectProjectTab {
+                if let target = command.target { Self.selectProjectTabHandler?(target) }
+                return
+            }
             if command.action == .openRecentProject {
                 #if os(macOS)
                 if let target = command.target { documents?.openRemoteProject(target) }
@@ -1025,12 +1059,19 @@ private struct RemoteSidebarRail<Content: View>: View {
         action(.remotePanel, value: Double(panel))
     }
     var body: some View {
-        Group {
-            if UIDevice.current.userInterfaceIdiom == .phone {
-                if observer { phoneRepertoire } else { phoneDirectorWorkspace }
+        VStack(spacing: 0) {
+            if !observer, let tabs = state.projectTabs, tabs.count > 1 {
+                RemoteProjectTabStrip(tabs: tabs, enabled: controlsEnabled && state.projects?.busy != true) {
+                    action(.selectProjectTab, target: $0)
+                }
             }
-            else if observer { observerWorkspace }
-            else { directorWorkspace }
+            Group {
+                if UIDevice.current.userInterfaceIdiom == .phone {
+                    if observer { phoneRepertoire } else { phoneDirectorWorkspace }
+                }
+                else if observer { observerWorkspace }
+                else { directorWorkspace }
+            }
         }
         .overlay {
             if creatingPlaylist, let createPlaylist {

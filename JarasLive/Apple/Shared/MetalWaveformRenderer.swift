@@ -499,6 +499,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         // Calling present only queues the drawable. Releasing the slot there
         // can exhaust the triple buffer before Core Animation displays it and
         // make nextDrawable block the UI thread for an entire timeout.
+        #if !targetEnvironment(simulator)
         let pixelWidth = Double(drawable.texture.width), pixelHeight = Double(drawable.texture.height)
         drawable.addPresentedHandler { presented in
             let timestamp = TimelineRenderDiagnostics.enabled ? presented.presentedTime : 0
@@ -510,6 +511,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
                     milliseconds: max(0, timestamp - requestedAt) * 1000, eventTime: timestamp)
             }
         }
+        #endif
         lastPresentedSequence = sequence
         // Join the run loop's implicit transaction. Starting and committing a
         // root explicit transaction from each GPU callback forces AppKit to
@@ -521,6 +523,10 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         didPresent?(frame)
         setContentVisible(true)
         drawable.present()
+        #if targetEnvironment(simulator)
+        // Simulator Metal has no presented-handler API; retire on the next UI turn.
+        DispatchQueue.main.async { lease.finish(2) }
+        #endif
     }
     private func setContentVisible(_ visible: Bool) {
         let opacity: CGFloat = visible ? 1 : 0

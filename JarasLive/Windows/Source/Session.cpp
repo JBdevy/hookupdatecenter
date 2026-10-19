@@ -1364,7 +1364,7 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
                     if(!targetTrack.empty()&&std::none_of(song->tracks.begin(),song->tracks.end(),[&](auto &t){return t.id==targetTrack;}))throw std::runtime_error("A pista de destino não existe mais.");
                     for(auto &imported:tracks){
                         auto found=std::find_if(song->tracks.begin(),song->tracks.end(),[&](auto &t){return t.id==imported.id;});
-                        if(found==song->tracks.end()){if(song->tracks.size()>=512)throw std::runtime_error("Limite de pistas atingido.");song->tracks.push_back(std::move(imported));found=std::prev(song->tracks.end());}
+                        if(found==song->tracks.end()){song->tracks.push_back(std::move(imported));found=std::prev(song->tracks.end());}
                         else {
                             // Move the batch as a unit past existing material, preserving
                             // the user's sequence and interval. Stacked import explicitly keeps
@@ -1392,8 +1392,6 @@ void Session::addTrack(String name, String role) {
     edit([&](jaras::Project &p) {
         for (auto &s : p.songs)
             if (s.id == id) {
-                if (s.tracks.size() >= 512)
-                    throw std::runtime_error("Track limit reached.");
                 jaras::Track t;
                 t.id = uuid();
                 t.name = utf8(name);

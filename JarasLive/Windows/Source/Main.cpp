@@ -428,6 +428,21 @@ class CatLiveApplication final : public JUCEApplication {
     std::vector<Session *> tabSessions;
     size_t selectedTab = 0;
     void installProjectTabHooks(Workspace &workspace) {
+        workspace.remoteProjectTabs = [this] {
+            Array<var> tabs;
+            for (size_t index = 0; index < tabWorkspaces.size(); ++index) {
+                auto tab = remote::object();
+                remote::put(tab, "id", remote::wireID(tabWorkspaces[index]->remoteProjectTabID));
+                remote::put(tab, "name", tabSessions[index]->document.existsAsFile() ? tabSessions[index]->document.getFileNameWithoutExtension() : String::fromUTF8(tabSessions[index]->project().name.c_str()));
+                remote::put(tab, "selected", index == selectedTab);
+                tabs.add(tab);
+            }
+            return var(tabs);
+        };
+        workspace.selectRemoteProjectTab = [this](const String &id) {
+            for (size_t index = 0; index < tabWorkspaces.size(); ++index)
+                if (remote::wireID(tabWorkspaces[index]->remoteProjectTabID) == id) { if (index != selectedTab) selectProjectTab(index); return; }
+        };
         workspace.activateExistingProjectTab = [this](File file) {
             for (size_t index = 0; index < tabSessions.size(); ++index)
                 if (index != selectedTab && tabSessions[index]->document == file) { selectProjectTab(index); return true; }

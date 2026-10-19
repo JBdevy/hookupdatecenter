@@ -526,8 +526,6 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
         masterOutputs.push_back(*project->masterSecondaryPatch);
     try {
         jaras::validateRouting(song);
-        if (song.tracks.size() > 512)
-            throw std::runtime_error("O projeto excede 512 pistas.");
         masterAutomation.prepare(project && project->masterAutomationJSON ? JSON::parse(text(*project->masterAutomationJSON)) : var());
         masterFXSettings = masterSettings;
         masterFX.prepare(masterSettings, rate.load(),nullptr,offlineMode,true,pluginDispatcher);
@@ -1185,7 +1183,6 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         if (((bus->midi && !bus->midi->empty()) || bus->fx[0].hasExternal()) && bus->midiSlot > 0)
             routedHardware = true;
     }
-    std::array<bool, 512> audible{};
     for (size_t i = 0; i < buses.size(); ++i) {
         bool muted = false, solo = false;
         int index = (int)i;
@@ -1195,17 +1192,17 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             solo |= bus.solo;
             index = bus.parent;
         }
-        audible[i] = !muted && (!anySolo || solo);
+        buses[i]->renderAudible = !muted && (!anySolo || solo);
     }
     if(latencyPlan)for(auto &channel:latencyPlan->buses)for(auto &buffer:channel.routed)buffer.clear(0,samples);
     const bool keepPipeline=latencyPlan&&latencyPlan->total>0;
-    auto sourceAudible=[&](size_t index){return keepPipeline||audible[index];};
-    auto routeAudible = audible;
+    auto sourceAudible=[&](size_t index){return keepPipeline||buses[index]->renderAudible;};
+    for (auto &bus : buses) bus->renderRouteAudible = bus->renderAudible;
     for (size_t i = 0; i < buses.size(); ++i)
-        if (audible[i]) {
+        if (buses[i]->renderAudible) {
             int parent = buses[i]->parent;
             while (parent >= 0) {
-                routeAudible[(size_t)parent] = true;
+                buses[(size_t)parent]->renderRouteAudible = true;
                 parent = buses[(size_t)parent]->parent;
             }
         }
@@ -1331,13 +1328,13 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         for(int ch=0;ch<2;ch++)buses[voice->bus]->clips[head].addFrom(ch,0,buffer,ch,0,samples);
     }
     for (int index : busOrder)
-        if (routeAudible[(size_t)index]) {
+        if (buses[(size_t)index]->renderRouteAudible) {
             const auto &bus = *buses[(size_t)index];
             for (int target : bus.sends)
-                routeAudible[(size_t)target] = true;
+                buses[(size_t)target]->renderRouteAudible = true;
             for (const auto &patch : bus.outputs)
                 if (patch.firstChannel == -2 && bus.parent >= 0)
-                    routeAudible[(size_t)bus.parent] = true;
+                    buses[(size_t)bus.parent]->renderRouteAudible = true;
         }
     auto routeHardware = [&](const AudioBuffer<float> &source, const jaras::OutputPatch &patch) {
         if (patch.firstChannel < 1)
@@ -1481,7 +1478,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 FloatVectorOperations::multiply(buffer.getWritePointer(ch),gain,samples);
                 if(fadeSelected)FloatVectorOperations::multiply(buffer.getWritePointer(ch),trackFadeoutGains.data(),samples);
             }
-            const bool silent = !routeAudible[(size_t)index];
+            const bool silent = !buses[(size_t)index]->renderRouteAudible;
             peak = std::max(peak, silent ? 0.f : buffer.getMagnitude(0, samples));
             if (!silent) for (int ch = 0; ch < 2; ++ch)
                 stereoPeak[(size_t)ch] = std::max(stereoPeak[(size_t)ch], buffer.getMagnitude(ch, 0, samples));
@@ -1574,7 +1571,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             for (int ch = 0; ch < std::min(channels, 2); ++ch)
                 if (out[ch])
                     FloatVectorOperations::copy(out[ch], masterBuffer.getReadPointer(ch), samples);
-        } else if (routeAudible[(size_t)exportBus]) {
+        } else if (buses[(size_t)exportBus]->renderRouteAudible) {
             const auto &bus = *buses[(size_t)exportBus];
             for (int ch = 0; ch < std::min(channels, 2); ++ch)
                 if (out[ch]) {

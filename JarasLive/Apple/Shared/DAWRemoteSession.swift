@@ -1152,7 +1152,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         // Walking every clip here repeats that work on the UI thread at 10 Hz.
         guard var state = stateProviderForSession?(self) ?? stateProvider?() else { return }
         if accessMode == .observer || accessMode == .notices {
-            state.tracks = []; state.playlists = nil; state.projects = nil; state.gridTempo = nil
+            state.tracks = []; state.playlists = nil; state.projects = nil; state.projectTabs = nil; state.gridTempo = nil
         }
         if accessMode == .notices {
             state.regions = []; state.timelineRegions = []; state.markers = nil
