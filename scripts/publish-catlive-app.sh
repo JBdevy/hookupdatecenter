@@ -19,9 +19,9 @@ esac
 BRANCH="$(git branch --show-current)"
 [[ -n "$BRANCH" ]] || { echo 'Selecione uma branch antes de continuar.' >&2; exit 1; }
 VERSION="${1:-}"
-if [[ -z "$VERSION" ]]; then read -r -p 'Versão do CatLive [1.01]: ' VERSION; VERSION="${VERSION:-1.01}"; fi
+if [[ -z "$VERSION" ]]; then read -r -p 'Versão do CatLive [1.04]: ' VERSION; VERSION="${VERSION:-1.04}"; fi
 VERSION="${VERSION#v}"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]{2}$ ]] || { echo 'Use X.XX (ex.: 1.01).' >&2; exit 1; }
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]{2}$ ]] || { echo 'Use X.XX (ex.: 1.04).' >&2; exit 1; }
 MESSAGE="${2:-}"
 if [[ -z "$MESSAGE" ]]; then read -r -p 'Mensagem do commit: ' MESSAGE; fi
 [[ -n "${MESSAGE//[[:space:]]/}" ]] || { echo 'Informe a mensagem do commit.' >&2; exit 1; }
