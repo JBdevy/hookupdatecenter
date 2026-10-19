@@ -49,6 +49,10 @@ assert(pkg.includes('options.set("rootVolumeOnly", "true")'));
 assert(pkg.includes('"--install-location", "/Applications"'));
 assert(!pkg.includes('ET.SubElement(document, "welcome"') && !pkg.includes('ET.SubElement(document, "conclusion"'));
 assert(workflow.includes('deleteReleaseAsset') && workflow.includes('!installers.has(asset.name)'));
+const publication = workflow.slice(workflow.indexOf('      - name: Publish both desktop installers together'));
+assert(publication.includes('token: ${{ secrets.CATLIVE_RELEASE_TOKEN }}') &&
+       publication.includes('github-token: ${{ secrets.CATLIVE_RELEASE_TOKEN }}'),
+       'Release replacement and tag updates must use the publication credential with workflow permission.');
 assert(publisher.includes("$Version='1.04'") && read('build catlive macos.command').includes('${VERSION:-1.04}'));
 for (const entry of [publisher, read('build catlive macos.command')])
     assert(entry.includes('space-before-tab,cr-at-eol diff --cached --check'), 'Preserved CRLF must not block source validation.');
