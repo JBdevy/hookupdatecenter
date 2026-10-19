@@ -2,6 +2,32 @@ import XCTest
 @testable import JarasApplication
 
 final class PlaybackScopeTests: XCTestCase {
+    func testEarlierUnifiedFlagIncludesNewlyExposedItemsButKeepsPreviousTailsExcluded() {
+        var song = Project.empty(name: "Moved boundary").songs[0]
+        let group = UUID(), a = UUID(), b = UUID()
+        song.parts = [Part(id: group, name: "Group", startTime: 0, endTime: 40),
+            Part(id: a, name: "A", startTime: 0, endTime: 22),
+            Part(id: b, name: "B", startTime: 20, endTime: 40)]
+        song.parts[1].parentRegionID = group; song.parts[2].parentRegionID = group
+        song.markers = [TimelineMarker(id: UUID(), name: "B", position: 17.5, color: 0,
+            unifiedRegionID: group, sourceRegionID: b)]
+        song.regionOwnershipInitialized = true
+        var transport = TransportState(playing: true, songId: song.id, position: 19,
+            regionId: group, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
+        transport.playbackStartRegionId = song.playbackEntryRegion(at: 19)
+        XCTAssertEqual(transport.playbackStartRegionId, b)
+        let scope = song.playbackScope(transport)
+        XCTAssertEqual(scope.minimum, 17.5)
+        let pickup = AudioClip(id: UUID(), name: "B regency pickup", startTime: 18.2, duration: 1, regionOwnerID: a)
+        let click = AudioClip(id: UUID(), name: "B click", startTime: 17.5, duration: 15, regionOwnerID: a)
+        let tail = AudioClip(id: UUID(), name: "A tail", startTime: 0, duration: 22, regionOwnerID: a)
+        let moved = AudioClip(id: UUID(), name: "Deliberately moved A", startTime: 24, duration: 1, regionOwnerID: a)
+        XCTAssertTrue(scope.allows(song.playbackItemStart(pickup)))
+        XCTAssertTrue(scope.allows(song.playbackItemStart(click)))
+        XCTAssertFalse(scope.allows(song.playbackItemStart(tail)))
+        XCTAssertFalse(scope.allows(song.playbackItemStart(moved)))
+    }
+
     func testEntryAndMembershipAreIndependentOfPlayheadAndRoundedOnset() {
         var song = Project.empty(name: "Playback scope").songs[0]
         let group = UUID(), a = UUID(), b = UUID()

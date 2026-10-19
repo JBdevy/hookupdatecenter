@@ -1993,16 +1993,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             auto cursor=MouseCursor::NormalCursor;
             if(e.y>=t.regionHeight()+32 && e.y<headerHeight() && timeRangeEdge(e.position.x)) cursor=MouseCursor::LeftRightResizeCursor;
             if (const auto *song=t.w.session.song()) {
-                if (e.y>=t.regionHeight() && e.y<t.regionHeight()+16) {
-                    t.refreshMarkers(*song);
-                    for (const auto &flag:t.markerFlags) {
-                        if (flag.tempo || flag.linked) continue;
-                        const float width=std::min(flag.width,(float)((flag.next-flag.position)*t.w.pixelsPerSecond-3));
-                        if (juce::Rectangle<float>(t.xAt(flag.position),(float)t.regionHeight()+1,std::max(8.f,width),14).contains(e.position)) {
-                            cursor=MouseCursor::PointingHandCursor; break;
-                        }
-                    }
-                }
                 const int row=t.w.rowAt(e.y-headerHeight()+t.w.verticalOffset);
                 if (e.y>=headerHeight() && row>=0 && row<(int)song->tracks.size()) {
                     const auto &track=song->tracks[(size_t)row];

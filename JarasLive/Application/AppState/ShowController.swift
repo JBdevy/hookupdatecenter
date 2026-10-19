@@ -2863,7 +2863,8 @@ public struct ShowTimelinePresentationState: Equatable {
                 try executor.setTempoMarkers([initial])
                 snapshot.project.songs[song].markers!.insert(initial, at: 0)
             }
-            markChanged(refreshAudio: (value.isTempo || previous?.isTempo == true) && (affectedAudio || snapshot.project.songs[song].tempoMarkersAffectAudio))
+            let playbackBoundaryChanged = value.sourceRegionID != nil && previous?.position != value.position
+            markChanged(refreshAudio: playbackBoundaryChanged || ((value.isTempo || previous?.isTempo == true) && (affectedAudio || snapshot.project.songs[song].tempoMarkersAffectAudio)))
         } catch { message = error.localizedDescription }
     }
     @discardableResult public func unifyRegions(containing id: UUID, name: String) -> Bool {

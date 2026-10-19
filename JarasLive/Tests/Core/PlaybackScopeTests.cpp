@@ -49,5 +49,18 @@ int main() {
     auto loose = a; loose.regionOwnerID.reset(); check(allows(loose), "intentionally unattached items stay global");
     engine.execute({CommandKind::stopAll}); engine.execute({CommandKind::selectRegion, "c"}); engine.execute({CommandKind::play}); engine.execute({CommandKind::ignoreNext});
     check(!engine.transport().ignoreNextAfter, "last child has no next to ignore");
+    auto shifted = song;
+    shifted.markers = std::vector<TimelineMarker>{{"flag-b", "B", 17.5, 0}};
+    shifted.markers->front().sourceRegionID = "b";
+    shifted.markers->front().unifiedRegionID = "group";
+    TransportState shiftedTransport;
+    shiftedTransport.playbackStartRegionId = playbackEntryRegion(shifted, 19);
+    check(shiftedTransport.playbackStartRegionId == "b", "entry follows visible moved flag");
+    const auto shiftedScope = playbackScope(shifted, shiftedTransport);
+    auto pickup = a; pickup.startTime = 18.2;
+    check(shiftedScope.minimum == 17.5 && shiftedScope.allows(playbackItemStart(shifted, pickup)), "regency pickup after moved flag is audible");
+    pickup.startTime = 17.5;
+    check(shiftedScope.allows(playbackItemStart(shifted, pickup)), "click at visible moved flag is audible");
+    check(!shiftedScope.allows(playbackItemStart(shifted, a)) && !shiftedScope.allows(playbackItemStart(shifted, lateA)), "previous tails and deliberately moved items stay excluded");
     std::cout << "PLAYBACK_ENTRY_OWNERSHIP_AND_IGNORE_NEXT_OK\n";
 }

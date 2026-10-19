@@ -435,13 +435,13 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     }
 }
 struct MarkerEditAnchor: NSViewRepresentable {
-    var handCursor = false
+    var normalCursor = false
     let edit: () -> Void
     let delete: () -> Void
     var seek: (() -> Void)? = nil
     var drag: ((CGFloat, Bool) -> Void)? = nil
     func makeNSView(context: Context) -> MarkerEditClickView { MarkerEditClickView() }
-    func updateNSView(_ view: MarkerEditClickView, context: Context) { view.action = edit; view.optionClick = delete; view.seek = seek; view.drag = drag; view.handCursor = handCursor }
+    func updateNSView(_ view: MarkerEditClickView, context: Context) { view.action = edit; view.optionClick = delete; view.seek = seek; view.drag = drag; view.normalCursor = normalCursor }
 }
 @MainActor private final class MarkerMenuActions: NSObject {
     let edit: () -> Void, convert: () -> Void
@@ -461,8 +461,8 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
         withExtendedLifetime(actions) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
     }
 
-    var handCursor = false { didSet { if handCursor != oldValue { window?.invalidateCursorRects(for: self) } } }
-    private var moveCursor: NSCursor { handCursor ? .openHand : .resizeLeftRight }
+    var normalCursor = false { didSet { if normalCursor != oldValue { window?.invalidateCursorRects(for: self) } } }
+    private var moveCursor: NSCursor { normalCursor ? .arrow : .resizeLeftRight }
     private var nativeInputBounds: CGRect?
     var hasActiveProjectedGesture: Bool { startX != nil }
     override var isFlipped: Bool { nativeInputBounds != nil || super.isFlipped }

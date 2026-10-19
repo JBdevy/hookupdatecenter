@@ -2606,7 +2606,7 @@ private final class NativeTimelineHeaderText: NSObject {
         view.optionClick = {
             if marker.unifiedRegionID == nil, marker.sourceRegionID == nil { value.delete(marker.id) }
         }
-        view.handCursor = !marker.isTempo && marker.sourceRegionID == nil && marker.unifiedRegionID == nil
+        view.normalCursor = !marker.isTempo && marker.sourceRegionID == nil && marker.unifiedRegionID == nil
         view.seek = { value.seek(marker) }
         view.drag = !value.movementLocked && value.song.canDragMarker(marker) ? { [weak self] delta, ended in
             guard let self, self.configuration?.movementLocked != true else { return }
@@ -6686,7 +6686,7 @@ private struct MarkerEditTargets: View {
         ZStack(alignment: .topLeading) {
             ForEach(targets) { target in
                 let marker = target.marker
-                MarkerEditAnchor(handCursor: !marker.isTempo && marker.sourceRegionID == nil && marker.unifiedRegionID == nil, edit: { edit(marker) }, delete: {
+                MarkerEditAnchor(normalCursor: !marker.isTempo && marker.sourceRegionID == nil && marker.unifiedRegionID == nil, edit: { edit(marker) }, delete: {
                     if marker.unifiedRegionID == nil, marker.sourceRegionID == nil { delete(marker.id) }
                 }, seek: { seek(marker) }, drag: song.canDragMarker(marker) ? drag.map { action in { delta, ended in action(marker, delta, ended) } } : nil)
                     .frame(width: target.width, height: markerLaneHeight)

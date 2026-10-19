@@ -727,17 +727,35 @@ public struct PlaybackScope: Equatable {
     }
 }
 public extension Song {
+    /// Linked flags are editable playback boundaries; stored child bounds
+    /// retain the original song extent for non-destructive arrangement edits.
+    func playbackRegionStart(_ part: Part) -> Double {
+        guard let parent = part.parentRegionID else { return part.startTime }
+        return markers?.first { $0.sourceRegionID == part.id && $0.unifiedRegionID == parent }?.position ?? part.startTime
+    }
     func playbackEntryRegion(at position: Double) -> UUID? {
         guard let root = parts.filter({ $0.parentRegionID == nil && position >= $0.startTime - 1e-6 && position < $0.endTime })
             .min(by: { $0.endTime - $0.startTime < $1.endTime - $1.startTime }) else { return nil }
-        return parts.filter { $0.parentRegionID == root.id && $0.startTime <= position + 1e-6 }
-            .sorted { $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime > $1.startTime }.first?.id
+        return parts.filter { $0.parentRegionID == root.id && playbackRegionStart($0) <= position + 1e-6 }
+            .sorted { playbackRegionStart($0) == playbackRegionStart($1) ? $0.id.uuidString < $1.id.uuidString : playbackRegionStart($0) > playbackRegionStart($1) }.first?.id
     }
     func playbackItemStart(_ clip: AudioClip) -> Double? {
         guard regionOwnershipInitialized == true else { return clip.startTime }
         let owner = clip.regionOwnerID
         if let part = parts.first(where: { $0.id == owner }) {
-            return part.parentRegionID != nil ? part.startTime : clip.startTime
+            guard let parent = part.parentRegionID else { return clip.startTime }
+            // Moving a song flag earlier includes onsets in the newly exposed
+            // interval, while previous-song tails and deliberately moved items
+            // beyond that interval keep their persisted attachment.
+            if let incoming = parts.filter({
+                $0.parentRegionID == parent && $0.id != part.id &&
+                playbackRegionStart($0) < $0.startTime - 1e-6 &&
+                clip.startTime >= playbackRegionStart($0) - 1e-6 && clip.startTime < $0.startTime - 1e-6 &&
+                $0.startTime > part.startTime
+            }).max(by: { playbackRegionStart($0) < playbackRegionStart($1) }) {
+                return playbackRegionStart(incoming)
+            }
+            return playbackRegionStart(part)
         }
         return regionOwnershipInitialized == true ? nil : clip.startTime
     }
@@ -747,7 +765,7 @@ public extension Song {
         else if head == 0 { entry = transport.playbackStartRegionId ?? transport.regionId }
         else { entry = transport.subPlaybackStartRegionId ?? transport.queuedRegionId }
         let part = parts.first { $0.id == entry && $0.parentRegionID != nil }
-        return PlaybackScope(minimum: part?.startTime ?? -.infinity,
+        return PlaybackScope(minimum: part.map { playbackRegionStart($0) } ?? -.infinity,
             maximum: head == 0 ? transport.ignoreNextAfter ?? .infinity : .infinity)
     }
 }
