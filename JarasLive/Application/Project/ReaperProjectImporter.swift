@@ -560,12 +560,16 @@ public enum ReaperProjectImporter {
                 let start = try item.number("POSITION"), duration = try item.number("LENGTH")
                 guard duration > 0, (start + duration).isFinite else { throw invalid("Invalid item position or length.") }
                 if start < 0 { ignoredItems += 1; continue }
-                // Each take is an independent item in CatLive. Keep inactive
-                // audio/MIDI takes at the same bounds so the existing item lanes
-                // expose every source instead of discarding all but the active take.
+                // Audio/MIDI tracks can expose alternate takes as stacked items.
+                // Special projection tracks have one lane, so importing all
+                // REAPER takes from the same item would create invalid overlaps.
                 var takes = item.children.filter { ["TAKE", "TAKE_INLINE"].contains($0.header.first ?? "") }
                 if item.child("SOURCE") != nil || takes.isEmpty { takes.insert(item, at: 0) }
                 let activeTake = takes.first { $0 !== item && ($0.header.contains("SEL") || $0.value("SEL") == "1") } ?? takes.first
+                if special != nil, let activeTake {
+                    if takes.count > 1 { warnings.insert("%@: alternate REAPER takes ignored on this single-lane special track; the active take was imported.", track.name) }
+                    takes = [activeTake]
+                }
                 let playAllTakes = try item.integer("ALLTAKES") != 0
                 for take in takes {
             do {

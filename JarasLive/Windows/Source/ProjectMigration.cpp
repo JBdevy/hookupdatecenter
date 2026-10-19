@@ -524,6 +524,12 @@ MigratedProject readReaperProject(const File &file) {
             for (auto *take : takes)
                 if (take->header.contains("SEL") || take->value("SEL") == "1")
                     active = take;
+            if (!specialName.empty()) {
+                if (takes.size() > 1)
+                    result.warnings.addIfNotAlreadyThere(
+                        track.name + ": alternate REAPER takes ignored on this single-lane special track; the active take was imported.");
+                takes = {active};
+            }
             for (auto *take : takes) {
             try {
                 jaras::AudioClip clip;
