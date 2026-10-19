@@ -296,7 +296,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             return
         }
         let replacesContent = latestFrame.map {
-            !$0.isEmpty && $0.coordinateSpace?.contentRevision != frame.coordinateSpace?.contentRevision
+            !$0.isEmpty && ($0.coordinateSpace != frame.coordinateSpace || $0.size != frame.size)
         } ?? false
         latestFrame = frame
         // An empty viewport has no GPU work. Hide any old drawable immediately
@@ -494,7 +494,8 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
 
     private func present(_ frame: MetalWaveformFrame, drawable: CAMetalDrawable, sequence: UInt64,
                          lease: FrameLease, requestedAt: Double) {
-        guard sequence > lastPresentedSequence, latestFrame?.isEmpty == false else { lease.finish(2); return }
+        guard sequence > lastPresentedSequence, let latestFrame, !latestFrame.isEmpty,
+              frame.coordinateSpace == latestFrame.coordinateSpace, frame.size == latestFrame.size else { lease.finish(2); return }
         // Calling present only queues the drawable. Releasing the slot there
         // can exhaust the triple buffer before Core Animation displays it and
         // make nextDrawable block the UI thread for an entire timeout.

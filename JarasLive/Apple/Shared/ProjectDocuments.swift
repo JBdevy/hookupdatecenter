@@ -18,6 +18,13 @@ enum PortableProjectImportPrompt: String, Identifiable {
 }
 
 @MainActor final class ProjectDocuments: ObservableObject {
+    var projectAudio: StemAudioPlayback = .shared
+    var activateExistingProjectTab: ((URL) -> Bool)?
+    var openInNewProjectTab: ((URL) -> Void)?
+    var navigateProjectTab: ((Int) -> Void)?
+    @Published var projectTabCount = 1
+    @Published var projectTabIndex = 0
+
     #if os(iOS)
     enum NativePicker: String, Identifiable { case package, packageDestination, stems, trackAudio, trackMedia, storage; var id: String { rawValue } }
     @Published var nativePicker: NativePicker?
@@ -546,7 +553,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
                 VideoPlayback.teleprompter.closeProject()
                 VideoPlayback.teleprompter2.closeProject()
                 TrackRecording.shared.closeProject()
-                StemAudioPlayback.shared.prepareForClosing()
+                projectAudio.prepareForClosing()
                 await store.deselect()
                 try await Task.detached(priority: .userInitiated) { try deletion.remove() }.value
                 recent.removeAll { deletion.contains($0) }
@@ -563,7 +570,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
                 if let url = currentURL {
                     await store.select(url: url, id: show.snapshot.project.id)
                     let directory = url.deletingLastPathComponent()
-                    StemAudioPlayback.shared.open(directory: directory)
+                    projectAudio.open(directory: directory)
                     VideoPlayback.shared.open(directory: directory)
                     VideoPlayback.teleprompter.open(directory: directory)
                     VideoPlayback.teleprompter2.open(directory: directory)
@@ -693,7 +700,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         VideoPlayback.teleprompter.closeProject()
         VideoPlayback.teleprompter2.closeProject()
         TrackRecording.shared.closeProject()
-        StemAudioPlayback.shared.prepareForClosing()
+        projectAudio.prepareForClosing()
         resetProjectSelections()
         clearImportSelection()
         cancelNativePackageImport(); nativePicker = nil; nativeAudioTarget = nil
@@ -728,8 +735,8 @@ enum PortableProjectImportPrompt: String, Identifiable {
         resetProjectSelections()
         await store.select(url: url, savedProject: project)
         let missing = Set(ProjectAudioRecovery.missingPaths(in: project, directory: url.deletingLastPathComponent()))
-        StemAudioPlayback.shared.open(directory: url.deletingLastPathComponent())
-        StemAudioPlayback.shared.setMissingAudioPaths(missing)
+        projectAudio.open(directory: url.deletingLastPathComponent())
+        projectAudio.setMissingAudioPaths(missing)
         VideoPlayback.shared.open(directory: url.deletingLastPathComponent())
         VideoPlayback.teleprompter.open(directory: url.deletingLastPathComponent())
         VideoPlayback.teleprompter2.open(directory: url.deletingLastPathComponent())
@@ -753,6 +760,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         if enriched != project { try await ProjectStore(url: url).save(enriched) }
     }
     func open(_ url: URL) {
+        if activateExistingProjectTab?(url) == true { return }
         guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         // Recent Projects and Finder can both request the document already in
         // memory. Reloading its older disk snapshot would discard current edits
@@ -1089,7 +1097,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
                 try show.replaceProject(result.0)
                 resetProjectSelections()
                 await store.select(url: url, savedProject: result.0)
-                StemAudioPlayback.shared.open(directory: url.deletingLastPathComponent())
+                projectAudio.open(directory: url.deletingLastPathComponent())
                 VideoPlayback.shared.open(directory: url.deletingLastPathComponent())
                 VideoPlayback.teleprompter.open(directory: url.deletingLastPathComponent())
                 VideoPlayback.teleprompter2.open(directory: url.deletingLastPathComponent())
@@ -1198,6 +1206,7 @@ struct ProjectBrowserView: View {
     @State private var addingOptions = false
     @State private var opening = false
     @State private var recentSearch = ""
+    @State private var recentToOpen: URL?
     private var filteredRecent: [URL] { documents.recent.filter { RecentProjectEntry.matches($0, query: recentSearch) } }
     @State private var askingForBPM = false
     @State private var recordingSetup = false
@@ -1326,7 +1335,11 @@ struct ProjectBrowserView: View {
                 ScrollView {
                     VStack(spacing: 6) {
                         ForEach(filteredRecent, id: \.path) { url in
-                            Button { documents.open(url) } label: {
+                            Button {
+                                if documents.ready && documents.currentURL?.standardizedFileURL != url.standardizedFileURL {
+                                    recentToOpen = url
+                                } else { documents.open(url) }
+                            } label: {
                                 HStack {
                                     VStack(alignment: .leading) {
                                         Text(url.deletingPathExtension().lastPathComponent).font(.jarasBody.bold())
@@ -1339,6 +1352,11 @@ struct ProjectBrowserView: View {
                                     .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.panel).contentShape(Rectangle())
                             }.buttonStyle(.plain)
                                 .contextMenu {
+                                    #if os(macOS)
+                                    if documents.ready, !RecentProjectEntry.isMissing(url), documents.openInNewProjectTab != nil {
+                                        Button("Open in new tab") { documents.openInNewProjectTab?(url); completed() }
+                                    }
+                                    #endif
                                     Button(role: .destructive) { documents.requestDeletion(url) } label: {
                                         Label(RecentProjectEntry.isMissing(url) ? "Remove from recents" : "Delete project", systemImage: "trash")
                                     }
@@ -1349,7 +1367,7 @@ struct ProjectBrowserView: View {
                 if filteredRecent.isEmpty { Text("No recent projects found.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
                 }
             }
-            }.disabled(documents.busy || documents.show.isPlaying)
+            }.disabled(documents.busy)
             if !documents.warnings.isEmpty && !nativeReviewVisible { Text(documents.warnings.joined(separator: "\n")).font(.jarasCaption).foregroundStyle(JarasTheme.yellow).lineLimit(3).jarasHelp(documents.warnings.joined(separator: "\n")) }
             if !documents.error.isEmpty { Text(LocalizedStringKey(documents.error)).font(.jarasCaption).foregroundStyle(.red).textSelection(.disabled) }
             if documents.busy {
@@ -1371,6 +1389,12 @@ struct ProjectBrowserView: View {
             .onChange(of: creating) { _ in recordingSetup = false }
             .sheet(item: $documents.pendingDeletion) { deletion in
                 ProjectDeletionConfirmation(documents: documents, deletion: deletion)
+            }
+            .alert("Open another project?", isPresented: Binding(get: { recentToOpen != nil }, set: { if !$0 { recentToOpen = nil } }), presenting: recentToOpen) { url in
+                Button("Cancel", role: .cancel) { recentToOpen = nil }
+                Button("Open project") { recentToOpen = nil; documents.open(url) }
+            } message: { url in
+                Text("The current project will be replaced by \(url.deletingPathExtension().lastPathComponent).")
             }
             .alert("Open a project first", isPresented: $documents.showingOpenProjectAlert) {
                 Button("OK", role: .cancel) {}

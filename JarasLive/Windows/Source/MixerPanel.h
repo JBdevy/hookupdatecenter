@@ -181,7 +181,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 const auto &project=mixer.session.project();
                 masterPresentation.volume=project.masterVolume;masterPresentation.pan=project.masterPan;
                 masterPresentation.mute=project.masterMute;masterPresentation.solo=project.masterSolo;
-                masterPresentation.color=project.masterColor.value_or(0xffdc52);masterPresentation.fxJSON=project.masterFXJSON;
+                masterPresentation.color=project.masterColor.value_or(0x414141);masterPresentation.fxJSON=project.masterFXJSON;
                 mono.setToggleState(project.masterMono,dontSendNotification);
                 mono.setTooltip(project.masterMono ? String::fromUTF8("Mono - Alternar para estéreo")
                                                   : String::fromUTF8("Estéreo - Alternar para mono"));

@@ -44,8 +44,9 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     void refresh();
     std::function<void()> createEmpty, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
         browse, resume;
-    std::function<void(File)> open, deleteProject;
+    std::function<void(File)> open, openInNewTab, deleteProject;
     void setProjectOpen(bool);
+    void setPlaybackRunning(bool value) { playbackRunning = value; updateEnabled(); }
     void beginLoading(const File &);
     void updateLoading(const String &);
     void finishLoading(const String &error = {});
@@ -80,7 +81,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     juce::Rectangle<int> spinnerBounds;
     StringArray filtered;
     enum Mode { none, creating, adding, opening } mode = none;
-    bool projectOpen = false;
+    bool projectOpen = false, playbackRunning = false;
     bool loading = false;
     int getNumRows() override { return filtered.size(); }
     void paintListBoxItem(int, Graphics &, int, int, bool) override;

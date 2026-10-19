@@ -14,7 +14,8 @@ struct AudioEngine::ReaderContext {
     ReaderContext() { registerAudioFormats(formats); thread.startThread(Thread::Priority::high); }
     ~ReaderContext() { thread.stopThread(5000); }
 };
-AudioEngine::AudioEngine(double preparationRate, bool preparingOffline) {
+AudioEngine::AudioEngine(double preparationRate, bool preparingOffline, std::shared_ptr<AudioDeviceManager> host)
+    : deviceHost(host ? std::move(host) : std::make_shared<AudioDeviceManager>()), devices(*deviceHost) {
     rate = preparationRate;
     offlineMode = preparingOffline;
     for (int i = 0; i < 128; ++i)
@@ -154,7 +155,7 @@ String AudioEngine::openDevice() {
     auto preferences = File::getSpecialLocation(File::userApplicationDataDirectory)
                            .getChildFile("Hook Developer/CatLive/audio-device.xml");
     auto saved = XmlDocument::parse(preferences);
-    auto error = devices.initialise(0, 2, saved.get(), true);
+    auto error = devices.getCurrentAudioDevice() ? String{} : devices.initialise(0, 2, saved.get(), true);
     if (error.isEmpty()) {
         devices.addAudioCallback(this);
         devices.removeMidiInputDeviceCallback({}, this);
@@ -231,7 +232,7 @@ void AudioEngine::closeDevice() {
     if (attached)
         devices.removeAudioCallback(this);
     attached = false;
-    devices.closeAudioDevice();
+    if (deviceHost.use_count() == 1) devices.closeAudioDevice();
 }
 void AudioEngine::configureMetronome(const var &settings) {
     const auto preset = str(settings, "preset", "Digital");
@@ -1390,9 +1391,9 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         }
         bus.midiMessages.clear();
         if (bus.midiSlot >= 1 && bus.midiSlot <= 3)
-            appendLiveTrackMIDI(bus.midiMessages, slotMessages[bus.midiSlot - 1], samples, bus.armed.load());
+            appendLiveTrackMIDI(bus.midiMessages, slotMessages[bus.midiSlot - 1], samples, bus.armed.load() && liveInputEnabled.load());
         if (index == keyboardTarget.load()) {
-            appendLiveTrackMIDI(bus.midiMessages, keyboardMidi, samples, bus.armed.load());
+            appendLiveTrackMIDI(bus.midiMessages, keyboardMidi, samples, bus.armed.load() && liveInputEnabled.load());
             routedKeyboard = true;
         }
         if (trackCapture)
@@ -1409,7 +1410,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             else if (instrumentWasAllowed)
                 bus.midi->stopLive();
         }
-        if (allowInstrument && bus.armed.load() && bus.inputMonitoring && bus.inputFirst > 0 &&
+        if (allowInstrument && liveInputEnabled.load() && bus.armed.load() && bus.inputMonitoring && bus.inputFirst > 0 &&
             input)
             for (int ch = 0; ch < 2; ++ch) {
                 const int physical = bus.inputFirst - 1 + (bus.inputChannels == 1 ? 0 : ch);
@@ -1524,7 +1525,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     if (routedHardware)
         liveMidi.clear();
     if (!routedKeyboard)
-        liveMidi.addEvents(keyboardMidi, 0, samples, 0);
+        appendLiveTrackMIDI(liveMidi, keyboardMidi, samples, liveInputEnabled.load());
     liveRecordBuffer.clear(0,samples);
     if (allowInstrument) {
         if (masterMIDI && !masterMIDI->empty())

@@ -160,7 +160,9 @@ void ProjectBrowser::updateEnabled() {
     for (auto *button : {&create, &add, &recent, &empty, &stems, &reaper,
                          &logic, &recording, &package, &back})
         button->setEnabled(!loading);
-    browseButton.setEnabled(!loading);
+    for (auto *button : {&create, &add, &empty, &stems, &reaper, &logic, &recording, &package})
+        button->setEnabled(!loading && !playbackRunning);
+    browseButton.setEnabled(!loading && !playbackRunning);
     search.setEnabled(!loading);
     recents.setEnabled(!loading);
 }
@@ -255,6 +257,7 @@ void ProjectBrowser::paintListBoxItem(int row, Graphics &g, int width, int heigh
     g.strokePath(chevron, PathStrokeType(1.3f));
 }
 void ProjectBrowser::returnKeyPressed(int row) {
+    if (playbackRunning) return;
     if (loading) return;
     if (isPositiveAndBelow(row, filtered.size()) && open)
         open(File(filtered[row]));
@@ -269,9 +272,15 @@ void ProjectBrowser::listBoxItemClicked(int row, const MouseEvent &event) {
     File file(filtered[row]);
     PopupMenu menu;
     const bool missing=!file.existsAsFile();
+    if (projectOpen && !missing && openInNewTab)
+        menu.addItem(2,localization::translate("Open in new tab"));
     menu.addItem(1,localization::translate(missing?"Remove from recents":"Delete project"));
-    menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&recents),[safe=Component::SafePointer<ProjectBrowser>(this),file,missing](int result){
-        if(!safe || safe->loading || result!=1)return;
+    const auto position = event.getScreenPosition();
+    menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&recents)
+                           .withTargetScreenArea({position.x, position.y, 1, 1}),[safe=Component::SafePointer<ProjectBrowser>(this),file,missing](int result){
+        if(!safe || safe->loading)return;
+        if(result==2){if(safe->projectOpen && file.existsAsFile() && safe->openInNewTab)safe->openInNewTab(file);return;}
+        if(result!=1)return;
         if(missing){RecentProjects::forget(file);safe->refresh();}
         else if(safe->deleteProject)safe->deleteProject(file);
     });

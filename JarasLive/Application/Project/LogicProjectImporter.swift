@@ -46,21 +46,24 @@ public enum LogicProjectImporter {
 
     public static func read(_ bundle: URL) throws -> Result {
         let fm = FileManager.default
+        var warnings: [String] = []
         guard bundle.pathExtension.lowercased() == "logicx" else { throw invalid("Select a .logicx project.") }
         let alternatives = bundle.appendingPathComponent("Alternatives")
         let information: [String: Any]
         do { information = try plist(bundle.appendingPathComponent("Resources/ProjectInformation.plist")) }
         catch {
             let failure = error as NSError
-            guard failure.domain == NSCocoaErrorDomain,
-                  failure.code == NSFileReadNoSuchFileError || failure.code == NSFileNoSuchFileError else { throw error }
+            if failure.domain != NSCocoaErrorDomain || (failure.code != NSFileReadNoSuchFileError && failure.code != NSFileNoSuchFileError) {
+                warnings.append("Logic project information ignored: " + error.localizedDescription)
+            }
             information = [:]
         }
         let available = try fm.contentsOfDirectory(at: alternatives, includingPropertiesForKeys: nil)
             .filter { fm.fileExists(atPath: $0.appendingPathComponent("ProjectData").path) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard !available.isEmpty else { throw invalid("No project alternative was found.") }
-        let alternative: URL
+        var alternative: URL
+        do {
         if let active = information["ActiveVariant"] {
             let matches: [URL]
             if let value = active as? String {
@@ -82,25 +85,45 @@ public enum LogicProjectImporter {
             guard available.count == 1 else { throw invalid("Multiple project alternatives were found without an active selection. Open and save the desired alternative in Logic first.") }
             alternative = available[0]
         }
-        let metadata = try plist(alternative.appendingPathComponent("MetaData.plist"))
-        let url = alternative.appendingPathComponent("ProjectData")
-        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard size >= 24, size <= 512 * 1024 * 1024 else { throw invalid("Invalid project data size.") }
-        let records = try parse(Data(contentsOf: url, options: .mappedIfSafe))
+        } catch {
+            alternative = available[0]
+            warnings.append("Logic: " + error.localizedDescription + " Recovered alternative: " + alternative.lastPathComponent)
+        }
+        var decoded: [Record]?
+        for candidate in [alternative] + available.filter({ $0 != alternative }) {
+            do {
+                let url = candidate.appendingPathComponent("ProjectData")
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size >= 24, size <= 512 * 1024 * 1024 else { throw invalid("Invalid project data size.") }
+                decoded = try parse(Data(contentsOf: url, options: .mappedIfSafe), report: { warnings.append("Logic: " + $0.localizedDescription) })
+                alternative = candidate
+                break
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.append("Logic alternative " + candidate.lastPathComponent + " ignored: " + error.localizedDescription) }
+        }
+        guard let records = decoded else { throw invalid("No readable arrangement data was found.") }
+        let metadata: [String: Any]
+        do { metadata = try plist(alternative.appendingPathComponent("MetaData.plist")) }
+        catch { metadata = [:]; warnings.append("Logic metadata ignored: " + error.localizedDescription) }
+        func readEvents(_ body: Bytes) throws -> [Bytes] {
+            try events(body, report: { warnings.append("Logic: " + $0.localizedDescription) })
+        }
         let name = bundle.deletingPathExtension().lastPathComponent
         var project = Project.empty(name: name)
         project.importedTimeline = true
         var song = project.songs[0]
         song.name = name; song.tracks = []; song.parts = []; song.markers = []; song.timeSettings = ProjectTimeSettings()
-        let rate = (metadata["SampleRate"] as? NSNumber)?.doubleValue ?? 44100
-        let defaultBPM = (metadata["BeatsPerMinute"] as? NSNumber)?.doubleValue ?? 120
-        guard (8000...768000).contains(rate), (1...1000).contains(defaultBPM) else { throw invalid("Invalid sample rate or tempo.") }
+        var rate = (metadata["SampleRate"] as? NSNumber)?.doubleValue ?? 44100
+        var defaultBPM = (metadata["BeatsPerMinute"] as? NSNumber)?.doubleValue ?? 120
+        if !(8000...768000).contains(rate) { rate = 44100; warnings.append("Logic: invalid sample rate ignored; 44100 Hz was used.") }
+        if !(1...1000).contains(defaultBPM) { defaultBPM = 120; warnings.append("Logic: invalid tempo ignored; 120 BPM was used.") }
         song.bpm = defaultBPM
         song.beatsPerBar = (metadata["SongSignatureNumerator"] as? NSNumber)?.intValue ?? 4
         song.beatUnit = (metadata["SongSignatureDenominator"] as? NSNumber)?.intValue ?? 4
         var tempos: [Tempo] = []
         var markerNames: [Int: String] = [:]
         for record in records {
+            do {
             if record.tag == "qSxT", let rtf = record.body.data.range(of: Data("{\\rtf".utf8)) {
                 let content = record.body.data.subdata(in: rtf.lowerBound..<record.body.count)
                 // RTF conversion only touches the embedded marker text.
@@ -109,13 +132,20 @@ public enum LogicProjectImporter {
                 }
             }
             if record.tag == "qSvE", record.kind == 3 {
-                for event in try events(record.body) where event.data.first == 0x60 {
+                for event in try readEvents(record.body) where event.data.first == 0x60 {
+            do {
                     let bpm = Double(try event.int(16)) / 10000
                     guard (1...1000).contains(bpm) else { throw invalid("Unsupported tempo event.") }
                     tempos.append(Tempo(tick: Double(try event.int(4)) - 38400, bpm: bpm))
-                }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.append("Logic tempo point ignored: \(error.localizedDescription)") }
+}
             }
-        }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.append("Logic record ignored: \(error.localizedDescription)") }
+}
         tempos.sort { $0.tick < $1.tick }
         if tempos.isEmpty { tempos = [Tempo(tick: 0, bpm: defaultBPM)] }
         if tempos[0].tick > 0 { tempos.insert(Tempo(tick: 0, bpm: defaultBPM), at: 0) }
@@ -144,6 +174,7 @@ public enum LogicProjectImporter {
         var sequenceRecords: [Int: Record] = [:]
         let mediaFolder = "Stems/Logic-" + UUID().uuidString
         for record in records {
+            do {
             switch record.tag {
             case "lFuA":
                 let filename = try record.body.text(8, utf16: true)
@@ -199,7 +230,10 @@ public enum LogicProjectImporter {
                 }
             default: break
             }
-        }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.append("Logic media or mixer setting ignored: \(error.localizedDescription)") }
+}
         // The arrangement is a sequence with an ordered row list. Automation,
         // trash and the media bin have other owners and must never be imported.
         let rowRecords = records.filter { $0.tag == "karT" && $0.kind == 23 && $0.body.count >= 57 }
@@ -215,6 +249,7 @@ public enum LogicProjectImporter {
         var nestedGroups = false
         var missingMixerSettings = false
         for row in rows {
+            do {
             let rowKind = try row.body.int(0, 1)
             guard rowKind != 3 else { continue } // Logic's output strip is not an audio track.
             guard rowKind == 1 else { throw invalid("Unsupported arrangement track kind.") }
@@ -226,13 +261,16 @@ public enum LogicProjectImporter {
                 track.volume = settings.volume; track.pan = settings.pan; track.mute = settings.mute
             } else { missingMixerSettings = true }
             if depth > 0 {
-                guard let group else { throw invalid("Invalid track group.") }
+                if group == nil { warnings.append("Logic: invalid group ignored for " + title) }
                 track.parentTrackID = group
                 if depth > 1 { nestedGroups = true }
             } else { group = track.id }
             trackIndices[row.index + 1] = song.tracks.count
             song.tracks.append(track)
-        }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.append("Logic track ignored: \(error.localizedDescription)") }
+}
         guard !song.tracks.isEmpty else { throw invalid("No arrangement tracks were found.") }
         var media: [String: Media] = [:]
         var midiItems = 0, extendedItems = 0
@@ -247,7 +285,8 @@ public enum LogicProjectImporter {
             return name.trimmingCharacters(in: .whitespacesAndNewlines) == "musicas"
         })
         for record in records where record.tag == "qSvE" && record.kind == 23 && record.owner == root {
-            for event in try events(record.body) {
+            for event in try readEvents(record.body) {
+            do {
                 let type = event.data.first ?? 0
                 guard type == 0x24 || type == 0x20 else {
                     if type == 0xf1 { continue }
@@ -275,7 +314,8 @@ public enum LogicProjectImporter {
                             guard let contents = sequenceEvents[owner] else { throw invalid("A MIDI region has no event sequence.") }
                             var decoded: [NoteEvent] = []
                             for content in contents {
-                                for note in try events(content.body) {
+                                for note in try readEvents(content.body) {
+            do {
                                     try Task.checkCancellation()
                                     let status = note.data.first ?? 0
                                     if status == 0xf1 { continue }
@@ -287,7 +327,10 @@ public enum LogicProjectImporter {
                                     if velocity == 0 { continue }
                                     decoded.append(NoteEvent(tick: Double(try note.int(4)) - 38400 + Double(try note.int(0) >> 8) / 16777216,
                                         length: noteLength, pitch: pitch, velocity: velocity, channel: Int(status & 15) + 1))
-                                }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.append("Logic MIDI note ignored: \(error.localizedDescription)") }
+}
                             }
                             noteCache[owner] = decoded
                         }
@@ -352,18 +395,25 @@ public enum LogicProjectImporter {
                 }
                 song.tracks[trackIndex].clips.append(clip)
                 if event.count > 80 { extendedItems += 1 }
-            }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.append("Logic item ignored: \(error.localizedDescription)") }
+}
         }
         var markers: [(name: String, start: Double, end: Double)] = []
         for record in records where record.tag == "qSvE" && record.kind == 22 {
-            for event in try events(record.body) where event.data.first == 0x12 {
+            for event in try readEvents(record.body) where event.data.first == 0x12 {
+            do {
                 guard event.count >= 48 else { throw invalid("Incomplete marker.") }
                 let tick = Double(try event.int(4)) - 38400
                 let length = Double(try event.int(28))
                 let savedTitle = markerNames[try event.int(16)] ?? ""
                 let title = savedTitle.isEmpty ? "Marker \(markers.count + 1)" : savedTitle
                 markers.append((title, max(0, seconds(tick)), max(0, seconds(tick + length))))
-            }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.append("Logic marker ignored: \(error.localizedDescription)") }
+}
         }
         markers.sort { $0.start < $1.start }
         var duration = 1.0
@@ -387,7 +437,6 @@ public enum LogicProjectImporter {
         if song.parts.isEmpty { song.parts = [Part(id: UUID(), name: name, startTime: 0, endTime: song.duration)] }
         for index in song.tracks.indices { song.tracks[index].clips.sort { $0.startTime < $1.startTime } }
         project.songs = [song]
-        var warnings: [String] = []
         if unsupportedItemPitch { warnings.append("Item pitch outside the supported ±12 semitone range was not converted.") }
         if missingMixerSettings { warnings.append("Some Logic mixer channels use an unsupported layout. Their volume, pan and mute were left at defaults; review those tracks.") }
         if midiItems > 0 { warnings.append("MIDI notes were imported. Choose an instrument in CatLive; Logic instruments and plug-ins are not migrated.") }
@@ -396,7 +445,7 @@ public enum LogicProjectImporter {
         if extendedItems > 0 { warnings.append("Logic Flex processing and region automation are not applied. Audio items retain their source bounds.") }
         if nestedGroups { warnings.append("Nested Logic groups were placed inside their top-level group.") }
         try project.validate()
-        return Result(project: project, media: media.values.sorted { $0.relativePath < $1.relativePath }, warnings: warnings)
+        return Result(project: project, media: media.values.filter { entry in song.tracks.contains { track in track.clips.contains { $0.audioFile?.path == entry.relativePath } } }.sorted { $0.relativePath < $1.relativePath }, warnings: warnings)
     }
 
     /// A MUSICAS track is a song map: its regions subdivide Logic marker
@@ -460,11 +509,16 @@ public enum LogicProjectImporter {
         }
         return value
     }
-    private static func parse(_ data: Data) throws -> [Record] {
+    private static func parse(_ data: Data, report: ((Error) -> Void)? = nil) throws -> [Record] {
         let bytes = Bytes(data: data)
-        guard try bytes.integer(0) == 0xabc04723, try bytes.int(16) == data.count - 24 else { throw invalid("Unsupported project container.") }
+        guard data.count >= 24, try bytes.integer(0) == 0xabc04723 else { throw invalid("Unsupported project container.") }
+        if try bytes.int(16) != data.count - 24 {
+            let error = invalid("Incomplete project container; recovering complete records.")
+            guard let report else { throw error }; report(error)
+        }
         var offset = 24, result: [Record] = []
         while offset < data.count {
+            do {
             try Task.checkCancellation()
             let header = try bytes.slice(offset, 36)
             if try header.integer(0) == 0xabc04723 {
@@ -480,16 +534,29 @@ public enum LogicProjectImporter {
             result.append(Record(tag: tag, version: try header.int(4, 2), kind: try header.int(6, 2),
                                  owner: try header.int(8), index: try header.int(tag == "karT" ? 18 : 14), body: body))
             offset += 36 + length
-        }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                guard let report else { throw error }; report(error); break
+            }
+}
         return result
     }
-    private static func events(_ bytes: Bytes) throws -> [Bytes] {
-        guard bytes.count % 16 == 0 else { throw invalid("Unsupported event layout.") }
+    private static func events(_ bytes: Bytes, report: ((Error) -> Void)? = nil) throws -> [Bytes] {
+        if bytes.count % 16 != 0 {
+            let error = invalid("Unsupported event layout.")
+            guard let report else { throw error }; report(error)
+        }
+        let complete = bytes.count - bytes.count % 16
         var result: [Bytes] = [], offset = 0
-        while offset < bytes.count {
-            guard try bytes.int(offset + 7, 1) & 0x80 == 0 else { throw invalid("Invalid event boundary.") }
+        while offset < complete {
+            if try bytes.int(offset + 7, 1) & 0x80 != 0 {
+                let error = invalid("Invalid event boundary.")
+                guard let report else { throw error }; report(error)
+                offset += 16; continue
+            }
             var end = offset + 16
-            while end < bytes.count, try bytes.int(end + 7, 1) & 0x80 != 0 { end += 16 }
+            while end < complete, try bytes.int(end + 7, 1) & 0x80 != 0 { end += 16 }
             result.append(try bytes.slice(offset, end - offset)); offset = end
         }
         return result

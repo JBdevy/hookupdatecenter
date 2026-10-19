@@ -185,13 +185,16 @@ struct Record {
     uint64 owner = 0, index = 0;
     Bytes body;
 };
-std::vector<Record> records(const Bytes &bytes) {
-    require(bytes.count >= 24 && bytes.integer(0) == 0xabc04723 &&
-                bytes.integer(16) == bytes.count - 24,
-            "Logic: unsupported project container.");
+std::vector<Record> records(const Bytes &bytes, StringArray *warnings = nullptr) {
+    require(bytes.count >= 24 && bytes.integer(0) == 0xabc04723, "Logic: unsupported project container.");
+    if (bytes.integer(16) != bytes.count - 24) {
+        require(warnings != nullptr, "Logic: incomplete project container.");
+        warnings->addIfNotAlreadyThere("Logic: incomplete container; complete records were recovered.");
+    }
     std::vector<Record> result;
     size_t offset = 24;
     while (offset < bytes.count) {
+        try {
         auto h = bytes.slice(offset, 36);
         if (h.integer(0) == 0xabc04723) {
             size_t n = (size_t)h.integer(16);
@@ -206,16 +209,29 @@ std::vector<Record> records(const Bytes &bytes) {
                           h.integer(tag == "karT" ? 18 : 14), bytes.slice(offset + 36, n)});
         offset += 36 + n;
         require(result.size() <= 1000000, "Logic: too many records.");
-    }
+
+        } catch (const std::exception &error) {
+            if (!warnings) throw;
+            warnings->addIfNotAlreadyThere("Logic record ignored: " + String::fromUTF8(error.what())); break;
+        }
+}
     return result;
 }
-std::vector<Bytes> events(const Bytes &bytes) {
-    require(bytes.count % 16 == 0, "Logic: unsupported event layout.");
+std::vector<Bytes> events(const Bytes &bytes, StringArray *warnings = nullptr) {
+    if (bytes.count % 16 != 0) {
+        require(warnings != nullptr, "Logic: unsupported event layout.");
+        warnings->addIfNotAlreadyThere("Logic: an incomplete event tail was ignored.");
+    }
+    const auto complete = bytes.count - bytes.count % 16;
     std::vector<Bytes> result;
-    for (size_t offset = 0; offset < bytes.count;) {
-        require((bytes.integer(offset + 7, 1) & 0x80) == 0, "Logic: invalid event boundary.");
+    for (size_t offset = 0; offset < complete;) {
+        if ((bytes.integer(offset + 7, 1) & 0x80) != 0) {
+            require(warnings != nullptr, "Logic: invalid event boundary.");
+            warnings->addIfNotAlreadyThere("Logic: an orphan event continuation was ignored.");
+            offset += 16; continue;
+        }
         size_t end = offset + 16;
-        while (end < bytes.count && (bytes.integer(end + 7, 1) & 0x80))
+        while (end < complete && (bytes.integer(end + 7, 1) & 0x80))
             end += 16;
         result.push_back(bytes.slice(offset, end - offset));
         offset = end;
@@ -312,10 +328,14 @@ MigratedProject readLogicProject(const File &bundle) {
         bundle.getChildFile("Alternatives").findChildFiles(File::findDirectories, false);
     available.removeIf([](const File &f) { return !f.getChildFile("ProjectData").existsAsFile(); });
     require(!available.isEmpty(), "Logic: no project alternative was found.");
+    MigratedProject result;
     auto infoFile = bundle.getChildFile("Resources/ProjectInformation.plist");
-    auto info = infoFile.existsAsFile() ? readPlist(infoFile) : object();
+    auto info = object();
+    try { if (infoFile.existsAsFile()) info = readPlist(infoFile); }
+    catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic project information ignored: " + String::fromUTF8(error.what())); }
     auto active = get(info, "ActiveVariant");
     File alternative;
+    try {
     if (!active.isVoid()) {
         require(active.isString() || active.isInt() || active.isInt64() || active.isDouble(),
                 "Logic: invalid active alternative.");
@@ -343,15 +363,27 @@ MigratedProject readLogicProject(const File &bundle) {
                                        "Save the desired alternative in Logic first.");
         alternative = available[0];
     }
-    auto metadata = readPlist(alternative.getChildFile("MetaData.plist"));
-    auto all = records(readBytes(alternative.getChildFile("ProjectData"), 512 * 1024 * 1024));
-    MigratedProject result;
+    } catch (const std::exception &error) {
+        available.sort(); alternative=available[0];
+        result.warnings.addIfNotAlreadyThere("Logic alternative selection ignored: " + String::fromUTF8(error.what()) + " Recovered: " + alternative.getFileName());
+    }
+    std::vector<Record> all;
+    bool readable=false;
+    auto candidates=available; candidates.removeAllInstancesOf(alternative); candidates.insert(0,alternative);
+    for (const auto &candidate : candidates) {
+        try { all=records(readBytes(candidate.getChildFile("ProjectData"),512*1024*1024),&result.warnings); alternative=candidate; readable=true; break; }
+        catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic alternative ignored: " + String::fromUTF8(error.what())); }
+    }
+    require(readable,"Logic: no readable arrangement data was found.");
+    auto metadata=object();
+    try { metadata=readPlist(alternative.getChildFile("MetaData.plist")); }
+    catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic metadata ignored: " + String::fromUTF8(error.what())); }
     result.project = migration::emptyProject(bundle.getFileNameWithoutExtension());
     auto &song = result.project.songs.front();
     double rate = num(metadata, "SampleRate", 44100),
            defaultBPM = num(metadata, "BeatsPerMinute", 120);
-    require(rate >= 8000 && rate <= 768000 && defaultBPM >= 1 && defaultBPM <= 1000,
-            "Logic: invalid sample rate or tempo.");
+    if (!(rate>=8000 && rate<=768000)) {rate=44100;result.warnings.addIfNotAlreadyThere("Logic: invalid sample rate ignored; 44100 Hz was used.");}
+    if (!(defaultBPM>=1 && defaultBPM<=1000)) {defaultBPM=120;result.warnings.addIfNotAlreadyThere("Logic: invalid tempo ignored; 120 BPM was used.");}
     song.bpm = defaultBPM;
     song.beatsPerBar = (int)num(metadata, "SongSignatureNumerator", 4);
     song.beatUnit = (int)num(metadata, "SongSignatureDenominator", 4);
@@ -361,16 +393,22 @@ MigratedProject readLogicProject(const File &bundle) {
     std::vector<Tempo> tempos;
     std::map<uint64, String> markerNames;
     for (auto &record : all) {
+            try {
         if (record.tag == "qSxT")
             markerNames[record.owner >> 16] = markerText(record.body);
         if (record.tag == "qSvE" && record.kind == 3)
-            for (auto &event : events(record.body))
+            for (auto &event : events(record.body, &result.warnings))
                 if (event.integer(0, 1) == 0x60) {
+            try {
                     double bpm = event.integer(16) / 10000.;
                     require(bpm >= 1 && bpm <= 1000, "Logic: invalid tempo event.");
                     tempos.push_back({(double)event.integer(4) - 38400, bpm});
-                }
-    }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic tempo point ignored: " + String::fromUTF8(error.what())); }
+}
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic metadata ignored: " + String::fromUTF8(error.what())); }
+}
     std::stable_sort(tempos.begin(), tempos.end(),
                      [](auto &a, auto &b) { return a.tick < b.tick; });
     if (tempos.empty() || tempos.front().tick > 0)
@@ -422,6 +460,7 @@ MigratedProject readLogicProject(const File &bundle) {
     std::map<String, Mixer> mixers;
     std::map<uint64, const Record *> sequences;
     for (auto &r : all) {
+            try {
         auto &b = r.body;
         if (r.tag == "lFuA") {
             auto name = b.string(8, true);
@@ -462,7 +501,9 @@ MigratedProject readLogicProject(const File &bundle) {
                            mute == 1};
         } else if (r.tag == "qeSM" && r.kind == 23)
             sequences[r.owner] = &r;
-    }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic media or mixer setting ignored: " + String::fromUTF8(error.what())); }
+}
     std::set<uint64> roots;
     for (auto &r : all)
         if (r.tag == "karT" && r.kind == 23 && r.body.count >= 57 && sequences.count(r.owner)) {
@@ -483,6 +524,7 @@ MigratedProject readLogicProject(const File &bundle) {
     std::map<uint64, size_t> tracks;
     std::optional<ID> group;
     for (auto *row : rows) {
+            try {
         int kind = (int)row->body.integer(0, 1);
         if (kind == 3)
             continue;
@@ -503,18 +545,21 @@ MigratedProject readLogicProject(const File &bundle) {
             result.warnings.addIfNotAlreadyThere("Some Logic mixer channels use an unsupported "
                                                  "layout. Review volume, pan and mute.");
         if (depth > 0) {
-            require(group.has_value(), "Logic: invalid track group.");
+            if (!group) result.warnings.addIfNotAlreadyThere("Logic: invalid track group was ignored.");
             track.parentTrackID = group;
         } else
             group = track.id;
         tracks[row->index + 1] = song.tracks.size();
         song.tracks.push_back(track);
-    }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic track ignored: " + String::fromUTF8(error.what())); }
+}
     require(!song.tracks.empty(), "Logic: no arrangement tracks.");
     std::vector<jaras::Part> music;
     for (auto &r : all)
         if (r.tag == "qSvE" && r.kind == 23 && r.owner == root)
-            for (auto &event : events(r.body)) {
+            for (auto &event : events(r.body, &result.warnings)) {
+            try {
                 int type = (int)event.integer(0, 1);
                 if (type == 0xf1)
                     continue;
@@ -552,7 +597,8 @@ MigratedProject readLogicProject(const File &bundle) {
                     for (auto &content : all)
                         if (content.tag == "qSvE" && content.kind == 23 && content.owner == owner) {
                             found = true;
-                            for (auto &note : events(content.body)) {
+                            for (auto &note : events(content.body, &result.warnings)) {
+            try {
                                 int status = (int)note.integer(0, 1);
                                 if (status == 0xf1)
                                     continue;
@@ -579,7 +625,9 @@ MigratedProject readLogicProject(const File &bundle) {
                                     midi.notes.push_back({uuid(), (a - start) * 2, (b - a) * 2,
                                                           pitch, velocity, (status & 15) + 1});
                                 require(midi.notes.size() <= 100000, "Logic: too many MIDI notes.");
-                            }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic MIDI note ignored: " + String::fromUTF8(error.what())); }
+}
                         }
                     require(found, "Logic: MIDI region has no event sequence.");
                     std::stable_sort(midi.notes.begin(), midi.notes.end(),
@@ -631,7 +679,9 @@ MigratedProject readLogicProject(const File &bundle) {
                     result.warnings.addIfNotAlreadyThere(
                         "Logic Flex processing and region automation are not applied. Audio "
                         "retains its source bounds.");
-            }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic item ignored: " + String::fromUTF8(error.what())); }
+}
     struct Marker {
         std::string name;
         double start, end;
@@ -639,8 +689,9 @@ MigratedProject readLogicProject(const File &bundle) {
     std::vector<Marker> markers;
     for (auto &r : all)
         if (r.tag == "qSvE" && r.kind == 22)
-            for (auto &event : events(r.body))
+            for (auto &event : events(r.body, &result.warnings))
                 if (event.integer(0, 1) == 0x12) {
+            try {
                     require(event.count >= 48, "Logic: incomplete marker.");
                     double tick = (double)event.integer(4) - 38400,
                            length = (double)event.integer(28);
@@ -649,7 +700,9 @@ MigratedProject readLogicProject(const File &bundle) {
                         title = "Marker " + String(markers.size() + 1);
                     markers.push_back({utf8(title), std::max(0., seconds(tick)),
                                        std::max(0., seconds(tick + length))});
-                }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Logic marker ignored: " + String::fromUTF8(error.what())); }
+}
     std::stable_sort(markers.begin(), markers.end(),
                      [](auto &a, auto &b) { return a.start < b.start; });
     for (auto &t : song.tracks)

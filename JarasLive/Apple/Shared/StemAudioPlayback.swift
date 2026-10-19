@@ -209,7 +209,8 @@ struct TimecodePlaybackSpan {
 
 /// The UI schedules file segments. AVAudioEngine streams and mixes off the UI thread.
 @MainActor final class StemAudioPlayback {
-    static let shared = StemAudioPlayback(engine: AudioDeviceSettings.shared.engine)
+    static var shared = StemAudioPlayback(engine: AudioDeviceSettings.shared.engine)
+    private let auxiliarySelectedHardware: Bool
     private let engine: AVAudioEngine
     private var mobileOutput: JarasMobileAudioOutput?
     private var licenseAllowed = true
@@ -217,7 +218,7 @@ struct TimecodePlaybackSpan {
         #if os(iOS)
         realtime && engine === AudioDeviceSettings.shared.engine
         #else
-        realtime && !engine.isInManualRenderingMode && engine === AudioDeviceSettings.shared.engine
+        realtime && !engine.isInManualRenderingMode && (engine === AudioDeviceSettings.shared.engine || auxiliarySelectedHardware)
         #endif
     }
     private var outputAllowed: Bool {
@@ -229,6 +230,22 @@ struct TimecodePlaybackSpan {
         #endif
         return AudioDeviceSettings.shared.selectedUID != "none"
     }
+    #if os(macOS)
+    private func requireSelectedOutput() throws {
+        try AudioDeviceSettings.shared.requireSelectedOutput()
+        guard auxiliarySelectedHardware else { return }
+        guard let device = AudioDeviceSettings.shared.devices.first(where: { $0.id == AudioDeviceSettings.shared.selectedUID }),
+              let unit = engine.outputNode.audioUnit else { throw ProjectError.invalid("Audio output is unavailable") }
+        var actual: AudioDeviceID = 0
+        var bytes = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let read = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &actual, &bytes)
+        if read == noErr, actual == device.hardwareID { return }
+        engine.stop()
+        var selected = AudioDeviceID(device.hardwareID)
+        let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &selected, bytes)
+        guard status == noErr else { throw ProjectError.invalid(String(format: "Unable to open audio device (%d).", status)) }
+    }
+    #endif
     func setLicenseAllowed(_ allowed: Bool) {
         licenseAllowed = allowed
         // Every hardware channel (master, direct outs, click, LTC and instruments)
@@ -761,7 +778,8 @@ struct TimecodePlaybackSpan {
         guard clock.sampleTime + lead >= first else { return nil }
         return Double(voice.scheduledSourceStart + max(0, clock.sampleTime - first)) / voice.file.processingFormat.sampleRate
     }
-    init(engine: AVAudioEngine, realtime: Bool = true, mobileOutput: JarasMobileAudioOutput? = nil) {
+    init(engine: AVAudioEngine, realtime: Bool = true, mobileOutput: JarasMobileAudioOutput? = nil, auxiliarySelectedHardware: Bool = false) {
+        self.auxiliarySelectedHardware = auxiliarySelectedHardware
         self.engine = engine; self.realtime = realtime
         self.mobileOutput = mobileOutput
         #if os(iOS)
@@ -822,7 +840,7 @@ struct TimecodePlaybackSpan {
             self.deviceRecovery = nil
             do {
                 #if os(macOS)
-                if self.usesSelectedHardware { try AudioDeviceSettings.shared.requireSelectedOutput() }
+                if self.usesSelectedHardware { try self.requireSelectedOutput() }
                 #endif
                 self.engine.mainMixerNode.outputVolume = self.licenseAllowed && self.outputAllowed ? 1 : 0
                 guard !self.engine.isRunning || self.outputFormatChanged else { return }
@@ -835,7 +853,7 @@ struct TimecodePlaybackSpan {
     func reconfigureDevice() throws {
         guard deviceSessionActive || directory != nil, outputAllowed else { return }
         #if os(macOS)
-        if usesSelectedHardware { try AudioDeviceSettings.shared.requireSelectedOutput() }
+        if usesSelectedHardware { try requireSelectedOutput() }
         #endif
         let previous = latestPlayback
         let rebuild = !masterConfigured || outputFormatChanged
@@ -1135,7 +1153,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         defer { startMeterClock() }
         guard outputAllowed else { return }
         #if os(macOS)
-        if usesSelectedHardware { try AudioDeviceSettings.shared.requireSelectedOutput() }
+        if usesSelectedHardware { try requireSelectedOutput() }
         #endif
         if masterConfigured && outputFormatChanged {
             // These processors belong to the graph being replaced. Their
@@ -1196,12 +1214,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         if engine.isRunning {
             try mobileOutput?.start()
             #if os(macOS)
-            if usesSelectedHardware { try AudioDeviceSettings.shared.validateOutputBinding() }
+            if usesSelectedHardware { try requireSelectedOutput() }
             #endif
             return
         }
         #if os(macOS)
-        if usesSelectedHardware { try AudioDeviceSettings.shared.requireSelectedOutput() }
+        if usesSelectedHardware { try requireSelectedOutput() }
         #endif
         // prepare/start can resolve the system's default route again. Keep
         // output silent until its physical device is confirmed after both.
@@ -1209,12 +1227,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         do {
             engine.prepare()
             #if os(macOS)
-            if usesSelectedHardware { try AudioDeviceSettings.shared.validateOutputBinding() }
+            if usesSelectedHardware { try requireSelectedOutput() }
             #endif
             try engine.start()
             try mobileOutput?.start()
             #if os(macOS)
-            if usesSelectedHardware { try AudioDeviceSettings.shared.validateOutputBinding() }
+            if usesSelectedHardware { try requireSelectedOutput() }
             #endif
             engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0
         } catch {
@@ -2888,7 +2906,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
             return
         }
         #if os(macOS)
-        if usesSelectedHardware, !engine.isRunning { try AudioDeviceSettings.shared.requireSelectedOutput() }
+        if usesSelectedHardware, !engine.isRunning { try requireSelectedOutput() }
         #endif
         // Project loading is permitted without an available audio device.
         // Build its graph only after a valid hardware format is available.

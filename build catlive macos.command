@@ -28,8 +28,8 @@ BRANCH="$(git branch --show-current)"
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
-  read -r -p 'Versão do CatLive [1.02]: ' VERSION
-  VERSION="${VERSION:-1.02}"
+  read -r -p 'Versão do CatLive [1.03]: ' VERSION
+  VERSION="${VERSION:-1.03}"
 fi
 VERSION="${VERSION#v}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]{2}$ ]] || { echo 'Use a versão no formato X.XX (ex.: 1.00).' >&2; exit 1; }

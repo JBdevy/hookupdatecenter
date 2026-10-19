@@ -16,7 +16,9 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     auto command = [&](jaras::CommandKind kind, const ID &id = ID{}, double number = 0) {
         session.command(kind, id, number);
     };
-    if (action == "transportFadeout") {
+    if (action == "previousProjectTab" || action == "nextProjectTab") {
+        if (value > 0 && navigateProjectTab) navigateProjectTab(action == "previousProjectTab" ? -1 : 1);
+    } else if (action == "transportFadeout") {
         triggerTransportFadeout();
     } else if (action == "selectTrack") {
         selectedTrack = track;

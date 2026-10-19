@@ -47,7 +47,10 @@ final class ReaperAutomationImportTests: XCTestCase {
         for parameter in [":", "\"\"", "0:", "::", "0:invalid", "0:1:2", "-1", "invalid"] {
             let (folder, file) = try fixture("<TRACK\nNAME FX\n<FXCHAIN\n\(vst(parameter))\n>\n>")
             defer { try? FileManager.default.removeItem(at: folder) }
-            XCTAssertThrowsError(try ReaperProjectImporter.read(file, resolveVST3: resolved), parameter)
+            let recovered = try ReaperProjectImporter.read(file, resolveVST3: resolved)
+            XCTAssertTrue(recovered.warnings.contains { $0.contains("FX ignored") }, parameter)
+            XCTAssertEqual(recovered.project.songs[0].tracks.count, 1)
+            try recovered.project.validate()
         }
     }
     func testTrackAndMasterFXStateAutomationAndUnsupportedFormats() throws {

@@ -87,8 +87,21 @@ struct TransportView: View {
             }.frame(width: buttonWidth)
             #endif
             MasterStrip(show: show).frame(width: 230)
+
             VStack(spacing: 5) {
                 HStack(spacing: spacing) {
+            #if os(macOS)
+            if let documents, documents.projectTabCount > 1 {
+                HStack(spacing: 2) {
+                    Button { documents.navigateProjectTab?(-1) } label: {
+                        Image(systemName: "chevron.left").font(.jarasSystem(size: 12, weight: .semibold)).frame(width: 25, height: 25).contentShape(Rectangle())
+                    }.buttonStyle(TransportButtonStyle(width: 25, height: 25)).disabled(documents.projectTabIndex == 0).opacity(documents.projectTabIndex == 0 ? 0.35 : 1).accessibilityLabel("Previous project tab").accessibilityIdentifier("previousProjectTab").jarasHelp(JarasLocalization.string("Previous project tab"))
+                    Button { documents.navigateProjectTab?(1) } label: {
+                        Image(systemName: "chevron.right").font(.jarasSystem(size: 12, weight: .semibold)).frame(width: 25, height: 25).contentShape(Rectangle())
+                    }.buttonStyle(TransportButtonStyle(width: 25, height: 25)).disabled(documents.projectTabIndex >= documents.projectTabCount - 1).opacity(documents.projectTabIndex >= documents.projectTabCount - 1 ? 0.35 : 1).accessibilityLabel("Next project tab").accessibilityIdentifier("nextProjectTab").jarasHelp(JarasLocalization.string("Next project tab"))
+                }.buttonStyle(.plain).disabled(documents.busy || TrackRecording.shared.recording || TrackRecording.shared.busy)
+            }
+            #endif
                     transportDisplay
                     HStack(spacing: 3) {
                         RegionTunerControl(show: show)

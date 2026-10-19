@@ -2,6 +2,30 @@ import XCTest
 @testable import JarasApplication
 
 final class DAWActionTests: XCTestCase {
+    func testProjectTabsNavigateInBothDirectionsWithoutDefaultShortcuts() throws {
+        XCTAssertNil(ProjectTabNavigation.destination(current: 0, count: 1, direction: 1))
+        XCTAssertNil(ProjectTabNavigation.destination(current: -1, count: 3, direction: 1))
+        XCTAssertNil(ProjectTabNavigation.destination(current: 0, count: 3, direction: -1))
+        XCTAssertNil(ProjectTabNavigation.destination(current: 2, count: 3, direction: 1))
+        XCTAssertEqual(ProjectTabNavigation.destination(current: 1, count: 3, direction: 1), 2)
+        var bindings = DAWActionBindings()
+        for (index, action) in [DAWAction.previousProjectTab, .nextProjectTab].enumerated() {
+            XCTAssertEqual(action.category, .shortcuts)
+            XCTAssertTrue(action.supportsMIDI)
+            XCTAssertNil(action.defaultKeyboard)
+            let key = ControlInput(kind: "keyboard", label: "Tab test", key: UInt16(98 + index), modifiers: 0)
+            let midi = ControlInput(kind: "midi", label: "CC test", device: 2, channel: 1, status: 0xb0, number: UInt8(80 + index))
+            XCTAssertTrue(bindings.setInput(key, action: action, kind: "keyboard"))
+            XCTAssertTrue(bindings.setInput(midi, action: action, kind: "midi"))
+            XCTAssertEqual(bindings.matching(key), action)
+            XCTAssertEqual(bindings.matching(midi), action)
+        }
+        let saved = try JSONEncoder().encode(bindings.entries)
+        let restored = DAWActionBindings(stored: try JSONDecoder().decode([DAWActionBinding].self, from: saved))
+        XCTAssertNotNil(restored.binding(.nextProjectTab).midi)
+        XCTAssertNotNil(restored.binding(.previousProjectTab).keyboard)
+    }
+
     func testSubPlayDefaultsToShiftSpaceWithoutEnterAliases() {
         var bindings = DAWActionBindings()
         let shortcut = ControlInput(kind: "keyboard", label: "⇧Space", key: 49, modifiers: 1 << 17)

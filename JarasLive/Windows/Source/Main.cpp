@@ -6,6 +6,108 @@
 #include "NativeWindowBounds.h"
 #include <BinaryData.h>
 namespace catlive {
+class ProjectTabButton final : public QuietButton {
+  public:
+    explicit ProjectTabButton(const String &title) : QuietButton(title) {}
+    void paintButton(Graphics &g, bool over, bool down) override {
+        const bool active=(bool)getProperties()["activeTab"];
+        g.setColour(active ? Colour(0xff333333) : Colour(0xff202020));
+        g.fillRect(getLocalBounds());
+        if(over || down){g.setColour(Colours::white.withAlpha(down?.06f:.025f));g.fillRect(getLocalBounds());}
+        g.setColour(active?Colours::white:Colour(0xffa0a0a0));
+        g.setFont(theme::semiboldFont(11));
+        g.drawText(getButtonText().trim(),getLocalBounds().withTrimmedLeft(6).withTrimmedRight(24),Justification::centred,true);
+    }
+};
+class ProjectTabCloseButton final : public QuietButton {
+  public:
+    void paintButton(Graphics &g,bool over,bool) override {
+        if(over){g.setColour(Colours::white.withAlpha(.1f));g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(2),3);}
+        g.setColour(Colours::white.withAlpha(over?1.f:.6f));
+        const auto centre=getLocalBounds().toFloat().getCentre();
+        g.drawLine(centre.x-3,centre.y-3,centre.x+3,centre.y+3,1.2f);
+        g.drawLine(centre.x+3,centre.y-3,centre.x-3,centre.y+3,1.2f);
+    }
+};
+class ProjectTabsHost final : public Component, private Timer {
+  public:
+    Workspace *current = nullptr;
+    std::function<std::vector<String>()> titles;
+    std::function<size_t()> selected;
+    std::function<void(size_t)> choose, closeTab;
+    ProjectTabsHost() { viewport.setViewedComponent(&strip, false); viewport.setScrollBarsShown(false, false); addAndMakeVisible(viewport); startTimerHz(5); }
+    ~ProjectTabsHost() override { detach(); viewport.setViewedComponent(nullptr, false); }
+    void detach() {
+        if (!current) return;
+        current->addAndMakeVisible(current->windowCaption());
+        removeChildComponent(current); current = nullptr;
+    }
+    void show(Workspace *workspace) {
+        detach(); current = workspace;
+        addAndMakeVisible(current); addAndMakeVisible(current->windowCaption());
+        rebuild(); resized();
+    }
+    void paintOverChildren(Graphics &g) override {
+        if (!current || !current->isProjectOpen() || buttons.size()<2 || lastSelected>=buttons.size()) return;
+        const auto bounds=buttons[lastSelected]->getBounds();
+        g.setColour(theme::green);
+        g.fillRect(bounds.getX(),viewport.getY()+22,bounds.getWidth(),2);
+    }
+    void refresh() { lastSelected=size_t(-1); rebuild(); }
+    void resized() override {
+        if (!current) return;
+        const int height = current->isProjectOpen() && buttons.size()>1 ? 24 : 0;
+        current->setBounds(0, height, getWidth(), getHeight() - height);
+        current->windowCaption().setBounds(0, 0, getWidth(), 32);
+        viewport.setBounds(0, 32, getWidth(), height);
+        viewport.setVisible(height > 0); viewport.toFront(false);
+        strip.setSize(getWidth(), 24);
+        const float cell = buttons.empty() ? 0.f : float(getWidth()-12+3)/float(buttons.size());
+        for (size_t i = 0; i < buttons.size(); ++i) {
+            const int x=6+roundToInt(float(i)*cell), right=6+roundToInt(float(i+1)*cell)-3;
+            buttons[i]->setBounds(x, 1, jmax(0,right-x), 22);
+            closeButtons[i]->setBounds(jmax(x,right-22), 2, 20, 20);
+        }
+    }
+  private:
+    Viewport viewport;
+    Component strip;
+    std::vector<std::unique_ptr<TextButton>> buttons;
+    std::vector<std::unique_ptr<QuietButton>> closeButtons;
+    std::vector<String> lastTitles;
+    size_t lastSelected = size_t(-1);
+    bool lastOpen = false;
+    void timerCallback() override { rebuild(); }
+    void rebuild() {
+        const auto names = titles ? titles() : std::vector<String>{};
+        const auto active = selected ? selected() : 0;
+        const bool open = current && current->isProjectOpen();
+        if (names == lastTitles && active == lastSelected && open == lastOpen) return;
+        lastTitles = names; lastSelected = active; lastOpen = open;
+        buttons.clear(); closeButtons.clear();
+        for (size_t i = 0; i < names.size(); ++i) {
+            auto button = std::make_unique<ProjectTabButton>(names[i]);
+            button->setColour(TextButton::buttonColourId, i == active ? Colour(0xff343434) : Colour(0xff222222));
+            button->setColour(TextButton::textColourOffId, i == active ? Colours::white : Colours::lightgrey);
+            button->setTooltip(names[i]);
+            button->getProperties().set("fontSize",11);
+            button->onClick = [safe = SafePointer<ProjectTabsHost>(this), i] {
+                MessageManager::callAsync([safe, i] { if (safe && safe->choose) safe->choose(i); });
+            };
+            button->getProperties().set("activeTab",i==active);
+            strip.addAndMakeVisible(*button); buttons.push_back(std::move(button));
+            auto close = std::make_unique<ProjectTabCloseButton>();
+            close->getProperties().set("icon","close");close->getProperties().set("plain",true);
+            close->setComponentID("closeProjectTab-"+String((int)i));
+            close->setTooltip(localization::translate("Close tab"));
+            close->onClick=[safe=SafePointer<ProjectTabsHost>(this),i] {
+                MessageManager::callAsync([safe,i]{if(safe && safe->closeTab)safe->closeTab(i);});
+            };
+            strip.addAndMakeVisible(*close);closeButtons.push_back(std::move(close));
+        }
+        resized(); repaint();
+    }
+};
 class CatLiveApplication final : public JUCEApplication {
   public:
     const String getApplicationName() override { return "CatLive"; }
@@ -19,11 +121,11 @@ class CatLiveApplication final : public JUCEApplication {
     }
     class Window final : public DocumentWindow {
       public:
-        Window(Workspace *content, bool showImmediately)
+        Window(Workspace *content, Component *host, bool showImmediately)
             : DocumentWindow("CatLive", theme::background, 0) {
             setUsingNativeTitleBar(false);
             setTitleBarHeight(0);
-            setContentOwned(content, true);
+            setContentNonOwned(host, true);
             setResizable(true, false);
             setDropShadowEnabled(true);
             setBackgroundColour(theme::background);
@@ -131,7 +233,7 @@ class CatLiveApplication final : public JUCEApplication {
             lighting = std::make_unique<Lighting>(*session);
             session->canPlay = [this] { return auth->allowed() && !auth->pendingRevocation; };
             auth->isPlaying = [this] {
-                return session->transport().playing || session->transport().subPlay.playing;
+                return std::any_of(tabSessions.begin(), tabSessions.end(), [](auto *s) { return s->transport().playing || s->transport().subPlay.playing; });
             };
             session->playbackUpdate = [this](const jaras::TransportState &state) {
                 lighting->update(state);
@@ -162,8 +264,21 @@ class CatLiveApplication final : public JUCEApplication {
                 auth->restore();
             }
             if (!visualTest && !previewHome) { showMode = ShowMode::shared(); showMode->start(); }
-            auto *content = new Workspace(*session, *auth, *lighting, previewHome, appearanceFile);
-            window = std::make_unique<Window>(content, visualTest);
+            firstWorkspace = std::make_unique<Workspace>(*session, *auth, *lighting, previewHome, appearanceFile);
+            auto *content = firstWorkspace.get();
+            tabWorkspaces.push_back(content); tabSessions.push_back(session.get());
+            installProjectTabHooks(*content);
+            tabHost = std::make_unique<ProjectTabsHost>();
+            tabHost->titles = [this] {
+                std::vector<String> names;
+                for (auto *tab : tabSessions) names.push_back(tab->document.existsAsFile() ? tab->document.getFileNameWithoutExtension() : String::fromUTF8(tab->project().name.c_str()));
+                return names;
+            };
+            tabHost->selected = [this] { return selectedTab; };
+            tabHost->choose = [this](size_t index) { selectProjectTab(index); };
+            tabHost->closeTab = [this](size_t index) { closeProjectTab(index); };
+            tabHost->show(content);
+            window = std::make_unique<Window>(content, tabHost.get(), visualTest);
             if (previewHome)
                 content->showProjectBrowser();
             if (previewHome && args.contains("--login-preview"))
@@ -227,6 +342,9 @@ class CatLiveApplication final : public JUCEApplication {
         tooltips.reset();
         splash.reset();
         window.reset();
+        tabHost.reset();
+        extraTabs.clear();
+        firstWorkspace.reset(); tabWorkspaces.clear(); tabSessions.clear();
         lighting.reset();
         auth.reset();
         session.reset();
@@ -238,8 +356,8 @@ class CatLiveApplication final : public JUCEApplication {
             return;
         }
         if (window)
-            if (auto *w = dynamic_cast<Workspace *>(window->getContentComponent())) {
-                w->requestClose([this] { beginClosing(); });
+            if (auto *w = (tabHost ? tabHost->current : nullptr)) {
+                requestTabClosing(0);
                 return;
             }
         quit();
@@ -250,7 +368,7 @@ class CatLiveApplication final : public JUCEApplication {
         auto args = StringArray::fromTokens(arguments, true);
         for (auto arg : args)
             if (File::isAbsolutePath(arg.unquoted()) && File(arg.unquoted()).hasFileExtension("jl;bkjl;ziplive;zip")) {
-                if (auto *w = dynamic_cast<Workspace *>(window->getContentComponent()))
+                if (auto *w = (tabHost ? tabHost->current : nullptr))
                     w->openProject(File(arg.unquoted()));
                 break;
             }
@@ -273,12 +391,12 @@ class CatLiveApplication final : public JUCEApplication {
         // Return to the message loop so the transparent artwork paints before device teardown.
         Timer::callAfterDelay(40, [this] {
             try {
-                if (session) {
-                    session->command(jaras::CommandKind::stopAll);
-                    splash->advanceClosing(.25);
-                    session->audio.instrumentAllowed = false;
-                    session->audio.closeDevice();
+                for (auto *projectSession : tabSessions) {
+                    projectSession->command(jaras::CommandKind::stopAll);
+                    projectSession->audio.instrumentAllowed = false;
+                    projectSession->audio.closeDevice();
                 }
+                splash->advanceClosing(.25);
                 splash->advanceClosing(.85);
                 // Briefly keep the closing panel readable even on a fast machine.
                 Timer::callAfterDelay(600, [this] {
@@ -292,11 +410,131 @@ class CatLiveApplication final : public JUCEApplication {
                 closing = false;
                 if (window) {
                     window->toFront(true);
-                    if (auto *w = dynamic_cast<Workspace *>(window->getContentComponent()))
+                    if (auto *w = (tabHost ? tabHost->current : nullptr))
                         w->showError(String::fromUTF8(e.what()));
                 }
             }
         });
+    }
+    struct ProjectTab {
+        std::unique_ptr<Session> session;
+        std::unique_ptr<Lighting> lighting;
+        std::unique_ptr<Workspace> workspace;
+    };
+    std::unique_ptr<ProjectTabsHost> tabHost;
+    std::unique_ptr<Workspace> firstWorkspace;
+    std::vector<std::unique_ptr<ProjectTab>> extraTabs;
+    std::vector<Workspace *> tabWorkspaces;
+    std::vector<Session *> tabSessions;
+    size_t selectedTab = 0;
+    void installProjectTabHooks(Workspace &workspace) {
+        workspace.activateExistingProjectTab = [this](File file) {
+            for (size_t index = 0; index < tabSessions.size(); ++index)
+                if (index != selectedTab && tabSessions[index]->document == file) { selectProjectTab(index); return true; }
+            return false;
+        };
+        workspace.openInNewProjectTab = [this](File file) { openProjectTab(file); };
+        workspace.navigateProjectTab = [this](int direction) {
+            if (tabWorkspaces.size() < 2 || selectedTab >= tabSessions.size() || tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording()) return;
+            if ((direction < 0 && selectedTab == 0) || (direction > 0 && selectedTab + 1 >= tabWorkspaces.size())) return;
+            const auto next = direction < 0 ? selectedTab - 1 : selectedTab + 1;
+            selectProjectTab(next);
+        };
+        workspace.canNavigateProjectTab = [this](int direction) {
+            return tabWorkspaces.size() > 1 && (direction < 0 ? selectedTab > 0 : selectedTab + 1 < tabWorkspaces.size());
+        };
+    }
+    void selectProjectTab(size_t index) {
+        if (!window || index >= tabWorkspaces.size()) return;
+        if (selectedTab < tabSessions.size() && (tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording())) return;
+        if (auto *old = (tabHost ? tabHost->current : nullptr)) { old->deactivateProjectTab(); old->setVisible(false); }
+        selectedTab = index;
+        auto *content = tabWorkspaces[index];
+        tabHost->show(content);
+        content->setVisible(true);
+        content->activateProjectTab();
+        content->grabKeyboardFocus();
+    }
+    void openProjectTab(const File &file) {
+        if (!file.existsAsFile()) return;
+        for (size_t index = 0; index < tabSessions.size(); ++index)
+            if (tabSessions[index]->document == file) { selectProjectTab(index); return; }
+        if (tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording()) return;
+        try {
+            const size_t previousTab = selectedTab;
+            auto tab = std::make_unique<ProjectTab>();
+            tab->session = std::make_unique<Session>(session->audio.deviceHost);
+            tab->session->inspection = session->inspection;
+            tab->session->canPlay = [this] { return auth->allowed() && !auth->pendingRevocation; };
+            if (!tab->session->inspection) {
+                const auto error = tab->session->audio.openDevice();
+                if (error.isNotEmpty()) throw std::runtime_error(utf8(error));
+            }
+            tab->lighting = std::make_unique<Lighting>(*tab->session);
+            auto *lights = tab->lighting.get();
+            tab->session->playbackUpdate = [lights](const jaras::TransportState &state) { lights->update(state); };
+            tab->workspace = std::make_unique<Workspace>(*tab->session, *auth, *tab->lighting, false, File{}, firstWorkspace->projectRemoteHost());
+            auto *workspace = tab->workspace.get();
+            installProjectTabHooks(*workspace);
+            workspace->projectTabLoadFinished = [this, previousTab, workspace](String error) {
+                MessageManager::callAsync([this, previousTab, workspace, error] {
+                    workspace->projectTabLoadFinished = {};
+                    if (error.isEmpty()) return;
+                    auto at = std::find(tabWorkspaces.begin(), tabWorkspaces.end(), workspace);
+                    if (at == tabWorkspaces.end()) return;
+                    const auto index = size_t(at - tabWorkspaces.begin());
+                    if (selectedTab == index) selectProjectTab(previousTab);
+                    tabWorkspaces.erase(at); tabSessions.erase(tabSessions.begin() + (ptrdiff_t)index);
+                    extraTabs.erase(std::remove_if(extraTabs.begin(), extraTabs.end(), [workspace](const auto &tab) { return tab->workspace.get() == workspace; }), extraTabs.end());
+                    tabWorkspaces[selectedTab]->activateProjectTab();
+                    tabWorkspaces[selectedTab]->showError(error);
+                });
+            };
+            tabWorkspaces.push_back(workspace); tabSessions.push_back(tab->session.get());
+            extraTabs.push_back(std::move(tab));
+            selectProjectTab(tabWorkspaces.size() - 1);
+            workspace->openProject(file);
+        } catch (const std::exception &error) {
+            tabWorkspaces[selectedTab]->activateProjectTab();
+            tabWorkspaces[selectedTab]->showError(String::fromUTF8(error.what()));
+        }
+    }
+    void closeProjectTab(size_t index) {
+        if (closing || index>=tabWorkspaces.size() || tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording()) return;
+        selectProjectTab(index);
+        auto *workspace=tabWorkspaces[index];
+        workspace->requestClose([this,workspace] {
+            MessageManager::callAsync([this,workspace] {
+                if(closing)return;
+                auto at=std::find(tabWorkspaces.begin(),tabWorkspaces.end(),workspace);
+                if(at==tabWorkspaces.end())return;
+                const auto index=size_t(at-tabWorkspaces.begin());
+                if(tabWorkspaces.size()==1) {
+                    if(workspace!=firstWorkspace.get())selectProjectTab(index);
+                    workspace->deactivateProjectTab();
+                    tabHost->detach();
+                    firstWorkspace->resetProjectTab();
+                    tabWorkspaces={firstWorkspace.get()};tabSessions={session.get()};selectedTab=0;
+                    tabHost->show(firstWorkspace.get());firstWorkspace->activateProjectTab();
+                    extraTabs.clear();
+                    return;
+                }
+                selectProjectTab(index==0?1:index-1);
+                tabSessions[index]->command(jaras::CommandKind::stopAll);
+                if(workspace==firstWorkspace.get())workspace->resetProjectTab();
+                tabWorkspaces.erase(tabWorkspaces.begin()+(ptrdiff_t)index);
+                tabSessions.erase(tabSessions.begin()+(ptrdiff_t)index);
+                if(selectedTab>index)--selectedTab;
+                extraTabs.erase(std::remove_if(extraTabs.begin(),extraTabs.end(),[workspace](const auto &tab){return tab->workspace.get()==workspace;}),extraTabs.end());
+                tabWorkspaces[selectedTab]->activateProjectTab();
+                tabHost->refresh();
+            });
+        },false);
+    }
+    void requestTabClosing(size_t index) {
+        if (index >= tabWorkspaces.size()) { beginClosing(); return; }
+        selectProjectTab(index);
+        tabWorkspaces[index]->requestClose([this, index] { requestTabClosing(index + 1); });
     }
     bool closing = false;
     std::vector<Component::SafePointer<Component>> hiddenWindows;

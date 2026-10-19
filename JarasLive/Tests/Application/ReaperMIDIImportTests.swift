@@ -139,7 +139,11 @@ final class ReaperMIDIImportTests: XCTestCase {
     }
     func testMalformedMIDIAndMissingExternalSourceFailExplicitly() throws {
         for source in ["HASDATA 1 0 QN", "HASDATA 1 960 QN\nE nan 90 3c 64", "HASDATA 1 960 QN\nE 0 90 ff 64", "POOLEDEVTS {missing}", "FILE \"missing.mid\""] {
-            XCTAssertThrowsError(try imported(source), source)
+            let recovered = try imported(source)
+            XCTAssertFalse(recovered.warnings.isEmpty, source)
+            XCTAssertEqual(recovered.project.songs[0].tracks.count, 1)
+            XCTAssertTrue(recovered.project.songs[0].tracks[0].clips.isEmpty)
+            try recovered.project.validate()
         }
         XCTAssertThrowsError(try StandardMIDIFileImport.read(midiFile().dropLast()))
     }

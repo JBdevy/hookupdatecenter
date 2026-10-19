@@ -634,6 +634,8 @@ public struct ShowTimelinePresentationState: Equatable {
         case .createTempoMarker: tempoMarkerRequest &+= 1
         case .toggleVideo: toggleVideoWindow()
         case .toggleTeleprompter: toggleTeleprompterWindow()
+        case .previousProjectTab: navigateProjectTab(-1)
+        case .nextProjectTab: navigateProjectTab(1)
         case .toggleTracks: toggleTracksPanel()
         case .toggleSetlist: toggleSetlistPanel()
         case .projectStart, .projectEnd, .nextRegion, .previousRegion, .nextTimelinePoint, .previousTimelinePoint:
@@ -654,6 +656,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var onStop: () -> Void = {}
     public var toggleVideoWindow: () -> Void = {}
     public var toggleTeleprompterWindow: () -> Void = {}
+    public var navigateProjectTab: (Int) -> Void = { _ in }
     public var toggleTracksPanel: () -> Void = {}
     public var toggleSetlistPanel: () -> Void = {}
     public var togglePartsPanel: () -> Void = {}

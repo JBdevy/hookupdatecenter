@@ -51,10 +51,23 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         const auto &videoTrack=video.project.songs.front().tracks.front();
         require(videoTrack.role.id=="other" && videoTrack.name=="Video" && videoTrack.solo &&
                 videoTrack.clips.front().audioFile->path.rfind("Videos/",0)==0,"Media must import into a standard video-capable track, like Mac");
-        bool rejected=false;
-        try{read(directory,"<TRACK {TP_FOLDER}\nNAME \"Teleprompter 1\"\nISBUS 1 1\n>\n<TRACK {CLOSE}\nNAME \"Audio\"\nISBUS 2 -1\n>\n");}
-        catch(const std::exception &e){rejected=String::fromUTF8(e.what()).contains(String::fromUTF8("pista especial"));}
-        require(rejected,"A special audio-folder parent needs the same explicit import error as Mac");
+        auto recovered=read(directory,"<TRACK {TP_FOLDER}\nNAME \"Teleprompter 1\"\nISBUS 1 1\n>\n<TRACK {CLOSE}\nNAME \"Audio\"\nISBUS 2 -1\n>\n");
+        require(recovered.project.songs.front().tracks.size()==2,"An invalid special folder discarded otherwise valid tracks");
+        require(!recovered.warnings.isEmpty(),"Recovered folder structure must be reported");
+        jaras::validate(recovered.project);
+    });
+    test("REAPER recovery keeps valid items and markers around malformed elements", [&] {
+        auto recovered=read(directory,
+            "<TRACK {RECOVER}\nNAME Recover\n"
+            "<ITEM\nPOSITION 0\nLENGTH 2\nNAME Before\n>\n"
+            "<ITEM\nPOSITION nan\nLENGTH 3\n>\n"
+            "<ITEM\nPOSITION 5\nLENGTH 2\nNAME After\n>\n>\n"
+            "MARKER invalid\nMARKER 1 1 Good 0\n");
+        const auto &song=recovered.project.songs.front();
+        require(song.tracks.size()==1 && song.tracks.front().clips.size()==2,"Bad item discarded valid neighbors");
+        require(song.tracks.front().clips[0].name=="Before" && song.tracks.front().clips[1].name=="After","Recovered item order changed");
+        require(recovered.warnings.joinIntoString(" ").contains("item ignored") && recovered.warnings.joinIntoString(" ").contains("marker ignored"),"Skipped elements were not reported");
+        jaras::validate(recovered.project);
     });
     test("Typed section prefixes populate Parts, persist clean names and drive real queued section jumps", [&] {
         auto project = floatingControlTests::fixture();

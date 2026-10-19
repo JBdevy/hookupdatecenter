@@ -49,7 +49,7 @@ assert(pkg.includes('options.set("rootVolumeOnly", "true")'));
 assert(pkg.includes('"--install-location", "/Applications"'));
 assert(!pkg.includes('ET.SubElement(document, "welcome"') && !pkg.includes('ET.SubElement(document, "conclusion"'));
 assert(workflow.includes('deleteReleaseAsset') && workflow.includes('!installers.has(asset.name)'));
-assert(publisher.includes("$Version='1.02'") && read('build catlive macos.command').includes('${VERSION:-1.02}'));
+assert(publisher.includes("$Version='1.03'") && read('build catlive macos.command').includes('${VERSION:-1.03}'));
 for (const entry of [publisher, read('build catlive macos.command')])
     assert(entry.includes('space-before-tab,cr-at-eol diff --cached --check'), 'Preserved CRLF must not block source validation.');
 console.log('All-user destinations, minimal native Mac UI and obsolete checksum cleanup validated.');
@@ -60,12 +60,12 @@ if (yaml) {
     (async () => {
         const sha = 'a'.repeat(40), changes = [];
         const context = {repo: {owner: 'fixture', repo: 'catlive'}, sha};
-        let assets = [{id: 1, name: 'Catlive-1.02.pkg', state: 'uploaded', size: 100},
-                      {id: 2, name: 'Catlive-1.02.exe', state: 'uploaded', size: 100},
-                      {id: 3, name: 'Catlive-1.02.pkg.sha256', state: 'uploaded', size: 64},
+        let assets = [{id: 1, name: 'Catlive-1.03.pkg', state: 'uploaded', size: 100},
+                      {id: 2, name: 'Catlive-1.03.exe', state: 'uploaded', size: 100},
+                      {id: 3, name: 'Catlive-1.03.pkg.sha256', state: 'uploaded', size: 64},
                       {id: 4, name: 'old-preview.zip', state: 'uploaded', size: 200}];
         const github = {rest: {repos: {
-            getReleaseByTag: async ({tag}) => {assert.equal(tag, 'catlive-v1.02');return {data: {id: 7, target_commitish: 'old'}};},
+            getReleaseByTag: async ({tag}) => {assert.equal(tag, 'catlive-v1.03');return {data: {id: 7, target_commitish: 'old'}};},
             listReleaseAssets: () => {},
             deleteReleaseAsset: async ({asset_id}) => {changes.push(['delete', asset_id]);},
             updateRelease: async ({target_commitish}) => {changes.push(['release', target_commitish]);}
@@ -73,9 +73,9 @@ if (yaml) {
             getRef: async () => ({data: {object: {sha: 'old'}}}),
             updateRef: async ({ref, sha, force}) => {changes.push(['tag', ref, sha, force]);}
         }}, paginate: async () => assets};
-        const environment = {env: {CATLIVE_RELEASE_VERSION: '1.02'}};
+        const environment = {env: {CATLIVE_RELEASE_VERSION: '1.03'}};
         await execute(github, context, {info: () => {}}, environment);
-        assert.deepEqual(changes, [['delete', 3], ['delete', 4], ['tag', 'tags/catlive-v1.02', sha, true], ['release', sha]]);
+        assert.deepEqual(changes, [['delete', 3], ['delete', 4], ['tag', 'tags/catlive-v1.03', sha, true], ['release', sha]]);
         changes.length = 0;assets = assets.filter(asset => asset.id !== 2);
         await assert.rejects(() => execute(github, context, {info: () => {}}, environment), /installer missing or incomplete/);
         assert.deepEqual(changes, [], 'Incomplete uploads must not remove existing assets or move the release tag.');

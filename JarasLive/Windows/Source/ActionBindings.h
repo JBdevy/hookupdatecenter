@@ -84,6 +84,8 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"toggleTeleprompter", "Teleprompter window on/off", 5, "alt + shift + T"},
         {"normalizeItems", "Normalize selected items", 5, "N"},
         {"createTempoMarker", "Create tempo marker", 5, "ctrl + shift + T"},
+        {"previousProjectTab", "Previous project tab", 5, ""},
+        {"nextProjectTab", "Next project tab", 5, ""},
         {"toggleTracks", "Tracks show/hide", 5, "F1"}};
     return definitions;
 }
@@ -123,6 +125,7 @@ class ActionBindings final : public ChangeBroadcaster,
                              private MidiInputCallback,
                              private AsyncUpdater {
   public:
+    std::atomic<bool> inputEnabled{true};
     ActionBindings(Appearance &preferences, AudioDeviceManager &manager)
         : settings(preferences), devices(manager) {
         devices.addMidiInputDeviceCallback({}, this);
@@ -298,6 +301,7 @@ class ActionBindings final : public ChangeBroadcaster,
     CriticalSection producers;
     std::array<Input, 256> pending;
     void handleIncomingMidiMessage(MidiInput *, const MidiMessage &message) override {
+        if (!inputEnabled.load(std::memory_order_relaxed)) return;
         if (!message.isNoteOn() && !message.isController())
             return;
         const ScopedLock lock(producers);
@@ -318,6 +322,7 @@ class ActionBindings final : public ChangeBroadcaster,
                 break;
             const auto input = pending[(size_t)start];
             queue.finishedRead(1);
+            if (!inputEnabled.load(std::memory_order_relaxed)) continue;
             if (learningKind == "midi" && learning.isNotEmpty()) {
                 auto def = std::find_if(actionDefinitions().begin(), actionDefinitions().end(),
                                         [&](const auto &d) { return learning == d.id; });

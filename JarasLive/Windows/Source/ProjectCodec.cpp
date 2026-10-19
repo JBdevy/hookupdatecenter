@@ -433,8 +433,10 @@ var ProjectCodec::canonicalIDs(const var &input) {
     return root;
 }
 var ProjectCodec::read(const File &file) {
-    require(file.existsAsFile() && file.getSize() > 0 && file.getSize() <= 128 * 1024 * 1024,
-            "Invalid project or document exceeds 128 MB.");
+    require(file.existsAsFile(), "Project file not found. It may have been moved or deleted.");
+    const auto size = file.getSize();
+    require(size > 0, "The project file is empty.");
+    require(size <= 128 * 1024 * 1024, "The project document exceeds 128 MB.");
     MemoryBlock bytes;
     require(file.loadFileAsData(bytes), "Could not read project.");
     var value;

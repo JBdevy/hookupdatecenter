@@ -1770,6 +1770,27 @@ int runTests(const File &directory) {
         piano.render(buffer, notes, 1024);
         expect(buffer.getMagnitude(0, 1024) == 0, "Piano panic left stuck notes");
     });
+    test("Project tab sessions share one audio host but preserve independent edits undo and transport", [&] {
+        Session first;
+        Session second(first.audio.deviceHost);
+        first.inspection = second.inspection = true;
+        expect(&first.audio.devices == &second.audio.devices, "Tabs opened independent hardware drivers");
+        expect(first.project().id != second.project().id, "Tabs shared a project identity");
+        first.edit([](jaras::Project &p) { p.name = "First edited"; }, false);
+        second.edit([](jaras::Project &p) { p.name = "Second edited"; }, false);
+        first.undo();
+        expect(first.project().name != "First edited" && second.project().name == "Second edited", "Undo crossed a tab boundary");
+        first.redo();
+        first.command(jaras::CommandKind::play);
+        second.command(jaras::CommandKind::editSeek, {}, 24);
+        expect(first.transport().playing && !second.transport().playing, "Selecting another tab stopped background playback");
+        second.command(jaras::CommandKind::play);
+        expect(first.transport().playing && second.transport().playing, "Tabs cannot play independently");
+        first.command(jaras::CommandKind::stopAll);
+        expect(second.transport().playing, "Stop leaked into another project");
+        second.command(jaras::CommandKind::stopAll);
+        expect(first.project().name == "First edited" && second.dirty, "Tab navigation discarded edits");
+    });
     test("Live MIDI REC gates new notes but preserves sustain and note releases after switching tracks", [&] {
         MidiBuffer input, previous, current;
         input.addEvent(MidiMessage::controllerEvent(2, 64, 127), 0);

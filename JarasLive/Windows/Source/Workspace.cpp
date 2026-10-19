@@ -2666,30 +2666,21 @@ void Workspace::paintOverChildren(Graphics &g) {
     if(!trackDropBlocked.empty()){auto r=boundsFor(trackDropBlocked);g.setColour(Colours::red);g.drawRect(r.reduced(2),2);g.setFont(theme::font(11));g.drawText("Destino indisponível",r,Justification::centred);}
 }
 
-Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File appearanceFile)
+Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File appearanceFile, std::shared_ptr<remote::Host> host)
     : session(s), auth(a), lighting(l), appearance(std::move(appearanceFile)),
       actions(appearance, s.audio.devices), stage(appearance) {
     LookAndFeel::setDefaultLookAndFeel(&look);
     setLookAndFeel(&look);
     remotePresentation = std::make_unique<remote::Presentation>(session, stage);
-    remoteHost = std::make_unique<remote::Host>(appearance);
+    remoteHost = host ? std::move(host) : std::make_shared<remote::Host>(appearance);
     remoteHost->setHostName(auth.deviceName);
     const auto transportFont = auth.dataDirectory().getChildFile("Fonts/Inter-SemiBold.ttf");
     transportFont.getParentDirectory().createDirectory();
     if (!transportFont.existsAsFile() && !transportFont.replaceWithData(BinaryData::InterSemiBold_ttf, BinaryData::InterSemiBold_ttfSize))
         throw std::runtime_error("Não foi possível preparar a fonte do transporte.");
-    masterPeakReadout=std::make_unique<meterDisplay::PeakReadout>([this]{return session.audio.heldPeak();},[this]{session.audio.clearPeak();},[this]{return theme::surfaceText(Colour(0xff000000|session.project().masterColor.value_or(0xffdc52)).withAlpha(.5f));});addAndMakeVisible(*masterPeakReadout);
+    masterPeakReadout=std::make_unique<meterDisplay::PeakReadout>([this]{return session.audio.heldPeak();},[this]{session.audio.clearPeak();},[this]{return theme::surfaceText(Colour(0xff000000|session.project().masterColor.value_or(0x414141)).withAlpha(.5f));});addAndMakeVisible(*masterPeakReadout);
     nativeTransport = std::make_unique<native::TransportButtons>(transportFont.getFullPathName().toWideCharPointer());
     remotePresentation->save = [this] { chooseSave(); };
-    remoteHost->presentation = [this](int panel) -> var {
-        return projectReady && !loginPanel ? remotePresentation->snapshot(panel) : var();
-    };
-    remoteHost->perform = [this](const remote::Command &command) {
-        return projectReady && !loginPanel && !browserVisible && remotePresentation->apply(command);
-    };
-    remoteHost->image = [this](const remote::Command &command) {
-        return projectReady && !loginPanel ? remotePresentation->image(command) : remote::Bytes{};
-    };
     appearance.addChangeListener(this);
     try {
         session.audio.configureMetronome(metronomePreferences(appearance));
@@ -2701,7 +2692,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
             slot, appearance.value("catlive.midi.slot" + String(slot + 1)).toString());
     localization::english = appearance.value("jaras.language", "pt-BR").toString() == "en";
     actions.invoke = [this](const String &id, float value, int track) {
-        if (projectReady && !loginPanel && !browserVisible) {
+        if (actions.inputEnabled.load() && projectReady && !loginPanel && !browserVisible) {
             ++actionInvocations[id];
             perform([&] { performAction(id, value, track); });
         }
@@ -2897,6 +2888,12 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     audioStatus.setMouseCursor(MouseCursor::PointingHandCursor);
     audioStatus.setTitle(String::fromUTF8("Configurações de áudio"));
     audioStatus.setTooltip(String::fromUTF8("Abrir Configurações · Áudio"));
+    for (const auto &spec : std::initializer_list<std::pair<const char *, int>>{{"previousProjectTab", -1}, {"nextProjectTab", 1}}) {
+        const int direction = spec.second;
+        auto &arrow = button(spec.first, {}, [this, direction] { if(navigateProjectTab) navigateProjectTab(direction); });
+        arrow.getProperties().set("icon", direction < 0 ? "chevron.left" : "chevron.right");
+        arrow.setTooltip(localization::translate(direction < 0 ? "Previous project tab" : "Next project tab"));
+    }
     button("save", "Save", [this] {
         chooseSave();
     }).setTooltip(String::fromUTF8("Salvar · Ctrl+S"));
@@ -3092,7 +3089,14 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     };
     projectBrowser->addPackage = [this] { choosePackage(); };
     projectBrowser->browse = [this] { chooseOpen(); };
-    projectBrowser->open = [this](File file) { openProject(file); };
+    projectBrowser->open = [safe = Component::SafePointer<Workspace>(this)](File file) {
+        if (!safe) return;
+        if (safe->projectReady && file != safe->session.document) {
+            safe->confirm(localization::translate("Open another project?"), localization::translate("The current project will be replaced.") + "\n\n" + file.getFileNameWithoutExtension(),
+                [safe, file] { if (safe) safe->openProject(file); });
+        } else safe->openProject(file);
+    };
+    projectBrowser->openInNewTab = [this](File file) { if (projectReady && openInNewProjectTab) openInNewProjectTab(file); };
     projectBrowser->deleteProject = [this](File file) { deleteRecentProject(file); };
     projectBrowser->resume = [this] { projectOpened(false); };
     projectReady = session.inspection && !homePreview;
@@ -3108,12 +3112,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         updateState();
     };
     session.tick = [this] { updateState(); };
-    auth.changed = [this] {
-        try { remoteHost->setHostName(auth.deviceName); }
-        catch (const std::exception &e) { session.message = String::fromUTF8(e.what()); }
-        updateLogin();
-        caption->repaint();
-    };
+    activateProjectTab();
     logger.reset(FileLogger::createDefaultAppLogger("Hook Developer/CatLive", "windows.log",
                                                     String("CatLive Windows ") +
                                                         JUCE_APPLICATION_VERSION_STRING +
@@ -3124,7 +3123,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     rebuild();
     updateState();
     updateLogin();
-    if (!session.inspection && (bool)appearance.value("jaras.remote.hostEnabled", false)) {
+    if (!remoteHost->enabled() && !session.inspection && (bool)appearance.value("jaras.remote.hostEnabled", false)) {
         try { remoteHost->start(); } catch (const std::exception &e) { session.message = String::fromUTF8(e.what()); }
     }
     mixerWidth = jlimit(281, 900, (int)appearance.value("jaras.trackColumnWidth", 281));
@@ -3184,11 +3183,44 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     selectionAreas.activate(*timeline);
     startTimerHz(30);
 }
+Component &Workspace::windowCaption() { return *caption; }
+void Workspace::resetProjectTab() {
+    floatingWindows.clear(); setlistWindow.reset();
+    selectedTracks.clear(); selectedTrack.clear(); collapsedGroups.clear();
+    session.newProject(); projectReady = false; browserVisible = true;
+    showProjectBrowser();
+}
+void Workspace::deactivateProjectTab() {
+    session.audio.keyboardState.allNotesOff(0);
+    session.audio.liveInputEnabled = false;
+    actions.inputEnabled = false;
+    if (nativeTransport) nativeTransport->hide();
+}
+void Workspace::activateProjectTab() {
+    session.audio.liveInputEnabled = true;
+    actions.inputEnabled = true;
+    remoteHost->presentation = [this](int panel) -> var {
+        return projectReady && !loginPanel ? remotePresentation->snapshot(panel) : var();
+    };
+    remoteHost->perform = [this](const remote::Command &command) {
+        return projectReady && !loginPanel && !browserVisible && remotePresentation->apply(command);
+    };
+    remoteHost->image = [this](const remote::Command &command) {
+        return projectReady && !loginPanel ? remotePresentation->image(command) : remote::Bytes{};
+    };
+    auth.changed = [this] {
+        try { remoteHost->setHostName(auth.deviceName); }
+        catch (const std::exception &e) { session.message = String::fromUTF8(e.what()); }
+        updateLogin(); caption->repaint();
+    };
+    LookAndFeel::setDefaultLookAndFeel(&look);
+    resized(); updateState(); repaint();
+}
 Workspace::~Workspace() {
     if(externalDropCancelled)externalDropCancelled->store(true);
     nativeTransport.reset();
     stopTimer();
-    remoteHost->stop();
+    if (remoteHost.use_count() == 1) remoteHost->stop();
     appearance.removeChangeListener(this);
     floatingWindows.clear();
     setlistWindow.reset();
@@ -3465,7 +3497,7 @@ void Workspace::paint(Graphics &g) {
     g.setColour(theme::line);
     g.drawVerticalLine(31, 32, (float)getHeight());
     g.drawHorizontalLine(transportBounds.getBottom(), 32, (float)getWidth());
-    const auto masterColour = Colour(0xff000000 | session.project().masterColor.value_or(0xffdc52)).withAlpha(.5f);
+    const auto masterColour = Colour(0xff000000 | session.project().masterColor.value_or(0x414141)).withAlpha(.5f);
     g.setColour(masterColour);
     g.fillRoundedRectangle(40, 40, 230, 70, 5);
     const auto masterLevels = session.audio.meterLevels();
@@ -3507,7 +3539,9 @@ void Workspace::resized() {
     }
     if (projectBrowser) {
         projectBrowser->setVisible(browserVisible && !loginPanel);
-        projectBrowser->setBounds(0, title, getWidth(), getHeight() - title);
+        if (canNavigateProjectTab && (canNavigateProjectTab(-1) || canNavigateProjectTab(1)))
+            projectBrowser->setBounds(juce::Rectangle<int>(0,title,getWidth(),getHeight()-title).withSizeKeepingCentre(std::min(560,getWidth()),std::min(456,getHeight()-title)));
+        else projectBrowser->setBounds(0, title, getWidth(), getHeight() - title);
         projectBrowser->setProjectOpen(projectReady);
     }
     if (loginPanel) {
@@ -3553,13 +3587,17 @@ void Workspace::resized() {
     controls["masterFX"]->setBounds(178, 46, 26, 20);
     controls["masterMute"]->setBounds(210, 46, 22, 20);
     controls["masterSolo"]->setBounds(240, 46, 22, 20);
-    const int edge = getWidth() - 8, start = 276;
+    const bool multipleProjects = canNavigateProjectTab && (canNavigateProjectTab(-1) || canNavigateProjectTab(1));
+    for (auto id : {"previousProjectTab", "nextProjectTab"}) controls[id]->setVisible(multipleProjects);
+    controls["previousProjectTab"]->setBounds(276, 39, 26, 26);
+    controls["nextProjectTab"]->setBounds(304, 39, 26, 26);
+    const int edge = getWidth() - 8, start = multipleProjects ? 336 : 276;
     int topRight = edge;
     for (auto spec : std::initializer_list<std::pair<const char *, int>>{{"settings", 30},
-                                                                         {"export", 82},
-                                                                         {"resolume", 64},
-                                                                         {"grandma2", 72},
-                                                                         {"advanced", 68}}) {
+                                                                         {"export", 66},
+                                                                         {"resolume", 58},
+                                                                         {"grandma2", 62},
+                                                                         {"advanced", 60}}) {
         topRight -= spec.second;
         controls[spec.first]->setBounds(topRight, narrowTransport ? 119 : 39, spec.second, 26);
         topRight -= 5;
@@ -4042,6 +4080,9 @@ void Workspace::updateLogin() {
     if (hadLogin != (loginPanel != nullptr)) { resized(); repaint(); }
 }
 void Workspace::timerCallback() {
+    if (!isShowing()) { if(nativeTransport) nativeTransport->hide(); return; }
+    for (const auto &spec : std::initializer_list<std::pair<const char *, int>>{{"previousProjectTab", -1}, {"nextProjectTab", 1}})
+        controls[spec.first]->setEnabled(canNavigateProjectTab && canNavigateProjectTab(spec.second));
     try { session.audio.refreshStemLatency(); }
     catch (const std::exception &e) { session.message = String::fromUTF8(e.what()); }
     syncNativeTransport();
@@ -4382,13 +4423,14 @@ void Workspace::deleteRecentProject(const File &file) {
 void Workspace::newProject() { showProjectBrowser(); }
 void Workspace::showProjectBrowser() {
     timeline->cancelInteraction();
-    if (session.busy || session.transport().playing || session.audio.isRecording()) {
-        showError("Stop playback and wait for imports before opening Projects.");
+    if (session.busy || session.audio.isRecording()) {
+        showError("Wait for recording and imports before opening Projects.");
         return;
     }
     if (projectReady && !browserVisible) {
         auto panel = std::make_unique<ProjectBrowser>();
-        panel->setProjectOpen(false);
+        panel->setProjectOpen(projectReady);
+        panel->setPlaybackRunning(session.transport().playing || session.transport().subPlay.playing);
         panel->createEmpty = projectBrowser->createEmpty;
         panel->createStems = projectBrowser->createStems;
         panel->createRecording = projectBrowser->createRecording;
@@ -4398,6 +4440,7 @@ void Workspace::showProjectBrowser() {
         panel->addPackage = projectBrowser->addPackage;
         panel->browse = projectBrowser->browse;
         panel->open = projectBrowser->open;
+        panel->openInNewTab = projectBrowser->openInNewTab;
         panel->deleteProject = projectBrowser->deleteProject;
         auto safe = SafePointer<ProjectBrowser>(panel.get());
         panel->resume = [safe] {
@@ -4440,13 +4483,14 @@ void Workspace::projectOpened(bool fitTimeline) {
     repaint();
     grabKeyboardFocus();
 }
-void Workspace::openProject(const File &file) {
+void Workspace::openProject(const File &file, std::function<void()> loaded, bool confirmed) {
     if (session.busy) return;
+    if (activateExistingProjectTab && activateExistingProjectTab(file)) return;
     timeline->cancelInteraction();
     if (file.hasFileExtension("ziplive;zip")) { choosePackageDestination(file); return; }
-    auto action = [safe = Component::SafePointer<Workspace>(this), file] {
+    auto action = [safe = Component::SafePointer<Workspace>(this), file, loaded] {
         if (!safe || safe->session.busy) return;
-        safe->perform([&] {
+        safe->perform([safe, file, loaded] {
             if (safe->session.audio.isRecording() || safe->session.transport().playing || safe->session.transport().subPlay.playing)
                 throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
             // Keep the same Projects view while preparing the next document,
@@ -4492,17 +4536,18 @@ void Workspace::openProject(const File &file) {
                     safe->selectedTracks.clear(); safe->selectedTrack.clear();
                     safe->trackSelectionAnchor.clear(); safe->collapsedGroups.clear();
                 },
-                [safe, finish](String error) {
+                [safe, finish, loaded](String error) {
                     finish(error);
                     if (!safe) return;
-                    if (error.isEmpty()) { safe->lighting.loadSettings(); safe->projectOpened(); }
+                    if (error.isEmpty()) { safe->lighting.loadSettings(); safe->projectOpened(); if (loaded) loaded(); }
+                    if (safe->projectTabLoadFinished) safe->projectTabLoadFinished(error);
                 });
             } catch (const std::exception &error) {
                 finish(String::fromUTF8(error.what()));
             }
         });
     };
-    if (session.dirty && projectReady)
+    if (!confirmed && session.dirty && projectReady)
         confirm("Open another project?", "The current project has unsaved changes.", action);
     else
         action();
@@ -4707,10 +4752,20 @@ void Workspace::chooseMigration(bool logic) {
                                 return;
                             auto selected = destination.getResult();
                             safe->session.busy = true;
-                            safe->projectBrowser->setEnabled(false);
-                            safe->session.message = logic ? "Importing Logic project..."
-                                                          : "Importing REAPER project...";
-                            Thread::launch([safe, logic, source, selected] {
+                            std::vector<SafePointer<ProjectBrowser>> browsers;
+                            browsers.emplace_back(safe->projectBrowser.get());
+                            for (auto *child : safe->getChildren())
+                                if (auto *sheet = dynamic_cast<ModalSheet *>(child); sheet && sheet->getName() == "Projetos")
+                                    for (auto *content : sheet->getChildren())
+                                        if (auto *browser = dynamic_cast<ProjectBrowser *>(content)) browsers.emplace_back(browser);
+                            const auto status = String::fromUTF8(logic ? "Importando projeto do Logic…" : "Importando projeto do REAPER…");
+                            safe->session.message = status;
+                            for (const auto &browser : browsers) if (browser) {
+                                browser->beginLoading(source);
+                                browser->updateLoading(status);
+                                ModalSheet::blockDismiss(*browser, true);
+                            }
+                            Thread::launch([safe, logic, source, selected, browsers] {
                                 File document;
                                 String error;
                                 StringArray warnings;
@@ -4722,23 +4777,23 @@ void Workspace::chooseMigration(bool logic) {
                                 } catch (const std::exception &e) {
                                     error = String::fromUTF8(e.what());
                                 }
-                                MessageManager::callAsync([safe, document, error, warnings] {
+                                MessageManager::callAsync([safe, document, error, warnings, browsers] {
                                     if (!safe)
                                         return;
                                     safe->session.busy = false;
-                                    safe->projectBrowser->setEnabled(true);
+                                    for (const auto &browser : browsers) if (browser) {
+                                        browser->finishLoading(error);
+                                        ModalSheet::blockDismiss(*browser, false);
+                                    }
                                     if (error.isNotEmpty()) {
                                         safe->showError(error);
                                         return;
                                     }
-                                    safe->perform([&] {
-                                        safe->session.load(document);
-                                        safe->lighting.loadSettings();
-                                        safe->projectOpened();
-                                        if (!warnings.isEmpty())
+                                    safe->openProject(document, [safe, warnings] {
+                                        if (safe && !warnings.isEmpty())
                                             safe->showPanel(String::fromUTF8("Migração de projeto"),
                                                 std::make_unique<ImportNoticePanel>(warnings), 520, 316);
-                                    });
+                                    }, true);
                                 });
                             });
                         });
@@ -5015,7 +5070,7 @@ void Workspace::editMasterColour() {
     auto safe=SafePointer<Workspace>(this);
     auto close=[safe] { if(safe) for(auto *child:safe->getChildren()) if(auto *sheet=dynamic_cast<ModalSheet*>(child);sheet && sheet->getName()=="Editar pista") {sheet->exitModalState(0);break;} };
     auto save=[safe,close](String,unsigned colour,bool) { if(safe) safe->perform([&] { safe->session.edit([&](jaras::Project &project){project.masterColor=colour;},false);close();}); };
-    auto editor=std::make_unique<RegionEditor>("Master",session.project().masterColor.value_or(0xffdc52),false,save,close,false,false);
+    auto editor=std::make_unique<RegionEditor>("Master",session.project().masterColor.value_or(0x414141),false,save,close,false,false);
     ModalSheet::open(*this,"Editar pista",std::move(editor),300,320);
 }
 void Workspace::editTrack(ID id) {
@@ -5563,7 +5618,7 @@ void Workspace::openTimer(bool settings) {
     showPanel(String::fromUTF8("Cronômetro"),
               std::make_unique<StageTimerSettings>(stage), 380, 348);
 }
-void Workspace::requestClose(std::function<void()> done) {
+void Workspace::requestClose(std::function<void()> done, bool application) {
     if (isCurrentlyBlockedByAnotherModalComponent()) {
         ModalComponentManager::getInstance()->bringModalComponentsToFront();
         return;
@@ -5573,11 +5628,11 @@ void Workspace::requestClose(std::function<void()> done) {
         return;
     }
     if (session.transport().playing || session.transport().subPlay.playing) {
-        confirm("Encerrar o CatLive?", String::fromUTF8("A reprodução está em andamento."),
-                [safe = Component::SafePointer<Workspace>(this), done] {
+        confirm(application ? "Encerrar o CatLive?" : "Fechar aba?", String::fromUTF8("A reprodução está em andamento."),
+                [safe = Component::SafePointer<Workspace>(this), done, application] {
                     if (safe) {
                         safe->session.command(jaras::CommandKind::stopAll);
-                        safe->requestClose(done);
+                        safe->requestClose(done, application);
                     }
                 });
         return;

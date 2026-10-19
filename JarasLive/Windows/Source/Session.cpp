@@ -46,7 +46,7 @@ std::vector<double> waveform(AudioFormatReader &reader) {
     return peaks;
 }
 } // namespace
-Session::Session() {
+Session::Session(std::shared_ptr<AudioDeviceManager> host) : audio(48000, false, std::move(host)) {
     newProject();
     startTimerHz(8);
 }

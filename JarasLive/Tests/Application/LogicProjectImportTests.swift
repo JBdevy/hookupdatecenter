@@ -104,7 +104,9 @@ final class LogicProjectImportTests: XCTestCase {
         }
         for value: Any in [7, "007", "missing", 2.5, true, [2]] {
             try active(value)
-            XCTAssertThrowsError(try LogicProjectImporter.read(bundle), "An invalid declared alternative must not read the first available arrangement")
+            let recovered = try LogicProjectImporter.read(bundle)
+            XCTAssertFalse(recovered.project.songs[0].tracks.isEmpty)
+            XCTAssertTrue(recovered.warnings.contains { $0.contains("Recovered alternative") })
         }
         let other = bundle.appendingPathComponent("Alternatives/000")
         try FileManager.default.copyItem(at: bundle.appendingPathComponent("Alternatives/002"), to: other)
@@ -124,9 +126,9 @@ final class LogicProjectImportTests: XCTestCase {
         try PropertyListSerialization.data(fromPropertyList: ["ActiveVariant": "Main"], format: .binary, options: 0).write(to: information)
         XCTAssertNoThrow(try LogicProjectImporter.read(bundle))
         try PropertyListSerialization.data(fromPropertyList: ["ActiveVariant": "Missing"], format: .binary, options: 0).write(to: information)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("active project alternative was not found"))
-        }
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertFalse(recovered.project.songs[0].tracks.isEmpty)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("alternative") })
     }
 
     func testMissingActiveSelectionIsAllowedOnlyForOneUnambiguousAlternative() throws {
@@ -139,14 +141,14 @@ final class LogicProjectImportTests: XCTestCase {
         try PropertyListSerialization.data(fromPropertyList: [String: String](), format: .binary, options: 0).write(to: information)
         XCTAssertNoThrow(try LogicProjectImporter.read(bundle))
         try Data("corrupt project information".utf8).write(to: information)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle), "Corrupt metadata must not be erased as though it was missing")
+        XCTAssertTrue(try LogicProjectImporter.read(bundle).warnings.contains { $0.contains("information ignored") })
         try PropertyListSerialization.data(fromPropertyList: ["not a dictionary"], format: .binary, options: 0).write(to: information)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
+        XCTAssertTrue(try LogicProjectImporter.read(bundle).warnings.contains { $0.contains("information ignored") })
         try FileManager.default.removeItem(at: information)
         try FileManager.default.copyItem(at: bundle.appendingPathComponent("Alternatives/000"), to: bundle.appendingPathComponent("Alternatives/001"))
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("without an active selection"))
-        }
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("without an active selection") })
+        XCTAssertFalse(recovered.project.songs[0].tracks.isEmpty)
     }
 
     func testOfflineMigrationRoundTripAndRecoveryPreserveGrid() async throws {
@@ -206,11 +208,15 @@ final class LogicProjectImportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: destination), saved)
         XCTAssertEqual(try Data(contentsOf: audio), bytes)
     }
-    func testBrokenReferencesAndTruncatedDataFailWithoutPartialMigration() throws {
+    func testBrokenReferencesRecoverTracksButUnreadableContainerFails() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let bundle = try fixture(directory, corruptLink: true)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertFalse(recovered.project.songs[0].tracks.isEmpty)
+        XCTAssertTrue(recovered.project.songs[0].tracks.flatMap(\.clips).isEmpty)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("item ignored") })
+        try recovered.project.validate()
         let data = bundle.appendingPathComponent("Alternatives/000/ProjectData")
         try Data([0x23, 0x47]).write(to: data)
         XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
@@ -325,12 +331,15 @@ final class LogicProjectImportTests: XCTestCase {
         let reopened = try await ProjectStore(url: destination).load()
         XCTAssertEqual(reopened, result.project)
         XCTAssertEqual(try Data(contentsOf: url), data, "source Logic project remains untouched")
-        // A broken linked note must fail, instead of silently producing an empty region.
+        // A broken note is reported without discarding the other notes or regions.
         let noteBytes = Data(notes.prefix(32))
         let range = try XCTUnwrap(data.range(of: noteBytes))
         data[range.lowerBound + 23] = 0x88
         try data.write(to: url)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("MIDI note ignored") })
+        XCTAssertGreaterThan(recovered.project.songs[0].tracks.flatMap(\.clips).compactMap(\.midi).flatMap(\.notes).count, 0)
+        try recovered.project.validate()
     }
 
     func testMixerUUIDLinkFractionalGainPanAndMuteRoundTrip() async throws {
@@ -387,7 +396,7 @@ final class LogicProjectImportTests: XCTestCase {
         }
     }
 
-    func testUnsupportedMixerIsExplicitAndTruncatedStripFails() throws {
+    func testUnsupportedAndTruncatedMixerKeepArrangementWithWarning() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let bundle = try fixture(directory)
@@ -398,7 +407,10 @@ final class LogicProjectImportTests: XCTestCase {
         put(100, in: &strip, at: 26, width: 2) // Points outside the bounded record.
         data.append(record("OCuA", body: strip, owner: 0x240000, kind: 14, version: 7))
         put(UInt64(data.count - 24), in: &data, at: 16); try data.write(to: url)
-        XCTAssertThrowsError(try LogicProjectImporter.read(bundle))
+        let recovered = try LogicProjectImporter.read(bundle)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("mixer setting ignored") })
+        XCTAssertFalse(recovered.project.songs[0].tracks.flatMap(\.clips).isEmpty)
+        try recovered.project.validate()
     }
 
     func testRealProjectsWhenProvided() throws {

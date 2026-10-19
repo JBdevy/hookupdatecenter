@@ -1,6 +1,6 @@
 ﻿param(
     [ValidateSet('Debug','Release')][string]$Configuration='Release',
-    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='1.02',
+    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='1.03',
     [string]$BuildDirectory=(Join-Path $env:LOCALAPPDATA 'CatLiveBuild/windows'),
     [switch]$SkipTests,
     [switch]$Installer,

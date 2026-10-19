@@ -27,13 +27,16 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         int timecodePreferred = -1;
         double end = std::numeric_limits<double>::infinity();
     };
-    AudioEngine(double preparationRate = 48000, bool preparingOffline = false);
+    AudioEngine(double preparationRate = 48000, bool preparingOffline = false,
+                std::shared_ptr<AudioDeviceManager> host = {});
     ~AudioEngine() override;
-    AudioDeviceManager devices;
+    std::shared_ptr<AudioDeviceManager> deviceHost;
+    AudioDeviceManager &devices;
     AudioFormatManager formats;
     MidiKeyboardState keyboardState;
     Instrument instrument;
     std::atomic<bool> instrumentAllowed{false};
+    std::atomic<bool> liveInputEnabled{true};
     void loadSoundFont(const File &);
     String openDevice();
     void configureDeviceChannels(const BigInteger &inputs, const BigInteger &outputs);

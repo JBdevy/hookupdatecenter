@@ -370,7 +370,13 @@ struct MappingTransferRequest: Identifiable {
                        value: action == .panTrack ? DAWActionValue.pan(value) : MIDIFaderValue.gain(value), id: action.rawValue)
             return
         }
-        if editing == nil { StemAudioPlayback.shared.receiveMIDI(device: source.id,status: status,number: number,value: value) }
+        if editing == nil {
+            #if os(macOS)
+            DesktopProjectTabs.shared.receiveMIDI(device: source.id, status: status, number: number, value: value)
+            #else
+            StemAudioPlayback.shared.receiveMIDI(device: source.id,status: status,number: number,value: value)
+            #endif
+        }
         guard [0xb0,0x90,0x80].contains(status & 0xf0) else { return }
         let key = "\(source.id):\(kind):\(channel):\(number)"
         let down = status & 0xf0 != 0x80 && value > 0

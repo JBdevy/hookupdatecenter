@@ -85,15 +85,15 @@ for (name, scene, previous) in cases {
 // Structural replacement must retire obsolete pixels even when Metal cannot
 // immediately provide a drawable. Retaining fine detail from the same clip is
 // useful; retaining deleted tracks or a previous project's rows is incorrect.
-for reason in ["PROJECT_REPLACEMENT", "ITEM_DELETION"] {
-    func scene(revision: Int, rows: [CGFloat], gray: Float = 0.7) -> MetalWaveformFrame {
+for reason in ["PROJECT_REPLACEMENT", "ITEM_DELETION", "PROJECTION_REPLACEMENT"] {
+    func scene(revision: Int, rows: [CGFloat], gray: Float = 0.7, scale: Double = 100) -> MetalWaveformFrame {
         let strokes = rows.map { y in
             MetalWaveformStroke(block: block, channel: 0, scale: SIMD2(100, 1),
                 translation: SIMD2(14, Float(y)), clip: CGRect(x: 0, y: y - 4, width: 128, height: 8),
                 color: SIMD4(gray, gray, gray, 1), itemRect: CGRect(x: 0, y: y - 4, width: 128, height: 8))
         }
         return MetalWaveformFrame(size: size, strokes: strokes,
-            coordinateSpace: .init(documentOrigin: .zero, pixelsPerSecond: 100, contentRevision: revision))
+            coordinateSpace: .init(documentOrigin: .zero, pixelsPerSecond: scale, contentRevision: revision))
     }
     let original = scene(revision: 10, rows: [25, 64, 105])
     surface.submit(original)
@@ -107,7 +107,7 @@ for reason in ["PROJECT_REPLACEMENT", "ITEM_DELETION"] {
     surface.submit(retired)
     check(surface.submittedFrameCount == originalCount + 1, "fixture submits a deferred old-content presentation")
     MetalDrawableRecoveryProbe.blocked = true
-    let replacement = scene(revision: 11, rows: [25])
+    let replacement = scene(revision: reason == "PROJECTION_REPLACEMENT" ? 10 : 11, rows: [25], scale: reason == "PROJECTION_REPLACEMENT" ? 200 : 100)
     let firstAttempt = MetalDrawableRecoveryProbe.attempts
     surface.submit(replacement)
     check(surface.subviews.first?.alphaValue == 0,

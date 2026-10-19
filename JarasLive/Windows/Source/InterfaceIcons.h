@@ -9,6 +9,14 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.startNewSubPath(x1, y1);
         p.lineTo(x2, y2);
     };
+    if (name == "chevron.left" || name == "chevron.right") {
+        const float a = name == "chevron.left" ? 15.f : 9.f;
+        const float b = 24.f - a;
+        p.startNewSubPath(a, 5); p.lineTo(b, 12); p.lineTo(a, 19);
+        p.applyTransform(AffineTransform::fromTargetPoints(0, 0, bounds.getX(), bounds.getY(), 24, 0, bounds.getRight(), bounds.getY(), 0, 24, bounds.getX(), bounds.getBottom()));
+        g.strokePath(p, PathStrokeType(1.8f, PathStrokeType::curved, PathStrokeType::rounded));
+        return true;
+    }
     if (name == "mono") {
         const auto cx = bounds.getCentreX(), cy = bounds.getCentreY();
         g.drawEllipse(cx - 9, cy - 5.5f, 11, 11, 1.3f);

@@ -147,10 +147,10 @@ assert.equal(clip.startTime,6);assert.equal(clip.duration,10);assert.equal(clip.
 assert.equal(song.parts[0].name,'Introduction');assert.equal(song.parts[0].endTime,6);
 assert.deepEqual(fs.readFileSync(path.join(path.dirname(imported.file),clip.audioFile.path)),audio);
 assert.deepEqual(fs.readFileSync(path.join(logic,'Media/Audio Files/Guitar.wav')),audio);
-fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:7}));migrate(logic,'BadAlternative',false);
-fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:true}));migrate(logic,'BooleanAlternative',false);
+fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:7}));migrate(logic,'BadAlternative');
+fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:true}));migrate(logic,'BooleanAlternative');
 fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:2}));fs.writeFileSync(path.join(alternative,'ProjectData'),Buffer.from([0x23,0x47]));migrate(logic,'TruncatedLogic',false);
-fs.writeFileSync(path.join(root,'Broken.rpp'),'<REAPER_PROJECT\n<TRACK\n');migrate(path.join(root,'Broken.rpp'),'TruncatedReaper',false);
+fs.writeFileSync(path.join(root,'Broken.rpp'),'<REAPER_PROJECT\n<TRACK\n');migrate(path.join(root,'Broken.rpp'),'TruncatedReaper');
 // VS Hook project ExtState: same migration contract as the current Mac importer.
 const rgn=(id,a,b,name)=>`MARKER ${id} ${a} "${name}" 1\nMARKER ${id} ${b} "" 1`;
 const mark=(id,at,name)=>`MARKER ${id} ${at} "${name}" 0`;
@@ -182,7 +182,7 @@ const noState=hookCase('HookLoopNoState',[rgn(1,0,20,'Canção'),mark(4,2,'*1'),
 assert.equal(noState.parts[0].multiLoops[0].enabled,false);assert.equal(noState.markers.find(m=>m.id===noState.parts[0].multiLoops[0].marker2).position,20);
 const cues=hookCase('HookOrdinaryCue',[rgn(1,0,20,'Canção'),mark(2,7,'Refrão'),ext('TUNER_OFFSETS_V1 "1=9|2=-7"')].join('\n')).project.songs[0];assert.equal(cues.parts.length,1);assert.equal(cues.parts[0].pitchSemitones,9);assert.deepEqual(cues.parts[0].pitchTrackIDs,[]);assert.equal(cues.markers.find(m=>m.name==='Refrão').sourceRegionID,undefined);
 const split=hookCase('ReaperNestedSplit',[rgn(100,0,40,'Family'),rgn(10,0,20,'First'),mark(10,0,'Duplicate'),mark(11,10,'Second')].join('\n')).project.songs[0];assert.deepEqual(split.parts.filter(p=>p.parentRegionID).map(p=>[p.name,p.startTime,p.endTime]),[['First',0,10],['Second',10,20]]);assert.equal(split.markers.filter(m=>!m.tempoBPM&&m.position===0).length,1);
-hookCase('HookMalformed',rgn(1,0,20,'Song')+'\n'+ext('<BIN PLAYLISTS_DB_V3\nnot-base64!!\n>'),false);
+assert(hookCase('HookMalformed',rgn(1,0,20,'Song')+'\n'+ext('<BIN PLAYLISTS_DB_V3\nnot-base64!!\n>')).warnings.length>0);
 assert(imported.project.songs[0].tracks.every(t=>t.color===0x828282));
 // Build Logic MUSICAS MIDI-region metadata, including a standalone song and
 // duplicate ordinary flags at child starts. Match Mac's linked-flag priority.
@@ -198,9 +198,31 @@ fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({Ac
 const logicMusic=migrate(logic,'LogicMusic').project.songs[0];assert.deepEqual(logicMusic.parts.map(p=>p.name),['Family','First','Second','Outside']);
 const normalFlags=logicMusic.markers.filter(m=>!m.tempoBPM);assert.deepEqual(normalFlags.map(m=>m.name),['First','Second','Outside']);assert(normalFlags[0].sourceRegionID&&normalFlags[1].sourceRegionID);assert(!normalFlags[2].sourceRegionID);
 const duplicateMixer=Buffer.alloc(180);duplicateMixer[89]=64;put(duplicateMixer,116,90*16777216);Buffer.alloc(16,7).copy(duplicateMixer,153);
-fs.writeFileSync(path.join(alternative,'ProjectData'),logicContainer([...musicRecords,record('OCuA',duplicateMixer,0,0,0,7),record('OCuA',duplicateMixer,0,0,0,7)]));migrate(logic,'LogicDuplicateMixer',false);
+fs.writeFileSync(path.join(alternative,'ProjectData'),logicContainer([...musicRecords,record('OCuA',duplicateMixer,0,0,0,7),record('OCuA',duplicateMixer,0,0,0,7)]));migrate(logic,'LogicDuplicateMixer');
 console.log('VS Hook playlists/blocks/tuner/four loops/linked songs and Logic MUSICAS/standalone/duplicate-mixer parity passed.');
 
+const recoveredItems=hookCase('RecoveredItems',`<TRACK
+NAME Recover
+<ITEM
+POSITION 0
+LENGTH 2
+NAME Before
+>
+<ITEM
+POSITION nan
+LENGTH 3
+>
+<ITEM
+POSITION 5
+LENGTH 2
+NAME After
+>
+>
+MARKER bad
+MARKER 1 1 Good 0`);
+assert.deepEqual(recoveredItems.project.songs[0].tracks[0].clips.map(c=>c.name),['Before','After']);
+assert(recoveredItems.warnings.some(w=>w.includes('item ignored')));
+assert(recoveredItems.warnings.some(w=>w.includes('marker ignored')));
 console.log('DAW imports passed: independent REAPER and binary Logic fixtures, audio copy, MIDI, tempo, regions, folder routing and malformed inputs.');
 fs.writeFileSync(path.join(root,'parity-cases.json'),JSON.stringify(parityCases,null,2));
 const exchange=path.join(output,'parity-fixtures');fs.mkdirSync(exchange,{recursive:true});

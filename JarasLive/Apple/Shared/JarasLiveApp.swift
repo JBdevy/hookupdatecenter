@@ -43,7 +43,13 @@ import UIKit
         retry()
         #endif
     }
-    func retry() { do { container = try AppContainer(); error = nil } catch { self.error = error.localizedDescription } }
+    func retry() { do {
+        let initial = try AppContainer(); container = initial
+        #if os(macOS)
+        DesktopProjectTabs.shared.install(initial)
+        #endif
+        error = nil
+    } catch { self.error = error.localizedDescription } }
 }
 @main @MainActor struct JarasLiveApp: App {
     @StateObject private var bootstrap = Bootstrap()
@@ -62,7 +68,13 @@ import UIKit
         #endif
     }
     @ViewBuilder private var bootstrappedContent: some View {
-        if let container = bootstrap.container { RootView(container: container) }
+        if let container = bootstrap.container {
+            #if os(macOS)
+            DesktopProjectRoot(initial: container)
+            #else
+            RootView(container: container)
+            #endif
+        }
         else { VStack(spacing: 20) { Text("CatLive").font(.jarasLargeTitle.bold()); Text(LocalizedStringKey(bootstrap.error ?? "Iniciando…")); Button("Tentar novamente") { bootstrap.retry() } }.padding(40) }
     }
     var body: some Scene {
@@ -135,14 +147,27 @@ struct RootView: View {
                     }
                 }
                 #else
-                if documents.ready {
-                    MainView(show: container.show, auth: auth, backend: container.backend, documents: documents)
-                        // A successful open starts a new workspace, even for
-                        // a backup/copy carrying the same project UUID. Native
-                        // surfaces, gestures and local editors cannot survive it.
-                        .id(documents.opened)
-                }
-                else { ProjectBrowserView(documents: documents) }
+                if documents.ready || documents.projectTabCount > 1 {
+                    ZStack {
+                        DesktopWorkspaceView(container: container)
+                        if !documents.ready {
+                            Color.black.opacity(0.45).ignoresSafeArea()
+                            VStack(spacing: 0) {
+                                HStack {
+                                    Text("Projects").font(.jarasHeadline)
+                                    Spacer()
+                                    if documents.canCancelOpening {
+                                        Button { documents.cancelOpening() } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                                    }
+                                }.padding(16)
+                                Divider()
+                                ProjectBrowserView(documents: documents)
+                            }.frame(width: 560, height: 500)
+                                .background(JarasTheme.background)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                } else { ProjectBrowserView(documents: documents) }
                 #endif
             }
             else if [.launching,.checkingSession,.checkingLicense,.checkingDevice].contains(auth.phase) {
@@ -157,7 +182,7 @@ struct RootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(InterfaceScaleAnchor(preserveFrame: true))
         .background(TrialTitlebar(auth: auth))
-        .background(ProjectWindowSizing(editor: documents.ready && auth.workspaceAllowed,
+        .background(ProjectWindowSizing(editor: (documents.ready || documents.projectTabCount > 1) && auth.workspaceAllowed,
                                         login: !auth.workspaceAllowed, documents: documents))
         .overlay {
             GeometryReader { geometry in
@@ -225,6 +250,64 @@ struct RootView: View {
         #endif
     }
 }
+#if os(macOS)
+/// Each tab owns its mounted workspace. Switching tabs detaches and reattaches
+/// that host, preserving timeline/mixer views and their local presentation state.
+@MainActor private struct DesktopWorkspaceView: NSViewRepresentable {
+    let container: AppContainer
+    @Environment(\.locale) private var locale
+    @Environment(\.displayScale) private var displayScale
+    private var environmentKey: String { locale.identifier + "|" + String(describing: displayScale) }
+    private func content() -> AnyView {
+        AnyView(MainView(show: container.show, auth: container.auth, backend: container.backend, documents: container.documents)
+            .environment(\.locale,locale).environment(\.colorScheme,.dark)
+            .environment(\.displayScale,displayScale).font(.jarasBody))
+    }
+    final class Deck: NSView {
+        override func layout() {
+            super.layout()
+            for view in subviews where !view.isHidden { view.frame = bounds }
+        }
+        override var isFlipped: Bool { true }
+    }
+    func makeNSView(context: Context) -> Deck { Deck() }
+    func updateNSView(_ deck: Deck, context: Context) {
+        guard container.documents.ready else { return }
+        let host: NSHostingView<AnyView>
+        if container.desktopWorkspaceIdentity == container.documents.opened,
+           let cached = container.desktopWorkspaceHost { host = cached }
+        else {
+            container.desktopWorkspaceHost?.removeFromSuperview()
+            host = NSHostingView(rootView: content())
+            if #available(macOS 13, *) { host.sizingOptions = [] }
+            if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+            host.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            host.setContentHuggingPriority(.defaultLow, for: .vertical)
+            container.desktopWorkspaceHost = host
+            container.desktopWorkspaceIdentity = container.documents.opened
+            container.desktopWorkspaceEnvironment = environmentKey
+        }
+        if container.desktopWorkspaceEnvironment != environmentKey {
+            container.desktopWorkspaceEnvironment = environmentKey
+            host.rootView = content()
+        }
+        // Keep mounted workspaces attached to the same window. Removing a
+        // hosting view from its window tears down native descendants on a switch.
+        if host.superview !== deck { deck.addSubview(host) }
+        let live = DesktopProjectTabs.shared.projects.compactMap { $0.desktopWorkspaceHost }
+        for view in deck.subviews {
+            if !live.contains(where: { $0 === view }) && view !== host { view.removeFromSuperview() }
+            else { view.isHidden = view !== host }
+        }
+        host.frame = deck.bounds
+        deck.needsLayout = true
+    }
+    @available(macOS 13, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: Deck, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? nsView.bounds.width, height: proposal.height ?? nsView.bounds.height)
+    }
+}
+#endif
 /// A native alert sizes itself to all of its text, which can put its dismiss
 /// button below the screen for projects with many unsupported effects. Only
 /// the details scroll here; the title and confirmation remain in view.
@@ -533,9 +616,12 @@ private struct ClosingLogoView: View {
         else { answer(alert.runModal()) }
     }
     private func finishClosing(documents: ProjectDocuments, save: Bool, completion: @escaping (Bool) -> Void) {
-        closingLogo.begin()
         Task { @MainActor in
             do {
+                guard try await DesktopProjectTabs.shared.confirmAndSaveBackgroundProjects(excluding: documents) else {
+                    pending = false; completion(false); return
+                }
+                closingLogo.begin()
                 // Let the transparent logo paint before releasing playback resources.
                 await Task.yield()
                 let capture = TrackRecording.shared
@@ -549,7 +635,7 @@ private struct ClosingLogoView: View {
                 closingLogo.advance(0.25)
                 FXWindows.shared.closeAll()
                 capture.closeProject()
-                StemAudioPlayback.shared.prepareForClosing()
+                DesktopProjectTabs.shared.stopAll()
                 try await documents.rememberProjectMedia()
                 closingLogo.advance(1)
                 await Task.yield()

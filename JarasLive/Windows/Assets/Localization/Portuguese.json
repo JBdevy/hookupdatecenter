@@ -1259,5 +1259,11 @@
   "Show Mode was not changed. Administrator authorization is required.": "O Modo Show não foi alterado. É necessária a autorização do administrador.",
   "Unable to change Show Mode. The previous lid settings were restored.": "Não foi possível alterar o Modo Show. As configurações anteriores da tampa foram restauradas.",
   "Unable to change Show Mode. Check the system lid settings.": "Não foi possível alterar o Modo Show. Confira a configuração de energia da tampa no sistema.",
-  "Exportar para CatLive iPadOS": "Exportar para CatLive iPadOS"
+  "Exportar para CatLive iPadOS": "Exportar para CatLive iPadOS",
+  "Open in new tab": "Abrir em nova aba",
+  "Previous project tab": "Aba anterior",
+  "Next project tab": "Próxima aba",
+  "Close tab": "Fechar aba",
+  "The current project will be replaced.": "O projeto atual será substituído.",
+  "Open another project?": "Abrir outro projeto?"
 }

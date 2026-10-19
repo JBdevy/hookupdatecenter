@@ -182,7 +182,9 @@ private final class CaptureWriter: @unchecked Sendable {
 }
 
 @MainActor final class TrackRecording: ObservableObject {
-    static let shared = TrackRecording()
+    static var shared = TrackRecording()
+    weak var projectAudio: StemAudioPlayback?
+    private var projectTabActive = true
     @Published private(set) var armed: Set<UUID> = []
     @Published private(set) var armState = RecordingArmState()
     private var microphoneTracks: Set<UUID> = []
@@ -207,7 +209,9 @@ private final class CaptureWriter: @unchecked Sendable {
         }
     }
     #endif
+    func suspendProjectTab() { projectTabActive = false; releaseInput() }
     func bind(_ show: ShowController) {
+        projectTabActive = true;
         self.show = show
         AudioDeviceSettings.shared.canChangeConfiguration = { [weak self, weak show] in
             show?.isPlaying != true && self?.recording != true && self?.busy != true
@@ -221,7 +225,7 @@ private final class CaptureWriter: @unchecked Sendable {
         ControlMappings.shared.onMIDIReceived = { [weak self] device, status, number, value, timestamp in
             self?.receiveMIDI(device: device, status: status, number: number, value: value, timestamp: timestamp)
         }
-        StemAudioPlayback.shared.onLiveKeyboardMIDI = { [weak self] track, status, number, value in
+        (projectAudio ?? StemAudioPlayback.shared).onLiveKeyboardMIDI = { [weak self] track, status, number, value in
             guard let self, self.recording else { return }
             let position = self.startPosition + ProcessInfo.processInfo.systemUptime - self.midiStartTime
             self.midiTakes[track]?.receive(source: Int32.min, status: status, number: number, value: value, position: position)
@@ -265,11 +269,11 @@ private final class CaptureWriter: @unchecked Sendable {
         guard !updatingMonitoring else { return }
         updatingMonitoring = true; defer { updatingMonitoring = false }
         let tracks = show?.current?.tracks ?? []
-        StemAudioPlayback.shared.armedMIDIRecordingTracks = Set(tracks.filter { armed.contains($0.id) && $0.recordingMode == .midi }.map(\.id))
+        (projectAudio ?? StemAudioPlayback.shared).armedMIDIRecordingTracks = Set(tracks.filter { armed.contains($0.id) && $0.recordingMode == .midi }.map(\.id))
         let desired = inputChannels > 0 && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? tracks.filter {
             armed.contains($0.id) && $0.recordingMode != .midi && $0.kind == .standard
         }.map { MonitorConfig(track: $0.id, patch: $0.inputPatch ?? defaultInputPatch, channels: $0.recordingChannels ?? 2) } : []
-        let playback = StemAudioPlayback.shared
+        let playback = (projectAudio ?? StemAudioPlayback.shared)
         guard desired != monitorConfig || desired.contains(where: { !playback.hasInputMonitor($0.track) }) else { return }
         for config in monitorConfig { playback.setInputMonitor(config.track, source: nil) }
         monitorConfig = []; monitorRings = []
@@ -446,6 +450,7 @@ private final class CaptureWriter: @unchecked Sendable {
         reconcileArming()
     }
     private func reconcileArming() {
+        guard projectTabActive else { return }
         #if os(iOS)
         guard localAudioAvailable else { return }
         #endif
@@ -659,8 +664,8 @@ private final class CaptureWriter: @unchecked Sendable {
         // Automatic REC still takes the normal path while it is deselected.
         if !recording, !busy, !armState.hasConfiguredTracks, armed.isEmpty,
            captureRing == nil, monitorConfig.isEmpty, !tapInstalled, !inputEngineRunning {
-            if !StemAudioPlayback.shared.armedMIDIRecordingTracks.isEmpty {
-                StemAudioPlayback.shared.armedMIDIRecordingTracks = []
+            if !(projectAudio ?? StemAudioPlayback.shared).armedMIDIRecordingTracks.isEmpty {
+                (projectAudio ?? StemAudioPlayback.shared).armedMIDIRecordingTracks = []
             }
             return
         }
@@ -743,7 +748,7 @@ private final class CaptureWriter: @unchecked Sendable {
         finishInputRelease()
     }
     private func finishInputRelease() {
-        for config in monitorConfig { StemAudioPlayback.shared.setInputMonitor(config.track, source: nil) }
+        for config in monitorConfig { (projectAudio ?? StemAudioPlayback.shared).setInputMonitor(config.track, source: nil) }
         monitorConfig = []; monitorRings = []
         captureRing?.endCapture()
         #if os(iOS)

@@ -54,7 +54,7 @@ class Workspace final : public Component,
                         private Timer,
                         private ChangeListener {
   public:
-    Workspace(Session &, Auth &, Lighting &, bool homePreview = false, File appearanceFile = {});
+    Workspace(Session &, Auth &, Lighting &, bool homePreview = false, File appearanceFile = {}, std::shared_ptr<remote::Host> host = {});
     ~Workspace() override;
     void paint(Graphics &) override;
     void resized() override;
@@ -69,7 +69,10 @@ class Workspace final : public Component,
     void mouseDown(const MouseEvent &) override;
     void mouseDoubleClick(const MouseEvent &) override;
     void mouseWheelMove(const MouseEvent &, const MouseWheelDetails &) override;
-    void requestClose(std::function<void()>);
+    void requestClose(std::function<void()>, bool application = true);
+    Component &windowCaption();
+    bool isProjectOpen() const { return projectReady; }
+    void resetProjectTab();
     void capture(const File &);
     var diagnostics() const;
     void openGrandMA2();
@@ -79,8 +82,16 @@ class Workspace final : public Component,
     void openAudioSettings();
     void openFX(ID track = {}, String preferredEffect = {});
     void openItemFX(ID clip);
+    std::shared_ptr<remote::Host> projectRemoteHost() const { return remoteHost; }
+    void activateProjectTab();
+    void deactivateProjectTab();
+    std::function<bool(File)> activateExistingProjectTab;
+    std::function<void(String)> projectTabLoadFinished;
+    std::function<void(File)> openInNewProjectTab;
+    std::function<void(int)> navigateProjectTab;
+    std::function<bool(int)> canNavigateProjectTab;
     void chooseOpen();
-    void openProject(const File &);
+    void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false);
     void chooseSave(bool saveAs = false, std::function<void()> saved = {});
     void chooseImport();
     void chooseExport();
@@ -153,7 +164,7 @@ class Workspace final : public Component,
     bool lastFadeoutActive = false;
     StageState stage;
     std::unique_ptr<remote::Presentation> remotePresentation;
-    std::unique_ptr<remote::Host> remoteHost;
+    std::shared_ptr<remote::Host> remoteHost;
     std::array<std::unique_ptr<TeleprompterHTTP>,2> teleprompterHTTP;
     void openTPRemote(int);
     std::unique_ptr<StageTimerControl> stageTimer;

@@ -967,6 +967,15 @@ private struct SetlistPlaybackBinding: Equatable {
         a.show === b.show && a.region == b.region && a.end == b.end && a.playbackEnd == b.playbackEnd
     }
 }
+private struct SetlistPressStyle: ButtonStyle {
+    let select: () -> Void
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.onChange(of: configuration.isPressed) { pressed in
+            if pressed { select() }
+        }
+    }
+}
+
 private struct RegionSetlistRow: View, Equatable {
     let region: Part
     var fontStyle: Int = 0
@@ -992,7 +1001,11 @@ private struct RegionSetlistRow: View, Equatable {
     var body: some View {
         let color = Color(hex: region.color ?? 0x705264)
         let numberWidth = CGFloat(max(2, String(number).count)) * 6
-        Button(action: select) {
+        Button(action: {
+            #if !os(macOS)
+            select()
+            #endif
+        }) {
             #if os(macOS)
             NativeRegionSetlistLabel(number: number, name: region.displayName, duration: regionDurationText(Double(remaining)),
                 color: region.color ?? 0x705264, selected: selected, active: active, queued: queued, prepareOnly: prepareOnly,
@@ -1026,7 +1039,13 @@ private struct RegionSetlistRow: View, Equatable {
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(selected && !active && !queued ? JarasTheme.green : .clear, lineWidth: 1.5))
                 .contentShape(Rectangle())
             #endif
-        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+        }
+        #if os(macOS)
+        .buttonStyle(SetlistPressStyle(select: select)).accessibilityAction { select() }
+        #else
+        .buttonStyle(.plain)
+        #endif
+        .accessibilityAddTraits(selected ? .isSelected : [])
             .accessibilityLabel(Text(verbatim: String(format: "%02d", number) + ", " + region.displayName + ", " + regionDurationText(Double(remaining))))
             .frame(maxWidth: .infinity)
             .padding(.trailing, 14)

@@ -1819,6 +1819,11 @@ private struct TimelineGridContent: View, Equatable {
         }
         if configuration == nil, value == nil, isHidden { return false }
         configuration = value
+        // A replacement can reach configuration before native layout projects
+        // its new rows. Retire the prior pixels immediately, not on the next zoom.
+        visibleWaveforms.removeAll(keepingCapacity: true)
+        fills.submit(MetalWaveformFrame(size: bounds.size, strokes: []))
+        waveforms.submit(MetalWaveformFrame(size: bounds.size, strokes: []))
         bodyInk.update([])
         mediaURLs.prepareClipRevision(directory: value?.mediaDirectory)
         contentRevision &+= 1

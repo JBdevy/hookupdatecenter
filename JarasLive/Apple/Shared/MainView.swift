@@ -161,7 +161,12 @@ struct MainView: View {
         let tools = EmptyView()
         #endif
         return presentWorkspace(GeometryReader { geometry in
-            workspace(height: geometry.size.height, transport: transport, tools: tools)
+            VStack(spacing: 0) {
+                #if os(macOS)
+                if desktopExtras && documents.projectTabCount > 1 { DesktopProjectTabBar().frame(height: 24) }
+                #endif
+                workspace(height: max(0, geometry.size.height - (desktopExtras && documents.projectTabCount > 1 ? 24 : 0)), transport: transport, tools: tools)
+            }
         })
     }
     private func workspace<Transport: View, Tools: View>(height workspaceHeight: CGFloat,
@@ -396,6 +401,13 @@ struct MainView: View {
                 show.toggleTracksPanel = { toggleMixer() }
                 show.toggleSetlistPanel = { toggleSetlist() }
             }
+            #if os(macOS)
+            .onChange(of: documents.projectTabIndex) { _ in
+                if !DesktopProjectTabs.shared.isForeground(show) {
+                    detachedMixer.close(); detachedSetlist.close()
+                }
+            }
+            #endif
             .onChange(of: textItemTarget != nil || trackEdit != nil || mappings.editing != nil) { blocked in
                 #if os(macOS)
                 if !remotePresentation { RightClickRouter.shared.interactionBlocked = blocked }
@@ -405,6 +417,7 @@ struct MainView: View {
                 guard !remotePresentation else { return }
                 #if os(macOS)
                 detachedMixer.close(); detachedSetlist.close()
+                guard DesktopProjectTabs.shared.isForeground(show) else { return }
                 #endif
                 // SwiftUI presents the replacement .id before removing the old
                 // workspace. The old view must not erase the new callbacks.

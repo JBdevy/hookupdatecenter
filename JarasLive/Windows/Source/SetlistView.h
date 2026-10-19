@@ -4,13 +4,80 @@ class Workspace::Setlist final : public Component,
                                  public DragAndDropTarget,
                                  private ListBoxModel,
                                  private ChangeListener {
+    // A viewport with per-entry heights: blocks occupy 28px, songs 38px.
+    class EntryList final : public Component {
+        struct Row final : Component {
+            EntryList &list; int index; std::unique_ptr<Component> drawer;
+            Row(EntryList &l,int i):list(l),index(i) {}
+            void paint(Graphics &g) override { if(list.model) list.model->paintListBoxItem(index,g,getWidth(),getHeight(),list.selected.contains(index)); }
+            void resized() override { if(drawer)drawer->setBounds(getLocalBounds()); }
+            void mouseDown(const MouseEvent &e) override {
+                if(!list.model)return;
+                if(!e.mods.isPopupMenu()) {
+                    if(e.mods.isShiftDown()&&list.anchor>=0)list.selectRangeOfRows(std::min(list.anchor,index),std::max(list.anchor,index));
+                    else if(e.mods.isCommandDown()||e.mods.isCtrlDown()) {
+                        if(list.selected.contains(index))list.selected.removeRange({index,index+1});
+                        else list.selected.addRange({index,index+1});
+                        list.changed(index);
+                    } else if(!list.selected.contains(index))list.selectRow(index,false,true);
+                    list.anchor=index;
+                }
+                list.model->listBoxItemClicked(index,e);
+            }
+            void mouseDoubleClick(const MouseEvent &e) override { if(list.model&&!e.mods.isPopupMenu())list.model->listBoxItemDoubleClicked(index,e); }
+            void mouseDrag(const MouseEvent &e) override {
+                if(!list.model||!e.mouseWasDraggedSinceMouseDown()||e.mods.isPopupMenu())return;
+                if(auto *container=DragAndDropContainer::findParentDragContainerFor(this);container&&!container->isDragAndDropActive()) {
+                    auto description=list.model->getDragSourceDescription(list.selected);
+                    if(!description.isVoid())container->startDragging(description,&list);
+                }
+            }
+        };
+        Viewport viewport; Component content; ListBoxModel *model=nullptr;
+        std::vector<std::unique_ptr<Row>> rows; SparseSet<int> selected; int anchor=-1;
+        void changed(int row) { content.repaint();if(model)model->selectedRowsChanged(row); }
+      public:
+        std::function<int(int)> heightForRow;
+        EntryList() { addAndMakeVisible(viewport);viewport.setViewedComponent(&content,false); }
+        ~EntryList() override {viewport.setViewedComponent(nullptr,false);}
+        void setModel(ListBoxModel *value){model=value;}
+        void setRowHeight(int){}
+        void setMultipleSelectionEnabled(bool){}
+        void setOutlineThickness(int){}
+        Viewport *getViewport(){return &viewport;}
+        const Viewport *getViewport() const{return &viewport;}
+        SparseSet<int> getSelectedRows() const{return selected;}
+        int rowTop(int index) const {int y=0;for(int i=0;i<index&&i<(int)rows.size();++i)y+=heightForRow?heightForRow(i):38;return y;}
+        int insertionRow(int y) const {for(int i=0;i<(int)rows.size();++i)if(y<rowTop(i)+(heightForRow?heightForRow(i):38)/2)return i;return (int)rows.size();}
+        void updateContent() {
+            const int count=model?model->getNumRows():0;
+            while((int)rows.size()>count)rows.pop_back();
+            while((int)rows.size()<count){auto row=std::make_unique<Row>(*this,(int)rows.size());content.addAndMakeVisible(*row);rows.push_back(std::move(row));}
+            for(auto &row:rows) {
+                auto *previous=row->drawer.release();
+                row->drawer.reset(model->refreshComponentForRow(row->index,selected.contains(row->index),previous));
+                if(row->drawer)row->addAndMakeVisible(*row->drawer);
+            }
+            resized();content.repaint();
+        }
+        void deselectAllRows(){selected.clear();changed(-1);}
+        void selectRangeOfRows(int first,int last){selected.clear();selected.addRange({first,last+1});changed(last);}
+        void selectRow(int row,bool scroll=true,bool deselectOthers=true){if(deselectOthers)selected.clear();selected.addRange({row,row+1});changed(row);if(scroll)scrollToEnsureRowIsOnscreen(row);}
+        void scrollToEnsureRowIsOnscreen(int row){int top=rowTop(row),bottom=rowTop(row+1),y=viewport.getViewPositionY();if(top<y)viewport.setViewPosition(0,top);else if(bottom>y+viewport.getHeight())viewport.setViewPosition(0,bottom-viewport.getHeight());}
+        void paint(Graphics &g) override {g.fillAll(theme::background);}
+        void resized() override {
+            viewport.setBounds(getLocalBounds());const int width=viewport.getMaximumVisibleWidth();int y=0;
+            for(auto &row:rows){int h=heightForRow?heightForRow(row->index):38;row->setBounds(0,y,width,h);y+=h;}
+            content.setSize(width,y);
+        }
+    };
   public:
     explicit Setlist(Workspace &owner) : w(owner) {
         w.appearance.addChangeListener(this);
         addAndMakeVisible(list);
         list.setComponentID("setlistRows");
         list.setModel(this);
-        list.setRowHeight(38);
+        list.heightForRow = [this](int row) { return row >= 0 && row < (int)entries.size() && entries[(size_t)row].block ? 28 : 38; };
         list.setColour(ListBox::backgroundColourId, theme::background);
         list.setMultipleSelectionEnabled(true);
         list.setOutlineThickness(0);
@@ -96,6 +163,7 @@ class Workspace::Setlist final : public Component,
         automatic.context = [this](Point<int>) { autoOptions(); };
         blocks.setTooltip("Add a setlist block");
         blocks.onClick = [this] { addBlock(); };
+        blocks.context = [this](Point<int>) { blockDefaults(); };
         stop.setTooltip("Stop automatically at the end of each region");
         stop.onClick = [this] {
             auto state = currentState();
@@ -246,6 +314,7 @@ class Workspace::Setlist final : public Component,
                         block.beforeRegionId == before) {
                         Entry entry;
                         entry.block = true;
+                        entry.blockSymbol = block.symbol.value_or(true);
                         entry.id = block.id;
                         entry.name = text(block.name);
                         entry.colour = Colour(0xff000000u | block.color);
@@ -368,9 +437,9 @@ class Workspace::Setlist final : public Component,
     }
 
   private:
-    class BypassButton final : public TextButton, private Timer {
+    class BypassButton final : public QuietButton, private Timer {
       public:
-        BypassButton() : TextButton("ByPass") {}
+        BypassButton() : QuietButton("ByPass") {}
         void setActive(bool active) {
             if (getToggleState() == active) return;
             setToggleState(active, dontSendNotification);
@@ -417,10 +486,10 @@ class Workspace::Setlist final : public Component,
         double start = 0, end = 0;
         int number = 0, regionNumber = 0;
         Colour colour;
-        bool child = false, block = false, hasChildren = false;
+        bool child = false, block = false, hasChildren = false, blockSymbol = true;
     };
     Workspace &w;
-    ListBox list;
+    EntryList list;
     class PlaylistBox final : public ComboBox {
       public:
         std::function<void()> context, open;
@@ -468,8 +537,9 @@ class Workspace::Setlist final : public Component,
     };
     std::unique_ptr<PlaylistEditor> playlistEditor;
     int dropRow = -1;
-    TextButton addPlaylist{"+"}, searchButton{String::fromUTF8("⌕")}, blocks{"Blocos"},
+    QuietButton addPlaylist{"+"}, searchButton{String::fromUTF8("⌕")},
         stop{"STOP"}, live{"Live"}, parts{"Parts"};
+    QuietButton blocks{"Blocos"};
     BypassButton bypass;
     QuietButton automatic{"AUTO"};
     TextEditor search;
@@ -566,6 +636,29 @@ class Workspace::Setlist final : public Component,
         if (row < 0 || row >= getNumRows())
             return;
         const auto &entry = entries[(size_t)row];
+        if (entry.block) {
+            const juce::Rectangle<float> bounds(0.f, 0.f, (float)width, 24.f);
+            if (selected) {
+                g.setGradientFill(ColourGradient(Colour(0xff2457a9), 0.f, 0.f,
+                                                 Colour(0xff152b58), (float)width, 0.f, false));
+            } else g.setColour(entry.colour.withAlpha(.15f));
+            g.fillRoundedRectangle(bounds, 4.f);
+            g.setColour(entry.colour.withAlpha(.5f));
+            g.drawRoundedRectangle(bounds.reduced(.5f), 4.f, 1.f);
+            if (selected) { g.setColour(theme::green); g.drawRoundedRectangle(bounds.reduced(.5f), 4.f, 1.f); }
+            float textX=10.f;
+            if (entry.blockSymbol) {
+                Path arrow;
+                arrow.startNewSubPath(10.f,12.f); arrow.lineTo(72.f,12.f);
+                arrow.startNewSubPath(66.f,6.f); arrow.lineTo(72.f,12.f); arrow.lineTo(66.f,18.f);
+                g.setColour(Colour(0xffffff00));
+                g.strokePath(arrow,PathStrokeType(1.5f,PathStrokeType::curved,PathStrokeType::rounded));
+                textX=80.f;
+            }
+            g.setFont(w.appearance.setlistFont()); g.setColour(theme::green);
+            g.drawText(entry.name, juce::Rectangle<float>(textX,0.f,jmax(0.f,(float)width-textX-10.f),24.f),Justification::centredLeft,true);
+            return;
+        }
         const auto t = w.session.presentationTransport();
         const bool active = t.playing && t.regionId == entry.id,
                    queued = t.playing && t.queuedRegionId == entry.id;
@@ -757,7 +850,7 @@ class Workspace::Setlist final : public Component,
     void itemDragMove(const SourceDetails &details) override {
         auto local = details.localPosition - list.getPosition();
         list.getViewport()->autoScroll(local.x, local.y, 24, 12);
-        dropRow = jlimit(0, (int)entries.size(), (local.y + scrollY() + 19) / 38);
+        dropRow = jlimit(0, (int)entries.size(), list.insertionRow(local.y + scrollY()));
         repaint();
     }
     void itemDragExit(const SourceDetails &) override {
@@ -803,7 +896,7 @@ class Workspace::Setlist final : public Component,
     void paintOverChildren(Graphics &g) override {
         if (dropRow >= 0) {
             g.setColour(theme::green);
-            g.fillRect(list.getX() + 4, list.getY() + dropRow * 38 - scrollY(), list.getWidth() - 8,
+            g.fillRect(list.getX() + 4, list.getY() + list.rowTop(dropRow) - scrollY(), list.getWidth() - 8,
                        2);
         }
     }
@@ -818,42 +911,98 @@ class Workspace::Setlist final : public Component,
         block.id = uuid();
         block.songId = playlist->songId;
         block.playlistId = playlist->id;
-        block.name = "Block " + std::to_string(state.blocks->size() + 1);
-        block.color = 0x6d647e;
+        const auto count = std::count_if(state.blocks->begin(),state.blocks->end(),[&](const auto &entry){return entry.songId==block.songId && entry.playlistId==block.playlistId;});
+        block.name = utf8(localization::translate("Bloco") + " " + String((int)count+1).paddedLeft('0',2));
+        auto &random=Random::getSystemRandom();
+        block.color = ((80+random.nextInt(151))<<16) | ((80+random.nextInt(151))<<8) | (80+random.nextInt(151));
+        block.symbol = (bool)w.appearance.value("jaras.blocks.symbol",true);
         if (std::find(playlist->regionIds.begin(), playlist->regionIds.end(), selectedEntry) !=
             playlist->regionIds.end())
             block.beforeRegionId = selectedEntry;
+        else if (!playlist->regionIds.empty()) block.beforeRegionId=playlist->regionIds.front();
         state.blocks->push_back(block);
         apply(state);
     }
+    class BlockDefaultsPanel final : public Component {
+      public:
+        BlockDefaultsPanel(bool enabled, std::function<void(bool)> save, std::function<void()> close) {
+            symbol.setButtonText(localization::translate("SIMBOL"));
+            symbol.setComponentID("blockDefaultSymbol");
+            symbol.setToggleState(enabled,dontSendNotification);
+            cancel.setButtonText(localization::translate("Cancel"));
+            apply.setButtonText(localization::translate("Save"));
+            cancel.onClick=close;
+            apply.onClick=[this,save,close] { save(symbol.getToggleState()); close(); };
+            for(auto *button : std::initializer_list<Button*>{&symbol,&cancel,&apply}) addAndMakeVisible(button);
+        }
+        void resized() override {
+            symbol.setBounds(18,14,getWidth()-36,28);
+            cancel.setBounds(18,getHeight()-48,100,30);
+            apply.setBounds(getWidth()-118,getHeight()-48,100,30);
+        }
+      private:
+        ToggleButton symbol;
+        TextButton cancel,apply;
+    };
+    void blockDefaults() {
+        auto self=SafePointer<Setlist>(this);
+        auto close=[self] {
+            if(self) for(auto *child : self->w.getChildren())
+                if(auto *sheet=dynamic_cast<ModalSheet*>(child);sheet && sheet->getName()==localization::translate("Blocks")) sheet->exitModalState(0);
+        };
+        ModalSheet::open(w,localization::translate("Blocks"),std::make_unique<BlockDefaultsPanel>(
+            (bool)w.appearance.value("jaras.blocks.symbol",true),
+            [self](bool enabled){if(self){auto result=self->w.appearance.set("jaras.blocks.symbol",enabled);if(result.failed())self->w.showError(result.getErrorMessage());}},close),280,118);
+    }
+    class AutoOptionsPanel final : public Component {
+      public:
+        AutoOptionsPanel(std::function<jaras::RegionSetlist()> readState,
+                         std::function<void(jaras::RegionSetlist)> writeState)
+            : read(std::move(readState)),write(std::move(writeState)) {
+            untilBlock.setButtonText(localization::translate("Run queue until the end of the block"));
+            withoutPlayback.setButtonText(localization::translate("Without playback"));
+            subplay.setButtonText(localization::translate("Automatic Subplay"));
+            untilBlock.setComponentID("autoUntilBlockEnd");withoutPlayback.setComponentID("autoWithoutPlayback");subplay.setComponentID("autoSubplay");
+            leadLabel.setText(localization::translate("Start before the end"),dontSendNotification);
+            leadLabel.setFont(theme::font(12));
+            for(auto *button : {&untilBlock,&withoutPlayback,&subplay}) addAndMakeVisible(button);
+            addAndMakeVisible(leadLabel);addAndMakeVisible(lead);
+            lead.setComponentID("autoSubplayLead");
+            for(int i=1;i<=5;++i)lead.addItem(String(i)+"s",i);
+            untilBlock.onClick=[this]{auto next=read();next.autoUntilBlockEnd=untilBlock.getToggleState();write(next);sync();};
+            withoutPlayback.onClick=[this]{auto next=read();next.prepareWithoutPlayback=withoutPlayback.getToggleState();write(next);sync();};
+            subplay.onClick=[this]{auto next=read();next.automaticSubplay=subplay.getToggleState();write(next);sync();};
+            lead.onChange=[this]{auto next=read();next.automaticSubplaySeconds=lead.getSelectedId();write(next);};
+            sync();
+        }
+        void resized() override {
+            const int width=getWidth()-36;
+            untilBlock.setBounds(18,12,width,38);withoutPlayback.setBounds(18,60,width,28);
+            subplay.setBounds(18,102,width,28);leadLabel.setBounds(18,144,width-70,28);lead.setBounds(getWidth()-84,144,66,28);
+        }
+      private:
+        ToggleButton untilBlock,withoutPlayback,subplay;
+        Label leadLabel;
+        ComboBox lead;
+        std::function<jaras::RegionSetlist()> read;
+        std::function<void(jaras::RegionSetlist)> write;
+        void sync() {
+            const auto state=read();const bool hidden=state.prepareWithoutPlayback.value_or(false);
+            untilBlock.setToggleState(state.autoUntilBlockEnd,dontSendNotification);
+            withoutPlayback.setToggleState(hidden,dontSendNotification);
+            subplay.setToggleState(state.automaticSubplay.value_or(false),dontSendNotification);
+            lead.setSelectedId(jlimit(1,5,(int)state.automaticSubplaySeconds.value_or(1)),dontSendNotification);
+            subplay.setVisible(!hidden);leadLabel.setVisible(!hidden);lead.setVisible(!hidden);
+            lead.setEnabled(state.automaticSubplay.value_or(false));leadLabel.setEnabled(state.automaticSubplay.value_or(false));
+            setSize(350,hidden?106:190);
+        }
+    };
     void autoOptions() {
-        auto state = currentState();
-        PopupMenu menu;
-        menu.addItem(1, "Run queue until the end of the block", true, state.autoUntilBlockEnd);
-        menu.addItem(2, "Without playback", true, state.prepareWithoutPlayback.value_or(false));
-        menu.addItem(3, "Automatic Subplay", !state.prepareWithoutPlayback.value_or(false),
-                     state.automaticSubplay.value_or(false));
-        PopupMenu lead;
-        for (int i = 1; i <= 5; ++i)
-            lead.addItem(10 + i, String(i) + "s", true,
-                         (int)state.automaticSubplaySeconds.value_or(1) == i);
-        menu.addSubMenu("Start before the end", lead);
-        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&automatic),
-                           [self = SafePointer<Setlist>(this)](int action) {
-                               if (!self || !action)
-                                   return;
-                               auto next = self->currentState();
-                               if (action == 1)
-                                   next.autoUntilBlockEnd = !next.autoUntilBlockEnd;
-                               if (action == 2)
-                                   next.prepareWithoutPlayback =
-                                       !next.prepareWithoutPlayback.value_or(false);
-                               if (action == 3)
-                                   next.automaticSubplay = !next.automaticSubplay.value_or(false);
-                               if (action > 10)
-                                   next.automaticSubplaySeconds = action - 10;
-                               self->apply(next);
-                           });
+        auto self=SafePointer<Setlist>(this);
+        auto panel=std::make_unique<AutoOptionsPanel>(
+            [self]{return self?self->currentState():jaras::RegionSetlist{};},
+            [self](jaras::RegionSetlist next){if(self)self->apply(std::move(next));});
+        CallOutBox::launchAsynchronously(std::move(panel),automatic.getScreenBounds(),nullptr);
     }
     void contextMenu(Entry entry) {
         if (entry.block) { editEntry(entry); return; }

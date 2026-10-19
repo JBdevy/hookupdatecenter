@@ -12,6 +12,7 @@ struct Project: Equatable {
     var pluginState = "old preset"
     var cursor = 0.0
     static func empty(name: String) -> Project { Project() }
+    static func recordingMultitrack(name: String, channels: Int, trackPrefix: String) throws -> Project { Project() }
 }
 struct Snapshot { var project = Project() }
 struct StemScan {}
@@ -56,6 +57,7 @@ final class NSSavePanel {
     func load() async throws -> Project? { show.saved }
 }
 @MainActor final class ProjectDocuments {
+    var activateExistingProjectTab: ((URL) -> Bool)?
     var ready = true, busy = false, adding = true, showingOpenProjectAlert = false
     var currentURL: URL?
     var appendDestination: (project: UUID, url: URL)?
@@ -65,6 +67,7 @@ final class NSSavePanel {
     var openingRequests = 0, migrationRequests = 0
     var capturedBase: Project?
     func importDAW(_ url: URL) { migrationRequests += 1 }
+    func importPortablePackage(_ url: URL) { migrationRequests += 1 }
     func closeProjectEditors() {}
     func runAppend() { finish(scan: StemScan(), detectBPM: false) }
     // INSERT_TRANSITION_METHODS
@@ -128,3 +131,5 @@ Task { @MainActor in
     }
 }
 dispatchMain()
+
+enum JarasLocalization { static func string(_ key: String) -> String { key } }

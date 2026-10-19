@@ -321,7 +321,10 @@ final class VSHookProjectImportTests: XCTestCase {
     func testInvalidBinaryMetadataFailsInsteadOfSilentlyLosingConfiguration() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        XCTAssertThrowsError(try read(region(1, 0, 10, "Canção") + "\n" + metadata("<BIN PLAYLISTS_DB_V3\nnot-base64!!\n>"), in: directory))
+        let recovered = try read(region(1, 0, 10, "Canção") + "\n" + metadata("<BIN PLAYLISTS_DB_V3\nnot-base64!!\n>"), in: directory)
+        XCTAssertTrue(recovered.warnings.contains { $0.contains("metadata") })
+        XCTAssertFalse(recovered.project.songs[0].parts.isEmpty)
+        try recovered.project.validate()
     }
 }
 #endif

@@ -147,7 +147,7 @@ class PortableExportPanel final : public Component, private Timer {
                                       : String{};
         g.drawFittedText(status, 24, 250, getWidth() - 48, 42, Justification::topLeft, 3, 1);
         if (work) {
-            const Rectangle<float> bar(24.f, 298.f, (float)getWidth() - 48.f, 5.f);
+            const juce::Rectangle<float> bar(24.f, 298.f, (float)getWidth() - 48.f, 5.f);
             g.setColour(theme::secondary.withAlpha(.2f));
             g.fillRoundedRectangle(bar, 2.5f);
             g.setColour(theme::green);

@@ -1674,3 +1674,13 @@
 "Unable to read the Windows lid settings." = "Unable to read the Windows lid settings.";
 "Show Mode was not changed. Administrator authorization is required." = "Show Mode was not changed. Administrator authorization is required.";
 "Unable to change Show Mode. The previous lid settings were restored." = "Unable to change Show Mode. The previous lid settings were restored.";
+
+"Open in new tab" = "Open in new tab";
+"Previous project tab" = "Previous project tab";
+"Next project tab" = "Next project tab";
+
+"Close tab" = "Close tab";
+
+"Open another project?" = "Open another project?";
+
+"Open project" = "Open project";

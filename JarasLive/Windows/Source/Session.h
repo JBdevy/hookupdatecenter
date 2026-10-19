@@ -7,7 +7,7 @@
 namespace catlive {
 class Session final : private Timer {
   public:
-    Session();
+    explicit Session(std::shared_ptr<AudioDeviceManager> host = {});
     ~Session() override;
     jaras::Engine core;
     AudioEngine audio;

@@ -19,7 +19,7 @@ import AVFoundation
                                      node suppliedNode: AVAudioUnitEffect?, project: UUID?, saving: Bool) throws {
         guard project == nil || project == show.snapshot.project.id else { return }
         if let clip, FXModelLookup.clip(clip, in: show.snapshot.project) == nil { return }
-        let node = suppliedNode ?? StemAudioPlayback.shared.effects(for: clip ?? track)?.externalNode(identifier)
+        let node = suppliedNode ?? DesktopProjectTabs.shared.audio(for: show).effects(for: clip ?? track)?.externalNode(identifier)
         guard let node else { return }
         guard let state = JarasVST3.state(node, identifier: identifier) else {
             if saving { throw ProjectError.invalid("Não foi possível capturar o estado atual do plugin. A operação foi cancelada.") }
@@ -36,7 +36,7 @@ import AVFoundation
                 componentState: settings.externalPlugins?[index].componentState,
                 controllerState: settings.externalPlugins?[index].controllerState),
                 let plugin = settings.externalPlugins?[index] else { return }
-            StemAudioPlayback.shared.rememberCapturedPluginState(track: track, clip: clip, plugin: plugin, source: node)
+            DesktopProjectTabs.shared.audio(for: show).rememberCapturedPluginState(track: track, clip: clip, plugin: plugin, source: node)
             return
         }
         if let clip { show.previewClipFX(clip, settings: settings) }
@@ -94,7 +94,7 @@ struct ExternalPluginEditor: View {
     }
     static func nativeEditor(show: ShowController, track: UUID?, clip: UUID? = nil, effect: String) -> NSView? {
         guard let plugin = ExternalPluginState.settings(show: show, track: track, clip: clip).externalPlugins?.first(where: { $0.effectKey == effect }),
-              let chain = StemAudioPlayback.shared.effects(for: clip ?? track), chain.externalError == nil, let node = chain.externalNode(plugin.id),
+              let chain = DesktopProjectTabs.shared.audio(for: show).effects(for: clip ?? track), chain.externalError == nil, let node = chain.externalNode(plugin.id),
               let view = JarasVST3.editor(node, identifier: plugin.id) else { return nil }
         ExternalPluginState.bindEdits(show: show, track: track, clip: clip, plugin: plugin, node: node)
         return view
@@ -125,7 +125,7 @@ struct ExternalPluginEditor: View {
         }.background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear {
                 guard let plugin else { failure = "Plugin settings are unavailable"; return }
-                guard let chain = StemAudioPlayback.shared.effects(for: clip ?? track) else { failure = "Audio track is not prepared"; return }
+                guard let chain = DesktopProjectTabs.shared.audio(for: show).effects(for: clip ?? track) else { failure = "Audio track is not prepared"; return }
                 if let error = chain.externalError { failure = error.localizedDescription; return }
                 guard let node = chain.externalNode(plugin.id) else { failure = "Plugin is not loaded"; return }
                 editingNode = node

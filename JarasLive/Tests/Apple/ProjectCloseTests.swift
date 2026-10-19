@@ -161,3 +161,9 @@ Task { @MainActor in
     exit(0)
 }
 RunLoop.main.run()
+
+@MainActor final class DesktopProjectTabs {
+    static let shared = DesktopProjectTabs()
+    func confirmAndSaveBackgroundProjects(excluding: ProjectDocuments) async throws -> Bool { true }
+    func stopAll() { StemAudioPlayback.shared.prepareForClosing() }
+}

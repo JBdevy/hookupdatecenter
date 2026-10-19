@@ -376,3 +376,10 @@ enum ProjectError: Error { case invalid(String) }
 
     }
 }
+
+@MainActor final class DesktopProjectTabs {
+    static let shared = DesktopProjectTabs()
+    func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8) {
+        StemAudioPlayback.shared.receiveMIDI(device: device, status: status, number: number, value: value)
+    }
+}

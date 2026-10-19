@@ -18,7 +18,6 @@ finish += '''                _ = remove
                 capturedBase = base
             } catch { self.error = error.localizedDescription }
         }
-        #endif
     }
 '''
 fixture = Path('Tests/Apple/ProjectTransitionStabilityTests.swift').read_text()

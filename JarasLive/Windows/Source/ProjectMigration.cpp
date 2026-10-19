@@ -11,6 +11,7 @@ void require(bool condition, const String &message) {
 jaras::Project emptyProject(const String &name) {
     jaras::Project project;
     project.id = uuid();
+    project.masterColor = 0x414141;
     project.name = utf8(name);
     project.createdAt = project.updatedAt = utf8(Time::getCurrentTime().toISO8601(true));
     jaras::Song song;
@@ -131,7 +132,7 @@ StringArray rppTokens(const String &line) {
     }
     return result;
 }
-std::unique_ptr<RppChunk> parseRpp(const File &file) {
+std::unique_ptr<RppChunk> parseRpp(const File &file, StringArray *warnings = nullptr) {
     require(file.getSize() > 0 && file.getSize() <= 256 * 1024 * 1024,
             "REAPER: invalid project size.");
     auto lines = StringArray::fromLines(file.loadFileAsString());
@@ -139,6 +140,7 @@ std::unique_ptr<RppChunk> parseRpp(const File &file) {
     std::unique_ptr<RppChunk> root;
     std::vector<RppChunk *> stack;
     for (auto raw : lines) {
+        try {
         auto line = raw.trim();
         if (line.isEmpty())
             continue;
@@ -185,8 +187,18 @@ std::unique_ptr<RppChunk> parseRpp(const File &file) {
             } else
                 stack.back()->lines.push_back(row);
         }
+
+        } catch (const std::exception &error) {
+            if (!warnings) throw;
+            warnings->addIfNotAlreadyThere("REAPER line ignored: " + String::fromUTF8(error.what()));
+            if (raw.trimStart().startsWithChar('<')) break;
+        }
+}
+    require(root != nullptr, "REAPER: no readable project data was found.");
+    if (!stack.empty()) {
+        require(warnings != nullptr, "REAPER: incomplete project.");
+        warnings->addIfNotAlreadyThere("REAPER: incomplete project; the available arrangement was recovered.");
     }
-    require(root && stack.empty(), "REAPER: incomplete project.");
     return root;
 }
 std::optional<unsigned> rppColor(String text) {
@@ -201,8 +213,11 @@ struct TempoMap {
         bool linear = false;
     };
     std::vector<Point> points;
-    explicit TempoMap(const RppChunk &root) {
-        points.push_back({0, root.number("TEMPO", 1, 120), 0, false});
+    explicit TempoMap(const RppChunk &root, StringArray *warnings = nullptr) {
+        double initial=120;
+        try { initial=root.number("TEMPO",1,120); }
+        catch (const std::exception &error) { if(!warnings)throw;warnings->addIfNotAlreadyThere("REAPER tempo ignored: "+String::fromUTF8(error.what())); }
+        points.push_back({0, initial, 0, false});
         if (auto *tempo = root.child("TEMPOENVEX"))
             for (auto &row : tempo->lines)
                 if (row[0] == "PT" && row.size() > 2)
@@ -212,11 +227,15 @@ struct TempoMap {
                          [](auto &a, auto &b) { return a.time < b.time; });
         std::vector<Point> unique;
         for (auto point : points) {
-            require(point.bpm > 0 && std::isfinite(point.bpm), "REAPER: invalid tempo.");
+            if (!(point.bpm>0 && std::isfinite(point.bpm) && std::isfinite(point.time))) {
+                require(warnings != nullptr, "REAPER: invalid tempo.");
+                warnings->addIfNotAlreadyThere("REAPER: invalid tempo point was ignored."); continue;
+            }
             if (!unique.empty() && unique.back().time == point.time)
                 unique.pop_back();
             unique.push_back(point);
         }
+        if(unique.empty())unique.push_back({0,120,0,false});
         points = std::move(unique);
         for (size_t i = 1; i < points.size(); ++i) {
             auto &a = points[i - 1];
@@ -361,7 +380,8 @@ jaras::MIDIItem rppMIDI(const RppChunk &source, const RppChunk &take, const RppC
 }
 } // namespace
 MigratedProject readReaperProject(const File &file) {
-    auto root = parseRpp(file);
+    MigratedProject result;
+    auto root = parseRpp(file, &result.warnings);
     migration::VSHookMigration hook;
     if (auto *ext = root->child("EXTSTATE")) for (const auto &section : ext->children) {
         const auto name = section->header[0];
@@ -369,6 +389,7 @@ MigratedProject readReaperProject(const File &file) {
         auto &values = hook.state[name];
         for (const auto &row : section->lines) if (row.size() >= 2) values[row[0]] = row.joinIntoString(" ", 1);
         for (const auto &binary : section->children) if (binary->header[0] == "BIN" && binary->header.size() == 2) {
+            try {
             MemoryOutputStream decoded;
             require(Base64::convertFromBase64(decoded, binary->notes.joinIntoString("")), "Invalid VS Hook project metadata.");
             const auto *bytes = static_cast<const char *>(decoded.getData());
@@ -376,19 +397,27 @@ MigratedProject readReaperProject(const File &file) {
             while (size && bytes[size-1] == 0) --size;
             require(CharPointer_UTF8::isValidString(bytes, (int)size), "Invalid VS Hook project metadata UTF-8.");
             values[binary->header[1]] = String::fromUTF8(bytes, (int)size);
-        }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("VS Hook metadata ignored: " + String::fromUTF8(error.what())); }
+}
     }
-    MigratedProject result;
     result.project = migration::emptyProject(file.getFileNameWithoutExtension());
     auto &project = result.project;
     auto &song = project.songs.front();
-    song.bpm = root->number("TEMPO", 1, 120);
-    song.beatsPerBar = (int)root->number("TEMPO", 2, 4);
-    song.beatUnit = (int)root->number("TEMPO", 3, 4);
-    project.masterVolume = std::clamp(root->number("MASTER_VOLUME", 1, 1), 0., std::pow(10., .6));
-    project.masterPan = root->number("MASTER_VOLUME", 2);
-    project.masterMute = ((int)root->number("MASTERMUTESOLO") & 1) != 0;
-    TempoMap tempo(*root);
+    auto scalar = [&](const RppChunk &node, const String &key, int index=1, double fallback=0.) {
+        try { return node.number(key,index,fallback); }
+        catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("REAPER setting "+key+" ignored: "+String::fromUTF8(error.what())); return fallback; }
+    };
+    song.bpm = scalar(*root, "TEMPO", 1, 120);
+    if (!(song.bpm>0)) {song.bpm=120;result.warnings.addIfNotAlreadyThere("REAPER: invalid initial tempo ignored; 120 BPM was used.");}
+    const double beats=scalar(*root,"TEMPO",2,4),unit=scalar(*root,"TEMPO",3,4);
+    song.beatsPerBar = beats>=1 && beats<=32 ? (int)beats : 4;
+    song.beatUnit = unit>=1 && unit<=32 ? (int)unit : 4;
+    if(beats!=song.beatsPerBar || unit!=song.beatUnit) result.warnings.addIfNotAlreadyThere("REAPER: invalid time signature ignored; defaults were used.");
+    project.masterVolume = std::clamp(scalar(*root, "MASTER_VOLUME", 1, 1), 0., std::pow(10., .6));
+    project.masterPan = std::clamp(scalar(*root, "MASTER_VOLUME", 2),-1.,1.);
+    project.masterMute = ((int)scalar(*root, "MASTERMUTESOLO") & 1) != 0;
+    TempoMap tempo(*root, &result.warnings);
     AudioFormatManager formats;
     registerAudioFormats(formats);
     std::map<String, std::string> references;
@@ -421,11 +450,11 @@ MigratedProject readReaperProject(const File &file) {
         track.id = uuid();
         if (node.header[1].isNotEmpty()) hook.tracks[node.header[1].toUpperCase()] = track.id;
         track.name = utf8(node.value("NAME", 1, "Track " + String(song.tracks.size() + 1)));
-        track.volume = std::clamp(node.number("VOLPAN", 1, 1), 0., std::pow(10., .6));
-        track.pan = node.number("VOLPAN", 2);
-        track.mute = node.number("MUTESOLO") != 0;
-        track.solo = node.number("MUTESOLO", 2) != 0;
-        track.phaseInverted = node.number("IPHASE") != 0;
+        track.volume = std::clamp(scalar(node, "VOLPAN", 1, 1), 0., std::pow(10., .6));
+        track.pan = std::clamp(scalar(node, "VOLPAN", 2),-1.,1.);
+        track.mute = scalar(node, "MUTESOLO") != 0;
+        track.solo = scalar(node, "MUTESOLO", 2) != 0;
+        track.phaseInverted = scalar(node, "IPHASE") != 0;
         track.color = rppColor(node.value("PEAKCOL"));
         if (!folders.empty())
             track.parentTrackID = folders.back();
@@ -459,16 +488,21 @@ MigratedProject readReaperProject(const File &file) {
             // Video is hosted by a standard track on both desktop platforms.
             if (importedVideo) track.role.id = "other";
         }
-        int delta = (int)node.number("ISBUS", 2);
-        require(delta <= 1 && delta >= -(int)folders.size(), "REAPER: invalid folder structure.");
+        const double savedDelta=scalar(node,"ISBUS",2);
+        int delta=savedDelta>=-1000 && savedDelta<=1 ? (int)savedDelta : 2;
+        if (delta > 1 || delta < -(int)folders.size()) {
+            result.warnings.addIfNotAlreadyThere("REAPER: invalid folder structure was ignored."); delta=0;
+        }
         if (delta > 0) {
-            require(specialName.empty(), String::fromUTF8("Uma pista especial não pode ser uma pasta de áudio no projeto de origem."));
-            folders.push_back(track.id);
+            if (!specialName.empty()) {
+                result.warnings.addIfNotAlreadyThere("REAPER: special-track folder membership was ignored."); delta=0;
+            } else folders.push_back(track.id);
         }
         if (node.child("FXCHAIN"))
             result.warnings.addIfNotAlreadyThere(
                 "REAPER plug-ins require review in the imported project.");
         for (auto &itemOwned : node.children) {
+            try {
             auto &item = *itemOwned;
             if (item.header[0] != "ITEM")
                 continue;
@@ -491,6 +525,7 @@ MigratedProject readReaperProject(const File &file) {
                 if (take->header.contains("SEL") || take->value("SEL") == "1")
                     active = take;
             for (auto *take : takes) {
+            try {
                 jaras::AudioClip clip;
                 clip.id = uuid();
                 clip.name = utf8(take->value("NAME", 1, item.value("NAME", 1, "Item")));
@@ -586,8 +621,12 @@ MigratedProject readReaperProject(const File &file) {
                 } else if (auto *notes = item.child("NOTES"))
                     clip.text = utf8(notes->notes.joinIntoString("\n"));
                 track.clips.push_back(clip);
-            }
-        }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("REAPER take ignored: " + String::fromUTF8(error.what())); }
+}
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("REAPER item ignored: " + String::fromUTF8(error.what())); }
+}
         song.tracks.push_back(track);
         if (delta < 0)
             folders.resize(folders.size() + delta);
@@ -595,6 +634,7 @@ MigratedProject readReaperProject(const File &file) {
     std::map<String, jaras::Part> pending;
     for (auto &row : root->lines)
         if (row[0] == "MARKER") {
+            try {
             require(row.size() >= 5, "REAPER: invalid marker.");
             double time = row[2].getDoubleValue();
             auto color = rppColor(row[5]);
@@ -626,13 +666,23 @@ MigratedProject readReaperProject(const File &file) {
                 song.markers->push_back(marker);
                 hook.markers.push_back({row[1], marker});
             }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("REAPER marker ignored: " + String::fromUTF8(error.what())); }
+}
+    if (!pending.empty()) {
+        result.warnings.addIfNotAlreadyThere("Incomplete REAPER regions were retained as start markers.");
+        for (const auto &entry : pending) {
+            jaras::TimelineMarker marker; marker.id=uuid(); marker.name=entry.second.name;
+            marker.position=entry.second.startTime; marker.color=entry.second.color.value_or(0xc7ab40);
+            song.markers->push_back(marker);
         }
-    require(pending.empty(), "REAPER: incomplete region.");
+    }
     hook.convertSpecial(song, result.warnings);
     if (const auto *envelope = root->child("TEMPOENVEX")) {
         int beats = song.beatsPerBar, unit = song.beatUnit;
         std::optional<jaras::TimelineMarker> initial;
         for (const auto &row : envelope->lines) if (row[0] == "PT") {
+            try {
             require(row.size() >= 3, "REAPER: invalid tempo point.");
             const double position = row[1].getDoubleValue(), bpm = row[2].getDoubleValue();
             if (bpm < 60 || bpm > 300 || !std::isfinite(bpm)) {
@@ -645,7 +695,9 @@ MigratedProject readReaperProject(const File &file) {
             marker.tempoBeats=beats;marker.tempoUnit=unit;marker.tempoTimebase="global";marker.tempoReferenceBPM=bpm;
             if(position<0)initial=marker;else song.markers->push_back(marker);
             if(row.size()>3&&row[3]!="1")result.warnings.addIfNotAlreadyThere("REAPER tempo ramps were imported as discrete tempo points; item positions in seconds are unchanged.");
-        }
+
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("REAPER tempo point ignored: " + String::fromUTF8(error.what())); }
+}
         if(initial&&!std::any_of(song.markers->begin(),song.markers->end(),[](const auto &m){return m.tempoBPM&&m.position==0;}))song.markers->push_back(*initial);
     }
     // Supply the fallback region before applying VS Hook's song-level settings.

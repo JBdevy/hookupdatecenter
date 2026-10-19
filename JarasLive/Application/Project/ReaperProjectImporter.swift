@@ -108,6 +108,7 @@ public enum ReaperProjectImporter {
         }
         settings.inserted = []
         for node in chain.children where ["VST", "AU", "JS", "DX", "CLAP", "VIDEO_EFFECT"].contains(node.header.first ?? "") {
+            do {
             let header = node.header
             guard header.first == "VST", header.count > 5,
                   header[1].hasPrefix("VST3:") || header[1].hasPrefix("VST3i:") else {
@@ -176,7 +177,10 @@ public enum ReaperProjectImporter {
                 let target = AutomationTarget(.externalFX, plugin: plugin.id, parameter: parameter)
                 if let imported = try importEnvelope(envelope, target: target, name: label, warnings: &warnings, scope: scope) { result.envelopes.append(imported) }
             }
-        }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.insert("REAPER FX ignored: %@", warnings.errorDescription(error)) }
+}
         if settings.externalPlugins?.isEmpty == false { result.settings = settings }
         return result
     }
@@ -187,6 +191,7 @@ public enum ReaperProjectImporter {
         if mode > 4 { warnings.insert("%@: unsupported REAPER automation mode was imported as Read.", scope) }
         result.envelopes = fx
         for child in node.children {
+            do {
             let key = child.header.first ?? ""
             let kind: AutomationTarget.Kind?
             switch key {
@@ -205,7 +210,10 @@ public enum ReaperProjectImporter {
                     warnings.insert("%@: REAPER %@ automation is not supported and was not applied (%ld points).", scope, key, points)
                 }
             }
-        }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.insert("REAPER envelope ignored: %@", warnings.errorDescription(error)) }
+}
         guard !result.envelopes.isEmpty else { return nil }
         for index in result.envelopes.indices {
             for point in result.envelopes[index].points.indices { result.envelopes[index].points[point].time += offset }
@@ -232,13 +240,17 @@ public enum ReaperProjectImporter {
         }
         var points: [ImportPoint] = []
         for row in node.lines where row.first == "PT" {
+            do {
             guard row.count >= 3 else { throw invalid("Invalid envelope point.") }
             let time = try number(row[1]), value = try number(row[2]), shape = row.count > 3 ? Int(row[3]) : 0
             guard let shape, (0...5).contains(shape) else { throw invalid("Invalid envelope point time or shape.") }
             let point = ImportPoint(time: time, value: value, shape: shape, tension: row.count > 7 ? try number(row[7]) : 0)
             if let last = points.last, last.time == time { points[points.count - 1] = point }
             else { points.append(point) }
-        }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.insert("REAPER envelope point ignored: %@", warnings.errorDescription(error)) }
+}
         guard !points.isEmpty else { return nil }
         guard zip(points, points.dropFirst()).allSatisfy({ $0.time < $1.time }) else { throw invalid("Unsorted envelope points.") }
         let volume = target.kind == .volume, fader = try volume && node.integer("VOLTYPE") == 1
@@ -339,10 +351,11 @@ public enum ReaperProjectImporter {
         }
         return result
     }
-    private static func parse(_ text: String) throws -> Chunk {
+    private static func parse(_ text: String, report: ((Error) -> Void)? = nil) throws -> Chunk {
         var stack: [Chunk] = [], root: Chunk?, count = 0
         let keys: Set<String> = ["POOLEDENVINST", "ACT", "VIS", "ARM", "VOLTYPE", "AUTOMODE", "BYPASS", "FX", "IPHASE", "NAME", "TEMPO", "MARKER", "PT", "VOLPAN", "MUTESOLO", "ISBUS", "PEAKCOL", "POSITION", "LENGTH", "TAKEVOLPAN", "SOFFS", "PLAYRATE", "MUTE", "FADEIN", "FADEOUT", "CHANMODE", "LOOP", "FILE", "TAKE", "SEL", "ALLTAKES", "STARTPOS", "MODE", "MASTER_VOLUME", "MASTERMUTESOLO", "AUXRECV", "MAINSEND", "PANMODE", "SM", "PITCHENV", "STARTTIME", "FRAMERATE", "SEND", "USERDATA", "HASDATA", "IGNTEMPO", "POOLEDEVTS", "E", "e", "Em", "em"]
         for raw in text.split(whereSeparator: \.isNewline) {
+            do {
             count += 1
             if count % 1024 == 0 { try Task.checkCancellation() }
             guard count <= 2_000_000 else { throw invalid("Project is too large.") }
@@ -399,8 +412,18 @@ public enum ReaperProjectImporter {
                     if ["E", "e", "Em", "em"].contains(key), parent.header == ["SOURCE", "MIDI"] { parent.midiEvents.append(row) }
                 }
             }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                guard let report else { throw error }; report(error)
+                if raw.trimmingCharacters(in: .whitespaces).hasPrefix("<") { break }
+            }
+}
+        guard let root, root.header.first == "REAPER_PROJECT" else { throw invalid("Incomplete or invalid .rpp project.") }
+        if !stack.isEmpty {
+            let error = invalid("Incomplete project: recovered the available arrangement.")
+            guard let report else { throw error }; report(error)
         }
-        guard stack.isEmpty, let root, root.header.first == "REAPER_PROJECT" else { throw invalid("Incomplete or invalid .rpp project.") }
         return root
     }
     public static func read(_ source: URL, resolveVST3: ((VST3Request) throws -> VST3Resolution?)? = nil,
@@ -410,7 +433,8 @@ public enum ReaperProjectImporter {
         guard size > 0, size <= 256 * 1024 * 1024 else { throw invalid("Invalid project size.") }
         let data = try Data(contentsOf: source, options: .mappedIfSafe)
         guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1252) else { throw invalid("Invalid text encoding.") }
-        let root = try parse(text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{feff}")))
+        var warnings = Warnings(localize: localizeWarning)
+        let root = try parse(text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{feff}")), report: { warnings.insert("%@", $0.localizedDescription) })
         // REAPER POSITION values are seconds from the physical start of the
         // arrangement. PROJOFFS/measure numbering label the ruler; they do not
         // move that boundary. Keep this start at CatLive 00:00.
@@ -421,21 +445,29 @@ public enum ReaperProjectImporter {
             for binary in section.children where binary.header.first == "BIN" && binary.header.count == 2 {
                 if let data = Data(base64Encoded: binary.notes.joined()), let value = String(data: data, encoding: .utf8) {
                     values[binary.header[1]] = value.trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
-                } else { throw invalid("Invalid VS Hook project metadata.") }
+                } else { warnings.insert("Invalid VS Hook metadata was ignored; arrangement data was retained.") }
             }
             hookState[section.header[0]] = values
+        }
+        func recovered<T>(_ description: String, _ fallback: T, _ operation: () throws -> T) throws -> T {
+            do { return try operation() }
+            catch is CancellationError { throw CancellationError() }
+            catch { warnings.insert("%@: %@", description, warnings.errorDescription(error)); return fallback }
         }
         var hook = VSHookProjectMigration(state: hookState)
         var project = Project.empty(name: source.deletingPathExtension().lastPathComponent)
         project.importedTimeline = true
         var song = project.songs[0]
         song.tracks = []; song.parts = []; song.markers = []; song.timeSettings = ProjectTimeSettings()
-        song.bpm = try root.number("TEMPO", default: 120)
-        song.beatsPerBar = try root.integer("TEMPO", 2, default: 4)
-        song.beatUnit = try root.integer("TEMPO", 3, default: 4)
-        var warnings = Warnings(localize: localizeWarning)
+        song.bpm = try recovered("REAPER project setting ignored", 120.0) { try root.number("TEMPO", default: 120) }
+        song.beatsPerBar = try recovered("REAPER project setting ignored", 4) { try root.integer("TEMPO", 2, default: 4) }
+        song.beatUnit = try recovered("REAPER project setting ignored", 4) { try root.integer("TEMPO", 3, default: 4) }
+        if !TimelineTempo.bpmRange.contains(song.bpm) { warnings.insert("Invalid REAPER tempo ignored; 120 BPM was used."); song.bpm = 120 }
+        if !(1...32).contains(song.beatsPerBar ?? 4) || ![1, 2, 4, 8, 16, 32].contains(song.beatUnit ?? 4) {
+            warnings.insert("Invalid REAPER time signature ignored; 4/4 was used."); song.beatsPerBar = 4; song.beatUnit = 4
+        }
         var ignoredItems = 0
-        let midiTempo = try MIDITempoMap(root)
+        let midiTempo = try MIDITempoMap(root, report: { warnings.insert("%@", $0.localizedDescription) })
         var midiPools: [String: Chunk] = [:]
         func collectPools(_ chunk: Chunk) {
             if chunk.header == ["SOURCE", "MIDI"], let pool = chunk.value("POOLEDEVTS"), !chunk.midiEvents.isEmpty { midiPools[pool] = chunk }
@@ -448,13 +480,14 @@ public enum ReaperProjectImporter {
             if limited != value { warnings.insert("REAPER mixer volumes above +12 dB were limited to the CatLive mixer range.") }
             return limited
         }
-        project.masterVolume = limitedVolume(try root.number("MASTER_VOLUME", default: 1))
-        project.masterPan = try root.number("MASTER_VOLUME", 2)
-        project.masterMute = try root.integer("MASTERMUTESOLO") & 1 != 0
+        project.masterVolume = limitedVolume(try recovered("REAPER project setting ignored", 1.0) { try root.number("MASTER_VOLUME", default: 1) })
+        project.masterPan = try recovered("REAPER project setting ignored", 0.0) { try root.number("MASTER_VOLUME", 2) }
+        project.masterMute = try recovered("REAPER project setting ignored", 0) { try root.integer("MASTERMUTESOLO") } & 1 != 0
         let masterFX = try importFX(root.child("MASTERFXLIST") ?? root.child("MASTERFXCHAIN"), scope: "Master", resolve: resolveVST3, warnings: &warnings)
         project.masterFX = masterFX.settings
-        project.masterAutomation = try importAutomation(root, fx: masterFX.envelopes, scope: "Master", warnings: &warnings)
-        if try root.number("PLAYRATE", default: 1) != 1 { warnings.insert(unsupported) }
+        do { project.masterAutomation = try importAutomation(root, fx: masterFX.envelopes, scope: "Master", warnings: &warnings) }
+        catch { warnings.insert("Master automation ignored: %@", warnings.errorDescription(error)) }
+        if try recovered("REAPER project setting ignored", 1.0) { try root.number("PLAYRATE", default: 1) } != 1 { warnings.insert(unsupported) }
         let base = source.deletingLastPathComponent()
         let mediaRoot = "Stems/REAPER-" + UUID().uuidString
         var media: [String: ProjectMigration.Media] = [:]
@@ -481,12 +514,17 @@ public enum ReaperProjectImporter {
         var folders: [UUID] = []
         let tracks = root.children.filter { $0.header.first == "TRACK" }
         for node in tracks {
+            do {
             try Task.checkCancellation()
             var track = Track(id: UUID(), name: node.value("NAME").flatMap { $0.isEmpty ? nil : $0 } ?? "Track \(song.tracks.count + 1)", role: .other)
-            track.volume = limitedVolume(try node.number("VOLPAN", default: 1))
-            track.pan = try node.number("VOLPAN", 2)
-            track.mute = try node.number("MUTESOLO") != 0
-            track.solo = try node.number("MUTESOLO", 2) != 0
+            do { track.volume = limitedVolume(try node.number("VOLPAN", default: 1)) }
+            catch { track.volume = 1; warnings.insert("%@: invalid mixer setting ignored: %@", track.name, warnings.errorDescription(error)) }
+            do { track.pan = try node.number("VOLPAN", 2) }
+            catch { track.pan = 0; warnings.insert("%@: invalid mixer setting ignored: %@", track.name, warnings.errorDescription(error)) }
+            do { track.mute = try node.number("MUTESOLO") != 0 }
+            catch { track.mute = false; warnings.insert("%@: invalid mixer setting ignored: %@", track.name, warnings.errorDescription(error)) }
+            do { track.solo = try node.number("MUTESOLO", 2) != 0 }
+            catch { track.solo = false; warnings.insert("%@: invalid mixer setting ignored: %@", track.name, warnings.errorDescription(error)) }
             track.color = color(node.value("PEAKCOL"))
             track.parentTrackID = folders.last
             let special = specialKind(track.name)
@@ -499,21 +537,26 @@ public enum ReaperProjectImporter {
                 if special != .video { track.solo = false }
                 if special == .timecode { track.timecode = TimecodeSettings(); track.importedTimecodeItems = true; track.patch = OutputPatch.none }
             }
-            let delta = try node.integer("ISBUS", 2)
-            guard (-1000...1).contains(delta), delta >= -folders.count else { throw invalid("Invalid track folder structure.") }
-            if delta > 0 {
-                if special != nil { throw invalid("Uma pista especial não pode ser uma pasta de áudio no projeto de origem.") }
-                folders.append(track.id)
+            var delta = (try? node.integer("ISBUS", 2)) ?? 0
+            if !(-1000...1).contains(delta) || delta < -folders.count {
+                warnings.insert("%@: invalid folder structure was ignored.", track.name); delta = 0
             }
-            track.phaseInverted = try node.integer("IPHASE") != 0
+            if delta > 0 {
+                if special != nil { warnings.insert("%@: special-track folder membership was ignored.", track.name); delta = 0 }
+                else { folders.append(track.id) }
+            }
+            do { track.phaseInverted = try node.integer("IPHASE") != 0 }
+            catch { track.phaseInverted = false; warnings.insert("%@: invalid mixer setting ignored: %@", track.name, warnings.errorDescription(error)) }
             let importedFX = try importFX(node.child("FXCHAIN"), scope: track.name, resolve: resolveVST3, warnings: &warnings)
             track.fx = importedFX.settings
             if node.value("FX") == "0", let plugins = track.fx?.externalPlugins {
                 track.fx?.externalPlugins = plugins.map { var plugin = $0; plugin.bypassed = true; return plugin }
             }
-            track.automation = try importAutomation(node, fx: importedFX.envelopes, scope: track.name, warnings: &warnings)
+            do { track.automation = try importAutomation(node, fx: importedFX.envelopes, scope: track.name, warnings: &warnings) }
+            catch { warnings.insert("%@: automation ignored: %@", track.name, warnings.errorDescription(error)) }
             if !node.line("AUXRECV").isEmpty { warnings.insert(unsupported) }
             for item in node.children where item.header.first == "ITEM" {
+            do {
                 let start = try item.number("POSITION"), duration = try item.number("LENGTH")
                 guard duration > 0, (start + duration).isFinite else { throw invalid("Invalid item position or length.") }
                 if start < 0 { ignoredItems += 1; continue }
@@ -525,6 +568,7 @@ public enum ReaperProjectImporter {
                 let activeTake = takes.first { $0 !== item && ($0.header.contains("SEL") || $0.value("SEL") == "1") } ?? takes.first
                 let playAllTakes = try item.integer("ALLTAKES") != 0
                 for take in takes {
+            do {
                 var clip = AudioClip(id: UUID(), name: take.value("NAME") ?? item.value("NAME") ?? "Item", startTime: start, duration: duration)
                 if let special {
                     let source = take.child("SOURCE")
@@ -647,8 +691,14 @@ public enum ReaperProjectImporter {
                 }
                 clip.automation = takeAutomation
                 track.clips.append(clip)
-                }
-            }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.insert("REAPER take ignored: %@", warnings.errorDescription(error)) }
+}
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.insert("REAPER item ignored: %@", warnings.errorDescription(error)) }
+}
             if track.kind.isSingleLane {
                 // VS Hook projects can contain empty placeholders underneath their
                 // actual lyrics. They must not hide the text or create a second lane.
@@ -661,9 +711,13 @@ public enum ReaperProjectImporter {
             }
             song.tracks.append(track)
             if delta < 0 { folders.removeLast(-delta) }
-        }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.insert("REAPER track ignored: %@", warnings.errorDescription(error)) }
+}
         var regionStarts: [String: (Double, String, UInt32?)] = [:]
         for row in root.lines where row.first == "MARKER" {
+            do {
             guard row.count >= 5, let flags = Int(row[4]) else { throw invalid("Invalid marker.") }
             let position = try number(row[2]), title = row[3].isEmpty ? "Marker " + row[1] : row[3]
             let tint = color(row.count > 5 ? row[5] : nil)
@@ -681,8 +735,16 @@ public enum ReaperProjectImporter {
                 song.markers?.append(marker)
                 hook.sourceMarkers.append(.init(number: row[1], marker: marker))
             }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.insert("REAPER marker ignored: %@", warnings.errorDescription(error)) }
+}
+        if !regionStarts.isEmpty {
+            warnings.insert("Incomplete REAPER regions were retained as start markers.")
+            for (_, begin) in regionStarts where begin.0 >= 0 {
+                song.markers?.append(TimelineMarker(id: UUID(), name: String(begin.1.prefix(TimelineMarker.maximumNameLength)), position: begin.0, color: begin.2 ?? 0xC7AB40))
+            }
         }
-        guard regionStarts.isEmpty else { throw invalid("Incomplete region.") }
         song.parts.sort { $0.startTime == $1.startTime ? $0.endTime > $1.endTime : $0.startTime < $1.startTime }
         var accepted: [Part] = []
         for var region in song.parts {
@@ -736,6 +798,7 @@ public enum ReaperProjectImporter {
         if let tempo = root.child("TEMPOENVEX") {
             var initialTempo: TimelineMarker?
             for row in tempo.lines where row.first == "PT" {
+            do {
                 guard row.count >= 3 else { throw invalid("Invalid tempo point.") }
                 let position = try number(row[1]), bpm = try number(row[2])
                 if TimelineTempo.bpmRange.contains(bpm) {
@@ -746,13 +809,16 @@ public enum ReaperProjectImporter {
                     if position < 0 { initialTempo = marker } else { song.markers?.append(marker) }
                 } else { warnings.insert("Tempo points outside the CatLive tempo range were omitted; item positions in seconds are unchanged.") }
                 if row.count > 3 && row[3] != "1" { warnings.insert("REAPER tempo ramps were imported as discrete tempo points; item positions in seconds are unchanged.") }
-            }
+
+            } catch is CancellationError { throw CancellationError() }
+            catch { warnings.insert("REAPER tempo point ignored: %@", warnings.errorDescription(error)) }
+}
             if let initialTempo, song.markers?.contains(where: { $0.isTempo && $0.position == 0 }) != true {
                 song.markers?.append(initialTempo)
             }
         }
         // The initial meter is independent from later tempo/time-signature changes.
-        song.beatsPerBar = try root.integer("TEMPO", 2, default: 4); song.beatUnit = try root.integer("TEMPO", 3, default: 4)
+        song.beatsPerBar = song.meterBeats; song.beatUnit = song.meterUnit
         let contentEnd = max(song.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0,
                              song.parts.map(\.endTime).max() ?? 0, song.markers?.map(\.position).max() ?? 0)
         song.duration = max(1, contentEnd)
@@ -764,23 +830,26 @@ public enum ReaperProjectImporter {
         if ignoredItems > 0 { warnings.insert("%ld REAPER items before the project start were ignored.", ignoredItems) }
         project.orderSpecialTracks()
         try project.validate()
-        return ProjectMigration.Result(project: project, media: media.values.sorted { $0.relativePath < $1.relativePath }, warnings: warnings.values.sorted())
+        return ProjectMigration.Result(project: project, media: media.values.filter { entry in song.tracks.contains { track in track.clips.contains { $0.audioFile?.path == entry.relativePath } } }.sorted { $0.relativePath < $1.relativePath }, warnings: warnings.values.sorted())
     }
     /// RPP MIDI uses source quarter notes. Integrate the original tempo map
     /// before flattening into the imported free timeline, including linear ramps.
     private struct MIDITempoMap {
         struct Point { let time: Double; let bpm: Double; let linear: Bool; var beat: Double = 0 }
         let points: [Point]
-        init(_ root: Chunk) throws {
-            let initial = try root.number("TEMPO", default: 120)
+        init(_ root: Chunk, report: (Error) -> Void) throws {
+            let initial = (try? root.number("TEMPO", default: 120)) ?? 120
             guard initial > 0 else { throw invalid("Invalid MIDI project tempo.") }
             var values: [Point] = []
             for row in root.child("TEMPOENVEX")?.lines ?? [] where row.first == "PT" {
+                do {
                 guard row.count >= 3 else { throw invalid("Invalid tempo point.") }
                 let time = try number(row[1]), bpm = try number(row[2])
                 guard bpm > 0 else { throw invalid("Invalid MIDI tempo point.") }
                 values.append(Point(time: time, bpm: bpm, linear: row.count > 3 && row[3] == "0"))
-            }
+
+                } catch { report(error) }
+}
             values.insert(Point(time: min(0, values.map(\.time).min() ?? 0), bpm: initial, linear: false), at: 0)
             let sorted = values.enumerated().sorted { $0.element.time == $1.element.time ? $0.offset < $1.offset : $0.element.time < $1.element.time }
             var result: [Point] = []
