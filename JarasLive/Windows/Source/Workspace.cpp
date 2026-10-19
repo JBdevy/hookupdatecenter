@@ -3202,22 +3202,24 @@ void Workspace::activateProjectTab() {
     remoteHost->presentation = [this](int panel) -> var {
         if (!projectReady || loginPanel) return var();
         auto state = remotePresentation->snapshot(panel);
-        if (remoteProjectTabs) remote::put(state, "projectTabs", remoteProjectTabs());
+        if (remoteProjectTabs) put(state, "projectTabs", remoteProjectTabs());
         return state;
     };
-    remoteHost->perform = [this](const remote::Command &command) {
-        if (!projectReady || loginPanel || browserVisible) return false;
+    remoteHost->perform = [safe = SafePointer<Workspace>(this)](const remote::Command &command) {
+        if (!safe || !safe->projectReady || safe->loginPanel || safe->browserVisible) return false;
         if (command.action == "selectProjectTab") {
-            if (!selectRemoteProjectTab || remote::wireID(command.project) != remote::wireID(session.project().id)) return false;
+            if (!safe->selectRemoteProjectTab || remote::wireID(command.project) != remote::wireID(safe->session.project().id)) return false;
             // Activate after the current Remote callback returns: activation replaces
             // that callback while keeping the existing clients connected.
-            MessageManager::callAsync([safe = SafePointer<Workspace>(this), project = session.project().id, target = command.target] {
+            const auto project = safe->session.project().id;
+            const auto target = command.target;
+            MessageManager::callAsync([safe, project, target] {
                 if (safe && safe->session.project().id == project && safe->selectRemoteProjectTab)
                     safe->selectRemoteProjectTab(remote::wireID(target));
             });
             return true;
         }
-        return remotePresentation->apply(command);
+        return safe->remotePresentation->apply(command);
     };
     remoteHost->image = [this](const remote::Command &command) {
         return projectReady && !loginPanel ? remotePresentation->image(command) : remote::Bytes{};

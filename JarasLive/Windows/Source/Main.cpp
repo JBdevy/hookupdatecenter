@@ -1,4 +1,5 @@
 #include "Workspace.h"
+#include "RemoteProtocol.h"
 #include "StartupSplash.h"
 #include "ShowMode.h"
 #include "ProjectMigration.h"
@@ -431,10 +432,10 @@ class CatLiveApplication final : public JUCEApplication {
         workspace.remoteProjectTabs = [this] {
             Array<var> tabs;
             for (size_t index = 0; index < tabWorkspaces.size(); ++index) {
-                auto tab = remote::object();
-                remote::put(tab, "id", remote::wireID(tabWorkspaces[index]->remoteProjectTabID));
-                remote::put(tab, "name", tabSessions[index]->document.existsAsFile() ? tabSessions[index]->document.getFileNameWithoutExtension() : String::fromUTF8(tabSessions[index]->project().name.c_str()));
-                remote::put(tab, "selected", index == selectedTab);
+                auto tab = object();
+                put(tab, "id", remote::wireID(tabWorkspaces[index]->remoteProjectTabID));
+                put(tab, "name", tabSessions[index]->document.existsAsFile() ? tabSessions[index]->document.getFileNameWithoutExtension() : String::fromUTF8(tabSessions[index]->project().name.c_str()));
+                put(tab, "selected", index == selectedTab);
                 tabs.add(tab);
             }
             return var(tabs);
