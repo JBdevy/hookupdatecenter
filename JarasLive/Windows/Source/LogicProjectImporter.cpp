@@ -508,7 +508,7 @@ MigratedProject readLogicProject(const File &bundle) {
     for (auto &r : all)
         if (r.tag == "karT" && r.kind == 23 && r.body.count >= 57 && sequences.count(r.owner)) {
             auto *s = sequences[r.owner];
-            auto title = s->body.string(s->version >= 5 ? 16 : 52);
+            auto title = s->body.string((s->version == 3 || s->version >= 5) ? 16 : 52);
             if (title != "TRASH" && title != "Track Automation Root Folder" &&
                 title != "Track Alternatives" && title != "Global Harmonies" &&
                 !title.startsWith("*Automation"))
@@ -579,7 +579,7 @@ MigratedProject readLogicProject(const File &bundle) {
                     require(sequences.count(owner),
                             "Logic: MIDI region references an unknown sequence.");
                     auto &seq = *sequences[owner];
-                    size_t offset = seq.version >= 5 ? 16 : 52;
+                    size_t offset = (seq.version == 3 || seq.version >= 5) ? 16 : 52;
                     auto title = seq.body.string(offset);
                     size_t padded = ((size_t)seq.body.integer(offset, 2) + 1) & ~size_t(1);
                     double length = (double)seq.body.integer(offset + 62 + padded);

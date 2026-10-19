@@ -225,7 +225,7 @@ public enum LogicProjectImporter {
                 }
             case "qeSM":
                 if record.kind == 23 {
-                    sequences[record.owner] = try record.body.text(record.version >= 5 ? 16 : 52)
+                    sequences[record.owner] = try record.body.text((record.version == 3 || record.version >= 5) ? 16 : 52)
                     sequenceRecords[record.owner] = record
                 }
             default: break
@@ -300,7 +300,7 @@ public enum LogicProjectImporter {
                     // for copied regions whose legacy +8 link is zero.
                     let owner = try event.int(32) << 16
                     guard let sequence = sequenceRecords[owner] else { throw invalid("A MIDI region references an unknown sequence.") }
-                    let nameOffset = sequence.version >= 5 ? 16 : 52
+                    let nameOffset = (sequence.version == 3 || sequence.version >= 5) ? 16 : 52
                     let title = try sequence.body.text(nameOffset)
                     let alignedName = ((try sequence.body.int(nameOffset, 2)) + 1) & ~1
                     let length = Double(try sequence.body.int(nameOffset + 62 + alignedName))

@@ -413,6 +413,33 @@ final class LogicProjectImportTests: XCTestCase {
         try recovered.project.validate()
     }
 
+    func testVersionThreeSequenceUsesNameAtOffsetSixteen() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bundle = try fixture(directory)
+        let url = bundle.appendingPathComponent("Alternatives/000/ProjectData")
+        var data = try Data(contentsOf: url)
+        // The first record is the arrangement's qeSM. Version 3 stores
+        // its length-prefixed name at +16, unlike version 4's +52.
+        put(3, in: &data, at: 24 + 4, width: 2)
+        try data.write(to: url)
+        let result = try LogicProjectImporter.read(bundle)
+        XCTAssertEqual(result.project.songs[0].tracks.count, 2)
+        XCTAssertFalse(result.warnings.contains { $0.contains("Truncated Logic data") })
+        XCTAssertTrue(result.project.songs[0].tracks.flatMap(\.clips).contains { $0.audioFile != nil })
+    }
+
+    func testSelectedLocalLogicProjectWhenProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["CATLIVE_LOGIC_PROJECT"] else {
+            throw XCTSkip("Local Logic project not supplied")
+        }
+        let result = try LogicProjectImporter.read(URL(fileURLWithPath: path))
+        let song = result.project.songs[0]
+        XCTAssertFalse(song.tracks.isEmpty)
+        print("LOGIC_SELECTED tracks=\(song.tracks.count) clips=\(song.tracks.flatMap(\.clips).count)")
+        for warning in result.warnings { print("LOGIC_WARNING \(warning)") }
+    }
+
     func testRealProjectsWhenProvided() throws {
         guard let directory = ProcessInfo.processInfo.environment["JARAS_LOGIC_FIXTURES"] else { throw XCTSkip("Local Logic fixtures not supplied") }
         for (filename, trackCount, clipCount, markerCount) in [
