@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 source = Path('Apple/Shared/AppContainer.swift').read_text()
 helper = source[source.index('enum AppStartupPresentation'):source.index('@MainActor final class AppContainer')]
-Path(sys.argv[1]).write_text('import Foundation\n' + helper)
+Path(sys.argv[1]).write_text('import Foundation\nimport AppKit\n' + helper)
 PY
 swiftc -swift-version 5 -parse-as-library "$test_dir/StartupPresentation.swift" Tests/Apple/AppStartupPresentationTests.swift -o "$test_dir/test"
 "$test_dir/test"

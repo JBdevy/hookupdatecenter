@@ -8,8 +8,9 @@ from pathlib import Path
 import sys
 src=Path('Apple/Shared/AppContainer.swift').read_text()
 helper=src[src.index('enum AppStartupPresentation'):src.index('@MainActor final class AppContainer')]
-methods=src[src.index('    func start() async {'):src.rfind('\n}')]
+methods=src[src.index('    func start() async {'):src.index('\n}\n\n#if os(macOS)\n/// Controllers')]
 stubs='''import Foundation
+import AppKit
 @MainActor final class FakeAuth {
  var restores = 0, expiryChecks = 0
  func restore() async { restores += 1; try? await Task.sleep(nanoseconds: 60_000_000) }
@@ -29,7 +30,7 @@ final class Connectivity {
 }
 '''
 fixture='''@MainActor final class AppContainerFixture {
- var preview = false, starting = true
+ var preview = false, starting = true, tabContext = false
  var startupProgress = 0.1, startupStage = ""
  private var startupTask: Task<Void, Never>?
  let auth = FakeAuth(), accessConnectivity = Connectivity(), show = 0

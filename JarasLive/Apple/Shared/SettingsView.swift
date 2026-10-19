@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage("jaras.language") private var language = "en"
     @AppStorage(InterfaceScale.key) private var interfaceScale = 1.0
     #if os(macOS)
+    @AppStorage("jaras.startup.sound") private var startupSound = true
     @ObservedObject private var showMode = MacShowMode.shared
     #endif
     @ObservedObject private var audio = AudioDeviceSettings.shared
@@ -56,6 +57,11 @@ struct SettingsView: View {
                         Text("Interface scale").font(.jarasHeadline)
                         Picker("Interface scale", selection: Binding(get: { InterfaceScale.percent(interfaceScale) }, set: { interfaceScale = Double($0) / 100 })) {
                             ForEach(InterfaceScale.percentages, id: \.self) { percent in Text(verbatim: "\(percent)%").tag(percent) }
+                        }.labelsHidden().frame(width: 176)
+                        Text("Startup sound").font(.jarasHeadline)
+                        Picker("Startup sound", selection: $startupSound) {
+                            Text("Disabled").tag(false)
+                            Text("Enabled").tag(true)
                         }.labelsHidden().frame(width: 176)
                         Text("Show Mode").font(.jarasHeadline)
                         Picker("Show Mode", selection: Binding(get: { showMode.enabled }, set: { showMode.setEnabled($0) })) {

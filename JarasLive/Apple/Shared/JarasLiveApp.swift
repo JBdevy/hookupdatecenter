@@ -167,7 +167,10 @@ struct RootView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
                     }
-                } else { ProjectBrowserView(documents: documents) }
+                } else {
+                    ProjectBrowserView(documents: documents)
+                        .background(ProjectTitlebarContent { EmptyView() })
+                }
                 #endif
             }
             else if [.launching,.checkingSession,.checkingLicense,.checkingDevice].contains(auth.phase) {
@@ -361,35 +364,59 @@ struct ProjectMigrationNotice: View {
 struct UnauthorizedPreview: PreviewProvider { static var previews: some View { let container = try! AppContainer(preview: true); LoginView(auth: container.auth, backend: container.backend).frame(width: 1100, height: 720) } }
 
 struct StartupView: View {
+    static let panelWidth: CGFloat = 600
+    static let panelHeight: CGFloat = 280
     let progress: Double?
     let stage: String
     var transparent = false
-    @State private var pulse = false
     var body: some View {
         ZStack {
             if !transparent { JarasTheme.background.ignoresSafeArea() }
-            VStack(spacing: 22) {
+            HStack(spacing: 0) {
                 Image("CatLiveSplash").resizable().scaledToFit()
-                    .frame(width: 330, height: 330).accessibilityLabel("CatLive")
-                Group {
-                    if let progress {
-                        GeometryReader { geometry in
-                            Capsule().fill(JarasTheme.green.opacity(0.14))
-                            Capsule().fill(JarasTheme.green)
-                                .frame(width: geometry.size.width * min(1, max(0, progress)))
-                                .opacity(pulse ? 1 : 0.55)
-                                .shadow(color: JarasTheme.green.opacity(pulse ? 0.5 : 0.15), radius: pulse ? 5 : 2)
-                        }.frame(height: 5)
-                    } else {
-                        ProgressView().progressViewStyle(.linear).tint(JarasTheme.green)
+                    .padding(24)
+                    .frame(width: Self.panelWidth * 0.4, height: Self.panelHeight)
+                    .accessibilityLabel("CatLive")
+                Rectangle().fill(Color.white.opacity(0.12)).frame(width: 1)
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer(minLength: 0)
+                    HStack(spacing: 10) {
+                        HStack(alignment: .center, spacing: 2) {
+                            ForEach(Array([10.0, 20, 30, 38, 26, 18, 8].enumerated()), id: \.offset) { _, height in
+                                Capsule().frame(width: 3, height: height)
+                            }
+                        }.frame(width: 33, height: 38).accessibilityHidden(true)
+                        Text(verbatim: "CatLive").font(.jarasSystem(size: 54, weight: .bold))
+                            .lineLimit(1).minimumScaleFactor(0.8)
                     }
-                }.frame(width: 300)
+                    .foregroundStyle(LinearGradient(colors: [Color(hex: 0x72FFB3), Color(hex: 0x00CF64)],
+                                                    startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Text(verbatim: "Version " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
+                        .font(.jarasSystem(size: 12)).foregroundStyle(JarasTheme.secondary).padding(.top, 8)
+                    Spacer(minLength: 24)
+                    Group {
+                        if let progress {
+                            GeometryReader { geometry in
+                                Capsule().fill(JarasTheme.green.opacity(0.14))
+                                Capsule().fill(JarasTheme.green)
+                                    .frame(width: geometry.size.width * min(1, max(0, progress)))
+                            }.frame(height: 5)
+                        } else {
+                            ProgressView().progressViewStyle(.linear).tint(JarasTheme.green)
+                        }
+                    }
                     .accessibilityLabel(LocalizedStringKey(stage))
                     .accessibilityValue(progress.map { "\(Int($0 * 100))%" } ?? "")
-                Text(LocalizedStringKey(stage)).font(.jarasSystem(size: 12))
-                    .foregroundStyle(JarasTheme.secondary)
+                    Text(LocalizedStringKey(stage)).font(.jarasSystem(size: 12))
+                        .foregroundStyle(JarasTheme.secondary).padding(.top, 10)
+                    Text(verbatim: "© reivsoficial").font(.jarasSystem(size: 10))
+                        .foregroundStyle(JarasTheme.secondary).padding(.top, 4)
+                }.padding(24).frame(width: Self.panelWidth * 0.6 - 1, height: Self.panelHeight)
             }
-            .onAppear { withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) { pulse = true } }
+            .frame(width: Self.panelWidth, height: Self.panelHeight)
+            .background(JarasTheme.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
         }
     }
 }
@@ -424,10 +451,10 @@ private final class FloatingStartupAnchor: NSView {
             window.alphaValue = 0
             hidMain = true
             if panel == nil {
-                let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 430), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+                let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: StartupView.panelWidth, height: StartupView.panelHeight), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
                 panel.isOpaque = false
                 panel.backgroundColor = .clear
-                panel.hasShadow = false
+                panel.hasShadow = true
                 panel.level = .floating
                 panel.isReleasedWhenClosed = false
                 panel.ignoresMouseEvents = true
@@ -437,6 +464,7 @@ private final class FloatingStartupAnchor: NSView {
                 self.panel = panel
                 panel.center()
                 panel.orderFrontRegardless()
+                DispatchQueue.main.async { AppStartupPresentation.playSoundOnce() }
             }
             hosting?.rootView = splashContent
         } else { finish() }
@@ -477,13 +505,13 @@ private final class FloatingStartupAnchor: NSView {
     func begin() {
         remaining = 1
         hiddenWindows = NSApp.windows.filter { $0.isVisible }
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 430), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: StartupView.panelWidth, height: StartupView.panelHeight), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true
         panel.level = .floating; panel.isReleasedWhenClosed = false; panel.ignoresMouseEvents = true
         panel.contentView = NSHostingView(rootView: ClosingLogoView(state: self)
             .environment(\.locale, Locale(identifier: UserDefaults.standard.string(forKey: "jaras.language") ?? "en")))
         if let screen = NSApp.mainWindow?.screen {
-            panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - 195, y: screen.visibleFrame.midY - 215))
+            panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - StartupView.panelWidth / 2, y: screen.visibleFrame.midY - StartupView.panelHeight / 2))
         } else { panel.center() }
         self.panel = panel
         hiddenWindows.forEach { $0.orderOut(nil) }

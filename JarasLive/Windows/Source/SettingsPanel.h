@@ -328,7 +328,7 @@ class SettingsPanel final : public Component, private Timer {
         auto &title = label(tabs[index]->getButtonText(), 20, 30, true);
         title.setFont(theme::font(18, true));
         if (index == 0) {
-            contentHeight = 420;
+            contentHeight = 510;
             label(String::fromUTF8("Escala da interface"), 152, 26, true);
             StringArray scales;
             for (int percent = 60; percent <= 120; percent += 10) scales.add(String(percent) + "%");
@@ -345,6 +345,12 @@ class SettingsPanel final : public Component, private Timer {
             showModeStatus = &label({}, 366, 38, false, theme::secondary);
             showModeStatus->setFont(theme::font(11));
             showMode->refresh(); timerCallback();
+            label(localization::translate("Startup sound"), 410, 26, true);
+            choice("startupSound", {"Disabled", "Enabled"}, (bool)preferences.value("jaras.startup.sound", true) ? 2 : 1,
+                   24, 446, 176, [this](int id) {
+                       auto result = preferences.set("jaras.startup.sound", id == 2);
+                       if (result.failed()) error(result.getErrorMessage());
+                   });
             label("Idioma", 66, 26, true);
             for (int language = 0; language < 2; ++language) {
                 auto &b = button(language == 0 ? "English" : String::fromUTF8("Português"),

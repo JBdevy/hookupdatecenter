@@ -49,6 +49,7 @@ juce_add_binary_data(CatLiveAssets SOURCES
     Assets/Localization/StageDefaults.json Assets/Localization/StageFields.json
     Assets/Localization/InstrumentCatalog.json Assets/Teleprompter.html
     "${CATLIVEROOT}/Apple/Resources/Click.mp3"
+    "${CATLIVEROOT}/Apple/Resources/StartupSound.wav"
     "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Regular.ttf"
     "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Medium.ttf"
     "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-SemiBold.ttf"

@@ -10,6 +10,19 @@ import AppKit
 import UIKit
 #endif
 enum AppStartupPresentation {
+    #if os(macOS)
+    @MainActor private static var startupSound: NSSound?
+    @MainActor private static var soundPlayed = false
+    @MainActor static func playSoundOnce() {
+        guard !soundPlayed else { return }
+        soundPlayed = true
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: "jaras.startup.sound") == nil || defaults.bool(forKey: "jaras.startup.sound"),
+              let url = Bundle.main.url(forResource: "StartupSound", withExtension: "wav") else { return }
+        startupSound = NSSound(contentsOf: url, byReference: false)
+        startupSound?.play()
+    }
+    #endif
     static let minimumDuration = 3.0
     static func wait(since start: TimeInterval) async throws {
         try Task.checkCancellation()

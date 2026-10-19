@@ -1429,17 +1429,17 @@ int runTests(const File &directory) {
                "Original logo decodes from executable");
         StartupSplash splash(true);
         splash.setVisible(false);
-        Image output(Image::ARGB, 390, 430, true, SoftwareImageType());
+        Image output(Image::ARGB, splash.getWidth(), splash.getHeight(), true, SoftwareImageType());
         Graphics graphics(output);
         // A transparent native peer may enter paint() with a transparent current brush.
         graphics.setOpacity(0.f);
         splash.paint(graphics);
         int visiblePixels = 0;
-        for (int y = 8; y < 338; ++y)
-            for (int x = 30; x < 360; ++x)
-                if (output.getPixelAt(x, y).getAlpha() > 100)
+        for (int y = 36; y < 200; ++y)
+            for (int x = 36; x < 221; ++x)
+                if (output.getPixelAt(x, y).getAlpha() > 100 && output.getPixelAt(x, y) != theme::panel)
                     ++visiblePixels;
-        expect(visiblePixels > 10000, "Closing panel contains visible logo artwork");
+        expect(visiblePixels > 3000, "Closing panel contains visible logo artwork distinct from its background");
         FileOutputStream stream(directory.getChildFile("closing-logo.png"));
         stream.setPosition(0);
         stream.truncate();

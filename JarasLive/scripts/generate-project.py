@@ -19,7 +19,8 @@ localization=add('localization',f'isa = PBXVariantGroup; children = {arr(languag
 icon=add('composerIcon','isa = PBXFileReference; lastKnownFileType = folder.icon; path = Apple/CatLiveIcon.icon; sourceTree = SOURCE_ROOT;')
 assets=add('assets','isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Apple/Assets.xcassets; sourceTree = SOURCE_ROOT;')
 clickSound=add('clickSound', 'isa = PBXFileReference; lastKnownFileType = audio.mp3; path = Apple/Resources/Click.mp3; sourceTree = SOURCE_ROOT;')
-legalRefs=[clickSound]
+startupSound=add('startupSound', 'isa = PBXFileReference; lastKnownFileType = audio.wav; path = Apple/Resources/StartupSound.wav; sourceTree = SOURCE_ROOT;')
+legalRefs=[clickSound, startupSound]
 for name in ['COPYING','SOURCE.txt','lame-3.100-source.tar.gz']:
  legalRefs.append(add('lame:'+name, f'isa = PBXFileReference; lastKnownFileType = file; path = {q("Core/ThirdParty/Lame/"+name)}; sourceTree = SOURCE_ROOT;'))
 legalRefs.append(add("tinySoundFontLicense", 'isa = PBXFileReference; lastKnownFileType = text; path = "Core/ThirdParty/TinySoundFont/TinySoundFont-LICENSE.txt"; sourceTree = SOURCE_ROOT;'))
