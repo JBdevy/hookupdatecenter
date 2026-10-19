@@ -25,8 +25,8 @@ const path = require('path')
 const root = path.resolve(__dirname, '..')
 
 const FILES = [
-  'app-shell.css', 'chat-app.css', 'recados-app.css', 'stylediretor-app.css',
-  'transfer-hook-app.css', 'vsdiretor.js', 'app-shell.js', 'chat.js',
+  'app-shell.css', 'recados-app.css', 'stylediretor-app.css',
+  'transfer-hook-app.css', 'vsdiretor.js', 'app-shell.js',
   'recados.js', 'transfer-hook.js',
 ]
 

@@ -6,13 +6,7 @@ const VSHOOK_MANUAL_IP_TIMEOUT_MS = 2800
 const VSHOOK_BRIDGE_BROWSER_TIMEOUT_MS = 4500
 const VSHOOK_SCAN_BATCH_SIZE = 72
 const appRoot = document.getElementById('app')
-const VSHOOK_ASSET_VERSION = '1-0-2-tuner-parts-v1'
-const VSHOOK_CHAT_BOOTSTRAP_KEY = 'vshook_chat_bootstrap_key'
-const VSHOOK_CHAT_MOBILE_SESSION_KEY = 'vshook_chat_mobile_session'
-const VSHOOK_CHAT_NOTIFICATION_TARGET_KEY = 'vshook_chat_notification_target'
-const VSHOOK_CHAT_PUSH_TOKEN_KEY = 'vshook_chat_push_token'
-const VSHOOK_CHAT_PUSH_MUTED_KEY = 'vshook_chat_push_muted'
-const VSHOOK_CHAT_BACKEND_URL = 'https://hookupdate7.up.railway.app'
+const VSHOOK_ASSET_VERSION = '1-0-2-no-chat-v1'
 let vshookDiscoveredProjects = []
 let vshookBridgeBrowserMode = false
 let vshookDiscoveryController = null
@@ -50,455 +44,6 @@ function isCurrentDiscovery(signal) {
 window.addEventListener('pagehide', cancelDiscovery)
 window.addEventListener('beforeunload', cancelDiscovery)
 
-function captureChatBootstrapKey() {
-  try {
-    const url = new URL(window.location.href)
-    const bootstrapKey = String(url.searchParams.get('chatKey') || '').trim()
-    if (/^[a-f0-9]{64}$/i.test(bootstrapKey)) {
-      localStorage.setItem(VSHOOK_CHAT_BOOTSTRAP_KEY, bootstrapKey.toLowerCase())
-      url.searchParams.delete('chatKey')
-      window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
-    }
-  } catch (error) {}
-}
-
-function getStoredChatMobileSession() {
-  try {
-    const session = JSON.parse(localStorage.getItem(VSHOOK_CHAT_MOBILE_SESSION_KEY) || 'null')
-    if (!session || !String(session.accessToken || '').startsWith('vshcm_') || !/^https?:\/\//i.test(String(session.backendUrl || ''))) return null
-    if (session.expiresAt && Date.parse(session.expiresAt) <= Date.now()) {
-      localStorage.removeItem(VSHOOK_CHAT_MOBILE_SESSION_KEY)
-      return null
-    }
-    return session
-  } catch (error) {
-    return null
-  }
-}
-
-async function bootstrapChatMobileSessionFromQr() {
-  if (getStoredChatMobileSession()) return true
-  let bootstrapKey = ''
-  try { bootstrapKey = String(localStorage.getItem(VSHOOK_CHAT_BOOTSTRAP_KEY) || '').trim() }
-  catch (error) {}
-  if (!/^[a-f0-9]{64}$/i.test(bootstrapKey)) return false
-
-  const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), 20000)
-  try {
-    const response = await fetch(`${window.location.origin}/chat/bootstrap`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bootstrapKey }),
-      cache: 'no-store',
-      signal: controller.signal,
-    })
-    const result = await response.json().catch(() => ({}))
-    const created = result?.mobileSession
-    if (!response.ok || !created?.accessToken || !created?.backendUrl) return false
-    localStorage.setItem(VSHOOK_CHAT_MOBILE_SESSION_KEY, JSON.stringify({
-      accessToken: String(created.accessToken),
-      backendUrl: String(created.backendUrl).replace(/\/+$/, ''),
-      expiresAt: String(created.expiresAt || ''),
-      bridgeBaseUrl: String(window.location.origin || '').replace(/\/+$/, ''),
-    }))
-    try { window.dispatchEvent(new CustomEvent('vshook-chat-session-changed', { detail: created })) } catch (error) {}
-    localStorage.removeItem(VSHOOK_CHAT_BOOTSTRAP_KEY)
-    return true
-  } catch (error) {
-    return false
-  } finally {
-    window.clearTimeout(timer)
-  }
-}
-
-function hasStoredChatBootstrapKey() {
-  try { return /^[a-f0-9]{64}$/i.test(String(localStorage.getItem(VSHOOK_CHAT_BOOTSTRAP_KEY) || '').trim()) }
-  catch (error) { return false }
-}
-
-function renderStoredChatButton() {
-  if (getStoredChatMobileSession()) return '<button class="vshook-mode-button" id="openStoredChatBtn">Abrir Chat Hook pela internet</button>'
-  if (hasStoredChatBootstrapKey()) return '<button class="vshook-mode-button" id="openStoredChatBtn">Abrir Chat Hook</button>'
-  return '<button class="vshook-mode-button" id="openStoredChatBtn">Entrar no Chat Hook</button>'
-}
-
-function enterStoredChat() {
-  const session = getStoredChatMobileSession()
-  if (!session && !hasStoredChatBootstrapKey()) return false
-  if (session) setupNativeChatPushNotifications().catch(() => false)
-  const bridgeBaseUrl = String(session?.bridgeBaseUrl || window.location.origin || '').replace(/\/+$/, '')
-  enterApp({
-    id: 'chat-hook-internet',
-    projectName: 'Chat Hook',
-    directorUrl: bridgeBaseUrl,
-    musiciansUrl: bridgeBaseUrl,
-    projectTabIndex: 0,
-  }, 'chat', { skipProjectSwitch: true })
-  return true
-}
-
-function markChatNotificationTarget() {
-  try { localStorage.setItem(VSHOOK_CHAT_NOTIFICATION_TARGET_KEY, '1') } catch (error) {}
-}
-
-function consumeChatNotificationTarget() {
-  try {
-    const pending = localStorage.getItem(VSHOOK_CHAT_NOTIFICATION_TARGET_KEY) === '1'
-    if (pending) localStorage.removeItem(VSHOOK_CHAT_NOTIFICATION_TARGET_KEY)
-    return pending
-  } catch (error) {
-    return false
-  }
-}
-
-function openChatFromNativeNotification() {
-  markChatNotificationTarget()
-  if (getStoredChatMobileSession() && enterStoredChat()) {
-    try { localStorage.removeItem(VSHOOK_CHAT_NOTIFICATION_TARGET_KEY) } catch (error) {}
-  }
-}
-
-let vshookChatPushListenersReady = false
-let vshookChatPushTokenRotationRunning = false
-let vshookChatPushTokenRotationAttempts = 0
-
-function isChatPushMuted() {
-  try { return localStorage.getItem(VSHOOK_CHAT_PUSH_MUTED_KEY) === '1' }
-  catch (error) { return false }
-}
-
-async function postChatPushUnregister(session, pushToken) {
-  if (!session?.accessToken || !session?.backendUrl || !pushToken) return false
-  const response = await fetch(`${String(session.backendUrl).replace(/\/+$/, '')}/api/chat/push/unregister`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chatMobileToken: session.accessToken, pushToken }),
-    cache: 'no-store',
-  })
-  const result = await response.json().catch(() => ({}))
-  if (!response.ok || result.ok === false) throw new Error(result.error || 'Não foi possível silenciar as notificações do Chat Hook.')
-  return true
-}
-
-async function revokeChatMobileSession(session) {
-  if (!session?.accessToken || !session?.backendUrl) return false
-  try {
-    await fetch(`${String(session.backendUrl).replace(/\/+$/, '')}/api/chat/mobile/logout`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatMobileToken: session.accessToken }),
-      cache: 'no-store',
-    })
-    return true
-  } catch (error) {
-    return false
-  }
-}
-
-async function reportChatPushDiagnostic(session, stage, detail = '') {
-  if (!session?.accessToken || !session?.backendUrl) return false
-  try {
-    await fetch(`${String(session.backendUrl).replace(/\/+$/, '')}/api/chat/push/diagnostic`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chatMobileToken: session.accessToken,
-        platform: String(window.Capacitor?.getPlatform?.() || '').toLowerCase(),
-        stage: String(stage || '').slice(0, 80),
-        detail: String(detail || '').slice(0, 500),
-      }),
-      cache: 'no-store',
-    })
-    return true
-  } catch (error) {
-    return false
-  }
-}
-
-function publishChatPushStatus(code, message) {
-  const status = { code: String(code || ''), message: String(message || '') }
-  window.vshookChatPushStatus = status
-  try { window.dispatchEvent(new CustomEvent('vshook-chat-push-status', { detail: status })) }
-  catch (error) {}
-}
-
-async function postChatPushToken(session, pushToken, platform, firebaseProjectId = '') {
-  if (!session?.accessToken || !session?.backendUrl || !pushToken) return false
-  if (isChatPushMuted()) {
-    await postChatPushUnregister(session, pushToken)
-    return false
-  }
-  const response = await fetch(`${String(session.backendUrl).replace(/\/+$/, '')}/api/chat/push/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chatMobileToken: session.accessToken,
-      pushToken,
-      platform,
-      firebaseProjectId: String(firebaseProjectId || '').trim(),
-    }),
-    cache: 'no-store',
-  })
-  const result = await response.json().catch(() => ({}))
-  if (!response.ok || result.ok === false) {
-    const error = new Error(result.error || 'Não foi possível ativar as notificações do Chat Hook.')
-    error.rotatePushToken = result.rotatePushToken === true
-    throw error
-  }
-  try { localStorage.setItem(VSHOOK_CHAT_PUSH_TOKEN_KEY, pushToken) } catch (error) {}
-  vshookChatPushTokenRotationAttempts = 0
-  return true
-}
-
-async function getNativeFirebaseProjectId(platform) {
-  if (platform !== 'android') return ''
-  try {
-    let nativePlugin = window.Capacitor?.Plugins?.VSHookLocalNetwork || null
-    if (!nativePlugin && typeof window.Capacitor?.registerPlugin === 'function') {
-      nativePlugin = window.Capacitor.registerPlugin('VSHookLocalNetwork')
-    }
-    if (typeof nativePlugin?.getFirebaseConfiguration !== 'function') return ''
-    const configuration = await nativePlugin.getFirebaseConfiguration()
-    return String(configuration?.projectId || '').trim()
-  } catch (error) {
-    console.warn('Não foi possível identificar o projeto Firebase do aplicativo', error)
-    return ''
-  }
-}
-
-async function rotateNativeChatPushToken(PushNotifications, rejectedToken, platform) {
-  if (vshookChatPushTokenRotationRunning || vshookChatPushTokenRotationAttempts >= 2 || !PushNotifications) return false
-  vshookChatPushTokenRotationRunning = true
-  vshookChatPushTokenRotationAttempts += 1
-  try {
-    try { localStorage.removeItem(VSHOOK_CHAT_PUSH_TOKEN_KEY) } catch (error) {}
-    if (platform === 'android') {
-      let nativePlugin = window.Capacitor?.Plugins?.VSHookLocalNetwork || null
-      if (!nativePlugin && typeof window.Capacitor?.registerPlugin === 'function') {
-        nativePlugin = window.Capacitor.registerPlugin('VSHookLocalNetwork')
-      }
-      if (typeof nativePlugin?.renewFirebasePushToken !== 'function') {
-        throw new Error('Renovação nativa do token Firebase indisponível.')
-      }
-      const renewed = await nativePlugin.renewFirebasePushToken()
-      const newToken = String(renewed?.token || '').trim()
-      if (!newToken || newToken === String(rejectedToken || '').trim()) {
-        throw new Error('O Firebase não substituiu o token recusado.')
-      }
-      const currentSession = getStoredChatMobileSession()
-      await postChatPushToken(currentSession, newToken, platform, await getNativeFirebaseProjectId(platform))
-      return true
-    }
-    if (typeof PushNotifications.unregister === 'function') {
-      await PushNotifications.unregister()
-    }
-    await PushNotifications.register()
-    return true
-  } catch (error) {
-    console.warn('Não foi possível renovar o token do Chat Hook', error)
-    return false
-  } finally {
-    vshookChatPushTokenRotationRunning = false
-  }
-}
-
-async function setupNativeChatPushNotifications() {
-  if (!isVshookInstalledNativeApp()) return false
-  const session = getStoredChatMobileSession()
-  if (!session) return false
-  if (isChatPushMuted()) {
-    publishChatPushStatus('muted', 'Notificações push silenciadas neste aparelho.')
-    reportChatPushDiagnostic(session, 'muted').catch(() => false)
-    let storedToken = ''
-    try { storedToken = String(localStorage.getItem(VSHOOK_CHAT_PUSH_TOKEN_KEY) || '') }
-    catch (error) {}
-    if (storedToken) await postChatPushUnregister(session, storedToken).catch(() => false)
-    return false
-  }
-  const PushNotifications = window.Capacitor?.Plugins?.PushNotifications
-  if (!PushNotifications) {
-    publishChatPushStatus('plugin_unavailable', 'Este aplicativo foi compilado sem o módulo de notificações push.')
-    reportChatPushDiagnostic(session, 'plugin_unavailable').catch(() => false)
-    return false
-  }
-  const platform = String(window.Capacitor?.getPlatform?.() || '').toLowerCase()
-
-  if (!vshookChatPushListenersReady) {
-    vshookChatPushListenersReady = true
-    await PushNotifications.addListener('registration', async (token) => {
-      const currentSession = getStoredChatMobileSession()
-      const receivedToken = String(token?.value || '')
-      const firebaseProjectId = await getNativeFirebaseProjectId(platform)
-      postChatPushToken(currentSession, receivedToken, platform, firebaseProjectId).catch((error) => {
-        if (error?.rotatePushToken === true) rotateNativeChatPushToken(PushNotifications, receivedToken, platform).catch(() => false)
-        else {
-          publishChatPushStatus('registration_rejected', error?.message || 'O servidor recusou o token de notificação.')
-          reportChatPushDiagnostic(currentSession, 'registration_rejected', error?.message || '').catch(() => false)
-          console.warn('Não foi possível registrar o token do Chat Hook', error)
-        }
-      }).then((registered) => {
-        if (registered === true) publishChatPushStatus('registered', 'Notificações push ativadas neste aparelho.')
-      })
-    })
-    await PushNotifications.addListener('registrationError', (error) => {
-      const currentSession = getStoredChatMobileSession()
-      const detail = error?.error || error?.message || JSON.stringify(error || {})
-      publishChatPushStatus('registration_error', `Falha ao registrar notificações: ${detail || 'erro desconhecido'}`)
-      reportChatPushDiagnostic(currentSession, 'registration_error', detail).catch(() => false)
-      console.warn('Chat Hook push registration error', error)
-    })
-    await PushNotifications.addListener('pushNotificationActionPerformed', () => {
-      openChatFromNativeNotification()
-    })
-  }
-
-  try {
-    if (platform === 'android' && typeof PushNotifications.createChannel === 'function') {
-      await PushNotifications.createChannel({
-        id: 'chat_hook_messages',
-        name: 'Mensagens do Chat Hook',
-        description: 'Novas mensagens recebidas no Chat Hook',
-        importance: 5,
-        visibility: 1,
-        vibration: true,
-        sound: 'default',
-      })
-    }
-    let permission = await PushNotifications.checkPermissions()
-    if (permission?.receive !== 'granted') {
-      permission = await PushNotifications.requestPermissions()
-    }
-    if (permission?.receive !== 'granted') {
-      const permissionState = String(permission?.receive || 'unknown')
-      publishChatPushStatus('permission_denied', 'Notificações desativadas no Android. Ative a permissão nas configurações do aplicativo.')
-      reportChatPushDiagnostic(session, 'permission_denied', permissionState).catch(() => false)
-      return false
-    }
-    await PushNotifications.register()
-    publishChatPushStatus('register_requested', 'Ativando notificações push...')
-    reportChatPushDiagnostic(session, 'register_requested', platform).catch(() => false)
-    return true
-  } catch (error) {
-    publishChatPushStatus('setup_error', `Não foi possível ativar notificações: ${error?.message || 'erro desconhecido'}`)
-    reportChatPushDiagnostic(session, 'setup_error', error?.message || '').catch(() => false)
-    console.warn('Não foi possível ativar notificações do Chat Hook', error)
-    return false
-  }
-}
-
-window.vshookSetupNativeChatPushNotifications = setupNativeChatPushNotifications
-window.vshookIsChatPushMuted = isChatPushMuted
-window.vshookSetChatPushMuted = async function (muted) {
-  const shouldMute = muted === true
-  try {
-    if (shouldMute) localStorage.setItem(VSHOOK_CHAT_PUSH_MUTED_KEY, '1')
-    else localStorage.removeItem(VSHOOK_CHAT_PUSH_MUTED_KEY)
-  } catch (error) {}
-
-  const session = getStoredChatMobileSession()
-  let storedToken = ''
-  try { storedToken = String(localStorage.getItem(VSHOOK_CHAT_PUSH_TOKEN_KEY) || '') }
-  catch (error) {}
-
-  if (shouldMute) {
-    if (!session || !storedToken) return { muted: true, synced: true }
-    try {
-      await postChatPushUnregister(session, storedToken)
-      return { muted: true, synced: true }
-    } catch (error) {
-      return { muted: true, synced: false, error: error.message }
-    }
-  }
-
-  try {
-    const platform = String(window.Capacitor?.getPlatform?.() || '').toLowerCase()
-    if (session && storedToken && (platform === 'android' || platform === 'ios')) {
-      try {
-        await postChatPushToken(session, storedToken, platform, await getNativeFirebaseProjectId(platform))
-      } catch (error) {
-        if (error?.rotatePushToken !== true) throw error
-        const PushNotifications = window.Capacitor?.Plugins?.PushNotifications
-        await rotateNativeChatPushToken(PushNotifications, storedToken, platform)
-      }
-    }
-    await setupNativeChatPushNotifications()
-    return { muted: false, synced: true }
-  } catch (error) {
-    return { muted: false, synced: false, error: error.message }
-  }
-}
-
-window.vshookLogoutChat = async function () {
-  const session = getStoredChatMobileSession()
-  let storedToken = ''
-  try { storedToken = String(localStorage.getItem(VSHOOK_CHAT_PUSH_TOKEN_KEY) || '') } catch (error) {}
-  if (session && storedToken) {
-    try { await postChatPushUnregister(session, storedToken) } catch (error) {}
-  }
-  await revokeChatMobileSession(session)
-  try {
-    localStorage.removeItem(VSHOOK_CHAT_MOBILE_SESSION_KEY)
-    localStorage.removeItem(VSHOOK_CHAT_BOOTSTRAP_KEY)
-  } catch (error) {}
-  try { window.dispatchEvent(new CustomEvent('vshook-chat-session-changed', { detail: null })) } catch (error) {}
-  return true
-}
-
-window.addEventListener('online', () => {
-  setupNativeChatPushNotifications().catch(() => false)
-})
-
-function attachStoredChatHandler() {
-  document.getElementById('openStoredChatBtn')?.addEventListener('click', () => {
-    if (getStoredChatMobileSession() || hasStoredChatBootstrapKey()) enterStoredChat()
-    else renderChatLogin()
-  })
-}
-
-function renderChatLogin() {
-  setShell(`
-    ${getLogoHtml()}
-    <h1 class="vshook-shell-title">Entrar no Chat Hook</h1>
-    <p class="vshook-shell-subtitle">Use o mesmo e-mail informado na compra do VS Hook.</p>
-    <form id="chatLoginForm" class="vshook-login-form">
-      <input id="chatLoginEmail" class="vshook-manual-ip-input" type="email" autocomplete="email" placeholder="E-mail da compra" required />
-      <div id="chatLoginStatus" class="vshook-shell-status"></div>
-      <button class="vshook-mode-button" type="submit">Entrar</button>
-    </form>
-    <button class="vshook-back-button" id="chatLoginBackBtn" type="button">Voltar</button>
-  `)
-  document.getElementById('chatLoginBackBtn')?.addEventListener('click', () => renderModeFirst(vshookDiscoveredProjects))
-  document.getElementById('chatLoginForm')?.addEventListener('submit', async (event) => {
-    event.preventDefault()
-    const email = String(document.getElementById('chatLoginEmail')?.value || '').trim().toLowerCase()
-    const status = document.getElementById('chatLoginStatus')
-    const button = event.currentTarget.querySelector('button[type="submit"]')
-    if (!email) return
-    button.disabled = true
-    if (status) status.textContent = 'Validando e-mail...'
-    try {
-      const response = await fetch(`${VSHOOK_CHAT_BACKEND_URL}/api/chat/mobile/session`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, mobileLogin: true }), cache: 'no-store'
-      })
-      const result = await response.json().catch(() => ({}))
-      const created = result?.mobileSession
-      if (!response.ok || !created?.accessToken) throw new Error(result?.error || 'E-mail não encontrado ou licença inativa.')
-      localStorage.setItem(VSHOOK_CHAT_MOBILE_SESSION_KEY, JSON.stringify({
-        accessToken: String(created.accessToken), backendUrl: VSHOOK_CHAT_BACKEND_URL,
-        expiresAt: String(created.expiresAt || ''), bridgeBaseUrl: VSHOOK_CHAT_BACKEND_URL
-      }))
-      try { window.dispatchEvent(new CustomEvent('vshook-chat-session-changed', { detail: created })) } catch (error) {}
-      enterStoredChat()
-    } catch (error) {
-      if (status) status.textContent = error.message || 'Não foi possível entrar no Chat Hook.'
-    } finally {
-      button.disabled = false
-    }
-  })
-}
-
 function renderStandaloneTransferHookButton() {
   return '<button class="vshook-mode-button" id="openStandaloneTransferHookBtn">Abrir Drop Hook</button>'
 }
@@ -526,7 +71,6 @@ function attachStandaloneTransferHookHandler() {
   document.getElementById('openStandaloneTransferHookBtn')?.addEventListener('click', enterStandaloneTransferHook)
 }
 
-captureChatBootstrapKey()
 
 function normalizeDirectorDeviceMode(value) {
   return String(value || '').toLowerCase() === 'tablet' ? 'tablet' : 'phone'
@@ -884,11 +428,9 @@ function renderSearching() {
     <p class="vshook-shell-subtitle">Procurando sessões VS Hook disponíveis na rede Wi‑Fi...</p>
     <div class="vshook-search-spinner" role="status" aria-label="Procurando"></div>
     <p class="vshook-shell-status">Abra o projeto no REAPER. A busca usa o Wi‑Fi atual e continua em segundo plano. Se preferir, digite o IP do computador.</p>
-    ${renderStoredChatButton()}
     ${renderStandaloneTransferHookButton()}
     ${renderManualIpBox()}
   `)
-  attachStoredChatHandler()
   attachStandaloneTransferHookHandler()
   attachManualIpHandler()
 }
@@ -899,11 +441,9 @@ function renderNoProjects() {
     <h1 class="vshook-shell-title">VS Hook</h1>
     <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
     <p class="vshook-shell-status">Abra o projeto no REAPER e toque em Procurar. O Drop Hook funciona somente com a Hook Center aberta.</p>
-    ${renderStoredChatButton()}
     ${renderStandaloneTransferHookButton()}
     ${renderManualIpBox()}
   `)
-  attachStoredChatHandler()
   attachStandaloneTransferHookHandler()
   attachManualIpHandler()
 }
@@ -924,7 +464,6 @@ function renderModeFirst(projects) {
       <button class="vshook-mode-button" id="chooseDirectorBtn">Entrar como Diretor</button>
       <button class="vshook-mode-button" id="chooseMusicianBtn">Entrar como Músico</button>
       <button class="vshook-mode-button" id="chooseRecadosBtn">Entrar como Recados</button>
-      <button class="vshook-mode-button" id="chooseChatHookBtn">Entrar no Chat Hook</button>
       <button class="vshook-mode-button" id="chooseTransferHookBtn">Entrar no Drop Hook</button>
     </div>
     <div class="vshook-app-version">Versão 1.0.2 app</div>
@@ -942,11 +481,6 @@ function renderModeFirst(projects) {
   document.getElementById('chooseRecadosBtn')?.addEventListener('click', () => {
     const selected = getDefaultMusicianProject(vshookDiscoveredProjects)
     if (selected) enterApp(selected, 'recados', { skipProjectSwitch: true })
-  })
-
-  document.getElementById('chooseChatHookBtn')?.addEventListener('click', () => {
-    if (getStoredChatMobileSession() || hasStoredChatBootstrapKey()) enterStoredChat()
-    else renderChatLogin()
   })
 
   document.getElementById('chooseTransferHookBtn')?.addEventListener('click', () => {
@@ -1090,9 +624,7 @@ function loadModeStyles(mode) {
   document.querySelectorAll('[data-vshook-mode-style]').forEach((el) => el.remove())
   const cssFile = mode === 'recados'
     ? './recados-app.css'
-    : mode === 'chat'
-      ? './chat-app.css'
-      : mode === 'transfer-hook'
+    : mode === 'transfer-hook'
         ? './transfer-hook-app.css'
       : './stylediretor-app.css'
   const link = document.createElement('link')
@@ -1103,6 +635,10 @@ function loadModeStyles(mode) {
 }
 
 async function enterApp(project, mode, options = {}) {
+  if (!['director', 'musician', 'recados', 'transfer-hook'].includes(mode)) {
+    renderModeFirst(vshookDiscoveredProjects)
+    return
+  }
   cancelDiscovery()
   try {
     localStorage.setItem('vshook_selected_project', JSON.stringify(project))
@@ -1147,9 +683,7 @@ async function enterApp(project, mode, options = {}) {
   const script = document.createElement('script')
   const scriptFile = mode === 'recados'
     ? './recados.js'
-    : mode === 'chat'
-      ? './chat.js'
-      : mode === 'transfer-hook'
+    : mode === 'transfer-hook'
         ? './transfer-hook.js'
       : './vsdiretor.js'
   script.src = `${scriptFile}?v=${VSHOOK_ASSET_VERSION}`
@@ -1546,11 +1080,9 @@ function renderBridgeNoProjects() {
     <h1 class="vshook-shell-title">VS Hook</h1>
     <p class="vshook-shell-subtitle">Nenhuma sessão VS Hook foi encontrada.</p>
     <p class="vshook-shell-status">Abra o projeto no REAPER. O Drop Hook funciona somente com a Hook Center aberta.</p>
-    ${renderStoredChatButton()}
     ${renderStandaloneTransferHookButton()}
     <button class="vshook-secondary-button" id="refreshProjectsBtn">Atualizar</button>
   `)
-  attachStoredChatHandler()
   attachStandaloneTransferHookHandler()
   document.getElementById('refreshProjectsBtn')?.addEventListener('click', startBridgeBrowserMode)
 }
@@ -1803,18 +1335,10 @@ window.addEventListener('load', async () => {
   await setDirectorNativeOrientation('phone')
   keepScreenAwake()
   const forcedModeProjects = consumeVSHookForcedModeSelection()
-  await bootstrapChatMobileSessionFromQr()
-  await setupNativeChatPushNotifications()
   if (forcedModeProjects !== null) {
     renderModeFirst(forcedModeProjects)
     return
   }
-  try {
-    if ((consumeChatNotificationTarget() || localStorage.getItem('vshook_selected_mode') === 'chat') && getStoredChatMobileSession()) {
-      enterStoredChat()
-      return
-    }
-  } catch (error) {}
   if (isBridgeBrowserMode()) startBridgeBrowserMode()
   else startDiscovery()
 })

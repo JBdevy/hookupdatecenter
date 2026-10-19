@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.2-tuner-parts-v1';
+const CACHE_NAME = 'vshook-mobile-1.0.2-no-chat-v1';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -17,8 +17,6 @@ const APP_ASSETS = [
   './recados.js',
   './recados-app.css',
   './recados.webmanifest',
-  './chat.js',
-  './chat-app.css',
   './transfer-hook.js',
   './transfer-hook-app.css',
   './vsdiretor-icon-180.png',
@@ -57,7 +55,6 @@ self.addEventListener('fetch', (event) => {
     '/state', '/state.json',
     '/lyrics', '/lyrics.json',
     '/command', '/technical-notice', '/recados-notice', '/recados-templates',
-    '/chat/state', '/chat/messages', '/chat/pin', '/chat/delete', '/chat/bootstrap',
     '/health', '/ping', '/bridge-info', '/qr.svg', '/app-qr.svg',
     '/media', '/tp-media', '/teleprompt-media'
   ];
