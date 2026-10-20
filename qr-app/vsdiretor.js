@@ -1,7 +1,7 @@
 (() => {
   'use strict'
 
-  const VERSION = '1.0.2-state-loading-v1'
+  const VERSION = '1.0.3-state-loading-v1'
   const userAgent = navigator.userAgent || ''
   const iPadDesktopMode = navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1
   const POLL_MS = 300

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vshook-mobile-1.0.2-no-chat-v1';
+const CACHE_NAME = 'vshook-mobile-1.0.3-no-chat-v1';
 const APP_ASSETS = [
   './',
   './index.html',
