@@ -578,7 +578,7 @@ private struct TimelineGridContent: View, Equatable {
                                 laneCounts: rows.lanes.map(\.count), scales: rows.scales, baseHeight: row,
                                 top: rulerHeight, verticalOffset: verticalScroll.offset,
                                 scrollView: { mixerScrollController.scrollView },
-                                excludedX: labelWidth...(labelWidth + dividerWidth), interactionBlocked: gridInteractionBlocked,
+                                mixerWidth: labelWidth, interactionBlocked: gridInteractionBlocked,
                                 change: { id, scale, ended in
                                     if ended {
                                         show.setTrackHeightScale(id, scale: scale, project: projectID, song: song.id)

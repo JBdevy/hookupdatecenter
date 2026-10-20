@@ -120,12 +120,14 @@ import SwiftUI
 @MainActor final class KeyboardMIDIMonitor: ObservableObject {
     static let shared = KeyboardMIDIMonitor()
     @Published private(set) var notes: Set<UInt8> = []
-    private var held: [Int32: Set<UInt8>] = [:]
-    var channel: Int = max(1, min(16, UserDefaults.standard.integer(forKey: "jaras.keyboard.channel") == 0 ? 1 : UserDefaults.standard.integer(forKey: "jaras.keyboard.channel"))) {
+    private struct Source: Hashable { let device: Int32; let channel: UInt8 }
+    private var held: [Source: Set<UInt8>] = [:]
+    var channel: Int = max(0, min(16, UserDefaults.standard.integer(forKey: "jaras.keyboard.channel"))) {
         didSet { held.removeAll(); notes = []; UserDefaults.standard.set(channel, forKey: "jaras.keyboard.channel") }
     }
     func receive(source: Int32, status: UInt8, number: UInt8, value: UInt8) {
-        guard status >= 0x80, status < 0xf0, Int(status & 15) + 1 == channel else { return }
+        guard status >= 0x80, status < 0xf0, channel == 0 || Int(status & 15) + 1 == channel else { return }
+        let source = Source(device: source, channel: status & 15)
         switch status & 0xf0 {
         case 0x90 where value > 0: held[source, default: []].insert(number)
         case 0x80, 0x90: held[source]?.remove(number)
@@ -442,9 +444,12 @@ struct TimecodePlaybackSpan {
     private struct InputMonitor {
         let source: AVAudioSourceNode
         let gate: AVAudioMixerNode
+        let input: JarasCaptureRing?
+        let firstChannel: Int
+        let channels: Int
     }
     private var inputMonitors: [UUID: InputMonitor] = [:]
-    func setInputMonitor(_ track: UUID, source: AVAudioSourceNode?, format: AVAudioFormat? = nil) {
+    func setInputMonitor(_ track: UUID, source: AVAudioSourceNode?, format: AVAudioFormat? = nil, input: JarasCaptureRing? = nil, firstChannel: Int = 0, channels: Int = 2) {
         if inputMonitors[track]?.source === source { return }
         if let old = inputMonitors.removeValue(forKey: track) { engine.detach(old.source); engine.detach(old.gate) }
         if let source, let format {
@@ -455,7 +460,7 @@ struct TimecodePlaybackSpan {
             engine.attach(source); engine.attach(gate)
             engine.connect(source, to: gate, format: format)
             engine.connect(gate, to: bus.mix, fromBus: 0, toBus: availableInputBus(track: track, node: bus.mix), format: format)
-            inputMonitors[track] = InputMonitor(source: source, gate: gate)
+            inputMonitors[track] = InputMonitor(source: source, gate: gate, input: input, firstChannel: firstChannel, channels: channels)
         }
         if deviceSessionActive { startMeterClock() }
     }
@@ -1855,6 +1860,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         idleVoices[track] = pool
     }
+    var onRecordingFXChanged: ((UUID, NativeFXSettings) -> Void)?
     func previewFX(_ track: UUID?, settings: NativeFXSettings) {
         if let track, tracks[track] == nil { return }
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
@@ -1867,6 +1873,7 @@ for (key, sampler) in samplers where key.track == track && !settings.isEnabled(k
         }
         if let track { tracks[track]?.fx = settings; trackBuses[track]?.effects.apply(settings) }
         else { masterFXSettings = settings; masterEffects.apply(settings) }
+        if let track { onRecordingFXChanged?(track, settings) }
         applyLevels()
         #if os(macOS)
         if let error = effects(for: track)?.externalError { onError(error) }
@@ -2606,7 +2613,7 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
             #endif
         }
     }
-    private var virtualNoteTargets: [UInt8: Set<UUID>] = [:]
+    private var virtualNoteTargets: [UInt8: [UUID: UInt8]] = [:]
     var onLiveKeyboardMIDI: ((UUID, UInt8, UInt8, UInt8) -> Void)?
     func releaseMIDINotes() {
         releaseKeyboardNotes()
@@ -2659,34 +2666,39 @@ for (key,sampler) in samplers {
         guard (21...108).contains(note) else { return }
         releaseKeyboardNote(note)
         let targets = armedInstrumentTracks.union(armedMIDIRecordingTracks).filter { tracks[$0]?.kind == .standard }
-        virtualNoteTargets[note] = targets
+        let selected = max(0, min(16, UserDefaults.standard.integer(forKey: "jaras.keyboard.channel")))
         for id in targets {
-            onLiveKeyboardMIDI?(id, 0x90, note, velocity)
+            let channel = UInt8((selected == 0 ? max(1, tracks[id]?.midiChannel ?? 1) : selected) - 1)
+            let status: UInt8 = 0x90 | channel
+            guard tracks[id]?.acceptsMIDI(status: status) == true else { continue }
+            virtualNoteTargets[note, default: [:]][id] = channel
+            onLiveKeyboardMIDI?(id, status, note, velocity)
             #if os(macOS)
-            trackBuses[id]?.effects.sendExternalMIDI(status: 0x90, number: note, value: velocity)
+            trackBuses[id]?.effects.sendExternalMIDI(status: status, number: note, value: velocity)
             #endif
 
 #if os(macOS)
-for (key, sampler) in samplers where key.track == id && tracks[id]?.fx?.isEnabled(key.effect) == true { sampler.sendStatus(0x90, data1: note, data2: velocity) }
+for (key, sampler) in samplers where key.track == id && tracks[id]?.fx?.isEnabled(key.effect) == true { sampler.sendStatus(status, data1: note, data2: velocity) }
 #endif
 
-            InstrumentKeyboardState.shared.receive(track: id, source: Int32.min, status: 0x90, number: note, value: velocity)
+            InstrumentKeyboardState.shared.receive(track: id, source: Int32.min, status: status, number: note, value: velocity)
         }
 
 #endif
 }
     func releaseKeyboardNote(_ note: UInt8) {
-        for id in virtualNoteTargets.removeValue(forKey: note) ?? [] {
-            onLiveKeyboardMIDI?(id, 0x80, note, 0)
+        for (id, channel) in virtualNoteTargets.removeValue(forKey: note) ?? [:] {
+            let status: UInt8 = 0x80 | channel
+            onLiveKeyboardMIDI?(id, status, note, 0)
             #if os(macOS)
-            trackBuses[id]?.effects.sendExternalMIDI(status: 0x80, number: note, value: 0)
+            trackBuses[id]?.effects.sendExternalMIDI(status: status, number: note, value: 0)
             #endif
 
 #if os(macOS)
-for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, data1: note, data2: 0) }
+for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status, data1: note, data2: 0) }
 #endif
 
-            InstrumentKeyboardState.shared.receive(track: id, source: Int32.min, status: 0x80, number: note, value: 0)
+            InstrumentKeyboardState.shared.receive(track: id, source: Int32.min, status: status, number: note, value: 0)
         }
     }
     func releaseKeyboardNotes() { for note in Array(virtualNoteTargets.keys) { releaseKeyboardNote(note) } }
@@ -3635,14 +3647,19 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(0x80, 
         #if os(iOS)
         guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
         #endif
-        guard engine.isRunning, transportWasRunning || instrumentRenderPending else { return }
+        guard engine.isRunning, transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty else { return }
         if now - lastMeterUpdate >= 1.0 / 30.0 - 0.002 {
             let elapsed = lastMeterUpdate == 0 ? 1.0 / 30.0 : now - lastMeterUpdate
             lastMeterUpdate = now
             drainNativeMeterPeaks()
             masterMeter.update(left: Double(peaks.takePeak(masterSlot)), right: Double(peaks.takePeak(masterSlot + 1)), elapsed: elapsed)
             for (id, bank) in trackPeaks {
-                let left = Double(bank.takePeak(0)), right = Double(bank.takePeak(1))
+                var left = Double(bank.takePeak(0)), right = Double(bank.takePeak(1))
+                if let monitor = inputMonitors[id], let input = monitor.input {
+                    let rawLeft = Double(input.takeInputPeak(UInt(monitor.firstChannel)))
+                    let rawRight = monitor.channels > 1 ? Double(input.takeInputPeak(UInt(monitor.firstChannel + 1))) : rawLeft
+                    left = max(left, rawLeft); right = max(right, rawRight)
+                }
                 observeTrackPeak(id, left: left, right: right, elapsed: elapsed)
             }
         }

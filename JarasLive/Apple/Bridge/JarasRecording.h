@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)waitForPendingCapture;
 - (void)pushBuffer:(AVAudioPCMBuffer *)buffer;
 - (NSUInteger)readFrames:(float *)destination maximum:(NSUInteger)frames;
+- (float)takeInputPeak:(NSUInteger)channel;
 @property(nonatomic, readonly) NSUInteger droppedFrames;
 @end
 @interface JarasMP3Encoder : NSObject

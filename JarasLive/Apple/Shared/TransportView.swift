@@ -17,6 +17,7 @@ struct TransportView: View {
     var mediaDirectory: URL? = nil
     var toggleNavigation: () -> Void = {}
     var openSettings: () -> Void = {}
+    var openAdvanced: () -> Void = {}
     var mixerCollapsed = false
     var setlistCollapsed = false
     var toggleMixer: () -> Void = {}
@@ -25,11 +26,13 @@ struct TransportView: View {
     var placeSetlist: (SetlistPlacement) -> Void = { _ in }
     init(show: ShowController, documents: ProjectDocuments? = nil, remotePresentation: Bool = false,
          mediaDirectory: URL? = nil, toggleNavigation: @escaping () -> Void = {}, openSettings: @escaping () -> Void = {},
+         openAdvanced: @escaping () -> Void = {},
          mixerCollapsed: Bool = false, setlistCollapsed: Bool = false,
          toggleMixer: @escaping () -> Void = {}, toggleSetlist: @escaping () -> Void = {},
          setlistPlacement: SetlistPlacement = .right, placeSetlist: @escaping (SetlistPlacement) -> Void = { _ in }) {
         self.show = show; self.documents = documents; self.remotePresentation = remotePresentation
         self.mediaDirectory = mediaDirectory; self.toggleNavigation = toggleNavigation; self.openSettings = openSettings
+        self.openAdvanced = openAdvanced
         self.mixerCollapsed = mixerCollapsed; self.setlistCollapsed = setlistCollapsed
         self.toggleMixer = toggleMixer; self.toggleSetlist = toggleSetlist
         self.setlistPlacement = setlistPlacement; self.placeSetlist = placeSetlist
@@ -55,7 +58,9 @@ struct TransportView: View {
                 .frame(width: width, height: 86, alignment: .leading)
         }.frame(height: 86).clipped()
             .sheet(isPresented: $showingExport) { AudioExportView(project: show.snapshot.project, song: show.current, mediaDirectory: mediaDirectory) }
+            #if !os(macOS)
             .sheet(isPresented: $showingAdvanced) { AdvancedView(show: show, documents: documents) }
+            #endif
             .sheet(isPresented: $showingFadeout) { TransportFadeoutSettings(show: show) }
             #if os(macOS)
             .background { if !remotePresentation { TransportFadeoutPresenter(show: show).frame(width: 0, height: 0) } }
@@ -105,7 +110,13 @@ struct TransportView: View {
                     transportDisplay
                     HStack(spacing: 3) {
                         RegionTunerControl(show: show)
-                        Button { showingAdvanced = true } label: {
+                        Button {
+                            #if os(macOS)
+                            openAdvanced()
+                            #else
+                            showingAdvanced = true
+                            #endif
+                        } label: {
                             Text(verbatim: "Advanced").font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 68, height: 25).contentShape(Rectangle())
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
                         }.buttonStyle(.plain).accessibilityLabel("Advanced").jarasHelp("Advanced")
@@ -144,7 +155,7 @@ struct TransportView: View {
                             Image(systemName: transport.subPlay.playing ? "pause.fill" : "play.fill")
                             Text("Sub Play")
                         }
-                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: transport.subPlay.playing, fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height))
+                    }.buttonStyle(TransportButtonStyle(color: Color(hex: 0xffff00), active: true, fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height))
                         .disabled(!transport.playing).jarasHelp(ControlMappings.shared.shortcutHelp(.subPlayStop))
                     RepeatControl(active: transport.loop.enabled) { show.send(.toggleLoop) }
                     TransportRecordButton(show: show)
@@ -849,7 +860,7 @@ private struct MetronomeControl: View {
     }
     private var control: some View {
         Button { settings.enabled.toggle() } label: { Image(systemName: "metronome") }
-            .buttonStyle(TransportButtonStyle(color: settings.enabled ? JarasTheme.yellow : Color(hex: 0xc44545), active: true, fontSize: TransportControlMetrics.font, width: max(30, (buttonWidth / 2).rounded()), height: 35))
+            .buttonStyle(TransportButtonStyle(color: settings.enabled ? JarasTheme.yellow : JarasTheme.panel, active: settings.enabled, fontSize: TransportControlMetrics.font, width: max(30, (buttonWidth / 2).rounded()), height: 35))
             #if !os(macOS)
             .opacity(!settings.enabled || pulse ? 1 : 0.45)
             .onReceive(show.$snapshot.map { pulse(for: $0) }.removeDuplicates()) { pulse = $0 }

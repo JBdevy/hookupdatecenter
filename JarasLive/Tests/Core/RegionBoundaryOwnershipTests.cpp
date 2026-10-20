@@ -45,7 +45,7 @@ int main() {
             Engine engine; engine.loadProject(fixture(initialized));
             require(clip(engine, "rounded").regionOwnerID == "region", "rounded onset must belong to its region on first import and on legacy initialized load");
             require(marker(engine, "rounded-marker").regionOwnerID == "region", "rounded cue onset must belong to its region");
-            require(engine.currentSong()->regionOwnershipVersion == 2, "ownership repair is persisted as version 2");
+            require(engine.currentSong()->regionOwnershipVersion == 3, "ownership repairs are persisted as version 3");
             if (initialized) {
                 require(!clip(engine, "loose-inside").regionOwnerID && !clip(engine, "exact-loose").regionOwnerID,
                         "migration never recaptures an intentionally loose item within or exactly on a region");

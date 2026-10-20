@@ -25,11 +25,13 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         addAndMakeVisible(horizontal);horizontal.setAutoHide(false);
         horizontal.setLookAndFeel(&scrollLook);horizontal.addListener(this);
         viewport.setScrollBarThickness(10);
+        viewport.moved = [this] { refreshVisible(); syncScroll(); };
         startTimerHz(30);
         refresh();
     }
     ~MixerPanel() override {
         stopTimer();
+        viewport.moved = {};
         horizontal.removeListener(this);horizontal.setLookAndFeel(nullptr);
         viewport.setViewedComponent(nullptr, false);
     }
@@ -71,10 +73,14 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             }
             resized();
         }
-        master->refresh();
-        for (auto *strip : strips)
-            strip->refresh();
+        refreshVisible();
         syncScroll();
+    }
+    void refreshVisible() {
+        master->refresh();
+        const auto visible = viewport.getViewArea();
+        for (auto *strip : strips)
+            if (strip->getBounds().intersects(visible)) strip->refresh();
     }
     void mouseWheelMove(const MouseEvent &event, const MouseWheelDetails &wheel) override {
         if (master->getLocalBounds().contains(event.getEventRelativeTo(master.get()).getPosition())) {
@@ -181,12 +187,30 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 const auto &project=mixer.session.project();
                 masterPresentation.volume=project.masterVolume;masterPresentation.pan=project.masterPan;
                 masterPresentation.mute=project.masterMute;masterPresentation.solo=project.masterSolo;
-                masterPresentation.color=project.masterColor.value_or(0x414141);masterPresentation.fxJSON=project.masterFXJSON;
+                masterPresentation.color=project.masterColor.value_or(0x414141);
+                if (masterPresentation.fxJSON != project.masterFXJSON) {
+                    masterPresentation.fxJSON = project.masterFXJSON;
+                    cachedFXRevision = ~uint64(0);
+                }
                 mono.setToggleState(project.masterMono,dontSendNotification);
                 mono.setTooltip(project.masterMono ? String::fromUTF8("Mono - Alternar para estéreo")
                                                   : String::fromUTF8("Estéreo - Alternar para mono"));
             }
             if (const auto *t = track()) {
+                const auto volume = id.empty() ? t->volume : mixer.session.trackDisplayVolume(id,t->volume);
+                const auto selected = !id.empty() && mixer.selectedTrack(id);
+                const auto levels = mixer.session.audio.meterLevels(id);
+                if (lastRevision == mixer.session.revision && lastSelection == selected &&
+                    lastVolume == volume && lastLocked == mixer.session.trackFaderLocked(id)) {
+                    if (lastLevels != levels) {
+                        const auto bounds = fader.getBounds();
+                        repaint(69 + controlsOffset(), bounds.getY(), 12, bounds.getHeight());
+                    }
+                    lastLevels = levels;
+                    return;
+                }
+                lastRevision = mixer.session.revision; lastSelection = selected;
+                lastVolume = volume; lastLocked = mixer.session.trackFaderLocked(id); lastLevels = levels;
                 fader.setValue(id.empty()?t->volume:mixer.session.trackDisplayVolume(id,t->volume),dontSendNotification);
                 fader.setEnabled(!mixer.session.trackFaderLocked(id));
                 pan.setValue(t->pan, dontSendNotification);
@@ -196,7 +220,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 phase.setTooltip(t->phaseInverted.value_or(false) ? "Fase invertida - Restaurar fase" : "Inverter fase");
                 record.setButtonText(mixer.session.recordArm(id) == 2 ? "A" : String::fromUTF8("◎"));
                 record.setToggleState(mixer.session.recordingArmed(id), dontSendNotification);
-                const auto settings = t->fxJSON ? JSON::parse(text(*t->fxJSON)) : var();
+                const auto &settings = slotSettings();
                 firstSlot = jlimit(0, maximumFirstSlot(), firstSlot);
                 fx.setColour(TextButton::textColourOffId, fxchain::colour(settings));
                 resized();repaint();
@@ -211,7 +235,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             if (!id.empty() && mixer.selectedTrack(id)) { g.setColour(Colours::white.withAlpha(.08f)); g.fillAll(); }
             g.setColour(colour);
             g.fillRect(0, 0, getWidth(), 3);
-            auto settings = t->fxJSON ? JSON::parse(text(*t->fxJSON)) : var();
+            const auto &settings = slotSettings();
             const auto chain = list(get(settings, "inserted"));
             const auto geometry = layout();
             if (jaras::fixedTrackName(t->role).empty() && !geometry.slots.isEmpty()) {
@@ -371,6 +395,25 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         MixerPanel &mixer;
         ID id;
         jaras::Track masterPresentation; // View state only; Master is never added to the song's tracks.
+        uint64 lastRevision = ~uint64(0);
+        bool lastSelection = false, lastLocked = false;
+        double lastVolume = -1;
+        std::array<float, 2> lastLevels{};
+        mutable std::optional<std::string> cachedFX;
+        mutable var cachedSettings;
+        mutable uint64 cachedFXRevision = ~uint64(0);
+        const var &slotSettings() const {
+            if (cachedFXRevision == mixer.session.revision) return cachedSettings;
+            const auto *t = track();
+            const std::optional<std::string> empty;
+            const auto &source = t ? t->fxJSON : empty;
+            if (cachedFX != source) {
+                cachedFX = source;
+                cachedSettings = source ? JSON::parse(text(*source)) : var();
+            }
+            cachedFXRevision = mixer.session.revision;
+            return cachedSettings;
+        }
         int controlsOffset() const { return std::max(0,(getWidth()-83)/2); }
         bool dragging=false;
         int pressedSlot=-1, effectDropSlot=-1, firstSlot=0, hoveredSlot=-1;
@@ -387,7 +430,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             return {{3,13,std::max(0,getWidth()-6),slots},
                     {3,13+slots+controls+4,std::max(0,getWidth()-6),22},13+slots,controls};
         }
-        int totalSlots() const {return std::max(3,list(get(fxchain::settings(mixer.session,id),"inserted")).size()+1);}
+        int totalSlots() const {return std::max(3,list(get(slotSettings(),"inserted")).size()+1);}
         int maximumFirstSlot() const {
             const int height=layout().slots.getHeight();
             return height<=0?0:jlimit(0,totalSlots()-1,(totalSlots()*21-height+19)/21);
@@ -475,7 +518,10 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
     ScrollBar horizontal{false};
     static constexpr int stripWidth=83,stripStride=stripWidth+3;
     std::unique_ptr<Strip> master;
-    Viewport viewport;
+    struct MixerViewport final : Viewport {
+        std::function<void()> moved;
+        void visibleAreaChanged(const juce::Rectangle<int> &) override { if (moved) moved(); }
+    } viewport;
     Component content;
     OwnedArray<Strip> strips;
     std::vector<ID> ids;

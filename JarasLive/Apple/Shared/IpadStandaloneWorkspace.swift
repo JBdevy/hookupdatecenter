@@ -1166,7 +1166,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
             }
             if only == nil || only == .metronome {
             Button { metronome.enabled.toggle() } label: { Image(systemName: "metronome") }
-                .buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : .red, active: true, fontSize: 12, width: controlWidth ?? 30, height: 28))
+                .buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : JarasTheme.panel, active: metronome.enabled, fontSize: 12, width: controlWidth ?? 30, height: 28))
                 .accessibilityLabel("Metronome").accessibilityValue(metronome.enabled ? "On" : "Off")
                 .contextMenu { Button("Settings") { configureMetronome?() } }
             }

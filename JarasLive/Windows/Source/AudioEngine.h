@@ -51,15 +51,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void refreshStemLatency();
     unsigned exportLatencyFrames()const;
     void setMIDISlot(int, const String &);
-    void setKeyboardTarget(const ID &id) {
-        int index = -1;
-        for (size_t i = 0; i < buses.size(); ++i)
-            if (buses[i]->id == id) {
-                index = (int)i;
-                break;
-            }
-        keyboardTarget = index;
-    }
+    std::atomic<int> keyboardChannel{0}; // 0 = Omni
     std::atomic<bool> metronomeEnabled{false};
     void closeDevice();
     void refreshTiming(const jaras::Song &song);
@@ -268,6 +260,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         jaras::PlaybackScope externalScopes[2];
         std::unique_ptr<MIDIPlayback> midi;
         MidiBuffer midiMessages;
+        VirtualKeyboardRoute keyboardRoute;
         int midiSlot = 0, midiChannel = 0;
         int inputFirst = 0, inputChannels = 2;
         bool inputMonitoring = true;
@@ -313,7 +306,6 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     AutomationProgram masterAutomation;
     std::unique_ptr<MIDIPlayback> masterMIDI;
     File instrumentDirectory;
-    std::atomic<int> keyboardTarget{-1};
     var masterFXSettings;
     AudioBuffer<float> masterBuffer{2, 4096};
     AudioBuffer<float> readScratch[2]{{2, 131080}, {2, 131080}};

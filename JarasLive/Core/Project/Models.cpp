@@ -11,16 +11,20 @@ namespace jaras {
 // positions retain sample/tempo precision. Less than one microsecond is the
 // same placement edge; it is still below one sample at 384 kHz.
 static constexpr double regionPlacementTolerance = 1e-6;
-static constexpr int regionOwnershipVersion = 2;
+static constexpr int regionOwnershipVersion = 3;
 // Membership is established on placement, never by moving a region across material.
-std::optional<ID> regionOwnerAt(const Song& song, double start, std::optional<double> end) {
+static std::optional<ID> resolveRegionOwner(const Song& song, double start, std::optional<double> end, bool legacy) {
     const Part* selected = nullptr;
     for (const auto& part : song.parts) {
         if (start < part.startTime - regionPlacementTolerance || start >= part.endTime - regionPlacementTolerance || (end && *end > part.endTime + regionPlacementTolerance)) continue;
         if (!selected || (part.parentRegionID.has_value() != selected->parentRegionID.has_value() ? part.parentRegionID.has_value() :
+            !legacy && part.parentRegionID && part.parentRegionID == selected->parentRegionID && part.startTime != selected->startTime ? part.startTime > selected->startTime :
             part.endTime - part.startTime != selected->endTime - selected->startTime ? part.endTime - part.startTime < selected->endTime - selected->startTime : part.id < selected->id)) selected = &part;
     }
     return selected ? std::optional<ID>(selected->id) : std::nullopt;
+}
+std::optional<ID> regionOwnerAt(const Song& song, double start, std::optional<double> end) {
+    return resolveRegionOwner(song, start, end, false);
 }
 bool regionOwns(const Song& song, const ID& root, const std::optional<ID>& owner) {
     if (!owner) return false;
@@ -37,7 +41,24 @@ void synchronizeRegionOwnership(Project& project, const Project* previous) {
         // microsecond before its rounded region start. Repair only that narrow
         // old boundary case, once at load. Nil within a region remains loose;
         // subsequent loads must never acquire items covered by a region move.
-        const bool repairRoundedBoundary = !old && !initialize && song.regionOwnershipVersion < regionOwnershipVersion;
+        const bool repairRoundedBoundary = !old && !initialize && song.regionOwnershipVersion < 2;
+        const bool repairUnifiedOverlap = !old && !initialize && song.regionOwnershipVersion < 3;
+        const auto repairOverlap = [&](std::optional<ID>& owner, double position) {
+            // Old placement preferred the shortest song, assigning incoming
+            // onsets to an outgoing tail. Repair only that legacy choice among
+            // siblings. Preserve loose items and explicit foreign ownership.
+            if (!repairUnifiedOverlap || !owner || owner != resolveRegionOwner(song, position, {}, true)) return;
+            const auto incoming = regionOwnerAt(song, position);
+            if (!incoming || incoming == owner) return;
+            const Part* from = nullptr;
+            const Part* to = nullptr;
+            for (const auto& part : song.parts) {
+                if (part.id == *owner) from = &part;
+                if (part.id == *incoming) to = &part;
+            }
+            if (from && to && from->parentRegionID && from->parentRegionID == to->parentRegionID &&
+                to->startTime > from->startTime) owner = incoming;
+        };
         const auto roundedBoundaryOwner = [&](double position) -> std::optional<ID> {
             if (!repairRoundedBoundary) return {};
             const auto owner = regionOwnerAt(song, position);
@@ -73,6 +94,7 @@ void synchronizeRegionOwnership(Project& project, const Project* previous) {
             else if (!valid(clip.regionOwnerID)) clip.regionOwnerID.reset();
             else if (prior && !clip.regionOwnerID) clip.regionOwnerID = regionOwnerAt(created, clip.startTime);
             else if (!clip.regionOwnerID) clip.regionOwnerID = roundedBoundaryOwner(clip.startTime);
+            repairOverlap(clip.regionOwnerID, clip.startTime);
         }
         if (song.markers) for (auto& marker : *song.markers) {
             const auto priorEntry = oldMarkers.find(marker.id);
@@ -83,6 +105,7 @@ void synchronizeRegionOwnership(Project& project, const Project* previous) {
             else if (!valid(marker.regionOwnerID)) marker.regionOwnerID.reset();
             else if (prior && !marker.regionOwnerID) marker.regionOwnerID = regionOwnerAt(created, marker.position);
             else if (!marker.regionOwnerID) marker.regionOwnerID = roundedBoundaryOwner(marker.position);
+            if (!marker.unifiedRegionID) repairOverlap(marker.regionOwnerID, marker.position);
         }
         song.regionOwnershipInitialized = true;
         song.regionOwnershipVersion = std::max(song.regionOwnershipVersion, regionOwnershipVersion);

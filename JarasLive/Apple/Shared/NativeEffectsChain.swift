@@ -568,3 +568,78 @@ final class NativeEffectsChain {
     }
     func compressorPeaks() -> [Float] { JarasDynamics.takeCompressorPeaks(compressor).map(\.floatValue) }
 }
+
+/// An isolated input-only graph owned by the recording writer. It never reads
+/// the playback buses, so existing items cannot be printed into a new take.
+final class RecordingInputProcessor {
+    private final class Feed {
+        let buffer: AVAudioPCMBuffer
+        var offset = 0
+        init(_ format: AVAudioFormat) { buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096)! }
+    }
+    private let engine = AVAudioEngine()
+    private let chain = NativeEffectsChain()
+    private let feed: Feed
+    private let source: AVAudioSourceNode
+    private let output: AVAudioPCMBuffer
+    private var position = 0.0
+    private(set) var latency: Int
+    private var settings: NativeFXSettings
+    init(format: AVAudioFormat, settings: NativeFXSettings) throws {
+        // Native track processors use a stereo bus even for a mono input.
+        self.settings = settings
+        let stereo = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate, channels: 2)!
+        let feed = Feed(stereo); self.feed = feed
+        output = AVAudioPCMBuffer(pcmFormat: stereo, frameCapacity: 4096)!
+        source = AVAudioSourceNode(format: stereo) { _, _, count, buffers in
+            let list = UnsafeMutableAudioBufferListPointer(buffers)
+            for channel in 0..<list.count {
+                guard let destination = list[channel].mData?.assumingMemoryBound(to: Float.self) else { continue }
+                for i in 0..<Int(count) {
+                    let at = feed.offset + i
+                    destination[i] = at < Int(feed.buffer.frameLength) ? feed.buffer.floatChannelData![min(channel, 1)][at] : 0
+                }
+            }
+            feed.offset += Int(count)
+            return noErr
+        }
+        try engine.enableManualRenderingMode(.offline, format: stereo, maximumFrameCount: 4096)
+        engine.attach(source)
+        chain.attach(to: engine, input: source, format: stereo,
+                     destinations: [AVAudioConnectionPoint(node: engine.mainMixerNode, bus: 0)])
+        chain.apply(settings)
+        #if os(macOS)
+        if let error = chain.externalError { throw error }
+        #endif
+        engine.prepare(); try engine.start()
+        latency = max(0, Int(((source.latency + source.outputPresentationLatency) * format.sampleRate).rounded()))
+    }
+    deinit { engine.stop() }
+    // Parameters are applied on the same worker that renders this graph.
+    func update(_ settings: NativeFXSettings) throws {
+        guard self.settings != settings else { return }
+        chain.apply(settings); self.settings = settings
+        #if os(macOS)
+        if let error = chain.externalError { throw error }
+        #endif
+        latency = max(0, Int(((source.latency + source.outputPresentationLatency) * output.format.sampleRate).rounded()))
+    }
+    func process(_ buffer: AVAudioPCMBuffer) throws {
+        let count = Int(buffer.frameLength)
+        feed.buffer.frameLength = buffer.frameLength; feed.offset = 0
+        for channel in 0..<2 {
+            feed.buffer.floatChannelData![channel].update(from: buffer.floatChannelData![min(channel, Int(buffer.format.channelCount) - 1)], count: count)
+        }
+        #if os(macOS)
+        chain.externalTransport(position: position, tempo: 120, beats: 4, unit: 4, playing: true)
+        #endif
+        let status = try engine.renderOffline(buffer.frameLength, to: output)
+        guard status == .success, output.frameLength == buffer.frameLength else {
+            throw ProjectError.invalid("The recording effects could not process the input audio.")
+        }
+        for channel in 0..<Int(buffer.format.channelCount) {
+            buffer.floatChannelData![channel].update(from: output.floatChannelData![channel], count: count)
+        }
+        position += Double(count) / buffer.format.sampleRate
+    }
+}

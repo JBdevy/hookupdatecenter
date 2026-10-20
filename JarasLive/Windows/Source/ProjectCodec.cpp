@@ -555,6 +555,8 @@ jaras::Project ProjectCodec::decode(const var &input) {
             optionalNum(rt, "inputMonitoring", t.inputMonitoring);
             optionalNum(rt, "recordingChannels", t.recordingChannels);
             optionalText(rt, "recordingFormat", t.recordingFormat);
+            optionalNum(rt, "recordingPostFader", t.recordingPostFader);
+            optionalNum(rt, "recordingPostFX", t.recordingPostFX);
             t.importedTimecodeItems = flag(rt, "importedTimecodeItems");
             if (get(rt, "inputPatch").isObject())
                 t.inputPatch = patch(get(rt, "inputPatch"));
@@ -834,6 +836,8 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
             emit(rt, "inputMonitoring", t.inputMonitoring);
             emit(rt, "recordingChannels", t.recordingChannels);
             emit(rt, "recordingFormat", t.recordingFormat);
+            emit(rt, "recordingPostFader", t.recordingPostFader);
+            emit(rt, "recordingPostFX", t.recordingPostFX);
             emit(rt, "inputPatch", t.inputPatch);
             emit(rt, "patch", t.patch);
             emit(rt, "secondaryPatch", t.secondaryPatch);

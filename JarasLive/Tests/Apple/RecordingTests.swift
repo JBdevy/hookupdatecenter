@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import AppKit
+setbuf(stdout, nil)
 let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 defer { try? FileManager.default.removeItem(at: directory) }
 let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channelLayout: AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 4)!)
@@ -237,6 +239,12 @@ try monitorEngine.start()
 let small = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
 small.frameLength = 1024
 for c in 0..<4 { small.floatChannelData![c].update(repeating: Float(c + 1) / 10, count: 1024) }
+monitorRing.endCapture()
+monitorRing.push(small)
+precondition(abs(monitorRing.takeInputPeak(2)-0.3)<0.0001 && abs(monitorRing.takeInputPeak(3)-0.4)<0.0001,
+    "Armed input meters must read selected channels with recording stopped")
+precondition(monitorRing.takeInputPeak(2)==0, "Input peak consumption must clear held callback values")
+monitorRing.beginCapture()
 monitorRing.push(small)
 let monitorPCM = AVAudioPCMBuffer(pcmFormat: monitorFormat, frameCapacity: 512)!
 let monitorStatus = try monitorEngine.renderOffline(512, to: monitorPCM); precondition(monitorStatus == .success)
@@ -290,3 +298,63 @@ multitrackWriter.finish(start: 0) { items, error in
 }
 precondition(multitrackFinished.wait(timeout: .now() + 10) == .success)
 print("RECORDING_32_MONO_FILES_SEQUENTIAL_INPUT_PCM_OK")
+
+// All four stages use ONLY the selected new input, with identical live/file PCM.
+for postFader in [false, true] { for postFX in [false, true] {
+    var fx = NativeFXSettings(); fx.inserted = ["Compressor"]
+    fx.compressorEnabled = true; fx.ratio = 1; fx.makeup = 6
+    let name = "Stages-\(postFader)-\(postFX)"
+    let target = CaptureTarget(track: UUID(), input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav32", name: name,
+                               postFader: postFader, postFX: postFX, gain: 0.25, effects: fx)
+    let recorder = try CaptureWriter(targets: [target], directory: directory, format: format)
+    let done = DispatchSemaphore(value: 0)
+    recorder.start(); recorder.ring.push(buffer)
+    recorder.finish(start: 0) { items, error in
+        precondition(error == nil && items.count == 1, "stage capture failed: \(error ?? "missing take")")
+        let file = try! AVAudioFile(forReading: directory.appendingPathComponent(items[0].clip.audioFile!.path))
+        precondition(file.length == 48000, "FX latency changed recording length")
+        let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48000)!
+        try! file.read(into: pcm)
+        let expected = Float(0.3 * (postFader ? 0.25 : 1) * (postFX ? pow(10, 6.0/20) : 1))
+        let peak = (10000..<40000).map { abs(pcm.floatChannelData![0][$0]) }.max()!
+        precondition(abs(peak - expected) < 0.002, "pre/post recording stage mismatch: \(name) \(peak) expected \(expected)")
+        done.signal()
+    }
+    precondition(done.wait(timeout: .now() + 15) == .success, "stage writer stalled")
+} }
+print("RECORDING_INPUT_ONLY_PRE_POST_FADER_FX_OK")
+
+let fixturePath = ProcessInfo.processInfo.environment["JARAS_TEST_VST3"]!
+_ = NSApplication.shared
+for latency in [0, 777, 4096] {
+    setenv("CATLIVE_TEST_VST3_LATENCY_FRAMES", String(latency), 1)
+    var plugin = ExternalPlugin(classID: "1234123456785678ABCDEF0012345678", name: "Recording latency fixture", path: fixturePath)
+    var unity: Float = 1
+    plugin.componentState = withUnsafeBytes(of: &unity) { Data($0).base64EncodedString() }
+    var fx = NativeFXSettings(); fx.externalPlugins = [plugin]; fx.inserted = [plugin.effectKey]
+    let target = CaptureTarget(track: UUID(), input: .stereo, format: "wav32", name: "Latency-\(latency)", effects: fx)
+    let recorder = try CaptureWriter(targets: [target], directory: directory, format: format)
+    let done = DispatchSemaphore(value: 0)
+    recorder.start(); recorder.ring.push(buffer)
+    recorder.finish(start: 17) { items, error in
+        precondition(error == nil && items.count == 1, "VST3 input capture failed: \(error ?? "missing take")")
+        let file = try! AVAudioFile(forReading: directory.appendingPathComponent(items[0].clip.audioFile!.path))
+        precondition(file.length == 48000 && items[0].clip.startTime == 17, "VST3 changed captured bounds")
+        let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 48000)!
+        try! file.read(into: pcm)
+        for channel in 0..<2 {
+            let difference = (0..<48000).map { abs(pcm.floatChannelData![channel][$0] - buffer.floatChannelData![channel][$0]) }.max()!
+            precondition(difference < 0.00001, "VST3 recording shifted or lost PCM: latency=\(latency), error=\(difference)")
+        }
+        done.signal()
+    }
+    precondition(done.wait(timeout: .now() + 20) == .success, "VST3 writer stalled")
+}
+unsetenv("CATLIVE_TEST_VST3_LATENCY_FRAMES")
+print("RECORDING_VST3_LATENCY_COMPENSATED_OK")
+var stageTrack = Track(id: UUID(), name: "Stages", role: .other)
+precondition(stageTrack.recordingPostFX != false && stageTrack.recordingPostFader != false)
+stageTrack.recordingPostFX = false; stageTrack.recordingPostFader = true
+let stageRoundtrip = try JSONDecoder().decode(Track.self, from: JSONEncoder().encode(stageTrack))
+precondition(stageRoundtrip.recordingPostFX == false && stageRoundtrip.recordingPostFader == true)
+print("RECORDING_STAGE_DEFAULTS_AND_PERSISTENCE_OK")

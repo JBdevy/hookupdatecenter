@@ -95,7 +95,7 @@ class Workspace final : public Component,
     std::function<void(const String &)> selectRemoteProjectTab;
     std::function<bool(int)> canNavigateProjectTab;
     void chooseOpen();
-    void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false);
+    void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false, bool allowMissing = false);
     void chooseSave(bool saveAs = false, std::function<void()> saved = {});
     void chooseImport();
     void chooseExport();
@@ -114,7 +114,7 @@ class Workspace final : public Component,
     void runMediaImportRegression(const File &, std::function<void(bool)>);
     void showLoginPreview();
     void showImportNoticePreview();
-    void showError(const String &);
+    void showError(const String &, const String &title = "CatLive");
     void showProjectBrowser();
     void projectOpened(bool fitTimeline = true);
     bool isLoginShowing() const { return loginPanel != nullptr; }
@@ -280,6 +280,9 @@ class Workspace final : public Component,
     void newSong();
     void showShortcuts();
     void toggleLeftParts();
+    void leftPartsMenu(Point<int>);
+    void detachLeftParts();
+    bool partsLeftDetached = false;
     void toggleRightParts();
     PopupMenu masterMenu(bool barMixer) const;
     void showMasterMenu(Point<int>, bool barMixer = false);
@@ -305,5 +308,6 @@ class Workspace final : public Component,
     void openAutomation(ID);
     void openTimer(bool settings = false);
     void openFloating(const String &, std::unique_ptr<Component>, int, int);
+    void openSettingsPage(int);
 };
 } // namespace catlive

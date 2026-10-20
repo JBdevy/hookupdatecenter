@@ -62,5 +62,54 @@ int main() {
     pickup.startTime = 17.5;
     check(shiftedScope.allows(playbackItemStart(shifted, pickup)), "click at visible moved flag is audible");
     check(!shiftedScope.allows(playbackItemStart(shifted, a)) && !shiftedScope.allows(playbackItemStart(shifted, lateA)), "previous tails and deliberately moved items stay excluded");
+    {
+        // Real Escudo arrangement: Abertura continues 4.479 seconds after the
+        // Escudo marker. The old shortest-region rule captured its new items.
+        auto saved = project;
+        auto& s = saved.songs[0];
+        const double start = 51915.98192699533;
+        s.duration = 52366.98192699533;
+        s.parts = {{"group", "H", 51829.96116741481, s.duration},
+            {"a", "Abertura", 51829.96116741481, 51920.46116741484},
+            {"b", "Escudo", start, 52194.98192699533},
+            {"c", "Eu sou de Jesus", 52189.48192699533, s.duration}};
+        for (int i = 1; i <= 3; ++i) s.parts[i].parentRegionID = "group";
+        s.regionOwnershipVersion = 2;
+        auto outgoing = a; outgoing.startTime = s.parts[1].startTime; outgoing.duration = 90.5;
+        auto click = a; click.id = "click"; click.startTime = start; click.duration = 279;
+        auto regency = a; regency.id = "regency"; regency.startTime = start + 0.676358073; regency.duration = 1.4542;
+        auto rounded = click; rounded.id = "rounded"; rounded.startTime -= 0.0000004;
+        auto detached = click; detached.id = "loose"; detached.regionOwnerID.reset();
+        s.tracks[0].clips = {outgoing, click, regency, rounded, detached};
+        s.markers = std::vector<TimelineMarker>{{"cue", "Cue", start + 1, 0}};
+        s.markers->front().regionOwnerID = "a";
+        check(regionOwnerAt(s, start) == "b" && regionOwnerAt(s, regency.startTime) == "b",
+            "incoming placements follow song start, not shortest overlapping song");
+        engine.execute({CommandKind::stopAll}); engine.loadProject(saved);
+        engine.execute({CommandKind::selectRegion, "b"}); engine.execute({CommandKind::play});
+        const auto& migrated = *engine.currentSong();
+        check(migrated.regionOwnershipVersion == 3, "overlap migration is versioned");
+        const auto& clips = migrated.tracks[0].clips;
+        check(!allows(clips[0]), "Abertura tail stays silent on direct Escudo start");
+        for (int i = 1; i <= 3; ++i)
+            check(clips[i].regionOwnerID == "b" && allows(clips[i]), "Escudo click, regency and rounded onsets are restored");
+        check(!clips[4].regionOwnerID, "intentionally loose items are not adopted");
+        check(migrated.markers->front().regionOwnerID == "b", "cue ownership follows repaired incoming song");
+        check(clips[1].startTime == click.startTime && clips[2].duration == regency.duration,
+            "repair never shifts or trims media");
+        engine.execute({CommandKind::stopAll}); engine.execute({CommandKind::selectRegion, "a"});
+        engine.execute({CommandKind::play}); engine.execute({CommandKind::ignoreNext});
+        check(allows(engine.currentSong()->tracks[0].clips[0]) && !allows(engine.currentSong()->tracks[0].clips[1]),
+            "Ignore Next still plays Abertura and excludes Escudo");
+        auto current = engine.project();
+        current.songs[0].tracks[0].clips[1].regionOwnerID = "a";
+        engine.execute({CommandKind::stopAll}); engine.loadProject(current);
+        check(engine.currentSong()->tracks[0].clips[1].regionOwnerID == "a",
+            "version 3 reload preserves subsequent explicit ownership");
+        auto imported = saved; imported.songs[0].regionOwnershipInitialized = false;
+        engine.loadProject(imported);
+        check(engine.currentSong()->tracks[0].clips[1].regionOwnerID == "b",
+            "new imports use the same incoming-onset rule");
+    }
     std::cout << "PLAYBACK_ENTRY_OWNERSHIP_AND_IGNORE_NEXT_OK\n";
 }

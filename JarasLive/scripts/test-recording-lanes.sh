@@ -10,5 +10,5 @@ source = Path('Apple/Shared/LiveRecordingPreview.swift').read_text()
 source = source[source.index('@MainActor final class RecordingLaneLayout'):source.index('struct RecordingGridOverlay')]
 Path(sys.argv[1]).write_text('import Foundation\nimport Combine\n' + source)
 PYTHON
-swiftc -swift-version 5 Application/Project/{ProjectModels,MIDIItem,ProjectDocumentCodec,ProjectDocumentAppearance,MultiLoop,AudioFileRead,TimelineTempo,OutputPatch,TrackRouting,ClipRepetition,NativeFXSettings,RecordingOverview,StemProjectImporter,MediaFileNames,HookImportRules}.swift "$build_dir/Layout.swift" Tests/Apple/RecordingLaneLayoutTests.swift -o "$build_dir/test"
+swiftc -swift-version 5 Application/Controls/NativeFXParameter.swift Application/Project/{ProjectModels,TrackAutomation,ItemFade,ItemFadeCurve,MIDIItem,ProjectDocumentCodec,ProjectDocumentAppearance,MultiLoop,AudioFileRead,TimelineTempo,OutputPatch,TrackRouting,ClipRepetition,NativeFXSettings,RecordingOverview,StemProjectImporter,MediaFileNames,HookImportRules}.swift "$build_dir/Layout.swift" Tests/Apple/RecordingLaneLayoutTests.swift -o "$build_dir/test"
 "$build_dir/test"

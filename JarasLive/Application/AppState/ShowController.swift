@@ -2175,6 +2175,22 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         catch { message = error.localizedDescription }
     }
+    public func setRecordingStage(_ track: UUID, postFader: Bool? = nil, postFX: Bool? = nil) {
+        guard canExecute(), !finishing else { return }
+        let ids = Set(mixerControlTargets(track).filter { $0.kind == .standard }.map(\.id))
+        var project = snapshot.project
+        for song in project.songs.indices {
+            for index in project.songs[song].tracks.indices where ids.contains(project.songs[song].tracks[index].id) {
+                if let postFader { project.songs[song].tracks[index].recordingPostFader = postFader }
+                if let postFX { project.songs[song].tracks[index].recordingPostFX = postFX }
+            }
+        }
+        guard project != snapshot.project else { return }
+        do {
+            try executor.applyProjectEdit(project); snapshot = try executor.snapshot()
+            markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
+        } catch { message = error.localizedDescription }
+    }
     public func setRecordingFormat(_ track: UUID, format: String?) {
         guard canExecute(), !finishing, format == nil || ["wav", "wav32", "mp3"].contains(format!) else { return }
         let ids = Set(mixerControlTargets(track).filter { $0.kind == .standard }.map(\.id))

@@ -203,6 +203,8 @@ static NSDictionary* trackJSON(const Track& t, bool includeWaveforms = true) {
     if(t.inputMonitoring) d[@"inputMonitoring"]=@(*t.inputMonitoring);
     if(t.recordingChannels) d[@"recordingChannels"]=@(*t.recordingChannels);
     if(t.recordingFormat) d[@"recordingFormat"]=text(*t.recordingFormat);
+    if(t.recordingPostFader) d[@"recordingPostFader"]=@(*t.recordingPostFader);
+    if(t.recordingPostFX) d[@"recordingPostFX"]=@(*t.recordingPostFX);
     if(t.color) d[@"color"]=@(*t.color);
     if(t.patch) d[@"patch"]=patchJSON(*t.patch);
     if(t.routing) d[@"routing"]=routingJSON(*t.routing);
@@ -354,6 +356,8 @@ static Track readTrack(NSDictionary* td) {
             if(td[@"inputMonitoring"] && td[@"inputMonitoring"] != NSNull.null) t.inputMonitoring=[td[@"inputMonitoring"] boolValue];
             if(td[@"recordingChannels"] && td[@"recordingChannels"] != NSNull.null) t.recordingChannels=[td[@"recordingChannels"] intValue];
             if(td[@"recordingFormat"] && td[@"recordingFormat"] != NSNull.null) t.recordingFormat=str(td[@"recordingFormat"]);
+            if(td[@"recordingPostFader"] && td[@"recordingPostFader"] != NSNull.null) t.recordingPostFader=[td[@"recordingPostFader"] boolValue];
+            if(td[@"recordingPostFX"] && td[@"recordingPostFX"] != NSNull.null) t.recordingPostFX=[td[@"recordingPostFX"] boolValue];
             if(td[@"color"] && td[@"color"] != NSNull.null) t.color=(unsigned)number(td[@"color"]);
             if(td[@"parentTrackID"] && td[@"parentTrackID"] != NSNull.null) t.parentTrackID=str(td[@"parentTrackID"]);
             if(td[@"midiInput"] && td[@"midiInput"] != NSNull.null) t.midiInput=int(number(td[@"midiInput"]));

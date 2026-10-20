@@ -12,13 +12,18 @@ end=source.index('\n#endif',start)
 title_start=source.index('private struct TrackDragTitle:')
 title_end=source.index('\n#endif',title_start)
 wheel=Path('Apple/Shared/TimelineWheelInput.swift').read_text()
-height=wheel[wheel.index('/// One native input surface'):wheel.index('/// Observes only wheel events')]
+height=wheel[wheel.index('/// Only the six-point footer'):wheel.index('/// Observes only wheel events')]
 models=Path('Application/Project/ProjectModels.swift').read_text()
 geometry=models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
 stubs='''import SwiftUI
 import AppKit
 enum TrackKind { case standard, timecode, video, click, other }
 final class ControlMappings { static let shared = ControlMappings(); var editing: String? }
+final class NativeVerticalTrackMeterView: NSView {}
+final class TrackMixerNativeControlView: NSView {
+    func addControlArea(_ view: NSView) {}
+    func removeControlArea(_ view: NSView) {}
+}
 private final class TrackReorderState: ObservableObject {
     static let shared = TrackReorderState()
     var active = false
@@ -28,7 +33,8 @@ private final class TrackReorderState: ObservableObject {
     func finish() { active = false }
 }
 '''
-Path(sys.argv[1]).write_text(stubs+geometry+height+source[start:end]+source[title_start:title_end]+'\n'+Path('Tests/Apple/TrackRowRecyclingTests.swift').read_text())
+typography=Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1]
+Path(sys.argv[1]).write_text(stubs+'// App-owned typography.'+typography+geometry+height+source[start:end]+source[title_start:title_end]+'\n'+Path('Tests/Apple/TrackRowRecyclingTests.swift').read_text())
 PY
 swiftc -swift-version 5 Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

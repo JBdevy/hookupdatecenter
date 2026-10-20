@@ -48,7 +48,7 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
                             "Gravar",
                             String::fromUTF8("Re-renderizar"),
                             String::fromUTF8("Vídeo"),
-                            "Setlist"};
+                            "Setlist", "Keyboard"};
     for (int i = 0; i < names.size(); ++i) {
         auto *tab = tabs.add(new TextButton(names[i]));
         addAndMakeVisible(tab);
@@ -59,7 +59,7 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
         tab->getProperties().set("fontSize", 13);
         tab->setColour(TextButton::buttonOnColourId, theme::green.withAlpha(.15f));
         tab->setColour(TextButton::textColourOnId, Colours::white);
-        const char *icons[]{"metronome", "grid", "record", "waveform", "video", "setlist"};
+        const char *icons[]{"metronome", "grid", "record", "waveform", "video", "setlist", "keyboard"};
         tab->getProperties().set("leadingIcon", icons[i]);
         tab->onClick = [this, i] { select(i); };
     }
@@ -315,7 +315,7 @@ void AdvancedPanel::select(int index) {
                });
         toggle("Preto e branco", "jaras.video.grayscale", false, 136);
         toggle(String::fromUTF8("Sem áudio"), "jaras.video.noAudio", true, 172);
-    } else {
+    } else if (index == 5) {
         label("Modo ID do Setlist", 174, 58, 130);
         choice("Setlist ID mode", {"ID da playlist", String::fromUTF8("ID da região")},
                appearance.regionIDs() ? 2 : 1, 308, 59, 126,
@@ -330,6 +330,16 @@ void AdvancedPanel::select(int index) {
                                 String::fromUTF8("Letras das músicas dentro das gavetas")};
         for (int i = 0; i < 3; ++i)
             colourRow(names[i], colourKeys[i], colourDefaults[i], 142 + i * 40);
+    }
+    if (index == 6) {
+        label("Keyboard style", 18, 58, 280);
+        auto &style = choice("Keyboard style", {"Default", "Black"}, appearance.value("jaras.keyboard.style", "default").toString()=="black" ? 2 : 1,
+            330, 59, 190, [this](int id) { save("jaras.keyboard.style", id==2 ? "black" : "default"); });
+        style.getProperties().set("preserveNames", true);
+        label("MIDI channel", 18, 104, 280);
+        StringArray channels{"Omni"}; for (int i=1;i<=16;++i) channels.add(String(i));
+        choice("MIDI channel", channels, jlimit(0,16,(int)appearance.value("jaras.keyboard.channel",0))+1,
+            330, 105, 190, [this](int id) { save("jaras.keyboard.channel", id-1); });
     }
     apply.setVisible(selected == 0);
     localization::panel(*this);

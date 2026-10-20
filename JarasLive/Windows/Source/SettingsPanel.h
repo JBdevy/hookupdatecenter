@@ -36,6 +36,10 @@ class SettingsPanel final : public Component, private Timer {
         startTimerHz(4);
     }
     ~SettingsPanel() override { stopTimer(); }
+    void selectPage(int index) {
+        if (isPositiveAndBelow(index, tabs.size()) && selected != index) select(index);
+    }
+    void cancelLearning() { actions.cancel(); }
     bool keyPressed(const KeyPress &key) override { return actions.captureKey(key); }
     void paint(Graphics &g) override {
         g.setColour(theme::background);
@@ -76,6 +80,7 @@ class SettingsPanel final : public Component, private Timer {
     std::function<void(String)> error;
     std::function<void()> login;
     int selected = 0, contentHeight = 500;
+    bool audioPageLocked = false;
     OwnedArray<TextButton> tabs;
     Viewport viewport;
     Component page;
@@ -92,6 +97,10 @@ class SettingsPanel final : public Component, private Timer {
     uint64 pluginRevision = ~uint64(0);
     std::unique_ptr<FileChooser> pluginFolderChooser;
     void timerCallback() override {
+        if (selected == 1) {
+            if (audioPageLocked != locked()) select(1);
+            return;
+        }
         if (selected == 0 && showModeChoice && showModeStatus) {
             showModeChoice->setEnabled(!showMode->busy && showMode->loaded);
             showModeChoice->setSelectedId(showMode->enabled ? 2 : 1, dontSendNotification);
@@ -420,6 +429,7 @@ class SettingsPanel final : public Component, private Timer {
         repaint();
     }
     void audioPage() {
+        audioPageLocked = locked();
         auto &manager = session.audio.devices;
         const auto setup = manager.getAudioDeviceSetup();
         StringArray types;

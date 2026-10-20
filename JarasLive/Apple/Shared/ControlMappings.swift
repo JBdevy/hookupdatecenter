@@ -412,6 +412,12 @@ struct MappingTransferRequest: Identifiable {
               event.window?.attachedSheet == nil,
               !NativeTimelineInputGate.shared.isBlocked(event.window),
               !(event.window?.firstResponder is NSTextView), !(event.window?.firstResponder is NSTextField) else { return false }
+        // These tools used to be sheets. Keep their Apply/Close keys in the
+        // panel's responder chain while other transport shortcuts remain live.
+        if flags.isEmpty, [36, 76, 53].contains(event.keyCode),
+           ["catlive.tool.advanced", "catlive.tool.settings"].contains(event.window?.identifier?.rawValue ?? "") {
+            return false
+        }
         // Standard editing shortcuts belong to the menu/grid or the active
         // text editor; a user mapping must not intermittently consume them.
         if flags == .command, [8, 7, 9].contains(event.keyCode) { return false }

@@ -23,18 +23,24 @@ struct SettingsView: View {
         #endif
     }
     @ObservedObject private var mappings = ControlMappings.shared
-    @State private var section: Section
+    @State private var localSection: Section
+    private var selection: Binding<Section>?
+    private var section: Section { selection?.wrappedValue ?? localSection }
     @State private var signingIn = false
     @State private var pendingDevice: AuthorizedDevice?
-    init(auth: AuthService, show: ShowController, backend: any BackendClient, initialSection: Section = .general) {
+    init(auth: AuthService, show: ShowController, backend: any BackendClient, initialSection: Section = .general,
+         selection: Binding<Section>? = nil) {
         self.auth = auth; self.show = show; self.backend = backend
-        _section = State(initialValue: initialSection)
+        self.selection = selection
+        _localSection = State(initialValue: initialSection)
     }
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 6) {
                 ForEach(availableSections, id: \.self) { item in
-                    Button { section = item } label: {
+                    Button {
+                        if let selection { selection.wrappedValue = item } else { localSection = item }
+                    } label: {
                         Label(LocalizedStringKey(item.rawValue), systemImage: item.icon)
                             .font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.85).frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 12).frame(height: 40)

@@ -8,6 +8,32 @@ using floatingControlTests::require;
 using floatingControlTests::pump;
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("REC can run with no armed tracks and missing media or effects remain nonblocking", [&] {
+        Session session; session.inspection=true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture())); session.audio.setOffline(true);
+        session.audio.missingFiles.add("missing.wav"); session.audio.unsupported.add("Missing effect media");
+        session.toggleRecording();
+        require(session.audio.isRecording() && session.transport().playing,"REC was blocked by empty arming or missing assets");
+        AudioBuffer<float> output(2,480);
+        const auto start=session.audio.state().position;
+        for(int i=0;i<4;++i) session.audio.render(output.getArrayOfWritePointers(),2,480);
+        require(session.audio.state().position>start,"REC without armed tracks did not advance transport");
+        session.toggleRecording(); pump();
+        require(!session.audio.isRecording(),"Empty recording did not stop");
+        require(session.audio.missingFiles.size()==1 && session.audio.unsupported.size()==1,"Recording discarded missing asset diagnostics");
+    });
+    test("Interface translations switch both ways without translating user-defined Parts names", [] {
+        const bool original=localization::english;
+        struct Restore { bool value; ~Restore(){localization::english=value;} } restore{original};
+        for(bool english:{true,false,true}) {
+            localization::english=english;
+            require(localization::translate("Cancel")== (english?"Cancel":"Cancelar"),"Cancel uses the wrong language");
+            require(localization::translate("Playing / Selected")== (english?"Playing / Selected":"Tocando / Selecionada"),"Parts heading uses the wrong language");
+            require(localization::translate("Undock mixer")== (english?"Undock mixer":"Desindexar"),"Undock label differs from Mac");
+            require(localization::translate("My marker 42")=="My marker 42","User label was translated");
+        }
+    });
+
     test("Escape cancels section, loop and song queue on separate presses without seeking audio", [&] {
         auto project = floatingControlTests::fixture();
         auto &song = project.songs.front();

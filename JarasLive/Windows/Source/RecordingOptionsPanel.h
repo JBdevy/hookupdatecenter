@@ -19,7 +19,8 @@ class RecordingOptionsPanel final : public Component, private Timer {
     RecordingOptionsPanel(Session &owner, ID track, std::set<ID> selected, std::function<void(String)> failure)
         : session(owner), source(std::move(track)), targets(std::move(selected)),
           project(owner.project().id), error(std::move(failure)),
-          modes({"Mono", "Stereo", "MIDI"}), monitor({"Monitor On", "Monitor Off"}) {
+          modes({"Mono", "Stereo", "MIDI"}), monitor({"Monitor On", "Monitor Off"}),
+          fader({"Pre-fader", "Post-fader"}), effects({"Pre-FX", "Post-FX"}) {
         setComponentID("trackRecordingOptions");
         addAndMakeVisible(modes);
         modes.setComponentID("recordingMode");
@@ -51,7 +52,11 @@ class RecordingOptionsPanel final : public Component, private Timer {
         monitor.changed = [this](int choice) {
             change([choice](jaras::Track &track) { track.inputMonitoring = choice == 0; }, true);
         };
-        setSize(318, 190);
+        addAndMakeVisible(fader); addAndMakeVisible(effects);
+        fader.setComponentID("recordingFaderStage"); effects.setComponentID("recordingFXStage");
+        fader.changed = [this](int choice) { change([choice](jaras::Track &track) { track.recordingPostFader = choice == 1; }); };
+        effects.changed = [this](int choice) { change([choice](jaras::Track &track) { track.recordingPostFX = choice == 1; }); };
+        setSize(318, 258);
         refresh();
         startTimerHz(5);
     }
@@ -69,7 +74,9 @@ class RecordingOptionsPanel final : public Component, private Timer {
     void resized() override {
         modes.setBounds(16, 48, getWidth() - 32, 28);
         format.setBounds(84, 88, getWidth() - 100, 28);
-        monitor.setBounds(16, 130, getWidth() - 32, 28);
+        fader.setBounds(16, 130, getWidth() - 32, 28);
+        effects.setBounds(16, 172, getWidth() - 32, 28);
+        monitor.setBounds(16, 214, getWidth() - 32, 28);
     }
 
   private:
@@ -119,7 +126,7 @@ class RecordingOptionsPanel final : public Component, private Timer {
     std::set<ID> targets;
     ID project;
     std::function<void(String)> error;
-    Segmented modes, monitor;
+    Segmented modes, monitor, fader, effects;
     ComboBox format;
     bool midi = false;
 
@@ -142,12 +149,17 @@ class RecordingOptionsPanel final : public Component, private Timer {
         modes.setEnabled(!session.busy && !session.audio.isRecording());
         format.setEnabled(!session.busy && !session.audio.isRecording());
         monitor.setEnabled(!session.busy);
+        fader.setEnabled(!session.busy && !session.audio.isRecording());
+        effects.setEnabled(!session.busy && !session.audio.isRecording());
         format.setSelectedId(!current->recordingFormat ? 1 : current->recordingFormat == "wav" ? 2 : current->recordingFormat == "wav32" ? 3 : 4, dontSendNotification);
         monitor.select(current->inputMonitoring.value_or(true) ? 0 : 1);
+        fader.select(current->recordingPostFader.value_or(true) ? 1 : 0);
+        effects.select(current->recordingPostFX.value_or(true) ? 1 : 0);
         midi = channels == 0;
         format.setVisible(!midi);
         monitor.setVisible(!midi);
-        setSize(318, midi ? 92 : 174);
+        fader.setVisible(!midi); effects.setVisible(!midi);
+        setSize(318, midi ? 92 : 258);
         repaint();
     }
     void timerCallback() override { refresh(); }
@@ -160,7 +172,8 @@ class RecordingOptionsPanel final : public Component, private Timer {
                     auto after = track; edit(after);
                     changed = changed || after.recordingChannels != track.recordingChannels ||
                               after.recordingFormat != track.recordingFormat || after.inputMonitoring != track.inputMonitoring ||
-                              after.midiInput != track.midiInput;
+                              after.midiInput != track.midiInput || after.recordingPostFader != track.recordingPostFader ||
+                              after.recordingPostFX != track.recordingPostFX;
                 }
         if (!changed) return;
         try {

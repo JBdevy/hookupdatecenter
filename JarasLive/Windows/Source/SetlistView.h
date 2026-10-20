@@ -138,21 +138,21 @@ class Workspace::Setlist final : public Component,
         return false;
     }
     void resized() override {
-        int x = 8, y = 2;
-        playlistMenu.setBounds(x, y, std::max(70, getWidth() - 184), 30);
-        x = playlistMenu.getRight() + 3;
-        for (auto item : std::initializer_list<std::pair<Button *, int>>{{&addPlaylist, 22},
-                                                                         {&searchButton, 22},
-                                                                         {&automatic, 34},
-                                                                         {&blocks, 38},
-                                                                         {&stop, 38}}) {
-            item.first->setBounds(x, y + 2, item.second, 26);
-            x += item.second + 3;
+        const int available = std::max(0, getWidth() - 16 - 6);
+        int index = 0;
+        for (auto *button : std::initializer_list<Button *>{&automatic, &blocks, &stop}) {
+            const int left = available * index / 3;
+            const int right = available * (index + 1) / 3;
+            button->setBounds(8 + left + index * 3, 2, right - left, 26);
+            ++index;
         }
+        playlistMenu.setBounds(8, 34, std::max(0, getWidth() - 16 - 60), 30);
+        addPlaylist.setBounds(playlistMenu.getRight() + 3, 34, 27, 30);
+        searchButton.setBounds(addPlaylist.getRight() + 3, 34, 27, 30);
         search.setVisible(searching);
-        search.setBounds(8, 38, getWidth() - 16, 28);
+        search.setBounds(8, 70, getWidth() - 16, 28);
         const int footerHeight = footerVisible ? 28 : 16;
-        const int top = searching ? 72 : 38;
+        const int top = searching ? 104 : 70;
         list.setBounds(8, top, getWidth() - 10,
                        std::max(0, getHeight() - top - footerHeight));
         const int cell = (getWidth() - 32) / 3;
@@ -178,7 +178,7 @@ class Workspace::Setlist final : public Component,
 
         if (entries.empty())
             g.drawFittedText(search.getText().isEmpty() ? "No regions" : "No matching songs", 16,
-                             searching ? 90 : 60, getWidth() - 32, 44, Justification::centred, 2);
+                             searching ? 122 : 92, getWidth() - 32, 44, Justification::centred, 2);
     }
     void refresh() {
         refreshing = true;
@@ -206,7 +206,7 @@ class Workspace::Setlist final : public Component,
         }
         playlistMenu.setSelectedId(selected, dontSendNotification);
         automatic.setToggleState(state.autoAdvance, dontSendNotification);
-        stop.setToggleState(state.stopAtRegionEnd.value_or(false), dontSendNotification);
+        stop.setActive(state.stopAtRegionEnd.value_or(false));
         live.setToggleState(state.liveEnabled.value_or(false), dontSendNotification);
         const auto *playlist = selectedPlaylist();
         blocks.setEnabled(playlist != nullptr && !searching);
@@ -370,6 +370,27 @@ class Workspace::Setlist final : public Component,
     }
 
   private:
+    class RegionStopButton final : public QuietButton, private Timer {
+      public:
+        RegionStopButton() : QuietButton("STOP") {}
+        void setActive(bool active) {
+            if (getToggleState() == active) return;
+            setToggleState(active, dontSendNotification);
+            setAlpha(1.f); bright = true;
+            if (active) startTimer(550); else stopTimer();
+        }
+        void paintButton(Graphics &g, bool, bool) override {
+            const auto bounds = getLocalBounds().toFloat().reduced(.5f);
+            const auto colour = getToggleState() ? theme::green : Colours::red;
+            g.setColour(theme::panel); g.fillRoundedRectangle(bounds, 4.f);
+            g.setColour(colour); g.drawRoundedRectangle(bounds, 4.f, 1.f);
+            g.setFont(theme::font(9).boldened());
+            g.drawText("STOP", getLocalBounds(), Justification::centred);
+        }
+      private:
+        bool bright = true;
+        void timerCallback() override { bright = !bright; setAlpha(bright ? 1.f : .4f); }
+    };
     class BypassButton final : public QuietButton, private Timer {
       public:
         BypassButton() : QuietButton("ByPass") {}
@@ -471,7 +492,8 @@ class Workspace::Setlist final : public Component,
     std::unique_ptr<PlaylistEditor> playlistEditor;
     int dropRow = -1;
     QuietButton addPlaylist{"+"}, searchButton{String::fromUTF8("⌕")},
-        stop{"STOP"}, live{"Live"}, parts{"Parts"};
+        live{"Live"}, parts{"Parts"};
+    RegionStopButton stop;
     QuietButton blocks{"Blocos"};
     BypassButton bypass;
     QuietButton automatic{"AUTO"};

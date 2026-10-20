@@ -19,6 +19,8 @@ class Session final : private Timer {
     var original;
     bool dirty = false, busy = false, inspection = false;
     double importProgress = 0;
+    struct RecordingItem { ID track; jaras::AudioClip clip; std::shared_ptr<RecordingPreview> preview; };
+    std::vector<RecordingItem> recordingItems;
     double subCursorPreviewUntil = 0;
     bool subCursorVisible() const { return presentationTransport().subPlay.playing || Time::getMillisecondCounterHiRes() < subCursorPreviewUntil; }
     static float subCursorOpacity(double seconds) { return std::fmod(seconds, .9) < .45 ? 1.f : .3f; }
@@ -42,7 +44,8 @@ class Session final : private Timer {
     void createRecordingProject(String name, int channels, const File &target);
     void load(const File &);
     void loadAsync(const File &, std::function<void(String, double)> progress,
-                   std::function<void()> beforeCommit, std::function<void(String)> completed);
+                   std::function<void()> beforeCommit, std::function<void(String)> completed,
+                   std::function<void(StringArray)> missingMedia = {});
     void save(const File &);
     void cleanTimelineMedia(std::function<void(String)> completed);
     void command(jaras::CommandKind, const ID &target = {}, double value = 0);

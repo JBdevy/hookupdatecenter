@@ -10,6 +10,7 @@ inline TrackCapture::Take capture(const File &file, int rate, int channels, int 
                                   bool floatingPoint, int bitrate, bool impulse) {
     TrackCapture::Target target{uuid(), file, 1, channels};
     target.bits = bits; target.floatingPoint = floatingPoint; target.bitrate = bitrate;
+    target.preview = std::make_shared<RecordingPreview>(rate, channels);
     TrackCapture recorder({target}, rate, bits, 120);
     std::array<int, 128> mapping; mapping.fill(-1); mapping[0] = 0; mapping[1] = 1;
     AudioBuffer<float> block(2, 512);
@@ -27,6 +28,9 @@ inline TrackCapture::Take capture(const File &file, int rate, int channels, int 
         recorder.input(block.getArrayOfReadPointers(), 2, count, mapping);
         recorder.advance(count);
     }
+    require(target.preview->frames.load() == frames, "Live recording duration is unavailable before Stop");
+    for (int wait = 0; wait < 200 && target.preview->history.empty(); ++wait) { target.preview->drain(); Thread::sleep(5); }
+    require(!target.preview->history.empty(), "Live waveform is unavailable before Stop");
     require(recorder.overflows() == 0, "Test capture overflowed");
     auto takes = recorder.finish();
     require(takes.size() == 1, "Capture did not return one take");
@@ -142,10 +146,57 @@ inline void aiff32Export(const File &directory) {
     require(std::abs(decoded.getSample(0, 0) - .25f) < .0002f &&
             std::abs(decoded.getSample(1, 0) + .125f) < .0002f, "AIFF32 export changed the PCM amplitude");
 }
+inline void previewBackpressure() {
+    RecordingPreview preview(48000, 2);
+    AudioBuffer<float> block(2, 960);
+    FloatVectorOperations::fill(block.getWritePointer(0), .25f, 960);
+    FloatVectorOperations::fill(block.getWritePointer(1), -.5f, 960);
+    // Leave UI stalled longer than its visual FIFO. Audio peaks must coalesce
+    // without losing the sample clock, signed channel values or blocking audio.
+    for (int i = 0; i < 3000; ++i) preview.append(block.getArrayOfReadPointers(), 960);
+    require(preview.drain(), "Stalled preview has no queued peaks");
+    preview.flush(); preview.drain();
+    int64 end = 0;
+    for (const auto &peak : preview.history) {
+        require(peak.start == end && peak.end > peak.start, "Preview lost or reordered captured frames");
+        require(peak.high[0] == .25f && peak.low[1] == -.5f && peak.low[0] == 0 && peak.high[1] == 0,
+                "Live preview lost signed stereo channel peaks");
+        end = peak.end;
+    }
+    require(end == 3000 * 960, "Preview dropped time while UI was stalled");
+}
+inline void stages(const File &directory) {
+    for (bool postFader : {false, true}) for (bool postFX : {false, true}) {
+        TrackCapture::Target target{uuid(), directory.getChildFile(text(uuid()) + ".wav"), 1, 2};
+        target.postFader = postFader; target.postFX = postFX; target.gain = .25f;
+        target.floatingPoint = true; target.bits = 32;
+        target.effects = JSON::parse(R"({"inserted":["Compressor"],"compressorEnabled":true,"ratio":1,"makeup":6})");
+        target.preview = std::make_shared<RecordingPreview>(48000, 2);
+        TrackCapture capture({target}, 48000, 32, 120);
+        AudioBuffer<float> input(2, 512);
+        std::array<int,128> mapping; mapping.fill(-1); mapping[0] = 0; mapping[1] = 1;
+        for (int frame = 0; frame < 24000; frame += 512) {
+            const int count = std::min(512, 24000 - frame);
+            for (int i = 0; i < count; ++i) { input.setSample(0, i, .2f); input.setSample(1, i, -.1f); }
+            capture.input(input.getArrayOfReadPointers(), 2, count, mapping); capture.advance(count);
+        }
+        auto takes = capture.finish(); auto reader = read(takes[0].file);
+        require(reader->lengthInSamples == 24000, "Post-FX recording changed captured length");
+        AudioBuffer<float> result(2, 512); reader->read(&result, 0, 512, 12000, true, true);
+        const float gain = (postFader ? .25f : 1.f) * (postFX ? Decibels::decibelsToGain(6.f) : 1.f);
+        require(std::abs(result.getSample(0, 0) - .2f * gain) < .0001f &&
+                std::abs(result.getSample(1, 0) + .1f * gain) < .0001f, "Pre/post stages changed channels or ignored selected gain/FX");
+        target.preview->drain();
+        require(!target.preview->history.empty() && std::abs(target.preview->history.back().high[0] - .2f * gain) < .0001f,
+                "Live recording preview differs from processed recorded PCM");
+    }
+}
 template <typename Register>
 void registerTests(const File &directory, Register &&test) {
     const auto folder = directory.getChildFile("recording-encoding-" + text(uuid()));
     folder.createDirectory();
+    test("Recording preview tolerates stalled UI without dropping captured time", [] { previewBackpressure(); });
+    test("Recording pre/post fader and FX print only input with matching live waveform", [=] { stages(folder); });
     test("Recording format defaults and track overrides match Mac", [] { rules(); });
     for (int bits : {16, 24, 32}) for (const String extension : {String(".wav"), String(".aiff")})
         test("Recording PCM " + extension + " " + String(bits), [=] { pcm(folder, extension, bits, false); });

@@ -42,6 +42,8 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var recordingChannels: Int?
     public var recordingMode: TrackRecordingMode { TrackRecordingMode(rawValue: recordingChannels ?? 2) ?? .stereo }
     public var recordingFormat: String?
+    public var recordingPostFader: Bool? = nil
+    public var recordingPostFX: Bool? = nil
     public var timecode: TimecodeSettings?
     public var importedTimecodeItems: Bool?
     public var color: UInt32?
@@ -893,6 +895,11 @@ public extension Song {
         parts.filter { start >= $0.startTime - 1e-6 && start < $0.endTime - 1e-6 && (end == nil || end! <= $0.endTime + 1e-6) }
             .min {
                 if ($0.parentRegionID != nil) != ($1.parentRegionID != nil) { return $0.parentRegionID != nil }
+                // Within a unified region the incoming song owns new onsets,
+                // even while the shorter outgoing song still has a tail.
+                if $0.parentRegionID != nil && $0.parentRegionID == $1.parentRegionID && $0.startTime != $1.startTime {
+                    return $0.startTime > $1.startTime
+                }
                 if $0.endTime - $0.startTime != $1.endTime - $1.startTime { return $0.endTime - $0.startTime < $1.endTime - $1.startTime }
                 return $0.id.uuidString < $1.id.uuidString
             }?.id

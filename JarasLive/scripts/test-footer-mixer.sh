@@ -17,7 +17,9 @@ body = body.replace('private func routeWheel(', 'fileprivate func routeWheel(')
 body = body.replace('private var cachedStrips:', 'fileprivate var cachedStrips:')
 body = body.replace('private var pendingStripLayout:', 'fileprivate var pendingStripLayout:')
 body = body.replace('strips[index]?.layoutSubtreeIfNeeded()', 'strips[index]?.layoutSubtreeIfNeeded(); FooterScrollLayoutProbe.forced += 1')
-body = 'enum FooterScrollLayoutProbe { static var forced = 0 }\n' + body
+body = body.replace('guard !preparing, let makeContent else { return }',
+                    'FooterScrollLayoutProbe.preparations += 1; guard !preparing, let makeContent else { return }')
+body = 'enum FooterScrollLayoutProbe { static var forced = 0; static var preparations = 0 }\n' + body
 meter = Path('Apple/Shared/StemAudioPlayback.swift').read_text()
 model = meter[meter.index('@MainActor final class TrackMeterLevel'):meter.index('/// Item edges')]
 native = meter[meter.index('/// Uses the existing stereo readings'):meter.index('#if os(macOS)\nprivate final class PreparedSoundFont')]

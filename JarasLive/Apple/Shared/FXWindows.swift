@@ -202,6 +202,27 @@ struct FXInsertEditor: View {
 import AppKit
 import Combine
 
+@MainActor private func makeWorkspacePanel(title: String, size: NSSize, minimum: NSSize) -> NSPanel {
+    let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
+                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    panel.title = title
+    panel.appearance = NSAppearance(named: .darkAqua)
+    panel.contentMinSize = minimum
+    panel.isReleasedWhenClosed = false
+    panel.isFloatingPanel = false
+    panel.hidesOnDeactivate = true
+    panel.level = .normal
+    return panel
+}
+
+@MainActor private func attachWorkspacePanel(_ panel: NSPanel) {
+    // Normal child windows remain above the workspace without blocking its
+    // controls, while sheets and application deactivation retain priority.
+    if let parent = NSApp.windows.first(where: { !($0 is NSPanel) && $0.isVisible && $0.title == "CatLive" }) {
+        parent.addChildWindow(panel, ordered: .above)
+    }
+}
+
 @MainActor final class FXWindows: NSObject, NSWindowDelegate {
     static let shared = FXWindows()
     private enum Target: Hashable {
@@ -261,23 +282,17 @@ import Combine
         }
         // The normal titlebar provides full-size native window controls for
         // both track chains and item FX, including third-party editors.
-        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 740,height: 560), styleMask: [.titled,.closable,.resizable], backing: .buffered, defer: false)
-        panel.title = title(key, in: show)
-        panel.appearance = NSAppearance(named: .darkAqua)
-        panel.contentMinSize = NSSize(width: 640,height: 540)
-        panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = true
-        panel.level = .normal; panel.delegate = self
+        let panel = makeWorkspacePanel(title: title(key, in: show),
+                                       size: NSSize(width: 740, height: 560),
+                                       minimum: NSSize(width: 640, height: 540))
+        panel.delegate = self
         panel.contentView = content(key, show: show, panel: panel, preferredEffect: preferredEffect)
         InterfaceScaling.shared.register(panel)
         panel.center()
         let stagger = CGFloat(windows.count % 5) * 26
         panel.setFrameOrigin(NSPoint(x: panel.frame.minX + stagger,y: panel.frame.minY - stagger))
         windows[key] = panel
-        // A normal-level child stays above the DAW when the timeline is clicked,
-        // while application deactivation and attached editing sheets retain priority.
-        if let parent = NSApp.windows.first(where: { !($0 is NSPanel) && $0.isVisible && $0.title == "CatLive" }) {
-            parent.addChildWindow(panel, ordered: .above)
-        }
+        attachWorkspacePanel(panel)
         panel.makeKeyAndOrderFront(nil)
     }
     func windowWillClose(_ notification: Notification) {
@@ -310,6 +325,112 @@ import Combine
         for panel in windows.values { (panel.contentView as? TrackFXChainView)?.restoreAudioEditor() }
     }
     func closeAll() { for panel in Array(windows.values) { panel.close() }; windows.removeAll() }
+}
+
+@MainActor private final class WorkspaceSettingsSelection: ObservableObject {
+    @Published var section: SettingsView.Section
+    init(_ section: SettingsView.Section) { self.section = section }
+}
+
+private struct WorkspaceSettingsContent: View {
+    let auth: AuthService
+    let show: ShowController
+    let backend: any BackendClient
+    @ObservedObject var selection: WorkspaceSettingsSelection
+    let close: () -> Void
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Configurações").font(.jarasHeadline)
+                Spacer()
+                Button(action: close) {
+                    Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel("Fechar").keyboardShortcut(.cancelAction)
+            }.padding(16)
+            Divider()
+            SettingsView(auth: auth, show: show, backend: backend, selection: $selection.section)
+        }
+    }
+}
+
+private struct WorkspaceToolContent<Content: View>: View {
+    @AppStorage("jaras.language") private var language = "en"
+    let content: Content
+    let updateTitle: () -> Void
+    var body: some View {
+        content
+            .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
+            .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
+            .onChange(of: language) { _ in updateTitle() }
+    }
+}
+
+/// The workspace owns these panels, just as it owns its detached mixer.
+/// Refocusing a tool keeps its hosting view, selection and unfinished text edits.
+@MainActor final class WorkspaceToolWindows: NSObject, ObservableObject, NSWindowDelegate {
+    private enum Tool: String { case advanced, settings }
+    @Published private(set) var settingsOpen = false
+    private var windows: [Tool: NSPanel] = [:]
+    private var settingsSelection: WorkspaceSettingsSelection?
+    private weak var show: ShowController?
+    private var projectObservation: AnyCancellable?
+
+    private func bind(_ show: ShowController) {
+        guard self.show !== show else { return }
+        closeAll()
+        self.show = show
+        projectObservation = show.$snapshot.map { $0.project.id }.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.closeAll() }
+    }
+    func openAdvanced(show: ShowController, documents: ProjectDocuments?) {
+        bind(show)
+        present(.advanced, title: "Advanced", size: NSSize(width: 760, height: 420)) { panel in
+            AdvancedView(show: show, documents: documents, close: { [weak panel] in panel?.close() })
+        }
+    }
+    func openSettings(auth: AuthService, show: ShowController, backend: any BackendClient,
+                      section: SettingsView.Section? = nil) {
+        bind(show)
+        if let section { settingsSelection?.section = section }
+        let selection = settingsSelection ?? WorkspaceSettingsSelection(section ?? .general)
+        settingsSelection = selection
+        present(.settings, title: "Configurações", size: NSSize(width: 940, height: 540)) { panel in
+            WorkspaceSettingsContent(auth: auth, show: show, backend: backend, selection: selection,
+                                     close: { [weak panel] in panel?.close() })
+        }
+        settingsOpen = true
+    }
+    private func present<Content: View>(_ tool: Tool, title: String, size: NSSize,
+                                       @ViewBuilder content: (NSPanel) -> Content) {
+        if let panel = windows[tool] { panel.makeKeyAndOrderFront(nil); return }
+        let panel = makeWorkspacePanel(title: JarasLocalization.string(title), size: size, minimum: size)
+        panel.identifier = NSUserInterfaceItemIdentifier("catlive.tool." + tool.rawValue)
+        panel.delegate = self
+        let host = NSHostingView(rootView: WorkspaceToolContent(content: content(panel), updateTitle: { [weak panel] in
+            panel?.title = JarasLocalization.string(title)
+        }).interfaceScaled())
+        if #available(macOS 13, *) { host.sizingOptions = [] }
+        panel.contentView = host
+        InterfaceScaling.shared.register(panel)
+        panel.center()
+        windows[tool] = panel
+        attachWorkspacePanel(panel)
+        panel.makeKeyAndOrderFront(nil)
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let panel = notification.object as? NSPanel,
+              let tool = windows.first(where: { $0.value === panel })?.key else { return }
+        panel.parent?.removeChildWindow(panel)
+        windows.removeValue(forKey: tool)
+        panel.contentView = nil
+        if tool == .settings { settingsOpen = false; settingsSelection = nil }
+    }
+    func closeAll() {
+        for panel in Array(windows.values) { panel.close() }
+        windows.removeAll()
+        settingsOpen = false
+        settingsSelection = nil
+    }
 }
 
 #else

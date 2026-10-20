@@ -1686,3 +1686,28 @@
 "Open project" = "Open project";
 
 "Startup sound" = "Startup sound";
+
+"Undock Setlist" = "Undock Setlist";
+
+"Undock mixer" = "Undock mixer";
+
+"Dock mixer" = "Dock mixer";
+
+"Undock Parts" = "Undock Parts";
+
+"Dock Parts" = "Dock Parts";
+
+"Parts on the left" = "Parts on the left";
+
+"Keyboard style" = "Keyboard style";
+
+"Section start" = "START";
+
+"Allow microphone access in System Settings to record audio." = "Allow microphone access in System Settings to record audio.";
+
+"Recording level" = "Recording level";
+"Recording effects" = "Recording effects";
+"Pre-fader" = "Pre-fader";
+"Post-fader" = "Post-fader";
+"Pre-FX" = "Pre-FX";
+"Post-FX" = "Post-FX";

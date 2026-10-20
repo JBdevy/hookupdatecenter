@@ -4,6 +4,8 @@
 #include <vector>
 #include <algorithm>
 #include <thread>
+#include <memory>
+#include <cmath>
 #include "../../Core/ThirdParty/Lame/lame.h"
 
 // Store encoder priming and padding in the standard Xing/LAME frame so that
@@ -16,13 +18,14 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
 }
 @implementation JarasCaptureRing {
     std::vector<float> _samples;
+    std::unique_ptr<std::atomic<float>[]> _inputPeaks;
     NSUInteger _channels, _capacity;
     std::atomic<uint64_t> _read, _write, _dropped;
     // Bit 0 accepts input; bit 1 belongs to the single realtime producer.
     std::atomic<unsigned> _captureState;
 }
 - (instancetype)initWithChannels:(NSUInteger)channels capacity:(NSUInteger)frames {
-    if ((self = [super init])) { _channels=channels; _capacity=frames; _samples.resize(channels*frames); _read=0; _write=0; _dropped=0; _captureState=1; }
+    if ((self = [super init])) { _channels=channels; _capacity=frames; _samples.resize(channels*frames); _read=0; _write=0; _dropped=0; _captureState=1; _inputPeaks=std::make_unique<std::atomic<float>[]>(channels); for(NSUInteger c=0;c<channels;++c) _inputPeaks[c]=0; }
     return self;
 }
 - (void)beginCapture {
@@ -37,6 +40,13 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
 }
 - (void)pushBuffer:(AVAudioPCMBuffer *)buffer {
     if (!buffer.floatChannelData || buffer.format.channelCount != _channels || !_capacity) return;
+    // Input indication is independent of recording and monitor audibility.
+    for(NSUInteger c=0;c<_channels;++c) {
+        float peak=0;
+        for(NSUInteger f=0;f<buffer.frameLength;++f) peak=std::max(peak,std::abs(buffer.floatChannelData[c][f*buffer.stride]));
+        auto previous=_inputPeaks[c].load(std::memory_order_relaxed);
+        while(peak>previous && !_inputPeaks[c].compare_exchange_weak(previous,peak,std::memory_order_relaxed)) {}
+    }
     unsigned accepting = 1;
     if (!_captureState.compare_exchange_strong(accepting, 3, std::memory_order_acquire)) return;
     auto write=_write.load(std::memory_order_relaxed), read=_read.load(std::memory_order_acquire);
@@ -72,6 +82,7 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
         return noErr;
     }];
 }
+- (float)takeInputPeak:(NSUInteger)channel { return channel<_channels ? _inputPeaks[channel].exchange(0,std::memory_order_relaxed) : 0; }
 - (NSUInteger)droppedFrames { return _dropped.load(std::memory_order_relaxed); }
 @end
 @implementation JarasMP3Encoder

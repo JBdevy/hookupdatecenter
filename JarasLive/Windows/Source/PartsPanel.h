@@ -1,5 +1,6 @@
 #pragma once
 #include "Session.h"
+#include "Localization.h"
 namespace catlive {
 namespace partsPresentation {
 inline const jaras::Part *region(const jaras::Song &song, const jaras::TransportState &state) {
@@ -80,8 +81,8 @@ class PartsPanel final : public Component, private Timer {
             g.fillRoundedRectangle(r.toFloat(), 5);
             g.setColour(selected ? Colours::white : theme::secondary);
             g.setFont(theme::font(9));
-            g.drawText(i ? (session.presentationTransport().subPlay.playing ? "Sub Play" : "Fila de espera")
-                         : "Tocando / Selecionada",
+            g.drawText(localization::translate(i ? (session.presentationTransport().subPlay.playing ? "Sub Play" : "Queued")
+                         : "Playing / Selected"),
                        r.removeFromTop(15), Justification::centred);
             g.setFont(theme::semiboldFont(12));
             g.drawFittedText(i ? queued.title() : current.title(), r.reduced(3, 1),
@@ -240,7 +241,7 @@ class PartsPanel final : public Component, private Timer {
                         active = (int)i;
             for (int i = 0; i < buttons.size(); ++i) {
                 auto &button = *buttons[i];
-                button.label = unicodeCase(text(markers[(size_t)i].name));
+                button.label = i == 0 ? localization::translate("Section start") : unicodeCase(text(markers[(size_t)i].name));
                 button.start = i == 0;
                 button.active = active == i;
                 button.queued = state.queuedSectionMarkerId == markers[(size_t)i].id;
@@ -368,7 +369,7 @@ class PartsPanel final : public Component, private Timer {
             }
             g.setColour(Colours::black);
             g.setFont(theme::semiboldFont(12));
-            g.drawText(getButtonText(), getLocalBounds(), Justification::centred);
+            g.drawText(localization::translate("Cancel"), getLocalBounds(), Justification::centred);
         }
     } cancel;
     Bank current, queued;

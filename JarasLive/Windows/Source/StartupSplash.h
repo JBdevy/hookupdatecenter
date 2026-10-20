@@ -46,6 +46,8 @@ class StartupSplash final : public Component, private Timer {
         const int contentWidth = getWidth() - logoWidth - 49;
         g.setColour(Colours::white.withAlpha(.12f));
         g.fillRect(logoWidth, 0, 1, getHeight());
+        // Image drawing also uses the current graphics opacity.
+        g.setOpacity(1.f);
         g.drawImageWithin(logo, 24, 24, logoWidth - 48, getHeight() - 48, RectanglePlacement::centred);
         const int titleLeft = 25 + logoWidth;
         g.setGradientFill(ColourGradient(Colour(0xff72ffb3), (float)titleLeft, 79.f,

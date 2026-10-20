@@ -89,7 +89,7 @@ void AudioEngine::startTrackRecording(const std::vector<TrackCapture::Target> &t
     if (recording.load())
         throw std::runtime_error("Recording already in progress.");
     auto *device = devices.getCurrentAudioDevice();
-    if (!device)
+    if (!device && !targets.empty())
         throw std::runtime_error(
             "Selecione uma interface de áudio nas configurações antes de gravar.");
     for (const auto &target : targets)
@@ -117,8 +117,9 @@ std::vector<TrackCapture::Take> AudioEngine::stopTrackRecording() {
     }
     if (!captured)
         return {};
+    auto result = captured->finish();
     recordingDrops = captured->overflows();
-    return captured->finish();
+    return result;
 }
 void AudioEngine::startTrackFadeout(const std::set<ID> &selected, double seconds) {
     if (!std::isfinite(seconds) || seconds < 1 || seconds > 5)
@@ -442,6 +443,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
     prepared[0].prepare(saved, sampleRate, effects(id),offlineMode,true);
     if (!id.empty())
         prepared[1].prepare(saved, sampleRate, effects(id,1),offlineMode,false);
+    if (trackCapture) trackCapture->updateEffects(id, saved);
     const bool running=playing.load()||subPlaying.load()||presentationTailing.load();
     for(int h=0;h<(id.empty()?1:2);h++){
         if(running){if(auto *old=effects(id,h))prepared[h].holdRemovedStems(*old);}
@@ -903,7 +905,7 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared) {
         missingFiles.swapWith(prepared.missingFiles);unsupported.swapWith(prepared.unsupported);
         std::swap(preparationDiagnostics,prepared.preparationDiagnostics);
         fifo.reset();current={};position=0;subPosition=0;playing=false;subPlaying=false;elapsedSamples=0;
-        keyboardTarget=-1;meter=0;masterPeakHold.clear();masterFXInput=0;masterFXOutput=0;
+        meter=0;masterPeakHold.clear();masterFXInput=0;masterFXOutput=0;
         presentationTailing=false;presentationDelay=latencyPlan?latencyPlan->total:0;
         for(int h=0;h<2;++h) {
             masterLevels[h]=0;presentedPosition[h]=0;presentedPlaying[h]=false;
@@ -1101,6 +1103,7 @@ void AudioEngine::applyUpdates() {
         } else if (u.index < (int)buses.size()) {
             auto &v = *buses[(size_t)u.index];
             v.volume = u.volume;
+            if (trackCapture) trackCapture->setGain(buses[(size_t)u.index]->id, u.volume);
             v.pan = u.pan;
             v.mute = u.mute;
             v.solo = u.solo;
@@ -1283,7 +1286,8 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     if (fadeout.active)
         for (int frame = 0; frame < samples; ++frame)
             trackFadeoutGains[(size_t)frame] = fadeout.gain((uint32_t)frame);
-    if (trackCapture)
+    const bool captureActive = trackCapture && current.playing;
+    if (captureActive)
         trackCapture->input(input, inputChannels, samples, inputMapping);
     liveMidi.clear();
     midiInput.removeNextBlockOfMessages(liveMidi, samples);
@@ -1294,7 +1298,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         midiSlots[slot].removeNextBlockOfMessages(slotMessages[slot], samples);
     }
     const bool allowInstrument = instrumentAllowed.load(std::memory_order_relaxed);
-    bool routedKeyboard = false, routedHardware = false;
+    bool routedHardware = false;
     const double sr = rate.load(std::memory_order_relaxed);
     const bool renderingHead[2]{current.playing||tailFrames[0]>0,current.subPlaying||tailFrames[1]>0};
     const bool active = renderingHead[0] || renderingHead[1];
@@ -1525,22 +1529,19 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         }
         bus.midiMessages.clear();
         if (bus.midiSlot >= 1 && bus.midiSlot <= 3)
-            appendLiveTrackMIDI(bus.midiMessages, slotMessages[bus.midiSlot - 1], samples, bus.armed.load() && liveInputEnabled.load());
-        if (index == keyboardTarget.load()) {
-            appendLiveTrackMIDI(bus.midiMessages, keyboardMidi, samples, bus.armed.load() && liveInputEnabled.load());
-            routedKeyboard = true;
-        }
-        if (trackCapture)
-            trackCapture->midi(bus.id, bus.midiMessages, samples, bus.midiChannel);
+            appendLiveTrackMIDI(bus.midiMessages, slotMessages[bus.midiSlot - 1], samples, bus.armed.load() && liveInputEnabled.load(), bus.midiChannel);
+        bus.keyboardRoute.append(bus.midiMessages, keyboardMidi, samples,
+            bus.armed.load() && liveInputEnabled.load(), keyboardChannel.load(), bus.midiChannel);
+        if (captureActive)
+            trackCapture->midi(bus.id, bus.midiMessages, samples, 0);
         if(allowInstrument)for(const auto event:bus.midiMessages)
-            if(bus.midiChannel<=0||event.getMessage().getChannel()==bus.midiChannel)
-                bus.externalMIDI[0].addEvent(event.getMessage(),event.samplePosition);
+            bus.externalMIDI[0].addEvent(event.getMessage(),event.samplePosition);
         if(!allowInstrument&&instrumentWasAllowed)
             for(int channel=1;channel<=16;++channel)bus.externalMIDI[0].addEvent(MidiMessage::allNotesOff(channel),0);
         liveRecordBuffer.clear(0, samples);
         if (bus.midi && !bus.midi->empty()) {
             if (allowInstrument)
-                bus.midi->live(liveRecordBuffer, bus.midiMessages, samples, bus.midiChannel);
+                bus.midi->live(liveRecordBuffer, bus.midiMessages, samples);
             else if (instrumentWasAllowed)
                 bus.midi->stopLive();
         }
@@ -1552,7 +1553,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 if (packed >= 0 && packed < inputChannels && input[packed])
                     liveRecordBuffer.addFrom(ch, 0, input[packed], samples);
             }
-        if (trackCapture)
+        if (captureActive)
             trackCapture->bus(bus.id, liveRecordBuffer, samples);
         for (int ch = 0; ch < 2; ++ch)
             bus.buffer.addFrom(ch, 0, liveRecordBuffer, ch, 0, samples);
@@ -1649,6 +1650,19 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 }
             }
         }
+        // An armed track indicates its selected input even with transport and
+        // audible monitoring off. This does not route that signal to the master.
+        if (bus.armed.load() && liveInputEnabled.load() && bus.inputFirst > 0 && input)
+            for (int channel = 0; channel < 2; ++channel) {
+                const int physical = bus.inputFirst - 1 + (bus.inputChannels == 1 ? 0 : channel);
+                const int packed = physical < 128 ? inputMapping[(size_t)physical] : -1;
+                if (packed >= 0 && packed < inputChannels && input[packed]) {
+                    const auto range = FloatVectorOperations::findMinAndMax(input[packed], samples);
+                    const float level = range.getEnd(), negative = -range.getStart();
+                    stereoPeak[(size_t)channel] = std::max(stereoPeak[(size_t)channel], std::max(level, negative));
+                    peak = std::max(peak, stereoPeak[(size_t)channel]);
+                }
+            }
         bus.fxInput.store(std::max(fxInput, bus.fxInput.load() * .85f));
         bus.fxOutput.store(std::max(fxOutput, bus.fxOutput.load() * .85f));
         const double elapsed = samples / rate.load();
@@ -1659,8 +1673,6 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     }
     if (routedHardware)
         liveMidi.clear();
-    if (!routedKeyboard)
-        appendLiveTrackMIDI(liveMidi, keyboardMidi, samples, liveInputEnabled.load());
     liveRecordBuffer.clear(0,samples);
     if (allowInstrument) {
         if (masterMIDI && !masterMIDI->empty())
@@ -1757,7 +1769,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     subPlaying.store(current.subPlaying);
     if (active)
         elapsedSamples.fetch_add((uint64)samples, std::memory_order_relaxed);
-    if (trackCapture) {
+    if (captureActive) {
         trackCapture->advance(samples);
         recordedFrames = trackCapture->sampleCount();
     }

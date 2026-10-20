@@ -133,7 +133,16 @@ class TransportButtons final {
             Ptr<ID2D1PathGeometry> path;factory->CreatePathGeometry(&path);Ptr<ID2D1GeometrySink> sink;if(path&&SUCCEEDED(path->Open(&sink))){sink->BeginFigure(D2D1::Point2F(x+2,y+1),D2D1_FIGURE_BEGIN_FILLED);sink->AddLine(D2D1::Point2F(x+11,y+6));sink->AddLine(D2D1::Point2F(x+2,y+11));sink->EndFigure(D2D1_FIGURE_END_CLOSED);sink->Close();t->FillGeometry(path.Get(),brush.Get());}
         }else if(s.icon==L"pause"){rect(2,1,4.5f,11);rect(7.5f,1,10,11);}
         else if(s.icon==L"stopall")rect(1.5f,1.5f,10.5f,10.5f);
-        else if(s.icon==L"record")t->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x+6,y+6),4,4),brush.Get(),1.2f);
+        else if(s.icon==L"record") {
+            const auto circle = D2D1::Ellipse(D2D1::Point2F(x+6,y+6),5,5);
+            if (s.active) {
+                t->FillEllipse(circle,brush.Get());
+                brush->SetColor(bg); rect(3.8f,3.8f,8.2f,8.2f); brush->SetColor(fg);
+            } else {
+                t->DrawEllipse(circle,brush.Get(),1.15f);
+                t->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x+6,y+6),2.6f,2.6f),brush.Get());
+            }
+        }
         else if(s.icon==L"loop"){
             Ptr<ID2D1PathGeometry> path;factory->CreatePathGeometry(&path);Ptr<ID2D1GeometrySink> sink;
             if(path&&SUCCEEDED(path->Open(&sink))){
@@ -149,7 +158,11 @@ class TransportButtons final {
             }
             line(8,0.5f,10,2.5f);line(8,4.5f,10,2.5f);line(4,7.5f,2,9.5f);line(4,11.5f,2,9.5f);
         }
-        else if(s.icon==L"metronome"){line(3,1,0,11);line(0,11,11,11);line(11,11,8,1);line(8,1,3,1);line(6,9,2,3);line(2,3,0,3);}
+        else if(s.icon==L"metronome") {
+            line(4,1,1,11); line(1,11,11,11); line(11,11,8,1); line(8,1,4,1);
+            line(3,8.5f,9,8.5f); line(6,9,9.5f,.5f);
+            t->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x+7.4f,y+2,x+10.2f,y+4.2f),.5f,.5f),brush.Get());
+        }
         if(layout)t->DrawTextLayout(D2D1::Point2F(x+iconSize+3,0),layout.Get(),brush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
         if(s.dimming>0){brush->SetColor(D2D1::ColorF(0,0,0,s.dimming));t->FillRectangle(D2D1::RectF(0,0,width,height),brush.Get());}
         if(t->EndDraw()==D2DERR_RECREATE_TARGET)b.target.Reset();

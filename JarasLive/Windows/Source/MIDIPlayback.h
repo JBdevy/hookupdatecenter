@@ -7,14 +7,42 @@
 #include "../../Core/Transport/PlaybackScope.hpp"
 namespace catlive {
 inline void appendLiveTrackMIDI(MidiBuffer &destination, const MidiBuffer &source,
-                                int samples, bool armed) {
+                                int samples, bool armed, int channel = 0) {
     // Disarming blocks new notes, while the original route must still receive
     // note releases and pedal/controllers so an already sounding voice can end.
     for (const auto event : source)
-        if (event.samplePosition >= 0 && event.samplePosition < samples &&
+        if ((channel <= 0 || event.getMessage().getChannel() == channel) &&
+            event.samplePosition >= 0 && event.samplePosition < samples &&
             (armed || !event.getMessage().isNoteOn()))
             destination.addEvent(event.getMessage(), event.samplePosition);
 }
+// One voice per armed track in Omni; note-offs retain their original channel.
+struct VirtualKeyboardRoute {
+    std::array<std::array<uint8,128>,16> held{};
+    void append(MidiBuffer &output, const MidiBuffer &input, int samples, bool armed, int selected, int trackChannel) {
+        for (const auto event : input) {
+            auto message = event.getMessage();
+            if (event.samplePosition < 0 || event.samplePosition >= samples) continue;
+            if (message.isAllNotesOff() || message.isAllSoundOff()) {
+                auto &notes = held[size_t(message.getChannel()-1)];
+                for (size_t note=0; note<notes.size(); ++note) if (notes[note]) {
+                    output.addEvent(MidiMessage::noteOff(notes[note],int(note)),event.samplePosition); notes[note]=0;
+                }
+                continue;
+            }
+            if (!message.isNoteOn() && !message.isNoteOff()) continue;
+            auto &target = held[size_t(message.getChannel()-1)][size_t(message.getNoteNumber())];
+            if (message.isNoteOn()) {
+                if (target) { output.addEvent(MidiMessage::noteOff(target,message.getNoteNumber()),event.samplePosition); target=0; }
+                if (!armed || (selected > 0 && trackChannel > 0 && selected != trackChannel)) continue;
+                target = uint8(selected > 0 ? selected : trackChannel > 0 ? trackChannel : 1);
+                message.setChannel(target); output.addEvent(message,event.samplePosition);
+            } else if (target) {
+                message.setChannel(target); output.addEvent(message,event.samplePosition); target=0;
+            }
+        }
+    }
+};
 struct PlaybackNote {
     double start = 0, end = 0;
     int pitch = 60, velocity = 100, channel = 1;

@@ -2596,6 +2596,7 @@ private final class FooterMixerScrollView: NSView {
     private var coastRemaining: CGFloat = 0
     private var coastFrame = 0.0
     private var boundsObserver: NSObjectProtocol?
+    private var movingClip = false
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 242) }
     override var fittingSize: NSSize { frame.size }
@@ -2608,7 +2609,11 @@ private final class FooterMixerScrollView: NSView {
         bar.scrollerStyle = .legacy; bar.controlSize = .small; bar.target = self; bar.action = #selector(moveBar)
         scroll.contentView.postsBoundsChangedNotifications = true
         boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.syncBar() }
+            MainActor.assumeIsolated {
+                guard let self, !self.movingClip else { return }
+                self.prepare(at: self.scroll.contentView.bounds.minX)
+                self.syncBar()
+            }
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -2662,7 +2667,10 @@ private final class FooterMixerScrollView: NSView {
         }
         let cacheLimit = min(24, max(4, preparedRange.count * 2))
         while cachedStripOrder.count > cacheLimit {
-            cachedStrips.removeValue(forKey: cachedStripOrder.removeFirst())
+            // A reversal detaches the old viewport before mounting the new
+            // one. Never evict a cached destination strip in that interval.
+            guard let victim = cachedStripOrder.firstIndex(where: { !preparedRange.contains($0) }) else { break }
+            cachedStrips.removeValue(forKey: cachedStripOrder.remove(at: victim))
         }
     }
     private func prepare(at x: CGFloat, force: Bool = false) {
@@ -2771,17 +2779,26 @@ private final class FooterMixerScrollView: NSView {
     }
     private func syncBar() {
         let range = max(0, host.frame.width - scroll.contentSize.width)
-        bar.isEnabled = range > 0
-        bar.knobProportion = min(1, scroll.contentSize.width / max(1, host.frame.width))
-        bar.doubleValue = range > 0 ? scroll.contentView.bounds.minX / range : 0
-        prepare(at: scroll.contentView.bounds.minX)
+        let enabled = range > 0
+        let proportion = min(1, scroll.contentSize.width / max(1, host.frame.width))
+        let value = range > 0 ? scroll.contentView.bounds.minX / range : 0
+        if bar.isEnabled != enabled { bar.isEnabled = enabled }
+        if bar.knobProportion != proportion { bar.knobProportion = proportion }
+        if bar.doubleValue != value { bar.doubleValue = value }
     }
 
     private func move(to x: CGFloat) {
         let target = min(max(0, x), max(0, host.frame.width - scroll.contentSize.width))
         prepare(at: target)
-        scroll.contentView.scroll(to: NSPoint(x: target, y: 0))
-        scroll.reflectScrolledClipView(scroll.contentView); syncBar()
+        // One preparation per frame. Scrolling posts a synchronous bounds
+        // notification; that notification used to prepare the same strips again.
+        if scroll.contentView.bounds.origin != NSPoint(x: target, y: 0) {
+            movingClip = true
+            scroll.contentView.scroll(to: NSPoint(x: target, y: 0))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            movingClip = false
+        }
+        syncBar()
     }
     @objc private func moveBar() {
         stopCoast()

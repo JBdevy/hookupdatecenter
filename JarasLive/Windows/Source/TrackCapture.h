@@ -3,6 +3,10 @@
 #include "AudioFormats.h"
 #include "MP3Writer.h"
 #include "RecordingEncoding.h"
+#include "RecordingPreview.h"
+#include "NativeFX.h"
+#include <deque>
+#include <mutex>
 namespace catlive {
 // JUCE's AIFF writer implements signed PCM32, but its advertised depth list
 // omits 32. Expose the implemented encoding for parity with Advanced on Mac.
@@ -22,6 +26,10 @@ class TrackCapture {
         int bits = 0;
         bool floatingPoint = false;
         int bitrate = 320;
+        std::shared_ptr<RecordingPreview> preview;
+        bool postFader = true, postFX = true;
+        float gain = 1;
+        var effects;
     };
     struct Take {
         ID track;
@@ -36,8 +44,9 @@ class TrackCapture {
     };
     TrackCapture(const std::vector<Target> &specs, double sampleRate, int bits, double tempo)
         : rate(sampleRate), bpm(tempo) {
-        if (specs.empty() || specs.size() > 512 || rate <= 0 || bpm <= 0)
+        if (specs.size() > 512 || rate <= 0 || bpm <= 0)
             throw std::runtime_error("Invalid recording configuration.");
+        if (specs.empty()) return; // REC may run with no armed tracks, as on Mac.
         silence.fill(0);
         events.reserve(65536);
         thread.startThread(Thread::Priority::high);
@@ -46,6 +55,8 @@ class TrackCapture {
                 throw std::runtime_error("Invalid recording patch.");
             Entry entry;
             entry.target = spec;
+            entry.gain = spec.gain;
+            entry.processing = std::make_shared<ProcessingState>();
             if (!spec.midi) {
                 const bool mp3 = spec.file.hasFileExtension("mp3");
                 entry.captureFile = mp3 ? spec.file.withFileExtension(".capture.wav") : spec.file;
@@ -71,7 +82,7 @@ class TrackCapture {
                 if (!writer)
                     throw std::runtime_error("Invalid recording encoding.");
                 entry.writer =
-                    std::make_unique<AudioFormatWriter::ThreadedWriter>(writer.release(), thread, 131072);
+                    std::make_unique<AudioFormatWriter::ThreadedWriter>(new InputWriter(std::move(writer), spec, rate, entry.processing), thread, 131072);
             }
             entries.push_back(std::move(entry));
         }
@@ -84,13 +95,15 @@ class TrackCapture {
                const std::array<int, 128> &mapping) {
         for (auto &entry : entries)
             if (!entry.target.bus && !entry.target.midi) {
-                const float *pointers[2]{silence.data(), silence.data()};
+                const float *pointers[3]{silence.data(), silence.data(), nullptr};
                 for (int ch = 0; ch < entry.target.channels; ++ch) {
                     const int physical = entry.target.input - 1 + ch;
                     const int packed = physical < 128 ? mapping[(size_t)physical] : -1;
                     if (packed >= 0 && packed < channels && data && data[packed])
                         pointers[ch] = data[packed];
                 }
+                std::fill_n(gainSamples.data(), count, entry.gain);
+                pointers[entry.target.channels] = gainSamples.data();
                 if (!entry.writer->write(pointers, count))
                     ++dropped;
             }
@@ -98,12 +111,14 @@ class TrackCapture {
     void bus(const ID &id, const AudioBuffer<float> &buffer, int count) {
         for (auto &entry : entries)
             if (entry.target.bus && !entry.target.midi && entry.target.track == id) {
-                const float *pointers[2]{buffer.getReadPointer(0), buffer.getReadPointer(1)};
+                const float *pointers[3]{buffer.getReadPointer(0), buffer.getReadPointer(1), nullptr};
                 if (entry.target.channels == 1) {
                     for (int i = 0; i < count; ++i)
                         mono[(size_t)i] = (pointers[0][i] + pointers[1][i]) * .5f;
                     pointers[0] = mono.data();
                 }
+                std::fill_n(gainSamples.data(), count, entry.gain);
+                pointers[entry.target.channels] = gainSamples.data();
                 if (!entry.writer->write(pointers, count))
                     ++dropped;
             }
@@ -129,9 +144,29 @@ class TrackCapture {
                     events.push_back(event);
                 }
     }
-    void advance(int count) { frames += count; }
+    // Called by the control thread, never by the device callback. Prepare
+    // plugins before handing the new isolated chain to the writer.
+    void updateEffects(const ID &track, const var &settings) {
+        for (auto &entry : entries) if (entry.target.track == track && entry.target.postFX && !entry.target.midi) {
+            auto next = std::make_unique<NativeFX>(); next->prepare(settings, rate);
+            std::lock_guard<std::mutex> lock(entry.processing->mutex);
+            entry.processing->pending = std::move(next);
+        }
+    }
+    void setGain(const ID &track, float gain) noexcept {
+        for (auto &entry : entries) if (entry.target.track == track) entry.gain = gain;
+    }
+    void advance(int count) {
+        frames += count;
+        for (auto &entry : entries) if (entry.target.preview)
+            entry.target.preview->frames.store(frames, std::memory_order_release);
+    }
     int64 sampleCount() const { return frames; }
-    uint64 overflows() const { return dropped; }
+    uint64 overflows() const {
+        uint64 result = dropped;
+        for (const auto &entry : entries) if (entry.processing->failed.load()) ++result;
+        return result;
+    }
     std::vector<Take> finish() {
         std::vector<Take> takes;
         for (size_t target = 0; target < entries.size(); ++target) {
@@ -245,9 +280,86 @@ class TrackCapture {
     }
 
   private:
+    struct ProcessingState {
+        std::mutex mutex;
+        std::unique_ptr<NativeFX> pending;
+        std::atomic<bool> failed{false};
+    };
+    // Only the disk worker invokes this processor. The callback enqueues the
+    // new input plus its fader value; no playback bus enters this writer.
+    class InputWriter final : public AudioFormatWriter {
+      public:
+        InputWriter(std::unique_ptr<AudioFormatWriter> file, const Target &target, double rate, std::shared_ptr<ProcessingState> state)
+            : AudioFormatWriter(nullptr, "CatLive recording input", rate, target.channels + 1, 32),
+              destination(std::move(file)), preview(target.preview), channels(target.channels),
+              postFader(target.postFader), block(2, 4096), state(std::move(state)) {
+            usesFloatingPointData = true;
+            if (target.postFX) {
+                effects.prepare(target.effects, rate);
+                latency = effects.latencyFrames();
+            }
+            skip = latency;
+        }
+        ~InputWriter() override {
+            try {
+                while (!gains.empty() && !state->failed.load()) {
+                    const int count = std::min<int64>(4096, (int64)gains.size() + skip);
+                    block.clear(); emit(count);
+                }
+            } catch (...) { state->failed = true; }
+            if (preview) preview->flush();
+        }
+        bool write(const int **data, int count) override {
+            try {
+                std::unique_ptr<NativeFX> next;
+                { std::lock_guard<std::mutex> lock(state->mutex); next.swap(state->pending); }
+                if (next) {
+                    while (!gains.empty() && !state->failed.load()) { block.clear(); emit(std::min<int64>(4096, (int64)gains.size() + skip)); }
+                    effects.swap(*next); latency = effects.latencyFrames(); skip = latency;
+                }
+                for (int at = 0; at < count; at += 4096) {
+                    const int length = std::min(4096, count - at);
+                    for (int ch = 0; ch < 2; ++ch)
+                        block.copyFrom(ch, 0, reinterpret_cast<const float *>(data[std::min(ch, channels - 1)]) + at, length);
+                    const auto *gain = reinterpret_cast<const float *>(data[channels]) + at;
+                    for (int i = 0; i < length; ++i) gains.push_back(postFader ? gain[i] : 1.f);
+                    if (!emit(length)) return false;
+                }
+                return true;
+            } catch (...) { state->failed = true; return false; }
+        }
+      private:
+        bool emit(int count) {
+            effects.process(block, count, double(processed) / sampleRate, true);
+            processed += count;
+            const int drop = std::min(count, skip); skip -= drop;
+            const int kept = std::min<int>(count - drop, (int)gains.size());
+            if (!kept) return true;
+            for (int i = 0; i < kept; ++i) {
+                const auto gain = gains.front(); gains.pop_front();
+                for (int ch = 0; ch < channels; ++ch)
+                    block.setSample(ch, i, block.getSample(ch, i + drop) * gain);
+            }
+            if (preview) preview->append(block.getArrayOfReadPointers(), kept);
+            const bool ok = destination->writeFromAudioSampleBuffer(block, 0, kept);
+            if (!ok) state->failed = true;
+            return ok;
+        }
+        std::unique_ptr<AudioFormatWriter> destination;
+        std::shared_ptr<RecordingPreview> preview;
+        NativeFX effects;
+        int channels, latency = 0, skip = 0;
+        bool postFader;
+        int64 processed = 0;
+        AudioBuffer<float> block;
+        std::deque<float> gains;
+        std::shared_ptr<ProcessingState> state;
+    };
     struct Entry {
         Target target;
         File captureFile;
+        float gain = 1;
+        std::shared_ptr<ProcessingState> processing;
         std::unique_ptr<AudioFormatWriter::ThreadedWriter> writer;
     };
     struct Event {
@@ -258,7 +370,7 @@ class TrackCapture {
     TimeSliceThread thread{"CatLive multitrack recording"};
     std::vector<Entry> entries;
     std::vector<Event> events;
-    std::array<float, 4096> silence{}, mono{};
+    std::array<float, 4096> silence{}, mono{}, gainSamples{};
     double rate, bpm;
     int64 frames = 0;
     uint64 dropped = 0;

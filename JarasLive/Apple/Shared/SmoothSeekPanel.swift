@@ -355,11 +355,14 @@ struct SmoothSeekBankView: View {
                 }
                 HStack(spacing: 2) {
                     if queued { Image(systemName: "arrow.turn.up.left").font(.jarasSystem(size: 8, weight: .bold)) }
-                    Text(verbatim: marker.name.uppercased()).font(.jarasSystem(size: isStart ? 16 : 12, weight: isStart ? .heavy : .semibold)).lineLimit(nil).multilineTextAlignment(.center).minimumScaleFactor(0.35)
+                    Group {
+                        if isStart { Text("Section start") }
+                        else { Text(verbatim: marker.name.uppercased()) }
+                    }.font(.jarasSystem(size: isStart ? 16 : 12, weight: isStart ? .heavy : .semibold)).lineLimit(nil).multilineTextAlignment(.center).minimumScaleFactor(0.35)
                 }.foregroundStyle(Color.white).padding(.horizontal, 3).frame(maxWidth: .infinity, maxHeight: .infinity)
                 RoundedRectangle(cornerRadius: 5).stroke(selected ? JarasTheme.green : isStart ? Color.blue : JarasTheme.line, lineWidth: selected || isStart ? 1.5 : 0.5)
             }.contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityLabel(marker.name.uppercased()).accessibilityValue(queued ? "Queued" : active ? "Playing" : "")
+        }.buttonStyle(.plain).accessibilityLabel(isStart ? JarasLocalization.string("Section start") : marker.name.uppercased()).accessibilityValue(queued ? "Queued" : active ? "Playing" : "")
     }
 }
 
@@ -542,3 +545,43 @@ struct SectionListDock<Primary: View, Sections: View>: View {
     }
 
 }
+
+#if os(macOS)
+@MainActor final class DetachedPartsWindow: NSObject, ObservableObject, NSWindowDelegate {
+    @Published private(set) var isDetached = false
+    @Published private(set) var isVisible = false
+    private var window: NSWindow?
+    func open(show: ShowController) {
+        if let window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil); isVisible = true; return
+        }
+        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        panel.title = "CatLive · Parts"; panel.minSize = NSSize(width: 240, height: 240)
+        panel.isReleasedWhenClosed = false; panel.delegate = self
+        let host = NSHostingView(rootView: DetachedPartsContent(show: show).interfaceScaled())
+        if #available(macOS 13, *) { host.sizingOptions = [] }
+        panel.contentView = host; InterfaceScaling.shared.register(panel)
+        panel.setFrameAutosaveName("CatLiveDetachedParts")
+        if !panel.setFrameUsingName("CatLiveDetachedParts") { panel.center() }
+        window = panel; isDetached = true; isVisible = true; panel.makeKeyAndOrderFront(nil)
+    }
+    func hide() { window?.orderOut(nil); isVisible = false }
+    func close() {
+        window?.delegate = nil; window?.close(); window?.contentView = nil; window = nil
+        isDetached = false; isVisible = false
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
+    func windowDidMiniaturize(_ notification: Notification) { isVisible = false }
+    func windowDidDeminiaturize(_ notification: Notification) { isVisible = true }
+}
+private struct DetachedPartsContent: View {
+    let show: ShowController
+    @AppStorage("jaras.language") private var language = "en"
+    var body: some View {
+        SmoothSeekPanel(show: show).environment(\.locale, Locale(identifier: language))
+            .preferredColorScheme(.dark).background(JarasTheme.panel)
+    }
+}
+#endif

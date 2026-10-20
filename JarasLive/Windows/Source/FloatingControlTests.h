@@ -72,6 +72,114 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         require(!FloatingShortcuts::allows(KeyPress(KeyPress::deleteKey)),"FX Delete leaked into timeline");
         window->setVisible(false);
     });
+    test("Advanced and Settings stay nonmodal, reuse their windows and release shortcut learning", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(fixture()));session.audio.setOffline(true);
+        const auto preferences=directory.getNonexistentChildFile("floating-preferences",".json");
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,preferences);w.setSize(1366,768);
+        const auto track=session.song()->tracks[0].id;
+        auto windows=[&](const String &tab) {
+            std::vector<DocumentWindow *> result;
+            auto &desktop=Desktop::getInstance();
+            for(int i=0;i<desktop.getNumComponents();++i)
+                if(auto *window=dynamic_cast<DocumentWindow *>(desktop.getComponent(i)))
+                    if(window->isVisible()&&uiFeatureTests::find(*window,tab))result.push_back(window);
+            return result;
+        };
+        auto single=[&](const String &tab) {
+            const auto found=windows(tab);require(found.size()==1,"Preference window missing or duplicated");
+            require(found[0]->getPeer()&&!found[0]->isCurrentlyModal()&&
+                    !Component::getCurrentlyModalComponent()&&!w.isCurrentlyBlockedByAnotherModalComponent(),
+                    "Preference window entered modal state or blocked the workspace");
+            return found[0];
+        };
+        std::function<Component *(Component &,const std::function<bool(Component &)> &)> matching;
+        matching=[&](Component &root,const std::function<bool(Component &)> &predicate)->Component * {
+            if(predicate(root))return &root;
+            for(auto *child:root.getChildren())if(auto *found=matching(*child,predicate))return found;
+            return nullptr;
+        };
+        auto button=[&](Component &root,const String &title) {
+            auto *found=dynamic_cast<Button *>(matching(root,[&](Component &component) {
+                if(auto *value=dynamic_cast<TextButton *>(&component))return value->getButtonText()==title;
+                return false;
+            }));
+            require(found&&bool(found->onClick),"Preference action button missing");return found;
+        };
+        auto tempo=[&](Component &root) {
+            auto *found=dynamic_cast<TextEditor *>(matching(root,[](Component &component) {
+                return dynamic_cast<TextEditor *>(&component)&&component.getName()=="BPM";
+            }));
+            require(found,"Advanced BPM editor missing");return found;
+        };
+        auto editTrack=[&](double value) {
+            auto *row=uiFeatureTests::find(w,"trackRow:"+text(track));require(row,"Preference test track row missing");
+            auto *fader=dynamic_cast<Slider *>(uiFeatureTests::find(*row,"trackVolume"));
+            require(fader&&fader->isEnabled()&&!fader->isCurrentlyBlockedByAnotherModalComponent(),
+                    "Floating preferences blocked the track fader");
+            fader->setValue(value,sendNotificationSync);
+            require(std::abs(session.song()->tracks[0].volume-value)<.001,
+                    "Track volume did not change with preferences open");
+        };
+        auto clickTab=[&](DocumentWindow &window,int index) {
+            auto *tab=dynamic_cast<Button *>(uiFeatureTests::find(window,"settingsTab"+String(index)));
+            require(tab&&bool(tab->onClick),"Settings tab missing");tab->onClick();pump();
+        };
+        auto selected=[&](DocumentWindow &window,int index) {
+            auto *tab=dynamic_cast<Button *>(uiFeatureTests::find(window,"settingsTab"+String(index)));
+            return tab&&tab->getToggleState();
+        };
+        w.openAdvanced();pump();
+        Component::SafePointer<DocumentWindow> advanced(single("advancedTab0"));
+        const auto before=session.song()->bpm;tempo(*advanced)->setText("137",false);
+        w.openAdvanced();pump();
+        require(single("advancedTab0")==advanced.getComponent()&&tempo(*advanced)->getText()=="137",
+                "Reopening Advanced replaced the window or discarded its draft");
+        editTrack(.37);
+        button(*advanced,"Cancelar")->onClick();
+        require(!advanced||!advanced->isVisible(),"Advanced Cancel did not close its floating window");
+        pump();require(session.song()->bpm==before,"Advanced Cancel applied the draft tempo");
+        w.openAdvanced();pump();advanced=single("advancedTab0");
+        tempo(*advanced)->setText("137",false);button(*advanced,"Aplicar")->onClick();
+        require((!advanced||!advanced->isVisible())&&session.song()->bpm==137,
+                "Advanced Apply did not commit and close");pump();
+
+        w.openSettings();pump();
+        Component::SafePointer<DocumentWindow> settings(single("settingsTab0"));
+        require(selected(*settings,0),"Settings did not open General");
+        clickTab(*settings,2);w.openSettings();pump();
+        require(single("settingsTab0")==settings.getComponent()&&selected(*settings,2),
+                "Reopening Settings duplicated the window or changed its page");
+        w.openAudioSettings();pump();
+        require(single("settingsTab0")==settings.getComponent()&&selected(*settings,1),
+                "Audio settings shortcut did not reuse Settings on its Audio page");
+        w.openAdvanced();pump();advanced=single("advancedTab0");single("settingsTab0");
+        editTrack(.61);advanced->closeButtonPressed();pump();
+        clickTab(*settings,3);
+        auto learningButton=[&] {
+            return dynamic_cast<Button *>(matching(*settings,[](Component &component) {
+                if(auto *value=dynamic_cast<Button *>(&component))return value->getTooltip()=="Fadeout keyboard";
+                return false;
+            }));
+        };
+        auto *learn=learningButton();require(learn&&bool(learn->onClick),"Settings shortcut learning control missing");
+        learn->onClick();pump();learn=learningButton();
+        require(learn&&learn->getName()==String::fromUTF8("Aguardando controle…"),
+                "Settings shortcut learning did not start");
+        settings->closeButtonPressed();
+        require(!settings||!settings->isVisible(),"Settings close did not hide the floating window");
+        // Test before deferred window destruction: hiding must immediately stop
+        // learning so the next workspace key cannot become an accidental binding.
+        w.keyPressed(KeyPress(KeyPress::F9Key));w.keyStateChanged(false);
+        Appearance saved(preferences);
+        require(str(get(saved.value("catlive.actions",object()),"transportFadeout"),"keyboard").isEmpty(),
+                "Closing Settings left shortcut learning active");
+        pump();w.openSettings();pump();settings=single("settingsTab0");
+        require(selected(*settings,0),"Closed Settings retained stale page/learning state");
+        settings->closeButtonPressed();pump();
+        require(!Component::getCurrentlyModalComponent()&&windows("settingsTab0").empty()&&windows("advancedTab0").empty(),
+                "Closing preferences left a modal mask or visible window");
+    });
     test("Live tuner changes audible pitch without moving transport and restores with Undo", [&] {
         const auto folder=directory.getNonexistentChildFile("live-tuner","");folder.createDirectory();
         WavAudioFormat format;auto stream=folder.getChildFile("tone.wav").createOutputStream();

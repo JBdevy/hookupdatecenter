@@ -2,22 +2,23 @@
 #include "Appearance.h"
 namespace catlive {
 // Mac FooterPianoKeyboard: all 88 notes always fit, no computer-key mappings.
-class FooterKeyboard final : public Component, private Timer, private MidiKeyboardState::Listener {
+class FooterKeyboard final : public Component, private Timer, private MidiKeyboardState::Listener, private ChangeListener {
   public:
     FooterKeyboard(MidiKeyboardState &state, Appearance &appearance) : state(state), appearance(appearance) {
         for (int n=21;n<=108;++n) if (!black(n)) whites.push_back(n);
-        state.addListener(this); startTimerHz(30); setWantsKeyboardFocus(false);
+        appearance.addChangeListener(this); state.addListener(this); startTimerHz(30); setWantsKeyboardFocus(false);
     }
-    ~FooterKeyboard() { release(); state.removeListener(this); }
+    ~FooterKeyboard() { release(); appearance.removeChangeListener(this); state.removeListener(this); }
     void visibilityChanged() override { if (!isShowing()) release(); }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
+        const bool inverted=appearance.value("jaras.keyboard.style", "default").toString()=="black";
         for (bool dark : {false,true}) for(int n=21;n<=108;++n) if(black(n)==dark) {
             auto r=keyRect(n).reduced(.5f,0);
             const bool active=state.isNoteOnForChannels(0xffff,n) || held==n;
-            g.setColour(active ? appearance.colour(dark?"jaras.keyboard.blackColor":"jaras.keyboard.whiteColor",0x54ff93) : dark?Colour(0xff141414):Colour(0xffe3e3e3));
+            g.setColour(active ? appearance.colour(dark?"jaras.keyboard.blackColor":"jaras.keyboard.whiteColor",0x54ff93) : (dark != inverted)?Colour(0xff141414):Colour(0xffe3e3e3));
             g.fillRoundedRectangle(r,2);
-            if(n==21 || n%12==0) { g.setColour(Colours::black); g.setFont(theme::mediumFont(9));
+            if(n==21 || n%12==0) { g.setColour(inverted && !active ? Colours::white : Colours::black); g.setFont(theme::mediumFont(9));
                 g.drawText(n==21?String("A-1"):"C"+String(n/12-2), r.withTop(r.getBottom()-21), Justification::centred); }
         }
     }
@@ -31,13 +32,14 @@ class FooterKeyboard final : public Component, private Timer, private MidiKeyboa
         return black(n)?juce::Rectangle<float>(bounds.getX()+i*width-width*.3f,bounds.getY(),width*.6f,bounds.getHeight()*.63f):juce::Rectangle<float>(bounds.getX()+i*width,bounds.getY(),width,bounds.getHeight());
     }
   private:
-    MidiKeyboardState &state; Appearance &appearance; std::vector<int> whites; int held=-1; std::atomic<bool> changed{true};
+    MidiKeyboardState &state; Appearance &appearance; std::vector<int> whites; int held=-1, heldChannel=1; std::atomic<bool> changed{true};
     static bool black(int n) { const int v=n%12; return v==1||v==3||v==6||v==8||v==10; }
     int at(Point<float> p) const { if(!getLocalBounds().toFloat().contains(p)) return -1; for(bool dark:{true,false}) for(int n=21;n<=108;++n) if(black(n)==dark&&keyRect(n).contains(p)) return n; return -1; }
-    void release() { if(held>=0) state.noteOff(1,held,0); held=-1; repaint(); }
-    void press(int n) { if(n==held) return; release(); if(n>=0){held=n;state.noteOn(1,n,.8f);} repaint(); }
+    void release() { if(held>=0) state.noteOff(heldChannel,held,0); held=-1; repaint(); }
+    void press(int n) { if(n==held) return; release(); if(n>=0){held=n;heldChannel=jlimit(1,16,(int)appearance.value("jaras.keyboard.channel",0));state.noteOn(heldChannel,n,.8f);} repaint(); }
     void handleNoteOn(MidiKeyboardState *,int,int,float) override {changed=true;}
     void handleNoteOff(MidiKeyboardState *,int,int,float) override {changed=true;}
+    void changeListenerCallback(ChangeBroadcaster *) override { repaint(); }
     void timerCallback() override {if(held>=0 && !Process::isForegroundProcess()) release(); if(changed.exchange(false)) repaint();}
 };
 }

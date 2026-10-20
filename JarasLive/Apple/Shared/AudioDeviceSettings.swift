@@ -193,13 +193,15 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
             let count = outputChannels(id)
             let uid = stringProperty(id, kAudioDevicePropertyDeviceUID)
             let name = stringProperty(id, kAudioObjectPropertyName).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard count > 0, !name.isEmpty, !uid.isEmpty, isSelectableOutput(id, uid: uid) else { return nil }
+            guard count > 0, !name.isEmpty, !uid.isEmpty, isSelectableAudioDevice(id, uid: uid) else { return nil }
             return OutputDevice(id: uid, name: name, channels: count, hardwareID: id)
         }
         inputDevices = ids.compactMap { id in
             let count = outputChannels(id, scope: kAudioDevicePropertyScopeInput)
-            guard count > 0 else { return nil }
-            return OutputDevice(id: stringProperty(id, kAudioDevicePropertyDeviceUID), name: stringProperty(id, kAudioObjectPropertyName), channels: count, hardwareID: id)
+            let uid = stringProperty(id, kAudioDevicePropertyDeviceUID)
+            let name = stringProperty(id, kAudioObjectPropertyName).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard count > 0, !name.isEmpty, !uid.isEmpty, isSelectableAudioDevice(id, uid: uid) else { return nil }
+            return OutputDevice(id: uid, name: name, channels: count, hardwareID: id)
         }
         // A catalog notification must not restart an armed recording input.
         let newInputHardwareID = inputDevice?.hardwareID
@@ -569,9 +571,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         #endif
     }
     #if os(macOS)
-    private func isSelectableOutput(_ id: AudioDeviceID, uid: String) -> Bool {
+    private func isSelectableAudioDevice(_ id: AudioDeviceID, uid: String) -> Bool {
         // AVAudioEngine creates this temporary input/output aggregate itself.
-        // Selecting it as an output creates a dependency on the engine being rebuilt.
+        // It is an implementation detail, never an input or output choice.
         guard !uid.hasPrefix("CADefaultDeviceAggregate-") else { return false }
         var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyIsHidden, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var hidden: UInt32 = 0, bytes = UInt32(MemoryLayout<UInt32>.size)

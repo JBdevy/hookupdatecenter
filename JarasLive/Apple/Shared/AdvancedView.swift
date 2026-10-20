@@ -6,8 +6,8 @@ struct AdvancedView: View {
     var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
-        case transport = "Transport", timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist"
-        var icon: String { switch self { case .transport: return "playpause"; case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet" } }
+        case transport = "Transport", timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist", keyboard = "Keyboard"
+        var icon: String { switch self { case .transport: return "playpause"; case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet"; case .keyboard: return "pianokeys" } }
     }
     private var availableTabs: [Tab] {
         #if os(iOS)
@@ -74,6 +74,7 @@ struct AdvancedView: View {
                     if tab == .transport { AdvancedTransportSettings() }
                     if tab == .video { AdvancedVideoSettings() }
                     if tab == .setlist { AdvancedSetlistColors() }
+                    if tab == .keyboard { AdvancedKeyboardSettings() }
                     if tab == .record || tab == .reRender { MediaProcessingFormatEditor(scope: tab == .record ? "record" : "rerender").id(tab.rawValue) }
                     Spacer(minLength: 0)
                 }.padding(20).frame(maxWidth: .infinity, alignment: .topLeading)
@@ -91,7 +92,7 @@ struct AdvancedView: View {
             }.padding(14).fixedSize(horizontal: false, vertical: true)
         }
         #if os(macOS)
-        .frame(width: 760, height: 420)
+        .frame(minWidth: 760, minHeight: 420)
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #endif
@@ -440,6 +441,23 @@ private struct AdvancedTransportSettings: View {
                 })).toggleStyle(.switch)
             }
             Button("Reset") { hidden = "" }
+        }
+    }
+}
+
+struct AdvancedKeyboardSettings: View {
+    @AppStorage("jaras.keyboard.style") private var style = "default"
+    @AppStorage("jaras.keyboard.channel") private var channel = 0
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Picker("Keyboard style", selection: $style) {
+                Text(verbatim: "Default").tag("default")
+                Text(verbatim: "Black").tag("black")
+            }
+            Picker("MIDI channel", selection: $channel) {
+                Text(verbatim: "Omni").tag(0)
+                ForEach(1...16, id: \.self) { Text(verbatim: String($0)).tag($0) }
+            }.onChange(of: channel) { KeyboardMIDIMonitor.shared.channel = $0 }
         }
     }
 }

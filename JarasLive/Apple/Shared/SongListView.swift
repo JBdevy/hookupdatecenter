@@ -233,6 +233,41 @@ struct SongListView: View {
         let displayedPlaying = transport.playing ? song?.playingSetlistRegion(ignoredRegion?.id ?? transport.regionId, position: ignoredRegion?.startTime ?? transport.position, expanded: expandedRegions) : nil
         let playbackEnd = transport.ignoreNextEnd ?? playingBounds?.endTime ?? transport.position
         VStack(spacing: 0) {
+            GeometryReader { geometry in
+                HStack(spacing: 3) {
+                    Button { show.toggleRegionAuto() } label: {
+                        Text("AUTO").font(.jarasSystem(size: 9, weight: .bold))
+                            .foregroundStyle(setlist.autoAdvance ? .black : JarasTheme.secondary)
+                            .frame(width: max(0, (geometry.size.width - 6) / 3), height: 26)
+                            .background(setlist.autoAdvance ? JarasTheme.green : JarasTheme.panel)
+                            .clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
+                    }.buttonStyle(.plain).jarasHelp("Queue the next song automatically")
+                        .immediateRightClick { showingAutoOptions = true }
+                        .popover(isPresented: $showingAutoOptions) {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Toggle("Run queue until the end of the block", isOn: Binding(get: { show.regionSetlist.autoUntilBlockEnd == true }, set: { show.setAutoUntilBlockEnd($0) }))
+                                Toggle("Without playback", isOn: Binding(get: { show.regionSetlist.preparesWithoutPlayback }, set: { show.setPrepareWithoutPlayback($0) }))
+                                if !show.regionSetlist.preparesWithoutPlayback {
+                                    Toggle("Automatic Subplay", isOn: Binding(get: { show.regionSetlist.automaticSubplay == true }, set: { show.setAutomaticSubplay($0) }))
+                                    Picker("Start before the end", selection: Binding(get: { Int(show.regionSetlist.subplayLeadTime) }, set: { show.setAutomaticSubplay(show.regionSetlist.automaticSubplay == true, seconds: Double($0)) })) {
+                                        ForEach(1...5, id: \.self) { Text("\($0)s").tag($0) }
+                                    }.disabled(show.regionSetlist.automaticSubplay != true)
+                                }
+                            }.toggleStyle(.automatic).padding(18).frame(width: 270)
+                        }
+                    Button { createdBlock = show.addSetlistBlock(symbol: defaultBlockSymbol, namePrefix: JarasLocalization.string("Bloco")) } label: {
+                        Text("Blocks").font(.jarasSystem(size: 9, weight: .bold)).frame(width: max(0, (geometry.size.width - 6) / 3), height: 26)
+                            .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
+                    }.buttonStyle(.plain).jarasHelp("Add a setlist block").accessibilityLabel("Blocks")
+                        .immediateRightClick {
+                            guard show.selectedRegionPlaylist != nil else { return }
+                            blockSymbolDraft = defaultBlockSymbol; showingBlockDefaults = true
+                        }
+                        .disabled(playlist == nil)
+                        .opacity(playlist == nil ? 0.4 : 1)
+                    RegionStopButton(active: setlist.stopsAtRegionEnd, width: max(0, (geometry.size.width - 6) / 3)) { show.toggleRegionStop() }
+                }
+            }.frame(height: 26).padding(.horizontal, 8).padding(.bottom, 6)
             HStack(spacing: 3) {
                 Button { choosingPlaylist.toggle() } label: {
                     HStack(spacing: 3) {
@@ -271,37 +306,6 @@ struct SongListView: View {
                         .frame(width: 27, height: 30).contentShape(Rectangle())
                 }.buttonStyle(.plain).jarasHelp("Search songs (Tab)").accessibilityLabel("Search songs")
                     .popover(isPresented: $searching, attachmentAnchor: .rect(.bounds), arrowEdge: .top) { searchPanel }
-                Button { show.toggleRegionAuto() } label: {
-                    Text("AUTO").font(.jarasSystem(size: 9, weight: .bold))
-                        .foregroundStyle(setlist.autoAdvance ? .black : JarasTheme.secondary)
-                        .frame(width: 34, height: 26)
-                        .background(setlist.autoAdvance ? JarasTheme.green : JarasTheme.panel)
-                        .clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
-                }.buttonStyle(.plain).jarasHelp("Queue the next song automatically")
-                    .immediateRightClick { showingAutoOptions = true }
-                    .popover(isPresented: $showingAutoOptions) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Toggle("Run queue until the end of the block", isOn: Binding(get: { show.regionSetlist.autoUntilBlockEnd == true }, set: { show.setAutoUntilBlockEnd($0) }))
-                            Toggle("Without playback", isOn: Binding(get: { show.regionSetlist.preparesWithoutPlayback }, set: { show.setPrepareWithoutPlayback($0) }))
-                            if !show.regionSetlist.preparesWithoutPlayback {
-                                Toggle("Automatic Subplay", isOn: Binding(get: { show.regionSetlist.automaticSubplay == true }, set: { show.setAutomaticSubplay($0) }))
-                                Picker("Start before the end", selection: Binding(get: { Int(show.regionSetlist.subplayLeadTime) }, set: { show.setAutomaticSubplay(show.regionSetlist.automaticSubplay == true, seconds: Double($0)) })) {
-                                    ForEach(1...5, id: \.self) { Text("\($0)s").tag($0) }
-                                }.disabled(show.regionSetlist.automaticSubplay != true)
-                            }
-                        }.toggleStyle(.automatic).padding(18).frame(width: 270)
-                    }
-                Button { createdBlock = show.addSetlistBlock(symbol: defaultBlockSymbol, namePrefix: JarasLocalization.string("Bloco")) } label: {
-                    Text("Blocks").font(.jarasSystem(size: 9, weight: .bold)).padding(.horizontal, 6).frame(height: 26)
-                        .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
-                }.buttonStyle(.plain).jarasHelp("Add a setlist block").accessibilityLabel("Blocks")
-                    .immediateRightClick {
-                        guard show.selectedRegionPlaylist != nil else { return }
-                        blockSymbolDraft = defaultBlockSymbol; showingBlockDefaults = true
-                    }
-                    .disabled(playlist == nil)
-                    .opacity(playlist == nil ? 0.4 : 1)
-                RegionStopButton(active: setlist.stopsAtRegionEnd) { show.toggleRegionStop() }
             }.padding(.horizontal, 8).padding(.bottom, 6)
             ScrollViewReader { scroll in
                 ScrollView(showsIndicators: false) {
@@ -1716,12 +1720,13 @@ private struct LockedRegionDrag: ViewModifier {
 
 private struct RegionStopButton: View {
     let active: Bool
+    var width: CGFloat? = nil
     let action: () -> Void
     var body: some View {
         Button(action: action) {
             Text("STOP").font(.jarasSystem(size: 9, weight: .bold))
                 .foregroundStyle(active ? JarasTheme.green : Color.red)
-                .padding(.horizontal, 6).frame(height: 26)
+                .padding(.horizontal, width == nil ? 6 : 0).frame(width: width, height: 26)
                 .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 4))
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(active ? JarasTheme.green : .red, lineWidth: 1))
                 .contentShape(Rectangle())

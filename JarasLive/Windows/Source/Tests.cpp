@@ -211,6 +211,23 @@ int runTests(const File &directory) {
     trackDuplicationTests::run(test);
     trackDuplicationTests::runSession<Session>(test);
     recordingCaptureTests::registerTests(directory, test);
+    test("Armed input meters work before REC with monitoring off and no master leakage", [&] {
+        jaras::Song song; song.id = uuid(); song.duration = 60; song.bpm = 120;
+        jaras::Track track; track.id = uuid(); track.role.id = "other"; track.name = "Input 3/4";
+        track.inputPatch = jaras::OutputPatch{3, 2}; track.inputMonitoring = false;
+        track.outputs = std::vector<jaras::OutputPatch>{{0, 2}};
+        song.tracks.push_back(track);
+        AudioEngine audio; audio.prepareOffline(48000); audio.prepareSong(song, directory);
+        audio.armTrack(track.id, true);
+        AudioBuffer<float> input(4, 512), output(2, 512); input.clear();
+        FloatVectorOperations::fill(input.getWritePointer(2), .2f, 512);
+        FloatVectorOperations::fill(input.getWritePointer(3), -.4f, 512);
+        audio.render(output.getArrayOfWritePointers(), 2, 512, input.getArrayOfReadPointers(), 4);
+        const auto levels = audio.meterLevels(track.id);
+        expect(levels[0] > .19f && levels[1] > .39f, "Stopped armed track did not meter its selected stereo input");
+        expect(output.getMagnitude(0, 512) == 0 && audio.peak() == 0, "Input metering routed monitor-off audio to master");
+        expect(!audio.state().playing && !audio.isRecording(), "Metering started playback or recording");
+    });
     transportFadeoutTests::registerTests(directory, test);
     addActionBindingsTests(directory, test);
     addUIFeatureTests(directory, test);
@@ -440,7 +457,9 @@ int runTests(const File &directory) {
         WaveformCache cache;jaras::AudioClip clip;clip.duration=200;
         for(float density:{1.f,1.25f,1.5f,2.f}) {
             const auto draw=[&](float scroll) {
-                Image image(Image::ARGB,roundToInt(512*density),roundToInt(96*density),true);
+                // This checks source-column invariance, so use deterministic software
+                // coverage. Direct2D can tessellate the cropped contours differently.
+                Image image(Image::ARGB,roundToInt(512*density),roundToInt(96*density),true,SoftwareImageType());
                 Graphics g(image);g.addTransform(AffineTransform::scale(density));
                 WaveformRenderer::draw(g,cache,data,clip,{-scroll,0,2000,96},{0,0,512,96},10,Colours::white);
                 return image;
@@ -451,7 +470,15 @@ int runTests(const File &directory) {
                 int height=0;
                 for(int y=roundToInt(20*density);y<roundToInt(93*density);++y) {
                     const auto a=original.getPixelAt(x+shift,y).getAlpha(),b=panned.getPixelAt(x,y).getAlpha();
-                    expect(std::abs((int)a-(int)b)<=2,"Scrolling changed source peak columns");
+                    if (std::abs((int)a-(int)b)>2) {
+                        for (const auto &entry : std::initializer_list<std::pair<String,Image>>{
+                                {"waveform-original",original},{"waveform-panned",panned}}) {
+                            FileOutputStream file(directory.getChildFile(entry.first+".png"));
+                            PNGImageFormat().writeImageToStream(entry.second,file);
+                        }
+                        expect(false,"Scrolling changed source peak columns: density="+String(density)+
+                                     ", x="+String(x)+", y="+String(y)+", alpha="+String(a)+"/"+String(b));
+                    }
                     height+=b>100;
                 }
                 if(height>40*density)++tall;
@@ -951,11 +978,25 @@ int runTests(const File &directory) {
         jaras::AudioClip heightClip;heightClip.id=uuid();heightClip.name="Height";heightClip.startTime=2;heightClip.duration=4;
         song.tracks.front().clips.push_back(heightClip);song.tracks.front().color=0xdd3030;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
-        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("height-drag",".json"));workspace.setSize(1366,768);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("height-drag",".json"));workspace.setSize(1366,768);workspace.setVisible(true);
         auto *handle=uiFeatureTests::find(workspace,"trackHeightHandle");expect(handle!=nullptr,"Height input exists");
         const auto before=JSON::toString(ProjectCodec::encode(session.project()));
         auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,handle,handle,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
         auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");
+        expect(!handle->hitTest(50,0)&&!handle->hitTest(50,2),"Row tops do not resize tracks");
+        expect(handle->hitTest(50,58)&&handle->hitTest(50,63),"Footer hits belong to the row above");
+        expect(!handle->hitTest(50,64)&&!handle->hitTest(50,65),"Moving below a footer must not resize the next track");
+        const auto alignedGrid=handle->getLocalPoint(canvas,Point<int>{100,110});
+        expect(!handle->hitTest(alignedGrid.x,alignedGrid.y),"An aligned point in the grid cannot resize a track");
+        const auto gridTarget=workspace.getComponentAt(workspace.getLocalPoint(canvas,Point<int>{100,110}));
+        expect(gridTarget&&gridTarget!=handle,"Native grid hit testing must not return the mixer resize overlay");
+        for(const auto point:{Point<float>{50,1},Point<float>{50,65},alignedGrid.toFloat()}) {
+            handle->mouseDown(event(point,point,ModifierKeys::leftButtonModifier,false));
+            handle->mouseDrag(event(point+Point<float>{0,20},point,ModifierKeys::leftButtonModifier,true));
+            handle->mouseUp(event(point+Point<float>{0,20},point,0,true));
+        }
+        expect(JSON::toString(ProjectCodec::encode(session.project()))==before,
+               "Top, next-row and aligned-grid gestures cannot change any track");
         auto firstImage=canvas->createComponentSnapshot(canvas->getLocalBounds());
         expect(firstImage.getPixelAt(75,140).getRed()<100,"Baseline sample is below first item");
         Point<float> anchor{50,62},end{50,94};

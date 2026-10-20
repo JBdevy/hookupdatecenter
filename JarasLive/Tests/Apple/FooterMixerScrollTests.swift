@@ -10,6 +10,11 @@ precondition(bar.frame.minY < scroll.frame.minY && bar.frame.width > bar.frame.h
 precondition(abs(bar.knobProportion - 0.25) < 0.01)
 bar.doubleValue = 0.5; bar.sendAction(bar.action, to:bar.target)
 precondition(abs(scroll.contentView.bounds.minX - 750) < 1, "top scrollbar moves exact horizontal position")
+FooterScrollLayoutProbe.preparations = 0
+bar.doubleValue = 0.51; bar.sendAction(bar.action, to:bar.target)
+precondition(FooterScrollLayoutProbe.preparations == 1,
+             "One scroll frame must prepare its strips once, including synchronous bounds notifications")
+bar.doubleValue = 0.5; bar.sendAction(bar.action, to:bar.target)
 view.smoothWheel(-40,target:scroll,horizontal:true)
 let first = scroll.contentView.bounds.minX
 precondition(abs(first - 764) < 1, "wheel begins immediately")

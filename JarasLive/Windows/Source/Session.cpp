@@ -1,6 +1,8 @@
+#include "Localization.h"
 #include "Session.h"
 #include "MediaSource.h"
 #include "ItemRender.h"
+#include "ItemLayout.h"
 #include "Appearance.h"
 #include "TrackTree.h"
 #include "MediaCleanup.h"
@@ -12,6 +14,7 @@
 #include "FXPresets.h"
 #include "FXSchema.h"
 #include "WaveformCache.h"
+#include "ProjectMediaRecovery.h"
 namespace catlive {
 namespace {
 jaras::Song emptySong(const String &name) {
@@ -89,6 +92,7 @@ void Session::newProject(String name) {
     mediaDirectory.createDirectory();
     undoHistory.clear();
     redoHistory.clear();
+    recordingItems.clear();
     recordArms.clear();
     recordSelections.clear(); endMixerGesture();
     dirty = false;
@@ -190,7 +194,8 @@ static ProjectPreparationQueue &projectPreparationQueue() {
     return queue;
 }
 void Session::loadAsync(const File &file, std::function<void(String, double)> progress,
-                        std::function<void()> beforeCommit, std::function<void(String)> completed) {
+                        std::function<void()> beforeCommit, std::function<void(String)> completed,
+                        std::function<void(StringArray)> missingMedia) {
     if (busy) return; // Single flight, including queued clicks on Recent Projects.
     if (audio.isRecording() || transport().playing || transport().subPlay.playing)
         throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
@@ -220,7 +225,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
         if(!projectPreparationQueue().addJob([value]{delete value;}))delete value;
     });
     prepared->document=file;prepared->mediaDirectory=file.getParentDirectory();
-    projectPreparationQueue().addJob([this, weak, cancellation, prepared, sampleRate, offline, multiLoopsBypassed, progress, beforeCommit, completed] {
+    projectPreparationQueue().addJob([this, weak, cancellation, prepared, sampleRate, offline, multiLoopsBypassed, progress, beforeCommit, completed, missingMedia] {
         String failure;
         const auto checkpoint=[weak,cancellation] {
             if(weak.expired()||cancellation->load())throw NativeFX::PreparationCancelled();
@@ -237,6 +242,22 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
             prepared->raw = ProjectCodec::read(prepared->document);
             auto incoming=ProjectCodec::decode(prepared->raw);
             checkpoint();
+            if (missingMedia) {
+                auto paths = projectMediaRecovery::missingPaths(incoming, prepared->mediaDirectory);
+                if (!paths.isEmpty()) {
+                    MessageManager::callAsync([this, weak, cancellation, paths, missingMedia, completed] {
+                        if (weak.expired() || loadCancellation != cancellation) return;
+                        busy = false; loadCancellation.reset();
+                        if (cancellation->load()) {
+                            if (completed) completed(String::fromUTF8("Abertura cancelada."));
+                            return;
+                        }
+                        message.clear(); notify();
+                        missingMedia(paths);
+                    });
+                    return;
+                }
+            }
             // Validate and establish the saved selection on an isolated core.
             // No encode/snapshot of the live project's opaque FX states is needed.
             const auto savedCursor=incoming.savedCursor;
@@ -643,10 +664,6 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
         notify();
         return;
     }
-    if (start && !audio.unsupported.isEmpty())
-        throw std::runtime_error(
-            "Este projeto contém FX Apple ainda não convertidos. Renderize esses "
-            "efeitos no Mac antes de reproduzir no Windows.");
     auto old = transport().songId;
     const bool wasPlaying = transport().playing;
     const bool cancellingTransport = transport().loop.enabled || transport().queuedSectionMarkerId ||
@@ -798,12 +815,13 @@ void Session::toggleRecording() {
         const auto directory = mediaDirectory;
         const auto projectID = project().id, songID = recordingSong;
         const auto start = recordingStart;
+        const auto previews = recordingItems;
         const auto drops = audio.recordingOverflows();
         const std::weak_ptr<int> lifetime = alive;
         busy = true;
         message = String::fromUTF8("Finalizando gravação…");
         notify();
-        worker.addJob([this, lifetime, directory, projectID, songID, start, drops,
+        worker.addJob([this, lifetime, directory, projectID, songID, start, drops, previews,
                        takes = std::move(takes)]() mutable {
             std::vector<std::pair<ID, jaras::AudioClip>> clips;
             StringArray failures;
@@ -821,6 +839,11 @@ void Session::toggleRecording() {
                 }
                 jaras::AudioClip clip;
                 clip.id = uuid();
+                for (const auto &item : previews) if (item.track == take.track) {
+                    clip.id = item.clip.id;
+                    clip.recordingLane = item.clip.recordingLane;
+                    break;
+                }
                 clip.startTime = start;
                 clip.duration = take.duration;
                 clip.name = utf8(take.file == File() ? String("MIDI take")
@@ -831,7 +854,7 @@ void Session::toggleRecording() {
                         utf8(take.file.getRelativePathFrom(directory).replaceCharacter('\\', '/')), {}};
                     try {
                         if (auto reader = std::unique_ptr<AudioFormatReader>(formats.createReaderFor(take.file)))
-                            clip.waveform = waveform(*reader);
+                            WaveformCache::preload(take.file);
                         else failures.add(String::fromUTF8("Não foi possível analisar o take: ") + take.file.getFileName());
                     } catch (const std::exception &failure) {
                         failures.add(String::fromUTF8(failure.what()));
@@ -843,6 +866,7 @@ void Session::toggleRecording() {
                                        clips = std::move(clips), failures] {
                 if (lifetime.expired()) return;
                 busy = false;
+                recordingItems.clear(); ++revision;
                 if (project().id != projectID) { notify(); return; }
                 try {
                     if (!clips.empty()) edit([&](jaras::Project &project) {
@@ -856,7 +880,7 @@ void Session::toggleRecording() {
                     message = !failures.isEmpty()
                         ? String::fromUTF8("A gravação não foi concluída em todas as pistas.")
                         : drops ? String::fromUTF8("Gravação concluída com perda de blocos. Verifique os takes antes de usar.")
-                                : String::fromUTF8("Gravação adicionada às pistas armadas.");
+                                : clips.empty() ? String::fromUTF8("Gravação encerrada.") : String::fromUTF8("Gravação adicionada às pistas armadas.");
                     if (!failures.isEmpty()) message += " " + failures.joinIntoString(String::fromUTF8(" · "));
                 } catch (const std::exception &failure) { message = String::fromUTF8(failure.what()); }
                 notify();
@@ -882,6 +906,7 @@ void Session::toggleRecording() {
     const int bits = (int)settings.value("jaras.media.record.bits", 24);
     const int bitrate = (int)settings.value("jaras.media.record.bitrate", 320);
     std::vector<TrackCapture::Target> targets;
+    std::vector<RecordingItem> previews;
     for (const auto &track : song()->tracks)
         if (recordingArmed(track.id) && jaras::fixedTrackName(track.role).empty()) {
             TrackCapture::Target target;
@@ -895,7 +920,7 @@ void Session::toggleRecording() {
             target.input = track.inputPatch ? track.inputPatch->firstChannel : 1;
             if (!target.midi && !target.bus && !track.inputPatch)
                 throw std::runtime_error(
-                    utf8("Escolha a entrada no Patch da pista " + text(track.name) + "."));
+                    utf8(localization::translate("Choose the input in the Patch of track %s.").replace("%s", text(track.name))));
             const auto encoding = recordingEncoding::resolve(track.recordingFormat, advancedFormat, bits, bitrate);
             if (!target.midi)
                 target.file = mediaDirectory.getChildFile("Stems/Recordings")
@@ -906,15 +931,35 @@ void Session::toggleRecording() {
             target.bits = encoding.bits;
             target.floatingPoint = encoding.floatingPoint;
             target.bitrate = encoding.bitrate;
+            target.postFader = track.recordingPostFader.value_or(true);
+            target.postFX = track.recordingPostFX.value_or(true);
+            target.gain = (float)track.volume;
+            target.effects = track.fxJSON ? JSON::parse(text(*track.fxJSON)) : var{};
+            if (target.postFX) audio.captureExternalEffects(track.id, target.effects);
+            RecordingItem item;
+            item.track = track.id;
+            item.clip.id = uuid();
+            item.clip.name = utf8(target.midi ? String("MIDI take") : target.file.getFileNameWithoutExtension());
+            item.clip.startTime = recordingStart;
+            // Reserve a lane for the whole remaining recording, without adding
+            // placeholder clips to the audio graph or reallocating it each frame.
+            double end = std::max(recordingStart + 1., song()->duration);
+            for (const auto &clip : track.clips) end = std::max(end, clip.startTime + clip.duration);
+            item.clip.duration = end - recordingStart;
+            item.clip.recordingLane = ItemLanes(track).count;
+            item.preview = std::make_shared<RecordingPreview>(audio.sampleRate(), target.channels);
+            target.preview = item.preview;
+            previews.push_back(std::move(item));
             targets.push_back(std::move(target));
         }
-    if (targets.empty())
-        throw std::runtime_error("Arme pelo menos uma pista no botão REC antes de gravar.");
-    if (!audio.missingFiles.isEmpty() || !audio.unsupported.isEmpty())
-        throw std::runtime_error("Resolva as mídias ou efeitos ausentes antes de gravar.");
     audio.startTrackRecording(targets, bits, song()->bpm);
-    if (!transport().playing)
-        command(jaras::CommandKind::play);
+    recordingItems = std::move(previews); ++revision;
+    try {
+        if (!transport().playing) command(jaras::CommandKind::play);
+    } catch (...) {
+        audio.stopTrackRecording(); recordingItems.clear(); ++revision;
+        throw;
+    }
     message = String::fromUTF8("Gravando áudio · clique em REC ou Stop para concluir");
     notify();
 }

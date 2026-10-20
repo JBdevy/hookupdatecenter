@@ -100,7 +100,7 @@
 "backingVocal" = "Backing vocal";
 "fx" = "Efeitos";
 "other" = "Outro";
-"Play" = "Reproduzir";
+"Play" = "Play";
 "Pause" = "Pausar";
 "Versão ou nome do projeto inválido." = "Versão ou nome do projeto inválido.";
 "UUID duplicado." = "UUID duplicado.";
@@ -802,7 +802,7 @@
 "Quality" = "Qualidade";
 "Re-render" = "Re-renderizar";
 
-"Advanced" = "Avançado";
+"Advanced" = "Advanced";
 "TimeProject" = "Tempo do projeto";
 "Gridline" = "Linhas do grid";
 "Resolution" = "Resolução";
@@ -936,7 +936,7 @@
 "Multiloop Manager" = "Gerenciador de Multiloops";
 
 "Metronome" = "Metrônomo";
-"Metronome · Right-click to configure" = "Metrônomo · Clique direito para configurar";
+"Metronome · Right-click to configure" = "Metrônomo · clique direito para configurar";
 "Click sound" = "Som do click";
 "Click mode" = "Modo do click";
 "Only A" = "Somente A";
@@ -1724,3 +1724,24 @@
 "Open project" = "Abrir projeto";
 
 "Startup sound" = "Som da inicialização";
+
+"Undock Setlist" = "Desindexar Setlist";
+
+"Undock Parts" = "Desindexar Parts";
+
+"Dock Parts" = "Indexar Parts";
+
+"Parts on the left" = "Parts à esquerda";
+
+"Keyboard style" = "Estilo do Keyboard";
+
+"Section start" = "INÍCIO";
+
+"Allow microphone access in System Settings to record audio." = "Permita o acesso ao microfone nos Ajustes do Sistema para gravar áudio.";
+
+"Recording level" = "Nível da gravação";
+"Recording effects" = "Efeitos na gravação";
+"Pre-fader" = "Pré-fader";
+"Post-fader" = "Pós-fader";
+"Pre-FX" = "Pré-FX";
+"Post-FX" = "Pós-FX";

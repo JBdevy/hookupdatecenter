@@ -2,6 +2,22 @@ import XCTest
 @testable import JarasApplication
 
 final class PlaybackScopeTests: XCTestCase {
+    func testOverlappingUnifiedSongsAssignNewOnsetsToIncomingSong() {
+        var song = Project.empty(name: "Escudo overlap").songs[0]
+        let group = UUID(), a = UUID(), b = UUID()
+        let start = 51915.98192699533
+        song.parts = [
+            Part(id: group, name: "H", startTime: 51829.96116741481, endTime: 52194.98192699533),
+            Part(id: a, name: "Abertura", startTime: 51829.96116741481, endTime: 51920.46116741484, parentRegionID: group),
+            Part(id: b, name: "Escudo", startTime: start, endTime: 52194.98192699533, parentRegionID: group)]
+        XCTAssertEqual(song.regionOwner(at: start), b)
+        XCTAssertEqual(song.regionOwner(at: start - 0.0000004), b)
+        XCTAssertEqual(song.regionOwner(at: start + 0.676358073), b)
+        XCTAssertEqual(song.regionOwner(at: start - 1), a)
+        song.parts.reverse()
+        XCTAssertEqual(song.regionOwner(at: start), b, "Independent of region creation order")
+    }
+
     func testEarlierUnifiedFlagIncludesNewlyExposedItemsButKeepsPreviousTailsExcluded() {
         var song = Project.empty(name: "Moved boundary").songs[0]
         let group = UUID(), a = UUID(), b = UUID()

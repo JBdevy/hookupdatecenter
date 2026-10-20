@@ -208,8 +208,8 @@ final class TimelineMixerHeightWheelView: NSView, NativeTimelineInputObserver {
     }
 }
 
-/// One native input surface owns only six-point row borders. Item and mixer
-/// controls keep their existing hit targets everywhere else.
+/// Only the six-point footer inside each Track Mixer row resizes that row.
+/// The grid, row tops and other mixer controls retain their normal input.
 struct TimelineTrackHeightResizeInput: NSViewRepresentable {
     let project: UUID
     let song: UUID
@@ -222,7 +222,7 @@ struct TimelineTrackHeightResizeInput: NSViewRepresentable {
     let top: CGFloat
     let verticalOffset: CGFloat
     let scrollView: () -> NSScrollView?
-    let excludedX: ClosedRange<CGFloat>
+    let mixerWidth: CGFloat
     let interactionBlocked: Bool
     let change: (UUID, Double, Bool) -> Void
     let cancel: () -> Void
@@ -232,7 +232,7 @@ struct TimelineTrackHeightResizeInput: NSViewRepresentable {
         view.scrollView = scrollView
         view.configure(project: project, song: song, tracks: tracks, offsets: offsets, heights: heights,
                        laneCounts: laneCounts, scales: scales, baseHeight: baseHeight, top: top,
-                       verticalOffset: verticalOffset, excludedX: excludedX, blocked: interactionBlocked)
+                       verticalOffset: verticalOffset, mixerWidth: mixerWidth, blocked: interactionBlocked)
     }
 }
 
@@ -242,7 +242,6 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         let track: UUID
         let startY: CGFloat
         let height: CGFloat
-        let direction: CGFloat
         let count: Int
         let denominator: Double
         let initialScale: Double
@@ -260,7 +259,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
     private var offsets: [CGFloat] = [], heights: [CGFloat] = []
     private var laneCounts: [Int] = [], scales: [Double] = []
     private var baseHeight: CGFloat = 64, top: CGFloat = 0, verticalOffset: CGFloat = 0
-    private var excludedX: ClosedRange<CGFloat> = 0...0
+    private var mixerWidth: CGFloat = 0
     private var blocked = false
     private var drag: Drag?
     private var keyMonitor: Any?
@@ -274,13 +273,13 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
     }
     func configure(project: UUID, song: UUID, tracks: [UUID], offsets: [CGFloat], heights: [CGFloat],
                    laneCounts: [Int], scales: [Double], baseHeight: CGFloat, top: CGFloat,
-                   verticalOffset: CGFloat, excludedX: ClosedRange<CGFloat>, blocked: Bool) {
-        if self.project != project || self.song != song || blocked || drag.map({ !tracks.contains($0.track) }) == true { cancelDrag() }
+                   verticalOffset: CGFloat, mixerWidth: CGFloat, blocked: Bool) {
+        if self.project != project || self.song != song || blocked || mixerWidth <= 0 || drag.map({ !tracks.contains($0.track) }) == true { cancelDrag() }
         let geometryChanged = self.offsets != offsets || self.heights != heights || self.top != top ||
-            self.verticalOffset != verticalOffset || self.excludedX != excludedX || self.blocked != blocked
+            self.verticalOffset != verticalOffset || self.mixerWidth != mixerWidth || self.blocked != blocked
         self.project = project; self.song = song; self.tracks = tracks; self.offsets = offsets; self.heights = heights
         self.laneCounts = laneCounts; self.scales = scales; self.baseHeight = baseHeight
-        self.top = top; self.verticalOffset = verticalOffset; self.excludedX = excludedX; self.blocked = blocked
+        self.top = top; self.verticalOffset = verticalOffset; self.mixerWidth = mixerWidth; self.blocked = blocked
         if geometryChanged { window?.invalidateCursorRects(for: self) }
     }
     /// Consulted before the mixer's global click/reorder monitor handles a border.
@@ -293,8 +292,8 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         guard let owner = owners.allObjects.first(where: { $0.window === window && $0.drag != nil }) else { return false }
         owner.cancelDrag(); return true
     }
-    private func edge(at point: NSPoint) -> (Int, CGFloat)? {
-        guard acceptsInput, bounds.contains(point), visibleRect.contains(point), !excludedX.contains(point.x) else { return nil }
+    private func edge(at point: NSPoint) -> Int? {
+        guard acceptsInput, bounds.contains(point), visibleRect.contains(point), point.x < mixerWidth else { return nil }
         let y = point.y + currentVerticalOffset - top
         // The pinned ruler retains its clicks, including while vertically scrolled.
         guard point.y >= top, y >= 0 else { return nil }
@@ -306,11 +305,8 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         let index = lower - 1
         if index >= 0 {
             let first = offsets[index], last = first + heights[index]
-            if y >= first && y < first + 3 { return (index, -1) }
-            if y >= last - 3 && y < last { return (index, 1) }
+            if heights[index] > 0 && y >= max(first, last - 6) && y < last { return index }
         }
-        if let index = tracks.indices.last, let last = offsets.last, let height = heights.last,
-           y >= last + height && y < last + height + 3 { return (index, 1) }
         return nil
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -322,26 +318,22 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         observeScroll()
         guard acceptsInput else { return }
         let verticalOffset = currentVerticalOffset
-        for index in tracks.indices where offsets.indices.contains(index) && heights.indices.contains(index) {
-            for edgeY in [offsets[index], offsets[index] + heights[index]] {
-                let band = CGRect(x: 0, y: top + edgeY - verticalOffset - 3, width: bounds.width, height: 6)
-                    .intersection(visibleRect).intersection(CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top)))
-                guard !band.isEmpty else { continue }
-                let left = CGRect(x: band.minX, y: band.minY, width: max(0, min(band.maxX, excludedX.lowerBound) - band.minX), height: band.height)
-                let right = CGRect(x: max(band.minX, excludedX.upperBound), y: band.minY,
-                                   width: max(0, band.maxX - max(band.minX, excludedX.upperBound)), height: band.height)
-                if !left.isEmpty { addCursorRect(left, cursor: .resizeUpDown) }
-                if !right.isEmpty { addCursorRect(right, cursor: .resizeUpDown) }
-            }
+        for index in tracks.indices where offsets.indices.contains(index) && heights.indices.contains(index) && heights[index] > 0 {
+            let footerHeight = min(6, heights[index])
+            let band = CGRect(x: 0, y: top + offsets[index] + heights[index] - verticalOffset - footerHeight,
+                              width: max(0, min(bounds.width, mixerWidth)), height: footerHeight)
+                .intersection(visibleRect).intersection(CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top)))
+            guard !band.isEmpty else { continue }
+            addCursorRect(band, cursor: .resizeUpDown)
         }
     }
     override func mouseDown(with event: NSEvent) {
         guard drag == nil, event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
-              let (index, direction) = edge(at: convert(event.locationInWindow, from: nil)),
+              let index = edge(at: convert(event.locationInWindow, from: nil)),
               laneCounts.indices.contains(index), scales.indices.contains(index) else { return }
         window?.makeFirstResponder(self)
         let count = max(1, laneCounts[index]), scale = scales[index]
-        drag = Drag(track: tracks[index], startY: event.locationInWindow.y, height: heights[index], direction: direction,
+        drag = Drag(track: tracks[index], startY: event.locationInWindow.y, height: heights[index],
                     count: count, denominator: Double(baseHeight) * (count > 1 ? 0.7 : 1), initialScale: scale, scale: scale)
         NSCursor.resizeUpDown.push(); cursorPushed = true
         change?(tracks[index], scale, false)
@@ -350,7 +342,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         guard acceptsInput else { cancelDrag(); return }
         guard var drag else { return }
         let limits = TrackHeightGeometry.laneLimits(count: drag.count)
-        let travel = Double((drag.startY - event.locationInWindow.y) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).height)) * drag.direction)
+        let travel = Double((drag.startY - event.locationInWindow.y) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).height)))
         let lane = min(limits.upperBound, max(limits.lowerBound, ((Double(drag.height) + travel) / Double(drag.count)).rounded()))
         let scale = min(TrackHeightGeometry.maximumScale, max(TrackHeightGeometry.minimumScale, lane / drag.denominator))
         guard scale != drag.scale else { return }

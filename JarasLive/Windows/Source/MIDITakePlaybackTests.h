@@ -23,6 +23,26 @@ inline int noteOns(const MidiBuffer &messages, int pitch=-1) {
     return count;
 }
 template <typename Test> void registerTests(Test &test) {
+    test("Virtual Keyboard routes Omni and fixed channels only to armed tracks and releases original voices", [] {
+        VirtualKeyboardRoute a,b,c;
+        MidiBuffer source,first,second,third;
+        source.addEvent(MidiMessage::noteOn(1,60,(uint8)100),3);
+        a.append(first,source,16,true,0,2); b.append(second,source,16,true,0,16); c.append(third,source,16,false,0,0);
+        require(first.getNumEvents()==1 && second.getNumEvents()==1 && third.isEmpty(),"Omni duplicated or reached an unarmed track");
+        require((*first.begin()).getMessage().getChannel()==2 && (*second.begin()).getMessage().getChannel()==16,"Omni ignored target channels");
+        source.clear();first.clear();second.clear();
+        source.addEvent(MidiMessage::noteOff(1,60),4);
+        a.append(first,source,16,false,5,7);b.append(second,source,16,false,5,7);
+        require(first.getNumEvents()==1 && (*first.begin()).getMessage().getChannel()==2 && second.getNumEvents()==1 && (*second.begin()).getMessage().getChannel()==16,"Changing arm/channel stranded original notes");
+        first.clear();second.clear();source.clear();
+        source.addEvent(MidiMessage::noteOn(5,62,(uint8)100),0);
+        a.append(first,source,16,true,5,2); b.append(second,source,16,true,5,0);
+        require(first.isEmpty() && second.getNumEvents()==1 && (*second.begin()).getMessage().getChannel()==5,"Fixed channel ignored track filter");
+        source.clear();second.clear();source.addEvent(MidiMessage::allNotesOff(5),0);
+        b.append(second,source,16,false,0,0);
+        require(second.getNumEvents()==1 && (*second.begin()).getMessage().isNoteOff(),"All-notes-off left a virtual note held");
+    });
+
     test("MIDI takes own their notes without duplicating the shared track instrument", [] {
         jaras::Song song; song.bpm=120;
         jaras::Track track;track.id=uuid();track.role.id="keys";

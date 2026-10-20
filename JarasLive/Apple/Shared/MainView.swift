@@ -58,7 +58,9 @@ struct MainView: View {
     @State private var footerMixerOpen = false
     #if os(macOS)
     @StateObject private var detachedMixer = DetachedMixerWindow()
+    @StateObject private var detachedParts = DetachedPartsWindow()
     @StateObject private var detachedSetlist = DetachedSetlistWindow()
+    @StateObject private var toolWindows = WorkspaceToolWindows()
     #endif
     @State private var keyboardOpen = false
     @State private var partsLeftOpen = false
@@ -91,6 +93,20 @@ struct MainView: View {
     }
     private func toggleMixer() {
         Self.togglePanel(width: $mixerWidth, restore: $mixerRestoreWidth, minimum: SidebarWidthLimits.trackMixer)
+    }
+    private func openSettings(_ section: SettingsView.Section? = nil) {
+        navigationOpen = false
+        #if os(macOS)
+        toolWindows.openSettings(auth: auth, show: show, backend: backend, section: section)
+        #else
+        panel = section == .audio ? .audioSettings : .settings
+        #endif
+    }
+    private func openAdvanced() {
+        #if os(macOS)
+        navigationOpen = false
+        toolWindows.openAdvanced(show: show, documents: documents)
+        #endif
     }
     private var setlistCollapsed: Bool {
         #if os(macOS)
@@ -151,7 +167,7 @@ struct MainView: View {
         let transport = TransportView(show: show, documents: documents, remotePresentation: remotePresentation,
             mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
             toggleNavigation: { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } },
-            openSettings: { navigationOpen = false; panel = .settings },
+            openSettings: { openSettings() }, openAdvanced: openAdvanced,
             mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistCollapsed,
             toggleMixer: toggleMixer, toggleSetlist: toggleSetlist,
             setlistPlacement: setlistPlacement, placeSetlist: placeSetlist)
@@ -236,7 +252,7 @@ struct MainView: View {
                             FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true).frame(maxWidth: .infinity)
                                 .overlay(FooterDisplayResizeInput(height: geometry.size.height, maximum: maximumFooterHeight(workspaceHeight: workspaceHeight),
                                     changed: { _ in }, ended: { storedFooterHeight = $0 }))
-                            AudioStatusView { navigationOpen = false; panel = .audioSettings }.fixedSize(horizontal: true, vertical: false)
+                            AudioStatusView { openSettings(.audio) }.fixedSize(horizontal: true, vertical: false)
                         }.buttonStyle(.plain).frame(height: geometry.size.height)
                     }.font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).background(JarasTheme.panel)
                 }
@@ -250,7 +266,7 @@ struct MainView: View {
                             ResourceUsageView().fixedSize(horizontal: true, vertical: false)
                             #if os(macOS)
                             Text(verbatim: "|").foregroundStyle(JarasTheme.secondary)
-                            AudioStatusView { navigationOpen = false; panel = .audioSettings }.frame(width: audioWidth, alignment: .leading)
+                            AudioStatusView { openSettings(.audio) }.frame(width: audioWidth, alignment: .leading)
                             #endif
                             FooterProjectNameDisplay(show: show, documents: documents)
                                 #if os(macOS)
@@ -263,7 +279,7 @@ struct MainView: View {
                         #if os(macOS)
                         Color.clear.frame(width: sideWidth)
                         #else
-                        AudioStatusView { navigationOpen = false; panel = .audioSettings }.frame(width: sideWidth, alignment: .trailing)
+                        AudioStatusView { openSettings(.audio) }.frame(width: sideWidth, alignment: .trailing)
                         #endif
                     }.frame(height: 27)
                 }.font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).frame(height: 27).background(JarasTheme.panel)
@@ -352,7 +368,8 @@ struct MainView: View {
             .onChange(of: show.snapshot.project.id) { _ in
                 trackEdit = nil
                 #if os(macOS)
-                detachedMixer.close(); detachedSetlist.close()
+                detachedMixer.close(); detachedSetlist.close(); detachedParts.close()
+                toolWindows.closeAll()
                 setlistPlacement = setlistDockPlacement
                 #endif
             }
@@ -404,7 +421,8 @@ struct MainView: View {
             #if os(macOS)
             .onChange(of: documents.projectTabIndex) { _ in
                 if !DesktopProjectTabs.shared.isForeground(show) {
-                    detachedMixer.close(); detachedSetlist.close()
+                    detachedMixer.close(); detachedSetlist.close(); detachedParts.close()
+                    toolWindows.closeAll()
                 }
             }
             #endif
@@ -414,9 +432,12 @@ struct MainView: View {
                 #endif
             }
             .onDisappear {
+                #if os(macOS)
+                toolWindows.closeAll()
+                #endif
                 guard !remotePresentation else { return }
                 #if os(macOS)
-                detachedMixer.close(); detachedSetlist.close()
+                detachedMixer.close(); detachedSetlist.close(); detachedParts.close()
                 guard DesktopProjectTabs.shared.isForeground(show) else { return }
                 #endif
                 // SwiftUI presents the replacement .id before removing the old
@@ -431,7 +452,12 @@ struct MainView: View {
             }
             .alert(Text(verbatim: recording.error.isEmpty ? "" : JarasLocalization.string("Recording")), isPresented: Binding(get: { !recording.error.isEmpty }, set: { if !$0 { recording.error = "" } })) { Button("OK") { recording.error = "" } } message: { Text(LocalizedStringKey(recording.error)) }
             .overlay {
-                if mappings.editing != nil && mappings.editing?.fxParameter == nil && panel == nil {
+                #if os(macOS)
+                let settingsOpen = toolWindows.settingsOpen
+                #else
+                let settingsOpen = false
+                #endif
+                if mappings.editing != nil && mappings.editing?.fxParameter == nil && panel == nil && !settingsOpen {
                     ZStack { Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { mappings.editing = nil }; ControlMappingEditor() }
                 }
             }
@@ -451,19 +477,27 @@ struct MainView: View {
             .sheet(item: $panel) { selected in
                 VStack(spacing: 0) {
                     HStack {
+                        #if os(macOS)
+                        Text("Projetos").font(.jarasHeadline)
+                        #else
                         Text(LocalizedStringKey(selected.isSettings ? "Configurações" : "Projetos")).font(.jarasHeadline)
+                        #endif
                         Spacer()
                         Button { panel = nil } label: { Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Fechar").keyboardShortcut(.cancelAction)
                     }.padding(16)
                     Divider()
+                    #if os(macOS)
+                    ProjectBrowserView(documents: documents, completed: { panel = nil })
+                    #else
                     if selected.isSettings {
                         SettingsView(auth: auth, show: show, backend: backend, initialSection: selected == .audioSettings ? .audio : .general)
                     } else {
                         ProjectBrowserView(documents: documents, completed: { panel = nil })
                     }
+                    #endif
                 }
                 #if os(macOS)
-                .interfaceScaledFrame(width: selected.isSettings ? 940 : documents.folderReview == nil ? 560 : 840, height: selected.isSettings ? 540 : 500)
+                .interfaceScaledFrame(width: documents.folderReview == nil ? 560 : 840, height: 500)
                 #else
                 .frame(width: selected.isSettings ? 940 : documents.folderReview == nil ? 560 : 840, height: selected.isSettings ? 540 : 500)
                 #endif
@@ -513,7 +547,7 @@ struct MainView: View {
             .accessibilityLabel("Barra Mixer")
             .jarasHelp("Barra Mixer")
             .contextMenu {
-                Button(detachedMixer.isDetached ? "Dock mixer" : "Undock mixer") {
+                Button(LocalizedStringKey(detachedMixer.isDetached ? "Dock mixer" : "Undock mixer")) {
                     if detachedMixer.isDetached {
                         detachedMixer.close(); footerMixerOpen = true
                     } else { showDetachedMixer() }
@@ -531,13 +565,22 @@ struct MainView: View {
             .immediateRightClick { keyboardSettings = true }
             .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
             Button {
-                partsLeftOpen.toggle()
+                if detachedParts.isDetached {
+                    if detachedParts.isVisible { detachedParts.hide() }
+                    else { detachedParts.open(show: show) }
+                } else { partsLeftOpen.toggle() }
             } label: {
                 PartsListIcon()
                     .font(.jarasSystem(size: 16, weight: .semibold)).frame(width: 30, height: 32)
                     .contentShape(Rectangle())
-            }.foregroundStyle(partsLeftOpen ? JarasTheme.green : JarasTheme.text)
+            }.foregroundStyle((partsLeftOpen || detachedParts.isVisible) ? JarasTheme.green : JarasTheme.text)
                 .accessibilityLabel("Parts à esquerda").jarasHelp("Parts à esquerda")
+                .contextMenu {
+                    Button(LocalizedStringKey(detachedParts.isDetached ? "Dock Parts" : "Undock Parts")) {
+                        if detachedParts.isDetached { detachedParts.close(); partsLeftOpen = true }
+                        else { partsLeftOpen = false; detachedParts.open(show: show) }
+                    }
+                }
             }
         }
         .buttonStyle(.plain)
@@ -788,6 +831,7 @@ private struct FooterPianoKeyboard: View {
     @ObservedObject private var state = KeyboardMIDIMonitor.shared
     @AppStorage("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
     @AppStorage("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
+    @AppStorage("jaras.keyboard.style") private var style = "default"
     @State private var pressed: UInt8?
     private let whiteNotes = (21...108).filter { ![1,3,6,8,10].contains($0 % 12) }
     private func keyRect(_ note: Int, size: CGSize) -> CGRect {
@@ -811,10 +855,10 @@ private struct FooterPianoKeyboard: View {
                     for note in 21...108 where (!whiteNotes.contains(note)) == black {
                         let rect = keyRect(note, size: size).insetBy(dx: 0.5, dy: 0)
                         let active = state.notes.contains(UInt8(note)) || pressed == UInt8(note)
-                        context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(active ? Color(hex: UInt32(black ? blackColor : whiteColor)) : (black ? Color(white: 0.08) : Color(white: 0.89))))
+                        context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(active ? Color(hex: UInt32(black ? blackColor : whiteColor)) : ((black != (style == "black")) ? Color(white: 0.08) : Color(white: 0.89))))
                         if note == 21 || note % 12 == 0 {
                             let label = note == 21 ? "A-1" : "C\(note / 12 - 2)"
-                            context.draw(Text(verbatim: label).font(.jarasSystem(size: 9, weight: .medium)).foregroundColor(.black), at: CGPoint(x: rect.midX, y: rect.maxY - 11))
+                            context.draw(Text(verbatim: label).font(.jarasSystem(size: 9, weight: .medium)).foregroundColor(style == "black" && !active ? .white : .black), at: CGPoint(x: rect.midX, y: rect.maxY - 11))
                         }
                     }
                 }
@@ -839,7 +883,6 @@ private struct KeyboardSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("jaras.keyboard.whiteColor") private var whiteColor = 0x54ff93
     @AppStorage("jaras.keyboard.blackColor") private var blackColor = 0x54ff93
-    @State private var channel = KeyboardMIDIMonitor.shared.channel
     private func color(_ value: Binding<Int>) -> Binding<Color> {
         Binding(get: { Color(hex: UInt32(value.wrappedValue)) }, set: { color in
             #if os(macOS)
@@ -857,9 +900,7 @@ private struct KeyboardSettingsView: View {
             Text("Keyboard").font(.jarasHeadline)
             ColorPicker("White key highlight", selection: color($whiteColor), supportsOpacity: false)
             ColorPicker("Black key highlight", selection: color($blackColor), supportsOpacity: false)
-            Picker("MIDI channel", selection: $channel) {
-                ForEach(1...16, id: \.self) { Text(String($0)).tag($0) }
-            }.onChange(of: channel) { KeyboardMIDIMonitor.shared.channel = $0 }
+            AdvancedKeyboardSettings()
             Button("Close") { dismiss() }.keyboardShortcut(.defaultAction)
         }.font(.jarasBody).padding(24).frame(width: 340).background(JarasTheme.panel)
             #if os(macOS)

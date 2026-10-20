@@ -32,6 +32,13 @@
   monitor.receive(source: 1, status: 0x91, number: 60, value: 100)
   monitor.channel = 3
   precondition(monitor.notes.isEmpty)
+  monitor.channel = 0
+  monitor.receive(source: 1, status: 0x90, number: 60, value: 100)
+  monitor.receive(source: 1, status: 0x9f, number: 60, value: 100)
+  monitor.receive(source: 1, status: 0x80, number: 60, value: 0)
+  precondition(monitor.notes == [60], "Omni must retain a note held on another channel")
+  monitor.receive(source: 1, status: 0xbf, number: 123, value: 0)
+  precondition(monitor.notes.isEmpty, "Omni must release the last channel")
   monitor.channel = oldChannel
   print("MIDI_KEYBOARD_MULTI_SOURCE_RELEASE_CHANNEL_CLEAR_AND_ACTIVITY_DECAY_OK")
  }

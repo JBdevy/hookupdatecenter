@@ -101,6 +101,8 @@ class ModalSheet final : public Component {
                 sheet->exitModalState(0);
         } else if (auto *dialog = child.findParentComponentOfClass<DialogWindow>())
             dialog->exitModalState(0);
+        else if (auto *window = child.findParentComponentOfClass<DocumentWindow>())
+            window->closeButtonPressed();
     }
     static void blockDismiss(Component &child, bool value) {
         if (auto *sheet = child.findParentComponentOfClass<ModalSheet>()) {
