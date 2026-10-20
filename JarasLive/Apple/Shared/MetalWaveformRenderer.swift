@@ -103,6 +103,7 @@ final class MetalWaveformSurface: MetalWaveformContainerBase {
     private let renderer = MetalWaveformRenderView()
     private var latest: MetalWaveformFrame?
     private var presented: MetalWaveformFrame?
+    private let itemClipMask = CAShapeLayer()
     var submittedFrameCount: UInt64 { renderer.submittedFrameCount }
     var coalescedFrameCount: UInt64 { renderer.coalescedFrameCount }
     var lastEncodeMilliseconds: Double { renderer.lastEncodeMilliseconds }
@@ -136,6 +137,10 @@ final class MetalWaveformSurface: MetalWaveformContainerBase {
 
     func submit(_ frame: MetalWaveformFrame) {
         latest = frame
+        // Clip at the compositor too. A drawable already queued by Metal can
+        // briefly outlive its projection; its old pixels must never escape
+        // the current item/channel rectangles while AppKit commits a zoom.
+        updateItemClip(frame)
         applyPresentationGeometry()
         // Only source-detail replacements with identical geometry may wait for
         // a free slot. Zoom, pan and edits present their new vertices in the
@@ -144,6 +149,34 @@ final class MetalWaveformSurface: MetalWaveformContainerBase {
             $0.coordinateSpace != nil && $0.coordinateSpace == frame.coordinateSpace && $0.size == frame.size
         } ?? false
         renderer.submit(frame, allowCoalescing: sameGeometry)
+    }
+    private var surfaceLayer: CALayer? {
+        #if os(macOS)
+        layer
+        #else
+        layer
+        #endif
+    }
+    private func updateItemClip(_ frame: MetalWaveformFrame) {
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
+        guard frame.items.isEmpty else {
+            surfaceLayer?.mask = nil
+            return
+        }
+        let path = CGMutablePath()
+        let viewport = CGRect(origin: .zero, size: frame.size)
+        var previous: CGRect?
+        for stroke in frame.strokes {
+            let rect = stroke.clip.intersection(stroke.itemRect).intersection(viewport)
+            guard !rect.isNull, !rect.isEmpty, rect != previous else { continue }
+            path.addRect(rect)
+            previous = rect
+        }
+        itemClipMask.frame = viewport
+        itemClipMask.path = path
+        if surfaceLayer?.mask !== itemClipMask { surfaceLayer?.mask = itemClipMask }
     }
     private func applyPresentationGeometry() {
         guard let latest, !latest.isEmpty else { return }
@@ -296,7 +329,8 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             return
         }
         let replacesContent = latestFrame.map {
-            !$0.isEmpty && ($0.coordinateSpace != frame.coordinateSpace || $0.size != frame.size)
+            !$0.isEmpty && ($0.coordinateSpace != frame.coordinateSpace || $0.size != frame.size ||
+                !$0.hasSameContent(as: frame))
         } ?? false
         latestFrame = frame
         // An empty viewport has no GPU work. Hide any old drawable immediately
@@ -495,7 +529,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     private func present(_ frame: MetalWaveformFrame, drawable: CAMetalDrawable, sequence: UInt64,
                          lease: FrameLease, requestedAt: Double) {
         guard sequence > lastPresentedSequence, let latestFrame, !latestFrame.isEmpty,
-              frame.coordinateSpace == latestFrame.coordinateSpace, frame.size == latestFrame.size else { lease.finish(2); return }
+              frame.hasSameContent(as: latestFrame) else { lease.finish(2); return }
         // Calling present only queues the drawable. Releasing the slot there
         // can exhaust the triple buffer before Core Animation displays it and
         // make nextDrawable block the UI thread for an entire timeout.
@@ -1005,15 +1039,15 @@ final class MetalWaveformEngine {
             a.x = centerX - halfWidth; b.x = centerX + halfWidth;
             float2 extrema = float2(min(a.y, b.y), max(a.y, b.y));
             float2 leftEdge = extrema, rightEdge = extrema;
-            // Two half-bins join neighbouring peak centers. Retain each real
-            // min/max at its center rather than flattening it into a rectangle.
+            // Join neighbouring extrema conservatively. Averaging their
+            // shared edge attenuates isolated transients at overview zoom.
             if (bucket > 0 && points[bucket * 2 - 1].x == points[bucket * 2].x) {
                 float2 previous = float2(points[bucket * 2 - 2].y, points[bucket * 2 - 1].y) * u.transform.y + u.transform.w;
-                leftEdge = (extrema + float2(min(previous.x, previous.y), max(previous.x, previous.y))) * 0.5;
+                leftEdge = float2(min(extrema.x, min(previous.x, previous.y)), max(extrema.y, max(previous.x, previous.y)));
             }
             if (bucket + 1 < uint(u.corner.z) && points[bucket * 2 + 2].x == points[bucket * 2 + 1].x) {
                 float2 next = float2(points[bucket * 2 + 2].y, points[bucket * 2 + 3].y) * u.transform.y + u.transform.w;
-                rightEdge = (extrema + float2(min(next.x, next.y), max(next.x, next.y))) * 0.5;
+                rightEdge = float2(min(extrema.x, min(next.x, next.y)), max(extrema.y, max(next.x, next.y)));
             }
             bool second = vertexID >= 6;
             float2 edge = second ? mix(extrema, rightEdge, corner.x) : mix(leftEdge, extrema, corner.x);

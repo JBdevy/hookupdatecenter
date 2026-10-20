@@ -1,5 +1,5 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "1.05"
+  #define AppVersion "1.06"
 #endif
 #ifndef PackageDirectory
   #error PackageDirectory must point to the tested CatLive package.

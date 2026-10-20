@@ -309,7 +309,7 @@ enum TimelineMetalWaveformFrameBuilder {
         [SIMD2<Float>(Float($0) / 2048, -1), SIMD2<Float>(Float($0 + 1) / 2048, 1)]
     }], start: 0, end: 1, step: TimelineAudioWaveform.peakFramesPerInterval, rate: 1, key: "timeline-repeat-band-unit", isPeakEnvelope: true)
     static func make(items: [TimelineWaveformItem], viewport: CGRect, scale: Double,
-                     cache: TimelineAudioWaveform, owner: TimelineWaveformVertexOwner, contentRevision: Int = 0) -> MetalWaveformFrame {
+                     cache: TimelineAudioWaveform, owner: TimelineWaveformVertexOwner, contentRevision: Int = 0, pixelDensity: Double = 2) -> MetalWaveformFrame {
         owner.beginFrame()
         defer { owner.endFrame() }
         var strokes: [MetalWaveformStroke] = []
@@ -348,7 +348,10 @@ enum TimelineMetalWaveformFrameBuilder {
                 let last = min(fragment.startTime + fragment.duration, min(rect.maxX, viewport.maxX) / scale)
                 guard last > first else { continue }
                 let sourceScale = scale / rate
-                let contourWidth = Float(TimelineWaveformStrokeStyle.lineWidth(sampleRate: header.rate, pixelsPerSecond: sourceScale))
+                let rasterScale = TimelineWaveformRasterScale.cacheScale(sourceScale, pixelDensity: pixelDensity)
+                // The sample contour must not thicken at LOD transitions. Match the
+                // envelope's minimum thickness of one physical display pixel.
+                let contourWidth = Float(1 / min(8, max(1, pixelDensity)))
                 // A subpixel repetition is a continuous band at this scale.
                 // Bound work to one period instead of iterating millions of loops.
                 if let length = fragment.loopLength, length > 0, length * sourceScale < 1 {
@@ -364,7 +367,8 @@ enum TimelineMetalWaveformFrameBuilder {
                     for channel in 0..<channels {
                         let sourceChannel = mode == 1 ? 0 : mode == 2 ? min(1, header.channels - 1) : mode == 3 && header.channels > 1 ? header.channels : channel
                         var minimum: Float = 0, maximum: Float = 0
-                        for block in blocks where sourceChannel < block.channels.count {
+                        for sourceBlock in blocks where sourceChannel < sourceBlock.channels.count {
+                                let block = sourceBlock.step > 1 && !sourceBlock.isPeakEnvelope ? sourceBlock.rasterEnvelope : sourceBlock
                             let points = block.channels[sourceChannel]
                             if block.isPeakEnvelope {
                                 // Peaks describe intervals, not isolated sample
@@ -406,7 +410,7 @@ enum TimelineMetalWaveformFrameBuilder {
                     let start = max(0, fragment.loopStart ?? 0)
                     let end = min(Double(header.frames) / header.rate, (fragment.loopStart ?? 0) + length)
                     loopBlocks = end > start ? owner.blocks(cache: cache, url: item.url, header: header,
-                        start: start, end: end, scale: sourceScale, key: "\(item.clip.id):\(fragmentIndex):period") : []
+                        start: start, end: end, scale: rasterScale, key: "\(item.clip.id):\(fragmentIndex):period") : []
                 } else { loopBlocks = nil }
                 var position = first
                 while position < last {
@@ -434,7 +438,7 @@ enum TimelineMetalWaveformFrameBuilder {
                         if let loopBlocks { blocks = loopBlocks }
                         else {
                             let key = "\(item.clip.id):\(fragmentIndex):\(fragment.startTime):\(fragment.sourceOffset):\(repetition)"
-                            blocks = owner.blocks(cache: cache, url: item.url, header: header, start: max(0, source), end: sourceEnd, scale: sourceScale, key: key)
+                            blocks = owner.blocks(cache: cache, url: item.url, header: header, start: max(0, source), end: sourceEnd, scale: rasterScale, key: key)
                         }
                         for channel in 0..<channels {
                             let sourceChannel = mode == 1 ? 0 : mode == 2 ? min(1, header.channels - 1) : mode == 3 && header.channels > 1 ? header.channels : channel
@@ -447,7 +451,8 @@ enum TimelineMetalWaveformFrameBuilder {
                                 scale: SIMD2(Float(localClip.width), 1), translation: SIMD2(Float(localClip.minX), Float(middle)),
                                 clip: localClip, color: SIMD4(repeating: item.gray).withAlpha(0.5), itemRect: localItem,
                                 firstSeamX: firstSeam, repeatSpacing: seamSpacing, lineWidth: 0.5))
-                            for block in blocks where sourceChannel < block.channels.count {
+                            for sourceBlock in blocks where sourceChannel < sourceBlock.channels.count {
+                                let block = sourceBlock.step > 1 && !sourceBlock.isPeakEnvelope ? sourceBlock.rasterEnvelope : sourceBlock
                                 let x = position * scale - viewport.minX + (Double(block.start) / header.rate - source) * sourceScale
                                 let right = x + Double(block.end - block.start) / header.rate * sourceScale
                                 guard right >= localClip.minX - 2, x <= localClip.maxX + 2 else { continue }

@@ -1800,6 +1800,11 @@ private struct TimelineGridContent: View, Equatable {
     }
     private var projection: Projection?
     private var waveformProjection: Projection?
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        waveformProjection = nil
+        submitWaveforms()
+    }
     private var waveformReadinessRevision: UInt64?
     private var verticalViewportHeight: CGFloat?
     private var visibleWaveforms: [TimelineWaveformItem] = []
@@ -1880,6 +1885,9 @@ private struct TimelineGridContent: View, Equatable {
         verticalViewportHeight = viewport.height
         let next = Projection(viewport: tile, scale: scale, revision: contentRevision)
         guard projection != next else { return }
+        // Retire pixels before moving/resizing their host. Otherwise AppKit can
+        // composite the preceding tile inside the new item's coordinate space.
+        waveforms.submit(MetalWaveformFrame(size: tile.size, strokes: []))
         projection = next
         if frame != tile { frame = tile }
         let local = CGRect(origin: .zero, size: tile.size)
@@ -1977,7 +1985,7 @@ private struct TimelineGridContent: View, Equatable {
         waveformReadinessRevision = revision
         waveforms.submit(TimelineMetalWaveformFrameBuilder.make(items: visibleWaveforms,
             viewport: projection.viewport, scale: projection.scale, cache: .shared,
-            owner: sourceOwner, contentRevision: projection.revision))
+            owner: sourceOwner, contentRevision: projection.revision, pixelDensity: Double(window?.backingScaleFactor ?? 1)))
     }
 }
 
@@ -4385,6 +4393,8 @@ private struct TimelineObservedWaveformReadinessLayer<Content: View>: View {
 /// One GPU surface batches all visible audio, including a bounded overscan for
 /// native scrolling. It never allocates a texture as large as the whole project.
 private struct TimelineMetalWaveformLayer: View {
+    @Environment(\.displayScale) private var waveformPixelDensity
+
     @State private var mediaURLs = TimelineMediaURLCache()
     @State private var sourceOwner = TimelineWaveformVertexOwner()
     @ObservedObject private var waveformCache = TimelineAudioWaveform.shared
@@ -4417,7 +4427,8 @@ private struct TimelineMetalWaveformLayer: View {
     }
     private func waveformFrame(viewport: CGRect, scale: Double) -> MetalWaveformFrame {
         TimelineMetalWaveformFrameBuilder.make(items: visibleItems(viewport: viewport, scale: scale),
-            viewport: viewport, scale: scale, cache: waveformCache, owner: sourceOwner, contentRevision: contentRevision)
+            viewport: viewport, scale: scale, cache: waveformCache, owner: sourceOwner, contentRevision: contentRevision,
+            pixelDensity: Double(waveformPixelDensity))
     }
     private var contentRevision: Int {
         var key = Hasher()

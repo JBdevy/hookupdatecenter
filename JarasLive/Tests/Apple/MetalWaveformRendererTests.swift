@@ -112,6 +112,25 @@ func waveform(scale: SIMD2<Float> = SIMD2(1, 32), translation: SIMD2<Float> = SI
     MetalWaveformStroke(block: block, channel: channel, scale: scale, translation: translation,
         clip: clip, color: colour, itemRect: item)
 }
+// Two sources may have the same start, span and LOD. Their derived envelopes
+// must retain source identity or the semantic GPU cache reuses the other audio.
+func envelopeFixture(_ name: String, _ level: Float) -> TimelineAudioWaveform.VertexBlock {
+    TimelineAudioWaveform.VertexBlock(channels: [[SIMD2(0, -level), SIMD2(3, level),
+        SIMD2(4, -level), SIMD2(7, level)]], start: 0, end: 8, step: 4, rate: 48000, key: name).rasterEnvelope
+}
+let loudEnvelope = envelopeFixture("different-source-loud", 0.8)
+let quietEnvelope = envelopeFixture("different-source-quiet", 0.1)
+precondition(loudEnvelope.key != quietEnvelope.key)
+func envelopeFrame(_ source: TimelineAudioWaveform.VertexBlock) -> MetalWaveformStroke {
+    MetalWaveformStroke(block: source, channel: 0, scale: SIMD2(10, 40), translation: SIMD2(20, 64),
+        clip: item, color: SIMD4(repeating: 1), itemRect: item)
+}
+let loudSource = render([envelopeFrame(loudEnvelope)])
+let quietSource = render([envelopeFrame(quietEnvelope)])
+precondition(loudSource.alpha(40, 40) > 200 && quietSource.alpha(40, 40) == 0,
+    "same-position source envelopes must never reuse another file's GPU pixels")
+precondition(render([envelopeFrame(loudEnvelope)]).bytes == loudSource.bytes)
+print("METAL_DERIVED_ENVELOPES_PRESERVE_SOURCE_IDENTITY_AND_GPU_PIXELS_OK")
 let original = render([waveform()])
 precondition(original.maximumAlpha(36, 26) > 180 && original.maximumAlpha(68, 74) > 180)
 precondition(original.maximumAlpha(36, 50) == 0, "do not replace actual samples by a synthetic centerline")
@@ -179,7 +198,9 @@ func peakStroke(clip: CGRect = item, block: TimelineAudioWaveform.VertexBlock = 
 let peaks = render([peakStroke()])
 precondition(peaks.alpha(20, 41) > 240 && peaks.alpha(60, 75) > 240 && peaks.alpha(80, 57) > 240)
 precondition(peaks.alpha(80, 45) == 0, "a later interval must preserve its own smaller extrema")
-precondition(peaks.alpha(32, 41) > 240 && peaks.alpha(60, 42) == 0, "real peak remains at center while neighboring bins join with a sloped contour")
+precondition(peaks.alpha(32, 41) > 240 && peaks.alpha(60, 42) > 240,
+             "joining interval edges must not attenuate a transient before its next bucket")
+precondition(peaks.alpha(96, 45) == 0, "the next bucket retains its own smaller extrema at its center")
 let trimmedPeak = render([peakStroke(clip: CGRect(x: 34, y: 10, width: 3, height: 108))])
 precondition(trimmedPeak.alpha(35, 41) > 240 && trimmedPeak.alpha(35, 78) > 240,
              "a trim inside one bucket must retain its continuous peak contour")
@@ -633,6 +654,18 @@ precondition(surface.submittedFrameCount == fillBefore + 1 && surface.subviews.f
 surface.submit(MetalWaveformFrame(size: size, strokes: []))
 precondition(surface.subviews.first?.alphaValue == 0, "deleting the last item hides its GPU fill immediately")
 print("METAL_NATIVE_FILL_ONLY_PRESENT_AND_DELETE_OK")
+// The compositor must adopt item clipping synchronously, before a queued
+// drawable can present pixels belonging to the previous item geometry.
+let maskDestination = CGRect(x: 75, y: 20, width: 25, height: 70)
+surface.submit(MetalWaveformFrame(size: size, strokes: [MetalWaveformStroke(block: filledInterval,
+    channel: 0, scale: SIMD2(128, 64), translation: SIMD2(0, 64), clip: maskDestination,
+    color: SIMD4(repeating: 1), itemRect: maskDestination)],
+    coordinateSpace: .init(documentOrigin: .zero, pixelsPerSecond: 100, contentRevision: 101)))
+let currentMask = (surface.layer?.mask as? CAShapeLayer)?.path
+precondition(currentMask?.contains(CGPoint(x: 85, y: 50)) == true)
+precondition(currentMask?.contains(CGPoint(x: 30, y: 50)) == false,
+    "current item clips must reject stale drawable pixels before presentation")
+print("METAL_COMPOSITOR_ITEM_MASK_UPDATES_BEFORE_DRAWABLE_PRESENTATION_OK")
 testWindow.close()
 
 #endif

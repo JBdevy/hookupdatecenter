@@ -21,6 +21,15 @@ enum WaveformPeakCodec {
 
 /// Dense curves keep their existing weight; resolved source samples become a
 /// thin contour without a width jump at a power-of-two geometry transition.
+enum TimelineWaveformRasterScale {
+    /// The peak cache historically targets half a point. Convert the physical
+    /// pixel budget into that coordinate system without rescaling its vertices.
+    static func cacheScale(_ scale: Double, pixelDensity: Double) -> Double {
+        let density = pixelDensity.isFinite ? min(8, max(1, pixelDensity)) : 1
+        return scale * density / 2
+    }
+}
+
 enum TimelineWaveformStrokeStyle {
     static func lineWidth(sampleRate: Double, pixelsPerSecond: Double) -> Double {
         guard sampleRate.isFinite, sampleRate > 0, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 2 }
@@ -424,6 +433,30 @@ final class TimelineAudioWaveform: ObservableObject {
             self.step = step; self.rate = rate; self.key = key
             keyHash = key.hashValue
         }
+        /// Raster-only envelope; retain the source's exact PCM vertices for
+        /// cache coverage, fine-detail transitions and sample-level inspection.
+        lazy var rasterEnvelope: VertexBlock = {
+            guard !isPeakEnvelope, step > 1 else { return self }
+            let intervals = channels.map { points -> [SIMD2<Float>] in
+                var result: [SIMD2<Float>] = []
+                var first: Float = -1, low: Float = 0, high: Float = 0
+                func flush() {
+                    guard first >= 0 else { return }
+                    result.append(SIMD2(first, low))
+                    result.append(SIMD2(min(Float(end - start), first + Float(step)), high))
+                }
+                for point in points {
+                    let bucket = floor(point.x / Float(step)) * Float(step)
+                    if bucket != first {
+                        flush(); first = bucket; low = point.y; high = point.y
+                    } else { low = min(low, point.y); high = max(high, point.y) }
+                }
+                flush()
+                return result
+            }
+            return VertexBlock(channels: intervals, start: start, end: end,
+                step: step, rate: rate, key: key + ":raster-envelope-v1", isPeakEnvelope: true)
+        }()
         convenience init(buckets: [[Bucket]], start: Int64, end: Int64, step: Int, rate: Double, key: String) {
             let channels = buckets.map { buckets -> [SIMD2<Float>] in
                 var vertices: [SIMD2<Float>] = []

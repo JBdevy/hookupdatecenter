@@ -421,6 +421,40 @@ int runTests(const File &directory) {
         expect(std::abs(data->range(0,0,1).second-.4f)<.001f,"Fade modified source peaks");
         PNGImageFormat png;auto out=directory.getChildFile("waveform-fades.png").createOutputStream();png.writeImageToStream(curved,*out);
     });
+    test("Waveform physical columns retain transients and scroll without repartitioning", [&] {
+        auto data=std::make_shared<WaveformCache::Data>();
+        data->duration=200;data->sampleRate=48000;data->frames=9600000;data->sourceChannels=data->storedChannels=1;
+        const size_t count=(size_t)((data->frames+255)/256);
+        data->levels.push_back({256,0,count});data->owned.setSize(count*4,true);
+        auto *bytes=(uint8*)data->owned.getData();
+        for(size_t bin=0;bin<count;++bin) {
+            const uint16 high=(uint16)WaveformCache::encode(bin%997==0?.8f:.04f);
+            const uint16 low=(uint16)WaveformCache::encode(bin%997==0?-.6f:-.04f);
+            bytes[bin*4]=(uint8)high;bytes[bin*4+1]=(uint8)(high>>8);
+            bytes[bin*4+2]=(uint8)low;bytes[bin*4+3]=(uint8)(low>>8);
+        }
+        WaveformCache cache;jaras::AudioClip clip;clip.duration=200;
+        for(float density:{1.f,1.25f,1.5f,2.f}) {
+            const auto draw=[&](float scroll) {
+                Image image(Image::ARGB,roundToInt(512*density),roundToInt(96*density),true);
+                Graphics g(image);g.addTransform(AffineTransform::scale(density));
+                WaveformRenderer::draw(g,cache,data,clip,{-scroll,0,2000,96},{0,0,512,96},10,Colours::white);
+                return image;
+            };
+            const auto original=draw(0),panned=draw(16);const int shift=roundToInt(16*density);
+            int tall=0;
+            for(int x=4;x<original.getWidth()-shift-4;++x) {
+                int height=0;
+                for(int y=roundToInt(20*density);y<roundToInt(93*density);++y) {
+                    const auto a=original.getPixelAt(x+shift,y).getAlpha(),b=panned.getPixelAt(x,y).getAlpha();
+                    expect(std::abs((int)a-(int)b)<=2,"Scrolling changed source peak columns");
+                    height+=b>100;
+                }
+                if(height>40*density)++tall;
+            }
+            expect(tall>0,"A short transient disappeared in the physical-pixel overview");
+        }
+    });
     test("Continuous scroll matches Mac and none does not change the viewport", [&] {
         TimelinePlaybackFollowPolicy policy;
         expect(!policy.destination(39,10,10000,0,800,"main",1),"Scroll before viewport midpoint");

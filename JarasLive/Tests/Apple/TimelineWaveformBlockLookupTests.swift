@@ -1,6 +1,18 @@
 import Foundation
 
 setbuf(stdout, nil)
+for density in [1.0, 1.25, 1.5, 2, 3] {
+    for scale in [5.0, 100, 500, 4000, 48000] {
+        let raster = TimelineWaveformRasterScale.cacheScale(scale, pixelDensity: density)
+        let step = TimelineAudioWaveform.step(rate: 48000, pixelsPerSecond: raster)
+        precondition(Double(step) * scale * density / 48000 <= max(1, scale * density / 48000),
+                     "LOD must retain at least one interval per physical pixel, or every source sample")
+    }
+}
+precondition(TimelineWaveformRasterScale.cacheScale(100, pixelDensity: .nan) == 50)
+precondition(TimelineWaveformRasterScale.cacheScale(100, pixelDensity: 0) == 50)
+precondition(TimelineWaveformRasterScale.cacheScale(100, pixelDensity: .infinity) == 50)
+print("WAVEFORM_NATIVE_AND_FRACTIONAL_DPI_SOURCE_RESOLUTION_OK")
 typealias Block = TimelineAudioWaveform.VertexBlock
 
 for sampleRate in [44_100.0, 48_000, 96_000] {
@@ -131,3 +143,20 @@ for count in ProcessInfo.processInfo.environment["JARAS_SKIP_BENCHMARKS"] == "1"
     let indexed = indexedTimes.sorted()[1], filtered = filteredTimes.sorted()[1]
     print(String(format: "WAVEFORM_BLOCK_LOOKUP_BENCHMARK blocks=%d queries=600 indexed_ms=%.3f full_filter_ms=%.3f speedup=%.1fx", count, indexed, filtered, filtered / max(0.000001, indexed)))
 }
+
+// Alternating PCM must form a continuous envelope while samples are grouped;
+// joining decimated extrema as an outline produces zoom-dependent stripes.
+let alternating = TimelineAudioWaveform.PCM(channels: [(0..<65).map { $0 % 2 == 0 ? Float(0.75) : Float(-0.5) }])
+let alternatingView = TimelineAudioWaveform.PCMView(slices: [.init(page: alternating, range: 0..<65)])
+for step in [2, 4, 8, 16, 32] {
+    let envelope = Block(pages: alternatingView, start: 0, span: 64, step: step, rate: 48000, key: "envelope-\(step)").rasterEnvelope
+    precondition(envelope.isPeakEnvelope)
+    let points = envelope.channels[0]
+    for index in stride(from: 0, to: points.count - 2, by: 2) {
+        precondition(points[index].y == -0.75 && points[index + 1].y == 0.5)
+        precondition(points[index + 1].x == points[index + 2].x)
+    }
+}
+let detailed = Block(pages: alternatingView, start: 0, span: 64, step: 1, rate: 48000, key: "samples")
+precondition(!detailed.isPeakEnvelope)
+print("WAVEFORM_PCM_ENVELOPE_CONTIGUOUS_WITH_EXACT_SAMPLE_DETAIL_OK")

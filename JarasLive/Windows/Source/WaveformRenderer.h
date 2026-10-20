@@ -2,8 +2,8 @@
 #include "WaveformCache.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
-// Mac geometry: connected min/max envelopes at half-point resolution; actual
-// extrema in temporal order at close zoom. No independent pixel-wide bars.
+// Source-anchored min/max columns at physical-pixel resolution; real PCM
+// extrema at close zoom. Connected contours keep fractional pans continuous.
 struct WaveformRenderer {
     struct FadeEnvelope {
         double origin, scale, duration, in, out;
@@ -34,10 +34,10 @@ struct WaveformRenderer {
         const double visibleEnd = std::min(clip.duration, (viewport.getRight() - item.getX()) / pixelsPerSecond);
         if (visibleEnd <= visibleStart) return;
         const double loop = clip.loopLength.value_or(0), loopStart = clip.loopStart.value_or(0);
-        const auto step = WaveformCache::step(data->sampleRate, sourceScale);
         const float amplitude = height * .98f * (float)jlimit(0., std::pow(10., 24. / 20), clip.gain.value_or(1));
         const FadeEnvelope fade(clip, item.getX(), pixelsPerSecond);
-        const float physical = std::max(.01f, g.getInternalContext().getPhysicalPixelScaleFactor());
+        const float physical = jlimit(1.f, 8.f, g.getInternalContext().getPhysicalPixelScaleFactor());
+        const auto step = WaveformCache::step(data->sampleRate, sourceScale * physical / 2.0);
         g.saveState();
         if (clipToItem) {Path outline;outline.addRoundedRectangle(item,3);g.reduceClipRegion(outline);}
         g.setColour(ink);
@@ -80,7 +80,7 @@ struct WaveformRenderer {
                     if(cropped) {g.saveState();Path clipPath;clipPath.addRectangle(segment);g.reduceClipRegion(clipPath);}
                     bool detailed = false;
                     if (step < 256) detailed = drawDetail(g, cache, data, sourceChannel, source, sourceEnd, sourceScale, x, middle, amplitude, step, fade);
-                    if (!detailed) drawEnvelope(g, *data, sourceChannel, source, sourceEnd, sourceScale, x, middle, amplitude, std::max<int64>(256, step), physical, fade);
+                    if (!detailed) drawEnvelope(g, *data, sourceChannel, source, sourceEnd, sourceScale, x, middle, amplitude, physical, fade);
                     if(cropped) g.restoreState();
                 }
                 if (end <= position) break;
@@ -92,24 +92,30 @@ struct WaveformRenderer {
     }
   private:
     static void drawEnvelope(Graphics &g, const WaveformCache::Data &data, int channel,
-        double start, double end, double scale, double x, float middle, float amplitude, int64 step, float physical, const FadeEnvelope &fade) {
-        const int64 first = std::max<int64>(0, (int64)std::floor(start * data.sampleRate / step) - 1);
-        const int64 last = std::min<int64>((data.frames - 1) / step, (int64)std::ceil(end * data.sampleRate / step) + 1);
+        double start, double end, double scale, double x, float middle, float amplitude, float physical, const FadeEnvelope &fade) {
+        // Anchor intervals to the source, not the visible crop: panning cannot
+        // repartition a transient or change its height. One column per device
+        // pixel bounds work by the visible width, including fractional DPI.
+        const double secondsPerColumn = 1.0 / (scale * physical);
+        const int64 first = std::max<int64>(0, (int64)std::floor(start / secondsPerColumn) - 1);
+        const int64 last = std::min<int64>((int64)std::ceil(data.duration / secondsPerColumn) - 1,
+                                          (int64)std::ceil(end / secondsPerColumn) + 1);
         if (last < first) return;
         struct Edge { float x, upper, lower; };
         std::vector<Edge> edges; edges.reserve((size_t)(last - first + 3));
-        for (int64 bin = first; bin <= last; ++bin) {
-            const double a = bin * step / data.sampleRate, b = std::min(data.duration, (bin + 1) * step / data.sampleRate);
-            const auto peak = data.rangeFrames(channel, bin * step, std::min(data.frames, (bin + 1) * step));
+        for (int64 column = first; column <= last; ++column) {
+            const double a = column * secondsPerColumn, b = std::min(data.duration, (column + 1) * secondsPerColumn);
+            const auto peak = data.rangeFrames(channel, (int64)std::floor(a * data.sampleRate),
+                std::min(data.frames, (int64)std::ceil(b * data.sampleRate) + 1));
             const auto edgeAt = [&](double time) {
                 const float px = (float)(x + (time - start) * scale), level = amplitude * fade.at(px);
                 const float center = middle - (peak.first + peak.second) * .5f * level;
                 const float half = std::max(.5f / physical, (peak.second - peak.first) * .5f * level);
                 return Edge{px, center-half, center+half};
             };
-            if (bin == first) edges.push_back(edgeAt(a));
+            if (column == first) edges.push_back(edgeAt(a));
             edges.push_back(edgeAt((a+b)*.5));
-            if (bin == last) edges.push_back(edgeAt(b));
+            if (column == last) edges.push_back(edgeAt(b));
         }
         Path path; path.preallocateSpace((int)edges.size() * 6);
         path.startNewSubPath(edges[0].x, edges[0].upper);

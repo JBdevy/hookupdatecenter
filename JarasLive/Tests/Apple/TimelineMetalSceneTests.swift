@@ -299,7 +299,7 @@ let completeFrame: MetalWaveformFrame = awaitValue {
     return !audio.isEmpty && audio.allSatisfy({ !$0.block.isPeakEnvelope && $0.block.step == 1 }) ? frame : nil
 }
 let completeAudio = audioStrokes(completeFrame)
-precondition(completeAudio.allSatisfy { $0.lineWidth == 1 }, "sample detail draws a thin connected contour")
+precondition(completeAudio.allSatisfy { $0.lineWidth == 0.5 }, "sample detail draws a thin connected contour")
 for stroke in completeAudio {
     let expected = (detailClip.startTime + (Double(stroke.block.start) / rate - detailClip.sourceOffset)) * detailScale - detailViewport.minX
     precondition(abs(Double(stroke.translation.x) - expected) < 0.0001,
