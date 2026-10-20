@@ -59,6 +59,14 @@ ProjectBrowser::ProjectBrowser() {
         button->setComponentID(button->getName());
     }
     addAndMakeVisible(browseButton);
+    addChildComponent(cancelLoading);
+    cancelLoading.setComponentID("cancelProjectLoading");
+    cancelLoading.onClick = [this] {
+        if (!loading || !cancelLoadingAction) return;
+        auto action = std::move(cancelLoadingAction);
+        setLoadingCancellation({});
+        action();
+    };
     addAndMakeVisible(search);
     addAndMakeVisible(recents);
     for (auto *label : {&loadingStatus, &loadingError}) {
@@ -128,6 +136,7 @@ void ProjectBrowser::selectMode(Mode value) {
 void ProjectBrowser::beginLoading(const File &file) {
     if (loading) return;
     loading = true;
+    cancelLoadingAction = {};
     mode = opening;
     loadingError.setText({}, dontSendNotification);
     loadingStatus.setText(String::fromUTF8("Carregando projeto…"), dontSendNotification);
@@ -144,11 +153,18 @@ void ProjectBrowser::beginLoading(const File &file) {
     resized();
     repaint();
 }
+void ProjectBrowser::setLoadingCancellation(std::function<void()> action) {
+    cancelLoadingAction = loading ? std::move(action) : std::function<void()>{};
+    cancelLoading.setButtonText(localization::translate("Cancelar"));
+    updateEnabled();
+    resized();
+}
 void ProjectBrowser::updateLoading(const String &status) {
     if (loading) loadingStatus.setText(status, dontSendNotification);
 }
 void ProjectBrowser::finishLoading(const String &error) {
     loading = false;
+    cancelLoadingAction = {};
     stopTimer();
     loadingStatus.setText({}, dontSendNotification);
     loadingError.setText(error, dontSendNotification);
@@ -163,6 +179,7 @@ void ProjectBrowser::updateEnabled() {
     for (auto *button : {&create, &add, &empty, &stems, &reaper, &logic, &recording, &package})
         button->setEnabled(!loading && !playbackRunning);
     browseButton.setEnabled(!loading && !playbackRunning);
+    cancelLoading.setEnabled(!loading || (bool)cancelLoadingAction);
     search.setEnabled(!loading);
     recents.setEnabled(!loading);
 }
@@ -228,8 +245,11 @@ void ProjectBrowser::resized() {
     const int listHeight = std::min(170, std::max(0, contentBottom - 193 - statusHeight));
     recents.setBounds(24, 193, width, listHeight);
     const int statusY = recents.getBottom() + 10;
+    const bool canCancel = loading && (bool)cancelLoadingAction;
     spinnerBounds = {24, statusY + 2, 16, 16};
-    loadingStatus.setBounds(48, statusY, std::max(0, width - 24), 20);
+    loadingStatus.setBounds(48, statusY, std::max(0, width - 24 - (canCancel ? 88 : 0)), 20);
+    cancelLoading.setBounds(getWidth() - 104, statusY - 2, 80, 24);
+    cancelLoading.setVisible(canCancel);
     loadingError.setBounds(24, statusY, width, 34);
     loadingStatus.setVisible(loading);
     loadingError.setVisible(hasError);

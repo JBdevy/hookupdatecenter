@@ -5,6 +5,7 @@
 namespace catlive {
 // Enabled only by the isolated --self-test harness, never by the application.
 inline bool stemDevelopmentTesting = false;
+struct AutomationProgram;
 class NativeFX {
 public:
     struct PreparationCancelled : std::runtime_error {
@@ -19,6 +20,7 @@ public:
                  const Dispatcher &pluginDispatcher = {});
     void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN());
     bool hasExternal() const;
+    void applyAutomation(const AutomationProgram &, double time);
     unsigned latencyFrames() const;
     void activateStemLatency(bool force=false);
     bool pendingStemChange()const;

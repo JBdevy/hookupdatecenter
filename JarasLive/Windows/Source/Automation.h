@@ -2,15 +2,17 @@
 #include "Common.h"
 namespace catlive {
 // The document representation is shared with TrackAutomation.swift. Compiled curves
-// contain no JUCE variants, strings or allocations in the audio callback.
+// contain no variants or allocations in the audio callback; plugin IDs are prepared once.
 struct AutomationCurve {
-    enum Target { volume, pan, mute, unsupported };
+    enum Target { volume, pan, mute, externalFX, unsupported };
     enum Shape { linear, square, smooth, fastStart, fastEnd };
     struct Point {
         double time, value;
         Shape shape;
     };
     Target target = volume;
+    String plugin;
+    uint32 parameter = 0;
     double fallback = 1;
     bool linearGain = false;
     std::vector<Point> points;
@@ -67,7 +69,13 @@ struct AutomationProgram {
             curve.target = kind == "volume" ? AutomationCurve::volume
                            : kind == "pan"  ? AutomationCurve::pan
                            : kind == "mute" ? AutomationCurve::mute
+                           : kind == "externalFX" ? AutomationCurve::externalFX
                                             : AutomationCurve::unsupported;
+            if (curve.target == AutomationCurve::externalFX) {
+                curve.plugin = str(get(entry,"target"),"plugin");
+                curve.parameter = (uint32)(int64)get(get(entry,"target"),"parameter");
+                if (curve.plugin.isEmpty()) continue;
+            }
             if (curve.target == AutomationCurve::unsupported)
                 continue;
             curve.fallback = jlimit(

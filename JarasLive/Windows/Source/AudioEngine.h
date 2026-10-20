@@ -159,14 +159,14 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     uint64 getUnderruns() const { return underruns.load(); }
     int residentStreams() const {
         std::set<const StreamingReader*> active;
-        for (const auto& voice : voices) for (const auto& reader : voice->source->readers)
+        for (const auto& voice : voices) if (voice->source) for (const auto& reader : voice->source->readers)
             if (reader->cached()) active.insert(reader.get());
         return (int)active.size();
     }
     var streamDiagnostics() const {
         std::set<const StreamingReader*> unique;
         uint64 caches = 0, inactive = 0;
-        for (const auto& voice : voices) for (const auto& reader : voice->source->readers)
+        for (const auto& voice : voices) if (voice->source) for (const auto& reader : voice->source->readers)
             if (unique.insert(reader.get()).second) {
                 caches += reader->cacheMisses.load();
                 inactive += reader->inactiveMisses.load();
@@ -207,6 +207,16 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         jaras::FadeCurve fadeInShape, fadeOutShape;
         int channelMode = 0;
         std::shared_ptr<Source> source;
+        // MIDI items have no disk reader. Each take owns two independent FX
+        // chains and clocks, while unowned notes keep using the track instrument.
+        bool midiItem = false, midiInstrument = false;
+        MIDIPlayback::Sequence midiSequence;
+        std::vector<PlaybackNote> sharedMIDINotes;
+        MidiBuffer midiMessages[2];
+        double midiExpected[2]{-1, -1};
+        jaras::PlaybackScope midiScopes[2];
+        std::unique_ptr<ClipTempo> midiTiming;
+        bool ownsMIDI() const { return midiItem && midiInstrument && !fxBypassed; }
         AudioBuffer<float> processed[2];
         AudioBuffer<float> stemInput[2]{{2,4096},{2,4096}};
         std::unique_ptr<ClipAudio> clipAudio;
@@ -218,6 +228,16 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         int firstOutput = 0, outputChannels = 2;
         size_t bus = 0;
     };
+    struct SharedMIDIUpdate {
+        MIDIPlayback::Sequence external, synth;
+        explicit SharedMIDIUpdate(std::vector<PlaybackNote> notes)
+            : external(MIDIPlayback::sequence(std::move(notes))), synth(external) {}
+    };
+    SharedMIDIUpdate sharedMIDISequence(size_t bus, const Voice *replacement = nullptr,
+                                       bool ownsReplacement = false) const;
+    void replaceSharedMIDI(size_t bus, SharedMIDIUpdate &);
+    void mixMIDIVoice(Voice &, int head, double at, float *const *out, int channels,
+                      int dest, int count, bool running);
     struct Bus {
         ID id;
         float volume = 1, pan = 0;
@@ -270,7 +290,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         AudioBuffer<float> scratch{2,4096},hardwareScratch{2,4096},metronomeBuffer{2,4096};
     };
     std::unique_ptr<LatencyPlan> latencyPlan;
-    std::unique_ptr<LatencyPlan> makeLatencyPlan(const ID *replacement=nullptr,const NativeFX *prepared=nullptr)const;
+    std::unique_ptr<LatencyPlan> makeLatencyPlan(const ID *replacement=nullptr,const NativeFX *prepared=nullptr,
+                                                std::optional<bool> midiTakeActive={})const;
     bool offlineMode=false;
     uint64 stemLatencyFingerprint=0;
     std::atomic<bool> presentationTailing{false};

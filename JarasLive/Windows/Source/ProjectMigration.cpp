@@ -1,7 +1,9 @@
 #include "ProjectMigration.h"
 #include "MediaPath.h"
+#include "Automation.h"
 #include "VSHookMigration.h"
 #include <deque>
+#include <climits>
 namespace catlive {
 namespace migration {
 void require(bool condition, const String &message) {
@@ -79,6 +81,10 @@ struct RppChunk {
     StringArray header;
     std::vector<StringArray> lines;
     StringArray notes;
+    StringArray effectBypass, pendingEffectBypass;
+    std::vector<StringArray> midiEvents;
+    std::vector<const RppChunk *> effectEnvelopes;
+    RppChunk *lastEffect = nullptr;
     std::vector<std::unique_ptr<RppChunk>> children;
     StringArray line(const String &key) const {
         for (const auto &row : lines)
@@ -154,8 +160,21 @@ std::unique_ptr<RppChunk> parseRpp(const File &file, StringArray *warnings = nul
                 require(!root && node->header[0] == "REAPER_PROJECT",
                         "Select a valid REAPER .rpp project.");
                 root = std::move(node);
-            } else
-                stack.back()->children.push_back(std::move(node));
+            } else {
+                auto *parent = stack.back();
+                const auto kind = parent->header[0];
+                if (kind == "FXCHAIN" || kind == "TAKEFX" || kind == "MASTERFXLIST" || kind == "MASTERFXCHAIN") {
+                    if (ptr->header[0] == "PARMENV" && parent->lastEffect)
+                        parent->lastEffect->effectEnvelopes.push_back(ptr);
+                    else if (StringArray{"VST","AU","JS","DX","CLAP","VIDEO_EFFECT"}.contains(ptr->header[0])) {
+                        ptr->effectBypass = parent->pendingEffectBypass;
+                        parent->lastEffect = ptr;
+                    }
+                }
+                if (parent->header[0] == "SOURCE" && parent->header[1] == "MIDI" &&
+                    StringArray{"X","x","Xm","xm"}.contains(ptr->header[0])) parent->midiEvents.push_back(ptr->header);
+                parent->children.push_back(std::move(node));
+            }
             stack.push_back(ptr);
         } else if (line == ">") {
             require(!stack.empty(), "REAPER: unexpected chunk end.");
@@ -184,8 +203,12 @@ std::unique_ptr<RppChunk> parseRpp(const File &file, StringArray *warnings = nul
                 auto *ptr = node.get();
                 stack.back()->children.push_back(std::move(node));
                 stack.push_back(ptr);
-            } else
+            } else {
                 stack.back()->lines.push_back(row);
+                if (row[0] == "BYPASS") stack.back()->pendingEffectBypass = row;
+                if (stack.back()->header[0] == "SOURCE" && stack.back()->header[1] == "MIDI" &&
+                    StringArray{"E","e","Em","em"}.contains(row[0])) stack.back()->midiEvents.push_back(row);
+            }
         }
 
         } catch (const std::exception &error) {
@@ -201,6 +224,7 @@ std::unique_ptr<RppChunk> parseRpp(const File &file, StringArray *warnings = nul
     }
     return root;
 }
+#include "ReaperEffectsImport.h"
 std::optional<unsigned> rppColor(String text) {
     auto value = (uint32)text.getLargeIntValue();
     if (!(value & 0x1000000))
@@ -217,12 +241,20 @@ struct TempoMap {
         double initial=120;
         try { initial=root.number("TEMPO",1,120); }
         catch (const std::exception &error) { if(!warnings)throw;warnings->addIfNotAlreadyThere("REAPER tempo ignored: "+String::fromUTF8(error.what())); }
-        points.push_back({0, initial, 0, false});
         if (auto *tempo = root.child("TEMPOENVEX"))
-            for (auto &row : tempo->lines)
-                if (row[0] == "PT" && row.size() > 2)
-                    points.push_back(
-                        {row[1].getDoubleValue(), row[2].getDoubleValue(), 0, row[3] == "0"});
+            for (const auto &row : tempo->lines) if (row[0] == "PT") {
+                try {
+                    require(row.size() >= 3, "REAPER: invalid tempo point.");
+                    const double time=rppNumeric(row[1]), bpm=rppNumeric(row[2]);
+                    require(bpm>0,"REAPER: invalid tempo.");
+                    points.push_back({time,bpm,0,row[3]=="0"});
+                } catch(const std::exception &error) {
+                    if(!warnings)throw;
+                    warnings->addIfNotAlreadyThere("REAPER tempo point ignored: "+String::fromUTF8(error.what()));
+                }
+            }
+        double first=0;for(const auto &point:points)first=std::min(first,point.time);
+        points.insert(points.begin(),{first,initial,0,false});
         std::stable_sort(points.begin(), points.end(),
                          [](auto &a, auto &b) { return a.time < b.time; });
         std::vector<Point> unique;
@@ -271,7 +303,7 @@ struct TempoMap {
 };
 jaras::MIDIItem rppMIDI(const RppChunk &source, const RppChunk &take, const RppChunk &item,
                         const jaras::AudioClip &clip, const TempoMap &tempo, const File &base,
-                        StringArray &warnings) {
+                        StringArray &warnings, const std::map<String,const RppChunk *> &pools) {
     std::vector<jaras::MIDINote> notes;
     double length = 0, ppq = source.number("HASDATA", 2, 960);
     require(ppq > 0 && ppq <= 1000000, "REAPER: invalid MIDI resolution.");
@@ -283,7 +315,7 @@ jaras::MIDIItem rppMIDI(const RppChunk &source, const RppChunk &take, const RppC
     std::map<int, std::deque<Pending>> active;
     if (source.value("FILE").isNotEmpty()) {
         auto path = source.value("FILE").replaceCharacter('\\', '/');
-        auto file = File::isAbsolutePath(path) ? File(path) : base.getChildFile(path);
+        auto file = existingMediaPath(File::isAbsolutePath(path) ? File(path) : base.getChildFile(path));
         FileInputStream input(file);
         MidiFile midi;
         require(input.openedOk() && midi.readFrom(input) && midi.getTimeFormat() > 0,
@@ -295,6 +327,8 @@ jaras::MIDIItem rppMIDI(const RppChunk &source, const RppChunk &take, const RppC
             for (int i = 0; i < sequence.getNumEvents(); ++i) {
                 auto *event = sequence.getEventPointer(i);
                 length = std::max(length, event->message.getTimeStamp() / ppq);
+                if(!event->message.isNoteOnOrOff() && !event->message.isMetaEvent() && !event->message.isAllNotesOff())
+                    warnings.addIfNotAlreadyThere("MIDI controllers, program changes and SysEx are not migrated; review instrument settings.");
                 if (event->message.isNoteOn() && event->noteOffObject) {
                     jaras::MIDINote note;
                     note.id = uuid();
@@ -309,32 +343,47 @@ jaras::MIDIItem rppMIDI(const RppChunk &source, const RppChunk &take, const RppC
             }
         }
     } else {
-        double ticks = 0;
-        for (auto &row : source.lines) {
-            if (row[0].toLowerCase() != "e" && row[0].toLowerCase() != "em")
-                continue;
-            require(row.size() >= 4, "REAPER: incomplete MIDI event.");
-            ticks += row[1].getDoubleValue();
-            int status = row[2].getHexValue32(), pitch = row[3].getHexValue32(),
-                velocity = row[4].getHexValue32();
+        const RppChunk *events=&source;
+        if(source.midiEvents.empty() && source.value("POOLEDEVTS").isNotEmpty()) {
+            const auto found=pools.find(source.value("POOLEDEVTS"));require(found!=pools.end(),"REAPER: missing pooled MIDI source.");events=found->second;
+        }
+        ppq=events->number("HASDATA",2,960);
+        require(ppq>0 && ppq<=1000000 && events->value("HASDATA",3,"QN")=="QN","REAPER: unsupported MIDI tick format.");
+        double ticks = 0; int noteOns=0;
+        for (auto &row : events->midiEvents) {
+            require(row.size()>=2,"REAPER: invalid MIDI event offset.");
+            const auto delta=rppNumeric(row[1]);require(delta==std::floor(delta),"REAPER: invalid MIDI event offset.");ticks+=delta;
+            require(std::abs(ticks)<=10000000*ppq,"REAPER: MIDI event is outside the supported range.");length=std::max(length,ticks/ppq);
+            if(!row[0].startsWithIgnoreCase("e")){warnings.addIfNotAlreadyThere("MIDI controllers, program changes and SysEx are not migrated; review instrument settings.");continue;}
+            const auto byte=[&](int index){require(index<row.size()&&row[index].isNotEmpty()&&row[index].length()<=2&&row[index].containsOnly("0123456789abcdefABCDEF"),"REAPER: invalid MIDI event bytes.");return row[index].getHexValue32();};
+            const int status=byte(2);require(status>=0x80,"REAPER: invalid MIDI event status.");
+            if(status>=0xf0){warnings.addIfNotAlreadyThere("MIDI controllers, program changes and SysEx are not migrated; review instrument settings.");continue;}
+            const int pitch=byte(3),velocity=(status&0xf0)==0xc0||(status&0xf0)==0xd0?0:byte(4);
             int kind = status & 0xf0, channel = (status & 15) + 1, key = channel * 128 + pitch;
             bool muted = row[0].containsIgnoreCase("m");
             require(pitch < 128 && velocity < 128 && std::abs(ticks) < 1e13,
                     "REAPER: invalid MIDI event.");
-            if (kind == 0x90 && velocity > 0)
+            if(muted)warnings.addIfNotAlreadyThere("Muted MIDI notes were omitted because individual note mute is not supported.");
+            if (kind == 0x90 && velocity > 0) {
+                require(++noteOns<=100000,"REAPER: too many MIDI notes.");
                 active[key].push_back({ticks / ppq, velocity, muted});
+            }
             else if ((kind == 0x80 || kind == 0x90) && !active[key].empty()) {
                 auto begin = active[key].front();
                 active[key].pop_front();
                 if (!begin.muted && !muted && ticks / ppq > begin.start)
                     notes.push_back({uuid(), begin.start, ticks / ppq - begin.start, pitch,
                                      begin.velocity, channel});
-            } else if (kind != 0xb0 || pitch != 123)
+            } else if (kind != 0x80 && kind != 0x90 && (kind != 0xb0 || pitch != 123))
                 warnings.addIfNotAlreadyThere("MIDI controllers, program changes and SysEx are not "
                                               "migrated; review instrument settings.");
-            require(notes.size() < 100000, "REAPER: too many MIDI notes.");
-            length = std::max(length, ticks / ppq);
+            require(notes.size() <= 100000, "REAPER: too many MIDI notes.");
         }
+        length=ticks/ppq;
+        for(const auto &note:notes)length=std::max(length,note.start+note.length);
+    }
+    for(const auto &pending:active) if(!pending.second.empty()) {
+        warnings.addIfNotAlreadyThere("MIDI notes without a matching note-off were omitted.");break;
     }
     double rate = clip.playbackRate, fixed = source.number("IGNTEMPO", 2, 120),
            startBeat = tempo.beat(clip.startTime);
@@ -374,12 +423,11 @@ jaras::MIDIItem rppMIDI(const RppChunk &source, const RppChunk &take, const RppC
         }
     }
     std::stable_sort(result.notes.begin(), result.notes.end(),
-                     [](auto &a, auto &b) { return a.start < b.start; });
-    warnings.addIfNotAlreadyThere("MIDI notes were imported. Choose an instrument in CatLive.");
+                     [](auto &a, auto &b) { return a.start!=b.start ? a.start<b.start : a.channel!=b.channel ? a.channel<b.channel : a.pitch<b.pitch; });
     return result;
 }
 } // namespace
-MigratedProject readReaperProject(const File &file) {
+MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &resolve) {
     MigratedProject result;
     auto root = parseRpp(file, &result.warnings);
     migration::VSHookMigration hook;
@@ -417,6 +465,16 @@ MigratedProject readReaperProject(const File &file) {
     project.masterVolume = std::clamp(scalar(*root, "MASTER_VOLUME", 1, 1), 0., std::pow(10., .6));
     project.masterPan = std::clamp(scalar(*root, "MASTER_VOLUME", 2),-1.,1.);
     project.masterMute = ((int)scalar(*root, "MASTERMUTESOLO") & 1) != 0;
+    const auto masterFX = rppImportFX(root->child("MASTERFXLIST") ? root->child("MASTERFXLIST") : root->child("MASTERFXCHAIN"), resolve, result.warnings, "Master");
+    if (masterFX.settings.isObject()) project.masterFXJSON = utf8(JSON::toString(masterFX.settings));
+    const auto masterAutomation = rppAutomation(*root, masterFX.envelopes, false, 0, result.warnings, "Master");
+    if (masterAutomation.isObject()) project.masterAutomationJSON = utf8(JSON::toString(masterAutomation));
+    std::map<String,const RppChunk *> midiPools;
+    std::function<void(const RppChunk &)> collectPools=[&](const RppChunk &chunk){
+        if(chunk.header[0]=="SOURCE"&&chunk.header[1]=="MIDI"&&!chunk.midiEvents.empty()&&chunk.value("POOLEDEVTS").isNotEmpty())midiPools[chunk.value("POOLEDEVTS")]=&chunk;
+        for(const auto &child:chunk.children)collectPools(*child);
+    };collectPools(*root);
+    if(scalar(*root,"PLAYRATE",1,1)!=1) result.warnings.addIfNotAlreadyThere("REAPER sends and advanced playback settings are not converted. Review the migrated mix.");
     TempoMap tempo(*root, &result.warnings);
     AudioFormatManager formats;
     registerAudioFormats(formats);
@@ -448,6 +506,7 @@ MigratedProject readReaperProject(const File &file) {
             continue;
         jaras::Track track;
         track.id = uuid();
+        hook.tracks["TRACK_"+String(song.tracks.size()+1)] = track.id;
         if (node.header[1].isNotEmpty()) hook.tracks[node.header[1].toUpperCase()] = track.id;
         track.name = utf8(node.value("NAME", 1, "Track " + String(song.tracks.size() + 1)));
         track.volume = std::clamp(scalar(node, "VOLPAN", 1, 1), 0., std::pow(10., .6));
@@ -498,9 +557,14 @@ MigratedProject readReaperProject(const File &file) {
                 result.warnings.addIfNotAlreadyThere("REAPER: special-track folder membership was ignored."); delta=0;
             } else folders.push_back(track.id);
         }
-        if (node.child("FXCHAIN"))
-            result.warnings.addIfNotAlreadyThere(
-                "REAPER plug-ins require review in the imported project.");
+        auto trackFX = rppImportFX(node.child("FXCHAIN"), resolve, result.warnings, text(track.name));
+        if (trackFX.settings.isObject()) {
+            if (node.value("FX") == "0") for (auto &plugin : *get(trackFX.settings, "externalPlugins").getArray()) put(plugin, "bypassed", true);
+            track.fxJSON = utf8(JSON::toString(trackFX.settings));
+        }
+        const auto trackAutomation = rppAutomation(node, trackFX.envelopes, false, 0, result.warnings, text(track.name));
+        if (trackAutomation.isObject()) track.automationJSON = utf8(JSON::toString(trackAutomation));
+        if (!node.line("AUXRECV").isEmpty()) result.warnings.addIfNotAlreadyThere("REAPER sends and advanced playback settings are not converted. Review the migrated mix.");
         for (auto &itemOwned : node.children) {
             try {
             auto &item = *itemOwned;
@@ -539,7 +603,9 @@ MigratedProject readReaperProject(const File &file) {
                 clip.duration = duration;
                 clip.sourceOffset = take->number("SOFFS");
                 clip.playbackRate = take->number("PLAYRATE", 1, 1);
-                clip.pitchSemitones = take->number("PLAYRATE", 3);
+                const auto pitch = take->number("PLAYRATE", 3);
+                if (pitch >= -12 && pitch <= 12) { if (pitch != 0) clip.pitchSemitones = pitch; }
+                else result.warnings.addIfNotAlreadyThere("Item pitch outside the supported ±12 semitone range was not converted.");
                 double gain = take->line("TAKEVOLPAN").isEmpty()
                                   ? take->number("VOLPAN", 1, item.number("VOLPAN", 1, 1)) *
                                         take->number("VOLPAN", 3, 1)
@@ -554,6 +620,8 @@ MigratedProject readReaperProject(const File &file) {
                     item.number("MUTE") != 0 || (item.number("ALLTAKES") == 0 && take != active);
                 int mode = (int)take->number("CHANMODE");
                 clip.channelMode = mode == 2 ? 3 : mode == 3 ? 1 : mode == 4 ? 2 : 0;
+                if ((mode!=0&&mode!=2&&mode!=3&&mode!=4)||!take->line("SM").isEmpty())
+                    result.warnings.addIfNotAlreadyThere("REAPER sends and advanced playback settings are not converted. Review the migrated mix.");
                 auto *source = take->child("SOURCE");
                 if (!specialName.empty()) {
                     // Special items do not inherit audio-only take controls.
@@ -583,17 +651,22 @@ MigratedProject readReaperProject(const File &file) {
                     }
                     track.clips.push_back(clip); continue;
                 }
+                const auto takeFX = rppImportFX(take->child("TAKEFX"), resolve, result.warnings, text(track.name) + " / " + text(clip.name));
+                if (takeFX.settings.isObject()) clip.fxJSON = utf8(JSON::toString(takeFX.settings));
                 double sectionStart = 0, sectionLength = 0;
                 if (source && source->header[1] == "SECTION") {
+                    if(source->number("MODE")!=0) result.warnings.addIfNotAlreadyThere("REAPER sends and advanced playback settings are not converted. Review the migrated mix.");
                     sectionStart = source->number("STARTPOS");
                     sectionLength = source->number("LENGTH");
                     source = source->child("SOURCE");
                 }
-                if (source && source->value("FILE").isNotEmpty() && source->header[1] != "MIDI") {
+                const auto sourceKind=source ? source->header[1] : String();
+                if (source && source->value("FILE").isNotEmpty() && StringArray{"WAVE","MP3","FLAC","VORBIS","AIFF","AIF","OPUS","WAVPACK"}.contains(sourceKind)) {
                     auto path =
                         reference(source->value("FILE"), importedVideo ||
                                                              jaras::isTeleprompterRole(track.role));
                     clip.audioFile = jaras::AudioFile{path, {}};
+                    if(clip.name.empty()||clip.name=="Item")clip.name=utf8(source->value("FILE").replaceCharacter('\\','/').fromLastOccurrenceOf("/",false,false));
                     clip.sourceOffset += sectionStart;
                     if (item.number("LOOP") != 0) {
                         double length = sectionLength;
@@ -606,26 +679,38 @@ MigratedProject readReaperProject(const File &file) {
                         if (length > 0) {
                             clip.loopStart = sectionStart;
                             clip.loopLength = length;
-                        }
+                        } else result.warnings.addIfNotAlreadyThere("Loop lengths for offline REAPER audio could not be determined. Review looped items after locating the files.");
                     }
                 } else if (source && source->header[1] == "MIDI") {
                     clip.midi = rppMIDI(*source, *take, item, clip, tempo,
-                                        file.getParentDirectory(), result.warnings);
+                                        file.getParentDirectory(), result.warnings, midiPools);
                     clip.sourceOffset = 0;
                     clip.playbackRate = 1;
                     clip.fadeIn.reset();
                     clip.fadeOut.reset();
                     clip.channelMode.reset();
-                } else if (source && source->header[1] == "LTC") {
-                    jaras::TimecodeSettings tc;
-                    tc.mode = source->number("SEND", 1, 1) == 2 ? "mtc" : "ltc";
-                    tc.frameRate = source->number("FRAMERATE", 1, 30);
-                    tc.offset = source->number("STARTTIME") + clip.sourceOffset;
-                    clip.timecode = tc;
-                    track.timecode = tc;
-                    track.importedTimecodeItems = true;
-                } else if (auto *notes = item.child("NOTES"))
-                    clip.text = utf8(notes->notes.joinIntoString("\n"));
+                } else if(sourceKind.isNotEmpty()) {
+                    clip.name=utf8("["+sourceKind+"] ")+clip.name;
+                    result.warnings.addIfNotAlreadyThere("REAPER video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound.");
+                }
+                const auto hasInstrument=[](const var &fx,bool requireActive) {
+                    const auto inserted=list(get(fx,"inserted"));
+                    for(const auto &plugin:list(get(fx,"externalPlugins"))) if(str(plugin,"category").contains("Instrument") &&
+                        inserted.contains(var("External:"+str(plugin,"id"))) && (!requireActive||!flag(plugin,"bypassed")))return true;
+                    return false;
+                };
+                const bool takeInstrument=hasInstrument(takeFX.settings,true);
+                if(clip.midi) {
+                    if(!takeInstrument&&!list(get(takeFX.settings,"externalPlugins")).isEmpty())result.warnings.addIfNotAlreadyThere(text(track.name)+" / "+text(clip.name)+": MIDI take VST3 effects and their saved states were retained, but no active take instrument generates audio for them. MIDI-only transformations are not supported; these take effects are not applied.");
+                    if(!takeInstrument&&!hasInstrument(trackFX.settings,false))result.warnings.addIfNotAlreadyThere("MIDI notes were imported. Choose an instrument in CatLive; no compatible VST3 instrument was inserted on this track or take.");
+                }
+                auto takeAutomation = rppAutomation(*take, takeFX.envelopes, true, clip.sourceOffset, result.warnings, text(track.name) + " / " + text(clip.name));
+                if (takeAutomation.isObject()) {
+                    if (clip.midi) for (auto &envelope : *get(takeAutomation,"envelopes").getArray())
+                        for (auto &point : *get(envelope,"points").getArray()) put(point,"time",num(point,"time") / take->number("PLAYRATE",1,1));
+                    clip.automationJSON = utf8(JSON::toString(takeAutomation));
+                    if(clip.midi&&!takeInstrument)result.warnings.addIfNotAlreadyThere(text(track.name)+" / "+text(clip.name)+": MIDI take automation was retained, but cannot be applied independently through a shared track instrument. An active VST3 instrument on the take is required.");
+                }
                 track.clips.push_back(clip);
 
             } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("REAPER take ignored: " + String::fromUTF8(error.what())); }
@@ -633,6 +718,19 @@ MigratedProject readReaperProject(const File &file) {
 
             } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("REAPER item ignored: " + String::fromUTF8(error.what())); }
 }
+        if (jaras::isTeleprompterRole(track.role) || track.role.id == "chords") {
+            // Empty REAPER placeholders must not hide the actual lyrics or
+            // cause the single-lane overlap validation to reject the project.
+            const auto populated = track.clips;
+            track.clips.erase(std::remove_if(track.clips.begin(), track.clips.end(), [&](const auto &clip) {
+                if (clip.audioFile || (clip.text && !clip.text->empty())) return false;
+                return std::any_of(populated.begin(), populated.end(), [&](const auto &other) {
+                    return (other.audioFile || (other.text && !other.text->empty())) &&
+                           clip.startTime < other.startTime + other.duration - 1e-7 &&
+                           clip.startTime + clip.duration > other.startTime + 1e-7;
+                });
+            }), track.clips.end());
+        }
         song.tracks.push_back(track);
         if (delta < 0)
             folders.resize(folders.size() + delta);
@@ -642,7 +740,7 @@ MigratedProject readReaperProject(const File &file) {
         if (row[0] == "MARKER") {
             try {
             require(row.size() >= 5, "REAPER: invalid marker.");
-            double time = row[2].getDoubleValue();
+            double time = rppNumeric(row[2]);
             auto color = rppColor(row[5]);
             if (row[4].getIntValue() & 1) {
                 auto it = pending.find(row[1]);
@@ -690,7 +788,7 @@ MigratedProject readReaperProject(const File &file) {
         for (const auto &row : envelope->lines) if (row[0] == "PT") {
             try {
             require(row.size() >= 3, "REAPER: invalid tempo point.");
-            const double position = row[1].getDoubleValue(), bpm = row[2].getDoubleValue();
+            const double position = rppNumeric(row[1]), bpm = rppNumeric(row[2]);
             if (bpm < 60 || bpm > 300 || !std::isfinite(bpm)) {
                 result.warnings.addIfNotAlreadyThere("Tempo points outside the CatLive tempo range were omitted; item positions in seconds are unchanged."); continue;
             }
@@ -716,5 +814,43 @@ MigratedProject readReaperProject(const File &file) {
     hook.apply(project, result.warnings);
     migration::finish(result);
     return result;
+}
+} // namespace catlive
+
+#include "ReaperVST3ImportSession.h"
+namespace catlive {
+ReaperVST3Resolver makeReaperVST3Resolver(std::function<bool()> cancelled) {
+    // Snapshot persisted discovery metadata once. The importer runs on a worker
+    // and must not read UI-owned catalog arrays while a scan updates them.
+    const auto catalogFile=File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/vst3-catalog.json");
+    const auto saved = JSON::parse(catalogFile);
+    StringArray roots;
+    for (const auto &path : list(get(saved, "paths")))
+        roots.addIfNotAlreadyThere(path.toString());
+    roots.addIfNotAlreadyThere(
+        File(SystemStats::getEnvironmentVariable("CommonProgramW6432", "C:\\Program Files\\Common Files"))
+            .getChildFile("VST3").getFullPathName());
+    roots.addIfNotAlreadyThere(File::getSpecialLocation(File::windowsLocalAppData)
+                                  .getChildFile("Programs/Common/VST3").getFullPathName());
+    const auto reaperConfiguration = File::getSpecialLocation(File::userApplicationDataDirectory)
+                                         .getChildFile("REAPER/reaper.ini");
+    for (const auto &line : StringArray::fromLines(reaperConfiguration.loadFileAsString())) {
+        const int separator = line.indexOfChar('=');
+        if (separator < 0)
+            continue;
+        const auto key = line.substring(0, separator).trim().toLowerCase();
+        if (key != "vstpath" && key != "vstpath64" && key != "vstpath_arm64")
+            continue;
+        for (auto path : StringArray::fromTokens(line.substring(separator + 1), ";", "\""))
+            if ((path = path.trim().unquoted()).isNotEmpty())
+                roots.addIfNotAlreadyThere(path);
+    }
+    const auto helper = File::getSpecialLocation(File::currentExecutableFile)
+                            .getSiblingFile("CatLiveVST3Probe.exe");
+    auto session = std::make_shared<ReaperVST3ImportSession>(
+        list(get(saved, "plugins")), std::move(roots), helper, std::move(cancelled));
+    return [session](const var &plugin, const std::set<int> &) {
+        return session->resolve(plugin);
+    };
 }
 } // namespace catlive

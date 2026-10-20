@@ -3,9 +3,21 @@
 #include <fstream>
 #include <iostream>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <windows.h>
 using namespace catlive::native;
+static std::vector<std::uint8_t> decodeState(const std::string &text) {
+    static const std::string alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if(text.size()>90*1024*1024)throw std::runtime_error("VST3 state too large.");
+    std::vector<std::uint8_t> result;unsigned value=0;int bits=0;bool padded=false;
+    for(unsigned char ch:text){
+        if(ch=='='){padded=true;continue;}
+        const auto index=alphabet.find(char(ch));if(padded||index==std::string::npos)throw std::runtime_error("Invalid VST3 state encoding.");
+        value=(value<<6)|unsigned(index);bits+=6;if(bits>=8){bits-=8;result.push_back(std::uint8_t(value>>bits));}
+    }
+    return result;
+}
 int wmain(int argc, wchar_t **argv) {
     if(argc<3)return 2;
     const auto apartment=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
@@ -17,6 +29,19 @@ int wmain(int argc, wchar_t **argv) {
         const auto descriptions=vst3::scan(argv[1]);
         report["plugins"]=nlohmann::json::array();
         for(const auto &d:descriptions)report["plugins"].push_back({{"classID",d.classID},{"name",d.name},{"vendor",d.vendor},{"category",d.category}});
+        if(argc>4 && std::wstring(argv[3])==L"--import") {
+            stage("restore-imported-state");
+            std::ifstream input{std::filesystem::path(argv[4])};const auto request=nlohmann::json::parse(input);
+            const auto id=request.at("classID").get<std::string>();
+            const auto found=std::find_if(descriptions.begin(),descriptions.end(),[&](const auto &d){return d.classID==id;});
+            if(found==descriptions.end())throw std::runtime_error("VST3 class not found in the installed module.");
+            vst3::State state{decodeState(request.value("componentState",std::string())),decodeState(request.value("controllerState",std::string()))};
+            auto plugin=std::make_unique<vst3::Processor>(*found,state,48000,512);
+            report["parameterIDs"]=nlohmann::json::object();const auto ids=plugin->parameterIDs();
+            for(const auto &[index,id]:ids)report["parameterIDs"][std::to_string(index)]=id;
+            report["restored"]=true;
+            stage("release-imported-processor");plugin.reset();
+        }
         if(argc>3&&(std::wstring(argv[3])==L"--process"||std::wstring(argv[3])==L"--validate")){
             const bool validate=std::wstring(argv[3])==L"--validate";
             if(descriptions.empty())throw std::runtime_error("No VST3 audio classes.");

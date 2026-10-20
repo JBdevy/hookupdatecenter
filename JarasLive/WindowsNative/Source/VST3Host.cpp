@@ -480,6 +480,18 @@ Processor::~Processor()=default;
 bool Processor::process(float *l,float *r,int n,const Transport &t,const MIDIEvent *events,int count)noexcept {
     try{return impl->render(l,r,n,t,events,count);}catch(...){return false;}
 }
+bool Processor::automate(std::uint32_t parameter, double value) noexcept {
+    return impl->performEdit(parameter,value)==kResultOk;
+}
+std::map<int, std::uint32_t> Processor::parameterIDs() const {
+    std::map<int, std::uint32_t> result;
+    if (impl->controller) for (int i=0; i<impl->paramCount; ++i) {
+        ParameterInfo parameter{};
+        if (impl->controller->getParameterInfo(i,parameter)==kResultOk &&
+            !(parameter.flags & ParameterInfo::kIsReadOnly)) result.emplace(i,parameter.id);
+    }
+    return result;
+}
 State Processor::state()const {
     Stream component,controller;
     const auto componentResult=impl->component->getState(&component);

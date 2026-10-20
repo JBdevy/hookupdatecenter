@@ -4,6 +4,37 @@
 
 namespace catlive::projectBrowserLoadingTests {
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Project browser cancellation stays inline and cannot cancel a later load", [&] {
+        using floatingControlTests::require;
+        ProjectBrowser browser;
+        browser.setSize(560, 424);
+        TextButton *cancel = nullptr;
+        Component *status = nullptr;
+        for (auto *child : browser.getChildren()) {
+            if (child->getComponentID() == "cancelProjectLoading") cancel = dynamic_cast<TextButton *>(child);
+            if (child->getComponentID() == "projectLoadingStatus") status = child;
+        }
+        require(cancel && status, "Inline loading controls are missing");
+        int cancellations = 0;
+        browser.beginLoading(directory.getChildFile("Import.rpp"));
+        require(!cancel->isVisible() && !cancel->isEnabled(), "Ordinary project load became cancellable");
+        browser.setLoadingCancellation([&] { ++cancellations; });
+        require(cancel->isVisible() && cancel->isEnabled() &&
+                    !cancel->getBounds().intersects(status->getBounds()),
+                "Cancel is hidden, disabled or covers the loading status");
+        cancel->onClick();
+        cancel->onClick();
+        require(cancellations == 1 && !cancel->isVisible() && browser.isLoading(),
+                "Cancellation repeated or released navigation before the worker finished");
+        browser.finishLoading();
+        browser.beginLoading(directory.getChildFile("Next.jl"));
+        cancel->onClick();
+        require(cancellations == 1 && !cancel->isVisible(), "Cancellation leaked into a later load");
+        browser.setLoadingCancellation([&] { ++cancellations; });
+        browser.finishLoading();
+        cancel->onClick();
+        require(cancellations == 1 && !cancel->isVisible(), "Completion retained a cancellation action");
+    });
     test("Project browser keeps progress inline, locks navigation and recovers after an open error", [&] {
         using floatingControlTests::require;
         ProjectBrowser browser;

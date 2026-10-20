@@ -15,9 +15,9 @@ if(-not (Test-Path -LiteralPath $githubCLI) -and (Test-Path -LiteralPath $github
 if(-not (Test-Path -LiteralPath $githubCLI)){throw 'Instale GitHub CLI (gh) e entre com gh auth login antes de publicar.'}
 $branch=(& git branch --show-current).Trim()
 if($LASTEXITCODE -or -not $branch){throw 'Selecione uma branch antes de publicar.'}
-if(-not $Version){$Version=Read-Host 'Versão do CatLive [1.06]';if(-not $Version){$Version='1.06'}}
+if(-not $Version){$Version=Read-Host 'Versão do CatLive [1.07]';if(-not $Version){$Version='1.07'}}
 $Version=$Version -replace '^v',''
-if($Version -notmatch '^[0-9]+\.[0-9]{2}$'){throw 'Use a versão X.XX, por exemplo 1.06.'}
+if($Version -notmatch '^[0-9]+\.[0-9]{2}$'){throw 'Use a versão X.XX, por exemplo 1.07.'}
 $repository='JBdevy/hookupdatecenter'
 $workflow='catlive-macos-pkg.yml'
 $files=@('JarasLive','.github/workflows/catlive-macos-pkg.yml','build catlive.bat','build catlive windows.bat','build catlive macos.command','scripts/publish-catlive-desktop.ps1','scripts/test-catlive-desktop-release.cjs')

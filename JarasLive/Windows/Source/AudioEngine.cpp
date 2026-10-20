@@ -164,17 +164,53 @@ String AudioEngine::openDevice() {
     }
     return error;
 }
+AudioEngine::SharedMIDIUpdate AudioEngine::sharedMIDISequence(size_t bus, const Voice *replacement,
+                                                            bool ownsReplacement) const {
+    std::vector<PlaybackNote> notes;
+    for (const auto &voice : voices)
+        if (voice->bus == bus && voice->midiItem &&
+            !(voice.get() == replacement ? ownsReplacement : voice->ownsMIDI()))
+            notes.insert(notes.end(), voice->sharedMIDINotes.begin(), voice->sharedMIDINotes.end());
+    std::stable_sort(notes.begin(), notes.end(), [](const auto &a, const auto &b) { return a.start < b.start; });
+    return SharedMIDIUpdate(std::move(notes));
+}
+void AudioEngine::replaceSharedMIDI(size_t index, SharedMIDIUpdate &next) {
+    auto &bus = *buses[index];
+    bus.midiNotes.swap(next.external.notes);
+    bus.externalEvents.swap(next.external.events);
+    for (auto &expected : bus.externalExpected) expected = -1;
+    if (bus.midi) bus.midi->replaceSequence(next.synth, true);
+}
 void AudioEngine::previewMIDIItem(const jaras::Song &song,const jaras::AudioClip &clip) {
     for(const auto &track:song.tracks)if(std::any_of(track.clips.begin(),track.clips.end(),[&](const auto &c){return c.id==clip.id;})){
         auto draft=track;for(auto &item:draft.clips)if(item.id==clip.id)item=clip;
-        auto notes=playbackNotes(draft,&song,true);auto sequence=MIDIPlayback::sequence(notes);
-        auto externalEvents=sequence.events;
-        const ScopedLock lock(devices.getAudioCallbackLock());
-        for(auto &bus:buses)if(bus->id==track.id){
-            bus->midiNotes.swap(notes);bus->externalEvents.swap(externalEvents);
-            for(auto &expected:bus->externalExpected)expected=-1;
-            if(bus->midi)bus->midi->replaceSequence(sequence,clip.muted);
+        SharedMIDIUpdate shared(playbackNotes(draft,&song,true,true));
+        auto sequence=MIDIPlayback::sequence(takePlaybackNotes(draft,clip,song,true));
+        auto sharedNotes=takePlaybackNotes(draft,clip,song,false);
+        auto timing=std::make_unique<ClipTempo>(clip,&song);
+        std::unique_ptr<LatencyPlan> preparedLatency;
+        bool updateShared=true;
+        for(const auto &voice:voices)if(voice->clipID==clip.id && voice->midiItem) {
+            updateShared=!voice->ownsMIDI()||!hasTakeInstrument(clip);
+            preparedLatency=makeLatencyPlan(&clip.id,&voice->fx[0],
+                voice->midiInstrument&&!clip.fxBypassed.value_or(false));
         }
+        setItemControls(clip);
+        const ScopedLock lock(devices.getAudioCallbackLock());
+        applyUpdates();
+        for(auto &voice:voices)if(voice->clipID==clip.id && voice->midiItem) {
+            std::swap(voice->midiSequence,sequence);
+            voice->sharedMIDINotes.swap(sharedNotes);
+            voice->midiTiming.swap(timing);
+            voice->start=clip.startTime;voice->duration=clip.duration;
+            voice->offset=clip.sourceOffset;voice->speed=clip.playbackRate;
+            voice->playbackStart=jaras::playbackItemStart(song,clip);
+            for(auto &expected:voice->midiExpected)expected=-2;
+        }
+        for(size_t index=0;index<buses.size();++index)if(updateShared&&buses[index]->id==track.id){
+            replaceSharedMIDI(index,shared);
+        }
+        if(preparedLatency){latencyPlan.swap(preparedLatency);publishLatency();}
         return;
     }
 }
@@ -184,17 +220,24 @@ void AudioEngine::refreshRegionPitch(const jaras::Song &song, const ID &region) 
     std::vector<std::pair<Voice *, std::unique_ptr<ClipAudio>>> replacements;
     struct MIDIUpdate { Bus *bus; MIDIPlayback::Sequence sequence; std::vector<PlaybackNote> notes; std::vector<MIDIPlayback::Event> events; };
     std::vector<MIDIUpdate> midi;
+    struct TakeUpdate { Voice *voice; MIDIPlayback::Sequence sequence; std::vector<PlaybackNote> shared; };
+    std::vector<TakeUpdate> takes;
     for (const auto &track : song.tracks) {
         for (const auto &clip : track.clips) {
             if (clip.startTime >= part->endTime || clip.startTime + clip.duration <= part->startTime) continue;
             for (auto &voice : voices) if (voice->clipID == clip.id) {
+                if (voice->midiItem) {
+                    takes.push_back({voice.get(),MIDIPlayback::sequence(takePlaybackNotes(track,clip,song,true)),
+                                     takePlaybackNotes(track,clip,song,false)});
+                    continue;
+                }
                 std::unique_ptr<ClipAudio> processor;
                 if (ClipAudio::needed(song, track, clip)) processor = std::make_unique<ClipAudio>(song, track, clip, rate.load());
                 replacements.emplace_back(voice.get(), std::move(processor));
             }
         }
         for (auto &bus : buses) if (bus->id == track.id && (!bus->midiNotes.empty() || bus->midi)) {
-            auto notes = playbackNotes(track, &song, true);
+            auto notes = playbackNotes(track, &song, true, true);
             auto sequence = MIDIPlayback::sequence(notes);
             auto events = sequence.events;
             midi.push_back({bus.get(), std::move(sequence), std::move(notes), std::move(events)});
@@ -205,6 +248,11 @@ void AudioEngine::refreshRegionPitch(const jaras::Song &song, const ID &region) 
     {
         const ScopedLock lock(devices.getAudioCallbackLock());
         for (auto &entry : replacements) entry.first->clipAudio.swap(entry.second);
+        for (auto &entry : takes) {
+            std::swap(entry.voice->midiSequence,entry.sequence);
+            entry.voice->sharedMIDINotes.swap(entry.shared);
+            for (auto &expected : entry.voice->midiExpected) expected=-2;
+        }
         for (auto &entry : midi) {
             entry.bus->midiNotes.swap(entry.notes); entry.bus->externalEvents.swap(entry.events);
             for (auto &expected : entry.bus->externalExpected) expected = -1;
@@ -264,10 +312,16 @@ void AudioEngine::configureMetronome(const var &settings) {
         metronomeEnabled = flag(settings, "enabled");
     }
 }
-std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID *replacement,const NativeFX *prepared)const {
+std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID *replacement,const NativeFX *prepared,
+                                                                    std::optional<bool> midiTakeActive)const {
     auto result=std::make_unique<LatencyPlan>();result->buses.resize(buses.size());
     auto latency=[&](const ID &id,const NativeFX &fx){return replacement&&*replacement==id?prepared->latencyFrames():fx.latencyFrames();};
-    for(const auto &voice:voices)if(!voice->frozen)result->buses[voice->bus].own=std::max(result->buses[voice->bus].own,latency(voice->clipID,voice->fx[0]));
+    auto voiceLatency=[&](const Voice &voice) {
+        const bool owns=replacement&&*replacement==voice.clipID&&midiTakeActive
+                            ? *midiTakeActive : voice.ownsMIDI();
+        return voice.midiItem&&!owns ? 0u : latency(voice.clipID,voice.fx[0]);
+    };
+    for(const auto &voice:voices)if(!voice->frozen)result->buses[voice->bus].own=std::max(result->buses[voice->bus].own,voiceLatency(*voice));
     for(size_t i=0;i<buses.size();i++)result->buses[i].input=result->buses[i].own;
     for(int index:busOrder) {
         const auto &bus=*buses[size_t(index)];auto &channel=result->buses[size_t(index)];
@@ -307,7 +361,7 @@ std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID 
         }
         for(const auto &voice:voices)if(!voice->frozen) {
             auto found=latencyPlan->clips.find(voice->clipID);
-            equal&=found!=latencyPlan->clips.end()&&found->second[0].latency()==result->buses[voice->bus].own-latency(voice->clipID,voice->fx[0]);
+            equal&=found!=latencyPlan->clips.end()&&found->second[0].latency()==result->buses[voice->bus].own-voiceLatency(*voice);
         }
         if(equal)return {}; // Parameter edits retain all delay history.
     }
@@ -328,7 +382,7 @@ std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID 
         }
     }
     for(const auto &voice:voices)if(!voice->frozen) {
-        const auto own=latency(voice->clipID,voice->fx[0]);
+        const auto own=voiceLatency(*voice);
         const auto delay=result->buses[voice->bus].own-own;
         result->clips.emplace(voice->clipID,std::array<native::StereoDelay,2>{native::StereoDelay(delay),native::StereoDelay(delay)});
         result->clipBypass.emplace(voice->clipID,std::array<native::StereoDelay,2>{native::StereoDelay(own),native::StereoDelay(own)});
@@ -394,11 +448,25 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
         else prepared[h].activateStemLatency(h>0&&prepared[0].latencyFrames()>0);
     }
     if(!id.empty())prepared[1].shareStems(prepared[0]);
-    auto preparedLatency=makeLatencyPlan(&id,&prepared[0]);
+    std::optional<bool> midiTakeActive;
+    for (const auto &voice : voices) if (voice->clipID == id && voice->midiItem)
+        midiTakeActive = hasTakeInstrument(saved, voice->fxBypassed);
+    auto preparedLatency=makeLatencyPlan(&id,&prepared[0],midiTakeActive);
     // Item edits replace only the processors; readers and playback heads stay alive.
     for (auto &voice : voices)
         if (voice->clipID == id) {
+            auto shared = voice->midiItem && voice->ownsMIDI()!=*midiTakeActive
+                              ? std::make_unique<SharedMIDIUpdate>(sharedMIDISequence(voice->bus, voice.get(), *midiTakeActive))
+                              : nullptr;
+            const bool instrument=hasTakeInstrument(saved);
             const ScopedLock lock(devices.getAudioCallbackLock());
+            if (voice->midiItem) {
+                // Release held notes through the old processors before swapping.
+                for (int head = 0; head < 2; ++head)
+                    mixMIDIVoice(*voice, head, 0, nullptr, 0, 0, 1, false);
+                voice->midiInstrument = instrument;
+                if (shared) replaceSharedMIDI(voice->bus, *shared);
+            }
             voice->fx[0].swap(prepared[0]);
             voice->fx[1].swap(prepared[1]);
             std::swap(voice->fxSettings, saved);
@@ -489,7 +557,8 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     std::map<std::string, std::shared_ptr<Source>> previousSources;
     std::map<ID, std::unique_ptr<ClipAudio>> previousProcessors;
     for (auto &voice : voices) {
-        previousSources.emplace(utf8(voice->source->file.getFullPathName()), voice->source);
+        if (voice->source)
+            previousSources.emplace(utf8(voice->source->file.getFullPathName()), voice->source);
         if (voice->clipAudio)
             previousProcessors.emplace(voice->clipID, std::move(voice->clipAudio));
     }
@@ -558,7 +627,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             bus->inputMonitoring = track.inputMonitoring.value_or(true);
             bus->outputs = track.outputPatches();
             bus->settings = track.fxJSON ? JSON::parse(text(*track.fxJSON)) : var();
-            bus->midiNotes = playbackNotes(track, &song);
+            bus->midiNotes = playbackNotes(track, &song, false, true);
             bus->externalEvents = MIDIPlayback::sequence(bus->midiNotes).events;
             for(auto &messages:bus->externalMIDI)messages.ensureSize(131072);
             bus->midiSlot = track.midiInput.value_or(0);
@@ -655,76 +724,86 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             for (const auto &clip : track.clips) {
                 checkpoint();
                 const auto &sourceFile = clip.audioFile ? clip.audioFile : track.audioFile;
-                if (!sourceFile || clip.duration <= 0 ||
-                    (clip.midi && !clip.frozenMIDI.value_or(false)))
+                const bool midiItem = clip.midi && !clip.frozenMIDI.value_or(false);
+                if ((!sourceFile && !midiItem) || clip.duration <= 0)
                     continue;
-                const auto file = ProjectCodec::resolveMedia(directory, sourceFile->path);
-                if(file.hasFileExtension("png;jpg;jpeg;bmp;gif;tif;tiff"))continue;
-                if(projectionMedia(clip))try{if(!inspectMediaSource(file).audio)continue;}catch(...){}
                 auto voice = std::make_unique<Voice>();
+                voice->midiItem = midiItem;
+                voice->fxSettings = clip.fxJSON ? JSON::parse(text(*clip.fxJSON)) : var();
+                voice->midiInstrument = hasTakeInstrument(voice->fxSettings);
+                if (midiItem) {
+                    voice->midiSequence = MIDIPlayback::sequence(takePlaybackNotes(track, clip, song, true));
+                    voice->sharedMIDINotes = takePlaybackNotes(track, clip, song, false);
+                    voice->midiTiming = std::make_unique<ClipTempo>(clip, &song);
+                    for (auto &messages : voice->midiMessages) messages.ensureSize(131072);
+                }
                 voice->frozen = clip.frozenMIDI.value_or(false);
                 if (voices.size() >= 20000)
                     throw std::runtime_error("Too many audio items in one timeline.");
-                auto sourceKey = utf8(file.getFullPathName());
-                auto found = sources.find(sourceKey);
-                if (found != sources.end())
-                    voice->source = found->second;
-                else {
-                    const auto previous = previousSources.find(sourceKey);
-                    if (previous != previousSources.end() && file.existsAsFile() &&
-                        file.getSize() == previous->second->fileSize &&
-                        file.getLastModificationTime() == previous->second->modified) {
-                        voice->source = previous->second;
-                        ++reusedSources;
-                    } else {
-                        const auto metadataStart = Time::getMillisecondCounterHiRes();
-                        StreamingReader::Metadata metadata;
-                        if (file.hasFileExtension("mp3")) {
-                            try {
-                                // MP3 caches may originate in another decoder/platform.
-                                // Inspect the actual gapless clock without building its
-                                // expensive synthesis/seek index for an inactive source.
-                                const auto info = native::AudioFile::inspect(std::filesystem::path(file.getFullPathName().toWideCharPointer()));
-                                metadata.format = "MP3";metadata.sampleRate = info.sampleRate;
-                                metadata.frames = (int64)info.frameCount;metadata.channels = info.channels;
-                                ++lightweightMetadataSources;
-                            } catch (...) {} // Retain the registered format fallback for unsupported containers.
-                        } else if (const auto cached = WaveformCache::cachedMetadata(file)) {
-                            metadata.format = file.getFileExtension();
-                            metadata.sampleRate = cached->sampleRate;
-                            metadata.frames = cached->frames;
-                            metadata.channels = (unsigned int)cached->sourceChannels;
-                            ++cachedMetadataSources;
+                if (!midiItem) {
+                    const auto file = ProjectCodec::resolveMedia(directory, sourceFile->path);
+                    if(file.hasFileExtension("png;jpg;jpeg;bmp;gif;tif;tiff"))continue;
+                    if(projectionMedia(clip))try{if(!inspectMediaSource(file).audio)continue;}catch(...){}
+                    auto sourceKey = utf8(file.getFullPathName());
+                    auto found = sources.find(sourceKey);
+                    if (found != sources.end())
+                        voice->source = found->second;
+                    else {
+                        const auto previous = previousSources.find(sourceKey);
+                        if (previous != previousSources.end() && file.existsAsFile() &&
+                            file.getSize() == previous->second->fileSize &&
+                            file.getLastModificationTime() == previous->second->modified) {
+                            voice->source = previous->second;
+                            ++reusedSources;
+                        } else {
+                            const auto metadataStart = Time::getMillisecondCounterHiRes();
+                            StreamingReader::Metadata metadata;
+                            if (file.hasFileExtension("mp3")) {
+                                try {
+                                    // MP3 caches may originate in another decoder/platform.
+                                    // Inspect the actual gapless clock without building its
+                                    // expensive synthesis/seek index for an inactive source.
+                                    const auto info = native::AudioFile::inspect(std::filesystem::path(file.getFullPathName().toWideCharPointer()));
+                                    metadata.format = "MP3";metadata.sampleRate = info.sampleRate;
+                                    metadata.frames = (int64)info.frameCount;metadata.channels = info.channels;
+                                    ++lightweightMetadataSources;
+                                } catch (...) {} // Retain the registered format fallback for unsupported containers.
+                            } else if (const auto cached = WaveformCache::cachedMetadata(file)) {
+                                metadata.format = file.getFileExtension();
+                                metadata.sampleRate = cached->sampleRate;
+                                metadata.frames = cached->frames;
+                                metadata.channels = (unsigned int)cached->sourceChannels;
+                                ++cachedMetadataSources;
+                            }
+                            if (metadata.sampleRate == 0) {
+                                std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
+                                if (reader) metadata = StreamingReader::Metadata(*reader);
+                            }
+                            metadataMilliseconds += Time::getMillisecondCounterHiRes() - metadataStart;
+                            if (metadata.sampleRate <= 0 || metadata.sampleRate > 384000 ||
+                                metadata.channels == 0 || metadata.frames <= 0) {
+                                missingFiles.addIfNotAlreadyThere(file.getFullPathName());
+                                continue;
+                            }
+                            voice->source = std::make_shared<Source>();
+                            voice->source->file = file;
+                            voice->source->fileSize = file.getSize();
+                            voice->source->modified = file.getLastModificationTime();
+                            if(!readerContext)readerContext=std::make_shared<ReaderContext>();
+                            voice->source->context=readerContext;
+                            for (int h = 0; h < 2; ++h)
+                                voice->source->readers[h] = std::make_unique<StreamingReader>(
+                                    file, metadata, readerContext->formats, readerContext->thread);
                         }
-                        if (metadata.sampleRate == 0) {
-                            std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
-                            if (reader) metadata = StreamingReader::Metadata(*reader);
-                        }
-                        metadataMilliseconds += Time::getMillisecondCounterHiRes() - metadataStart;
-                        if (metadata.sampleRate <= 0 || metadata.sampleRate > 384000 ||
-                            metadata.channels == 0 || metadata.frames <= 0) {
-                            missingFiles.addIfNotAlreadyThere(file.getFullPathName());
-                            continue;
-                        }
-                        voice->source = std::make_shared<Source>();
-                        voice->source->file = file;
-                        voice->source->fileSize = file.getSize();
-                        voice->source->modified = file.getLastModificationTime();
-                        if(!readerContext)readerContext=std::make_shared<ReaderContext>();
-                        voice->source->context=readerContext;
-                        for (int h = 0; h < 2; ++h)
-                            voice->source->readers[h] = std::make_unique<StreamingReader>(
-                                file, metadata, readerContext->formats, readerContext->thread);
                     }
+                    sources[sourceKey] = voice->source;
                 }
                 for (int h = 0; h < 2; ++h) {
                     voice->processed[h].setSize(2, 4096);
-                    voice->fxSettings = clip.fxJSON ? JSON::parse(text(*clip.fxJSON)) : var();
                     voice->fx[h].prepare(voice->fxSettings,rate.load(),nullptr,offlineMode,h==0,pluginDispatcher);
                     for (auto value : voice->fx[h].unsupported)
                         unsupported.addIfNotAlreadyThere(text(clip.name) + ": " + value);
                 }
-                sources[sourceKey] = voice->source;
                 voice->track = track.id;
                 voice->clipID = clip.id;
                 voice->start = clip.startTime;
@@ -742,7 +821,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 voice->fadeInShape = {clip.fadeInCurve.value_or(0), clip.fadeInSCurve.value_or(1)};
                 voice->fadeOutShape = {clip.fadeOutCurve.value_or(0), clip.fadeOutSCurve.value_or(1)};
                 voice->channelMode = clip.channelMode.value_or(0);
-                if (ClipAudio::needed(song, track, clip)) {
+                if (!midiItem && ClipAudio::needed(song, track, clip)) {
                     const auto previous = previousProcessors.find(clip.id);
                     if (previous != previousProcessors.end()) {
                         voice->clipAudio = std::move(previous->second);
@@ -869,7 +948,7 @@ void AudioEngine::transport(const State &state) {
         if (head == 0 ? !state.playing : !state.subPlaying) continue;
         const auto cursor = head == 0 ? state.position : state.subPosition;
         for (auto& voice : voices) {
-            if (!state.scope[head].allows(voice->playbackStart) || voice->start > cursor + 2 ||
+            if (!voice->source || !state.scope[head].allows(voice->playbackStart) || voice->start > cursor + 2 ||
                 voice->start + voice->duration <= cursor) continue;
             auto* reader = voice->source->readers[head].get();
             const double local = std::max(0., cursor - voice->start);
@@ -978,7 +1057,7 @@ AudioEngine::State AudioEngine::state() const {
     return s;
 }
 void AudioEngine::setOffline(bool enabled) {
-    for (auto &voice : voices)
+    for (auto &voice : voices) if (voice->source)
         for (auto &reader : voice->source->readers)
             reader->setOffline(enabled);
 }
@@ -1035,8 +1114,59 @@ void AudioEngine::applyUpdates() {
         apply(updates[(size_t)(b + i)]);
     fifo.finishedRead(n + m);
 }
+void AudioEngine::mixMIDIVoice(Voice &v, int head, double at, float *const *out, int channels,
+                              int dest, int count, bool running) {
+    const double sr=rate.load(std::memory_order_relaxed);
+    const unsigned ownDelay=v.ownsMIDI()?v.fx[head].latencyFrames():0;
+    const unsigned busDelay=latencyPlan?latencyPlan->buses[v.bus].own:ownDelay;
+    running=running&&v.ownsMIDI()&&!v.itemMuted&&current.scope[head].allows(v.playbackStart);
+    const bool intersects=at+count/sr>v.start&&at<v.start+v.duration+busDelay/sr;
+    if (!running || !intersects) {
+        if (v.midiExpected[head] == -1) return;
+        // Stopping, muting, changing scope or bypassing a take releases only
+        // this take's held notes; the track's live MIDI bank stays untouched.
+        auto &messages=v.midiMessages[head];messages.clear();
+        MIDIPlayback::appendExternal(v.midiSequence,messages,v.midiExpected[head],v.midiScopes[head],
+                                     at,count,sr,{},false);
+        v.processed[head].clear(0,count);
+        v.fx[head].process(v.processed[head],count,at,false,&messages,(renderClock+dest)/sr);
+        if(latencyPlan)if(auto delay=latencyPlan->clips.find(v.clipID);delay!=latencyPlan->clips.end())
+            delay->second[size_t(head)].reset();
+        return;
+    }
+    auto &buffer=v.processed[head];buffer.clear(0,count);
+    auto &messages=v.midiMessages[head];messages.clear();
+    const bool timelineRunning=head==0?current.playing:current.subPlaying;
+    MIDIPlayback::appendExternal(v.midiSequence,messages,v.midiExpected[head],v.midiScopes[head],
+                                 at,count,sr,current.scope[head],timelineRunning);
+    const double automationAt=v.midiTiming->sourceAt(std::max(v.start,at));
+    v.fx[head].applyAutomation(v.automation,automationAt);
+    v.fx[head].process(buffer,count,at,timelineRunning,&messages,(renderClock+dest)/sr);
+    // A generator has no input samples to attenuate. Apply the take fader,
+    // source-time automation, pan and fades to its generated audio exactly once.
+    for(int n=0;n<count;++n) {
+        const double time=at+(n-double(ownDelay))/sr,local=time-v.start;
+        if(local<0||local>=v.duration){buffer.setSample(0,n,0);buffer.setSample(1,n,0);continue;}
+        const auto values=v.automation.evaluate(v.midiTiming->sourceAt(time),v.clipGain,v.clipPan);
+        double gain=values.mute?0:values.gain;
+        if(v.fadeIn>0)gain*=v.fadeInShape.value(local/std::min(v.duration,v.fadeIn));
+        if(v.fadeOut>0)gain*=v.fadeOutShape.value((v.duration-local)/std::min(v.duration,v.fadeOut));
+        float left=buffer.getSample(0,n),right=buffer.getSample(1,n);
+        if(v.channelMode==1)right=left;
+        else if(v.channelMode==2)left=right;
+        else if(v.channelMode==3)left=right=(left+right)*.5f;
+        buffer.setSample(0,n,left*(float)(gain*(values.pan>0?1-values.pan:1)));
+        buffer.setSample(1,n,right*(float)(gain*(values.pan<0?1+values.pan:1)));
+    }
+    if(latencyPlan)if(auto delay=latencyPlan->clips.find(v.clipID);delay!=latencyPlan->clips.end())
+        delay->second[size_t(head)].process(buffer.getWritePointer(0),buffer.getWritePointer(1),
+                                            count,int64_t(renderClock)+dest,true);
+    for(int ch=0;ch<std::min(2,channels);++ch)if(out[ch])
+        FloatVectorOperations::add(out[ch]+dest,buffer.getReadPointer(ch),count);
+}
 void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int channels, int dest,
                            int count) {
+    if (v.midiItem) {mixMIDIVoice(v,head,at,out,channels,dest,count,true);return;}
     if (v.itemMuted) return;
     const double sr = rate.load(std::memory_order_relaxed);
     auto &reader = *v.source->readers[head];
@@ -1120,13 +1250,13 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
             if(inputCount&&begin)std::memmove(data+begin,data,size_t(inputCount)*sizeof(float));
             std::fill_n(data,begin,0.f);std::fill(data+std::max(begin,end),data+count,0.f);
         }
-        if(!v.fxBypassed)v.fx[head].process(v.processed[head],count,at,true,nullptr,(renderClock+dest)/sr);
+        if(!v.fxBypassed){v.fx[head].applyAutomation(v.automation,v.offset+std::max(0.,at-v.start)*v.speed);v.fx[head].process(v.processed[head],count,at,true,nullptr,(renderClock+dest)/sr);}
         else if(auto bypass=latencyPlan->clipBypass.find(v.clipID);bypass!=latencyPlan->clipBypass.end())bypass->second[size_t(head)].process(v.processed[head].getWritePointer(0),v.processed[head].getWritePointer(1),count,int64_t(renderClock)+dest,true);
         auto found=latencyPlan->clips.find(v.clipID);
         if(found!=latencyPlan->clips.end())found->second[size_t(head)].process(v.processed[head].getWritePointer(0),v.processed[head].getWritePointer(1),count,int64_t(renderClock)+dest,true);
         for(int ch=0;ch<std::min(2,channels);ch++)if(out[ch])FloatVectorOperations::add(out[ch]+dest,v.processed[head].getReadPointer(ch),count);
     } else {
-        if(!v.fxBypassed)v.fx[head].process(v.processed[head],end-begin,at+begin/sr);
+        if(!v.fxBypassed){v.fx[head].applyAutomation(v.automation,v.offset+std::max(0.,at+begin/sr-v.start)*v.speed);v.fx[head].process(v.processed[head],end-begin,at+begin/sr);}
         for(int ch=0;ch<std::min(2,channels);ch++)if(out[ch])FloatVectorOperations::add(out[ch]+dest+begin,v.processed[head].getReadPointer(ch),end-begin);
     }
 }
@@ -1169,7 +1299,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     const bool renderingHead[2]{current.playing||tailFrames[0]>0,current.subPlaying||tailFrames[1]>0};
     const bool active = renderingHead[0] || renderingHead[1];
     const auto blockClock=int64_t(renderClock);
-    for(auto &voice:voices)if(voice->fx[0].hasActiveStem())for(auto &buffer:voice->stemInput)buffer.clear(0,samples);
+    for(auto &voice:voices)if(!voice->midiItem&&voice->fx[0].hasActiveStem())for(auto &buffer:voice->stemInput)buffer.clear(0,samples);
     masterBuffer.clear(0, samples);
     if(latencyPlan)latencyPlan->metronomeBuffer.clear(0,samples);
     bool anySolo = false;
@@ -1212,6 +1342,9 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         int done = 0;
         std::fill_n(timelinePositions[(size_t)head].begin(), samples, cursor);
         std::fill_n(timelineRunning[size_t(head)].begin(),samples,false);
+        if (!run && !tailFrames[head])
+            for (auto &voice : voices) if (voice->midiItem)
+                mixMIDIVoice(*voice,head,cursor,nullptr,0,0,samples,false);
         if (!run)
             for (auto &bus : buses) {
                 if (bus->midi)
@@ -1262,10 +1395,11 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             }
             for (auto &v : voices)
                 if (sourceAudible(v->bus) && current.scope[head].allows(v->playbackStart)) {
-                    if (v->start > cursor && v->start <= cursor + 2)
+                    if (v->source && v->start > cursor && v->start <= cursor + 2)
                         v->source->readers[head]->request((int64)std::floor((v->clipAudio ? v->clipAudio->sourcePosition(0) : v->offset) * v->source->readers[head]->sampleRate));
                     mixVoice(*v, head, cursor, (v->frozen ? buses[v->bus]->frozen[head] : buses[v->bus]->clips[head]).getArrayOfWritePointers(), 2, done, count);
-                }
+                } else if (v->midiItem)
+                    mixMIDIVoice(*v,head,cursor,nullptr,0,done,count,false);
             for (size_t index = 0; index < buses.size(); ++index)
                 if (sourceAudible(index) && buses[index]->midi)
                     buses[index]->midi->render(head, cursor, buses[index]->head(head), done, count, current.scope[head]);
@@ -1315,10 +1449,13 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             for(int n=done;n<samples;n++)timelinePositions[size_t(head)][size_t(n)]=tailCursor[head]+(n-done)/sr;
             tailCursor[head]+=count/sr;tailFrames[head]-=unsigned(count);
         }
+        if (!run && !tailFrames[head])
+            for (auto &voice : voices) if (voice->midiItem)
+                mixMIDIVoice(*voice,head,cursor,nullptr,0,0,1,false);
     }
     // Item-level CatStem sees the already clipped/faded audio of both heads.
     // Scope/ignore rules and item automation were applied before this sum.
-    for(auto &voice:voices)if(voice->fx[0].hasActiveStem()&&!voice->frozen) {
+    for(auto &voice:voices)if(!voice->midiItem&&voice->fx[0].hasActiveStem()&&!voice->frozen) {
         const int head=renderingHead[0]?0:renderingHead[1]?1:0;
         auto &buffer=voice->stemInput[0];for(int ch=0;ch<2;ch++)buffer.addFrom(ch,0,voice->stemInput[1],ch,0,samples);
         const auto clock=blockClock;
@@ -1464,6 +1601,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             auto &buffer=bus.head(head);const auto clock=blockClock;
             const bool moving=combined?active:renderingHead[head];
             fxInput=std::max(fxInput,buffer.getMagnitude(0,samples));
+            bus.fx[combined?0:head].applyAutomation(bus.automation,automationTime(head,0,compensation?compensation->input:0));
             bus.fx[combined?0:head].process(buffer,samples,timelinePositions[size_t(head)][0],moving,&bus.externalMIDI[head],blockClock/sr);
             for(int ch=0;ch<2;ch++)buffer.addFrom(ch,0,bus.frozen[head],ch,0,samples);
             fxOutput=std::max(fxOutput,buffer.getMagnitude(0,samples));
@@ -1539,6 +1677,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     for(int ch=0;ch<2;ch++)masterBuffer.addFrom(ch,0,liveRecordBuffer,ch,0,samples);
     masterFXInput.store(
         std::max(masterBuffer.getMagnitude(0, samples), masterFXInput.load() * .85f));
+    masterFX.applyAutomation(masterAutomation,automationTime(0,0,latencyPlan?latencyPlan->masterInput:0));
     masterFX.process(masterBuffer, samples,timelinePositions[0][0],active,allowInstrument?&liveMidi:nullptr,blockClock/sr);
     masterFXOutput.store(
         std::max(masterBuffer.getMagnitude(0, samples), masterFXOutput.load() * .85f));
@@ -1675,6 +1814,7 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice *d) {
     for (auto &voice : voices) {
         if (voice->clipAudio)
             voice->clipAudio->prepare(rate.load());
+        for (auto &expected : voice->midiExpected) expected=-1;
         for(int h=0;h<2;h++)
             voice->fx[h].prepare(voice->fxSettings,rate.load(),nullptr,offlineMode,h==0);
         voice->fx[1].shareStems(voice->fx[0]);

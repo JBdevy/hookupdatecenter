@@ -48,6 +48,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     void setProjectOpen(bool);
     void setPlaybackRunning(bool value) { playbackRunning = value; updateEnabled(); }
     void beginLoading(const File &);
+    void setLoadingCancellation(std::function<void()>);
     void updateLoading(const String &);
     void finishLoading(const String &error = {});
     bool isLoading() const { return loading; }
@@ -75,6 +76,8 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     Action package{"Add .ziplive", Action::archive};
     Action back{"Voltar ao projeto", Action::back};
     TextButton browseButton{String::fromUTF8("Procurar…")};
+    TextButton cancelLoading{"Cancelar"};
+    std::function<void()> cancelLoadingAction;
     TextEditor search;
     ListBox recents;
     Label loadingStatus, loadingError;

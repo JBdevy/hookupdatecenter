@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,9 @@ public:
     bool process(float *left, float *right, int frames, const Transport &,
                  const MIDIEvent *events = nullptr, int eventCount = 0) noexcept;
     State state() const;
+    std::map<int, std::uint32_t> parameterIDs() const;
+    // Audio/control safe: queues atomics only; no controller calls or allocations.
+    bool automate(std::uint32_t parameter, double value) noexcept;
     bool consumeEdited() noexcept;
     unsigned latency() const noexcept;
     bool isInstrument() const noexcept;

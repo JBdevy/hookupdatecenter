@@ -164,7 +164,7 @@ class CatLiveApplication final : public JUCEApplication {
                 if (i + 2 >= args.size())
                     throw std::runtime_error("Expected source and destination paths.");
                 auto source = File(args[i + 1]);
-                auto imported = source.hasFileExtension("rpp") ? readReaperProject(source)
+                auto imported = source.hasFileExtension("rpp") ? readReaperProject(source, makeReaperVST3Resolver())
                                                                : readLogicProject(source);
                 auto destination = saveMigratedProject(imported, File(args[i + 2]));
                 auto report = object();

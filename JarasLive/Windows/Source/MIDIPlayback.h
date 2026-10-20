@@ -20,12 +20,27 @@ struct PlaybackNote {
     int pitch = 60, velocity = 100, channel = 1;
     std::optional<double> playbackStart;
 };
+inline bool hasTakeInstrument(const var &fx, bool bypassed = false) {
+    if (bypassed) return false;
+    const auto inserted = list(get(fx, "inserted"));
+    for (const auto &plugin : list(get(fx, "externalPlugins")))
+        if (!flag(plugin, "bypassed") && str(plugin, "category").contains("Instrument") &&
+            inserted.contains(var("External:" + str(plugin, "id"))))
+            return true;
+    return false;
+}
+inline bool hasTakeInstrument(const jaras::AudioClip &clip) {
+    return clip.midi && !clip.frozenMIDI.value_or(false) && clip.fxJSON &&
+           hasTakeInstrument(JSON::parse(text(*clip.fxJSON)), clip.fxBypassed.value_or(false));
+}
 inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
-                                               const jaras::Song *song = nullptr, bool includeSilent = false) {
+                                               const jaras::Song *song = nullptr, bool includeSilent = false,
+                                               bool sharedInstrumentOnly = false) {
     std::vector<PlaybackNote> result;
     for (const auto &clip : track.clips) {
         if (!clip.midi || (!includeSilent && (clip.muted || clip.gain.value_or(1) <= 0)) || clip.frozenMIDI.value_or(false))
             continue;
+        if (sharedInstrumentOnly && hasTakeInstrument(clip)) continue;
         const auto &midi = *clip.midi;
         const ClipTempo timing(clip, song);
         const double seconds = 60 / midi.sourceBPM,
@@ -76,6 +91,24 @@ inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                      [](const auto &a, const auto &b) { return a.start < b.start; });
     return result;
 }
+inline std::vector<PlaybackNote> takePlaybackNotes(const jaras::Track &track,
+                                                  const jaras::AudioClip &clip,
+                                                  const jaras::Song &song, bool audioControls) {
+    jaras::Track source;
+    source.id = track.id;
+    source.role = track.role;
+    source.parentTrackID = track.parentTrackID;
+    source.clips = {clip};
+    if (audioControls) {
+        // The take's gain/fades act on its generated audio, not on note velocity.
+        auto &item = source.clips.front();
+        item.gain = 1;
+        item.muted = false;
+        item.fadeIn = 0;
+        item.fadeOut = 0;
+    }
+    return playbackNotes(source, &song, true);
+}
 class MIDIPlayback {
   public:
     struct Event { double time; PlaybackNote note; bool on; };
@@ -84,6 +117,38 @@ class MIDIPlayback {
         Sequence result;result.notes=std::move(notes);result.events.reserve(result.notes.size()*2);
         for(const auto &note:result.notes){if(note.velocity>0)result.events.push_back({note.start,note,true});result.events.push_back({note.end,note,false});}
         std::stable_sort(result.events.begin(),result.events.end(),[](const auto &a,const auto &b){return a.time==b.time?!a.on && b.on:a.time<b.time;});return result;
+    }
+    static void appendExternal(const Sequence &sequence, MidiBuffer &messages,
+                               double &expected, jaras::PlaybackScope &previousScope,
+                               double at, int count, double rate, jaras::PlaybackScope scope = {},
+                               bool running = true) {
+        if (!running) {
+            if (expected != -1)
+                for (int channel = 1; channel <= 16; ++channel)
+                    messages.addEvent(MidiMessage::allNotesOff(channel), 0);
+            expected = -1;
+            return;
+        }
+        if (std::abs(expected - at) > 1.5 / rate || previousScope != scope) {
+            for (int channel = 1; channel <= 16; ++channel)
+                messages.addEvent(MidiMessage::allNotesOff(channel), 0);
+            for (const auto &note : sequence.notes)
+                if (note.velocity > 0 && scope.allows(note.playbackStart) &&
+                    note.start < at - 1e-9 && note.end > at + 1e-9)
+                    messages.addEvent(MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity), 0);
+        }
+        const double end = at + count / rate;
+        auto event = std::lower_bound(sequence.events.begin(), sequence.events.end(), at - 1e-9,
+            [](const Event &event, double value) { return event.time < value; });
+        for (; event != sequence.events.end() && event->time < end - 1e-9; ++event) {
+            const auto &note = event->note;
+            if (!scope.allows(note.playbackStart)) continue;
+            messages.addEvent(event->on ? MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity)
+                                        : MidiMessage::noteOff(note.channel, note.pitch),
+                              jlimit(0, count - 1, (int)std::round((event->time - at) * rate)));
+        }
+        expected = end;
+        previousScope = scope;
     }
     void replaceSequence(Sequence &next,bool stopHeld=false) noexcept {
         notes.swap(next.notes);events.swap(next.events);if(stopHeld)reset();

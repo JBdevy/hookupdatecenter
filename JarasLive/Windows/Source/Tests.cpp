@@ -53,6 +53,8 @@
 #include "ProjectBrowserLoadingTests.h"
 #include "BPMDetectionTests.h"
 #include "SectionMarkerTests.h"
+#include "ReaperImportParityTests.h"
+#include "MIDITakePlaybackTests.h"
 #include "RegionLaneTests.h"
 #include "MasterMixerTests.h"
 #include "WorkspaceSetlistPresentationTests.h"
@@ -223,6 +225,8 @@ int runTests(const File &directory) {
     bpmDetectionTests::registerTests(directory,test);
     lightingRegionTests::registerTests(directory,test);
     sectionMarkerTests::registerTests(directory,test);
+    reaperImportParityTests::registerTests(directory,test);
+    midiTakePlaybackTests::registerTests(test);
     regionLaneTests::registerTests(directory,test);
     setlistSearchTests::registerTests(directory,test);
     remoteSetlistSelectionTests::registerTests(directory,test);

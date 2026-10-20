@@ -4763,32 +4763,59 @@ void Workspace::chooseMigration(bool logic) {
                                 if (auto *sheet = dynamic_cast<ModalSheet *>(child); sheet && sheet->getName() == "Projetos")
                                     for (auto *content : sheet->getChildren())
                                         if (auto *browser = dynamic_cast<ProjectBrowser *>(content)) browsers.emplace_back(browser);
+                            // 0 = importing, 1 = cancelled, 2 = saving. Claiming
+                            // the save phase prevents a late click from reporting
+                            // cancellation after the destination has been written.
+                            auto importPhase = std::make_shared<std::atomic<int>>(0);
+                            const auto cancelImport = [importPhase, browsers] {
+                                int importing = 0;
+                                if (!importPhase->compare_exchange_strong(importing, 1)) return;
+                                for (const auto &browser : browsers) if (browser)
+                                    browser->setLoadingCancellation({});
+                            };
                             const auto status = String::fromUTF8(logic ? "Importando projeto do Logic…" : "Importando projeto do REAPER…");
                             safe->session.message = status;
                             for (const auto &browser : browsers) if (browser) {
                                 browser->beginLoading(source);
                                 browser->updateLoading(status);
+                                if (!logic) browser->setLoadingCancellation(cancelImport);
                                 ModalSheet::blockDismiss(*browser, true);
                             }
-                            Thread::launch([safe, logic, source, selected, browsers] {
+                            Thread::launch([safe, logic, source, selected, browsers, importPhase] {
                                 File document;
                                 String error;
                                 StringArray warnings;
+                                bool cancelled = false;
                                 try {
                                     auto imported = logic ? readLogicProject(source)
-                                                          : readReaperProject(source);
+                                                          : readReaperProject(source, makeReaperVST3Resolver(
+                                                                [importPhase] { return importPhase->load() == 1; }));
+                                    int importing = 0;
+                                    if (!importPhase->compare_exchange_strong(importing, 2))
+                                        throw ReaperImportCancelled{};
+                                    MessageManager::callAsync([browsers] {
+                                        for (const auto &browser : browsers) if (browser)
+                                            browser->setLoadingCancellation({});
+                                    });
                                     warnings = imported.warnings;
                                     document = saveMigratedProject(imported, selected);
+                                } catch (const ReaperImportCancelled &) {
+                                    cancelled = true;
                                 } catch (const std::exception &e) {
                                     error = String::fromUTF8(e.what());
                                 }
-                                MessageManager::callAsync([safe, document, error, warnings, browsers] {
+                                MessageManager::callAsync([safe, document, error, warnings, browsers,
+                                                           cancelled] {
                                     if (!safe)
                                         return;
                                     safe->session.busy = false;
                                     for (const auto &browser : browsers) if (browser) {
                                         browser->finishLoading(error);
                                         ModalSheet::blockDismiss(*browser, false);
+                                    }
+                                    if (cancelled) {
+                                        safe->session.message = String::fromUTF8("Importação cancelada.");
+                                        return;
                                     }
                                     if (error.isNotEmpty()) {
                                         safe->showError(error);

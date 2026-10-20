@@ -1,9 +1,10 @@
 #include "NativeFX.h"
+#include "Automation.h"
 #include "../ThirdParty/Signalsmith/signalsmith-stretch.h"
 namespace catlive {
 struct NativeFX::Effect {
     String kind;
-    String key, externalConfiguration;
+    String key, externalConfiguration, pluginID;
     bool bypassed = false, retiredStem=false;
     std::shared_ptr<native::vst3::Processor> plugin;
     std::shared_ptr<native::stem::Processor> stem;
@@ -188,7 +189,7 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                     unsupported.addIfNotAlreadyThere(str(plugin,"name",key)+": plugin VST3 ausente");
                     break;
                 }
-                auto e=std::make_unique<Effect>();e->kind="External";e->key=key;e->bypassed=flag(plugin,"bypassed");
+                auto e=std::make_unique<Effect>();e->kind="External";e->key=key;e->pluginID=str(plugin,"id");e->bypassed=flag(plugin,"bypassed");
                 auto configuration=plugin.clone();configuration.getDynamicObject()->removeProperty("bypassed");
                 e->externalConfiguration=JSON::toString(configuration,true);
                 if(previous)for(const auto &old:previous->effects)
@@ -279,6 +280,12 @@ void NativeFX::previewStemMix(const String &key,const native::stem::Mix &mix){fo
 void NativeFX::waitForStems(){for(auto &e:effects)if(e->stem&&e->stemMix.enabled)e->stem->waitReady();}
 void NativeFX::checkStemErrors()const {for(const auto &e:effects)if(e->stem&&e->stemMix.enabled){const auto s=e->stem->status();if(s.state=="fault")throw std::runtime_error(s.error);}}
 bool NativeFX::hasExternal() const {for(const auto &effect:effects)if(effect->plugin)return true;return false;}
+void NativeFX::applyAutomation(const AutomationProgram &program, double time) {
+    for (const auto &curve : program.curves) if (curve.target == AutomationCurve::externalFX)
+        for (const auto &effect : effects) if (effect->plugin && !effect->bypassed &&
+            effect->pluginID == curve.plugin)
+            effect->plugin->automate(curve.parameter, curve.value(time));
+}
 void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds) {
     ScopedNoDenormals noDenormals;
     for (auto &e : effects) {
