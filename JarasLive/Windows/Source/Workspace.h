@@ -199,6 +199,7 @@ class Workspace final : public Component,
     DragDivider mixerDivider, setlistDivider, partsLeftDivider, partsRightDivider;
     DragDivider footerHeightDivider{false}, mixerHeightDivider{false};
     int resizeStart = 0, footerHeightSetting = 27, mixerHeightSetting = 300;
+    std::optional<double> savePulseStarted;
     int footerLeftWidth = 155, footerRightWidth = 230;
     juce::Rectangle<int> footerSongBounds;
     bool mixerDetached = false;

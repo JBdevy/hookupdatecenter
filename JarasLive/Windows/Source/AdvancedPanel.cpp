@@ -168,9 +168,11 @@ void AdvancedPanel::select(int index) {
             fields.add(e);
             page.addAndMakeVisible(e);
             e->setName(name);
-            e->setText(initial);
             e->setFont(theme::font(13));
+            e->setText(initial);
             e->setJustification(Justification::centred);
+            e->setIndents(0, 0);
+            e->setBorder(BorderSize<int>(2));
             e->setBounds(x, 59, width, 24);
             e->onReturnKey = [this] { applyTiming(); };
             return e;

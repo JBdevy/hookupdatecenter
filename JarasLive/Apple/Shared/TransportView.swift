@@ -145,7 +145,7 @@ struct TransportView: View {
                         Label { Text(verbatim: transport.playing ? "Stop" : "Play") } icon: {
                             Image(systemName: transport.playing ? "stop.fill" : "play.fill").frame(width: 12)
                         }
-                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: transport.playing, fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height)).jarasHelp(ControlMappings.shared.shortcutHelp(.playStop))
+                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.transportPlay, active: transport.playing, fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height)).jarasHelp(ControlMappings.shared.shortcutHelp(.playStop))
                         .contextMenu { Button("Fadeout…") { showingFadeout = true } }
                     Button { show.send(.pause) } label: { Image(systemName: "pause.fill") }
                         .buttonStyle(TransportButtonStyle(fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height))
@@ -807,6 +807,8 @@ extension EnvironmentValues {
 struct TransportButtonStyle: ButtonStyle {
     var color = JarasTheme.panel
     var active = false
+    var inactiveOpacity: Double = 0.45
+    var activeForeground = Color.black
     var horizontalPadding: CGFloat = 9
     var fontSize: CGFloat = 12
     var width: CGFloat? = nil
@@ -818,13 +820,13 @@ struct TransportButtonStyle: ButtonStyle {
             .fixedSize(horizontal: width == nil, vertical: false)
             .padding(.horizontal, width == nil ? horizontalPadding : 0)
             .frame(width: width, height: height)
-            .foregroundStyle(active ? Color.black : JarasTheme.text)
+            .foregroundStyle(active ? activeForeground : JarasTheme.text)
             #if os(iOS)
             .background {
-                RemoteSurface.fill(active ? color : color.opacity(configuration.isPressed ? 0.7 : 0.45))
+                RemoteSurface.fill(active ? color : color.opacity(configuration.isPressed ? max(0.7, inactiveOpacity) : inactiveOpacity))
             }
             #else
-            .background(active ? color : color.opacity(configuration.isPressed ? 0.7 : 0.45))
+            .background(active ? color : color.opacity(configuration.isPressed ? max(0.7, inactiveOpacity) : inactiveOpacity))
             #endif
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(active ? color : Color.white.opacity(0.45)))
@@ -1051,7 +1053,7 @@ private struct RepeatControl: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) { Image(systemName: "repeat") }
-            .buttonStyle(TransportButtonStyle(color: active ? JarasTheme.yellow : .red, active: active, fontSize: TransportControlMetrics.font, width: max(30, (buttonWidth / 2).rounded()), height: TransportControlMetrics.height))
+            .buttonStyle(TransportButtonStyle(color: active ? JarasTheme.yellow : JarasTheme.transportRed, active: active, inactiveOpacity: 1, fontSize: TransportControlMetrics.font, width: max(30, (buttonWidth / 2).rounded()), height: TransportControlMetrics.height))
             .modifier(JarasBlink(active: active, interval: 0.55, lowOpacity: 0.45))
             .accessibilityLabel("Repeat").jarasHelp("Repeat (R)")
     }
@@ -1071,8 +1073,8 @@ private struct VideoToggleButton: View {
             .lineLimit(1)
             .frame(width: buttonWidth, height: TransportControlMetrics.height)
             .foregroundStyle(video.visible ? Color.black : JarasTheme.text)
-            .background(RoundedRectangle(cornerRadius: 5).fill(video.visible ? JarasTheme.green : Color(hex: 0xc44545)))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(video.visible ? JarasTheme.green : Color(hex: 0xc44545)))
+            .background(RoundedRectangle(cornerRadius: 5).fill(video.visible ? JarasTheme.green : JarasTheme.transportRed))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(video.visible ? JarasTheme.green : JarasTheme.transportRed))
             .contentShape(Rectangle())
         }
             .buttonStyle(.plain)
@@ -1118,7 +1120,7 @@ private struct RemoteToggleButton: View {
                 Image(systemName: "network")
                 Text(verbatim: "Remote")
             }.lineLimit(1)
-        }.buttonStyle(TransportButtonStyle(color: remote.enabled ? JarasTheme.green : Color(hex: 0xc44545), active: true, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
+        }.buttonStyle(TransportButtonStyle(color: remote.enabled ? JarasTheme.green : JarasTheme.transportRed, active: true, activeForeground: remote.enabled ? .black : .white, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
             .accessibilityLabel("Remote").accessibilityValue(remote.enabled ? "On" : "Off")
             #if os(macOS)
             .popover(isPresented: $settings) { DAWRemoteHostView() }

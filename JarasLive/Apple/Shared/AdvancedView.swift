@@ -47,8 +47,6 @@ struct AdvancedView: View {
             HStack {
                 Text("Advanced").font(.jarasHeadline)
                 Spacer()
-                Button { finish() } label: { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
-                    .buttonStyle(.plain).accessibilityLabel("Close")
             }.padding(.horizontal, 16).padding(.vertical, 6)
             #endif
             Divider()

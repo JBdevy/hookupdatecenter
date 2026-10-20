@@ -3080,16 +3080,16 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["mixer"]->setColour(TextButton::textColourOffId, theme::green);
     controls["setlist"]->setColour(TextButton::buttonColourId, theme::green);
     controls["setlist"]->setColour(TextButton::textColourOffId, Colours::black);
-    controls["video"]->setColour(TextButton::buttonColourId, Colour(0xffc44545));
-    for(auto id:{"tp1","tp2","preview"})controls[id]->setColour(TextButton::buttonColourId,Colour(0xffc44545));
-    controls["loop"]->setColour(TextButton::buttonColourId, Colours::red.withAlpha(.45f));
+    controls["video"]->setColour(TextButton::buttonColourId, theme::transportRed);
+    for(auto id:{"tp1","tp2","preview"})controls[id]->setColour(TextButton::buttonColourId,theme::transportRed);
+    controls["loop"]->setColour(TextButton::buttonColourId, theme::transportRed);
     controls["loop"]->setColour(TextButton::buttonOnColourId, theme::yellow);
     controls["subplay"]->setColour(TextButton::buttonOnColourId, Colour(0xffffff00));
     controls["subplay"]->setColour(TextButton::textColourOffId, Colours::black);
     controls["subplay"]->setColour(TextButton::textColourOnId, Colours::black);
     controls["subplay"]->getProperties().set("solidTransportColour", true);
     for (auto id : {"play", "pause", "subplay"}) {
-        const auto colour = String(id) == "play" ? theme::green : String(id) == "subplay" ? Colour(0xffffff00) : theme::panel;
+        const auto colour = String(id) == "play" ? theme::transportPlay : String(id) == "subplay" ? Colour(0xffffff00) : theme::panel;
         controls[id]->getProperties().set("transportColour", (int64)colour.getARGB());
     }
     controls["masterMute"]->setColour(TextButton::buttonOnColourId, Colour(0xffff4444));
@@ -3099,8 +3099,9 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["metronome"]->setColour(TextButton::textColourOnId, Colours::black);
     controls["metronome"]->setColour(TextButton::buttonColourId, theme::panel);
     controls["remote"]->setColour(TextButton::textColourOffId, Colours::black);
-    controls["record"]->setColour(TextButton::textColourOffId, theme::secondary);
-    controls["record"]->setColour(TextButton::buttonColourId, Colours::red.withAlpha(.45f));
+    controls["record"]->setColour(TextButton::textColourOffId, Colours::white);
+    controls["record"]->setColour(TextButton::textColourOnId, Colours::white);
+    controls["record"]->setColour(TextButton::buttonColourId, theme::transportRed);
     controls["record"]->setButtonText("REC");
     for (auto spec : std::initializer_list<std::pair<const char *, const char *>>{
              {"play", "play"}, {"subplay", "play"}, {"record", "record"},
@@ -3608,8 +3609,15 @@ void Workspace::paint(Graphics &g) {
         label(next, String::fromUTF8("Próxima  ›"), nextName);
         label(queued, state.subPlay.playing ? String::fromUTF8("Sub Play  ›") : String::fromUTF8("Fila de espera  ›"), queueName);
         g.setColour(theme::yellow);
-        g.setFont(theme::semiboldFont(12 * fontScale));
-        g.drawFittedText(clockText(setlist->duration(), true), total, Justification::centred, 1, 1.f);
+        const auto durationText = clockText(setlist->duration(), true);
+        auto durationFont = theme::semiboldFont(12 * fontScale);
+        const auto durationBounds = total.reduced(3, 1);
+        const float textWidth = GlyphArrangement::getStringWidth(durationFont, durationText);
+        const float available = (float)std::max(1, durationBounds.getWidth() - 1);
+        if (textWidth > available)
+            durationFont = durationFont.withHeight(durationFont.getHeight() * available / textWidth);
+        g.setFont(durationFont);
+        g.drawText(durationText, durationBounds, Justification::centred, false);
     }
     auto displayFrame = songDisplay.getBounds().getUnion(transportTime.getBounds());
     g.setColour(theme::line);
@@ -4092,7 +4100,7 @@ void Workspace::updateState() {
     controls["record"]->setToggleState(session.audio.isRecording(), dontSendNotification);
     controls["metronome"]->setToggleState(session.audio.metronomeEnabled.load(),
                                           dontSendNotification);
-    controls["record"]->setColour(TextButton::buttonOnColourId, Colour(0xffff1f1f));
+    controls["record"]->setColour(TextButton::buttonOnColourId, theme::transportRed);
     controls["save"]->setButtonText(session.dirty ? "Salvar" : "Salvo");
     controls["save"]->getProperties().set("leadingIcon", session.dirty ? "save" : "check");
     controls["save"]->setColour(TextButton::buttonColourId,
@@ -4218,13 +4226,23 @@ void Workspace::timerCallback() {
         controls[spec.first]->setEnabled(canNavigateProjectTab && canNavigateProjectTab(spec.second));
     try { session.audio.refreshStemLatency(); }
     catch (const std::exception &e) { session.message = String::fromUTF8(e.what()); }
+    const double now = Time::getMillisecondCounterHiRes() / 1000.0;
+    if (session.dirty) {
+        if (!savePulseStarted) savePulseStarted = now;
+        const float alpha = (float)(.74 + .26 * std::cos((now - *savePulseStarted) * MathConstants<double>::pi / .9));
+        controls["save"]->setAlpha(alpha);
+    } else {
+        savePulseStarted.reset();
+        controls["save"]->setAlpha(1.f);
+    }
     syncNativeTransport();
     if (fadeoutOverlay) fadeoutOverlay->update();
     timeline->refreshWaveforms();
     if (resourceUsage.sample()) repaint(footerBounds);
     repaint(44, 43, 14, 64);
     for (auto *row : rows) if (row->isShowing()) row->repaint(0, 0, 22 + row->groupIndent(), row->getHeight());
-    controls["remote"]->setColour(TextButton::buttonColourId, remoteHost->enabled() ? theme::green : Colour(0xffc44848));
+    controls["remote"]->setColour(TextButton::buttonColourId, remoteHost->enabled() ? theme::green : theme::transportRed);
+    controls["remote"]->setColour(TextButton::textColourOffId, remoteHost->enabled() ? Colours::black : Colours::white);
     int y = tracksViewport.getViewPositionY();
     if (y != verticalOffset) {
         verticalOffset = y;

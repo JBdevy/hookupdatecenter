@@ -28,6 +28,8 @@ enum JarasTheme {
     static let titlebar = Color(hex: 0x2b2b2b)
     static let accent = Color(hex: 0x79f59a)
     static let green = Color(hex: 0x69ed91)
+    static let transportPlay = Color(hex: 0x24f06a)
+    static let transportRed = Color(hex: 0x8f2847)
     static let purple = Color(hex: 0xb8b8b8)
     static let yellow = Color(hex: 0xffdc52)
     static func track(_ track: Track, emphasized: Bool = false) -> Color {

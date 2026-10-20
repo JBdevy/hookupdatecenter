@@ -655,7 +655,11 @@ private final class CaptureWriter: @unchecked Sendable {
         if let message { error = message }
     }
     func toggle(show: ShowController) {
-        if recording { finish(); return }
+        if recording {
+            finish()
+            show.send(.stop)
+            return
+        }
         guard !busy, show.canExecute(), let directory, project == show.snapshot.project.id else { return }
         let tracks = show.current?.tracks.filter { $0.kind == .standard && armed.contains($0.id) } ?? []
         #if os(iOS)
@@ -936,12 +940,12 @@ private struct RecordingButtonStyle: ButtonStyle {
             .font(.jarasSystem(size: fontSize, weight: .semibold))
             .lineLimit(1).minimumScaleFactor(0.75)
             .frame(width: width, height: height)
-            .foregroundStyle(active ? Color.black : transport ? JarasTheme.secondary : Color.red)
-            .background(active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
-                transport ? Color.red.opacity(configuration.isPressed ? 0.7 : 0.45) :
+            .foregroundStyle(transport ? Color.white : active ? Color.black : Color.red)
+            .background(transport ? JarasTheme.transportRed.opacity(configuration.isPressed ? 0.85 : 1) :
+                active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
                 JarasTheme.text.opacity(configuration.isPressed ? 0.24 : 0.12))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius).stroke(transport ? (active ? red : Color.white.opacity(0.45)) : .clear))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius).stroke(transport ? (active ? JarasTheme.transportRed : Color.white.opacity(0.45)) : .clear))
             .contentShape(Rectangle())
             .transaction { $0.animation = nil }
     }

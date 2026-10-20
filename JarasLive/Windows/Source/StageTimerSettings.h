@@ -87,8 +87,12 @@ class StageTimerSettings final : public Component, private Timer {
             g.setColour(Colours::white.withAlpha(isEnabled() ? 1.f : .5f));
             g.setFont(theme::semiboldFont(11));
             g.drawText(localization::translate(getName()), 0, 6, getWidth(), 16, Justification::centred);
-            g.setFont(theme::semiboldFont(24));
-            g.drawText(digits, 0, 24, getWidth(), 30, Justification::centred);
+            GlyphArrangement numbers;
+            numbers.addLineOfText(theme::semiboldFont(24), digits, 0, 0);
+            const auto ink = numbers.getBoundingBox(0, -1, true);
+            const auto area = juce::Rectangle<float>(0, 24, (float)getWidth(), 30);
+            numbers.draw(g, AffineTransform::translation(area.getCentreX() - ink.getCentreX(),
+                                                        area.getCentreY() - ink.getCentreY()));
         }
     };
     StageState &state;

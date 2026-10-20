@@ -337,19 +337,8 @@ private struct WorkspaceSettingsContent: View {
     let show: ShowController
     let backend: any BackendClient
     @ObservedObject var selection: WorkspaceSettingsSelection
-    let close: () -> Void
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Configurações").font(.jarasHeadline)
-                Spacer()
-                Button(action: close) {
-                    Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel("Fechar").keyboardShortcut(.cancelAction)
-            }.padding(16)
-            Divider()
-            SettingsView(auth: auth, show: show, backend: backend, selection: $selection.section)
-        }
+        SettingsView(auth: auth, show: show, backend: backend, selection: $selection.section)
     }
 }
 
@@ -394,9 +383,8 @@ private struct WorkspaceToolContent<Content: View>: View {
         if let section { settingsSelection?.section = section }
         let selection = settingsSelection ?? WorkspaceSettingsSelection(section ?? .general)
         settingsSelection = selection
-        present(.settings, title: "Configurações", size: NSSize(width: 940, height: 540)) { panel in
-            WorkspaceSettingsContent(auth: auth, show: show, backend: backend, selection: selection,
-                                     close: { [weak panel] in panel?.close() })
+        present(.settings, title: "Configurações", size: NSSize(width: 940, height: 540)) { _ in
+            WorkspaceSettingsContent(auth: auth, show: show, backend: backend, selection: selection)
         }
         settingsOpen = true
     }

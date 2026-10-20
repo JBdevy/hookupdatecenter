@@ -28,6 +28,8 @@ class TempoControl final : public Component {
             addAndMakeVisible(field);
             field->setFont(theme::font(13));
             field->setJustification(Justification::centred);
+            field->setIndents(0, 0);
+            field->setBorder(BorderSize<int>(2));
             field->setInputRestrictions(2, "0123456789");
             field->setSelectAllWhenFocused(true);
             field->setPopupMenuEnabled(false);
