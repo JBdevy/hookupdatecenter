@@ -27,9 +27,12 @@ function canonicalExistingTrackKey(trackName) {
 }
 
 function groupKeyFromFolderName(folderName) {
-  const key = normalizeTrackKey(folderName);
+  const key = normalizeTrackKey(String(folderName || '').replace(/^[#\s]+/, ''));
   const exact = CREATE_PROJECT_TRACK_GROUPS.find((group) => normalizeTrackKey(group.name) === key);
   if (exact) return exact.key;
+  if (key === 'guitarra') return 'guitarras';
+  if (key === 'sanfona') return 'sanfonas';
+  if (key === 'teclado') return 'teclados';
   if (key === 'percussao' || key === 'percussivo') return 'percussivo';
   if (key === 'back-vocal' || key === 'back-vocais' || key === 'backing-vocals') return 'back-vocais';
   return '';
@@ -156,6 +159,7 @@ function buildExistingTrackMap(model) {
     if (track.isFolder) continue;
     const key = canonicalExistingTrackKey(track.name);
     if (!result.has(key)) result.set(key, track);
+    if (!result.has(`custom:${key}`)) result.set(`custom:${key}`, track);
   }
   return result;
 }

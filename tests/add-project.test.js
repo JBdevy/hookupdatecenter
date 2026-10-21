@@ -138,6 +138,28 @@ function main() {
     orderedFolder.directChildren.map((index) => orderedModel.tracks[index].name),
     ['Click', 'Regência', 'Guia']
   );
+  // Reuse means media only: do not move the user's track or create a
+  // category folder merely because its current parent has a different name.
+  const customHierarchy = buildCreateProjectRpp(makeAudit('Base', [makeFile('Guitarra', 2), makeFile('Sanfona', 2)]), { platform: 'win32' })
+    .replace('NAME "Guitarras"', 'NAME "Minha pasta"').replace('NAME "Sanfonas"', 'NAME "Outra pasta"');
+  const hierarchyBefore = inspectRppProject(customHierarchy);
+  const reuseAudit = auditAddProjectRpp(customHierarchy, makeAudit('Nova', [makeFile('Guitarra', 3), makeFile('Sanfona', 3)]));
+  assert.strictEqual(reuseAudit.newTrackCount, 0);
+  const preserved = inspectRppProject(buildAddProjectRpp(customHierarchy, reuseAudit));
+  assert.deepStrictEqual(preserved.tracks.map(t => [t.name, t.parentIndex, t.folderDelta]), hierarchyBefore.tracks.map(t => [t.name, t.parentIndex, t.folderDelta]));
+  assert(!preserved.groupFolders.has('guitarras') && !preserved.groupFolders.has('sanfonas'));
+
+  // Decorative # and singular category names still identify existing folders
+  // when a genuinely new child has to be inserted.
+  const decorated = buildCreateProjectRpp(makeAudit('Base', [makeFile('Guitarra', 2), makeFile('Sanfona', 2)]), { platform: 'win32' })
+    .replace('NAME "Guitarras"', 'NAME "#GUITARRAS"').replace('NAME "Sanfonas"', 'NAME "#SANFONA"');
+  const decoratedAudit = auditAddProjectRpp(decorated, makeAudit('Nova', [makeFile('Guitarra Solo', 3), makeFile('Sanfona Solo', 3)]));
+  const decoratedResult = inspectRppProject(buildAddProjectRpp(decorated, decoratedAudit));
+  assert.strictEqual(decoratedResult.tracks.filter(t => t.isFolder).length, 2);
+  assert.strictEqual(decoratedResult.groupFolders.get('guitarras').name, '#GUITARRAS');
+  assert.strictEqual(decoratedResult.groupFolders.get('sanfonas').name, '#SANFONA');
+  assert.strictEqual(decoratedResult.groupFolders.get('guitarras').directChildren.length, 2);
+  assert.strictEqual(decoratedResult.groupFolders.get('sanfonas').directChildren.length, 2);
   process.stdout.write('Add Project: testes concluídos com sucesso.\n');
 }
 
