@@ -1224,33 +1224,12 @@ void Engine::advance(double elapsed) {
     const auto* next = sectionPlaybackRegion();
     if (!transport_.playing || !next || next->id != previousID) transport_.queuedSectionMarkerId.reset();
 }
-// Count backwards in musical bars using the same tempo/meter marker ordering
-// as the grid. A marker exactly at the end belongs to the following section.
-// No allocation or sorting on the transport update path.
-static double automaticSubplayBarStart(const Song& song, double end, int count) {
-    double cursor=std::max(0.0,end), remaining=std::clamp(count,1,5);
-    while(cursor>0 && remaining>0) {
-        const TimelineMarker* marker=nullptr;
-        if(song.markers) for(const auto& candidate:*song.markers)
-            if(candidate.tempoBPM && candidate.position<cursor &&
-               (!marker || candidate.position>marker->position ||
-                (candidate.position==marker->position && candidate.id>marker->id))) marker=&candidate;
-        const double start=marker?marker->position:0;
-        const double bpm=marker?*marker->tempoBPM:song.bpm;
-        const int beats=marker?marker->tempoBeats.value_or(4):song.beatsPerBar;
-        const int unit=marker?marker->tempoUnit.value_or(4):song.beatUnit;
-        const double seconds=60.0/bpm*beats*4.0/unit;
-        const double available=(cursor-start)/seconds;
-        if(remaining<=available) return std::max(0.0,cursor-remaining*seconds);
-        remaining-=available;cursor=start;
-    }
-    return 0;
-}
 // Next measures its lead from the queued song's onset, not from the outgoing
 // song's tempo. Integrate tempo/meter changes inside that initial passage.
-static double automaticSubplayInitDuration(const Song& song, const Part& queued) {
-    if(!queued.subplayInitBars) return std::clamp(queued.subplayInitSeconds.value_or(1),1.0,5.0);
-    double cursor=queued.startTime, remaining=std::clamp(*queued.subplayInitBars,1,5);
+static double automaticSubplayInitDuration(const Song& song, const Part& queued, std::optional<int> barsOverride = std::nullopt) {
+    const auto bars=barsOverride ? barsOverride : queued.subplayInitBars;
+    if(!bars) return std::clamp(queued.subplayInitSeconds.value_or(1),1.0,5.0);
+    double cursor=queued.startTime, remaining=std::clamp(*bars,1,5);
     while(remaining>0) {
         const TimelineMarker* active=nullptr;
         double next=std::numeric_limits<double>::infinity();
@@ -1284,7 +1263,7 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
             const double trigger = project_.regionSetlist->automaticSubplayNext.value_or(false) && currentSong()
                 ? end - automaticSubplayInitDuration(*currentSong(), *queued)
                 : project_.regionSetlist->automaticSubplayBars && currentSong()
-                    ? automaticSubplayBarStart(*currentSong(), end, *project_.regionSetlist->automaticSubplayBars)
+                    ? end - automaticSubplayInitDuration(*currentSong(), *queued, project_.regionSetlist->automaticSubplayBars)
                     : end - lead;
             if (transport_.position < end && transport_.position + elapsed >= trigger) {
                 transport_.subPlay.position = queued->startTime; manualSubCursor_ = false;

@@ -315,10 +315,10 @@ static void testAutomaticSubplayBars() {
         check(p,60-count);
     }
     auto changing=fixture();changing.regionSetlist->automaticSubplayBars=2;
-    TimelineMarker change{"change","Tempo",57,0};change.tempoBPM=60;change.tempoBeats=3;change.tempoUnit=4;
-    TimelineMarker next{"next","Next tempo",60,0};next.tempoBPM=300;next.tempoBeats=7;next.tempoUnit=8;
+    TimelineMarker change{"change","Tempo",80,0};change.tempoBPM=60;change.tempoBeats=3;change.tempoUnit=4;
+    TimelineMarker next{"next","Next tempo",83,0};next.tempoBPM=120;next.tempoBeats=3;next.tempoUnit=4;
     changing.songs[0].markers=std::vector<TimelineMarker>{next,change};
-    check(changing,55); // 1 bar at 60 BPM/3-4, then 1 bar at 120 BPM/4-4.
+    check(changing,55.5); // Incoming bars: 3 seconds at 60 BPM, then 1.5 at 120 BPM.
     for(int count=1;count<=5;++count) {
         auto p=fixture();p.regionSetlist->automaticSubplayNext=true;
         p.regionSetlist->automaticSubplayBars=5;p.songs[0].parts[1].subplayInitSeconds=count;
