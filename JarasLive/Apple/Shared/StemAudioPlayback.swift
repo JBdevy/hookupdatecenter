@@ -1271,6 +1271,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         guard !usesSelectedHardware || AudioDeviceSettings.shared.localSessionEnabled else { return }
         #endif
         let active = transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty
+        if !active { resetIdleMeterLevels() }
         guard meterTimer == nil || meterTimerActive != active else { return }
         meterTimer?.invalidate()
         meterTimerActive = active
@@ -3649,11 +3650,23 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             bank.recordPeak(JarasEqualizer.takeOutputPeak(bus.controls, channel: 1), slot: 1)
         }
     }
+    private func resetIdleMeterLevels() {
+        // The last REC disarm stops the active meter clock. Do not leave its
+        // last input sample painted indefinitely; preserve the held peak number.
+        for meter in meters.values { meter.reset() }
+        masterMeter.reset()
+        for bank in trackPeaks.values { _ = bank.takePeak(0); _ = bank.takePeak(1) }
+        _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)
+        lastMeterUpdate = 0
+    }
     private func pollMeters(now: Double = ProcessInfo.processInfo.systemUptime) {
         #if os(iOS)
         guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
         #endif
-        guard engine.isRunning, transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty else { return }
+        guard engine.isRunning, transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty else {
+            resetIdleMeterLevels()
+            return
+        }
         if now - lastMeterUpdate >= 1.0 / 30.0 - 0.002 {
             let elapsed = lastMeterUpdate == 0 ? 1.0 / 30.0 : now - lastMeterUpdate
             lastMeterUpdate = now

@@ -11,6 +11,7 @@ import AVFoundation
     func runModal() -> NSApplication.ModalResponse { Self.response }
 }
 enum JarasLocalization { static func string(_ key: String) -> String { key } }
+@MainActor enum ProjectSyncControl { static var following = false }
 enum ProjectError: Error { case invalid(String) }
 enum TestCommand { case stopAll }
 struct TestPlugin { var category = "Instrument" }
@@ -176,6 +177,11 @@ enum ProjectTabNavigation {
         tabs.open(URL(fileURLWithPath: "/fixtures/bad.jl"))
         for _ in 0..<10 { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(tabs.projects.count == 2 && tabs.active === first && first.show.isPlaying)
+        ProjectSyncControl.following = true
+        tabs.close(0)
+        precondition(tabs.projects.count == 2 && tabs.active === first && !first.projectAudio.closed,
+                     "a following PC cannot locally close a synchronized project tab")
+        ProjectSyncControl.following = false
         // Closing one tab cancels cleanly, then saves/removes only that tab.
         TestAlert.response = .alertThirdButtonReturn
         tabs.close(0)

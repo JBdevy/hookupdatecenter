@@ -265,6 +265,8 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
     private var keyMonitor: Any?
     private var notifications: [NSObjectProtocol] = []
     private var cursorPushed = false
+    private var previewTimer: Timer?
+    private var pendingPreview = false
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     private var acceptsInput: Bool {
@@ -280,7 +282,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         self.project = project; self.song = song; self.tracks = tracks; self.offsets = offsets; self.heights = heights
         self.laneCounts = laneCounts; self.scales = scales; self.baseHeight = baseHeight
         self.top = top; self.verticalOffset = verticalOffset; self.mixerWidth = mixerWidth; self.blocked = blocked
-        if geometryChanged { window?.invalidateCursorRects(for: self) }
+        if geometryChanged && drag == nil { window?.invalidateCursorRects(for: self) }
     }
     /// Consulted before the mixer's global click/reorder monitor handles a border.
     static func handlesPointer(_ event: NSEvent) -> Bool {
@@ -347,19 +349,36 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         let scale = min(TrackHeightGeometry.maximumScale, max(TrackHeightGeometry.minimumScale, lane / drag.denominator))
         guard scale != drag.scale else { return }
         drag.scale = scale; self.drag = drag
+        pendingPreview = true
+        // High-rate mice can deliver many events per frame. Publish only the
+        // latest geometry, instead of laying out the entire timeline per event.
+        if previewTimer == nil {
+            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.flushHeightPreview() }
+            }
+            previewTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+    func flushHeightPreview() {
+        guard pendingPreview, let drag else { return }
+        pendingPreview = false
         var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
-        withTransaction(transaction) { change?(drag.track, scale, false) }
+        withTransaction(transaction) { change?(drag.track, drag.scale, false) }
     }
     override func mouseUp(with event: NSEvent) {
         guard acceptsInput else { cancelDrag(); return }
+        mouseDragged(with: event) // Commit the release position even between display ticks.
         guard let drag else { return }
-        finishCursor(); self.drag = nil
+        previewTimer?.invalidate(); previewTimer = nil; pendingPreview = false
+        self.drag = nil; finishCursor()
         if drag.scale != drag.initialScale { change?(drag.track, drag.scale, true) }
         else { cancelled?() }
     }
     private func finishCursor() { if cursorPushed { NSCursor.pop(); cursorPushed = false }; window?.invalidateCursorRects(for: self) }
     private func cancelDrag() {
         guard drag != nil else { return }
+        previewTimer?.invalidate(); previewTimer = nil; pendingPreview = false
         drag = nil; finishCursor(); cancelled?()
     }
     func timelineInputGateChanged(blocked: Bool) { if blocked { cancelDrag() }; window?.invalidateCursorRects(for: self) }
@@ -375,7 +394,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         if let clip {
             clipObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
                 guard let self else { return }
-                self.window?.invalidateCursorRects(for: self)
+                if self.drag == nil { self.window?.invalidateCursorRects(for: self) }
             }
         }
     }
@@ -402,6 +421,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         }
     }
     deinit {
+        previewTimer?.invalidate()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         notifications.forEach(NotificationCenter.default.removeObserver)
         if let clipObserver { NotificationCenter.default.removeObserver(clipObserver) }

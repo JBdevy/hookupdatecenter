@@ -757,6 +757,9 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private var pointerMonitor: Any?
     private var activeButton: Int?
     private var anchorInWindow = CGPoint.zero
+    private var selectionPointerInWindow = CGPoint.zero
+    private var selectionScrollTimer: Timer?
+    private var lastSelectionScrollTime = 0.0
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window), window?.attachedSheet == nil,
@@ -781,6 +784,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         cursorCoverage = nil
+        stopSelectionScroll()
         if let pointerMonitor { NSEvent.removeMonitor(pointerMonitor); self.pointerMonitor = nil }
         heldItemGuide = nil
         pendingSeek = nil
@@ -795,6 +799,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         }
     }
     deinit {
+        selectionScrollTimer?.invalidate()
         if let pointerMonitor { NSEvent.removeMonitor(pointerMonitor) }
         for observer in headerScrollObservers { NotificationCenter.default.removeObserver(observer) }
     }
@@ -945,6 +950,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     func timelineInputGateChanged(blocked: Bool) {
         guard blocked else { return }
+        stopSelectionScroll()
         if let fadeItem {
             if let sCurve = fadeItem.sCurve { fadeShape?(fadeItem.item.id, fadeItem.left, sCurve, sCurve ? fadeItem.item.curve(fadeItem.left).sCurve : fadeItem.item.curve(fadeItem.left).curvature, false) }
             else { fade?(fadeItem.item.id, fadeItem.left, fadeItem.left ? fadeItem.item.fadeIn : fadeItem.item.fadeOut, false) }
@@ -1191,28 +1197,93 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         if NSCursor.current !== NSCursor.arrow { NSCursor.arrow.set() }
     }
     override func rightMouseDown(with event: NSEvent) {
+        stopSelectionScroll()
         pointerDown?(event)
         window?.makeFirstResponder(self)
         anchor = timelinePoint(event)
         anchorInWindow = event.locationInWindow
+        selectionPointerInWindow = event.locationInWindow
         additive = !event.modifierFlags.intersection([.shift, .command, .control]).isEmpty
         baseSelection = additive ? selected : []
         selectionRect = nil
     }
     override func rightMouseDragged(with event: NSEvent) {
-        guard let anchor else { return }
-        let point = timelinePoint(event)
+        guard anchor != nil else { return }
+        selectionPointerInWindow = event.locationInWindow
         guard selectionRect != nil || hypot(event.locationInWindow.x-anchorInWindow.x, event.locationInWindow.y-anchorInWindow.y) >= 3 else { return }
-        let top = max(coordinates.origin.y + headerHeight, min(anchor.y, point.y))
-        let rect = CGRect(x: min(anchor.x,point.x), y: top, width: max(1,abs(point.x-anchor.x)), height: max(1,max(anchor.y,point.y)-top))
+        updateMarqueeSelection()
+        if selectionScrollTimer == nil {
+            lastSelectionScrollTime = ProcessInfo.processInfo.systemUptime
+            let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let now = ProcessInfo.processInfo.systemUptime
+                    self.advanceSelectionScroll(elapsed: now - self.lastSelectionScrollTime)
+                    self.lastSelectionScrollTime = now
+                }
+            }
+            selectionScrollTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+    private func stopSelectionScroll() {
+        selectionScrollTimer?.invalidate(); selectionScrollTimer = nil
+    }
+    private func updateMarqueeSelection() {
+        guard let anchor else { return }
+        let space = coordinates, pointer = convert(selectionPointerInWindow, from: nil)
+        let point = CGPoint(
+            x: min(space.viewport.maxX, max(space.viewport.minX, pointer.x)) - space.viewport.minX + space.origin.x,
+            y: min(space.viewport.maxY, max(space.viewport.minY + headerHeight, pointer.y)) - space.viewport.minY + space.origin.y)
+        // Keep the initial document anchor when scrolling reveals more rows.
+        // Only drawing is clipped to the viewport, never the selection itself.
+        let top = min(anchor.y, point.y)
+        let rect = CGRect(x: min(anchor.x, point.x), y: top,
+            width: max(1, abs(point.x - anchor.x)), height: max(1, abs(point.y - anchor.y)))
         selectionRect = rect
         let next = baseSelection.union(candidates(in: rect).lazy.filter { $0.rect.intersects(rect) }.map(\.id))
         if selected != next { selected = next; selectionChanged?(next) }
         needsDisplay = true
     }
+    func advanceSelectionScroll(elapsed: TimeInterval) {
+        guard anchor != nil, selectionRect != nil, activeButton != nil,
+              window != nil, window?.attachedSheet == nil, !interactionBlocked,
+              !NativeTimelineInputGate.shared.isBlocked(window), !isHiddenOrHasHiddenAncestor else {
+            stopSelectionScroll(); return
+        }
+        var scrolls: [NSScrollView] = [], parent = superview
+        while let view = parent {
+            if let scroll = view as? NSScrollView { scrolls.append(scroll) }
+            parent = view.superview
+        }
+        guard let horizontal = scrolls.first, let vertical = scrolls.last, horizontal !== vertical else { return }
+        let viewport = coordinates.viewport, pointer = convert(selectionPointerInWindow, from: nil)
+        func velocity(_ value: CGFloat, _ low: CGFloat, _ high: CGFloat) -> CGFloat {
+            let band = min(28, max(1, (high - low) / 3))
+            if value < low + band { return -600 * min(1, max(0, (low + band - value) / band)) }
+            if value > high - band { return 600 * min(1, max(0, (value - high + band) / band)) }
+            return 0
+        }
+        let dt = CGFloat(min(0.05, max(0, elapsed)))
+        func scroll(_ view: NSScrollView, horizontal axis: Bool, delta: CGFloat) -> Bool {
+            guard delta != 0 else { return false }
+            let clip = view.contentView
+            var origin = clip.bounds.origin
+            if axis { origin.x = min(max(0, origin.x + delta), max(0, clip.documentRect.width - clip.bounds.width)) }
+            else { origin.y = min(max(0, origin.y + delta), max(0, clip.documentRect.height - clip.bounds.height)) }
+            guard origin != clip.bounds.origin else { return false }
+            (view as? NativeTimelineSelectionScrollHost)?.prepareSelectionScroll(to: origin, horizontal: axis)
+            clip.scroll(to: origin); view.reflectScrolledClipView(clip)
+            return true
+        }
+        let movedX = scroll(horizontal, horizontal: true, delta: velocity(pointer.x, viewport.minX, viewport.maxX) * dt)
+        let movedY = scroll(vertical, horizontal: false, delta: velocity(pointer.y, viewport.minY + headerHeight, viewport.maxY) * dt)
+        if movedX || movedY { updateMarqueeSelection() }
+    }
     override func rightMouseUp(with event: NSEvent) {
         guard let anchor else { return }
         rightMouseDragged(with: event)
+        stopSelectionScroll()
         if selectionRect == nil {
             contextItem = candidates(in: CGRect(origin: anchor, size: .zero)).first { $0.rect.contains(anchor) }?.id
             if let contextItem {

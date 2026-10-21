@@ -15,7 +15,9 @@ let preferenceCredential = hostPreferences.data(forKey: "catlive.remote.director
 firstLaunchHost.setHostEnabled(true)
 require(firstLaunchHost.enabled && hostPreferences.bool(forKey: "catlive.remote.enabled"),
         "explicit enable starts the host and records its global intention")
+require(MainActor.assumeIsolated { ProjectSyncController.shared.enabled }, "enabling the primary Remote host enables wired Project Sync")
 firstLaunchHost.stop()
+require(!MainActor.assumeIsolated { ProjectSyncController.shared.enabled }, "stopping the primary Remote host disables wired Project Sync")
 require(!firstLaunchHost.enabled && hostPreferences.bool(forKey: "catlive.remote.enabled"),
         "lifecycle shutdown must not overwrite the saved enabled intention")
 

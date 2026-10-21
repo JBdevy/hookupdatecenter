@@ -2259,6 +2259,12 @@ for route in [0, 1, 2] {
     state.project.songs[0].tracks[i].clips = [AudioClip(id: UUID(), name: "Recorded", startTime: 0, duration: 5, audioFile: AudioFile(path: "tone.wav"))]
     try liveAudio.update(state, revision: 5)
     let recorded = try livePeaks(); print("MONITOR_RECORDED_PCM", route, recorded); precondition(recorded[first] > 0.001, "Monitor Off never silences recorded clips")
+    let playingMeter = liveAudio.meter(for: inputTrack.id)
+    playingMeter.update(peak: Double(recorded[first]), elapsed: 1.0/30)
+    liveAudio.setInputMonitor(inputTrack.id, source: nil)
+    precondition(playingMeter.level > 0.001, "REC disarm does not clear active playback meters")
+    let afterDisarm = try livePeaks()
+    precondition(afterDisarm[first] > 0.001, "REC disarm retains recorded playback PCM")
     var captured: [UInt8] = []
     liveAudio.armedMIDIRecordingTracks = [inputTrack.id]
     liveAudio.onLiveKeyboardMIDI = { _, status, _, _ in captured.append(status) }
@@ -2267,6 +2273,51 @@ for route in [0, 1, 2] {
     liveAudio.prepareForClosing()
 }
 print("INPUT_MONITOR_MASTER_GROUP_HARDWARE_OFF_RECORDED_AUDIO_AND_MIDI_CAPTURE_OK")
+
+// The last REC disarm must clear moving bars even without a transport tick.
+try audioAutoreleasepool {
+    let engine = AVAudioEngine()
+    try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
+    let playback = StemAudioPlayback(engine: engine, realtime: true)
+    playback.open(directory: directory)
+    var project = Project.empty(name: "Disarm meter")
+    let track = Track(id: UUID(), name: "Input", role: .other)
+    let other = Track(id: UUID(), name: "Second input", role: .other)
+    project.songs[0].tracks = [track, other]
+    let snapshot = ShowSnapshot(project: project, transport: TransportState(playing: false, songId: project.songs[0].id, position: 0,
+        queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    let meter = playback.meter(for: track.id), otherMeter = playback.meter(for: other.id)
+    try playback.update(snapshot, revision: 1)
+    func monitor() -> AVAudioSourceNode {
+        AVAudioSourceNode(format: outputFormat) { silent, _, frames, buffers in
+            silent.pointee = false
+            for buffer in UnsafeMutableAudioBufferListPointer(buffers) {
+                buffer.mData!.assumingMemoryBound(to: Float.self).update(repeating: 0.2, count: Int(frames))
+            }
+            return noErr
+        }
+    }
+    playback.setInputMonitor(track.id, source: monitor(), format: outputFormat)
+    // Raw input metering bypasses the idle playback graph. Seed the received
+    // input sample; the regression is losing the final UI reset on detach.
+    meter.update(left: 0.2, right: 0.4, elapsed: 1.0/30)
+    playback.masterMeter.update(peak: 0.2, elapsed: 1.0/30)
+    let peak = meter.peakHold.decibels
+    playback.setInputMonitor(track.id, source: nil)
+    precondition(meter.level == 0 && playback.masterMeter.level == 0,
+        "last disarm clears moving bars immediately instead of freezing the last sample")
+    precondition(meter.peakHold.decibels == peak, "disarm preserves the independent held peak readout")
+    playback.setInputMonitor(track.id, source: monitor(), format: outputFormat)
+    playback.setInputMonitor(other.id, source: monitor(), format: outputFormat)
+    otherMeter.update(left: 0.1, right: 0.2, elapsed: 1.0/30)
+    playback.setInputMonitor(track.id, source: nil)
+    precondition(otherMeter.level > 0.01, "disarming one track preserves another armed input's metering")
+    playback.setInputMonitor(other.id, source: nil)
+    precondition(otherMeter.level == 0 && meter.level == 0)
+    playback.prepareForClosing()
+}
+print("REC_DISARM_IDLE_METER_CLEAR_REARM_OTHER_TRACK_AND_PLAYBACK_OK")
+
 
 // Folder inside folder: every gain stage is audible, and child Solo keeps the
 // complete path alive without admitting siblings outside the selected subtree.

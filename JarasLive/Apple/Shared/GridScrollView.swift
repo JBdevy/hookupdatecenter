@@ -947,7 +947,7 @@ private final class GridHostingView<Content: View>: NSHostingView<Content> {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { frame.size }
 }
-final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost {
+final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, NativeTimelineSelectionScrollHost {
     /// Nil keeps ordinary, unbridged scroll views tied to their document frame.
     var logicalDocumentWidth: CGFloat?
     weak var timelineBodyInput: (NSView & NativeTimelineBodyInput)?
@@ -1047,6 +1047,11 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost {
     var playbackFollowSuspendedUntil: TimeInterval = 0
     var permitsPlaybackFollow: Bool {
         zoomAnchor == nil && ProcessInfo.processInfo.systemUptime >= playbackFollowSuspendedUntil
+    }
+    func prepareSelectionScroll(to origin: CGPoint, horizontal: Bool) {
+        prioritizeZoom()
+        if horizontal { prepareHorizontalViewport(at: origin.x) }
+        else { prepareVerticalViewport(at: origin.y) }
     }
     func prioritizeZoom() { playbackFollowSuspendedUntil = ProcessInfo.processInfo.systemUptime + 0.18 }
     var zoomAnchor: (fraction: Double, screenX: CGFloat, width: CGFloat)?

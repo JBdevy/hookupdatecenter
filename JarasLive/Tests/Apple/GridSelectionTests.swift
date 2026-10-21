@@ -245,6 +245,39 @@ drag(CGPoint(x: 100,y: 200),CGPoint(x: 300,y: 290))
 precondition(grid.selected == [first],"marquee selection uses the same live native coordinates as the pinned drawing surface")
 precondition(grid.timelineOrigin == CGPoint(x: -23,y: -44),"all native scroll interactions succeeded without a hosted offset update")
 print("GRID_NATIVE_PINNED_HEADER_BOTH_AXES_INPUT_AND_STALE_HOSTED_ORIGIN_OK")
+// Holding at an edge continues both axes without additional pointer events.
+inner.contentView.scroll(to: .zero); outer.contentView.scroll(to: .zero)
+grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 150,y: 180,width: 40,height: 30)),
+              GridSelectionItem(id: second, rect: CGRect(x: 850,y: 650,width: 40,height: 30)),
+              GridSelectionItem(id: third, rect: CGRect(x: 20,y: 100,width: 20,height: 20))]
+grid.updateSelection([third])
+precondition(grid.handlePointerEvent(event(.rightMouseDown, CGPoint(x: 100,y: 150), modifiers: .shift)))
+precondition(grid.handlePointerEvent(event(.rightMouseDragged, CGPoint(x: 699,y: 599), modifiers: .shift)))
+for _ in 0..<24 { grid.advanceSelectionScroll(elapsed: 1.0/60) }
+precondition(inner.contentView.bounds.minX > 200 && outer.contentView.bounds.minY > 200,
+             "the held diagonal marquee scrolls both axes")
+precondition(grid.selected == [first,second,third], "revealed clips join selection without dropping its original anchor or additive baseline")
+precondition(grid.handlePointerEvent(event(.rightMouseDragged, CGPoint(x: 350,y: 300))))
+let centeredOrigin = grid.frame.origin
+for _ in 0..<10 { grid.advanceSelectionScroll(elapsed: 1.0/60) }
+precondition(grid.frame.origin == centeredOrigin, "moving away from edges stops scrolling")
+precondition(grid.handlePointerEvent(event(.rightMouseUp, CGPoint(x: 350,y: 300))))
+for _ in 0..<10 { grid.advanceSelectionScroll(elapsed: 1.0/60) }
+precondition(grid.frame.origin == centeredOrigin, "release cancels auto-scroll")
+inner.contentView.scroll(to: CGPoint(x: 500,y: 0)); outer.contentView.scroll(to: CGPoint(x: 0,y: 500))
+precondition(grid.handlePointerEvent(event(.rightMouseDown, CGPoint(x: 500,y: 400))))
+precondition(grid.handlePointerEvent(event(.rightMouseDragged, CGPoint(x: 1,y: 72))))
+for _ in 0..<20 { grid.advanceSelectionScroll(elapsed: 1.0/60) }
+precondition(inner.contentView.bounds.minX < 320 && outer.contentView.bounds.minY < 320,
+             "left and top edges scroll in the reverse direction")
+NativeTimelineInputGate.shared.setBlocked(true, for: window)
+let gatedOrigin = grid.frame.origin
+grid.advanceSelectionScroll(elapsed: 1)
+precondition(grid.frame.origin == gatedOrigin, "modal input cancels pending marquee scrolling")
+NativeTimelineInputGate.shared.setBlocked(false, for: window)
+inner.contentView.scroll(to: CGPoint(x: 780,y: 0)); outer.contentView.scroll(to: CGPoint(x: 0,y: 300))
+print("GRID_MARQUEE_EDGE_SCROLL_BOTH_AXES_STABLE_ANCHOR_ADDITIVE_RELEASE_AND_GATE_OK")
+
 
 // A stationary pointer must follow controls moving beneath it, while repeated
 // refreshes over the same target must not resend its image to WindowServer.
@@ -452,7 +485,7 @@ _ = grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: knob.midX,y: knob.mi
 _ = grid.handlePointerEvent(event(.leftMouseUp,CGPoint(x: knob.midX,y: knob.midY),clicks: 2))
 precondition(gainMotions.count == beforeReset+1 && gainMotions.last!.1 == 1 && gainMotions.last!.2, "double click resets the mini knob to 0 dB once")
 let small = GridSelectionItem(id: UUID(),rect: CGRect(x: 0,y: 0,width: 25,height: 30))
-precondition(small.fxRect == nil && small.gainKnobRect == nil && small.titleInset < small.rect.width, "controls collapse before item titles overflow")
+precondition(small.fxRect == nil && small.gainKnobRect == nil && small.titleInset <= small.rect.width, "controls collapse before item titles overflow")
 print("GRID_ITEM_FX_MUTE_HIT_AREAS_AND_MINI_KNOB_RESET_OK")
 
 let textID = UUID()

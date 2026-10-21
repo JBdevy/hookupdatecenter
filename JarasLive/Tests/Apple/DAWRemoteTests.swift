@@ -1,5 +1,12 @@
 // Compiled with the production protocol/session sources by test-daw-remote.sh.
 import AppKit
+// The Remote suite exercises its real encrypted transport on loopback. Keep
+// the separate wired-sync service out of this fixture's listeners/preferences.
+@MainActor final class ProjectSyncController {
+    static let shared = ProjectSyncController()
+    private(set) var enabled = false
+    func setEnabled(_ value: Bool) { enabled = value }
+}
 setbuf(stdout, nil)
 func require(_ value: @autoclosure () -> Bool, _ message: String) {
     if !value() { fatalError(message) }

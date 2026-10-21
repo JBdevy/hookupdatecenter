@@ -8,6 +8,10 @@ protocol TimelineGridKeyboardTarget: AnyObject {}
 /// controls can share that default while keeping their own special cursors.
 protocol NativeTimelineDefaultCursorHost: AnyObject {}
 
+protocol NativeTimelineSelectionScrollHost: AnyObject {
+    func prepareSelectionScroll(to origin: CGPoint, horizontal: Bool)
+}
+
 /// Input covering the timeline body can answer directly. AppKit otherwise
 /// traverses every nested hosting graph on cursor updates during zoom.
 protocol NativeTimelineBodyInput: AnyObject {

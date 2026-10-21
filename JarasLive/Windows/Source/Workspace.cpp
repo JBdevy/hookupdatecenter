@@ -1711,7 +1711,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     float lastSubOpacity = 1;
     bool lastSubVisible = false;
     bool lastLoop = false;
-    class Canvas final : public Component {
+    class Canvas final : public Component, private Timer {
       public:
         int headerHeight() const { return t.headerHeight(); }
         explicit Canvas(Timeline &timeline) : t(timeline) { setOpaque(true); setComponentID("timelineCanvas"); }
@@ -2062,6 +2062,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 g.strokePath(edges,PathStrokeType(1.f));
             }
             if (selectionBox) {
+                Graphics::ScopedSaveState selectionClip(g);
+                g.reduceClipRegion(0, headerHeight(), getWidth(), std::max(0, getHeight()-headerHeight()));
                 g.setColour(Colour(0xff34c759).withAlpha(.12f));
                 g.fillRect(*selectionBox);
                 g.setColour(Colour(0xff34c759).withAlpha(.9f));
@@ -2097,6 +2099,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             t.stopGesture();
             startTime = t.timeAt(e.position.x);
             startPosition = e.position;
+            stopTimer(); rightSelection = false;
             dragClip.clear(); dragRegion.clear(); dragMarker.clear(); regionEdge=0;
             mainDrag=false; dragPreview = false; resizedClipPreview.reset(); movingClipPreview.reset();
             resizeEdge = 0;
@@ -2163,6 +2166,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             }
             if (e.mods.isPopupMenu()) {
                 rightSelection = true;
+                selectionAnchor = {e.position.x + (float)t.horizontal.getCurrentRangeStart(), e.position.y + t.w.verticalOffset};
+                selectionPointer = e.position;
                 selectionBox.reset();
                 additiveSelection = e.mods.isCtrlDown() || e.mods.isShiftDown();
                 selectionBase = additiveSelection ? t.w.selectedClips : std::set<ID>{};
@@ -2272,7 +2277,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             }
             if (rightSelection) {
                 updateAreaSelection(e);
-                rightSelection = false;
+                rightSelection = false; stopTimer();
                 const bool dragged = selectionBox.has_value();
                 selectionBox.reset(); repaint();
                 if (!dragged && t.w.session.song() && t.w.session.song()->id == selectionSong) showItemContext(e);
@@ -2400,7 +2405,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         void cancelDrag() {
             t.setRegionPreview(std::nullopt);
             timeRangeGesture=false;timeRangeDragged=false;timeRangeResize=0;timeRangeBefore.reset();
-            rightSelection = false; selectionBox.reset(); selectionBase.clear();
+            stopTimer(); rightSelection = false; selectionBox.reset(); selectionBase.clear();
             dragRegion.clear(); dragMarker.clear();
             if(controlClip) t.w.perform([&]{previewControl(controlOriginal);});
             controlClip.reset();controlKind=ItemHeader::none;
@@ -2434,13 +2439,24 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         ID selectionSong;
         std::set<ID> selectionBase;
         std::optional<juce::Rectangle<float>> selectionBox;
+        Point<float> selectionAnchor, selectionPointer;
+        double selectionScrollTime = 0;
         void updateAreaSelection(const MouseEvent &e) {
-            const auto *song = t.w.session.song();
-            if (!song || song->id != selectionSong) return;
+            selectionPointer = e.position;
             if (!selectionBox && e.position.getDistanceFrom(startPosition) < 3.f) return;
-            const float top = std::max((float)headerHeight(),std::min(startPosition.y,e.position.y));
-            selectionBox = juce::Rectangle<float>(std::min(startPosition.x,e.position.x),top,
-                std::max(1.f,std::abs(e.position.x-startPosition.x)),std::max(1.f,std::max(startPosition.y,e.position.y)-top));
+            updateMarqueeSelection();
+            if (!isTimerRunning()) { selectionScrollTime = Time::getMillisecondCounterHiRes(); startTimerHz(60); }
+        }
+        void updateMarqueeSelection() {
+            const auto *song = t.w.session.song();
+            if (!song || song->id != selectionSong) { cancelDrag(); return; }
+            const Point<float> offset{(float)t.horizontal.getCurrentRangeStart(), (float)t.w.verticalOffset};
+            const Point<float> point{jlimit(0.f, (float)getWidth(), selectionPointer.x),
+                jlimit((float)headerHeight(), (float)std::max(headerHeight(), getHeight()), selectionPointer.y)};
+            const auto anchor = selectionAnchor - offset;
+            selectionBox = juce::Rectangle<float>(anchor, point);
+            if (selectionBox->getWidth() < 1) selectionBox->setWidth(1);
+            if (selectionBox->getHeight() < 1) selectionBox->setHeight(1);
             auto selected = selectionBase;
             for (int row=0; row<(int)song->tracks.size(); ++row) {
                 if (t.w.rowHidden(row)) continue;
@@ -2450,6 +2466,25 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             t.w.selectedClips = std::move(selected);
             t.w.selectedClip = t.w.selectedClips.empty() ? ID{} : *t.w.selectedClips.begin();
             repaint();
+        }
+        void timerCallback() override {
+            if (!rightSelection || !selectionBox || !isShowing() || isCurrentlyBlockedByAnotherModalComponent() ||
+                !t.w.session.song() || t.w.session.song()->id != selectionSong) { cancelDrag(); return; }
+            const double now = Time::getMillisecondCounterHiRes();
+            const double dt = jlimit(0., .05, (now - selectionScrollTime) / 1000.);
+            selectionScrollTime = now;
+            auto velocity=[](float value, float low, float high) {
+                const float band=std::min(28.f,std::max(1.f,(high-low)/3));
+                if(value<low+band)return -600.f*jlimit(0.f,1.f,(low+band-value)/band);
+                if(value>high-band)return 600.f*jlimit(0.f,1.f,(value-high+band)/band);
+                return 0.f;
+            };
+            const auto dx=velocity(selectionPointer.x,0.f,(float)getWidth())*dt;
+            const auto dy=velocity(selectionPointer.y,(float)headerHeight(),(float)getHeight())*dt;
+            const double oldX=t.horizontal.getCurrentRangeStart(), oldY=t.vertical.getCurrentRangeStart();
+            if(dx!=0)t.horizontal.setCurrentRangeStart(oldX+dx,sendNotificationSync);
+            if(dy!=0)t.vertical.setCurrentRangeStart(oldY+dy,sendNotificationSync);
+            if(oldX!=t.horizontal.getCurrentRangeStart() || oldY!=t.vertical.getCurrentRangeStart())updateMarqueeSelection();
         }
         void showItemContext(const MouseEvent &e) {
             const auto *song=t.w.session.song(); if(!song)return;
@@ -2657,9 +2692,19 @@ TextButton &Workspace::button(String id, const String &title, std::function<void
     b->onClick = [this, action] { perform(action); };
     return *b;
 }
-class Workspace::TrackHeightHandle final : public Component {
+class Workspace::TrackHeightHandle final : public Component, private Timer {
     Workspace &w;
     ID trackID, songID; int startY=0, count=1; double startHeight=0, denominator=1, initialScale=1;
+    double pendingScale=1;
+    bool pendingHeight=false;
+    void timerCallback() override {
+        if(trackID.empty()) {stopTimer();return;}
+        if(!w.session.song() || w.session.song()->id!=songID){cancel();return;}
+        if(!pendingHeight)return;
+        pendingHeight=false;
+        w.trackHeightPreview=std::pair<ID,double>{trackID,pendingScale};
+        w.resized();w.timeline->updateRanges();w.tracksViewport.repaint();
+    }
     std::optional<int> edge(int x,int y) const {
         if(!w.session.song() || !w.projectReady || w.browserVisible) return {};
         auto p=getParentComponent()->getLocalPoint(this,Point<int>{x,y});
@@ -2680,25 +2725,30 @@ class Workspace::TrackHeightHandle final : public Component {
     void mouseDown(const MouseEvent &e) override {
         if(!e.mods.isLeftButtonDown() || e.mods.isAnyModifierKeyDown())return;
         if(auto at=edge(e.x,e.y)) {int i=*at;const auto &track=w.session.song()->tracks[(size_t)i];
-            trackID=track.id;songID=w.session.song()->id;startY=e.y;count=w.itemLanes(i).count;
+            trackID=track.id;songID=w.session.song()->id;startY=e.getScreenY();count=w.itemLanes(i).count;
             startHeight=w.rowBodyHeight(i);denominator=w.trackHeight*(count>1?.7:1.);initialScale=track.heightScale.value_or(1.);
+            pendingScale=initialScale;pendingHeight=false;
             w.trackHeightPreview=std::pair<ID,double>{trackID,initialScale};grabKeyboardFocus();
         }
     }
     void mouseDrag(const MouseEvent &e) override {
         if(trackID.empty())return;
         if(!w.session.song() || w.session.song()->id!=songID){cancel();return;}
-        double lane=jlimit(count>1?26.:24.,count>1?168.:240.,std::round((startHeight+e.y-startY)/count));
-        w.trackHeightPreview=std::pair<ID,double>{trackID,jlimit(.1,10.,lane/denominator)};w.resized();w.timeline->updateRanges();w.repaint();
+        const double scale=std::max(.01,(double)getApproximateScaleFactorForComponent(this));
+        double lane=jlimit(count>1?26.:24.,count>1?168.:240.,std::round((startHeight+(e.getScreenY()-startY)/scale)/count));
+        const double next=jlimit(.1,10.,lane/denominator);
+        if(next==pendingScale)return;
+        pendingScale=next;pendingHeight=true;
+        if(!isTimerRunning())startTimerHz(60);
     }
     void mouseUp(const MouseEvent &e) override {
-        if(trackID.empty())return;mouseDrag(e);if(!w.trackHeightPreview)return;
-        const auto value=*w.trackHeightPreview;const auto song=songID;bool changed=std::abs(value.second-initialScale)>1e-8;
+        if(trackID.empty())return;mouseDrag(e);stopTimer();if(trackID.empty())return;
+        const auto value=std::pair<ID,double>{trackID,pendingScale};pendingHeight=false;const auto song=songID;bool changed=std::abs(value.second-initialScale)>1e-8;
         trackID.clear();w.trackHeightPreview.reset();
         if(changed)w.perform([&]{w.session.edit([&](jaras::Project &p){for(auto &s:p.songs)if(s.id==song)for(auto &t:s.tracks)if(t.id==value.first)t.heightScale=value.second;},false);});
         w.resized();w.timeline->updateRanges();w.repaint();w.grabKeyboardFocus();
     }
-    void cancel(){trackID.clear();w.trackHeightPreview.reset();w.resized();w.timeline->updateRanges();w.repaint();}
+    void cancel(){stopTimer();pendingHeight=false;trackID.clear();w.trackHeightPreview.reset();w.resized();w.timeline->updateRanges();w.repaint();}
     bool keyPressed(const KeyPress &key) override {if(key.getKeyCode()==KeyPress::escapeKey && !trackID.empty()){cancel();w.grabKeyboardFocus();return true;}return false;}
     void mouseWheelMove(const MouseEvent &e,const MouseWheelDetails &wheel) override {
         // JUCE may retain the last mouse target while layout moves underneath
