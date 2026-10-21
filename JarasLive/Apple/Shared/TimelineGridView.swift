@@ -595,6 +595,9 @@ private struct TimelineGridContent: View, Equatable {
                                 .font(.jarasSystem(size: 9, weight: .bold, design: .monospaced))
                                 .foregroundStyle(JarasTheme.secondary)
                                 .frame(width: labelWidth, height: rulerHeight).clipped().background(JarasTheme.mixer)
+                                .overlay(alignment: .bottom) {
+                                    Rectangle().fill(JarasTheme.line).frame(height: 1).allowsHitTesting(false)
+                                }
                             }
                         }
                         .overlay(alignment: .topLeading) {
@@ -1128,7 +1131,7 @@ private struct TimelineGridContent: View, Equatable {
     }
 
     private func glueItems(_ ids: Set<UUID>) {
-        guard show.canExecute(), reRenderWorker == nil, !documents.busy, let song = show.current,
+        guard show.canControl(), reRenderWorker == nil, !documents.busy, let song = show.current,
               let directory = documents.currentURL?.deletingLastPathComponent() else { return }
         let groups = song.tracks.filter { $0.kind == .standard }.compactMap { track -> (Track, [AudioClip])? in
             let clips = track.clips.filter { ids.contains($0.id) }
@@ -1173,7 +1176,7 @@ private struct TimelineGridContent: View, Equatable {
     }
 
     private func reRenderItems(_ ids: Set<UUID>, midiChannels: Int? = nil) {
-        guard show.canExecute(), reRenderWorker == nil, !documents.busy, let initialSong = show.current,
+        guard show.canControl(), reRenderWorker == nil, !documents.busy, let initialSong = show.current,
               let directory = documents.currentURL?.deletingLastPathComponent() else { return }
         #if os(macOS)
         if midiChannels != nil {

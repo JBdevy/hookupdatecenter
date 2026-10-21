@@ -11,3 +11,7 @@ add_test(NAME JarasCoreTests COMMAND JarasCoreTests)
 add_executable(SmoothSeekTests Tests/Core/SmoothSeekTests.cpp)
 target_link_libraries(SmoothSeekTests PRIVATE JarasLiveCore)
 add_test(NAME SmoothSeekTests COMMAND SmoothSeekTests)
+
+add_executable(ProjectSyncTests Tests/Core/ProjectSyncTests.cpp)
+target_link_libraries(ProjectSyncTests PRIVATE JarasLiveCore)
+add_test(NAME ProjectSyncTests COMMAND ProjectSyncTests)

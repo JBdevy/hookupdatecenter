@@ -1319,5 +1319,6 @@
   "bar": "bar",
   "bars": "bars",
   "Config Init": "Config Init",
-  "Initial playback": "Initial playback"
+  "Initial playback": "Initial playback",
+  "Overlapping item ignored on this special-track layer. The rest of the project was imported.": "Overlapping item ignored on this special-track layer. The rest of the project was imported."
 }

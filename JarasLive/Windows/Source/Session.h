@@ -48,6 +48,8 @@ class Session final : private Timer {
                    std::function<void(StringArray)> missingMedia = {});
     void save(const File &);
     void cleanTimelineMedia(std::function<void(String)> completed);
+    jaras::projectSync::Frame projectSyncFrame() { syncClock(); return core.projectSyncFrame(); }
+    void applyProjectSync(const jaras::projectSync::Frame &, double elapsed, bool first, std::optional<ID> focused = {});
     void command(jaras::CommandKind, const ID &target = {}, double value = 0);
     std::optional<std::pair<double,double>> selectedTimeRange() const;
     void selectTimeRange(double from, double to);

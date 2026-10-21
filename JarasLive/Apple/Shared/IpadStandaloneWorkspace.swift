@@ -192,7 +192,7 @@ import Combine
                     },
                     openMasterDetails: {
                         trackEdit = .init(project: show.snapshot.project.id, tracks: [], name: "Master",
-                            color: show.snapshot.project.masterColor ?? 0xffdc52, nameEditable: false)
+                            color: show.snapshot.project.masterColor ?? 0x414141, nameEditable: false)
                     },
                     openItemMenu: { itemMenu = .init(clip: $0) }, openItemFX: { fx = .init(clip: $0) }, addTrack: { addingTrack = true }, addTrackAudio: { documents.chooseNativeTrackAudio($0) },
                     addTrackText: { editingTextItem = show.addTextItem(track: $0) }, addTrackMedia: { documents.chooseNativeTrackMedia($0) },

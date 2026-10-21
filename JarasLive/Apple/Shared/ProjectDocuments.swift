@@ -205,7 +205,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
             error = "Finish recording and pending operations before importing audio."; return
         }
-        guard show.canExecute() else { error = "Project editing is not available right now."; return }
+        guard show.canControl() else { error = "Project editing is not available right now."; return }
         error = ""
         if adding { finish(scan: scan, detectBPM: detectBPM, destination: nil) }
         else {
@@ -350,7 +350,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     @Published var pendingAudioDrop: PendingAudioDrop?
     func importAudio(_ providers: [NSItemProvider], start: Double, track: UUID?, song: UUID, layout: AudioDropLayout? = nil, gap: Double = 0) -> Bool {
-        guard show.canExecute(), ready, !busy, !providers.isEmpty, let destination = currentURL,
+        guard show.canControl(), ready, !busy, !providers.isEmpty, let destination = currentURL,
               let arrangement = show.snapshot.project.songs.first(where: { $0.id == song }) else { return false }
         let projectID = show.snapshot.project.id
         if let track, !arrangement.tracks.contains(where: { $0.id == track }) {
@@ -429,7 +429,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     #if os(macOS)
     func pasteMedia(_ urls: [URL], track: UUID?) {
-        guard show.canExecute(), ready, !busy, !urls.isEmpty,
+        guard show.canControl(), ready, !busy, !urls.isEmpty,
               let song = show.current, pendingAudioDrop == nil else { return }
         let project = show.snapshot.project.id
         let position = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
@@ -845,7 +845,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         if response == .OK, let source = panel.url { importDAW(source) }
     }
     private func importDAW(_ source: URL) {
-        guard show.canExecute() else { return }
+        guard show.canControl() else { return }
         let isReaper = source.pathExtension.lowercased() == "rpp"
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
@@ -987,7 +987,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     func confirmImport(detectBPM: Bool) { guard let scan else { return }; finish(scan: scan, detectBPM: detectBPM) }
     private func finish(scan: StemScan?, detectBPM: Bool, recordingChannels: Int? = nil) {
-        guard show.canExecute(), !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard show.canControl(), !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(iOS)
         if !(scan != nil && adding) {
             // Choose storage before showing the name alert. Presenting Files
@@ -1061,6 +1061,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
                     var project = try scan.map { try StemProjectImporter.build(scan: $0, remove: remove, base: base, destination: url, progress: { [weak self] current, total, name in
                         Task { @MainActor [weak self] in self?.status = "Importing \(current)/\(total): \(name)" }
                     }) } ?? base
+                    if project.projectSyncID == nil { project.projectSyncID = UUID() }
                     var tempoWarnings: [String] = []
                     do {
                     if detectBPM, scan != nil, !project.songs.isEmpty {

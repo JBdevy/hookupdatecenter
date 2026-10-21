@@ -669,6 +669,7 @@ enum AppStartupPresentation {
         return true
     }
     func close(_ index: Int) {
+        guard !ProjectSyncControl.following else { return }
         guard !closingTab, projects.indices.contains(index), let current = active,
               !current.documents.busy, !current.documents.importingAudio,
               !current.projectRecorder.recording, !current.projectRecorder.busy else { return }

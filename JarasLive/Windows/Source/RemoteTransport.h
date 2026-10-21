@@ -1,6 +1,7 @@
 #pragma once
 #include "RemoteCipher.h"
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <deque>
 namespace catlive::remote {
 // Socket ownership, ciphers and frame assembly stay on this worker. The UI only
@@ -13,6 +14,7 @@ class Transport final : private Thread {
         String name;
         uint8_t kind = 0;
         var body;
+        MemoryBlock binding;
     };
     Transport() : Thread("CatLive Remote") {}
     ~Transport() override { stop(); }
@@ -39,6 +41,12 @@ class Transport final : private Thread {
         outgoing.clear();
         queuedBytes = 0;
         active.clear();
+        connections.clear();
+    }
+    ID connectTo(const String &address, int port, const String &localAddress = {}, ULONG interfaceIndex = 0) {
+        const ScopedLock lock(mutex);
+        if (connections.size() >= 8) return {};
+        const auto id=uuid(); connections.push_back({id,address,port,localAddress,interfaceIndex}); notify(); return id;
     }
     bool running() const { return isThreadRunning(); }
     std::vector<Event> events() {
@@ -72,8 +80,8 @@ class Transport final : private Thread {
 
   private:
     struct Client {
-        Client(std::unique_ptr<StreamingSocket> value, const String &name)
-            : socket(std::move(value)), cipher(Cipher::host, name) {
+        Client(std::unique_ptr<StreamingSocket> value, const String &name, Cipher::Role role=Cipher::host)
+            : socket(std::move(value)), cipher(role, name) {
             u_long nonblocking = 1;
             require(ioctlsocket((SOCKET)socket->getRawSocketHandle(), FIONBIO, &nonblocking) == 0);
             push(Frames::encode(cipher.hello()));
@@ -102,6 +110,8 @@ class Transport final : private Thread {
         Bytes packet;
         bool close;
     };
+    struct Connection { ID id; String address; int port; String localAddress; ULONG interfaceIndex=0; };
+    std::vector<Connection> connections;
     String displayName;
     std::unique_ptr<StreamingSocket> listener;
     std::vector<std::unique_ptr<Client>> clients;
@@ -131,14 +141,14 @@ class Transport final : private Thread {
                 const ScopedLock lock(mutex);
                 active.insert(client.id);
             }
-            post({Event::connected, client.id, client.name});
+            post({Event::connected, client.id, client.name, 0, {}, client.cipher.sessionBinding});
             return;
         }
         require(plain.size() >= 6 && plain[0] == 1 && plain[1] == 0x4a && plain[2] == 0x4c &&
                 plain[3] == 2);
         const uint8_t kind = plain[4];
-        require(kind == 1 || kind == 3 || kind == 5);
-        const size_t maximum = kind == 1 ? 8192 : kind == 3 ? 64 : 256;
+        require(kind == 1 || kind == 3 || kind == 5 || kind == 8);
+        const size_t maximum = kind == 8 ? 524292 : kind == 1 ? 8192 : kind == 3 ? 64 : 256;
         require(plain.size() - 1 <= maximum);
         const auto now = Time::getMillisecondCounterHiRes();
         if (now - client.rateStarted >= 1000) {
@@ -214,6 +224,29 @@ class Transport final : private Thread {
                     } catch (...) {
                     }
                 }
+            }
+            std::vector<Connection> connects;
+            { const ScopedLock lock(mutex); connects.swap(connections); }
+            for(const auto &request:connects) {
+                try {
+                    auto socket=std::make_unique<StreamingSocket>();
+                    if(!socket->connect(request.address,request.port,1000)) { post({Event::disconnected,request.id,{}}); continue; }
+                    if (request.interfaceIndex) {
+                        // Check before exchanging any application data. A system
+                        // route choosing Wi-Fi must not turn into a Sync session.
+                        sockaddr_in local{}; int size = sizeof(local);
+                        char address[INET_ADDRSTRLEN]{};
+                        const auto handle = static_cast<SOCKET>(socket->getRawSocketHandle());
+                        const DWORD index = htonl(request.interfaceIndex);
+                        if (getsockname(handle, reinterpret_cast<sockaddr *>(&local), &size) != 0 ||
+                            !InetNtopA(AF_INET, &local.sin_addr, address, sizeof(address)) || request.localAddress != address ||
+                            setsockopt(handle, IPPROTO_IP, IP_UNICAST_IF, reinterpret_cast<const char *>(&index), sizeof(index)) != 0) {
+                            post({Event::disconnected,request.id,{}}); continue;
+                        }
+                    }
+                    auto client=std::make_unique<Client>(std::move(socket),displayName,Cipher::client);
+                    client->id=request.id; clients.push_back(std::move(client));
+                } catch(...) { post({Event::disconnected,request.id,{}}); }
             }
             std::vector<Outgoing> messages;
             {

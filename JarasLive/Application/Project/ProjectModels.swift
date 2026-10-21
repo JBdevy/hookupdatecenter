@@ -478,6 +478,8 @@ public indirect enum PortableProjectJSON: Codable, Equatable, Sendable {
 }
 
 public struct Project: Codable, Identifiable, Equatable, Sendable {
+    /// Permanent identity shared by copies used for redundant playback. Assigned by Save.
+    public var projectSyncID: UUID? = nil
     /// Protect timeline positions and boundaries; nil keeps older projects unlocked.
     public var timelineMovementLocked: Bool? = nil
     /// Windows grandMA2 assignments and reserved destinations must survive a Mac save.
@@ -789,7 +791,12 @@ public struct AudioRouting: Codable, Sendable { public var routes: [AudioRoute] 
 public struct MixerState: Codable, Sendable { public var tracks: [Track]; public var routing: AudioRouting }
 public struct ShowSnapshot: Codable, Sendable { public var project: Project; public var transport: TransportState; public var nextSongId: UUID? }
 
-public struct PlaybackSnapshot: Codable, Sendable { public var transport: TransportState; public var nextSongId: UUID? }
+public struct ProjectSyncMixer: Codable, Sendable {
+    public struct Track: Codable, Sendable { public var id: UUID; public var volume: Double; public var pan: Double; public var mute: Bool; public var solo: Bool }
+    public var masterVolume: Double; public var masterPan: Double; public var masterMute: Bool; public var masterSolo: Bool
+    public var tracks: [Track]
+}
+public struct PlaybackSnapshot: Codable, Sendable { public var transport: TransportState; public var nextSongId: UUID?; public var syncSetlist: RegionSetlist? = nil; public var syncMixer: ProjectSyncMixer? = nil }
 
 /// Interval partitioning: adjacent items share a lane; simultaneous items never do.
 public struct TrackLanes: Equatable {

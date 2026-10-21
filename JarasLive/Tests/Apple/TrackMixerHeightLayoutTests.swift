@@ -40,6 +40,10 @@ for lowerTitle in [false,true] {
     for height in stride(from: 24.0, through: 80.0, by: 0.05) {
         let frames = TrackMixerHeightGeometry.frames(width: 248,height: height,meterWidth: 40,standard: true,lowerTitle: lowerTitle,controlsWidth: 100 + 42*TrackMixerHeightGeometry.progress(height))
         precondition(frames.allSatisfy { $0.width >= 0 && $0.height >= 0 })
+        precondition(frames[0].width >= 10 && frames[0].height > 0 && frames[0].maxY <= height,
+            "Audio meters remain inside the track at every height, including its minimum")
+        precondition(frames[0].maxX < frames[2].minX, "The small meter cannot cover the name")
+        if height < 64 { precondition(frames[1].width == 0, "Only MIDI activity disappears in a collapsed row") }
         precondition(frames[2].minY >= 0 && frames[2].maxY <= height, "Track name must fit at every intermediate/stacked-lane height")
         if lowerTitle {
             precondition(frames[4].height == 0 || frames[4].maxY <= frames[2].minY + 0.001, "volume cannot cover the moving title")

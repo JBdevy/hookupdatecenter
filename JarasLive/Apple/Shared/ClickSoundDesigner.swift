@@ -31,7 +31,7 @@ struct ClickSoundDesigner: View {
         }.padding(22).frame(width: 360).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
     }
     private func choose() {
-        guard let directory, show.canExecute() else { return }
+        guard let directory, show.canControl() else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = ["wav", "aif", "aiff", "mp3"].compactMap { UTType(filenameExtension: $0) }
         panel.allowsMultipleSelection = false; panel.canChooseDirectories = false

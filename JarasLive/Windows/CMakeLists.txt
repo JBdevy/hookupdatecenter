@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(CatLiveWindows VERSION 1.1.0 LANGUAGES C CXX)
-set(CATLIVE_VERSION "1.07" CACHE STRING "Public CatLive version (X.XX)")
+set(CATLIVE_VERSION "1.08" CACHE STRING "Public CatLive version (X.XX)")
 if(NOT CATLIVE_VERSION MATCHES "^[0-9]+\\.[0-9][0-9]$")
     message(FATAL_ERROR "CATLIVE_VERSION must use X.XX format.")
 endif()
@@ -110,7 +110,7 @@ set(CATLIVE_FFMPEG_PUBLIC_HEADERS "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-include")
 catlive_prepare_ffmpeg_headers("${CATLIVE_FFMPEG_INCLUDE_DIR}" "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
 target_include_directories(CatLive PRIVATE ThirdParty/FFmpeg/include "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
 target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets CatLiveVST3 juce::juce_audio_utils
-    juce::juce_dsp juce::juce_osc juce::juce_cryptography d2d1 dwrite bcrypt crypt32 normaliz dnsapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32
+    juce::juce_dsp juce::juce_osc juce::juce_cryptography d2d1 dwrite bcrypt crypt32 normaliz dnsapi iphlpapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="CatLive" JUCE_APPLICATION_VERSION_STRING="${CATLIVE_VERSION}"
@@ -118,7 +118,7 @@ target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_MODAL_LOOPS_PERMITTED=0 NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_compile_options(CatLive PRIVATE /utf-8 /bigobj)
 enable_testing()
-foreach(name Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership TempoOwnership Timecode TimecodePlayback ClickTrack)
+foreach(name ProjectSync Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership TempoOwnership Timecode TimecodePlayback ClickTrack)
     add_executable(${name}Tests "${CATLIVEROOT}/Tests/Core/${name}Tests.cpp")
     target_link_libraries(${name}Tests PRIVATE CatLiveCore)
     target_compile_options(${name}Tests PRIVATE /utf-8)

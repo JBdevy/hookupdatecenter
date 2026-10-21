@@ -47,6 +47,39 @@ inline var restored(const var &plugin, const std::set<int> &indices) {
     return result;
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("REAPER special overlaps recover compatible items and independent projection layers", [&] {
+        const auto item = [](double start, double duration, const String &content = {}) {
+            return "<ITEM\nPOSITION " + String(start, 9) + "\nLENGTH " + String(duration, 9) + "\n" +
+                (content.isEmpty() ? String() : "<NOTES\n|" + content + "\n>\n") + ">\n";
+        };
+        const auto items = item(10, 2, "Later") + item(0, 4, "First") + item(2, 5, "Conflicting") +
+            item(0, 1, "Duplicate") + item(4, 2, "Next") + item(20, 3) + item(21, 3);
+        String body;
+        for (const auto &name : StringArray{"Teleprompt 1", "Teleprompt 2", "CIFRAS"})
+            body += "<TRACK\nNAME \"" + name + "\"\n" + items + ">\n";
+        body += "<TRACK\nNAME \"Teleprompt 1\"\n" + item(0, 4, "Lyrics");
+        for (int start : {0, 2, 4})
+            body += "<ITEM\nPOSITION " + String(start) + "\nLENGTH 4\n<SOURCE VIDEO\nFILE \"video" + String(start) + ".mp4\"\n>\n>\n";
+        body += ">\n<TRACK\nNAME Audio\n" + item(0, 4) + item(2, 4) + ">\n";
+        const auto result = read(directory, body);
+        require(result.project.songs[0].tracks.size() == 5, "Overlap discarded a track or project");
+        for (const auto &track : result.project.songs[0].tracks) {
+            if (track.name == "Audio") { require(track.clips.size() == 2, "Audio overlaps must remain supported"); continue; }
+            const bool media = std::any_of(track.clips.begin(), track.clips.end(), [](const auto &clip) { return clip.audioFile.has_value(); });
+            if (media) {
+                require(track.clips.size() == 3, "Text/media layers were merged or conflicting media retained");
+                require(track.clips[0].startTime == 0 && track.clips[1].startTime == 0 && track.clips[2].startTime == 4,
+                        "Projection timing differs from Mac");
+            } else {
+                require(track.clips.size() == 4, "Wrong special items were recovered");
+                require(track.clips[0].startTime == 0 && track.clips[0].duration == 4 && track.clips[0].text == "First" &&
+                            track.clips[1].startTime == 4 && track.clips[2].startTime == 10 && track.clips[3].startTime == 20,
+                        "Recovery moved/trimmed content or depends on source order");
+            }
+        }
+        require(result.warnings.joinIntoString("\n").contains("Conflicting"), "Recovery must report affected items");
+        jaras::validate(result.project);
+    });
     test("REAPER MIDI keeps pre-zero tempo and exact trimmed loop repetitions", [&] {
         const auto tempo = read(directory,
             "<TEMPOENVEX\nPT -2 60 1\n>\n<TRACK\n<ITEM\nPOSITION 0\nLENGTH 4\n"

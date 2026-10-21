@@ -1,5 +1,6 @@
 #include "Workspace.h"
 #include "RemoteProtocol.h"
+#include "RemoteHost.h"
 #include "StartupSplash.h"
 #include "ShowMode.h"
 #include "ProjectMigration.h"
@@ -115,7 +116,7 @@ class CatLiveApplication final : public JUCEApplication {
     const String getApplicationVersion() override { return JUCE_APPLICATION_VERSION_STRING; }
     bool moreThanOneInstanceAllowed() override {
         auto args = getCommandLineParameters();
-        return args.contains("--self-test") || args.contains("--visual-test") ||
+        return args.contains("--prepare-project-sync-cable") || args.contains("--self-test") || args.contains("--visual-test") ||
                args.contains("--grid-import-test") ||
                args.contains("--home-preview") || args.contains("--project-preview") || args.contains("--roundtrip-project") ||
                args.contains("--migrate-project");
@@ -158,6 +159,14 @@ class CatLiveApplication final : public JUCEApplication {
         args.removeEmptyStrings();
         for (auto &arg : args)
             arg = arg.unquoted();
+        if (args.contains("--prepare-project-sync-cable")) {
+            const auto i=args.indexOf("--prepare-project-sync-cable");
+            const auto index=i+1<args.size()?args[i+1].getLargeIntValue():0;
+            const auto hardware=i+2<args.size()?args[i+2]:String();
+            const auto code=index>0 && index<=std::numeric_limits<ULONG>::max() && hardware.isNotEmpty()
+                ?remote::SyncEthernet::prepareElevated((ULONG)index,hardware):ERROR_INVALID_PARAMETER;
+            setApplicationReturnValue((int)code);quit();return;
+        }
         if (args.contains("--migrate-project")) {
             auto i = args.indexOf("--migrate-project");
             try {
@@ -351,6 +360,10 @@ class CatLiveApplication final : public JUCEApplication {
         setApplicationReturnValue(testResult);
     }
     void systemRequestedQuit() override {
+        if(jaras::projectSync::readOnly()) {
+            if(tabHost && tabHost->current)tabHost->current->showError(String::fromUTF8("Project Sync: o PC B está seguindo o PC A. Desative a sincronização antes de encerrar."));
+            return;
+        }
         if (closing) {
             if (splash) splash->toFront(false);
             return;
@@ -427,7 +440,71 @@ class CatLiveApplication final : public JUCEApplication {
     std::vector<Workspace *> tabWorkspaces;
     std::vector<Session *> tabSessions;
     size_t selectedTab = 0;
+    std::map<std::pair<ID,ID>,bool> syncApplied;
     void installProjectTabHooks(Workspace &workspace) {
+        auto &sync=workspace.projectRemoteHost()->sync;
+        sync.resetApplied=[this]{syncApplied.clear();};
+        sync.confirm=[this](String message,std::function<void(bool)> reply) {
+            auto *owner=tabHost?tabHost->current:nullptr;
+            AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon,"Project Sync",message,
+                "Aceitar","Cancelar",owner,ModalCallbackFunction::create([reply](int result){reply(result!=0);}));
+        };
+        sync.audioIdentity=[this] {
+            if(selectedTab>=tabSessions.size()) return String();
+            auto *device=tabSessions[selectedTab]->audio.devices.getCurrentAudioDevice();
+            return device && device->isOpen()?device->getTypeName()+":"+device->getName():String();
+        };
+        sync.snapshot=[this] {
+            auto result=object(); Array<var> tabs;
+            if(selectedTab>=tabSessions.size()) return result;
+            const auto &active=tabSessions[selectedTab]->project().projectSyncID;
+            if(active) put(result,"active",text(*active));
+            std::set<ID> seen;
+            for(size_t i=0;i<tabSessions.size();++i) {
+                auto &session=*tabSessions[i]; const auto &id=session.project().projectSyncID;
+                if(!tabWorkspaces[i]->isProjectOpen() || session.busy || !id || !seen.insert(*id).second) continue;
+                auto tab=object();put(tab,"project",text(*id));put(tab,"name",text(session.project().name));
+                if(session.focusedRegion)put(tab,"focusedRegion",text(*session.focusedRegion));
+                const auto data=jaras::projectSync::encode(session.projectSyncFrame());
+                put(tab,"transport",Base64::toBase64(data.data(),data.size()));tabs.add(tab);
+            }
+            put(result,"tabs",var(tabs));return result;
+        };
+        sync.apply=[this](const var &message,double elapsed,const ID &connection) {
+            remote::ProjectSync::ApplyResult result;
+            StringArray missing;std::set<ID> seen;
+            auto *tabs=message["tabs"].getArray();if(!tabs) return result;
+            for(const auto &tab:*tabs) {
+                if(!remote::validID(tab["project"]) || !tab["transport"].isString() || tab["transport"].toString().length()>174764) continue;
+                const auto id=utf8(tab["project"].toString());if(!seen.insert(id).second) continue;
+                size_t index=0;
+                for(;index<tabSessions.size();++index) {
+                    const auto &candidate=tabSessions[index]->project().projectSyncID;
+                    if(candidate && jaras::projectSync::sameID(*candidate,id) && tabWorkspaces[index]->isProjectOpen() && !tabSessions[index]->busy)break;
+                }
+                if(index==tabSessions.size()) {missing.add(tab["name"].toString().substring(0,128));continue;}
+                try {
+                    if(tabSessions[index]->audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de sincronizar.");
+                    MemoryOutputStream bytes;
+                    if(!Base64::convertFromBase64(bytes,tab["transport"].toString())) throw std::runtime_error("Invalid Project Sync frame");
+                    auto frame=jaras::projectSync::decode((const uint8_t*)bytes.getData(),bytes.getDataSize());
+                    if(!jaras::projectSync::sameID(frame.project,id))throw std::runtime_error("Invalid Project Sync project");
+                    auto key=std::make_pair(connection,id);
+                    const auto age=tab.hasProperty("age")?(double)tab["age"]:0.;
+                    if(!std::isfinite(age) || age<0 || age>1)throw std::runtime_error("Invalid Project Sync clock");
+                    std::optional<ID> focus;
+                    if(remote::validID(tab["focusedRegion"]))focus=utf8(tab["focusedRegion"].toString());
+                    tabSessions[index]->applyProjectSync(frame,std::min(1.,elapsed+age),!syncApplied[key],focus);
+                    syncApplied[key]=true;result.applied=true;
+                } catch(const std::exception &e) { result.problem=String::fromUTF8(e.what()); }
+            }
+            const auto active=utf8(message["active"].toString());
+            for(size_t i=0;i<tabSessions.size();++i) if(auto id=tabSessions[i]->project().projectSyncID;id && jaras::projectSync::sameID(*id,active)) {
+                if(i!=selectedTab)selectProjectTab(i);break;
+            }
+            if(!missing.isEmpty())result.problem=String::fromUTF8("Abra este projeto também no PC B: ")+missing.joinIntoString(", ");
+            return result;
+        };
         workspace.remoteProjectTabs = [this] {
             Array<var> tabs;
             for (size_t index = 0; index < tabWorkspaces.size(); ++index) {

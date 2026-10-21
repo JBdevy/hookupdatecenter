@@ -660,7 +660,7 @@ private final class CaptureWriter: @unchecked Sendable {
             show.send(.stop)
             return
         }
-        guard !busy, show.canExecute(), let directory, project == show.snapshot.project.id else { return }
+        guard !busy, show.canControl(), let directory, project == show.snapshot.project.id else { return }
         let tracks = show.current?.tracks.filter { $0.kind == .standard && armed.contains($0.id) } ?? []
         #if os(iOS)
         guard !tracks.isEmpty, tracks.allSatisfy({ $0.recordingMode != .midi }) else {
@@ -673,7 +673,7 @@ private final class CaptureWriter: @unchecked Sendable {
         Task {
             do {
                 if !audioTracks.isEmpty { try await startAudioCapture(tracks: audioTracks) }
-                guard self.project == show.snapshot.project.id, show.canExecute() else { busy = false; return }
+                guard self.project == show.snapshot.project.id, show.canControl() else { busy = false; return }
                 startPosition = show.snapshot.transport.playing ? show.snapshot.transport.position : show.snapshot.transport.editPosition ?? show.snapshot.transport.position
                 midiStartTime = ProcessInfo.processInfo.systemUptime
                 recordingSong = show.snapshot.transport.songId
@@ -707,7 +707,7 @@ private final class CaptureWriter: @unchecked Sendable {
         do {
             let writer = try await Task.detached(priority: .userInitiated) { try CaptureWriter(targets: targets, directory: directory, format: format, ring: ring) }.value
             do {
-                guard project == requestedProject, project == show.snapshot.project.id, show.canExecute(), !wasRecording || recording else {
+                guard project == requestedProject, project == show.snapshot.project.id, show.canControl(), !wasRecording || recording else {
                     throw ProjectError.invalid("The destination project is no longer available.")
                 }
                 // Creating files yields to the main actor. The selected input or

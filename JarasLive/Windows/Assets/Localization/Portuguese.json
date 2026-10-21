@@ -1319,5 +1319,6 @@
   "bar": "compasso",
   "bars": "compassos",
   "Config Init": "Config Init",
-  "Initial playback": "Reprodução inicial"
+  "Initial playback": "Reprodução inicial",
+  "Overlapping item ignored on this special-track layer. The rest of the project was imported.": "Item sobreposto ignorado nesta camada da pista especial. O restante do projeto foi importado."
 }

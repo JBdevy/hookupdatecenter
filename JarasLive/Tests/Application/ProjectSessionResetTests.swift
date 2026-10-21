@@ -4,8 +4,13 @@ import XCTest
 @MainActor private final class SessionResetExecutor: CommandExecutor {
     var project = Project.empty(name: "Session")
     var transport = TransportState(playing: false, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
+    var syncMixer: ProjectSyncMixer?
+    func applyProjectSync(_ data: Data, elapsed: Double, first: Bool) throws -> PlaybackSnapshot {
+        PlaybackSnapshot(transport: transport, syncMixer: syncMixer)
+    }
     var rejectLoad = false
     var commands: [ShowCommand] = []
+    func setProjectSyncID(_ id: UUID) { if project.projectSyncID == nil { project.projectSyncID = id } }
     func load(_ project: Project) throws {
         if rejectLoad { throw ProjectError.invalid("Injected load failure") }
         self.project = project
@@ -62,6 +67,37 @@ final class ProjectSessionResetTests: XCTestCase {
     @MainActor private func replace(_ show: ShowController, with project: Project, importing: Bool) throws {
         if importing { try show.importProject(ProjectDocumentCodec.encode(project)) }
         else { try show.replaceProject(project) }
+    }
+
+    @MainActor func testProjectSyncUpdatesSelectionAndMixerWithoutRequeueingOrReloadingAudio() throws {
+        let project = project(), executor = SessionResetExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let track = project.songs[0].tracks[0].id, region = project.songs[0].parts[0].id
+        executor.syncMixer = ProjectSyncMixer(masterVolume: 0.6, masterPan: -0.25, masterMute: true, masterSolo: true,
+            tracks: [.init(id: track, volume: 0.3, pan: 0.5, mute: true, solo: true)])
+        var volumes: [Double] = [], pans: [Double] = [], mutes: [Bool] = [], solos: [Bool] = []
+        show.audioVolume = { _, value in volumes.append(value) }
+        show.audioPan = { _, value in pans.append(value) }
+        show.audioMute = { _, value in mutes.append(value) }
+        show.audioSolo = { _, value in solos.append(value) }
+        let before = show.setlistFocusRequest
+        try show.applyProjectSync(Data(), elapsed: 0, first: true, focused: region)
+        XCTAssertEqual(show.focusedRegion, region)
+        XCTAssertNotEqual(show.setlistFocusRequest, before)
+        XCTAssertEqual(show.snapshot.project.masterVolume, 0.6)
+        XCTAssertEqual(show.snapshot.project.songs[0].tracks[0].volume, 0.3)
+        XCTAssertEqual(show.snapshot.project.songs[0].tracks[0].pan, 0.5)
+        XCTAssertTrue(show.snapshot.project.songs[0].tracks[0].mute)
+        XCTAssertTrue(show.snapshot.project.songs[0].tracks[0].solo)
+        XCTAssertEqual(volumes, [0.6, 0.3]); XCTAssertEqual(pans, [0.5])
+        XCTAssertEqual(mutes, [true, true]); XCTAssertEqual(solos, [true])
+        let selected = show.setlistFocusRequest
+        try show.applyProjectSync(Data(), elapsed: 0, first: false, focused: region)
+        XCTAssertEqual(show.setlistFocusRequest, selected)
+        XCTAssertEqual(volumes, [0.6, 0.3]); XCTAssertEqual(pans, [0.5])
+        XCTAssertTrue(executor.commands.isEmpty, "Replicated focus must not select/queue the song again")
+        try show.applyProjectSync(Data(), elapsed: 0, first: false, focused: nil)
+        XCTAssertNil(show.focusedRegion)
     }
 
     @MainActor func testReloadAndImportSameIDsClearSelectionGesturesAndPendingUI() throws {
@@ -148,10 +184,11 @@ final class ProjectSessionResetTests: XCTestCase {
         show.modalNotice = "Current notice"
         try await show.flushProject()
         let saved = show.lastSavedAt
+        let savedProject = show.snapshot.project
         XCTAssertNotNil(saved)
         executor.rejectLoad = true
         XCTAssertThrowsError(try show.replaceProject(.empty(name: "Rejected")))
-        XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertEqual(show.snapshot.project, savedProject)
         XCTAssertEqual(show.lastSavedAt, saved)
         XCTAssertEqual(show.modalNotice, "Current notice")
         XCTAssertEqual(show.mixerTrackSelection, [project.songs[0].tracks[0].id])

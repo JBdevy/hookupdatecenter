@@ -488,6 +488,10 @@ private final class FloatingStartupAnchor: NSView {
         NSWindow.allowsAutomaticWindowTabbing = false
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if ProjectSyncControl.following {
+            DesktopProjectTabs.shared.active?.documents.closeNotice = "Project Sync: o PC B está seguindo o PC A. Desative a sincronização antes de encerrar."
+            return .terminateCancel
+        }
         let guardClose = ProjectCloseGuard.shared
         guard !guardClose.pending else { guardClose.focusCurrentDialog(); return .terminateCancel }
         guard guardClose.attached else { return .terminateNow }

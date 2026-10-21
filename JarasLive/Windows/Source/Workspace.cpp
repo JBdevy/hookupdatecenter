@@ -1183,10 +1183,11 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
                 g.setColour(Colours::white.withAlpha(.65f));
                 g.drawRect((float)indent + .5f, .5f, (float)getWidth() - indent - 1, (float)body - 2, 1.f);
             }
+            const float meterInset=body>=64?4.f:2.f;
+            const auto levels = w.session.audio.meterLevels(id);
+            for (int ch = 0; ch < 2; ++ch)
+                meterDisplay::bar(g, {(float)indent + 2 + ch * 6.f, meterInset, 5, std::max(0.f,(float)body - 2*meterInset)}, levels[(size_t)ch]);
             if (body >= 64) {
-                const auto levels = w.session.audio.meterLevels(id);
-                for (int ch = 0; ch < 2; ++ch)
-                    meterDisplay::bar(g, {(float)indent + 2 + ch * 6.f, 4, 5, (float)body - 8}, levels[(size_t)ch]);
                 g.setColour(Colours::black.withAlpha(.38f));
                 g.fillRect(indent + 14, 4, 4, body - 8);
             }
@@ -1196,7 +1197,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             if (const auto *song = w.session.song())
                 number = String((int)trackTree::index(*song, id) + 1).paddedLeft('0', 2) + "  ";
             const bool expanded = body >= 64;
-            const int titleX = indent + (expanded ? 22 : 4);
+            const int titleX = indent + (expanded ? 22 : 16);
             const bool textTrack=jaras::isTeleprompterRole(t->role)||t->role.id=="chords";
             const int titleY = expanded ? (textTrack?3:47) : std::max(0, (body - 21) / 2);
             const int titleRight = expanded&&!textTrack ? getWidth()-40 : textTrack&&special ? special->getX()-4 : expanded ? getWidth()-4 : (jaras::fixedTrackName(t->role).empty()?output.getX()-4:special?special->getX()-4:getWidth()-4);
@@ -3789,6 +3790,9 @@ void Workspace::paint(Graphics &g) {
         g.setFont(theme::semiboldFont(10));
         g.drawText("Track-Mixer", tracksViewport.getX(), workspaceBounds.getY() + 15, tracksViewport.getWidth() - 60, 24,
                    Justification::centredLeft);
+        g.setColour(theme::line);
+        g.drawHorizontalLine(workspaceBounds.getY() + timeline->headerHeight() - 1,
+                             (float)tracksViewport.getX(), (float)tracksViewport.getRight());
     }
 }
 void Workspace::resized() {
@@ -6019,7 +6023,12 @@ void Workspace::openTPRemote(int index) {
     ModalSheet::open(*this,"TP "+String(index)+String::fromUTF8(" · TP Remoto"),std::make_unique<TeleprompterRemotePanel>(*teleprompterHTTP[(size_t)(index-1)],index),420,408);
 }
 void Workspace::openRemote() {
-    ModalSheet::open(*this, "Remote", std::make_unique<RemotePanel>(*remoteHost, [this] { toggleRemote(); }), 440, 548);
+    auto panel=std::make_unique<RemotePopover>(*remoteHost,[safe=SafePointer<Workspace>(this)]{if(safe)safe->toggleRemote();});
+    auto *button=controls["remote"];
+    const auto anchor=button?button->getScreenBounds():getScreenBounds().withSizeKeepingCentre(1,1);
+    const auto *display=Desktop::getInstance().getDisplays().getDisplayForRect(anchor);
+    panel->setSize(440,display?jlimit(280,820,display->userArea.getHeight()-100):650);
+    CallOutBox::launchAsynchronously(std::move(panel),anchor,nullptr);
 }
 void Workspace::openAutomation(ID id) {
     String name = "Master";
@@ -6061,6 +6070,7 @@ void Workspace::openTimer(bool settings) {
               std::make_unique<StageTimerSettings>(stage), 380, 348);
 }
 void Workspace::requestClose(std::function<void()> done, bool application) {
+    if(jaras::projectSync::readOnly()) return;
     if (isCurrentlyBlockedByAnotherModalComponent()) {
         ModalComponentManager::getInstance()->bringModalComponentsToFront();
         return;
@@ -6610,6 +6620,7 @@ void Workspace::chooseExport() {
         860, 510);
 }
 void Workspace::openFX(ID track, String preferredEffect) {
+    if(jaras::projectSync::readOnly()) return;
     std::vector<ID> targets;
     if (trackSelected(track))
         if (const auto *song = session.song())
@@ -6638,6 +6649,7 @@ void Workspace::openFX(ID track, String preferredEffect) {
     if (editor && preferredEffect.isNotEmpty()) editor->selectEffect(preferredEffect);
 }
 void Workspace::openItemFX(ID id) {
+    if(jaras::projectSync::readOnly()) return;
     String name;
     if (const auto *song=session.song()) for(const auto &track:song->tracks) for(const auto &clip:track.clips)
         if(clip.id==id) name=text(clip.name);

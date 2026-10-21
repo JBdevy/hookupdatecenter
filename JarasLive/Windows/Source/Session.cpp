@@ -70,6 +70,8 @@ void Session::notify() {
         changed();
 }
 void Session::newProject(String name) {
+    if(jaras::projectSync::readOnly() && (transport().playing || transport().subPlay.playing)) return;
+    jaras::projectSync::Internal initialProject;
     if (busy)
         return;
     if (audio.isRecording())
@@ -359,6 +361,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
             // Validate and establish the saved selection on an isolated core.
             // No encode/snapshot of the live project's opaque FX states is needed.
             const auto savedCursor=incoming.savedCursor;
+            jaras::projectSync::Internal preparingSavedProject;
             prepared->core.loadProject(std::move(incoming));
             if(multiLoopsBypassed)prepared->core.execute({jaras::CommandKind::toggleMultiLoopBypass});
             const auto &project=prepared->core.project();
@@ -474,6 +477,7 @@ var Session::snapshot() const {
     return ProjectCodec::encode(p, original);
 }
 void Session::save(const File &file) {
+    jaras::projectSync::requireWritable();
     if (audio.isRecording())
         throw std::runtime_error("Conclua a gravação antes de salvar o projeto.");
     if (busy)
@@ -486,6 +490,7 @@ void Session::save(const File &file) {
         if (other != target)
             throw std::runtime_error("Escolha uma pasta separada para cada projeto CatLive.");
     auto p = project();
+    if (!p.projectSyncID) p.projectSyncID = utf8(Uuid().toDashedString().toUpperCase());
     if (transport().songId)
         p.savedCursor = jaras::SavedProjectCursor{*transport().songId, transport().editPosition};
     // The same media set as the Mac Project.mediaPaths policy, including legacy
@@ -677,6 +682,7 @@ void Session::warnTransportFadeout(String warning) {
     else message = warning;
 }
 void Session::toggleTransportFadeout(bool enabled, const std::set<ID> &tracks, double seconds) {
+    if (jaras::projectSync::readOnly()) return;
     if (fadeoutRequested) { cancelTransportFadeout(); return; }
     if (!enabled) { warnTransportFadeout("Ative Fadeout no clique direito do Play."); return; }
     if (transport().subPlay.playing) { warnTransportFadeout("Pare o Subplay antes de iniciar o Fadeout."); return; }
@@ -726,8 +732,10 @@ std::optional<std::pair<double,double>> Session::selectedTimeRange() const {
     if (!timeSelection || timeSelection->project != project().id || !song() || timeSelection->song != song()->id) return {};
     return std::pair<double,double>{timeSelection->start,timeSelection->end};
 }
-void Session::clearTimeRange() { timeSelection.reset(); }
+void Session::clearTimeRange() {
+    if (jaras::projectSync::readOnly()) return; timeSelection.reset(); }
 void Session::selectTimeRange(double from, double to) {
+    if (jaras::projectSync::readOnly()) return;
     if (busy || !song() || !std::isfinite(from) || !std::isfinite(to)) return;
     if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de alterar a área de loop.");
     const double start=std::max(0.,std::min(from,to)), end=std::max(0.,std::max(from,to));
@@ -741,6 +749,7 @@ void Session::selectTimeRange(double from, double to) {
     }
 }
 void Session::command(jaras::CommandKind kind, const ID &target, double value) {
+    if (jaras::projectSync::readOnly()) return;
     if (fadeoutRequested && kind == jaras::CommandKind::subPlay) {
         warnTransportFadeout(String::fromUTF8("Subplay indisponível enquanto o Fadeout está acontecendo.")); return;
     }
@@ -873,6 +882,7 @@ void Session::setRecordingSelection(const ID &id, const std::set<ID> &targets) {
     updateRecordArms();
 }
 void Session::cycleRecordArm(const ID &id, const std::set<ID> &targets) {
+    if (jaras::projectSync::readOnly()) return;
     if (audio.isRecording())
         throw std::runtime_error("Conclua a gravação antes de alterar as pistas armadas.");
     const int next = (recordArm(id) + 1) % 3;
@@ -884,6 +894,7 @@ void Session::cycleRecordArm(const ID &id, const std::set<ID> &targets) {
     }
 }
 void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set<ID> &selection, double value) {
+    if (jaras::projectSync::readOnly()) return;
     if (busy || !song()) return;
     const auto tracks = mixerGestureSource == id && mixerGestureProject == project().id && mixerGestureKind == kind ? mixerGestureTracks : song()->tracks;
     const auto source = std::find_if(tracks.begin(), tracks.end(), [&](const auto &t) { return t.id == id; });
@@ -910,6 +921,7 @@ void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set
     dirty = true; audio.setMixer(project(), *song()); notify();
 }
 void Session::toggleRecording() {
+    if (jaras::projectSync::readOnly()) return;
     if (audio.isRecording()) {
         auto takes = audio.stopTrackRecording();
         core.execute({jaras::CommandKind::stopAll});
@@ -1168,6 +1180,7 @@ void Session::detectRegionBPM(std::set<ID> ids) {
     });
 }
 void Session::configureSetlist(jaras::RegionSetlist state) {
+    if (jaras::projectSync::readOnly()) return;
     if (busy)
         return;
     syncClock();
@@ -1191,6 +1204,7 @@ std::vector<ID> Session::duplicateTracks(const std::set<ID> &targets) {
     return result.trackIDs;
 }
 void Session::resizeItem(const ID &id, double start, double end) {
+    if (jaras::projectSync::readOnly()) return;
     if (busy || !song()) return;
     if (audio.isRecording())
         throw std::runtime_error("Conclua a gravação antes de alterar a estrutura do projeto.");
@@ -1244,6 +1258,7 @@ void Session::commitItemTiming(jaras::Project project, const ID &id, bool record
     notify();
 }
 void Session::edit(const std::function<void(jaras::Project &)> &change, bool rebuild, bool allowTimingEdit) {
+    if (jaras::projectSync::readOnly()) return;
     if (busy)
         return;
     if (rebuild && audio.isRecording())
@@ -1272,6 +1287,7 @@ void Session::edit(const std::function<void(jaras::Project &)> &change, bool reb
     notify();
 }
 void Session::configureEffects(const ID &id, const var &settings) {
+    if (jaras::projectSync::readOnly()) return;
     configureEffects(std::map<ID, var>{{id, settings}});
 }
 std::map<ID, var> Session::currentEffects(const std::map<ID, var> &targets) const {
@@ -1288,6 +1304,7 @@ std::map<ID, var> Session::currentEffects(const std::map<ID, var> &targets) cons
     return result;
 }
 void Session::configureEffects(const std::map<ID, var> &changes) {
+    if (jaras::projectSync::readOnly()) return;
     auto live=changes;
     for(auto &[id,settings]:live){settings=settings.clone();audio.captureExternalEffects(id,settings);}
     applyEffects(live, true);
@@ -1416,6 +1433,7 @@ void Session::setMeter(int beats, int unit) {
     redoHistory.clear(); dirty = true; message.clear(); notify();
 }
 void Session::setTempo(double value) {
+    if (jaras::projectSync::readOnly()) return;
     if (busy || !song() || !std::isfinite(value)) return;
     if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de alterar o andamento.");
     syncClock();
@@ -1447,6 +1465,7 @@ void Session::setTempo(double value) {
 }
 void Session::configureTiming(double bpm, int beats, int unit,
                               jaras::ProjectTimeSettings settings) {
+    if (jaras::projectSync::readOnly()) return;
     if (busy || audio.isRecording())
         throw std::runtime_error("Conclua a gravação antes de alterar o tempo do projeto.");
     auto before = snapshot();
@@ -1470,6 +1489,7 @@ void Session::restoreSnapshot(const var &raw) {
     notify();
 }
 void Session::undo() {
+    if (jaras::projectSync::readOnly()) return;
     if (!canUndo() || busy)
         return;
     if (audio.isRecording())
@@ -1486,6 +1506,7 @@ void Session::undo() {
     else restoreSnapshot(value.project);
 }
 void Session::redo() {
+    if (jaras::projectSync::readOnly()) return;
     if (!canRedo() || busy)
         return;
     if (audio.isRecording())
@@ -1877,3 +1898,28 @@ void Session::makeInspectionProject(bool withAudioFixture) {
     notify();
 }
 } // namespace catlive
+
+namespace catlive {
+void Session::applyProjectSync(const jaras::projectSync::Frame &frame, double elapsed, bool first, std::optional<ID> focused) {
+    if(canPlay && !canPlay()) throw std::runtime_error("Project Sync: playback access is unavailable.");
+    syncClock();
+    const auto oldSong=transport().songId;
+    const auto oldRegion=transport().regionId;
+    bool mixerChanged=false;
+    const bool changed=core.applyProjectSync(frame, elapsed, first, &mixerChanged);
+    if(mixerChanged) {dirty=true;if(song())audio.setMixer(project(),*song());}
+    if(focused && (!song() || !std::any_of(song()->parts.begin(),song()->parts.end(),[&](const auto &part){return part.id==*focused;}))) focused.reset();
+    const bool focusChanged=focusedRegion!=focused;
+    if(focusChanged) {focusedRegion=focused;++setlistFocusRevision;}
+    if(changed) {
+        if(oldSong!=transport().songId) { prepare(); }
+        publishTransport();
+    }
+    if(oldSong!=transport().songId || oldRegion!=transport().regionId) {
+        if(selectionChanged) selectionChanged();
+    }
+    if(mixerChanged || focusChanged || first) notify();
+    if(playbackUpdate) playbackUpdate(transport());
+    if(tick) tick();
+}
+}

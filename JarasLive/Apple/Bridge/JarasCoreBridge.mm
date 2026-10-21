@@ -327,6 +327,7 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
     NSMutableDictionary* result=[@{@"id":text(p.id),@"name":text(p.name),@"projectFormatVersion":@(p.projectFormatVersion),@"minimumJarasVersion":text(p.minimumJarasVersion),@"createdAt":text(p.createdAt),@"updatedAt":text(p.updatedAt),@"songs":songs,@"setlists":setlists} mutableCopy];
     if(p.timelineMovementLocked) result[@"timelineMovementLocked"]=@(*p.timelineMovementLocked);
     if(p.savedCursor) result[@"savedCursor"]=@{@"songID":text(p.savedCursor->songID), @"position":@(p.savedCursor->position)};
+    if(p.projectSyncID) result[@"projectSyncID"]=text(*p.projectSyncID);
     if(p.masterPan != 0) result[@"masterPan"]=@(p.masterPan);
     if(p.masterVolume != 1) result[@"masterVolume"]=@(p.masterVolume);
     if(p.masterMute) result[@"masterMute"]=@YES;
@@ -375,6 +376,7 @@ static Track readTrack(NSDictionary* td) {
 }
 static Project readProject(NSDictionary* d) {
     Project p; p.id=str(d[@"id"]); p.name=str(d[@"name"]); p.projectFormatVersion=number(d[@"projectFormatVersion"]); p.minimumJarasVersion=str(d[@"minimumJarasVersion"]); p.createdAt=str(d[@"createdAt"]); p.updatedAt=str(d[@"updatedAt"]);
+    if(d[@"projectSyncID"] && d[@"projectSyncID"] != NSNull.null) p.projectSyncID=str(d[@"projectSyncID"]);
     if(d[@"timelineMovementLocked"] && d[@"timelineMovementLocked"] != NSNull.null) p.timelineMovementLocked=number(d[@"timelineMovementLocked"])!=0;
     if(d[@"savedCursor"] && d[@"savedCursor"] != NSNull.null) {
         NSDictionary* cursor=object(d[@"savedCursor"]);
@@ -462,6 +464,32 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
 - (BOOL)loadProjectData:(NSData*)data error:(NSError**)error {
     id decoded=[NSJSONSerialization JSONObjectWithData:data options:0 error:error]; if (!decoded) return NO;
     try { _engine->loadProject(readProject(object(decoded))); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
+}
++ (void)setProjectSyncFollowing:(BOOL)following { projectSync::following=following; }
+- (void)setProjectSyncID:(NSString*)identifier { _engine->setProjectSyncID(str(identifier)); }
+- (NSData*)projectSyncFrameWithError:(NSError**)error {
+    try { auto bytes=projectSync::encode(_engine->projectSyncFrame()); return [NSData dataWithBytes:bytes.data() length:bytes.size()]; }
+    catch(const std::exception& e) { report(error,e); return nil; }
+}
+- (NSData*)applyProjectSyncData:(NSData*)data elapsed:(double)elapsed first:(BOOL)first error:(NSError**)error {
+    try {
+        auto frame=projectSync::decode(data.bytes,data.length);
+        bool mixerChanged=false;
+        _engine->applyProjectSync(frame,elapsed,first,&mixerChanged);
+        NSData* playback=[self playbackSnapshotWithError:error]; if(!playback) return nil;
+        NSMutableDictionary* result=[[NSJSONSerialization JSONObjectWithData:playback options:0 error:error] mutableCopy];
+        if(frame.setlist) result[@"syncSetlist"]=regionSetlistJSON(*frame.setlist);
+        if(mixerChanged || first) {
+            const auto &m=frame.mixer; NSMutableArray *tracks=[NSMutableArray array];
+            for(const auto &t:m.tracks) [tracks addObject:@{@"id":text(t.id),@"volume":@(t.volume),@"pan":@(t.pan),@"mute":@(t.mute),@"solo":@(t.solo)}];
+            result[@"syncMixer"]=@{@"masterVolume":@(m.masterVolume),@"masterPan":@(m.masterPan),@"masterMute":@(m.masterMute),@"masterSolo":@(m.masterSolo),@"tracks":tracks};
+        }
+        return [NSJSONSerialization dataWithJSONObject:result options:0 error:error];
+    } catch(const std::exception& e) { report(error,e); return nil; }
+}
+- (BOOL)executeAutomation:(NSString*)command target:(NSString*)target value:(double)value error:(NSError**)error {
+    projectSync::Internal internal;
+    return [self executeCommand:command target:target value:value error:error];
 }
 - (BOOL)executeCommand:(NSString*)command target:(NSString*)target value:(double)value error:(NSError**)error {
     static const std::map<std::string,CommandKind> commands={{"toggleMultiLoopBypass",CommandKind::toggleMultiLoopBypass},{"queueSection",CommandKind::queueSection},{"cancelSection",CommandKind::cancelSection},{"clipFadeIn",CommandKind::clipFadeIn},{"clipFadeOut",CommandKind::clipFadeOut},{"clipFadeInCurve",CommandKind::clipFadeInCurve},{"clipFadeInSCurve",CommandKind::clipFadeInSCurve},{"clipFadeOutCurve",CommandKind::clipFadeOutCurve},{"clipFadeOutSCurve",CommandKind::clipFadeOutSCurve},{"phase",CommandKind::phase},{"loopStart",CommandKind::loopStart},{"loopEnd",CommandKind::loopEnd},{"escape",CommandKind::escape},{"masterMono",CommandKind::masterMono},{"ignoreNext",CommandKind::ignoreNext},{"tempo",CommandKind::tempo},{"beatsPerBar",CommandKind::beatsPerBar},{"beatUnit",CommandKind::beatUnit},{"selectRegion",CommandKind::selectRegion},{"queueRegion",CommandKind::queueRegion},{"clipMute",CommandKind::clipMute},{"clipGain",CommandKind::clipGain},{"clipPhase",CommandKind::clipPhase},{"clipPan",CommandKind::clipPan},{"clipChannelMode",CommandKind::clipChannelMode},{"clipNormalization",CommandKind::clipNormalization},{"clipPitch",CommandKind::clipPitch},{"pause",CommandKind::pause},{"play",CommandKind::play},{"stop",CommandKind::stop},{"next",CommandKind::next},{"previous",CommandKind::previous},{"queue",CommandKind::queue},{"select",CommandKind::select},{"toggleLoop",CommandKind::toggleLoop},{"seek",CommandKind::seek},{"editSeek",CommandKind::editSeek},{"subPlay",CommandKind::subPlay},{"subStop",CommandKind::subStop},{"subSeek",CommandKind::subSeek},{"stopAll",CommandKind::stopAll},{"volume",CommandKind::volume},{"pan",CommandKind::pan},{"mute",CommandKind::mute},{"solo",CommandKind::solo}};

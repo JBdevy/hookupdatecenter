@@ -75,25 +75,47 @@ struct GridSelectionItem {
         guard editable, x + width + 2 <= headerRect.maxX else { return nil }
         return CGRect(x: x, y: rect.minY, width: width, height: min(Self.headerHeight, rect.height))
     }
+    var headerNameWidth: CGFloat? = nil
+    private var preferredNameWidth: CGFloat {
+        if let headerNameWidth { return headerNameWidth }
+        guard let name else { return 24 }
+        #if os(macOS)
+        return GridSelectionHeaderText.title(name).width
+        #else
+        return (name as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: Self.headerFontSize, weight: .semibold)]).width
+        #endif
+    }
+    // Reserve the complete name before revealing additional controls.
+    // At the tightest widths only M survives; the gain readout yields before its knob.
+    private var headerDetail: Int {
+        var required = 2 * Self.headerScale + 2 + 17 * Self.headerScale + 1 + max(24, ceil(preferredNameWidth)) + 8
+        required += 15 * Self.headerScale + Self.readoutGap + Self.readoutWidth(gainLabel) + 1
+        guard headerRect.width >= required else { return 0 }
+        if !midiEditable || hasFX { required += 20 * Self.headerScale + 1 }
+        guard headerRect.width >= required else { return 1 }
+        if !midiEditable { required += 15 * Self.headerScale + 1 }
+        guard headerRect.width >= required else { return 2 }
+        if !midiEditable { required += 15 * Self.headerScale + Self.readoutGap + Self.readoutWidth(panLabel) + 1 }
+        return headerRect.width >= required ? 4 : 3
+    }
     var gainKnobMinimumWidth: CGFloat { 21 * Self.headerScale }
     var gainKnobRect: CGRect? {
-        guard headerRect.width >= gainKnobMinimumWidth else { return nil }
+        guard headerRect.width >= 2 * Self.headerScale + 17 * Self.headerScale + 1 + 15 * Self.headerScale + 1 + max(24, ceil(preferredNameWidth)) + 8 else { return nil }
         return controlRect(x: controlStart, width: 15 * Self.headerScale)
     }
     var muteRect: CGRect? {
-        guard let value = gainLabelRect else { return nil }
-        return controlRect(x: value.maxX + 1, width: 17 * Self.headerScale)
+        return controlRect(x: gainLabelRect.map { $0.maxX + 1 } ?? gainKnobRect.map { $0.maxX + 1 } ?? controlStart, width: 17 * Self.headerScale)
     }
     var fxRect: CGRect? {
-        guard !midiEditable || hasFX, let mute = muteRect else { return nil }
+        guard headerDetail >= 2, !midiEditable || hasFX, let mute = muteRect else { return nil }
         return controlRect(x: mute.maxX + 1, width: 20 * Self.headerScale)
     }
     var phaseRect: CGRect? {
-        guard !midiEditable, let fx = fxRect else { return nil }
+        guard headerDetail >= 3, !midiEditable, let fx = fxRect else { return nil }
         return controlRect(x: fx.maxX + 1, width: 15 * Self.headerScale)
     }
     var panKnobRect: CGRect? {
-        guard let phase = phaseRect else { return nil }
+        guard headerDetail >= 4, let phase = phaseRect else { return nil }
         return controlRect(x: phase.maxX + 1, width: 15 * Self.headerScale)
     }
     var panLabel: String {
@@ -110,13 +132,14 @@ struct GridSelectionItem {
     var gainLabel: String { gain <= 0 ? "−∞ dB" : String(format: "%+.1f dB", 20 * log10(gain)) }
     var gainLabelRect: CGRect? { gainLabelRect(text: nil) }
     func gainLabelRect(text: String?) -> CGRect? {
-        guard let knob = gainKnobRect else { return nil }
+        guard headerDetail >= 1, let knob = gainKnobRect else { return nil }
         return controlRect(x: knob.maxX + Self.readoutGap, width: Self.readoutWidth(text ?? gainLabel))
     }
 
     var editRect: CGRect? { textEditable && headerRect.width >= 33 * Self.headerScale ? CGRect(x: controlStart, y: rect.minY, width: 30 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
     var titleInset: CGFloat { headerTitleInset(gainLabel: nil) }
     func headerTitleInset(gainLabel: String?) -> CGFloat {
+        if editable && muteRect == nil { return headerRect.width }
         let controls = [gainKnobRect, gainLabelRect(text: gainLabel), muteRect, fxRect, phaseRect, panKnobRect, panLabelRect, editRect]
         guard let rightEdge = controls.compactMap({ $0?.maxX }).max() else { return 2 }
         return rightEdge - headerRect.minX + 1
@@ -124,10 +147,11 @@ struct GridSelectionItem {
 
     func visibleLeftHeader(in viewport: CGRect, titleWidth: CGFloat, gainLabel: String? = nil) -> Self {
         var item = self
+        item.headerNameWidth = titleWidth
         let left = max(rect.minX, viewport.minX), right = min(rect.maxX, viewport.maxX)
         let visibleWidth = max(0, right - left)
         item.visibleHeader = CGRect(x: left, y: rect.minY, width: visibleWidth, height: min(Self.headerHeight, rect.height))
-        let width = min(visibleWidth, item.headerTitleInset(gainLabel: gainLabel) + titleWidth + 12 * Self.headerScale)
+        let width = min(visibleWidth, item.headerTitleInset(gainLabel: gainLabel) + max(24, titleWidth) + 12 * Self.headerScale)
         item.visibleHeader = CGRect(x: left, y: rect.minY, width: width, height: min(Self.headerHeight, rect.height))
         return item
     }

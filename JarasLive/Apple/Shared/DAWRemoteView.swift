@@ -11,6 +11,9 @@ struct DAWRemoteHostView: View {
     @State private var noticesPIN = ""
     @State private var noticesSaved = false
     var body: some View {
+        ScrollView { hostContent }.frame(width: 420).frame(maxHeight: 720)
+    }
+    private var hostContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(verbatim: "Remote").font(.jarasHeadline)
             #if os(macOS)
@@ -47,6 +50,10 @@ struct DAWRemoteHostView: View {
             Button("Salvar senha de Recados") { noticesSaved = remote.setNoticesPIN(noticesPIN) }
                 .disabled(!noticesPIN.isEmpty && noticesPIN.count != 4)
             if noticesSaved { Text("Configuração salva.").font(.jarasCaption).foregroundStyle(JarasTheme.green) }
+            #if os(macOS)
+            Divider()
+            ProjectSyncPanel()
+            #endif
             if remote.enabled { Button("Disable Remote") { remote.setHostEnabled(false) } }
         }.padding(20).frame(maxWidth: 420).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear { pin = remote.savedDirectorPIN; noticesPIN = remote.savedNoticesPIN }
@@ -482,8 +489,8 @@ struct DAWRemoteClientView: View {
                 pitchRegion: show.pitchRegion?.id, pitchSemitones: show.pitchRegion?.semitones,
                 setlistFontStyle: UserDefaults.standard.integer(forKey: "jaras.setlist.fontStyle"),
                 prepareOnly: show.regionSetlist.preparesWithoutPlayback,
-                masterColor: snapshot.project.masterColor ?? 0xffdc52,
-                masterNameColor: JarasTheme.masterNameHex(snapshot.project.masterColor ?? 0xffdc52),
+                masterColor: snapshot.project.masterColor ?? 0x414141,
+                masterNameColor: JarasTheme.masterNameHex(snapshot.project.masterColor ?? 0x414141),
                 regionAuto: show.regionSetlist.autoAdvance, queueStartedAt: transport.queueStartedAt,
                 playbackEnd: transport.ignoreNextEnd ?? song?.parts.first(where: { $0.id == transport.regionId })?.endTime,
                 projectSavedAt: show.lastSavedAt ?? snapshot.project.updatedAt, footerInformation: information,

@@ -269,6 +269,7 @@ import Combine
         }
     }
     private func open(show: ShowController, target key: WindowKey, preferredEffect: String? = nil) {
+        guard !ProjectSyncControl.following else { return }
         guard targetExists(key, in: show) else { return }
         if self.show !== show {
             closeAll(); self.show = show

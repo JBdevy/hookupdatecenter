@@ -3,10 +3,12 @@
 #include "RemoteTransport.h"
 #include "RemoteDiscovery.h"
 #include "Appearance.h"
+#include "ProjectSync.h"
 namespace catlive::remote {
 class Host final : private Timer {
   public:
-    explicit Host(Appearance &value) : preferences(value) {}
+    explicit Host(Appearance &value) : sync(value), preferences(value) {}
+    ProjectSync sync;
     ~Host() override { stop(); }
     std::function<var(int)> presentation;
     std::function<bool(const Command &)> perform;
@@ -32,12 +34,14 @@ class Host final : private Timer {
                 discovery.start(name, port);
             advertising = discover;
             startTimerHz(30);
+            if (discover) sync.start();
         } catch (...) {
             stop();
             throw;
         }
     }
     void stop() {
+        sync.stop();
         stopTimer();
         discovery.stop();
         transport.stop();

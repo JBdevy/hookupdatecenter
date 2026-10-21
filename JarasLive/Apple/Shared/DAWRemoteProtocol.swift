@@ -6,13 +6,17 @@ enum DAWRemoteWire {
     static let service = "jaras-live"
     static let version: UInt8 = 2
     static let maximumPacket = 2 * 1024 * 1024
-    enum Packet { case command(DAWRemoteCommand), state(DAWRemoteState), acknowledge(UInt64), noticeReceipt(DAWRemoteNoticeReceipt), imageAsset(DAWRemoteImageAsset), accessRequest(DAWRemoteAccessRequest), accessStatus(DAWRemoteAccessStatus) }
+    enum Packet { case projectSync(Data), command(DAWRemoteCommand), state(DAWRemoteState), acknowledge(UInt64), noticeReceipt(DAWRemoteNoticeReceipt), imageAsset(DAWRemoteImageAsset), accessRequest(DAWRemoteAccessRequest), accessStatus(DAWRemoteAccessStatus) }
     enum Failure: Error { case invalid }
     private static func encode<T: Encodable>(_ value: T, kind: UInt8) throws -> Data {
         var data = Data([0x4a, 0x4c, version, kind])
         data.append(try JSONEncoder().encode(value))
         guard data.count <= maximumPacket else { throw Failure.invalid }
         return data
+    }
+    static func projectSync(_ payload: Data) throws -> Data {
+        guard payload.count <= 524288 else { throw Failure.invalid }
+        return Data([0x4a, 0x4c, version, 8]) + payload
     }
     static func command(_ value: DAWRemoteCommand) throws -> Data {
         guard value.valid else { throw Failure.invalid }
@@ -67,6 +71,8 @@ enum DAWRemoteWire {
         case 6:
             guard data.count <= 1024 else { throw Failure.invalid }
             return .accessStatus(try decoder.decode(DAWRemoteAccessStatus.self, from: payload))
+        case 8:
+            guard data.count <= 524292 else { throw Failure.invalid }; return .projectSync(Data(payload))
         case 7:
             guard data.count <= 256 else { throw Failure.invalid }
             return .noticeReceipt(try decoder.decode(DAWRemoteNoticeReceipt.self, from: payload))

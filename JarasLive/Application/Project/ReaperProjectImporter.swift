@@ -712,6 +712,25 @@ public enum ReaperProjectImporter {
                         clip.startTime < other.startTime + other.duration - 0.0000001 && clip.startTime + clip.duration > other.startTime + 0.0000001
                     }
                 }
+                // REAPER permits overlaps even between distinct items, not only
+                // alternate takes. Recover each supported projection layer in
+                // timeline order, without moving or trimming accepted content.
+                // Equal starts keep source order; text and media remain independent.
+                let order = track.clips.indices.sorted {
+                    track.clips[$0].startTime == track.clips[$1].startTime ? $0 < $1 :
+                        track.clips[$0].startTime < track.clips[$1].startTime
+                }
+                var ends = [-Double.infinity, -Double.infinity]
+                var rejected = Set<Int>()
+                for index in order {
+                    let clip = track.clips[index]
+                    let layer = track.kind.isTeleprompter && clip.isProjectionMedia ? 1 : 0
+                    if ends[layer] > clip.startTime + 0.0000001 {
+                        rejected.insert(index)
+                        warnings.insert("%@: item \"%@\" at %.6f s was ignored because it overlaps another item on the same special-track layer. The rest of the project was imported.", track.name, clip.name, clip.startTime)
+                    } else { ends[layer] = clip.startTime + clip.duration }
+                }
+                track.clips = track.clips.enumerated().compactMap { rejected.contains($0.offset) ? nil : $0.element }
             }
             song.tracks.append(track)
             if delta < 0 { folders.removeLast(-delta) }

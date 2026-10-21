@@ -148,21 +148,22 @@ struct TrackMixerHeightGeometry {
                        lowerTitle: Bool, controlsWidth: CGFloat, folder: Bool = false) -> [CGRect] {
         let p = progress(height)
         func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * p }
-        let bodyX = (max(meterWidth, standard ? 18 : 0) + 4) * p
-        let meterTop: CGFloat = 4
+        let audioWidth = mix(min(10, meterWidth), meterWidth)
+        let bodyX = mix(audioWidth + 4, max(meterWidth, standard ? 18 : 0) + 4)
+        let meterTop: CGFloat = mix(2, 4)
         let bodyWidth = max(0, width - bodyX - 4)
         let centeredY = max(0, (height - 21) / 2)
         // The group action has its own space immediately before Patch.
         // Anchor it to the control row so widening never separates the two.
         let controlsX = max(0, width - controlsWidth - 4)
-        let titleX = mix(4, bodyX)
+        let titleX = bodyX
         let titleY = lowerTitle ? Self.titleY(height) : mix(centeredY, 3)
         let controlsY = mix(centeredY, 3), controlsHeight = mix(21, 24)
         let clear = lowerTitle ? min(1, max(0, (titleY - controlsY - controlsHeight) / 8)) : 0
         let thinWidth = max(0, width - controlsWidth - 8 - titleX)
         let titleWidth = thinWidth + (max(0, width - titleX - 4) - thinWidth) * clear
         return [
-            CGRect(x: 0, y: 4, width: meterWidth * p, height: max(0, height - 8)),
+            CGRect(x: 0, y: meterTop, width: audioWidth, height: max(0, height - meterTop * 2)),
             CGRect(x: 14 * p, y: meterTop, width: standard ? 4 * p : 0, height: max(0, height - meterTop - 4)),
             CGRect(x: titleX, y: titleY, width: titleWidth, height: titleHeight(height)),
             CGRect(x: controlsX, y: controlsY, width: controlsWidth, height: controlsHeight),
@@ -483,9 +484,9 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
     }
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true; autoresizesSubviews = false
+        wantsLayer = true; layer?.masksToBounds = true; autoresizesSubviews = false
         for host in [meter, activity, controls] {
-            host.wantsLayer = true
+            host.wantsLayer = true; host.layer?.masksToBounds = true
             if #available(macOS 13, *) { host.sizingOptions = [] }
             if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
             addSubview(host)
@@ -578,7 +579,10 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
     override func setFrameSize(_ size: NSSize) { super.setFrameSize(size); place() }
     override func setFrameOrigin(_ origin: NSPoint) { super.setFrameOrigin(origin); refreshViewportVisibility() }
     override func layout() { super.layout(); place() }
+    private var placing = false
     func place() {
+        guard !placing else { return }; placing = true
+        defer { placing = false }
         // AppKit pixel rounding can turn 63.9 into 64; use the committed SwiftUI
         // size for the mode boundary, and actual bounds for independent native resizes.
         let height = logicalSize.flatMap { abs($0.height - bounds.height) <= 1 ? $0.height : nil } ?? bounds.height
@@ -588,7 +592,12 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
         defer { CATransaction.commit() }
         func update(_ host: NSView, _ frame: CGRect) {
             host.isHidden = frame.width <= 0 || frame.height <= 0
-            if host.frame != frame { host.frame = frame }
+            if host.frame != frame {
+                host.frame = frame
+                host.needsLayout = true
+                host.layoutSubtreeIfNeeded()
+                host.needsDisplay = true
+            }
         }
         update(meter, frames[0]); update(activity, frames[1])
         update(controls, CGRect(x: 0, y: expanded ? 0 : (height - 24) / 2, width: bounds.width, height: expanded ? 64 : 24))
@@ -627,7 +636,7 @@ struct TrackMixerRow: View, Equatable {
     }
     static func == (lhs: Self, rhs: Self) -> Bool {
         #if os(macOS)
-        let sameHeightMode = true // GeometryReader handles continuous height without rebuilding the row body.
+        let sameHeightMode = lhs.compactHeight == rhs.compactHeight && lhs.minimalHeight == rhs.minimalHeight // Rebuild only when crossing a control-layout threshold.
         #else
         let sameHeightMode = lhs.compactHeight == rhs.compactHeight && lhs.minimalHeight == rhs.minimalHeight
         #endif
@@ -1103,13 +1112,13 @@ struct MasterStrip: View {
                     Button("S") { show.send(.solo) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterSolo == true ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                 }.font(.jarasSystem(size: 10, weight: .semibold)).buttonStyle(.bordered).controlSize(.small).frame(height: 24)
                     Text("Master").font(.jarasSystem(size: 11, weight: .semibold))
-                        .foregroundStyle(Color(hex: JarasTheme.masterNameHex(show.snapshot.project.masterColor ?? 0xffdc52)))
+                        .foregroundStyle(Color(hex: JarasTheme.masterNameHex(show.snapshot.project.masterColor ?? 0x414141)))
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 TrackVolumeFader(show: show, track: nil, volume: show.snapshot.project.masterVolume ?? 1, phaseInverted: show.snapshot.project.masterPhaseInverted == true, compact: true)
                     .frame(height: 20)
             }.padding(.vertical, 4)
         }.padding(.horizontal, 6).frame(minWidth: 230, maxWidth: .infinity).frame(height: 70)
-            .background(Color(hex: show.snapshot.project.masterColor ?? 0xffdc52).opacity(0.5)).cornerRadius(6)
+            .background(Color(hex: show.snapshot.project.masterColor ?? 0x414141).opacity(0.5)).cornerRadius(6)
             .contextMenu {
                 MasterTrackContextMenu(show: show, patch: { patchPresented = true },
                     fx: { fxPresented = true }, edit: { colorPresented = true })
@@ -1121,7 +1130,7 @@ struct MasterStrip: View {
                 FXInsertEditor(show: show, track: nil, targets: [nil]) { fxPresented = false }
             }
             .sheet(isPresented: $colorPresented) {
-                NameColorEditor(title: "Editar pista", initialName: "Master", initialColor: show.snapshot.project.masterColor ?? 0xffdc52,
+                NameColorEditor(title: "Editar pista", initialName: "Master", initialColor: show.snapshot.project.masterColor ?? 0x414141,
                     save: { _, color in show.editMasterColor(color) }, nameEditable: false, showsName: false)
             }
     }
@@ -2999,7 +3008,7 @@ private struct FooterMixerStrip: View, Equatable {
     @Environment(\.openFX) private var openFX
     private var id: UUID? { track?.id }
     private var settings: NativeFXSettings { track?.fx ?? masterState?.masterFX ?? NativeFXSettings() }
-    private var color: Color { Color(hex: track.map { $0.color ?? JarasTheme.roleHex($0.role) } ?? show.snapshot.project.masterColor ?? 0xffdc52) }
+    private var color: Color { Color(hex: track.map { $0.color ?? JarasTheme.roleHex($0.role) } ?? show.snapshot.project.masterColor ?? 0x414141) }
     private var hasStandardControls: Bool { track == nil || track?.kind == .standard }
     private var buttons: some View {
         VStack(spacing: 5) {
@@ -3192,7 +3201,7 @@ private struct FooterMixerStrip: View, Equatable {
                 FXInsertEditor(show: show, track: id, targets: targets) { fxPresented = false }
             }
             .sheet(isPresented: $colorPresented) {
-                NameColorEditor(title: "Editar pista", initialName: "Master", initialColor: show.snapshot.project.masterColor ?? 0xffdc52,
+                NameColorEditor(title: "Editar pista", initialName: "Master", initialColor: show.snapshot.project.masterColor ?? 0x414141,
                     save: { _, color in show.editMasterColor(color) }, nameEditable: false, showsName: false)
             }
     }

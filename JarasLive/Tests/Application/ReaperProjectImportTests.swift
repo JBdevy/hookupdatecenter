@@ -497,6 +497,45 @@ final class ReaperProjectImportTests: XCTestCase {
         XCTAssertEqual(resized.songs[0].tracks[0].clips[0].duration, 10)
         XCTAssertEqual(resized.songs[0].tracks[0].clips[0].timecode, timecode.clips[0].timecode)
     }
+    func testOverlappingSpecialItemsRecoverWithoutDiscardingTheProject() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func item(_ start: Double, _ length: Double, _ text: String?) -> String {
+            "<ITEM\nPOSITION \(start)\nLENGTH \(length)\n" +
+                (text.map { "<NOTES\n|\($0)\n>\n" } ?? "") + ">\n"
+        }
+        // Source order differs from timeline order. Keep the earliest compatible
+        // item, preserve its timing, and recover later compatible items as well.
+        let items = item(10, 2, "Later") + item(0, 4, "First") +
+            item(2, 5, "Conflicting") + item(0, 1, "Duplicate") +
+            item(4, 2, "Next") + item(20, 3, nil) + item(21, 3, nil)
+        var body = ["Teleprompt 1", "Teleprompt 2", "CIFRAS"].map {
+            "<TRACK\nNAME \"\($0)\"\n\(items)>\n"
+        }.joined()
+        // Text and projection media are independent layers of a teleprompter.
+        body += "<TRACK\nNAME \"Teleprompt 1\"\n" + item(0, 4, "Lyrics")
+        for start in [0, 2, 4] {
+            body += "<ITEM\nPOSITION \(start)\nLENGTH 4\n<SOURCE VIDEO\nFILE \"video\(start).mp4\"\n>\n>\n"
+        }
+        body += ">\n<TRACK\nNAME Audio\n" + item(0, 4, nil) + item(2, 4, nil) + ">\n"
+        let source = try fixture("<REAPER_PROJECT 0.1\n\(body)>\n", in: directory)
+        let original = try Data(contentsOf: source)
+        let result = try ReaperProjectImporter.read(source)
+        let tracks = result.project.songs[0].tracks
+        XCTAssertEqual(tracks.count, 5)
+        for track in tracks where track.clips.contains(where: { $0.text == "First" }) {
+            XCTAssertEqual(track.clips.map(\.startTime).sorted(), [0, 4, 10, 20])
+            XCTAssertEqual(track.clips.first { $0.text == "First" }?.duration, 4)
+            XCTAssertFalse(track.clips.contains { $0.text == "Conflicting" || $0.text == "Duplicate" })
+        }
+        let mediaTrack = try XCTUnwrap(tracks.first { $0.clips.contains { $0.text == "Lyrics" } })
+        XCTAssertEqual(mediaTrack.clips.count, 3)
+        XCTAssertEqual(mediaTrack.clips.filter(\.isProjectionMedia).map(\.startTime).sorted(), [0, 4])
+        XCTAssertEqual(tracks.first { $0.name == "Audio" }?.clips.count, 2)
+        XCTAssertTrue(result.warnings.contains { $0.contains("Conflicting") && $0.contains("overlap") })
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
     func testRealProjectsWhenProvided() throws {
         guard let files = ProcessInfo.processInfo.environment["JARAS_REAPER_FIXTURES"] else { return }
         for path in files.components(separatedBy: "\n") where !path.isEmpty {

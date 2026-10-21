@@ -1739,3 +1739,5 @@
 
 "Config Init" = "Config Init";
 "Initial playback" = "Initial playback";
+
+"%@: item \"%@\" at %.6f s was ignored because it overlaps another item on the same special-track layer. The rest of the project was imported." = "%@: item \"%@\" at %.6f s was ignored because it overlaps another item on the same special-track layer. The rest of the project was imported.";

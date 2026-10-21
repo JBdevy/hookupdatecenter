@@ -420,7 +420,7 @@ final class StemImportTests: XCTestCase {
         XCTAssertEqual(second.songs[0].tracks.map(\.id), tracks.map(\.id))
         XCTAssertTrue(second.songs[0].tracks.filter { !$0.clips.isEmpty }.allSatisfy { $0.clips.count == 2 })
     }
-    func testAppendUsesHookCenterCanonicalAliasesAndCreatesMissingFolder() throws {
+    func testAppendReusesStandaloneTrackWithoutCreatingOrMovingToFolder() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let folder = try fixture(root, folder: "Song", file: "Guitarra.wav")
@@ -429,10 +429,32 @@ final class StemImportTests: XCTestCase {
         existing.clips = [AudioClip(id: UUID(), name: "Old", startTime: 0, duration: 0.1)]
         base.songs[0].tracks = [existing]
         let appended = try StemProjectImporter.build(scan: StemProjectImporter.scan([folder]), remove: "", base: base, destination: root.appendingPathComponent("Show.jl"))
-        let group = try XCTUnwrap(appended.songs[0].tracks.first { $0.name == "Guitarras" })
-        XCTAssertEqual(appended.songs[0].tracks.count, 2)
-        XCTAssertEqual(appended.songs[0].tracks.first { $0.id == existing.id }?.parentTrackID, group.id)
+        XCTAssertEqual(appended.songs[0].tracks.map(\.id), [existing.id])
+        XCTAssertNil(appended.songs[0].tracks.first?.parentTrackID)
         XCTAssertEqual(appended.songs[0].tracks.first { $0.id == existing.id }?.clips.count, 2)
+    }
+    func testAppendPreservesExistingHierarchyAndUsesDecoratedGroupForNewTrack() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try fixture(root, folder: "Song", file: "Guitarra.wav")
+        _ = try fixture(root, folder: "Song", file: "Sanfona.wav")
+        _ = try fixture(root, folder: "Song", file: "Guitarra Solo.wav")
+        var base = Project.empty(name: "Existing")
+        let guitars = Track(id: UUID(), name: "#GUITARRAS", role: .other)
+        let other = Track(id: UUID(), name: "Minha pasta", role: .other)
+        var guitar = Track(id: UUID(), name: "GTR", role: .guitar)
+        guitar.parentTrackID = other.id; guitar.patch = OutputPatch(firstChannel: 4, channelCount: 2)
+        let accordion = Track(id: UUID(), name: "Sanfona", role: .accordion)
+        base.songs[0].tracks = [other, guitar, accordion, guitars]
+        let result = try StemProjectImporter.build(scan: StemProjectImporter.scan([folder]), remove: "", base: base, destination: root.appendingPathComponent("Show.jl"))
+        let tracks = result.songs[0].tracks, ids = Set(base.songs[0].tracks.map(\.id))
+        XCTAssertEqual(tracks.filter { ids.contains($0.id) }.map(\.id), base.songs[0].tracks.map(\.id))
+        XCTAssertEqual(tracks.first { $0.id == guitar.id }?.parentTrackID, other.id)
+        XCTAssertEqual(tracks.first { $0.id == guitar.id }?.patch, guitar.patch)
+        XCTAssertNil(tracks.first { $0.id == accordion.id }?.parentTrackID)
+        XCTAssertFalse(tracks.contains { $0.name == "Sanfonas" || $0.name == "Guitarras" })
+        XCTAssertEqual(tracks.first { $0.name == "Guitarra Solo" }?.parentTrackID, guitars.id)
+        XCTAssertEqual(tracks.filter { $0.id == guitar.id || $0.id == accordion.id }.map { $0.clips.count }, [1,1])
     }
     func testParallelImportFailureRollsBackOnlyItsOwnMediaDirectory() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

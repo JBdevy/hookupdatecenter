@@ -18,6 +18,7 @@ import XCTest
     var timeAtTempoEdit = 0.0
     var regionItems: [UUID] = []
     func regionsFromClips(_ ids: [UUID]) throws { regionItems = ids }
+    func setProjectSyncID(_ id: UUID) { if project.projectSyncID == nil { project.projectSyncID = id } }
     func load(_ project: Project) throws { self.project = project }
     func snapshot() throws -> ShowSnapshot {
         snapshotCount += 1
@@ -123,6 +124,23 @@ private actor SaveTestStore: ProjectPersistence {
     }
 }
 final class ProjectSaveTests: XCTestCase {
+    @MainActor func testProjectSyncIdentityIsCreatedBySaveAndRemainsStable() async throws {
+        let project = Project.empty(name: "Sync identity")
+        let executor = SaveTestExecutor(), store = MemoryProjectStore()
+        let show = try ShowController(executor: executor, persistence: store, initialProject: project)
+        XCTAssertNil(show.snapshot.project.projectSyncID)
+        try await show.flushProject()
+        let id = try XCTUnwrap(show.snapshot.project.projectSyncID)
+        let saved = await store.load()
+        XCTAssertEqual(saved?.projectSyncID, id)
+        XCTAssertEqual(executor.project.projectSyncID, id)
+        try await show.flushProject()
+        let savedAgain = await store.load()
+        XCTAssertEqual(savedAgain?.projectSyncID, id)
+        let bytes = try ProjectDocumentCodec.encode(try XCTUnwrap(savedAgain))
+        XCTAssertEqual(try ProjectDocumentCodec.decode(bytes).projectSyncID, id)
+    }
+
     private func markerOwnershipProject() -> Project {
         var project = Project.empty(name: "Marker ownership")
         project.songs[0].duration = 60

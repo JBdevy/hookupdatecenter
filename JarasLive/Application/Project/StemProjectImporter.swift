@@ -322,7 +322,7 @@ enum StemProjectImporter {
         let oldEnd = max(arrangement.parts.map(\.endTime).max() ?? 0, arrangement.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0)
         let offset = oldEnd
         let existingFolders = Set(arrangement.tracks.compactMap(\.parentTrackID)).union(arrangement.tracks.filter {
-            $0.kind == .standard && $0.parentTrackID == nil && $0.clips.isEmpty && !js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()!.isEmpty
+            $0.kind == .standard && $0.role == .other && $0.parentTrackID == nil && $0.clips.isEmpty && !js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()!.isEmpty
         }.map(\.id))
         var keys: [String: Int] = [:]
         for (index, track) in arrangement.tracks.enumerated() where track.kind == .standard && !existingFolders.contains(track.id) {
@@ -365,7 +365,7 @@ enum StemProjectImporter {
             // Use the actual Hook Center audit, including Outros, instead of
             // classifying display names again or mistaking audio tracks for folders.
             for group in audit.groups {
-                let members = group.tracks.compactMap { keys[$0.key] }
+                let members = group.tracks.compactMap { keys[$0.key] }.filter { $0 >= existingTrackCount }
                 guard !members.isEmpty else { continue }
                 let folder = arrangement.tracks.first { existingFolders.contains($0.id) && js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()! == group.key }
                 let color = folder?.color ?? UInt32(group.colorHex.dropFirst(), radix: 16) ?? 0x55acbe
@@ -377,19 +377,42 @@ enum StemProjectImporter {
                         arrangement.tracks[index].patch = .masterGroup
                         arrangement.tracks[index].secondaryPatch = nil; arrangement.tracks[index].outputs = nil
                     }
-                    // Appending media must keep colors chosen on existing tracks.
-                    guard index >= existingTrackCount else { continue }
                     // Keep the folder saturated; new children use its softened hue.
                     let r = (color >> 16) & 255, g = (color >> 8) & 255, b = color & 255
                     func soft(_ value: UInt32) -> UInt32 { value + (255 - value) * 28 / 100 }
                     arrangement.tracks[index].color = soft(r) << 16 | soft(g) << 8 | soft(b)
                 }
             }
-            let children = Dictionary(grouping: arrangement.tracks.filter { $0.parentTrackID != nil }, by: { $0.parentTrackID! })
-            let roots = arrangement.tracks.filter { $0.parentTrackID == nil }
-            let percussionIDs = Set(roots.filter { js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()! == "percussivo" }.map(\.id))
-            arrangement.tracks = (roots.filter { !percussionIDs.contains($0.id) } + roots.filter { percussionIDs.contains($0.id) })
-                .flatMap { [$0] + (children[$0.id] ?? []) }
+            // Preserve every existing track's identity, order, routing and parent.
+            // Only brand-new tracks are inserted, at the end of the matching
+            // folder's subtree. Never regroup a reused track, even when it has
+            // a different category or no parent at all.
+            let additions = Array(arrangement.tracks.dropFirst(existingTrackCount))
+            var ordered = Array(arrangement.tracks.prefix(existingTrackCount))
+            let newRoots = additions.filter { $0.parentTrackID == nil }
+            if existingTrackCount == 0 {
+                ordered += newRoots.filter { js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()! != "percussivo" }
+                ordered += newRoots.filter { js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()! == "percussivo" }
+            } else { ordered += newRoots }
+            let parents = Dictionary(uniqueKeysWithValues: arrangement.tracks.map { ($0.id, $0.parentTrackID) })
+            func belongs(_ track: Track, to parent: UUID) -> Bool {
+                var ancestor = track.parentTrackID
+                var visited = Set<UUID>()
+                while let id = ancestor, visited.insert(id).inserted {
+                    if id == parent { return true }
+                    ancestor = parents[id] ?? nil
+                }
+                return false
+            }
+            for track in additions where track.parentTrackID != nil {
+                guard let parent = track.parentTrackID, let index = ordered.firstIndex(where: { $0.id == parent }) else {
+                    ordered.append(track); continue
+                }
+                var insertion = index + 1
+                while insertion < ordered.count && belongs(ordered[insertion], to: parent) { insertion += 1 }
+                ordered.insert(track, at: insertion)
+            }
+            arrangement.tracks = ordered
             project.songs[0] = arrangement
             project.updatedAt = ISO8601DateFormatter().string(from: Date())
             try project.validate()

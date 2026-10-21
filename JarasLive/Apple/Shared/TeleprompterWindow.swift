@@ -141,27 +141,38 @@ struct TeleprompterProjectionLayout<Media: View>: View {
     }
     private func previewGrid(size: CGSize) -> some View {
         let blocks = content.blocks
-        let columns = max(1,min(4,blocks.count))
-        let longestColumn = max(1,(blocks.count + columns - 1) / columns)
-        let mostSongs = max(1,blocks.map { $0.rows.count + ($0.name.isEmpty ? 0 : 1) }.max() ?? 1)
-        let font = max(9,min((size.width/Double(columns)-20)/13,(size.height/Double(longestColumn)-20)/Double(mostSongs)/1.1) * settings.previewScale / 100)
-        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 8,alignment: .top),count: columns),alignment: .leading,spacing: 8) {
+        let columns = max(1, blocks.count)
+        let width = max(1, (size.width - 12 - CGFloat(columns - 1) * 8) / CGFloat(columns))
+        let height = max(1, size.height - 12)
+        let mostRows = max(1, blocks.map { $0.rows.count + ($0.name.isEmpty ? 0 : 1) }.max() ?? 1)
+        let fit = max(1, min((width - 12) / 13, (height - 12 - CGFloat(mostRows - 1) * 3) / CGFloat(mostRows) / 2.4))
+        let font = max(1, fit * settings.previewScale / 100)
+        // A preview page contains at most four columns. Eager, explicitly sized
+        // columns avoid stale lazy-grid cells retaining their previous geometry.
+        return HStack(alignment: .top, spacing: 8) {
             ForEach(blocks) { block in
-                VStack(alignment: .leading,spacing: 3) {
+                VStack(alignment: .leading, spacing: 3) {
                     if !block.name.isEmpty {
-                        Text(settings.display(block.name) + (settings.previewBlockDurationEnabled && (block.rows.reduce(0) { $0 + $1.duration }) > 0 ? " • " + tpTime(Int(ceil((block.rows.reduce(0) { $0 + $1.duration })))) : ""))
-                            .font(tpFont(settings.previewFontFamily,size: font * 1.05)).foregroundStyle(Color(hex: block.color)).lineLimit(2)
+                        Text(settings.display(block.name) + (settings.previewBlockDurationEnabled && block.rows.reduce(0, { $0 + $1.duration }) > 0 ? " • " + tpTime(Int(ceil(block.rows.reduce(0, { $0 + $1.duration })))) : ""))
+                            .font(tpFont(settings.previewFontFamily, size: font))
+                            .foregroundStyle(Color(hex: block.color)).lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     ForEach(block.rows) { song in
                         Text(settings.display(song.name) + (settings.previewSongDurationEnabled ? " • " + tpTime(Int(ceil(song.duration))) : ""))
-                            .font(tpFont(settings.previewFontFamily,size: font))
+                            .font(tpFont(settings.previewFontFamily, size: font))
                             .underline(settings.previewUnderlineEnabled)
                             .foregroundStyle(Color(hex: song.color)).lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                }.frame(maxWidth: .infinity,alignment: .leading).padding(6)
+                }.multilineTextAlignment(.leading)
+                    .padding(6).frame(width: width, alignment: .topLeading)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: block.color).opacity(0.7)))
+                    .frame(width: width, height: height, alignment: .topLeading).clipped()
             }
-        }.padding(6).frame(maxWidth: .infinity,maxHeight: .infinity,alignment: .topLeading)
+        }.id(blocks.map(\.id))
+            .padding(6).frame(width: max(1, size.width), height: max(1, size.height), alignment: .topLeading)
+            .clipped().transaction { $0.animation = nil }
     }
     private func border(_ color: UInt32,rgb: Bool,date: Date) -> Color {
         rgb ? Color(hue: date.timeIntervalSince1970.truncatingRemainder(dividingBy: 6)/6,saturation: 0.9,brightness: 1) : Color(hex: color)

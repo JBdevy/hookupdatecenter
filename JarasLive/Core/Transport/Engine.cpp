@@ -19,8 +19,10 @@ void Engine::loadProject(Project project) {
     auto ids = order(); if (!ids.empty()) transport_.songId = ids.front();
 }
 void Engine::applyProjectEdit(Project project) {
+    projectSync::requireWritable();
     if (project.id != project_.id) throw std::invalid_argument("Cannot edit another project");
     orderSpecialTracks(project); synchronizeTimecode(project); synchronizeRegionOwnership(project, &project_); validate(project);
+    if (project_.projectSyncID) project.projectSyncID = project_.projectSyncID;
     project_ = std::move(project);
     if (!currentSong()) { const bool bypassed = transport_.multiLoopsBypassed; transport_ = {}; manualSubCursor_ = false; transport_.multiLoopsBypassed = bypassed; auto ids = order(); if (!ids.empty()) transport_.songId = ids.front(); }
     if (!region(transport_.regionId)) { transport_.regionId.reset(); transport_.loop.enabled = false; }
@@ -63,6 +65,7 @@ const Part* Engine::region(const std::optional<ID>& id) const {
     return nullptr;
 }
 void Engine::configureRegionSetlist(RegionSetlist state) {
+    projectSync::requireWritable();
     validateRegionSetlist(project_, state);
     const auto& previous = project_.regionSetlist;
     const auto previousTarget = automaticRegionQueueTarget();
@@ -218,6 +221,7 @@ void Engine::syncRegion() {
     autoQueueRegion();
 }
 void Engine::addTrack(ID id, std::string name, TrackRole role) {
+    projectSync::requireWritable();
     if (!currentSong() || id.empty() || name.empty() || role.id.empty()) throw std::invalid_argument("Invalid track");
     Project next = project_;
     for (auto& song : next.songs) if (song.id == transport_.songId) {
@@ -230,6 +234,7 @@ void Engine::addTrack(ID id, std::string name, TrackRole role) {
     orderSpecialTracks(next); synchronizeTimecode(next); validate(next); project_ = std::move(next);
 }
 void Engine::resizeRegion(const ID& id, double start, double end) {
+    projectSync::requireWritable();
     if (!std::isfinite(start) || !std::isfinite(end) || start < 0 || end <= start)
         throw std::invalid_argument("Invalid region bounds");
     Project next = project_;
@@ -276,6 +281,7 @@ static double repelRegionMarkers(const Song& song, const Part& region, double pr
     return start;
 }
 void Engine::moveRegion(const ID& id, double start) {
+    projectSync::requireWritable();
     if (!std::isfinite(start) || start < 0) throw std::invalid_argument("Invalid region position");
     Project next = project_;
     for (auto& song : next.songs) if (song.id == transport_.songId) {
@@ -303,6 +309,7 @@ void Engine::moveRegion(const ID& id, double start) {
     throw std::invalid_argument("Unknown region");
 }
 void Engine::setRegionInit(const ID& id, int count, bool bars) {
+    projectSync::requireWritable();
     if(count<1 || count>5) throw std::invalid_argument("Invalid Config Init count");
     for(auto& song:project_.songs) if(song.id==transport_.songId)
         for(auto& part:song.parts) if(part.id==id) {
@@ -313,6 +320,7 @@ void Engine::setRegionInit(const ID& id, int count, bool bars) {
     throw std::invalid_argument("Unknown region");
 }
 void Engine::setRegionPitch(const ID& id, int semitones, std::vector<ID> tracks, std::vector<ID> groups) {
+    projectSync::requireWritable();
     if (semitones < -12 || semitones > 12) throw std::invalid_argument("Invalid region pitch");
     for (auto& song : project_.songs) if (song.id == transport_.songId) {
         for (const auto& identifiers : {tracks, groups}) for (const auto& target : identifiers)
@@ -324,12 +332,14 @@ void Engine::setRegionPitch(const ID& id, int semitones, std::vector<ID> tracks,
     throw std::invalid_argument("Unknown region");
 }
 void Engine::editRegion(const ID& id, std::string name, unsigned color, bool uppercaseName) {
+    projectSync::requireWritable();
     if (name.empty() || color > 0xFFFFFF) throw std::invalid_argument("Invalid region settings");
     for (auto& song : project_.songs) if (song.id == transport_.songId)
         for (auto& part : song.parts) if (part.id == id) { part.name = std::move(name); part.color = color; part.uppercaseName = uppercaseName; return; }
     throw std::invalid_argument("Unknown region");
 }
 void Engine::moveClip(const ID& clipId, double start, const ID& destination) {
+    projectSync::requireWritable();
     if (!std::isfinite(start) || start < 0) throw std::invalid_argument("Invalid clip position");
     Project next = project_;
     for (auto& song : next.songs) if (song.id == transport_.songId) {
@@ -353,6 +363,7 @@ void Engine::moveClip(const ID& clipId, double start, const ID& destination) {
     throw std::invalid_argument("Unknown clip");
 }
 void Engine::deleteManualMarker(const ID& id) {
+    projectSync::requireWritable();
     auto song = std::find_if(project_.songs.begin(), project_.songs.end(), [&](const auto& value) { return value.id == transport_.songId; });
     if (song == project_.songs.end() || !song->markers) throw std::invalid_argument("Unknown marker");
     auto marker = std::find_if(song->markers->begin(), song->markers->end(), [&](const auto& value) { return value.id == id; });
@@ -368,6 +379,7 @@ void Engine::deleteManualMarker(const ID& id) {
     refreshMultiLoop();
 }
 void Engine::setProjectTiming(double bpm, int beats, int unit, std::optional<ProjectTimeSettings> settings) {
+    projectSync::requireWritable();
     if (!std::isfinite(bpm) || bpm < 60 || bpm > 300 || beats < 1 || beats > 32 ||
         unit < 1 || unit > 64 || (unit & (unit - 1)) != 0 ||
         (settings && !validProjectTimeSettings(*settings))) throw std::invalid_argument("Invalid project timing");
@@ -400,6 +412,7 @@ void Engine::setProjectTiming(double bpm, int beats, int unit, std::optional<Pro
     song->bpm = bpm; song->beatsPerBar = beats; song->beatUnit = unit; song->timeSettings = settings;
 }
 void Engine::setMarker(ID id, std::string name, double position, unsigned color, std::optional<double> bpm, std::optional<int> beats, std::optional<int> unit, std::optional<std::string> timebase, std::optional<bool> section, std::optional<bool> loopSection) {
+    projectSync::requireWritable();
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == transport_.songId; });
     if (song == next.songs.end()) throw std::invalid_argument("No current arrangement");
@@ -439,6 +452,7 @@ void Engine::setMarker(ID id, std::string name, double position, unsigned color,
     }
 }
 void Engine::setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing, bool retime) {
+    projectSync::requireWritable();
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == transport_.songId; });
     if (song == next.songs.end()) throw std::invalid_argument("No current arrangement");
@@ -478,9 +492,11 @@ void Engine::setMarkers(const std::vector<TimelineMarker>& markers, const std::v
     }
 }
 void Engine::regionFromClip(const ID& clipId, ID regionId) {
+    projectSync::requireWritable();
     regionsFromClips({{clipId, std::move(regionId)}});
 }
 void Engine::regionsFromClips(const std::vector<std::pair<ID, ID>>& items) {
+    projectSync::requireWritable();
     if (items.empty()) return;
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == transport_.songId; });
@@ -512,6 +528,7 @@ void Engine::regionsFromClips(const std::vector<std::pair<ID, ID>>& items) {
     orderSpecialTracks(next); synchronizeTimecode(next); synchronizeRegionOwnership(next, &project_); validate(next); project_ = std::move(next);
 }
 void Engine::setTimecode(const ID& id, TimecodeSettings settings) {
+    projectSync::requireWritable();
     if ((settings.mode != "mtc" && settings.mode != "ltc") ||
         (settings.frameRate != 24 && settings.frameRate != 25 && settings.frameRate != 29.97 && settings.frameRate != 30) ||
         !std::isfinite(settings.offset) || settings.offset < 0 || settings.offset >= 86400)
@@ -532,6 +549,7 @@ void Engine::setTimecode(const ID& id, TimecodeSettings settings) {
     throw std::invalid_argument("Unknown Timecode track");
 }
 void Engine::setFX(const ID& id, std::string json) {
+    projectSync::requireWritable();
     // Track/Master VST3 presets need the same capacity as item FX snapshots.
     if(json.empty() || json.size()>32 * 1024 * 1024) throw std::invalid_argument("Invalid FX data");
     if(id.empty()) { project_.masterFXJSON=std::move(json); return; }
@@ -539,6 +557,7 @@ void Engine::setFX(const ID& id, std::string json) {
     throw std::invalid_argument("Unknown FX track");
 }
 void Engine::setClipFX(const ID& id, std::string json) {
+    projectSync::requireWritable();
     validateClipFXJSON(json);
     for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips) if (clip.id == id) {
         if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Item FX requires an audio item");
@@ -547,6 +566,7 @@ void Engine::setClipFX(const ID& id, std::string json) {
     throw std::invalid_argument("Unknown FX item");
 }
 void Engine::setClipFXBypass(const ID& id, bool bypassed) {
+    projectSync::requireWritable();
     for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips) if (clip.id == id) {
         if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Item FX requires an audio item");
         clip.fxBypassed = bypassed; return;
@@ -554,6 +574,7 @@ void Engine::setClipFXBypass(const ID& id, bool bypassed) {
     throw std::invalid_argument("Unknown FX item");
 }
 void Engine::setClipText(const ID& id, std::string text) {
+    projectSync::requireWritable();
     validateClipText(text);
     for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips) if (clip.id == id) {
         if (!isTeleprompterRole(track.role) && track.role.id != "chords") throw std::invalid_argument("Text items require a Teleprompter or Chords track");
@@ -563,6 +584,7 @@ void Engine::setClipText(const ID& id, std::string text) {
     throw std::invalid_argument("Unknown text item");
 }
 void Engine::setMIDIInput(const ID& id, int slot) {
+    projectSync::requireWritable();
     if(slot < 0 || slot > 3) throw std::invalid_argument("Invalid MIDI input");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
         if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
@@ -571,6 +593,7 @@ void Engine::setMIDIInput(const ID& id, int slot) {
     throw std::invalid_argument("Unknown MIDI track");
 }
 void Engine::setMIDIChannel(const ID& id, int channel) {
+    projectSync::requireWritable();
     if(channel < 0 || channel > 16) throw std::invalid_argument("Invalid MIDI channel");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
         if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
@@ -579,10 +602,12 @@ void Engine::setMIDIChannel(const ID& id, int channel) {
     throw std::invalid_argument("Unknown MIDI track");
 }
 void Engine::setInputMonitoring(const ID& id, bool enabled) {
+    projectSync::requireWritable();
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) { track.inputMonitoring = enabled; return; }
     throw std::invalid_argument("Unknown track");
 }
 void Engine::setRecordingChannels(const ID& id, int channel) {
+    projectSync::requireWritable();
     if(channel < 0 || channel > 2) throw std::invalid_argument("Invalid recording channel mode");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
         if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
@@ -591,6 +616,7 @@ void Engine::setRecordingChannels(const ID& id, int channel) {
     throw std::invalid_argument("Unknown MIDI track");
 }
 void Engine::setRecording(const ID& id, int first, int count, std::string format) {
+    projectSync::requireWritable();
     if(first < 1 || count < 1 || count > 2 || (format != "wav" && format != "wav32" && format != "mp3")) throw std::invalid_argument("Invalid recording settings");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) { if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX"); if (track.stereoLinkPartner) {
         const int top = std::clamp(first - (track.stereoLinkLeft ? 0 : 1), 1, 1023);
@@ -601,6 +627,7 @@ void Engine::setRecording(const ID& id, int first, int count, std::string format
     throw std::invalid_argument("Unknown track");
 }
 void Engine::pasteItems(const ID& songID, std::vector<Track> tracks, bool moving) {
+    projectSync::requireWritable();
     if (tracks.empty()) throw std::invalid_argument("No items to paste");
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == songID; });
@@ -626,6 +653,7 @@ void Engine::pasteItems(const ID& songID, std::vector<Track> tracks, bool moving
     validate(next); project_ = std::move(next);
 }
 void Engine::insertAudioTracks(const ID& songID, std::vector<Track> tracks) {
+    projectSync::requireWritable();
     if (tracks.empty()) throw std::invalid_argument("No audio files to import");
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == songID; });
@@ -646,6 +674,7 @@ void Engine::insertAudioTracks(const ID& songID, std::vector<Track> tracks) {
     project_ = std::move(next);
 }
 void Engine::addRecordedClip(const ID& id, AudioClip clip, bool replacing) {
+    projectSync::requireWritable();
     Project next = project_;
     for(auto& song : next.songs) for(auto& track : song.tracks) if(track.id == id) {
         const auto recordedID = clip.id;
@@ -668,10 +697,12 @@ void Engine::addRecordedClip(const ID& id, AudioClip clip, bool replacing) {
     throw std::invalid_argument("Unknown recording track");
 }
 void Engine::editMasterColor(unsigned color) {
+    projectSync::requireWritable();
     if (color > 0xffffff) throw std::invalid_argument("Invalid master color");
     project_.masterColor = color;
 }
 void Engine::editTrack(const ID& id, std::string name, unsigned color) {
+    projectSync::requireWritable();
     if (name.empty() || color > 0xffffff) throw std::invalid_argument("Invalid track name or color");
     for (auto& song : project_.songs) for (auto& track : song.tracks) if (track.id == id) {
         track.name = fixedTrackName(track.role).empty() ? std::move(name) : fixedTrackName(track.role); track.color = color; return;
@@ -679,6 +710,7 @@ void Engine::editTrack(const ID& id, std::string name, unsigned color) {
     throw std::invalid_argument("Unknown track");
 }
 void Engine::setOutputPatches(const ID& id, const std::vector<OutputPatch>& patches) {
+    projectSync::requireWritable();
     for (const auto& patch : patches)
         if (patch.firstChannel < -2 || patch.firstChannel > 1024 || patch.channelCount < 1 || patch.channelCount > 2 || (patch.firstChannel <= 0 && patch.channelCount != 2)) throw std::invalid_argument("Invalid output patch");
     if (id.empty()) {
@@ -695,6 +727,7 @@ void Engine::setOutputPatches(const ID& id, const std::vector<OutputPatch>& patc
     throw std::invalid_argument("Unknown track");
 }
 void Engine::setOutputPatch(const ID& id, int first, int count, int slot) {
+    projectSync::requireWritable();
     if (slot < 0 || slot > 1 || first < -2 || first > 1024 || count < 1 || count > 2 || (first <= 0 && count != 2)) throw std::invalid_argument("Invalid output patch");
     if (id.empty()) {
         if (first == 0 || first == -2) throw std::invalid_argument("Master cannot route back into itself");
@@ -761,6 +794,7 @@ std::vector<Track> orderTrackForest(const std::vector<Track>& tracks) {
 }
 }
 void Engine::groupTracks(const std::vector<ID>& ids) {
+    projectSync::requireWritable();
     if (ids.size() < 2) throw std::invalid_argument("Select at least two tracks");
     auto song = std::find_if(project_.songs.begin(), project_.songs.end(), [&](const auto& s) { return s.id == transport_.songId; });
     if (song == project_.songs.end()) throw std::invalid_argument("No current arrangement");
@@ -788,6 +822,7 @@ void Engine::groupTracks(const std::vector<ID>& ids) {
     project_ = std::move(replacement);
 }
 void Engine::reorderTrack(const ID& id, const ID& before) {
+    projectSync::requireWritable();
     for (size_t songIndex = 0; songIndex < project_.songs.size(); ++songIndex) {
         const auto& song = project_.songs[songIndex];
         if (song.id != transport_.songId) continue;
@@ -833,6 +868,10 @@ void Engine::reorderTrack(const ID& id, const ID& before) {
     throw std::invalid_argument("No current arrangement");
 }
 void Engine::execute(const Command& c) {
+    projectSync::requireWritable();
+    const bool mixerControl = c.kind==CommandKind::volume || c.kind==CommandKind::pan ||
+        c.kind==CommandKind::mute || c.kind==CommandKind::solo || c.kind==CommandKind::phase || c.kind==CommandKind::masterMono;
+    if (projectSync::internalDepth == 0 && !mixerControl) ++syncRevision_;
     if (!std::isfinite(c.value)) throw std::invalid_argument("Non-finite control value");
     if (c.kind == CommandKind::stop || c.kind == CommandKind::stopAll || c.kind == CommandKind::seek || c.kind == CommandKind::select || c.kind == CommandKind::selectRegion || c.kind == CommandKind::next || c.kind == CommandKind::previous) resetMultiLoop();
     if (c.kind == CommandKind::stop || c.kind == CommandKind::stopAll || c.kind == CommandKind::seek || c.kind == CommandKind::select || c.kind == CommandKind::selectRegion || c.kind == CommandKind::next || c.kind == CommandKind::previous) transport_.queuedSectionMarkerId.reset();
@@ -1191,6 +1230,7 @@ std::optional<double> Engine::nextSectionTrigger() const {
     return trigger;
 }
 void Engine::advance(double elapsed) {
+    projectSync::Internal syncTick;
     if (!std::isfinite(elapsed) || elapsed <= 0) return;
     // Consume a queued jump at its musical boundary, including the remainder of
     // a long tick. Sub Play advances once for each consumed interval, independently.
@@ -1378,6 +1418,7 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
 
 namespace jaras {
 void Engine::setTrackRouting(const std::vector<std::pair<ID,TrackRouting>>& routes) {
+    projectSync::requireWritable();
     std::vector<std::pair<Track*, std::optional<TrackRouting>>> previous;
     try {
         for (const auto& value : routes) {
@@ -1495,5 +1536,90 @@ bool Engine::advanceMultiLoop(double elapsed) {
     transport_.position = next >= state.end ? state.start + std::fmod(next - state.start, state.end - state.start) : next;
     syncRegion();
     return true;
+}
+}
+namespace jaras {
+bool Engine::applyProjectSync(projectSync::Frame frame, double elapsed, bool first, bool *mixerChanged) {
+    if (!project_.projectSyncID || !projectSync::sameID(*project_.projectSyncID, frame.project))
+        throw std::invalid_argument("Project Sync: open the matching saved project on PC B.");
+    if (!std::isfinite(elapsed) || elapsed < 0 || elapsed > 1) throw std::invalid_argument("Stale Project Sync frame");
+    const auto &t = frame.transport;
+    auto validTime=[](double value) { return std::isfinite(value) && value >= 0 && value <= 60480000; };
+    if (!validTime(t.position) || !validTime(t.subPlay.position) || !validTime(t.editPosition) ||
+        (t.loop.start && !validTime(*t.loop.start)) || (t.loop.end && !validTime(*t.loop.end)) ||
+        (t.loop.start && t.loop.end && *t.loop.end <= *t.loop.start)) throw std::invalid_argument("Invalid Project Sync position");
+    const Song *song=nullptr;
+    for(const auto &s:project_.songs) if(t.songId==s.id) song=&s;
+    if(t.songId && !song) throw std::invalid_argument("Project Sync: project contents do not match.");
+    const auto regionExists=[&](const std::optional<ID> &id) {
+        return !id || (song && std::any_of(song->parts.begin(),song->parts.end(),[&](const auto &p){ return p.id==*id; }));
+    };
+    if(!regionExists(t.regionId) || !regionExists(t.queuedRegionId) || !regionExists(t.playbackStartRegionId) ||
+       !regionExists(t.subPlaybackStartRegionId) || !regionExists(t.ignoreNextRegionId))
+        throw std::invalid_argument("Project Sync: project regions do not match.");
+    if(t.queuedSectionMarkerId && (!song || !song->markers || !std::any_of(song->markers->begin(),song->markers->end(),[&](const auto &m){return m.id==*t.queuedSectionMarkerId;})))
+        throw std::invalid_argument("Project Sync: project markers do not match.");
+    if(frame.setlist && frame.setlist->selectedId && (!project_.regionSetlist || !std::any_of(project_.regionSetlist->playlists.begin(),project_.regionSetlist->playlists.end(),[&](const auto &p){return p.id==*frame.setlist->selectedId;})))
+        throw std::invalid_argument("Project Sync: project playlists do not match.");
+    for(const auto &time:{frame.playStart,frame.subPlayStart,t.ignoreNextAfter,t.ignoreNextEnd})
+        if(time && !validTime(*time))throw std::invalid_argument("Invalid Project Sync position");
+    if(!regionExists(frame.automaticSubplayQueue) || (t.queue.songId && !std::any_of(project_.songs.begin(),project_.songs.end(),[&](const auto &s){return s.id==*t.queue.songId;})))
+        throw std::invalid_argument("Project Sync: project queue does not match.");
+    if(t.multiLoop) {
+        const auto &m=*t.multiLoop;
+        if(!song || !validTime(m.start) || !validTime(m.end) || m.end<=m.start || m.amount<0 || m.amount>1 || !validTime(m.releasePosition) ||
+           !std::isfinite(m.config.fadeSeconds) || m.config.fadeSeconds<0 || m.config.fadeSeconds>60)
+            throw std::invalid_argument("Invalid Project Sync loop");
+        for(const auto &track:m.config.tracks) if(!std::isfinite(track.gain) || track.gain<0 || track.gain>64 ||
+            (track.id!="master" && track.id!="00000000-0000-0000-0000-000000000000" && !std::any_of(song->tracks.begin(),song->tracks.end(),[&](const auto &t){return t.id==track.id;})))
+            throw std::invalid_argument("Invalid Project Sync loop track");
+    }
+    if(frame.setlist) {
+        const auto &s=*frame.setlist;
+        if((s.automaticSubplaySeconds && (!std::isfinite(*s.automaticSubplaySeconds) || *s.automaticSubplaySeconds<1 || *s.automaticSubplaySeconds>5)) ||
+           (s.automaticSubplayBars && (*s.automaticSubplayBars<1 || *s.automaticSubplayBars>5))) throw std::invalid_argument("Invalid Project Sync timing");
+    }
+    // Validate all mixer targets before changing any project or transport state.
+    const auto validMixer=[](double volume,double pan) {
+        return std::isfinite(volume) && volume>=0 && volume<=64 && std::isfinite(pan) && pan>=-1 && pan<=1;
+    };
+    if(!validMixer(frame.mixer.masterVolume,frame.mixer.masterPan) || frame.mixer.tracks.size()>2048)
+        throw std::invalid_argument("Invalid Project Sync mixer");
+    std::map<ID,Track*> tracks;
+    for(auto &s:project_.songs) for(auto &track:s.tracks) tracks.emplace(track.id,&track);
+    std::set<ID> seen;
+    for(const auto &track:frame.mixer.tracks)
+        if(!validMixer(track.volume,track.pan) || !tracks.count(track.id) || !seen.insert(track.id).second)
+            throw std::invalid_argument("Project Sync: project tracks do not match.");
+    bool mixerEdited=false;
+    const auto assign=[&](auto &destination,const auto &value) {if(destination!=value){destination=value;mixerEdited=true;}};
+    assign(project_.masterVolume,frame.mixer.masterVolume);assign(project_.masterPan,frame.mixer.masterPan);
+    assign(project_.masterMute,frame.mixer.masterMute);assign(project_.masterSolo,frame.mixer.masterSolo);
+    for(const auto &track:frame.mixer.tracks) {
+        auto &target=*tracks.at(track.id);
+        assign(target.volume,track.volume);assign(target.pan,track.pan);assign(target.mute,track.mute);assign(target.solo,track.solo);
+    }
+    if(mixerChanged) *mixerChanged=mixerEdited;
+    const auto previous=transport_;
+    const bool command=first || receivedSyncRevision_!=frame.revision || previous.songId!=t.songId ||
+        previous.playing!=t.playing || previous.subPlay.playing!=t.subPlay.playing || previous.regionId!=t.regionId;
+    if(frame.setlist) {
+        auto next=*frame.setlist;
+        if(project_.regionSetlist) { next.playlists=project_.regionSetlist->playlists; next.blocks=project_.regionSetlist->blocks; }
+        project_.regionSetlist=std::move(next);
+    }
+    transport_=t; receivedSyncRevision_=frame.revision;
+    resumeSub_=frame.resumeSub;manualSubCursor_=frame.manualSubCursor;
+    autoRegionQueue_=frame.autoRegionQueue;automaticSubplayActive_=frame.automaticSubplayActive;
+    playStart_=frame.playStart;subPlayStart_=frame.subPlayStart;automaticSubplayQueue_=frame.automaticSubplayQueue;
+    // Compensate measured LAN transit time through the normal loop/queue rules.
+    if(elapsed>0) advance(elapsed);
+    const bool discontinuity=command || std::abs(transport_.position-previous.position)>.04 ||
+        (transport_.subPlay.playing && std::abs(transport_.subPlay.position-previous.subPlay.position)>.04);
+    if(!discontinuity) {
+        if(transport_.playing) transport_.position=previous.position;
+        if(transport_.subPlay.playing) transport_.subPlay.position=previous.subPlay.position;
+    }
+    return discontinuity;
 }
 }

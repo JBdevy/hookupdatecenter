@@ -2,6 +2,7 @@
 #include "MediaPath.h"
 #include "Automation.h"
 #include "VSHookMigration.h"
+#include "Localization.h"
 #include <deque>
 #include <climits>
 namespace catlive {
@@ -718,7 +719,7 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
 
             } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("REAPER item ignored: " + String::fromUTF8(error.what())); }
 }
-        if (jaras::isTeleprompterRole(track.role) || track.role.id == "chords") {
+        if (jaras::isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "video") {
             // Empty REAPER placeholders must not hide the actual lyrics or
             // cause the single-lane overlap validation to reject the project.
             const auto populated = track.clips;
@@ -730,6 +731,31 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
                            clip.startTime + clip.duration > other.startTime + 1e-7;
                 });
             }), track.clips.end());
+            // Match the Mac importer: recover supported items in timeline order
+            // without changing their timing. Text and media are separate layers.
+            std::vector<size_t> order;
+            for (size_t i = 0; i < track.clips.size(); ++i) order.push_back(i);
+            std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+                return track.clips[a].startTime < track.clips[b].startTime;
+            });
+            double ends[2] = {-std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
+            std::vector<bool> accepted(track.clips.size(), true);
+            for (const auto index : order) {
+                const auto &clip = track.clips[index];
+                const int layer = jaras::isTeleprompterRole(track.role) && clip.audioFile &&
+                                      clip.audioFile->path.rfind("Videos/", 0) == 0 ? 1 : 0;
+                if (ends[layer] > clip.startTime + 1e-7) {
+                    accepted[index] = false;
+                    result.warnings.addIfNotAlreadyThere(text(track.name) + " / " + text(clip.name) +
+                        " (" + String(clip.startTime, 6) + " s): " + localization::translate(
+                            "Overlapping item ignored on this special-track layer. The rest of the project was imported."));
+                } else ends[layer] = clip.startTime + clip.duration;
+            }
+            std::vector<jaras::AudioClip> recovered;
+            recovered.reserve(track.clips.size());
+            for (size_t i = 0; i < track.clips.size(); ++i)
+                if (accepted[i]) recovered.push_back(std::move(track.clips[i]));
+            track.clips = std::move(recovered);
         }
         song.tracks.push_back(track);
         if (delta < 0)

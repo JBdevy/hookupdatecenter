@@ -13,7 +13,7 @@
 <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 <key>LSApplicationCategoryType</key><string>public.app-category.music</string>
 <key>NSMicrophoneUsageDescription</key><string>CatLive records audio from the input selected for each armed track.</string>
-<key>NSLocalNetworkUsageDescription</key><string>CatLive connects directly to a nearby iPad for Remote control and shares the teleprompter on your local network when enabled.</string>
+<key>NSLocalNetworkUsageDescription</key><string>CatLive connects to a nearby iPad for Remote control, shares the teleprompter, and synchronizes playback with a paired computer on your local network when enabled.</string>
 <key>NSBonjourServices</key><array><string>_jaras-live._tcp</string></array>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleDocumentTypes</key><array><dict>

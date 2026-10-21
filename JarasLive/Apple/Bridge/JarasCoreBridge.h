@@ -1,9 +1,14 @@
 #import <Foundation/Foundation.h>
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasCoreBridge : NSObject
++ (void)setProjectSyncFollowing:(BOOL)following;
+- (void)setProjectSyncID:(NSString *)identifier;
+- (nullable NSData *)projectSyncFrameWithError:(NSError **)error NS_SWIFT_NAME(projectSyncFrame());
+- (nullable NSData *)applyProjectSyncData:(NSData *)data elapsed:(double)elapsed first:(BOOL)first error:(NSError **)error NS_SWIFT_NAME(applyProjectSync(_:elapsed:first:));
 - (BOOL)applyProjectEditData:(NSData *)data error:(NSError **)error;
 - (BOOL)applyProjectMetadataEditData:(NSData *)data preservingWaveforms:(NSArray<NSString *> *)identifiers error:(NSError **)error NS_SWIFT_NAME(applyProjectMetadataEdit(_:preservingWaveforms:));
 - (BOOL)loadProjectData:(NSData *)data error:(NSError **)error NS_SWIFT_NAME(load(projectData:));
+- (BOOL)executeAutomation:(NSString *)command target:(nullable NSString *)target value:(double)value error:(NSError **)error NS_SWIFT_NAME(executeAutomation(command:target:value:));
 - (BOOL)executeCommand:(NSString *)command target:(nullable NSString *)target value:(double)value error:(NSError **)error NS_SWIFT_NAME(execute(command:target:value:));
 - (nullable NSData *)snapshotWithError:(NSError **)error NS_SWIFT_NAME(snapshot());
 - (nullable NSData *)metadataSnapshotWithError:(NSError **)error NS_SWIFT_NAME(metadataSnapshot());

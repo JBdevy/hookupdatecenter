@@ -75,7 +75,8 @@ struct ItemHeader {
         visible = bounds.getIntersection({0, bounds.getY(), viewportWidth, std::min(17.f,bounds.getHeight())});
         const float x = visible.getX() + 2.6f, y = bounds.getY(), width = visible.getWidth();
         titleLeft = visible.getX() + 6;
-        if (!editable || width<27.3f) return;
+        if (!editable) return;
+        if (width < 26.7f) { titleLeft = visible.getRight(); return; }
         float next = x;
         auto append = [&](juce::Rectangle<float>& target, float w, float gap = 1.f) {
             if (next + w + 2 > visible.getRight()) return false;
@@ -85,13 +86,25 @@ struct ItemHeader {
         };
         const auto readoutFont = theme::semiboldFont(9);
         const auto labelWidth = [&](const String& label) { return std::ceil(GlyphArrangement::getStringWidth(readoutFont,label)) + 2.f; };
-        if (!append(gainRect,19.5f,.5f)) return;
-        if (!append(gainLabel,labelWidth(gainText(clip.gain.value_or(1))))) return;
+        const float gainWidth = labelWidth(gainText(clip.gain.value_or(1)));
+        const float panWidth = labelWidth(panText(clip.pan.value_or(0)));
+        const float nameWidth = std::max(24.f, std::ceil(GlyphArrangement::getStringWidth(readoutFont, text(clip.name)))) + 3.f;
+        const float gainThreshold = 4.6f + 23.1f + nameWidth + 19.5f + .5f + gainWidth + 1.f;
+        const float fxThreshold = gainThreshold + ((!midi || clip.fxJSON) ? 27.f : 0.f);
+        const float phaseThreshold = fxThreshold + (!midi ? 20.5f : 0.f);
+        const float panThreshold = phaseThreshold + (!midi ? 19.5f + .5f + panWidth + 1.f : 0.f);
+        if (width >= gainThreshold) {
+            append(gainRect,19.5f,.5f);
+            append(gainLabel,gainWidth);
+        } else if (width >= 2.6f + 23.1f + nameWidth + 19.5f + 1.f) {
+            append(gainRect,19.5f);
+        }
         if (!append(muteRect,22.1f)) return;
+        if (width < fxThreshold) return;
         if ((!midi || clip.fxJSON) && !append(fxRect,26)) return;
         if (!midi) {
-            if (!append(phaseRect,19.5f)) return;
-            if (!append(panRect,19.5f,.5f)) return;
+            if (width < phaseThreshold || !append(phaseRect,19.5f)) return;
+            if (width < panThreshold || !append(panRect,19.5f,.5f)) return;
             append(panLabel,labelWidth(panText(clip.pan.value_or(0))));
         }
     }

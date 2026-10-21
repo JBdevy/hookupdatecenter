@@ -77,6 +77,7 @@ final class DAWRemoteCipher {
     private let key = Curve25519.KeyAgreement.PrivateKey()
     private let role: DAWRemoteRole
     private let name: String
+    private(set) var binding = Data()
     private var outgoing: SymmetricKey?
     private var incoming: SymmetricKey?
     private var sent: UInt64 = 0
@@ -98,7 +99,7 @@ final class DAWRemoteCipher {
         var transcript = Data("Jaras Live Direct 1".utf8)
         transcript.append(role == .host ? self.hello() : hello)
         transcript.append(role == .host ? hello : self.hello())
-        let salt = Data(SHA256.hash(data: transcript))
+        let salt = Data(SHA256.hash(data: transcript)); binding = salt
         let toClient = shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: salt, sharedInfo: Data("host-to-client".utf8), outputByteCount: 32)
         let toHost = shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: salt, sharedInfo: Data("client-to-host".utf8), outputByteCount: 32)
         outgoing = role == .host ? toClient : toHost; incoming = role == .host ? toHost : toClient
@@ -148,6 +149,7 @@ final class DAWRemoteChannel {
     private var name = ""
     private var pendingBytes = 0
     private var timeout: DispatchWorkItem?
+    var sessionBinding: Data { cipher.binding }
     var onReady: ((String) -> Void)?
     var onPacket: ((DAWRemoteWire.Packet) -> Void)?
     var onClose: (() -> Void)?
@@ -626,6 +628,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         startHost()
     }
     func stop() {
+        #if os(macOS)
+        if role == .host && parentHost == nil { MainActor.assumeIsolated { ProjectSyncController.shared.setEnabled(false) } }
+        #endif
         failPendingNotices(.disconnected)
         dispatchPrecondition(condition: .onQueue(.main))
         reconnectTimer?.invalidate(); reconnectTimer = nil; reconnecting = false
@@ -692,6 +697,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             let listener = try NWListener(using: DAWRemoteChannel.parameters())
             listener.service = NWListener.Service(name: name, type: "_\(DAWRemoteWire.service)._tcp")
             startListener(listener)
+            #if os(macOS)
+            if parentHost == nil { MainActor.assumeIsolated { ProjectSyncController.shared.setEnabled(true) } }
+            #endif
         } catch { enabled = false; status = error.localizedDescription }
     }
     private func startListener(_ listener: NWListener) {
@@ -990,6 +998,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     private func received(_ packet: DAWRemoteWire.Packet, from source: DAWRemoteChannel) {
         guard channel === source, connected, enabled else { return }
         switch packet {
+        case .projectSync: return
         case .command(let command):
             guard role == .host, DAWRemoteAccessRules.allows(command, mode: accessMode) else { return }
             if handledCommands.contains(command.id) {

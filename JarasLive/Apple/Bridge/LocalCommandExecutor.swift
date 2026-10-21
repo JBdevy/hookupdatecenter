@@ -1,5 +1,9 @@
 import Foundation
 @MainActor final class LocalCommandExecutor: CommandExecutor {
+    func setProjectSyncID(_ id: UUID) { core.setProjectSyncID(id.uuidString) }
+    func executeAutomation(_ command: ShowCommand, target: UUID?, value: Double) throws { try core.executeAutomation(command: command.rawValue, target: target?.uuidString, value: value) }
+    func projectSyncFrame() throws -> Data { try core.projectSyncFrame() }
+    func applyProjectSync(_ data: Data, elapsed: Double, first: Bool) throws -> PlaybackSnapshot { try JSONDecoder().decode(PlaybackSnapshot.self, from: core.applyProjectSync(data, elapsed: elapsed, first: first)) }
     private let core: JarasCoreBridge
     private struct ClipWaveform {
         let values: [Double]
