@@ -170,6 +170,8 @@ struct SongListView: View {
         return show.allRegions.filter { !existing.contains($0.id) }
     }
     @State private var showingAutoOptions = false
+    @State private var configInitRegion: Part?
+    @State private var configInitSelection = 1
     @State private var searching = false
     @State private var query = ""
     @State private var playlistName = ""
@@ -256,11 +258,24 @@ struct SongListView: View {
                                 Toggle("Without playback", isOn: Binding(get: { show.regionSetlist.preparesWithoutPlayback }, set: { show.setPrepareWithoutPlayback($0) }))
                                 if !show.regionSetlist.preparesWithoutPlayback {
                                     Toggle("Automatic Subplay", isOn: Binding(get: { show.regionSetlist.automaticSubplay == true }, set: { show.setAutomaticSubplay($0) }))
-                                    Picker("Start before the end", selection: Binding(get: { Int(show.regionSetlist.subplayLeadTime) }, set: { show.setAutomaticSubplay(show.regionSetlist.automaticSubplay == true, seconds: Double($0)) })) {
-                                        ForEach(1...5, id: \.self) { Text("\($0)s").tag($0) }
+                                    Picker("Start before the end", selection: Binding(get: { show.regionSetlist.subplayLeadSelection }, set: { selection in
+                                        if selection == 11 {
+                                            show.setAutomaticSubplay(show.regionSetlist.automaticSubplay == true, next: true)
+                                            return
+                                        }
+                                        let count = (selection + 1) / 2
+                                        show.setAutomaticSubplay(show.regionSetlist.automaticSubplay == true,
+                                            seconds: selection % 2 == 1 ? Double(count) : nil,
+                                            bars: selection % 2 == 0 ? count : nil)
+                                    })) {
+                                        ForEach(1...5, id: \.self) { count in
+                                            Text("\(count)s").tag(count * 2 - 1)
+                                            Text(verbatim: "\(count) " + JarasLocalization.string(count == 1 ? "bar" : "bars")).tag(count * 2)
+                                        }
+                                        Text(verbatim: "Next").tag(11)
                                     }.disabled(show.regionSetlist.automaticSubplay != true)
                                 }
-                            }.toggleStyle(.automatic).padding(18).frame(width: 270)
+                            }.toggleStyle(.automatic).padding(18).frame(width: 320)
                         }
                     Button { createdBlock = show.addSetlistBlock(symbol: defaultBlockSymbol, namePrefix: JarasLocalization.string("Bloco")) } label: {
                         Text("Blocks").font(.jarasSystem(size: 9, weight: .bold)).frame(width: max(0, (geometry.size.width - 6) / 3), height: 26)
@@ -366,6 +381,7 @@ struct SongListView: View {
                                         regionExport = RegionAudioExportRequest(project: show.snapshot.project, song: current,
                                             regions: selection, mediaDirectory: mediaDirectory)
                                     }
+                                    Button("Config Init") { configInitSelection = region.subplayInitSelection; configInitRegion = region }
                                     Button("Edit song") { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: region.id, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: targets) }
                                     if region.parentRegionID == nil {
                                     Button(playlist == nil ? "Delete region" : "Remove from playlist", role: .destructive) {
@@ -484,6 +500,23 @@ struct SongListView: View {
         .sheet(item: $regionExport) { request in
             AudioExportView(project: request.project, song: request.song, mediaDirectory: request.mediaDirectory,
                             regionSelection: request.regions)
+        }
+        .sheet(item: $configInitRegion) { region in
+            VStack(alignment: .leading, spacing: 16) {
+                Text(verbatim: "Config Init").font(.jarasHeadline)
+                Text(verbatim: region.name).lineLimit(2)
+                Picker("Initial playback", selection: $configInitSelection) {
+                    ForEach(1...5, id: \.self) { count in
+                        Text("\(count)s").tag(count * 2 - 1)
+                        Text(verbatim: "\(count) " + JarasLocalization.string(count == 1 ? "bar" : "bars")).tag(count * 2)
+                    }
+                }
+                HStack {
+                    Button("Cancelar") { configInitRegion = nil }.keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("Salvar") { show.setRegionInit(region.id, selection: configInitSelection); configInitRegion = nil }.keyboardShortcut(.defaultAction)
+                }
+            }.padding(20).frame(width: 320).background(JarasTheme.panel)
         }
         .sheet(item: $multiLoopRegion) { region in MultiLoopsEditor(show: show, regionID: region.id) }
         .sheet(item: $editingEntry) { edit in

@@ -40,6 +40,7 @@ public:
     void setMarker(ID id, std::string name, double position, unsigned color, std::optional<double> bpm = {}, std::optional<int> beats = {}, std::optional<int> unit = {}, std::optional<std::string> timebase = {}, std::optional<bool> section = {}, std::optional<bool> loopSection = {});
     void setProjectTiming(double bpm, int beats, int unit, std::optional<ProjectTimeSettings> settings);
     void deleteManualMarker(const ID& id);
+    void setRegionInit(const ID& id, int count, bool bars);
     void setRegionPitch(const ID& id, int semitones, std::vector<ID> tracks, std::vector<ID> groups);
     void editRegion(const ID& id, std::string name, unsigned color, bool uppercaseName = true);
     void moveClip(const ID& clipId, double start, const ID& destination = {});

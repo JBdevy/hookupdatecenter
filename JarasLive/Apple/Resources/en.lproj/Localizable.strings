@@ -1733,3 +1733,9 @@
 "Finish recording and pending operations before importing audio." = "Finish recording and pending operations before importing audio.";
 
 "Finish recording and imports before cleaning timeline files." = "Finish recording and imports before cleaning timeline files.";
+
+"bar" = "bar";
+"bars" = "bars";
+
+"Config Init" = "Config Init";
+"Initial playback" = "Initial playback";

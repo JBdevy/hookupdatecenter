@@ -1156,7 +1156,15 @@ clipDelay.delayEnabled = true; clipDelay.delayTime = 0.01; clipDelay.delayMix = 
 itemFXAudio.previewClipFX(untreatedClipID, settings: clipDelay)
 itemFXAudio.observeEffect(untreatedClipID, effect: "Delay", active: true)
 _ = try itemFXPeak()
-precondition(itemFXAudio.spectrumFrame(untreatedClipID, effect: "Delay") != nil, "clip delay editor receives its own spectrum frame")
+// The analysis tap is asynchronous; offline rendering may finish before its
+// callback runs on a loaded CI machine. Await delivery, retaining the assertion.
+let clipSpectrumDeadline = ProcessInfo.processInfo.systemUptime + 2
+var clipDelaySpectrum = itemFXAudio.spectrumFrame(untreatedClipID, effect: "Delay")
+while clipDelaySpectrum == nil && ProcessInfo.processInfo.systemUptime < clipSpectrumDeadline {
+    Thread.sleep(forTimeInterval: 0.01)
+    clipDelaySpectrum = itemFXAudio.spectrumFrame(untreatedClipID, effect: "Delay")
+}
+precondition(clipDelaySpectrum != nil, "clip delay editor receives its own spectrum frame")
 itemFXAudio.stop()
 precondition(itemFXEngine.attachedNodes.count == afterDynamicInsert, "Stop retains prepared players and effects for immediate replay")
 try itemFXEngine.start()

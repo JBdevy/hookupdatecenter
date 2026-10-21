@@ -27,6 +27,7 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws
     func editMasterColor(_ color: UInt32) throws
     func editTrack(_ id: UUID, name: String, color: UInt32) throws
+    func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws
@@ -91,6 +92,7 @@ public extension CommandExecutor {
     func configureRegionSetlist(_ state: RegionSetlist) throws { throw BackendFailure.notConfigured }
     func resizeRegion(_ id: UUID, start: Double, end: Double) throws { throw BackendFailure.notConfigured }
     func moveRegion(_ id: UUID, start: Double) throws { throw BackendFailure.notConfigured }
+    func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws { throw BackendFailure.notConfigured }
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws { throw BackendFailure.notConfigured }
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws { throw BackendFailure.notConfigured }
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws { throw BackendFailure.notConfigured }

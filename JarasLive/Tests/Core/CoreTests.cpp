@@ -291,7 +291,65 @@ static void testFreeSecondaryCursor() {
     expect(e.transport().subPlay.playing && e.transport().subPlay.position==47, "secondary head runs past project duration through silence");
     e.execute({CommandKind::stopAll}); expect(!e.transport().subPlay.playing, "Stop All stops free secondary playback");
 }
+static void testAutomaticSubplayBars() {
+    const auto fixture=[] {
+        Project p;p.id="bar-project";p.name="Bars";
+        p.songs={{"bar-song","Timeline",240,120,{},{{"out","Outgoing",0,60},{"in","Incoming",80,200}}}};
+        p.regionSetlist=RegionSetlist{};p.regionSetlist->automaticSubplay=true;p.regionSetlist->autoAdvance=true;
+        return p;
+    };
+    const auto check=[](Project p,double trigger) {
+        Engine e;e.loadProject(p);e.execute({CommandKind::selectRegion,"out"});e.execute({CommandKind::play});
+        e.advance(trigger-.25);expect(!e.transport().subPlay.playing,"musical lead must wait for the correct boundary");
+        e.advance(.5);expect(e.transport().subPlay.playing && std::abs(e.transport().subPlay.position-80.25)<1e-8,
+            "musical lead accounts for only the elapsed time after the trigger");
+        e.advance(60-trigger-.25+.001);
+        expect(e.transport().regionId=="in" && e.transport().subPlayPromotion==1 && std::abs(e.transport().position-(140-trigger+.001))<1e-8,
+            "bar-based lead promotes queued playback without restarting it");
+    };
+    for(double bpm:{60.,120.,180.})for(auto meter:{std::pair<int,int>{4,4},{3,4},{6,8},{3,2}})for(int count=1;count<=5;++count) {
+        auto p=fixture();p.songs[0].bpm=bpm;p.songs[0].beatsPerBar=meter.first;p.songs[0].beatUnit=meter.second;
+        p.regionSetlist->automaticSubplayBars=count;p.regionSetlist->automaticSubplaySeconds=5;
+        check(p,60-count*60./bpm*meter.first*4./meter.second);
+        p.regionSetlist->automaticSubplayBars.reset();p.regionSetlist->automaticSubplaySeconds=count;
+        check(p,60-count);
+    }
+    auto changing=fixture();changing.regionSetlist->automaticSubplayBars=2;
+    TimelineMarker change{"change","Tempo",57,0};change.tempoBPM=60;change.tempoBeats=3;change.tempoUnit=4;
+    TimelineMarker next{"next","Next tempo",60,0};next.tempoBPM=300;next.tempoBeats=7;next.tempoUnit=8;
+    changing.songs[0].markers=std::vector<TimelineMarker>{next,change};
+    check(changing,55); // 1 bar at 60 BPM/3-4, then 1 bar at 120 BPM/4-4.
+    for(int count=1;count<=5;++count) {
+        auto p=fixture();p.regionSetlist->automaticSubplayNext=true;
+        p.regionSetlist->automaticSubplayBars=5;p.songs[0].parts[1].subplayInitSeconds=count;
+        check(p,60-count);
+        p.songs[0].parts[1].subplayInitBars=count;
+        TimelineMarker incoming{"incoming-tempo","Incoming",80,0};incoming.tempoBPM=60;incoming.tempoBeats=3;incoming.tempoUnit=4;
+        p.songs[0].markers=std::vector<TimelineMarker>{incoming};check(p,60-count*3);
+    }
+    auto nextTempo=fixture();nextTempo.regionSetlist->automaticSubplayNext=true;nextTempo.songs[0].parts[1].subplayInitBars=2;
+    TimelineMarker incoming{"incoming","Incoming",80,0};incoming.tempoBPM=60;incoming.tempoBeats=3;incoming.tempoUnit=4;
+    TimelineMarker internal{"internal","Internal",83,0};internal.tempoBPM=120;internal.tempoBeats=3;internal.tempoUnit=4;
+    nextTempo.songs[0].markers=std::vector<TimelineMarker>{internal,incoming};
+    check(nextTempo,55.5); // The next song's first bars last 3 + 1.5 seconds.
+    {
+        auto p=fixture();p.regionSetlist->automaticSubplayNext=true;
+        Engine e;e.loadProject(p);e.execute({CommandKind::selectRegion,"out"});e.execute({CommandKind::play});e.advance(10);
+        const auto before=e.transport();e.setRegionInit("in",3,true);
+        expect(e.transport().position==before.position && e.transport().playing && e.transport().queuedRegionId==before.queuedRegionId,
+               "Config Init edits preserve playback and the queue");
+        expect(e.currentSong()->parts[1].subplayInitBars==3,"Config Init musical bars persist");
+        e.setRegionInit("in",4,false);expect(!e.currentSong()->parts[1].subplayInitBars && e.currentSong()->parts[1].subplayInitSeconds==4,
+               "Config Init seconds replace bar mode");
+    }
+    for(int invalid:{0,6}) {
+        auto p=fixture();p.regionSetlist->automaticSubplayBars=invalid;bool rejected=false;
+        try { Engine e;e.loadProject(p); } catch(const std::invalid_argument&) {rejected=true;}
+        expect(rejected,"invalid bar counts must be rejected");
+    }
+}
 int main() {
+    testAutomaticSubplayBars();
     testFreeSecondaryCursor();
     testRegionStopRespectsQueue();
     testSubplaySurvivesOutgoingEnd();
@@ -973,6 +1031,21 @@ int main() {
     ignoredCross.advance(22); expect(!ignoredCross.transport().subPlay.playing, "Ignore Next lead time uses the real current audio end");
     ignoredCross.advance(2); expect(ignoredCross.transport().subPlay.playing && ignoredCross.transport().subPlay.position == 81, "Ignore Next starts queue before its shortened boundary");
     ignoredCross.advance(1); expect(ignoredCross.transport().position == 82 && ignoredCross.transport().subPlayPromotion == 1, "Ignore Next preserves the automatic subplay handoff");
+    for(bool bars:{false,true}) {
+        auto nextIgnoreProject=ignoredCrossProject;nextIgnoreProject.regionSetlist->automaticSubplayNext=true;
+        nextIgnoreProject.regionSetlist->automaticSubplaySeconds=5;
+        for(auto& part:nextIgnoreProject.songs[0].parts)if(part.id=="ignore-queue") {
+            if(bars)part.subplayInitBars=1;else part.subplayInitSeconds=2;
+        }
+        TimelineMarker initTempo{"init-tempo","Init",80,0};initTempo.tempoBPM=60;initTempo.tempoBeats=2;initTempo.tempoUnit=4;
+        if(!nextIgnoreProject.songs[0].markers)nextIgnoreProject.songs[0].markers=std::vector<TimelineMarker>{};
+        nextIgnoreProject.songs[0].markers->push_back(initTempo);
+        Engine e;e.loadProject(nextIgnoreProject);e.execute({CommandKind::selectRegion,"ignore-first"});e.execute({CommandKind::play});
+        e.execute({CommandKind::queueRegion,"ignore-queue"});e.execute({CommandKind::ignoreNext});
+        e.advance(22);expect(!e.transport().subPlay.playing,"Next waits for the Ignore Next audio boundary");
+        e.advance(2);expect(e.transport().subPlay.playing && e.transport().subPlay.position==81,"Next uses the queued song's configured lead");
+        e.advance(1);expect(e.transport().position==82 && e.transport().subPlayPromotion==1,"Next finishes its configured intro exactly at Ignore Next handoff");
+    }
     auto readyProject = regionShow; readyProject.regionSetlist->prepareWithoutPlayback = true; readyProject.regionSetlist->automaticSubplay = true;
     Engine ready; ready.loadProject(readyProject);
     ready.execute({CommandKind::selectRegion, "r1"}); ready.execute({CommandKind::play});

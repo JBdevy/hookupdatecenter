@@ -181,6 +181,7 @@ void validateClipFXJSON(const std::string& json) {
 void validateRegionSetlist(const Project& p, const RegionSetlist& state) {
     auto require = [](bool valid, const char* message) { if (!valid) throw std::invalid_argument(message); };
     require(!state.automaticSubplaySeconds || (std::isfinite(*state.automaticSubplaySeconds) && *state.automaticSubplaySeconds >= 1 && *state.automaticSubplaySeconds <= 5), "Automatic Subplay time must be between 1 and 5 seconds");
+    require(!state.automaticSubplayBars || (*state.automaticSubplayBars >= 1 && *state.automaticSubplayBars <= 5), "Automatic Subplay bars must be between 1 and 5");
     std::set<ID> ids{p.id};
     for (const auto& song : p.songs) {
         ids.insert(song.id);
@@ -414,6 +415,8 @@ void validate(const Project& p) {
                 require(parent != s.parts.end() && !parent->parentRegionID && parent->id != part.id && part.startTime >= parent->startTime && part.endTime <= parent->endTime, "Invalid unified region");
             }
             require(!part.color || *part.color <= 0xFFFFFF, "Invalid region color");
+            require(!part.subplayInitSeconds || (finite(*part.subplayInitSeconds) && *part.subplayInitSeconds >= 1 && *part.subplayInitSeconds <= 5), "Invalid Config Init seconds");
+            require(!part.subplayInitBars || (*part.subplayInitBars >= 1 && *part.subplayInitBars <= 5), "Invalid Config Init bars");
             require(finite(part.startTime) && finite(part.endTime) && part.startTime >= 0 && part.endTime > part.startTime && part.endTime <= s.duration, "Invalid part interval");
         }
         std::sort(regionEdges.begin(), regionEdges.end());

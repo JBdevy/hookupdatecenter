@@ -28,6 +28,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)addRecordedClip:(NSData *)data track:(NSString *)track error:(NSError **)error;
 - (BOOL)editMasterColor:(unsigned int)color error:(NSError **)error;
 - (BOOL)editTrack:(NSString *)identifier name:(NSString *)name color:(unsigned int)color error:(NSError **)error;
+- (BOOL)setRegionInit:(NSString *)identifier count:(int)count bars:(BOOL)bars error:(NSError **)error;
 - (BOOL)setRegionPitch:(NSString *)identifier semitones:(int)semitones tracks:(NSArray<NSString *> *)tracks groups:(NSArray<NSString *> *)groups error:(NSError **)error;
 - (BOOL)editRegion:(NSString *)identifier name:(NSString *)name color:(unsigned int)color uppercaseName:(BOOL)uppercaseName error:(NSError **)error;
 - (BOOL)moveClip:(NSString *)clipId start:(double)start track:(NSString *)trackId error:(NSError **)error;

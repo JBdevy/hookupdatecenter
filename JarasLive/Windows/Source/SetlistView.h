@@ -923,17 +923,29 @@ class Workspace::Setlist final : public Component,
             for(auto *button : {&untilBlock,&withoutPlayback,&subplay}) addAndMakeVisible(button);
             addAndMakeVisible(leadLabel);addAndMakeVisible(lead);
             lead.setComponentID("autoSubplayLead");
-            for(int i=1;i<=5;++i)lead.addItem(String(i)+"s",i);
+            for(int i=1;i<=5;++i) {
+                lead.addItem(String(i)+"s",i*2-1);
+                lead.addItem(String(i)+" "+localization::translate(i==1?"bar":"bars"),i*2);
+            }
+            lead.addItem("Next",11);
             untilBlock.onClick=[this]{auto next=read();next.autoUntilBlockEnd=untilBlock.getToggleState();write(next);sync();};
             withoutPlayback.onClick=[this]{auto next=read();next.prepareWithoutPlayback=withoutPlayback.getToggleState();write(next);sync();};
             subplay.onClick=[this]{auto next=read();next.automaticSubplay=subplay.getToggleState();write(next);sync();};
-            lead.onChange=[this]{auto next=read();next.automaticSubplaySeconds=lead.getSelectedId();write(next);};
+            lead.onChange=[this]{
+                const int selection=lead.getSelectedId();if(selection<1)return;
+                auto next=read();const int count=(selection+1)/2;
+                next.automaticSubplayNext=selection==11;
+                if(selection==11){write(next);return;}
+                if(selection%2==0)next.automaticSubplayBars=count;
+                else {next.automaticSubplayBars.reset();next.automaticSubplaySeconds=count;}
+                write(next);
+            };
             sync();
         }
         void resized() override {
             const int width=getWidth()-36;
             untilBlock.setBounds(18,12,width,38);withoutPlayback.setBounds(18,60,width,28);
-            subplay.setBounds(18,102,width,28);leadLabel.setBounds(18,144,width-70,28);lead.setBounds(getWidth()-84,144,66,28);
+            subplay.setBounds(18,102,width,28);leadLabel.setBounds(18,144,width-134,28);lead.setBounds(getWidth()-148,144,130,28);
         }
       private:
         ToggleButton untilBlock,withoutPlayback,subplay;
@@ -946,7 +958,7 @@ class Workspace::Setlist final : public Component,
             untilBlock.setToggleState(state.autoUntilBlockEnd,dontSendNotification);
             withoutPlayback.setToggleState(hidden,dontSendNotification);
             subplay.setToggleState(state.automaticSubplay.value_or(false),dontSendNotification);
-            lead.setSelectedId(jlimit(1,5,(int)state.automaticSubplaySeconds.value_or(1)),dontSendNotification);
+            lead.setSelectedId(state.automaticSubplayNext.value_or(false) ? 11 : state.automaticSubplayBars ? jlimit(1,5,*state.automaticSubplayBars)*2 : jlimit(1,5,(int)state.automaticSubplaySeconds.value_or(1))*2-1,dontSendNotification);
             subplay.setVisible(!hidden);leadLabel.setVisible(!hidden);lead.setVisible(!hidden);
             lead.setEnabled(state.automaticSubplay.value_or(false));leadLabel.setEnabled(state.automaticSubplay.value_or(false));
             setSize(350,hidden?106:190);
@@ -959,6 +971,47 @@ class Workspace::Setlist final : public Component,
             [self](jaras::RegionSetlist next){if(self)self->apply(std::move(next));});
         CallOutBox::launchAsynchronously(std::move(panel),automatic.getScreenBounds(),nullptr);
     }
+    class ConfigInitPanel final : public Component {
+      public:
+        ConfigInitPanel(const jaras::Part& part,std::function<void(int)> save,std::function<void()> close) {
+            name.setText(String::fromUTF8(part.name.c_str()),dontSendNotification);
+            label.setText(localization::translate("Initial playback"),dontSendNotification);
+            for(int i=1;i<=5;++i) {
+                lead.addItem(String(i)+"s",i*2-1);
+                lead.addItem(String(i)+" "+localization::translate(i==1?"bar":"bars"),i*2);
+            }
+            lead.setSelectedId(part.subplayInitBars ? jlimit(1,5,*part.subplayInitBars)*2 : jlimit(1,5,(int)part.subplayInitSeconds.value_or(1))*2-1,dontSendNotification);
+            apply.setButtonText(localization::translate("Save"));cancel.setButtonText(localization::translate("Cancel"));
+            apply.onClick=[this,save]{save(lead.getSelectedId());};cancel.onClick=std::move(close);
+            for(Component* child:std::initializer_list<Component*>{&name,&label,&lead,&apply,&cancel}) addAndMakeVisible(child);
+        }
+        void resized() override {
+            name.setBounds(18,12,getWidth()-36,26);label.setBounds(18,48,getWidth()-172,28);
+            lead.setBounds(getWidth()-148,48,130,28);cancel.setBounds(18,100,100,30);apply.setBounds(getWidth()-118,100,100,30);
+        }
+      private:
+        Label name,label;ComboBox lead;TextButton apply,cancel;
+    };
+    void configInit(Entry entry) {
+        const auto* song=w.session.song();if(!song)return;
+        const auto at=std::find_if(song->parts.begin(),song->parts.end(),[&](const auto& p){return p.id==entry.id;});
+        if(at==song->parts.end())return;
+        auto self=SafePointer<Setlist>(this);
+        auto close=[self]{if(self)for(auto* child:self->w.getChildren())if(auto* sheet=dynamic_cast<ModalSheet*>(child);sheet&&sheet->getName()=="Config Init"){sheet->exitModalState(0);break;}};
+        auto save=[self,entry,close](int selection){
+            if(!self || selection<1 || selection>10)return;
+            try {
+                self->w.session.edit([&](jaras::Project& project){
+                    for(auto& song:project.songs)for(auto& part:song.parts)if(part.id==entry.id){
+                        if(selection%2==0)part.subplayInitBars=(selection+1)/2;
+                        else {part.subplayInitBars.reset();part.subplayInitSeconds=(selection+1)/2;}
+                    }
+                },false);
+                close();
+            } catch(const std::exception& e){self->w.showError(String::fromUTF8(e.what()));}
+        };
+        ModalSheet::open(w,"Config Init",std::make_unique<ConfigInitPanel>(*at,save,close),360,150);
+    }
     void contextMenu(Entry entry) {
         if (entry.block) { editEntry(entry); return; }
         auto targets = selectedEntryIDs();
@@ -969,6 +1022,7 @@ class Workspace::Setlist final : public Component,
         menu.addItem(2, String::fromUTF8("Detectar BPM…"));
         menu.addItem(3, String::fromUTF8("Exportar áudio"));
         menu.addItem(4, String::fromUTF8("Editar música"));
+        menu.addItem(6,"Config Init");
         if (!entry.child) menu.addItem(5, selectedPlaylist() ? "Remover da playlist" : String::fromUTF8("Excluir região"));
         const auto playlist = selectedPlaylist() ? selectedPlaylist()->id : ID{};
         menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({Desktop::getMousePosition().x,Desktop::getMousePosition().y,1,1}),
@@ -978,6 +1032,7 @@ class Workspace::Setlist final : public Component,
                 if(action==2)self->w.detectRegions(targets);
                 if(action==3)self->w.exportRegions(targets);
                 if(action==4)self->editEntry(entry,targets);
+                if(action==6)self->configInit(entry);
                 if(action==5){
                     if(playlist.empty()) self->w.deleteRegions({entry.id},true);
                     else self->w.confirm("Remover da playlist", String::fromUTF8("Remover esta música da playlist?"), [self,entry,playlist] {

@@ -69,6 +69,7 @@ import Foundation
     }
     func editMasterColor(_ color: UInt32) throws { try core.editMasterColor(color) }
     func editTrack(_ id: UUID, name: String, color: UInt32) throws { try core.editTrack(id.uuidString, name: name, color: color) }
+    func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws { try core.setRegionInit(id.uuidString, count: Int32(count), bars: bars) }
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws { try core.setRegionPitch(id.uuidString, semitones: Int32(semitones), tracks: tracks.map(\.uuidString), groups: groups.map(\.uuidString)) }
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws { try core.editRegion(id.uuidString, name: name, color: color, uppercaseName: uppercaseName) }
     func moveClip(_ id: UUID, start: Double, track: UUID?) throws { try core.moveClip(id.uuidString, start: start, track: track?.uuidString ?? "") }

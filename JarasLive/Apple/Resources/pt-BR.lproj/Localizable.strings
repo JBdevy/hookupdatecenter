@@ -1767,3 +1767,9 @@
 "Finish recording and pending operations before importing audio." = "Conclua a gravação e as operações pendentes antes de importar áudio.";
 
 "Finish recording and imports before cleaning timeline files." = "Conclua a gravação e as importações antes de limpar os arquivos da timeline.";
+
+"bar" = "compasso";
+"bars" = "compassos";
+
+"Config Init" = "Config Init";
+"Initial playback" = "Reprodução inicial";

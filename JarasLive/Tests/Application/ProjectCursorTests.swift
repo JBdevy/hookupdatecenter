@@ -53,11 +53,53 @@ import XCTest
     func snapshot() throws -> ShowSnapshot { snapshotCount += 1; return ShowSnapshot(project: project, transport: transport) }
     func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: transport) }
     func configureRegionSetlist(_ state: RegionSetlist) throws { project.regionSetlist = state }
+    func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws {
+        for s in project.songs.indices { for r in project.songs[s].parts.indices where project.songs[s].parts[r].id == id {
+            if bars { project.songs[s].parts[r].subplayInitBars = count }
+            else { project.songs[s].parts[r].subplayInitBars = nil; project.songs[s].parts[r].subplayInitSeconds = Double(count) }
+        } }
+    }
     func advance(_ elapsed: Double) { transport.position += elapsed }
     func finishCurrentSong(_ enabled: Bool) {}
 }
 
 final class ProjectCursorTests: XCTestCase {
+    @MainActor func testAutomaticSubplaySecondsAndBarsPersistAndSwitchUnits() throws {
+        var project = Project.demo()
+        project.songs[0].parts = [Part(id: UUID(), name: "Next song", startTime: 0, endTime: 60)]
+        project.songs[0].duration = max(project.songs[0].duration, 60)
+        let show = try ShowController(executor: CursorExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertEqual(show.regionSetlist.subplayLeadSelection, 1)
+        for count in 1...5 {
+            show.setAutomaticSubplay(true, bars: count)
+            XCTAssertEqual(show.regionSetlist.automaticSubplayBars, count)
+            XCTAssertEqual(show.regionSetlist.subplayLeadSelection, count * 2)
+            show.setAutomaticSubplay(false)
+            XCTAssertEqual(show.regionSetlist.automaticSubplayBars, count)
+            let restored = try JSONDecoder().decode(RegionSetlist.self, from: JSONEncoder().encode(show.regionSetlist))
+            XCTAssertEqual(restored, show.regionSetlist)
+            show.setAutomaticSubplay(true, seconds: Double(count))
+            XCTAssertNil(show.regionSetlist.automaticSubplayBars)
+            XCTAssertEqual(show.regionSetlist.subplayLeadSelection, count * 2 - 1)
+        }
+        show.setAutomaticSubplay(true, next: true)
+        XCTAssertEqual(show.regionSetlist.subplayLeadSelection, 11)
+        show.setAutomaticSubplay(false)
+        XCTAssertEqual(show.regionSetlist.subplayLeadSelection, 11)
+        let next = try JSONDecoder().decode(RegionSetlist.self, from: JSONEncoder().encode(show.regionSetlist))
+        XCTAssertTrue(next.automaticSubplayNext == true)
+        show.setAutomaticSubplay(true, bars: 2)
+        XCTAssertFalse(show.regionSetlist.automaticSubplayNext == true)
+        let region = try XCTUnwrap(show.current?.parts.first)
+        show.setRegionInit(region.id, selection: 6)
+        XCTAssertEqual(show.current?.parts.first?.subplayInitBars, 3)
+        show.setRegionInit(region.id, selection: 3)
+        XCTAssertNil(show.current?.parts.first?.subplayInitBars)
+        XCTAssertEqual(show.current?.parts.first?.subplayInitSeconds, 2)
+        let legacy = try JSONDecoder().decode(RegionSetlist.self, from: Data(#"{"playlists":[],"autoAdvance":false,"automaticSubplay":true,"automaticSubplaySeconds":3}"#.utf8))
+        XCTAssertNil(legacy.automaticSubplayBars)
+        XCTAssertEqual(legacy.subplayLeadSelection, 5)
+    }
     @MainActor func testHeaderClickPausesFollowWithoutSeekingOrChangingRegionSelection() throws {
         var project = Project.empty(name: "Header navigation")
         let part = Part(id: UUID(), name: "Song", startTime: 10, endTime: 40)

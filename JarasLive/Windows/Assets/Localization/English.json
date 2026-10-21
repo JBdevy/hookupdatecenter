@@ -1315,5 +1315,9 @@
   "Conclua a gravação antes de importar mídia.": "Finish recording before importing media.",
   "Conclua a gravação antes de renderizar itens.": "Finish recording before rendering items.",
   "Conclua a gravação antes de exportar.": "Finish recording before exporting.",
-  "Não foi possível atualizar o áudio do projeto.": "Could not update the project audio."
+  "Não foi possível atualizar o áudio do projeto.": "Could not update the project audio.",
+  "bar": "bar",
+  "bars": "bars",
+  "Config Init": "Config Init",
+  "Initial playback": "Initial playback"
 }

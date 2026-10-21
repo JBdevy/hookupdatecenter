@@ -1315,5 +1315,9 @@
   "Conclua a gravação antes de importar mídia.": "Conclua a gravação antes de importar mídia.",
   "Conclua a gravação antes de renderizar itens.": "Conclua a gravação antes de renderizar itens.",
   "Conclua a gravação antes de exportar.": "Conclua a gravação antes de exportar.",
-  "Não foi possível atualizar o áudio do projeto.": "Não foi possível atualizar o áudio do projeto."
+  "Não foi possível atualizar o áudio do projeto.": "Não foi possível atualizar o áudio do projeto.",
+  "bar": "compasso",
+  "bars": "compassos",
+  "Config Init": "Config Init",
+  "Initial playback": "Reprodução inicial"
 }

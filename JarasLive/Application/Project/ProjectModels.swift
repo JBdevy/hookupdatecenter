@@ -155,6 +155,12 @@ public struct Part: Codable, Identifiable, Equatable, Sendable {
     public var pitchGroupIDs: [UUID]? = nil
     public var multiLoops: [MultiLoop]? = nil
     public var totalLoop: Bool? = nil
+    public var subplayInitSeconds: Double? = nil
+    public var subplayInitBars: Int? = nil
+    public var subplayInitSelection: Int {
+        if let bars = subplayInitBars { return min(5, max(1, bars)) * 2 }
+        return Int(min(5, max(1, subplayInitSeconds ?? 1))) * 2 - 1
+    }
     public var semitones: Int { pitchSemitones ?? 0 }
     public var usesUppercase: Bool { uppercaseName ?? true }
     public var displayName: String {
@@ -354,6 +360,13 @@ public struct RegionSetlist: Codable, Equatable, Sendable {
     public var autoUntilBlockEnd: Bool?
     public var automaticSubplay: Bool?
     public var automaticSubplaySeconds: Double?
+    public var automaticSubplayBars: Int?
+    public var automaticSubplayNext: Bool?
+    public var subplayLeadSelection: Int {
+        if automaticSubplayNext == true { return 11 }
+        if let bars = automaticSubplayBars { return min(5, max(1, bars)) * 2 }
+        return Int(subplayLeadTime) * 2 - 1
+    }
     public var subplayLeadTime: Double { min(5, max(1, automaticSubplaySeconds ?? 1)) }
     public var prepareWithoutPlayback: Bool?
     public var preparesWithoutPlayback: Bool { prepareWithoutPlayback ?? false }

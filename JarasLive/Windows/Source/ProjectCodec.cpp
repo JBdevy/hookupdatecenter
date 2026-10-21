@@ -662,6 +662,8 @@ jaras::Project ProjectCodec::decode(const var &input) {
             optionalNum(rp, "color", part.color);
             optionalText(rp, "parentRegionID", part.parentRegionID);
             optionalNum(rp, "uppercaseName", part.uppercaseName);
+            optionalNum(rp, "subplayInitSeconds", part.subplayInitSeconds);
+            optionalNum(rp, "subplayInitBars", part.subplayInitBars);
             optionalNum(rp, "pitchSemitones", part.pitchSemitones);
             optionalNum(rp, "totalLoop", part.totalLoop);
             optionalIDs(rp, "pitchTrackIDs", part.pitchTrackIDs);
@@ -722,6 +724,8 @@ jaras::Project ProjectCodec::decode(const var &input) {
         optionalNum(rs, "stopAtRegionEnd", state.stopAtRegionEnd);
         optionalNum(rs, "automaticSubplay", state.automaticSubplay);
         optionalNum(rs, "automaticSubplaySeconds", state.automaticSubplaySeconds);
+        optionalNum(rs, "automaticSubplayBars", state.automaticSubplayBars);
+        optionalNum(rs, "automaticSubplayNext", state.automaticSubplayNext);
         optionalNum(rs, "prepareWithoutPlayback", state.prepareWithoutPlayback);
         optionalNum(rs, "liveEnabled", state.liveEnabled);
         optionalIDs(rs, "playedLiveRegionIDs", state.playedLiveRegionIDs);
@@ -980,6 +984,8 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
             emit(rp, "color", part.color);
             emit(rp, "parentRegionID", part.parentRegionID);
             emit(rp, "uppercaseName", part.uppercaseName);
+            emit(rp, "subplayInitSeconds", part.subplayInitSeconds);
+            emit(rp, "subplayInitBars", part.subplayInitBars);
             emit(rp, "pitchSemitones", part.pitchSemitones);
             emit(rp, "totalLoop", part.totalLoop);
             if (part.pitchTrackIDs)
@@ -1046,6 +1052,8 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
         emit(rs, "prepareWithoutPlayback", state.prepareWithoutPlayback);
         emit(rs, "automaticSubplay", state.automaticSubplay);
         emit(rs, "automaticSubplaySeconds", state.automaticSubplaySeconds);
+        emit(rs, "automaticSubplayBars", state.automaticSubplayBars);
+        emit(rs, "automaticSubplayNext", state.automaticSubplayNext);
         emit(rs, "liveEnabled", state.liveEnabled);
         if (state.playedLiveRegionIDs)
             put(rs, "playedLiveRegionIDs", idsJSON(*state.playedLiveRegionIDs));

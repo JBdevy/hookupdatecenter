@@ -439,6 +439,21 @@ int runTests(const File &directory) {
         expect(notes[0].velocity==4 && notes[3].velocity==50 && notes[7].velocity==100,"MIDI fade velocity differs from Mac");
         expect(clip.midi->notes[0].velocity==100,"Fade destroyed source MIDI velocities");
     });
+    test("Automatic Subplay seconds and bars survive Windows project serialization", [&] {
+        auto p=projectFixture();p.regionSetlist=jaras::RegionSetlist{};p.regionSetlist->automaticSubplay=true;
+        for(int count=1;count<=5;++count) {
+            p.regionSetlist->automaticSubplayBars=count;p.regionSetlist->automaticSubplaySeconds=3;
+            p.regionSetlist->automaticSubplayNext=true;p.songs[0].parts[0].subplayInitBars=count;p.songs[0].parts[1].subplayInitSeconds=count;
+            const auto restored=ProjectCodec::decode(ProjectCodec::encode(p,{}));
+            expect(restored.regionSetlist->automaticSubplayBars==count && restored.regionSetlist->automaticSubplaySeconds==3,
+                "Windows codec lost Subplay units or count");
+            expect(restored.regionSetlist->automaticSubplayNext.value_or(false) && restored.songs[0].parts[0].subplayInitBars==count && restored.songs[0].parts[1].subplayInitSeconds==count,"Windows codec lost Next or Config Init");
+            p.regionSetlist->automaticSubplayBars.reset();p.regionSetlist->automaticSubplaySeconds=count;
+            const auto seconds=ProjectCodec::decode(ProjectCodec::encode(p,{}));
+            expect(!seconds.regionSetlist->automaticSubplayBars && seconds.regionSetlist->automaticSubplaySeconds==count,
+                "Seconds mode unexpectedly became musical bars");
+        }
+    });
     test("Edit cursor selects setlist songs without changing playback or queue", [&] {
         Session session; auto p=projectFixture(); auto &song=p.songs[0];
         const auto first=song.parts[0].id, second=song.parts[1].id;

@@ -36,6 +36,9 @@ int main(int argc,char**argv){@autoreleasepool{
     expect(equalJSON(original,snapshot[@"project"]),"bridge round trip preserves all fields and clips");
     expect([snapshot[@"project"][@"songs"][0][@"regionOwnershipVersion"] intValue] == 3,
            "native snapshots retain versioned region ownership so loose items are not migrated again");
+    expect([snapshot[@"project"][@"regionSetlist"][@"automaticSubplayNext"] boolValue], "Next mode survives the native bridge");
+    expect([snapshot[@"project"][@"songs"][0][@"parts"][0][@"subplayInitSeconds"] intValue]==3 && [snapshot[@"project"][@"songs"][0][@"parts"][1][@"subplayInitBars"] intValue]==2,
+           "per-song Config Init seconds and bars survive the native bridge");
     expectMetadataSnapshot(core,snapshot);
     expect([core executeCommand:@"toggleMultiLoopBypass" target:nil value:0 error:&error], "global bypass command reaches engine");
     NSDictionary* bypassState=[NSJSONSerialization JSONObjectWithData:[core playbackSnapshotWithError:&error] options:0 error:&error];
@@ -72,11 +75,13 @@ int main(int argc,char**argv){@autoreleasepool{
     stopList[@"stopAtRegionEnd"] = @YES;
     stopList[@"prepareWithoutPlayback"] = @YES;
     stopList[@"automaticSubplay"] = @YES; stopList[@"automaticSubplaySeconds"] = @3;
+    stopList[@"automaticSubplayBars"] = @4;
     stopList[@"autoUntilBlockEnd"] = @YES;
     stopList[@"liveEnabled"] = @NO;
     expect([core configureRegionSetlistData:[NSJSONSerialization dataWithJSONObject:stopList options:0 error:&error] error:&error], "enable region Stop through bridge");
     NSDictionary* stopSnapshot = [NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplay"] boolValue] && [stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplaySeconds"] doubleValue] == 3, "automatic subplay settings survive native serialization");
+    expect([stopSnapshot[@"project"][@"regionSetlist"][@"automaticSubplayBars"] intValue] == 4, "automatic subplay bars survive native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"prepareWithoutPlayback"] boolValue], "prepare without playback survives native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"stopAtRegionEnd"] boolValue], "region Stop survives native serialization");
     expect([stopSnapshot[@"project"][@"regionSetlist"][@"autoUntilBlockEnd"] boolValue], "block queue limit survives native serialization");

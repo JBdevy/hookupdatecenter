@@ -466,9 +466,14 @@ public struct ShowTimelinePresentationState: Equatable {
         guard forceReveal || changedPlaylist || focusedRegion != region.id else { return }
         focusedRegion = region.id; setlistFocusRequest = UUID()
     }
-    public func setAutomaticSubplay(_ enabled: Bool, seconds: Double? = nil) {
+    public func setAutomaticSubplay(_ enabled: Bool, seconds: Double? = nil, bars: Int? = nil, next: Bool? = nil) {
         var state = regionSetlist; state.automaticSubplay = enabled
-        if let seconds, seconds.isFinite { state.automaticSubplaySeconds = min(5, max(1, seconds)) }
+        if let seconds, seconds.isFinite {
+            state.automaticSubplaySeconds = min(5, max(1, seconds)); state.automaticSubplayBars = nil
+        }
+        if let bars { state.automaticSubplayBars = min(5, max(1, bars)) }
+        if seconds != nil || bars != nil { state.automaticSubplayNext = false }
+        if let next { state.automaticSubplayNext = next }
         _ = configureRegionSetlist(state)
     }
     public func toggleRegionAuto() {
@@ -2691,6 +2696,21 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         guard let selected = song.parts.first(where: { $0.id == focusedRegion }) ?? song.parts.first(where: { $0.id == snapshot.transport.regionId }) else { return nil }
         return song.parts.filter { $0.parentRegionID == selected.id }.min { $0.startTime < $1.startTime } ?? selected
+    }
+    public func setRegionInit(_ id: UUID, selection: Int) {
+        guard canExecute(), !finishing, (1...10).contains(selection),
+              let song = snapshot.project.songs.firstIndex(where: { $0.id == snapshot.transport.songId }),
+              let region = snapshot.project.songs[song].parts.firstIndex(where: { $0.id == id }) else { return }
+        let count = (selection + 1) / 2, bars = selection % 2 == 0
+        do {
+            try executor.setRegionInit(id, count: count, bars: bars)
+            if bars { snapshot.project.songs[song].parts[region].subplayInitBars = count }
+            else {
+                snapshot.project.songs[song].parts[region].subplayInitBars = nil
+                snapshot.project.songs[song].parts[region].subplayInitSeconds = Double(count)
+            }
+            markChanged(refreshAudio: false)
+        } catch { message = error.localizedDescription }
     }
     public func setRegionPitch(_ id: UUID, semitones: Int, tracks: Set<UUID>, groups: Set<UUID>) {
         guard canExecute(), !finishing, (-12...12).contains(semitones),
