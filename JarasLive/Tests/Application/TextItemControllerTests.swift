@@ -31,7 +31,9 @@ import XCTest
         throw ProjectError.invalid("Missing item")
     }
     func applyProjectEdit(_ project: Project) throws { self.project = project; fullEdits += 1 }
-    func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {}
+    func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
+        if command == .editSeek { transport.editPosition = value; if !transport.playing { transport.position = value } }
+    }
     func addTrack(id: UUID, name: String, role: TrackRole) throws {}
     func advance(_ elapsed: Double) {}
     func finishCurrentSong(_ enabled: Bool) {}
@@ -60,7 +62,8 @@ final class TextItemControllerTests: XCTestCase {
             XCTAssertEqual(clip.startTime, 27); XCTAssertEqual(clip.duration, 10)
             XCTAssertEqual(clip.text, ""); XCTAssertNil(clip.audioFile)
             XCTAssertEqual(show.current?.duration, 37)
-            XCTAssertEqual(show.snapshot.transport, transport)
+            var expected = transport; expected.editPosition = 37; expected.position = 37
+            XCTAssertEqual(show.snapshot.transport, expected)
             XCTAssertEqual(executor.snapshotReads, reads)
             XCTAssertEqual(executor.insertions, 1); XCTAssertEqual(executor.fullEdits, 0)
             XCTAssertTrue(show.hasUnsavedChanges); XCTAssertTrue(show.canUndo)
@@ -69,6 +72,19 @@ final class TextItemControllerTests: XCTestCase {
             XCTAssertTrue(show.current?.tracks.first { $0.id == track.id }?.clips.isEmpty == true)
             show.redo()
             XCTAssertEqual(show.current?.tracks.first { $0.id == track.id }?.clips.first?.id, item)
+        }
+    }
+    @MainActor func testConsecutiveTextItemsAdvanceOnlyEditCursorWhilePlaying() throws {
+        for role in ["teleprompt", "chords"] {
+            let executor = TextItemExecutor(); executor.transport.playing = true
+            let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: fixture())
+            let track = try XCTUnwrap(show.current?.tracks.first { $0.role.rawValue == role })
+            _ = try XCTUnwrap(show.addTextItem(track: track.id))
+            _ = try XCTUnwrap(show.addTextItem(track: track.id))
+            XCTAssertEqual(show.current?.tracks.first { $0.id == track.id }?.clips.map(\.startTime), [27, 37])
+            XCTAssertEqual(show.snapshot.transport.editPosition, 47)
+            XCTAssertEqual(show.snapshot.transport.position, 15)
+            XCTAssertTrue(show.snapshot.transport.playing)
         }
     }
     @MainActor func testTextCommitsOneScalarRetainsBothClocksAndAllowsUndo() throws {
@@ -112,8 +128,10 @@ final class TextItemControllerTests: XCTestCase {
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: fixture())
         let track = try XCTUnwrap(show.current?.tracks.first?.id)
         _ = try XCTUnwrap(show.addTextItem(track: track))
+        show.send(.editSeek, value: 27)
         let original = show.snapshot.project, revision = show.projectRevision, insertions = executor.insertions
         XCTAssertNil(show.addTextItem(track: track))
+        XCTAssertEqual(show.snapshot.transport.editPosition, 27)
         XCTAssertEqual(show.snapshot.project, original)
         XCTAssertEqual(show.projectRevision, revision)
         XCTAssertEqual(executor.insertions, insertions)

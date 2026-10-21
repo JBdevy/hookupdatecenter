@@ -14,6 +14,7 @@ start = layout.index('TimelineView(.periodic(')
 end = layout.index('\n', start)
 layout = layout[:start] + 'Group {' + layout[end:]
 layout = layout.replace('context.date', 'Date(timeIntervalSince1970: 1000)')
+layout = layout.replace('NSFont.jarasBoldSystemFont', 'NSFont.boldSystemFont')
 protocol = Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()
 protocol = protocol[protocol.index('struct DAWRemoteTeleprompter:'):protocol.index('struct DAWRemoteNotices:')]
 config = Path('Apple/Shared/TeleprompterConfig.swift').read_text()

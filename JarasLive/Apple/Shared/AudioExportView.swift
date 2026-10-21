@@ -129,7 +129,7 @@ struct AudioExportView: View {
             HStack(spacing: 8) {
                 ForEach(["%track","%region","%stem","%project"],id: \.self) { token in
                     Button { outputName.wrappedValue += token } label: { Text(verbatim: token).font(.jarasSystem(size: 11,design: .monospaced)) }
-                        .buttonStyle(.bordered).help(token)
+                        .buttonStyle(.bordered).jarasHelp(token)
                 }
             }
             ScrollView(showsIndicators: false) {
@@ -329,7 +329,7 @@ struct ItemAudioExportView: View {
                 HStack {
                     TextField("Directory", text: $directory).textFieldStyle(.roundedBorder)
                     Button { choosingDirectory = true } label: { Image(systemName: "folder") }
-                        .accessibilityLabel("Choose folder").help("Choose folder")
+                        .accessibilityLabel("Choose folder")
                 }
             }.disabled(session.running || session.finished)
             ScrollView {

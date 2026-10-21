@@ -78,6 +78,24 @@ class ClipAudio {
         return loopLength > 0 && source >= loopStart
             ? loopStart + std::fmod(source - loopStart, loopLength) : source;
     }
+    bool sameMapping(const ClipAudio &other) const noexcept {
+        if (start != other.start || offset != other.offset || speed != other.speed ||
+            duration != other.duration || loopStart != other.loopStart || loopLength != other.loopLength ||
+            sampleRate != other.sampleRate || segments.size() != other.segments.size() ||
+            timing.has_value() != other.timing.has_value()) return false;
+        for (size_t i=0;i<segments.size();++i) {
+            const auto &a=segments[i], &b=other.segments[i];
+            if(a.start!=b.start || a.end!=b.end || a.pitch!=b.pitch) return false;
+        }
+        if(timing) {
+            if(timing->spans.size()!=other.timing->spans.size())return false;
+            for(size_t i=0;i<timing->spans.size();++i) {
+                const auto &a=timing->spans[i], &b=other.timing->spans[i];
+                if(a.start!=b.start || a.end!=b.end || a.source!=b.source || a.rate!=b.rate)return false;
+            }
+        }
+        return true;
+    }
     std::pair<double, double> readAheadRange(double local, double seconds) const {
         const auto begin = sourcePosition(local);
         const auto end = sourcePosition(std::min(duration, local + seconds));
@@ -102,9 +120,7 @@ class ClipAudio {
                 }
             const double pitch = segment ? segment->pitch : 0;
             const int frames =
-                segment ? std::min(
-                              count - done,
-                              std::max(1, (int)std::ceil((segment->end - now) * sampleRate - 1e-7)))
+                segment ? boundedFrames((segment->end - now) * sampleRate, count - done)
                         : count - done;
             if (std::abs(pitch) < 1e-8) {
                 ok = read(reader, scratch, output, done, now, frames) && ok;
@@ -143,6 +159,11 @@ class ClipAudio {
     std::optional<ClipTempo> timing;
     double start = 0, offset = 0, speed = 1, duration = 0, loopStart = 0, loopLength = 0,
            sampleRate = 48000, preparedPitchRate = 0;
+    // Long items/loops can exceed INT_MAX samples. Clamp in floating point
+    // before narrowing, otherwise the overflow degenerates into one-frame reads.
+    static int boundedFrames(double remaining, int maximum) {
+        return (int)jlimit(1., double(maximum), std::ceil(remaining - 1e-7));
+    }
     bool read(AudioFormatReader &reader, AudioBuffer<float> &scratch, AudioBuffer<float> &output,
               int target, double local, int count) {
         bool ok = true;
@@ -157,26 +178,35 @@ class ClipAudio {
             const double rate = span ? span->rate : speed;
             const double step = reader.sampleRate / sampleRate * rate;
             const double boundary = span ? std::min(duration, span->end - start) : duration;
-            int frames = std::min(
-                {512, count - done, std::max(1, (int)((scratch.getNumSamples() - 2) / step)),
-                 std::max(1, (int)std::ceil((boundary - now) * sampleRate - 1e-7))});
+            const int limit = std::min(512, count - done);
+            const int capacity = (int)jlimit(1., double(limit),
+                                             std::floor((scratch.getNumSamples() - 2) / step));
+            int frames = std::min(capacity, boundedFrames((boundary - now) * sampleRate, limit));
             double source = timing ? timing->sourceAt(start + now) : offset + now * speed;
             if (loopLength > 0 && source >= loopStart) {
                 source = loopStart + std::fmod(source - loopStart, loopLength);
-                frames =
-                    std::min(frames, std::max(1, (int)std::ceil((loopStart + loopLength - source) /
-                                                                    rate * sampleRate -
-                                                                1e-7)));
+                frames = boundedFrames((loopStart + loopLength - source) / rate * sampleRate, frames);
             }
             const double frame = source * reader.sampleRate;
             const int64 first = (int64)std::floor(frame);
-            const int needed = (int)std::ceil(frames * step) + 2;
-            if (needed > scratch.getNumSamples()) {
+            // Unit-rate PCM already occupies the exact output sample grid.
+            // Keep the loop/tempo boundary splitting above, but avoid a second
+            // scratch copy and interpolation of samples that need no resampling.
+            // Exact equality leaves every fractional source position on the
+            // established interpolation path (including rounding near an edge).
+            if (step == 1 && frame == (double)first) {
+                ok = reader.read(&output, target + done, frames, first, true, true) && ok;
+                done += frames;
+                continue;
+            }
+            const double required = std::ceil(frames * step) + 2;
+            if (!std::isfinite(required) || required > scratch.getNumSamples()) {
                 output.clear(target + done, frames);
                 ok = false;
                 done += frames;
                 continue;
             }
+            const int needed = (int)required;
             scratch.clear(0, needed);
             if (!reader.read(&scratch, 0, needed, first, true, true))
                 ok = false;

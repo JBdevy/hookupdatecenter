@@ -4,8 +4,8 @@ let item = GridSelectionItem(id: UUID(), rect: CGRect(x: 100, y: 100, width: 400
 for (point, expected) in [(CGPoint(x: 250, y: 145), TimelineItemTouchGesture.Action.move),
                           (CGPoint(x: 101, y: 140), .resize(left: true)),
                           (CGPoint(x: 499, y: 140), .resize(left: false)),
-                          (CGPoint(x: 102, y: 116), .fade(left: true)),
-                          (CGPoint(x: 498, y: 116), .fade(left: false))] {
+                          (CGPoint(x: item.fadeHandleRect(true)!.midX, y: item.fadeHandleRect(true)!.midY), .fade(left: true)),
+                          (CGPoint(x: item.fadeHandleRect(false)!.midX, y: item.fadeHandleRect(false)!.midY), .fade(left: false))] {
     var gesture = TimelineItemTouchGesture(item: item, start: point)
     precondition(gesture.action == expected && !gesture.hasDragged)
     if case .fade = expected { precondition(!gesture.shouldSeek) }
@@ -36,7 +36,7 @@ MainActor.assumeIsolated {
     let bitmap = NSBitmapImageRep(cgImage: image)
     // Fade endpoints and curved midpoints are real foreground pixels; no Metal
     // source geometry or gain transform is involved in this overlay.
-    for point in [CGPoint(x: 1, y: 77), CGPoint(x: 100, y: 45), CGPoint(x: 200, y: 14), CGPoint(x: 300, y: 45), CGPoint(x: 398, y: 77)] {
+    for point in [CGPoint(x: 1, y: 77), CGPoint(x: 100, y: 45), CGPoint(x: 200, y: item.fadeTop - item.rect.minY), CGPoint(x: 300, y: 45), CGPoint(x: 398, y: 77)] {
         var found = false
         for dy in -2...2 { for dx in -2...2 {
             let x = min(399, max(0, Int(point.x) + dx)), y = min(79, max(0, Int(point.y) + dy))

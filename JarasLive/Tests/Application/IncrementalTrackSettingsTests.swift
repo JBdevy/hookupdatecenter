@@ -152,6 +152,31 @@ private actor PresentationSaveStore: ProjectPersistence {
 }
 
 final class IncrementalTrackSettingsTests: XCTestCase {
+    @MainActor func testAppendingImportedTracksPreservesLiveTransportAndProjectSession() throws {
+        let (controller, executor) = try show(fixture())
+        let before = controller.snapshot, session = controller.projectSessionID
+        var imported = before.project
+        var track = Track(id: UUID(), name: "Imported", role: .other)
+        track.clips = [AudioClip(id: UUID(), name: "New", startTime: 65, duration: 5,
+                                audioFile: AudioFile(path: "Stems/imported.wav"))]
+        imported.songs[0].tracks.append(track)
+        var updates: [ShowSnapshot] = []
+        controller.audioUpdate = { snapshot, _ in updates.append(snapshot) }
+        try controller.applyImportedProject(imported)
+        XCTAssertEqual(controller.snapshot.transport, before.transport)
+        XCTAssertTrue(controller.snapshot.transport.playing)
+        XCTAssertEqual(controller.projectSessionID, session, "Appending must not enter a new project session")
+        XCTAssertEqual(controller.current?.tracks.last?.id, track.id)
+        XCTAssertEqual(executor.fullEdits, 1)
+        XCTAssertFalse(executor.mixerCommands.contains(.stopAll))
+        XCTAssertEqual(updates.last?.project.songs[0].tracks.last?.id, track.id)
+        XCTAssertTrue(controller.hasUnsavedChanges)
+        controller.undo()
+        XCTAssertEqual(controller.snapshot.project, before.project)
+        XCTAssertEqual(controller.snapshot.transport, before.transport)
+        XCTAssertThrowsError(try controller.applyImportedProject(.empty(name: "Other")))
+        XCTAssertEqual(controller.snapshot.project, before.project)
+    }
     @MainActor func testMixerSlotCopiesNativeParametersAndBypassWithoutMovingSource() throws {
         var project = fixture()
         var sourceFX = NativeFXSettings(); sourceFX.appendNative("EQ"); sourceFX.bands[2].gain = -9
@@ -886,6 +911,13 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(converted, clips, "Channel conversion preserves source paths, gain, FX, mute and position")
         show.undo(); XCTAssertEqual(show.snapshot.project, project)
         show.redo(); XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == 3 })
+        XCTAssertTrue(show.convertItems(ids, mode: 0))
+        XCTAssertEqual(show.current!.tracks[1].clips, clips)
+        XCTAssertTrue(show.convertItems(ids, mode: 4))
+        XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == 4 })
+        try show.snapshot.project.validate()
+        show.undo(); XCTAssertEqual(show.current!.tracks[1].clips, clips)
+        show.redo(); XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == 4 })
         XCTAssertTrue(show.convertItems(ids, mode: 0))
         XCTAssertEqual(show.current!.tracks[1].clips, clips)
     }

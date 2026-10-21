@@ -52,7 +52,7 @@ struct GridItemClipboard {
             }
         }
         for (auto &entry : result) for (auto &clip : entry.clips) {
-            clip.startTime = position + clip.startTime - first;
+            clip.startTime = position + (clip.startTime - first);
             if (!moving) { clip.id = uuid(); clip.separatedStemTracks.clear(); }
         }
         return result;

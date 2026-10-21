@@ -371,8 +371,8 @@ struct EQKernel {
             inputGainInitialized=false;
         }
         const int mode=channelMode.load(std::memory_order_relaxed);
-        const double matrices[4][4]={{1,0,0,1},{1,0,1,0},{0,1,0,1},{0.5,0.5,0.5,0.5}};
-        const auto &matrixTarget=matrices[std::clamp(mode,0,3)];
+        const double matrices[5][4]={{1,0,0,1},{1,0,1,0},{0,1,0,1},{0.5,0.5,0.5,0.5},{0,1,1,0}};
+        const auto &matrixTarget=matrices[std::clamp(mode,0,4)];
         if(!inputGainInitialized) std::copy(matrixTarget,matrixTarget+4,channelMatrix);
         if(buffers->mNumberBuffers>=2 && (mode!=0 || channelMatrix[0]!=1 || channelMatrix[3]!=1)) {
             auto left=static_cast<float*>(buffers->mBuffers[0].mData);
@@ -536,7 +536,7 @@ struct EQKernel {
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.configure(std::max(0.0,fadeIn),std::max(0.0,fadeOut),std::max(0.0,duration),position,hostTime,sampleTime,inCurve,inS,outCurve,outS);
 }
 + (void)setInputChannelMode:(AVAudioUnitEffect *)node mode:(int)mode {
-    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.channelMode.store(std::clamp(mode,0,3),std::memory_order_relaxed);
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.channelMode.store(std::clamp(mode,0,4),std::memory_order_relaxed);
 }
 + (void)setInputPan:(AVAudioUnitEffect *)node pan:(double)pan {
     if(!std::isfinite(pan)) return;

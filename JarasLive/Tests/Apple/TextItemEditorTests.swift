@@ -1,12 +1,27 @@
 import AppKit
 
+MainActor.assumeIsolated {
 let app = NSApplication.shared
+app.setActivationPolicy(.regular); app.activate(ignoringOtherApps: true)
+RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+let main = NSWindow(contentRect: NSRect(x: 20, y: 20, width: 1000, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+main.title = "CatLive"; main.isReleasedWhenClosed = false; main.makeKeyAndOrderFront(nil)
+let projection = ProjectionWindow(contentRect: NSRect(x: 40, y: 40, width: 640, height: 360), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+projection.isReleasedWhenClosed = false; projection.followApplicationWindowOrder(); projection.makeKeyAndOrderFront(nil)
+func inFront(_ a: NSWindow, _ b: NSWindow) -> Bool {
+    let ids = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []).compactMap { $0[kCGWindowNumber as String] as? Int }
+    guard let x = ids.firstIndex(of: a.windowNumber), let y = ids.firstIndex(of: b.windowNumber) else { return false }
+    return x < y
+}
 for textLength in [10000, 20000] {
-let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 466, height: 360), styleMask: [.titled], backing: .buffered, defer: false)
+let window = makeWorkspacePanel(title: "Text Editor", size: NSSize(width: 430, height: 330), minimum: NSSize(width: 430, height: 330))
 window.isReleasedWhenClosed = false
 var committed: [String] = [], closes = 0
-let host = NSHostingView(rootView: TextItemEditor(text: "", apply: { committed.append($0); return true }, close: { closes += 1 }))
+let host = NSHostingView(rootView: TextItemEditor(text: "", showHeader: false, apply: { committed.append($0); return true }, close: { closes += 1 }))
 window.contentView = host
+attachWorkspacePanel(window)
+window.makeKeyAndOrderFront(nil)
+NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
 host.layoutSubtreeIfNeeded()
 func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
 func textView(in view: NSView) -> NSTextView? {
@@ -15,6 +30,7 @@ func textView(in view: NSView) -> NSTextView? {
 }
 settle()
 guard let editor = textView(in: host) else { fatalError("The floating editor must contain a real notepad") }
+precondition(projection.isVisible && projection.parent == nil && inFront(projection, main) && inFront(window, projection), "Typing must keep the teleprompter above the workspace and below the independent editor")
 precondition(window.firstResponder === editor, "the notepad receives focus immediately")
 precondition(editor.bounds.width > 100, "the text container follows the available editor width")
 let maximum = String(repeating: "🎵", count: textLength)
@@ -40,4 +56,7 @@ key(53)
 precondition(committed == ["Am\nG"] && closes == 2, "Escape cancels without another project edit")
 window.close()
 }
+projection.close(); main.close()
 print("TEXT_NOTEPAD_UNLIMITED_PASTE_FOCUS_MULTILINE_APPLY_AND_CANCEL_OK")
+
+}

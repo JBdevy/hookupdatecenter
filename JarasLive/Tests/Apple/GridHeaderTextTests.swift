@@ -5,7 +5,7 @@ enum GridHeaderRasterProbe { static var count = 0 }
 func oldAttributes(centered: Bool? = nil, color: NSColor = .white, fontSize: CGFloat = GridSelectionItem.headerFontSize) -> [NSAttributedString.Key: Any] {
     let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
     if let centered { paragraph.alignment = centered ? .center : .left }
-    return [.font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
+    return [.font: NSFont.jarasSystemFont(ofSize: fontSize, weight: .semibold),
             .foregroundColor: color, .paragraphStyle: paragraph]
 }
 struct HeaderRaster {
@@ -124,11 +124,11 @@ for (label, cached, centered, color) in labels {
 // Readouts must fit completely in their compact reservations, including their
 // one-point drawing inset, without moving the controls or reducing title text.
 var compactItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 240, height: 50))
-precondition(GridSelectionItem.headerReadoutFontSize < GridSelectionItem.headerFontSize)
+precondition(GridSelectionItem.headerReadoutFontSize == GridSelectionItem.headerFontSize)
 precondition(compactItem.rect.width - compactItem.titleInset >= 40,
     "a 240-point audio item leaves useful title space after all controls and readouts")
-precondition(compactItem.gainKnobRect!.minX - compactItem.panLabelRect!.maxX <= 1,
-    "the volume knob sits immediately after the complete pan readout")
+precondition(compactItem.muteRect!.minX - compactItem.gainLabelRect!.maxX == 1,
+    "mute sits immediately after the complete volume readout")
 for percent in -100...100 {
     compactItem.pan = Double(percent) / 100
     precondition(GridSelectionHeaderText.gain(compactItem.panLabel).width <= compactItem.panLabelRect!.width - 2,

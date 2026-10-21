@@ -272,7 +272,27 @@ static void testRegionStopRespectsQueue() {
            "AUTO plus STOP ends normally after the final queued song");
 }
 
+static void testFreeSecondaryCursor() {
+    Project p; p.id="free-sub"; p.name="Free";
+    p.songs={{"song","Song",30,120,{},{{"a","A",5,10},{"b","B",20,25}}}};
+    Engine e; e.loadProject(p);
+    e.execute({CommandKind::subSeek,"",2}); e.execute({CommandKind::subPlay}); e.advance(.5);
+    expect(!e.transport().subPlay.playing && e.transport().subPlay.position==2,
+           "Subplay does nothing while main transport is stopped");
+    e.execute({CommandKind::play}); e.execute({CommandKind::subPlay}); e.advance(.5);
+    expect(e.transport().subPlay.playing && e.transport().subPlay.position==2.5,
+           "secondary head starts in empty space while main is playing");
+    e.execute({CommandKind::subStop});
+    expect(e.transport().subPlay.position==2, "sub stop restores its own free start position");
+    e.execute({CommandKind::selectRegion,"a"}); e.execute({CommandKind::play}); e.execute({CommandKind::queueRegion,"b"});
+    e.execute({CommandKind::subSeek,"",15}); e.execute({CommandKind::subPlay}); e.advance(.25);
+    expect(e.transport().subPlay.position==15.25, "manual secondary seek is not replaced by queued music");
+    e.execute({CommandKind::stopAll}); e.execute({CommandKind::play}); e.execute({CommandKind::subSeek,"",45}); e.execute({CommandKind::subPlay}); e.advance(2);
+    expect(e.transport().subPlay.playing && e.transport().subPlay.position==47, "secondary head runs past project duration through silence");
+    e.execute({CommandKind::stopAll}); expect(!e.transport().subPlay.playing, "Stop All stops free secondary playback");
+}
 int main() {
+    testFreeSecondaryCursor();
     testRegionStopRespectsQueue();
     testSubplaySurvivesOutgoingEnd();
     testAutoUntilBlockEnd();

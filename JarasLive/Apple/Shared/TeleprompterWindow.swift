@@ -67,7 +67,8 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         let font = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.clockScale / 100)
         let localSideFont = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.localClockScale / 100)
         let sameSide = side && timer && local && settings.clockPosition.hasPrefix(settings.localClockPosition)
-        let height = sameSide ? font + localSideFont + 24 : max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
+        let localOnlyFont = max(10,min(24,size.height/28) * settings.localClockScale / 100)
+        let height = !timer ? localOnlyFont + 10 : sameSide ? font + localSideFont + 24 : max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
         // Keep a real clock column on narrow phone screens, including fullscreen.
         let timerLimit = compactPhone && local && !side ? max(1, width - 152) : width
         let timerWidth = min(timerLimit,max(118,tpTimerTextWidth(font) + 36))
@@ -129,12 +130,12 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         let text = settings.display(content.text)
         let lines = text.components(separatedBy: .newlines)
         let longest = max(1,lines.map(\.count).max() ?? 1)
-        let font = max(9,min(120,min((size.width-20) / (Double(longest)*0.64),(size.height-20) / (Double(max(1,lines.count))*1.2))) * settings.textScale / 100)
-        let textWidth = min(size.width,max(20,Double(longest) * font * 0.64 + 12))
+        let font = max(1,min(max(1,size.width-12) / (Double(longest)*0.64),max(1,size.height-12) / (Double(max(1,lines.count))*1.2)) * settings.textScale / 100)
         let alignment: Alignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
         let textAlignment: TextAlignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
         return Text(text).font(tpFont(settings.fontFamily,size: font)).foregroundStyle(Color(hex: settings.textColor))
-            .multilineTextAlignment(textAlignment).lineLimit(nil).minimumScaleFactor(0.3).padding(6).frame(width: textWidth)
+            .multilineTextAlignment(textAlignment).lineLimit(nil).minimumScaleFactor(0.3).padding(6)
+            .frame(width: max(1,size.width),height: max(1,size.height),alignment: alignment)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.textBoxEnabled ? border(settings.textBoxColor,rgb: settings.rgbTextBoxBorderEnabled,date: date) : .clear,lineWidth: 2))
             .frame(maxWidth: .infinity,maxHeight: .infinity,alignment: alignment)
     }
@@ -690,6 +691,7 @@ struct TPNoticeButton: View {
             }
         }
             .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: false, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
+            .jarasHelp("Messages")
     }
 }
 private struct TPNoticeEditor: View {

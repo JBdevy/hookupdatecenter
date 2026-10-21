@@ -288,8 +288,8 @@ private final class CaptureWriter: @unchecked Sendable {
     func bind(_ show: ShowController) {
         projectTabActive = true;
         self.show = show
-        AudioDeviceSettings.shared.canChangeConfiguration = { [weak self, weak show] in
-            show?.isPlaying != true && self?.recording != true && self?.busy != true
+        AudioDeviceSettings.shared.canChangeConfiguration = { [weak self] in
+            self?.recording != true && self?.busy != true
         }
         AudioDeviceSettings.shared.inputDeviceChanged = { [weak self] in
             guard let self else { return }

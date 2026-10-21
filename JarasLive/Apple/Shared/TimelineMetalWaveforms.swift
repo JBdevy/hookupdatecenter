@@ -331,10 +331,10 @@ enum TimelineMetalWaveformFrameBuilder {
             let rect = item.rect
             let waveTop = rect.minY + min(GridSelectionItem.bodyInset, rect.height)
             let mode = item.clip.channelMode ?? 0
-            let channels = mode == 0 ? header.channels : 1
+            let channels = (mode == 0 || mode == 4) ? header.channels : 1
             let channelHeight = max(0, rect.maxY - waveTop - 2) / Double(channels)
             guard channelHeight > 0 else { continue }
-            let amplitude = channelHeight * 0.98 * min(pow(10, 24.0 / 20), max(0, item.clip.gain ?? 1))
+            let amplitude = channelHeight * 0.98 * WaveformAmplitude.gain(item: item.clip.gain, normalization: item.clip.normalizationGain, inverted: item.clip.phaseInverted == true)
             let localItem = rect.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
             for (fragmentIndex, fragment) in item.fragments.enumerated() {
                 var visibleSeams = ClipRepetitionBoundaries(clip: fragment,
@@ -365,7 +365,7 @@ enum TimelineMetalWaveformFrameBuilder {
                     let blocks = owner.blocks(cache: cache, url: item.url, header: header, start: start, end: end,
                         scale: summaryScale, key: "\(item.clip.id):\(fragmentIndex):subpixel")
                     for channel in 0..<channels {
-                        let sourceChannel = mode == 1 ? 0 : mode == 2 ? min(1, header.channels - 1) : mode == 3 && header.channels > 1 ? header.channels : channel
+                        let sourceChannel = mode == 1 ? 0 : mode == 2 ? min(1, header.channels - 1) : mode == 3 && header.channels > 1 ? header.channels : mode == 4 && header.channels > 1 && channel < 2 ? 1 - channel : channel
                         var minimum: Float = 0, maximum: Float = 0
                         for sourceBlock in blocks where sourceChannel < sourceBlock.channels.count {
                                 let block = sourceBlock.step > 1 && !sourceBlock.isPeakEnvelope ? sourceBlock.rasterEnvelope : sourceBlock
@@ -394,7 +394,7 @@ enum TimelineMetalWaveformFrameBuilder {
                         guard !channelRect.isNull, !channelRect.isEmpty else { continue }
                         let middle = waveTop + channelHeight * (Double(channel) + 0.5) - viewport.minY
                         strokes.append(MetalWaveformStroke(block: unitBand, channel: 0,
-                            scale: SIMD2(Float((last - first) * scale), max(0.25, (maximum - minimum) * Float(amplitude) / 2)),
+                            scale: SIMD2(Float((last - first) * scale), max(0.25, (maximum - minimum) * abs(Float(amplitude)) / 2)),
                             translation: SIMD2(Float(first * scale - viewport.minX), Float(middle) + (minimum + maximum) * Float(amplitude) / 2),
                             clip: channelRect.offsetBy(dx: -viewport.minX, dy: -viewport.minY), color: SIMD4(repeating: item.gray).withAlpha(1), itemRect: localItem,
                             firstSeamX: firstSeam, repeatSpacing: seamSpacing, lineWidth: 0.5, fadeCenter: Float(middle)))
@@ -441,7 +441,7 @@ enum TimelineMetalWaveformFrameBuilder {
                             blocks = owner.blocks(cache: cache, url: item.url, header: header, start: max(0, source), end: sourceEnd, scale: rasterScale, key: key)
                         }
                         for channel in 0..<channels {
-                            let sourceChannel = mode == 1 ? 0 : mode == 2 ? min(1, header.channels - 1) : mode == 3 && header.channels > 1 ? header.channels : channel
+                            let sourceChannel = mode == 1 ? 0 : mode == 2 ? min(1, header.channels - 1) : mode == 3 && header.channels > 1 ? header.channels : mode == 4 && header.channels > 1 && channel < 2 ? 1 - channel : channel
                             let middle = waveTop + channelHeight * (Double(channel) + 0.5) - viewport.minY
                             let channelRect = CGRect(x: position * scale, y: waveTop + channelHeight * Double(channel) + 0.5,
                                 width: (end - position) * scale, height: max(0, channelHeight - 1)).intersection(rect).intersection(viewport)

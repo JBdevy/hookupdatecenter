@@ -103,7 +103,8 @@ struct PartsDividerTests {
         Session restored;restored.inspection=true;restored.audio.prepareOffline(48000);
         restored.restoreSnapshot(ProjectCodec::encode(project));restored.audio.setOffline(true);
         Auth auth;Lighting lighting(restored);Workspace workspace(restored,auth,lighting,false,preferences);
-        workspace.setSize(1920,900);workspace.toggleLeftParts();workspace.toggleRightParts();
+        workspace.setSize(1920,900);
+        require(workspace.partsLeftVisible && workspace.partsRightVisible,"A new editor session did not restore global Parts visibility");
         require(workspace.partsLeft->getWidth()==savedLeft && workspace.partsSidebar->getWidth()==savedRight,
                 "A new editor session did not reload independent Parts widths");
     }

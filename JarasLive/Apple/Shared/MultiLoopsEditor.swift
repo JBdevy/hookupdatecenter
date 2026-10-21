@@ -13,6 +13,7 @@ struct MultiLoopsEditor: View {
     @State private var second: UUID?
     @State private var draft: MultiLoop?
     @State private var pairWarning = false
+    @State private var markerWarning = false
     @FocusState private var nameFocused: Bool
     private var region: Part? { show.current?.parts.first { $0.id == regionID } }
     private var totalLoop: Bool { region?.totalLoop == true }
@@ -20,6 +21,7 @@ struct MultiLoopsEditor: View {
     private var loops: [MultiLoop] { region?.multiLoops ?? [] }
     private var availableTracks: [Track] { (show.current?.tracks ?? []).filter { $0.kind == .standard } }
     private var markers: [TimelineMarker] { guard let song = show.current, let region else { return [] }; return song.multiLoopMarkers(in: region) }
+    private var hasEnoughMarkers: Bool { markers.count >= 2 }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Multiloop Manager").font(.jarasTitle2.bold())
@@ -47,12 +49,22 @@ struct MultiLoopsEditor: View {
             .alert("A multiloop cannot exist inside another multiloop.", isPresented: $pairWarning) {
                 Button("OK", role: .cancel) { pairWarning = false }
             }
+            .alert("Multiloop", isPresented: $markerWarning) {
+                Button("OK", role: .cancel) { markerWarning = false }
+            } message: {
+                Text("Create at least 2 section markers enabled for looping in this song before creating a multiloop.")
+            }
     }
     private var loopList: some View {
         VStack {
             HStack {
-                Button { name = ""; invalid = false; first = nil; second = nil; stage = 1; nameFocused = true } label: { Image(systemName: "plus") }
-                    .help("Create multiloop").disabled(bypassed)
+                Button {
+                    guard hasEnoughMarkers else { markerWarning = true; return }
+                    name = ""; invalid = false; first = nil; second = nil; stage = 1; nameFocused = true
+                } label: { Image(systemName: "plus") }
+                    .jarasHelp("Create multiloop")
+                    .opacity(hasEnoughMarkers ? 1 : 0.4)
+                    .disabled(bypassed && hasEnoughMarkers)
                 Button { show.setTotalLoop(!totalLoop, region: regionID) } label: {
                     Text("Total Loop").font(.jarasCallout.bold()).padding(.horizontal, 10).padding(.vertical, 6)
                         .background(totalLoop ? JarasTheme.green : Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
@@ -66,7 +78,7 @@ struct MultiLoopsEditor: View {
                         HStack {
                             flag(loop.isEnabled ? "On" : "Off", active: loop.isEnabled, color: JarasTheme.green) {
                                 var next = loop; next.enabled = !loop.isEnabled; commit(next)
-                            }.help("Enable multiloop").disabled(bypassed)
+                            }.jarasHelp("Enable multiloop").disabled(bypassed)
                             Text(loop.name).lineLimit(1).opacity(bypassed || !loop.isEnabled ? 0.45 : 1)
                             if bypassed { Text("Bypass").font(.jarasCaption).foregroundStyle(.secondary) }
                             Spacer()
@@ -167,7 +179,7 @@ struct MultiLoopsEditor: View {
             Text(loop.name).font(.jarasHeadline)
             HStack {
                 flag("M/S", active: loop.usesMixer, color: .yellow) { draft?.mixerEnabled = !loop.usesMixer }
-                    .help("Apply saved mute and solo settings")
+                    .jarasHelp("Apply saved mute and solo settings")
                 Text("Auto Fader")
                 Button("−") { draft?.fadeSeconds = max(1, loop.fadeSeconds - 1) }.disabled(loop.fadeSeconds <= 1)
                 Text("\(Int(loop.fadeSeconds))s").monospacedDigit().frame(width: 32)

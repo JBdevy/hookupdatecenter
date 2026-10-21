@@ -36,10 +36,13 @@ void Projection::paintStage(Graphics &g) {
     if (!clear && !flag(settings, "hideTransport") &&
         !(showingNotice && flag(notices, "cleanDisplay", true))) {
         const auto position = str(settings, "clockPosition", "center-top");
-        const bool top = position.endsWith("top");
+        const bool timerEnabled = flag(settings,"clockEnabled",true);
+        const bool top = !timerEnabled || position.endsWith("top");
         const float size =
             (float)jlimit(16., 76., getHeight() / 8. * num(settings, "clockScale", 100) / 100.);
-        const float clockHeight = size * 1.3f;
+        const float localSize = (float)jlimit(
+            12., 42., getHeight() / 18. * num(settings, "localClockScale", 100) / 100.);
+        const float clockHeight = timerEnabled ? size * 1.3f : localSize * 1.4f;
         if (flag(settings, "clockEnabled", true) || flag(settings, "localClockEnabled", true)) {
             auto row =
                 top ? box.removeFromTop(clockHeight + 6) : box.removeFromBottom(clockHeight + 6);
@@ -57,8 +60,6 @@ void Projection::paintStage(Graphics &g) {
                       color(stage->seconds() < 0 ? "clockExpiredColor" : "clockColor"));
             }
             if (flag(settings, "localClockEnabled", true)) {
-                const float localSize = (float)jlimit(
-                    12., 42., getHeight() / 18. * num(settings, "localClockScale", 100) / 100.);
                 const float width = std::min(row.getWidth() / 3, localSize * 5.4f);
                 const bool left = str(settings, "localClockPosition", "right") == "left";
                 juce::Rectangle<float> local{left ? row.getX() : row.getRight() - width, row.getY(),
@@ -137,13 +138,21 @@ void Projection::paintStage(Graphics &g) {
             g.drawRoundedRectangle(box, 5, 1);
         }
         auto align = str(settings, "textAlignment", "center");
-        label(str(content,"text"), box.reduced(12), "fontFamily",
-              (float)(getHeight() / 9. * num(settings, "textScale", 100) / 100.),
+        const auto text = display(str(content,"text"));
+        const auto lines = StringArray::fromLines(text);
+        const auto baseFont = StageState::font(settings,"fontFamily",100.f);
+        float longest = 1;
+        for (const auto &line : lines) longest = std::max(longest,GlyphArrangement::getStringWidth(baseFont,line));
+        const auto textArea = box.reduced(6);
+        const float fit = std::max(.01f,std::min(std::max(1.f,textArea.getWidth()) / longest,
+            std::max(1.f,textArea.getHeight()) / (std::max(1,lines.size()) * baseFont.getHeight() * 1.2f)));
+        label(text, textArea, "fontFamily",
+              (float)(100 * fit * num(settings, "textScale", 100) / 100.),
               color("textColor"),
               align == "left"    ? Justification::centredLeft
               : align == "right" ? Justification::centredRight
                                  : Justification::centred,
-              20);
+              std::max(1,lines.size()));
     }
     if (!clear && flag(settings, "windowBorderEnabled", true)) {
         g.setColour(border("borderColor", "rgbWindowBorderEnabled"));

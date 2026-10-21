@@ -14,6 +14,12 @@ public:
         const ScopedLock guard(lock);
         prepared = std::move(program); duration = end; muted = mute; running = false; ++generation;
     }
+    void updateProgram(jaras::TimecodeProgram program, double end, bool mute) {
+        // Item edge edits retain the running transport and its current anchor.
+        const ScopedLock guard(lock);
+        std::swap(prepared, program); duration = end; muted = mute; ++generation;
+        notify();
+    }
     void transport(double at, bool play, bool loop, double begin, double end,
                    double stop, int preferred, bool permitted) {
         const ScopedLock guard(lock);
@@ -21,6 +27,11 @@ public:
         loopStart = begin; loopEnd = end; stopAt = stop; selected = preferred;
         allowed = permitted; anchor = Time::getMillisecondCounterHiRes() * .001; ++generation;
         notify();
+    }
+    void updateRouting(bool loop, double begin, double end, double stop, int preferred) {
+        const ScopedLock guard(lock);
+        looping=loop && end>begin; loopStart=begin; loopEnd=end; stopAt=stop; selected=preferred;
+        ++generation; notify();
     }
     // The render thread only publishes atomics. Device enumeration and MIDI
     // transmission remain on this worker, following the compensated timeline.

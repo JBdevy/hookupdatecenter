@@ -110,7 +110,7 @@ struct TrackVisibilityTests {
         change(Panel::trackMixer,fixture.second,false);
         require(hidden(fixture.second) && w.rowHeight((int)trackTree::index(*session.song(),fixture.second))==0 &&
                 strip(fixture.second) && w.selectedTracks.empty() && w.selectedClips.empty(),
-                "Hiding a Track Mixer row did not remove its grid height/selection, or also hid its Barra Mixer strip");
+                "Hiding a Track Mixer row did not remove its grid height/selection, or also hid its Hoz-Mixer strip");
         change(Panel::trackMixer,fixture.group,false);
         require(hidden(fixture.group) && hidden(fixture.first) && hidden(fixture.second) &&
                 !checkbox(Panel::trackMixer,fixture.first)->isEnabled() && checkbox(Panel::trackMixer,fixture.first)->getToggleState() &&
@@ -118,13 +118,13 @@ struct TrackVisibilityTests {
                 "Group hiding lost child choices or allowed editing an inherited hidden row");
         audible();
         auto *barTab=dynamic_cast<Button *>(uiFeatureTests::find(*panel,"trackVisibilityBarTab"));
-        require(barTab && barTab->onClick,"Barra Mixer visibility tab missing");barTab->onClick();
+        require(barTab && barTab->onClick,"Hoz-Mixer visibility tab missing");barTab->onClick();
         require(!uiFeatureTests::find(*panel,"trackVisibility:barMixer:"+text(fixture.timecode)) &&
-                checkbox(Panel::barMixer,fixture.click)->isEnabled(),"Barra Mixer visibility listed an unavailable special track or omitted Click");
+                checkbox(Panel::barMixer,fixture.click)->isEnabled(),"Hoz-Mixer visibility listed an unavailable special track or omitted Click");
         change(Panel::barMixer,fixture.outside,false);change(Panel::barMixer,fixture.group,false);
         require(!strip(fixture.outside) && !strip(fixture.group) && !strip(fixture.first) && !strip(fixture.second) &&
                 strip(fixture.click) && !hidden(fixture.outside) && uiFeatureTests::find(*w.footerMixer,"mixerMaster"),
-                "Barra Mixer hiding changed the grid, retained a hidden child strip or removed Master");
+                "Hoz-Mixer hiding changed the grid, retained a hidden child strip or removed Master");
         audible();
         auto *trackTab=dynamic_cast<Button *>(uiFeatureTests::find(*panel,"trackVisibilityTrackTab"));
         require(trackTab && trackTab->onClick,"Track Mixer visibility tab missing");trackTab->onClick();
@@ -132,13 +132,13 @@ struct TrackVisibilityTests {
         require(!hidden(fixture.group) && !hidden(fixture.first) && hidden(fixture.second) &&
                 checkbox(Panel::trackMixer,fixture.first)->isEnabled() &&
                 !checkbox(Panel::trackMixer,fixture.second)->getToggleState() && !strip(fixture.first),
-                "Showing Track Mixer group reset a hidden child or changed Barra Mixer visibility");
+                "Showing Track Mixer group reset a hidden child or changed Hoz-Mixer visibility");
         ModalSheet::dismiss(*panel);floatingControlTests::pump();
         w.selectAllTracks(false);
         require(w.selectedTracks==std::set<ID>{fixture.click,fixture.group,fixture.first,fixture.outside},
                 "Track Mixer Select All included hidden rows or omitted visible editable tracks");
         w.selectAllTracks(true);require(w.selectedTracks==std::set<ID>{fixture.click},
-                "Barra Mixer Select All selected hidden tracks");
+                "Hoz-Mixer Select All selected hidden tracks");
         w.selectMixerTrack(fixture.first,{});w.selectMixerTrack(fixture.outside,ModifierKeys(ModifierKeys::shiftModifier));
         require(w.selectedTracks==std::set<ID>{fixture.first,fixture.outside},"Shift selection included a hidden track between visible endpoints");
         // Loading a Timecode track creates one native item for the fixture's

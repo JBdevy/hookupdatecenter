@@ -322,6 +322,12 @@ struct TimecodePlaybackSpan {
     private var preparedOnsets: [OnsetKey: AVAudioPCMBuffer] = [:]
     private var voices: [VoiceKey: Voice] = [:]
     private var retiredVoices: [Voice] = []
+    /// File sources still retained by the graph must survive timeline cleanup,
+    /// including voices retiring after an edit and voices prepared for a seek.
+    var activeMediaURLs: Set<URL> {
+        let retained = Array(voices.values) + retiredVoices + idleVoices.values.flatMap { $0 } + effectTails.values.map(\.voice)
+        return Set(retained.map { $0.file.url.standardizedFileURL.resolvingSymlinksInPath() })
+    }
     // Idle sources retain their graph connections. Transport commands only stop
     // and reschedule PCM; graph ownership changes on project/device teardown.
     private var pitchClipRevision: UInt64?

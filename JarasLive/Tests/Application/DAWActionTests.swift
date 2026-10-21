@@ -33,7 +33,7 @@ final class DAWActionTests: XCTestCase {
         XCTAssertEqual(bindings.matching(shortcut), .subPlayStop)
         XCTAssertEqual(bindings.matching(ControlInput(kind: "keyboard", label: "", key: 49, modifiers: 0)), .playStop)
         for key: UInt16 in [36, 76] {
-            XCTAssertNil(bindings.matching(ControlInput(kind: "keyboard", label: "", key: key, modifiers: 0)))
+            XCTAssertNil(bindings.matching(ControlInput(kind: "keyboard", label: "", key: key, modifiers: 1 << 19)))
         }
         let custom = ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)
         XCTAssertTrue(bindings.setInput(custom, action: .subPlayStop, kind: "keyboard"))
@@ -109,11 +109,11 @@ final class DAWActionTests: XCTestCase {
     }
     func testPanelToggleDefaultsKeyboardAndMIDIRemappingPersistGlobally() throws {
         var bindings = DAWActionBindings()
-        for (action, key, number) in [(DAWAction.toggleTracks, UInt16(122), UInt8(75)), (.toggleSetlist, 120, 76)] {
-            let standard = ControlInput(kind: "keyboard", label: "", key: key, modifiers: 0)
+        for (action, key, number) in [(DAWAction.toggleTracks, UInt16(17), UInt8(75)), (.toggleSetlist, 1, 76), (.toggleBarMixer, 4, 77)] {
+            let standard = ControlInput(kind: "keyboard", label: "", key: key, modifiers: 1 << 19)
             XCTAssertEqual(bindings.matching(standard), action)
             XCTAssertTrue(action.supportsMIDI); XCTAssertFalse(action.repeats); XCTAssertFalse(action.needsTrack)
-            let replacement = ControlInput(kind: "keyboard", label: "Custom", key: key, modifiers: 1 << 17)
+            let replacement = ControlInput(kind: "keyboard", label: "Custom", key: key, modifiers: 1 << 19 | 1 << 18)
             XCTAssertTrue(bindings.setInput(replacement, action: action, kind: "keyboard"))
             XCTAssertNil(bindings.matching(standard)); XCTAssertEqual(bindings.matching(replacement), action)
             let midi = ControlInput(kind: "midi", label: "CC", device: 3, channel: 0, status: 0xb0, number: number)
@@ -124,8 +124,43 @@ final class DAWActionTests: XCTestCase {
         XCTAssertEqual(DAWActionBindings(stored: saved), bindings)
         var existing = DAWActionBinding(action: .pause); existing.keyboard = DAWAction.toggleTracks.defaultKeyboard
         let migrated = DAWActionBindings(stored: [existing])
-        XCTAssertNil(migrated.binding(.toggleTracks).keyboard, "F1 must not replace an existing global shortcut")
+        XCTAssertNil(migrated.binding(.toggleTracks).keyboard, "Option T must not replace an existing global shortcut")
         XCTAssertEqual(migrated.binding(.pause).keyboard, existing.keyboard)
+    }
+    func testHozMixerDefaultMigrationPreservesCustomBindingsAndConflicts() throws {
+        let old = ControlInput(kind: "keyboard", label: "⌥B", key: 11, modifiers: 1 << 19)
+        var mixer = DAWActionBinding(action: .toggleBarMixer)
+        mixer.keyboard = old
+        mixer.midi = ControlInput(kind: "midi", label: "CC 77", device: 3, channel: 0, status: 0xb0, number: 77)
+        let migrated = DAWActionBindings(stored: [mixer])
+        XCTAssertEqual(migrated.matching(DAWAction.toggleBarMixer.defaultKeyboard!), .toggleBarMixer)
+        XCTAssertNil(migrated.matching(old))
+        XCTAssertEqual(migrated.binding(.toggleBarMixer).midi, mixer.midi)
+        let saved = try JSONDecoder().decode([DAWActionBinding].self, from: JSONEncoder().encode(migrated.entries))
+        XCTAssertEqual(DAWActionBindings(stored: saved), migrated)
+        var existing = DAWActionBinding(action: .pause)
+        existing.keyboard = DAWAction.toggleBarMixer.defaultKeyboard
+        let conflict = DAWActionBindings(stored: [mixer, existing])
+        XCTAssertEqual(conflict.matching(old), .toggleBarMixer)
+        XCTAssertEqual(conflict.matching(existing.keyboard!), .pause)
+        for custom in [nil, ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)] {
+            mixer.keyboard = custom
+            XCTAssertEqual(DAWActionBindings(stored: [mixer]).binding(.toggleBarMixer), mixer)
+        }
+    }
+    func testLegacyPanelDefaultsMigrateWithoutOverwritingCustomShortcuts() {
+        var tracks = DAWActionBinding(action: .toggleTracks)
+        tracks.keyboard = ControlInput(kind: "keyboard", label: "F1", key: 122, modifiers: 0)
+        var setlist = DAWActionBinding(action: .toggleSetlist)
+        setlist.keyboard = ControlInput(kind: "keyboard", label: "F2", key: 120, modifiers: 0)
+        let migrated = DAWActionBindings(stored: [tracks, setlist])
+        XCTAssertEqual(migrated.binding(.toggleTracks).keyboard, DAWAction.toggleTracks.defaultKeyboard)
+        XCTAssertEqual(migrated.binding(.toggleSetlist).keyboard, DAWAction.toggleSetlist.defaultKeyboard)
+        var custom = DAWActionBinding(action: .pause)
+        custom.keyboard = DAWAction.toggleTracks.defaultKeyboard
+        XCTAssertEqual(DAWActionBindings(stored: [tracks, custom]).binding(.toggleTracks).keyboard, tracks.keyboard)
+        tracks.keyboard = nil
+        XCTAssertNil(DAWActionBindings(stored: [tracks]).binding(.toggleTracks).keyboard)
     }
     func testNormalizationAndTempoMarkersAreKeyboardOnly() {
         var bindings = DAWActionBindings()

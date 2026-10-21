@@ -48,6 +48,25 @@ final class ProjectCleanupProgressTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: root.appendingPathComponent("Stems/used.wav").path))
         XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("Stems/deleted.wav").path))
     }
+    func testCleanupRetainsSourcesStillOwnedByAudioGraphAndCleansThemAfterRelease() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: root.appendingPathComponent("Stems"), withIntermediateDirectories: true)
+        let document = root.appendingPathComponent("Playing.jl")
+        let held = root.appendingPathComponent("Stems/retiring.wav")
+        let unused = root.appendingPathComponent("Stems/unused.wav")
+        try Data([1, 2, 3]).write(to: held); try Data([4, 5]).write(to: unused)
+        let project = Project.empty(name: "Playing")
+        let known: Set<String> = ["Stems/retiring.wav", "Stems/unused.wav"]
+        try ProjectMediaCleanup.remember(project: project, document: document, knownPaths: known)
+        try ProjectMediaCleanup.removeDeletedFiles(project: project, document: document, knownPaths: [],
+                                                   protectedURLs: [root.appendingPathComponent("Stems/./retiring.wav")])
+        XCTAssertEqual(try Data(contentsOf: held), Data([1, 2, 3]), "Retiring voices and other open tabs retain their media")
+        XCTAssertFalse(fm.fileExists(atPath: unused.path), "Playback does not block cleanup of unrelated unused sources")
+        try ProjectMediaCleanup.removeDeletedFiles(project: project, document: document, knownPaths: [])
+        XCTAssertFalse(fm.fileExists(atPath: held.path), "A later cleanup can remove the source after its last reader releases it")
+    }
     func testProgressCompletesWithNoUnusedMedia() throws {
         let log = ProgressLog()
         try ProjectMediaCleanup.removeDeletedFiles(project: .empty(name: "Empty"), document: URL(fileURLWithPath: "/unused/Empty.jl"), knownPaths: [], progress: log.append)

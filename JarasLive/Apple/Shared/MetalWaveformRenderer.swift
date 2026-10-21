@@ -51,6 +51,7 @@ struct MetalTimelineItem: Equatable {
     var cornerRadius: Float = 3
     var borderWidth: Float = 0.6
     var headerHeight: Float = 0
+    var headerColor = SIMD4<Float>(48.0 / 255, 48.0 / 255, 48.0 / 255, 1)
     var firstSeamX: CGFloat? = nil
     var repeatSpacing: CGFloat? = nil
     var visibleX: ClosedRange<CGFloat>? = nil
@@ -766,6 +767,7 @@ final class MetalWaveformEngine {
         var top: SIMD4<Float>
         var bottom: SIMD4<Float>
         var border: SIMD4<Float>
+        var header: SIMD4<Float>
         var style: SIMD4<Float>
         var notch: SIMD4<Float>
         var visibleX: SIMD4<Float>
@@ -814,7 +816,7 @@ final class MetalWaveformEngine {
                     r.width > 0, r.height > 0, r.insetBy(dx: -2, dy: -2).intersects(viewport) else { continue }
                 let spacing = Float(item.repeatSpacing ?? 0)
                 batch.append(ItemUniforms(rect: SIMD4(Float(r.minX), Float(r.minY), Float(r.maxX), Float(r.maxY)),
-                    top: item.topColor, bottom: item.bottomColor, border: item.borderColor,
+                    top: item.topColor, bottom: item.bottomColor, border: item.borderColor, header: item.headerColor,
                     style: SIMD4(max(0, item.cornerRadius), max(0, item.borderWidth), max(0, item.headerHeight), 0),
                     notch: SIMD4(Float(item.firstSeamX ?? 0), spacing.isFinite && spacing > 0 ? spacing : 0, 4, min(5, Float(r.height) / 3)),
                     visibleX: SIMD4(Float(item.visibleX?.lowerBound ?? -.greatestFiniteMagnitude), Float(item.visibleX?.upperBound ?? .greatestFiniteMagnitude), 0, 0)))
@@ -937,7 +939,7 @@ final class MetalWaveformEngine {
     #include <metal_stdlib>
     using namespace metal;
     struct TimelineItemUniforms {
-        float4 rect, top, bottom, border, style, notch, visibleX;
+        float4 rect, top, bottom, border, header, style, notch, visibleX;
     };
     struct TimelineItemOut {
         float4 position [[position]];
@@ -985,9 +987,8 @@ final class MetalWaveformEngine {
         float alpha = fill.a * fillCoverage;
         float3 rgb = fill.rgb * alpha;
         if (u.style.z > 0 && in.screen.y < u.rect.y + u.style.z) {
-            float headerAlpha = 0.16 * fillCoverage;
-            rgb *= (1 - headerAlpha);
-            alpha = headerAlpha + alpha * (1 - headerAlpha);
+            alpha = u.header.a * fillCoverage;
+            rgb = u.header.rgb * alpha;
         }
         float strokeCoverage = u.style.y > 0 ? saturate(0.5 + (u.style.y * 0.5 - abs(distance)) * screen.z) : 0;
         float strokeAlpha = u.border.a * strokeCoverage;

@@ -347,7 +347,7 @@ struct PluginScanProgress: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(verbatim: catalog.currentPlugin).lineLimit(1).help(catalog.currentPlugin)
+                Text(verbatim: catalog.currentPlugin).lineLimit(1).accessibilityHint(Text(verbatim: catalog.currentPlugin))
                 Spacer()
                 Text(verbatim: "\(catalog.completedPlugins) / \(catalog.totalPlugins)").monospacedDigit()
             }.font(.jarasCaption)

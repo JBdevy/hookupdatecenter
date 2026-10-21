@@ -1,9 +1,10 @@
 #if os(macOS)
 import AppKit
 import CoreGraphics
+import QuartzCore
 
-/// A presentation belongs to one display. Never change application-wide menu
-/// or Dock visibility when showing it on a second monitor.
+/// A presentation fills its display without moving the workspace. System chrome
+/// is hidden for this app while a projection is fullscreen and restored afterward.
 final class ProjectionWindow: NSWindow {
     var closesOnRightDoubleClick = false
     private(set) var isProjectionFullscreen = false
@@ -24,33 +25,43 @@ final class ProjectionWindow: NSWindow {
     private var placementKey: String?
     private var placementObservers: [NSObjectProtocol] = []
     private static weak var lastFocusedTool: NSWindow?
-    private var orderingObserver: NSObjectProtocol?
-    private var orderingMonitor: Any?
+    private static var orderingObserver: NSObjectProtocol?
+    private static var orderingMonitor: Any?
+    private static var orderingPending = false
     private static func clicked(_ window: NSWindow) {
         guard let main = NSApp.windows.first(where: { !($0 is ProjectionWindow) && $0.title == "CatLive" }) else { return }
-        if window === main {
-            // Independent editors/configuration panels must not be buried by
-            // the main window's owned projection/FX group when resuming edits.
-            DispatchQueue.main.async {
-                if let tool = lastFocusedTool, tool.isVisible, tool.parent == nil, tool !== main {
-                    tool.orderFront(nil)
-                }
-            }
+        guard window === main else {
+            lastFocusedTool = window
             return
         }
-        lastFocusedTool = window
-        var top = window
-        while let parent = top.parent, parent !== main { top = parent }
-        if top.parent === main, main.childWindows?.last !== top {
-            main.removeChildWindow(top); main.addChildWindow(top, ordered: .above)
+        guard !orderingPending else { return }
+        orderingPending = true
+        DispatchQueue.main.async {
+            orderingPending = false
+            guard main.isVisible else { return }
+            // Keep auxiliary windows above the workspace without parenting them:
+            // child windows move with their parent and inherit its display/Space.
+            let tools = NSApp.orderedWindows.filter {
+                $0 !== main && $0.isVisible && $0.level == .normal &&
+                    ($0.parent == nil || $0.parent === main)
+            }
+            var anchor = main.windowNumber
+            for tool in tools.reversed() {
+                tool.order(.above, relativeTo: anchor)
+                anchor = tool.windowNumber
+            }
+            if let tool = lastFocusedTool, tool.isVisible, tool !== main {
+                tool.orderFront(nil)
+            }
         }
     }
     func followApplicationWindowOrder() {
         level = .normal
         hidesOnDeactivate = false
-        if let main = NSApp.windows.first(where: { !($0 is ProjectionWindow) && $0.title == "CatLive" }) {
-            main.addChildWindow(self, ordered: .above)
-        }
+        Self.followWorkspaceWindow(self)
+    }
+    static func followWorkspaceWindow(_ window: NSWindow) {
+        window.parent?.removeChildWindow(window)
         guard orderingObserver == nil else { return }
         orderingObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { notice in
             if let window = notice.object as? NSWindow { Self.clicked(window) }
@@ -58,6 +69,20 @@ final class ProjectionWindow: NSWindow {
         orderingMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
             if let window = event.window { Self.clicked(window) }
             return event
+        }
+    }
+    private static var savedPresentationOptions: NSApplication.PresentationOptions?
+    private static func updatePresentationOptions() {
+        let presenting = NSApp.windows.contains { ($0 as? ProjectionWindow)?.isProjectionFullscreen == true }
+        if presenting {
+            if savedPresentationOptions == nil { savedPresentationOptions = NSApp.presentationOptions }
+            var options = savedPresentationOptions ?? []
+            options.subtract([.autoHideDock, .autoHideMenuBar])
+            options.formUnion([.hideDock, .hideMenuBar])
+            NSApp.presentationOptions = options
+        } else if let options = savedPresentationOptions {
+            NSApp.presentationOptions = options
+            savedPresentationOptions = nil
         }
     }
     private var changingPresentation = false
@@ -96,8 +121,6 @@ final class ProjectionWindow: NSWindow {
     }
     deinit {
         placementObservers.forEach(NotificationCenter.default.removeObserver)
-        if let orderingObserver { NotificationCenter.default.removeObserver(orderingObserver) }
-        if let orderingMonitor { NSEvent.removeMonitor(orderingMonitor) }
     }
 
     override var canBecomeKey: Bool { true }
@@ -117,14 +140,29 @@ final class ProjectionWindow: NSWindow {
     func toggleProjectionFullscreen(on target: NSScreen? = nil) {
         let wasChanging = changingPresentation
         changingPresentation = true
-        defer { changingPresentation = wasChanging; savePlacement() }
+        // Publish the final style and frame together, retaining the hosting view
+        // and video layer instead of displaying intermediate window geometry.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        NSAnimationContext.current.allowsImplicitAnimation = false
+        defer {
+            contentView?.layoutSubtreeIfNeeded()
+            if isVisible { contentView?.displayIfNeeded() }
+            NSAnimationContext.endGrouping()
+            CATransaction.commit()
+            changingPresentation = wasChanging
+            savePlacement()
+        }
         if let state = saved {
             saved = nil; isProjectionFullscreen = false
+            Self.updatePresentationOptions()
             styleMask = state.style; collectionBehavior = state.behavior; level = state.level
             titleVisibility = state.title; titlebarAppearsTransparent = state.transparentTitlebar
             isMovable = state.movable; isMovableByWindowBackground = state.movableByBackground
             hasShadow = state.shadow; canHide = state.canHide; hidesOnDeactivate = state.hidesOnDeactivate
-            setFrame(state.frame, display: true, animate: false)
+            setFrame(state.frame, display: false, animate: false)
             makeKeyAndOrderFront(nil)
             return
         }
@@ -134,12 +172,13 @@ final class ProjectionWindow: NSWindow {
                            movable: isMovable, movableByBackground: isMovableByWindowBackground,
                            shadow: hasShadow, canHide: canHide, hidesOnDeactivate: hidesOnDeactivate)
         isProjectionFullscreen = true
+        Self.updatePresentationOptions()
         styleMask = .borderless; titleVisibility = .hidden; titlebarAppearsTransparent = true
         isMovable = false; isMovableByWindowBackground = false; hasShadow = false
         canHide = false; hidesOnDeactivate = false
         level = .normal
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        setFrame(display.frame, display: true, animate: false)
+        setFrame(display.frame, display: false, animate: false)
         makeKeyAndOrderFront(nil)
     }
     override func close() {

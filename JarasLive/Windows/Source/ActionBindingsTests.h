@@ -9,6 +9,54 @@ void addActionBindingsTests(const File &directory, Register &&test) {
     const auto require = [](bool okay, const char *message) {
         if (!okay) throw std::runtime_error(message);
     };
+    test("Panel shortcuts toggle once and preserve customized bindings", [&, require] {
+        const auto file = directory.getChildFile("panel-shortcuts.json");
+        require(file.replaceWithText("{}"), "Could not create panel preferences fixture");
+        Appearance settings(file); AudioDeviceManager devices; ActionBindings bindings(settings, devices);
+        for (const auto &pair : std::vector<std::pair<String, String>>{{"toggleTracks", "alt + T"}, {"toggleBarMixer", "alt + H"}, {"toggleSetlist", "alt + S"}}) {
+            int calls = 0;
+            bindings.invoke = [&](const String &id, float, int) { require(id == pair.first, "Wrong panel dispatch"); ++calls; };
+            require(bindings.key(KeyPress::createFromDescription(pair.second)), "Default panel key did not dispatch");
+            require(bindings.key(KeyPress::createFromDescription(pair.second), true) && calls == 1, "Held panel key toggled repeatedly");
+        }
+        auto saved = object(), tracks = object(), setlist = object();
+        put(tracks, "keyboard", "F1"); put(setlist, "keyboard", "F2");
+        put(saved, "toggleTracks", tracks); put(saved, "toggleSetlist", setlist);
+        require(settings.set("catlive.actions", saved).wasOk(), "Could not set legacy defaults");
+        require(KeyPress::createFromDescription(bindings.inputLabel("toggleTracks", "keyboard")) == KeyPress::createFromDescription("alt + T"), "F1 was not migrated");
+        require(KeyPress::createFromDescription(bindings.inputLabel("toggleSetlist", "keyboard")) == KeyPress::createFromDescription("alt + S"), "F2 was not migrated");
+        auto pause = object(); put(pause, "keyboard", "alt + T"); put(saved, "pause", pause);
+        require(settings.set("catlive.actions", saved).wasOk(), "Could not set migration conflict");
+        require(KeyPress::createFromDescription(bindings.inputLabel("toggleTracks", "keyboard")) == KeyPress(KeyPress::F1Key), "Migration overwrote custom shortcut");
+        require(bindings.assign("toggleBarMixer", "keyboard", "F9"), "Could not remap Hoz-Mixer");
+        Appearance restored(file); ActionBindings reopened(restored, devices);
+        require(KeyPress::createFromDescription(reopened.inputLabel("toggleBarMixer", "keyboard")) == KeyPress(KeyPress::F9Key), "Custom panel binding was lost");
+    });
+    test("Hoz-Mixer migrates Alt B to Alt H without losing MIDI or custom shortcuts", [&, require] {
+        const auto file = directory.getChildFile("hoz-mixer-shortcut-migration.json");
+        require(file.replaceWithText("{}"), "Could not create migration fixture");
+        Appearance settings(file); AudioDeviceManager devices; ActionBindings bindings(settings, devices);
+        auto saved = object(), mixer = object(), midi = object();
+        put(mixer, "keyboard", "alt + B");
+        put(midi, "status", 0xb0); put(midi, "number", 77); put(midi, "channel", 1);
+        put(mixer, "midi", midi); put(saved, "toggleBarMixer", mixer);
+        require(settings.set("catlive.actions", saved).wasOk(), "Could not save legacy Hoz-Mixer shortcut");
+        int calls = 0;
+        bindings.invoke = [&](const String &id, float, int) { require(id == "toggleBarMixer", "Wrong migrated action"); ++calls; };
+        require(bindings.key(KeyPress::createFromDescription("alt + H")) && calls == 1, "Alt H did not replace Alt B");
+        require(!bindings.key(KeyPress::createFromDescription("alt + B")), "Old shortcut is still active");
+        require(bindings.inputLabel("toggleBarMixer", "midi").contains("77"), "Migration lost MIDI mapping");
+        auto pause = object(); put(pause, "keyboard", "alt + H"); put(saved, "pause", pause);
+        require(settings.set("catlive.actions", saved).wasOk(), "Could not save conflict fixture");
+        require(KeyPress::createFromDescription(bindings.inputLabel("toggleBarMixer", "keyboard")) == KeyPress::createFromDescription("alt + B"), "Migration replaced an occupied key");
+        for (const auto &custom : {String(), String("F9")}) {
+            put(mixer, "keyboard", custom); put(saved, "toggleBarMixer", mixer);
+            require(settings.set("catlive.actions", saved).wasOk(), "Could not save custom fixture");
+            Appearance restored(file); ActionBindings reopened(restored, devices);
+            require(reopened.inputLabel("toggleBarMixer", "keyboard") == custom, "Custom or unbound key was replaced");
+            require(reopened.inputLabel("toggleBarMixer", "midi").contains("77"), "Reload lost MIDI mapping");
+        }
+    });
     test("Transport Fadeout protects default and editor shortcuts", [&, require] {
         const auto file = directory.getChildFile("fadeout-reserved-actions.json");
         require(file.replaceWithText("{}"), "Could not create fadeout preferences fixture");

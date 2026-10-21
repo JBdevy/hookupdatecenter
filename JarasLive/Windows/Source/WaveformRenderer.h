@@ -5,6 +5,10 @@ namespace catlive {
 // Source-anchored min/max columns at physical-pixel resolution; real PCM
 // extrema at close zoom. Connected contours keep fractional pans continuous.
 struct WaveformRenderer {
+    static double gain(const jaras::AudioClip &clip) {
+        const auto limit=std::pow(10.,24./20);
+        return jlimit(0.,limit,clip.gain.value_or(1)) * jlimit(0.,limit,clip.normalizationGain.value_or(1)) * (clip.phaseInverted.value_or(false) ? -1 : 1);
+    }
     struct FadeEnvelope {
         double origin, scale, duration, in, out;
         jaras::FadeCurve inCurve, outCurve;
@@ -26,7 +30,7 @@ struct WaveformRenderer {
                      juce::Rectangle<float> viewport, double pixelsPerSecond, Colour ink, bool clipToItem = true) {
         if (!data || data->sourceChannels <= 0 || pixelsPerSecond <= 0) return;
         const int mode = clip.channelMode.value_or(0);
-        const int channels = mode == 0 ? data->sourceChannels : 1;
+        const int channels = (mode == 0 || mode == 4) ? data->sourceChannels : 1;
         const float top = item.getY() + 18, height = std::max(0.f, item.getBottom() - top - 2) / channels;
         if (height <= 0) return;
         const double rate = std::max(.001, clip.playbackRate), sourceScale = pixelsPerSecond / rate;
@@ -34,7 +38,7 @@ struct WaveformRenderer {
         const double visibleEnd = std::min(clip.duration, (viewport.getRight() - item.getX()) / pixelsPerSecond);
         if (visibleEnd <= visibleStart) return;
         const double loop = clip.loopLength.value_or(0), loopStart = clip.loopStart.value_or(0);
-        const float amplitude = height * .98f * (float)jlimit(0., std::pow(10., 24. / 20), clip.gain.value_or(1));
+        const float amplitude = height * .98f * (float)gain(clip);
         const FadeEnvelope fade(clip, item.getX(), pixelsPerSecond);
         const float physical = jlimit(1.f, 8.f, g.getInternalContext().getPhysicalPixelScaleFactor());
         const auto step = WaveformCache::step(data->sampleRate, sourceScale * physical / 2.0);
@@ -43,7 +47,8 @@ struct WaveformRenderer {
         g.setColour(ink);
         for (int channel = 0; channel < channels; ++channel) {
             const int sourceChannel = mode == 1 ? 0 : mode == 2 ? std::min(1, data->sourceChannels - 1)
-                : mode == 3 && data->sourceChannels > 1 ? data->sourceChannels : channel;
+                : mode == 3 && data->sourceChannels > 1 ? data->sourceChannels
+                : mode == 4 && data->sourceChannels > 1 && channel < 2 ? 1 - channel : channel;
             const float middle = top + height * (channel + .5f);
             auto lane = juce::Rectangle<float>(item.getX(), top + channel * height + .5f, item.getWidth(), std::max(0.f, height - 1)).getIntersection(viewport);
             if (lane.isEmpty()) continue;
@@ -110,7 +115,7 @@ struct WaveformRenderer {
             const auto edgeAt = [&](double time) {
                 const float px = (float)(x + (time - start) * scale), level = amplitude * fade.at(px);
                 const float center = middle - (peak.first + peak.second) * .5f * level;
-                const float half = std::max(.5f / physical, (peak.second - peak.first) * .5f * level);
+                const float half = std::max(.5f / physical, (peak.second - peak.first) * .5f * std::abs(level));
                 return Edge{px, center-half, center+half};
             };
             if (column == first) edges.push_back(edgeAt(a));

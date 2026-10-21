@@ -65,7 +65,7 @@ import Combine
         }
         useDefault.isEnabled = currentID != nil
         useDefault.title = currentID == (library.defaults[identity] ?? "") ? "Padrão selecionado" : "Usar como padrão"
-        useDefault.toolTip = "Aplicar este preset às novas inserções deste plugin em qualquer pista."
+        useDefault.setAccessibilityHelp("Aplicar este preset às novas inserções deste plugin em qualquer pista.")
     }
     private func nativeFactory(_ settings: NativeFXSettings, effect: String) -> FXPreset? {
         guard !effect.hasPrefix("External:") else { return nil }

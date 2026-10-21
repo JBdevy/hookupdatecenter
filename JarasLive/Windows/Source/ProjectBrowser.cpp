@@ -176,9 +176,7 @@ void ProjectBrowser::updateEnabled() {
     for (auto *button : {&create, &add, &recent, &empty, &stems, &reaper,
                          &logic, &recording, &package, &back})
         button->setEnabled(!loading);
-    for (auto *button : {&create, &add, &empty, &stems, &reaper, &logic, &recording, &package})
-        button->setEnabled(!loading && !playbackRunning);
-    browseButton.setEnabled(!loading && !playbackRunning);
+    browseButton.setEnabled(!loading);
     cancelLoading.setEnabled(!loading || (bool)cancelLoadingAction);
     search.setEnabled(!loading);
     recents.setEnabled(!loading);
@@ -277,7 +275,6 @@ void ProjectBrowser::paintListBoxItem(int row, Graphics &g, int width, int heigh
     g.strokePath(chevron, PathStrokeType(1.3f));
 }
 void ProjectBrowser::returnKeyPressed(int row) {
-    if (playbackRunning) return;
     if (loading) return;
     if (isPositiveAndBelow(row, filtered.size()) && open)
         open(File(filtered[row]));

@@ -23,8 +23,9 @@ enum ProjectError: Error { case invalid(String) }
 enum CloseTestCommand { case stopAll }
 @MainActor final class CloseTestShow {
     var hasUnsavedChanges = true, saving = false, saves = 0, stops = 0
+    var isPlaying = false
     var failSave = false
-    func send(_ command: CloseTestCommand) { stops += 1 }
+    func send(_ command: CloseTestCommand) { stops += 1; isPlaying = false }
     func saveForClosing() async throws {
         saves += 1
         if failSave { throw ProjectError.invalid("Save failed") }
@@ -80,6 +81,42 @@ Task { @MainActor in
         precondition(CloseTestAlert.buttons[1].keyEquivalent.isEmpty, "discard is never the default keyboard action")
         precondition(CloseTestAlert.buttons[2].keyEquivalent == "\u{1b}")
     }
+    for background in [false, true] {
+        let documents = ProjectDocuments(), guardClose = ProjectCloseGuard()
+        documents.show.hasUnsavedChanges = false
+        documents.show.isPlaying = !background
+        DesktopProjectTabs.shared.anyPlaying = background
+        guardClose.attach(window: window, documents: documents)
+        CloseTestAlert.response = .alertFirstButtonReturn // Cancel is the safe default.
+        let alerts = CloseTestAlert.instances
+        var outcome: Bool?
+        guardClose.request { outcome = $0 }
+        precondition(outcome == false && !guardClose.pending && CloseTestAlert.instances == alerts + 1)
+        precondition(documents.show.stops == 0 && documents.show.saves == 0)
+        precondition(documents.show.isPlaying || DesktopProjectTabs.shared.anyPlaying)
+        precondition(CloseTestAlert.buttons.map(\.title) == ["Cancel", "Close CatLive"])
+        precondition(CloseTestAlert.buttons[0].keyEquivalent == "\r")
+        outcome = nil
+        CloseTestAlert.response = .alertSecondButtonReturn
+        guardClose.request { outcome = $0 }
+        while outcome == nil { await Task.yield() }
+        precondition(outcome == true && documents.show.stops == 1 && documents.show.saves == 0)
+        precondition(!documents.show.isPlaying && !DesktopProjectTabs.shared.anyPlaying)
+    }
+    do {
+        let documents = ProjectDocuments(), guardClose = ProjectCloseGuard()
+        documents.show.isPlaying = true
+        guardClose.attach(window: window, documents: documents)
+        CloseTestAlert.deferred = true
+        var outcome: Bool?
+        guardClose.request { outcome = $0 }
+        CloseTestAlert.answer?(.alertSecondButtonReturn)
+        while CloseTestAlert.buttons.first?.title != "Save" { await Task.yield() }
+        CloseTestAlert.answer?(.alertThirdButtonReturn)
+        precondition(outcome == false && documents.show.isPlaying && documents.show.stops == 0)
+        CloseTestAlert.deferred = false; CloseTestAlert.answer = nil
+    }
+    print("PROJECT_CLOSE_PLAYBACK_CONFIRMATION_ACTIVE_AND_BACKGROUND_CANCEL_OK")
     print("PROJECT_CLOSE_SAVE_DISCARD_CANCEL_OK")
     do {
         let documents = ProjectDocuments(), guardClose = ProjectCloseGuard()
@@ -165,5 +202,6 @@ RunLoop.main.run()
 @MainActor final class DesktopProjectTabs {
     static let shared = DesktopProjectTabs()
     func confirmAndSaveBackgroundProjects(excluding: ProjectDocuments) async throws -> Bool { true }
-    func stopAll() { StemAudioPlayback.shared.prepareForClosing() }
+    var anyPlaying = false
+    func stopAll() { anyPlaying = false; StemAudioPlayback.shared.prepareForClosing() }
 }

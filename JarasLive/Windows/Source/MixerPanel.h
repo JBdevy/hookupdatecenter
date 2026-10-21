@@ -136,6 +136,20 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             }
             mute.setColour(TextButton::buttonOnColourId, Colour(0xffff4444));
             solo.setColour(TextButton::buttonOnColourId, theme::yellow);
+            if (id.empty()) {
+                for (auto *button : {&fx, &mute, &solo}) {
+                    button->getProperties().set("macMasterControl", true);
+                    button->getProperties().set("compactTrackStyle", true);
+                    button->setColour(TextButton::buttonColourId, Colours::white.withAlpha(.12f));
+                    button->setColour(TextButton::textColourOffId, Colours::white);
+                    button->setColour(TextButton::textColourOnId, Colours::black);
+                }
+                mute.setColour(TextButton::buttonOnColourId, Colour(0xffff4245));
+                mono.getProperties().set("flat", true);
+                mono.setColour(TextButton::buttonColourId, Colours::transparentBlack);
+                mono.setColour(TextButton::buttonOnColourId, Colours::transparentBlack);
+                mono.setColour(TextButton::textColourOffId, Colours::white);
+            }
             phase.setColour(TextButton::buttonOnColourId, theme::yellow);
             record.setColour(TextButton::textColourOffId, Colour(0xffff4444));
             fx.onClick = [this] { mixer.openEffects(id,{}); };
@@ -222,7 +236,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 record.setToggleState(mixer.session.recordingArmed(id), dontSendNotification);
                 const auto &settings = slotSettings();
                 firstSlot = jlimit(0, maximumFirstSlot(), firstSlot);
-                fx.setColour(TextButton::textColourOffId, fxchain::colour(settings));
+                fx.setColour(TextButton::textColourOffId, fxchain::colour(settings, id.empty()));
                 resized();repaint();
             }
         }

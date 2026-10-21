@@ -41,6 +41,10 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         if (name == "lock") { p.cubicTo(8, 1, 16, 1, 16, 7); p.lineTo(16, 11); }
         else { p.cubicTo(8, 1, 17, 1, 17, 7); }
         line(12, 15, 12, 18);
+    } else if (name == "magnet") {
+        p.startNewSubPath(4,3); p.lineTo(4,13); p.cubicTo(4,25,20,25,20,13);
+        p.lineTo(20,3); p.lineTo(15,3); p.lineTo(15,13); p.cubicTo(15,18,9,18,9,13);
+        p.lineTo(9,3); p.closeSubPath(); line(4,8,9,8); line(15,8,20,8);
     } else if (name == "visibility") {
         p.startNewSubPath(2,12);p.cubicTo(7,3,17,3,22,12);p.cubicTo(17,21,7,21,2,12);p.closeSubPath();
         p.addEllipse(8.5f,8.5f,7,7);

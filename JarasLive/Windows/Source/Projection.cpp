@@ -1,7 +1,30 @@
 #include "ProjectionSelection.h"
 #include "Projection.h"
+#include <shobjidl.h>
 #include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
+namespace {
+void markProjectionFullscreen(Component &component, bool fullscreen) {
+    const auto *peer = component.getPeer();
+    if (!peer) return;
+    const auto hwnd = static_cast<HWND>(peer->getNativeHandle());
+    if (fullscreen) {
+        // The Shell does not treat an owned tool window as an independent
+        // fullscreen presentation. Restore workspace ownership on exit.
+        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+        RemovePropW(hwnd, L"NonRudeHWND");
+    }
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    ITaskbarList2 *taskbar = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&taskbar)))) {
+        if (SUCCEEDED(taskbar->HrInit())) taskbar->MarkFullscreenWindow(hwnd, fullscreen ? TRUE : FALSE);
+        taskbar->Release();
+    }
+    if (SUCCEEDED(initialized)) CoUninitialize();
+}
+}
+
 void Projection::refreshVideoAppearance() {
     if(videoSurface)InvalidateRect(videoSurface,nullptr,FALSE);
     repaint();
@@ -209,11 +232,9 @@ void Projection::toggleFullScreen() {
     if (auto *window = findParentComponentOfClass<DocumentWindow>()) {
         if (presenting) {
             presenting = false;
+            markProjectionFullscreen(*window, false);
             window->setAlwaysOnTop(windowedOnTop);
-            window->setResizable(true, false);
-            window->setDropShadowEnabled(true);
             window->setTitleBarHeight(windowedTitleHeight);
-            window->setTitleBarButtonsRequired(DocumentWindow::allButtons, false);
             window->setBounds(windowedBounds);
             if (windowedMaximised) window->setFullScreen(true);
         } else {
@@ -226,15 +247,18 @@ void Projection::toggleFullScreen() {
             windowedMaximised = window->isFullScreen();
             if (windowedMaximised) window->setFullScreen(false);
             presenting = true;
-            window->setResizable(false, false);
-            window->setDropShadowEnabled(false);
-            window->setTitleBarButtonsRequired(0, false);
+            // Preserve the native peer and decoded video surface across the
+            // transition. Changing resize/shadow/button flags recreates the HWND.
             window->setTitleBarHeight(0);
-            window->setAlwaysOnTop(true);
+            window->setAlwaysOnTop(false);
             window->setBounds(screen);
         }
+        for (auto *button : {window->getCloseButton(), window->getMinimiseButton(), window->getMaximiseButton()})
+            if (button) button->setVisible(!presenting);
+        if (auto *peer = window->getPeer()) peer->performAnyPendingRepaintsNow();
         window->toFront(true);
         grabKeyboardFocus();
+        if (presenting) markProjectionFullscreen(*window, true);
     }
 }
 bool Projection::keyPressed(const KeyPress &key) {

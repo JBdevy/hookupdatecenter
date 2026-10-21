@@ -16,7 +16,7 @@ struct ItemLanes {
         std::vector<double> ends;
         for (const auto *clip : ordered) {
             if (clip->recordingLane) { takes.push_back(clip); continue; }
-            auto at = std::find_if(ends.begin(), ends.end(), [&](double end) { return end <= clip->startTime; });
+            auto at = std::find_if(ends.begin(), ends.end(), [&](double end) { return end <= clip->startTime + 1e-9; });
             const int lane = (int)(at - ends.begin());
             if (at == ends.end()) ends.push_back(clip->startTime + clip->duration);
             else *at = clip->startTime + clip->duration;
@@ -28,7 +28,7 @@ struct ItemLanes {
         for (const auto *clip : takes) {
             int lane = 0;
             for (const auto *other : placed)
-                if (other->startTime < clip->startTime + clip->duration && other->startTime + other->duration > clip->startTime)
+                if (other->startTime < clip->startTime + clip->duration - 1e-9 && other->startTime + other->duration > clip->startTime + 1e-9)
                     lane = std::max(lane, lanes.at(other->id) + 1);
             lanes[clip->id] = lane; placed.push_back(clip); count = std::max(count, lane + 1);
         }
@@ -76,22 +76,42 @@ struct ItemHeader {
         const float x = visible.getX() + 2.6f, y = bounds.getY(), width = visible.getWidth();
         titleLeft = visible.getX() + 6;
         if (!editable || width<27.3f) return;
-        if (width >= 27.3f) muteRect = {x,y,22.1f,17};
-        if ((!midi || clip.fxJSON) && width >= 53.3f) fxRect = {x+23.4f,y,26,17};
-        if (!midi && width >= 74.1f) phaseRect = {x+50.7f,y,19.5f,17};
-        if (!midi && width >= 96.2f) panRect = {x+71.5f,y,19.5f,17};
-        if (!panRect.isEmpty() && visible.getRight()-panRect.getRight() >= 42.6f) panLabel = {panRect.getRight()+.5f,y,40,17};
-        const float offset = midi ? 50.7f : 132.f;
-        if (width >= offset + (midi ? 23.4f : 24.7f)) gainRect = {x+offset,y,19.5f,17};
-        const float labelWidth = std::max(32.f, std::ceil(gainText(clip.gain.value_or(1)).length()*4.75f)+6);
-        if (!gainRect.isEmpty() && visible.getRight()-gainRect.getRight() >= labelWidth+3.9f) gainLabel = {gainRect.getRight()+.5f,y,labelWidth,17};
-        for (auto r : {muteRect,fxRect,phaseRect,panRect,panLabel,gainRect,gainLabel}) if (!r.isEmpty()) titleLeft = r.getRight()+1;
+        float next = x;
+        auto append = [&](juce::Rectangle<float>& target, float w, float gap = 1.f) {
+            if (next + w + 2 > visible.getRight()) return false;
+            target = {next,y,w,std::min(17.f,bounds.getHeight())};
+            next += w + gap; titleLeft = next;
+            return true;
+        };
+        const auto readoutFont = theme::semiboldFont(9);
+        const auto labelWidth = [&](const String& label) { return std::ceil(GlyphArrangement::getStringWidth(readoutFont,label)) + 2.f; };
+        if (!append(gainRect,19.5f,.5f)) return;
+        if (!append(gainLabel,labelWidth(gainText(clip.gain.value_or(1))))) return;
+        if (!append(muteRect,22.1f)) return;
+        if ((!midi || clip.fxJSON) && !append(fxRect,26)) return;
+        if (!midi) {
+            if (!append(phaseRect,19.5f)) return;
+            if (!append(panRect,19.5f,.5f)) return;
+            append(panLabel,labelWidth(panText(clip.pan.value_or(0))));
+        }
     }
     int resizeSide(Point<float> point) const {
         if (point.y < item.getY() || point.y >= item.getBottom()) return 0;
         const float tolerance = std::min(10.f, std::max(2.f, item.getWidth() / 2));
         const float left = std::abs(point.x - item.getX()), right = std::abs(point.x - item.getRight());
         return std::min(left, right) <= tolerance ? (left <= right ? -1 : 1) : 0;
+    }
+    static const MouseCursor &fadeCursor(bool left) {
+        static const auto make = [](bool in) {
+            Image image(Image::ARGB, 32, 32, true); Graphics g(image);
+            Path curve; curve.startNewSubPath(6, in ? 26.f : 6.f);
+            curve.cubicTo(14, in ? 26.f : 6.f, 16, in ? 6.f : 26.f, 26, in ? 6.f : 26.f);
+            g.setColour(Colours::black); g.strokePath(curve, PathStrokeType(6, PathStrokeType::curved, PathStrokeType::rounded));
+            g.setColour(Colours::white); g.strokePath(curve, PathStrokeType(3, PathStrokeType::curved, PathStrokeType::rounded));
+            return MouseCursor(image, 8, 8, 2.f);
+        };
+        static const auto fadeIn = make(true), fadeOut = make(false);
+        return left ? fadeIn : fadeOut;
     }
     static String gainText(double value) { return value <= 0 ? String::fromUTF8("−∞ dB") : (value >= 1 ? "+" : "") + String(20*std::log10(value),1)+" dB"; }
     static String panText(double value) { return std::abs(value)<.005 ? "Center" : String(value<0 ? "L-" : "R-")+String(roundToInt(std::abs(value)*100))+"%"; }
@@ -133,15 +153,19 @@ struct ItemHeader {
             const auto r = shapeRect(clip, shapeIn(control), shapeS(control));
             if (!r.isEmpty() && r.expanded(3).contains(p)) return control;
         }
-        if (fadeRect(clip,true).contains(p)) return fadeIn;
-        if (fadeRect(clip,false).contains(p)) return fadeOut;
+        const auto left = fadeRect(clip,true), right = fadeRect(clip,false);
+        const bool in = !left.isEmpty() && left.expanded(2).getIntersection(item.withTrimmedTop(17)).contains(p);
+        const bool out = !right.isEmpty() && right.expanded(2).getIntersection(item.withTrimmedTop(17)).contains(p);
+        if (in && out) return std::abs(p.x-left.getCentreX()) <= std::abs(p.x-right.getCentreX()) ? fadeIn : fadeOut;
+        if (in) return fadeIn;
+        if (out) return fadeOut;
         return none;
     }
     void draw(Graphics &g, const jaras::AudioClip &clip) const {
         g.saveState(); g.reduceClipRegion(visible.getSmallestIntegerContainer());
         auto button = [&](juce::Rectangle<float> r, String caption, bool active, bool bypass = false) {
             if (r.isEmpty()) return;
-            g.setColour(bypass ? Colour(0xffff453a) : Colours::black.withAlpha(.28f)); g.fillRect(r);
+            g.setColour(bypass ? Colour(0xffff453a) : Colours::white.withAlpha(.10f)); g.fillRect(r);
             g.setColour(active ? Colour(0xff33ff8c) : Colours::white); g.setFont(theme::semiboldFont(9)); g.drawText(caption,r,Justification::centred);
         };
         button(muteRect,"M",false,clip.muted);

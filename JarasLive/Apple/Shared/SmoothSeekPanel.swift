@@ -550,25 +550,36 @@ struct SectionListDock<Primary: View, Sections: View>: View {
 @MainActor final class DetachedPartsWindow: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var isDetached = false
     @Published private(set) var isVisible = false
+    private func remember(detached: Bool, visible: Bool) {
+        UserDefaults.standard.set(detached, forKey: "jaras.layout.parts.detached")
+        UserDefaults.standard.set(visible, forKey: "jaras.layout.parts.visible")
+    }
     private var window: NSWindow?
     func open(show: ShowController) {
+        remember(detached: true, visible: true)
         if let window {
             if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil); isVisible = true; return
         }
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        ProjectionWindow.followWorkspaceWindow(panel)
         panel.title = "CatLive · Parts"; panel.minSize = NSSize(width: 240, height: 240)
         panel.isReleasedWhenClosed = false; panel.delegate = self
         let host = NSHostingView(rootView: DetachedPartsContent(show: show).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         panel.contentView = host; InterfaceScaling.shared.register(panel)
+        if !panel.setFrameUsingName("CatLiveDetachedParts", force: true) { panel.center() }
         panel.setFrameAutosaveName("CatLiveDetachedParts")
-        if !panel.setFrameUsingName("CatLiveDetachedParts") { panel.center() }
         window = panel; isDetached = true; isVisible = true; panel.makeKeyAndOrderFront(nil)
     }
-    func hide() { window?.orderOut(nil); isVisible = false }
-    func close() {
+    private func savePlacement() { window?.saveFrame(usingName: "CatLiveDetachedParts") }
+    func windowDidMove(_ notification: Notification) { savePlacement() }
+    func windowDidResize(_ notification: Notification) { savePlacement() }
+    func hide() { remember(detached: true, visible: false); savePlacement(); window?.orderOut(nil); isVisible = false }
+    func close(preserveState: Bool = false) {
+        if !preserveState { remember(detached: false, visible: false) }
+        savePlacement()
         window?.delegate = nil; window?.close(); window?.contentView = nil; window = nil
         isDetached = false; isVisible = false
     }

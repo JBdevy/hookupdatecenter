@@ -4,6 +4,7 @@ import AppKit
 @MainActor final class FixtureShow {
     var projectSessionID = UUID()
     var toggleTracksPanel: () -> Void = {}
+    var toggleBarMixerPanel: () -> Void = {}
     var toggleSetlistPanel: () -> Void = {}
     var togglePartsPanel: () -> Void = {}
 }
@@ -12,6 +13,12 @@ import AppKit
     let show = FixtureShow()
     func replace() { show.projectSessionID = UUID(); opened = UUID() }
 }
+@MainActor final class DesktopProjectTabs {
+    static let shared = DesktopProjectTabs()
+    func isForeground(_ show: FixtureShow) -> Bool { true }
+}
+@MainActor final class ToolWindowsFixture: ObservableObject { func closeAll() {} }
+@MainActor final class DetachedPartsFixture: ObservableObject { func close(preserveState: Bool = false) {} }
 @MainActor enum DAWRemoteHostBridge { static func bind(_ show: FixtureShow) {} }
 @MainActor final class ResolumeController {
     static let shared = ResolumeController()
@@ -26,11 +33,11 @@ import AppKit
 }
 @MainActor final class DetachedMixerFixture: ObservableObject {
     static var closes = 0
-    func close() { Self.closes += 1 }
+    func close(preserveState: Bool = false) { Self.closes += 1 }
 }
 @MainActor final class DetachedSetlistFixture: ObservableObject {
     static var closes = 0
-    func close() { Self.closes += 1 }
+    func close(preserveState: Bool = false) { Self.closes += 1 }
 }
 @MainActor final class RightClickRouter {
     static let shared = RightClickRouter()
@@ -47,9 +54,13 @@ import AppKit
     @State private var mixerRestoreWidth = 280.0
     @State private var setlistWidth = 300.0
     @State private var setlistRestoreWidth = 300.0
+    @StateObject private var toolWindows = ToolWindowsFixture()
+    @StateObject private var detachedParts = DetachedPartsFixture()
     @StateObject private var detachedMixer = DetachedMixerFixture()
     @StateObject private var detachedSetlist = DetachedSetlistFixture()
     @State private var partsRightOpen = false
+    private func restoreGlobalPanels() {}
+    private func toggleBarMixer() { PanelInvocation.count += 1 }
     private func toggleMixer() { Self.togglePanel(width: $mixerWidth, restore: $mixerRestoreWidth, minimum: SidebarWidthLimits.trackMixer) }
     private func toggleSetlist() { Self.togglePanel(width: $setlistWidth, restore: $setlistRestoreWidth, minimum: SidebarWidthLimits.setlist) }
     static func togglePanel(width: Binding<Double>, restore: Binding<Double>, minimum: Double) {
@@ -88,9 +99,9 @@ import AppKit
     for iteration in 0..<12 {
         if iteration > 0 { session.replace(); settle() }
         let before = PanelInvocation.count
-        session.show.toggleTracksPanel(); session.show.toggleSetlistPanel(); settle()
-        check(PanelInvocation.count == before + 2,
-              "Replacement workspace \(iteration) must retain both panel actions after the previous workspace disappears")
+        session.show.toggleTracksPanel(); session.show.toggleSetlistPanel(); session.show.toggleBarMixerPanel(); settle()
+        check(PanelInvocation.count == before + 3,
+              "Replacement workspace \(iteration) must retain all panel actions after the previous workspace disappears")
         check(FXWindows.shared.closes == 0,
               "Previous workspace must not close editors owned by the new session")
         check(RightClickRouter.shared.interactionBlocked,

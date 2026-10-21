@@ -637,6 +637,7 @@ public struct ShowTimelinePresentationState: Equatable {
         case .previousProjectTab: navigateProjectTab(-1)
         case .nextProjectTab: navigateProjectTab(1)
         case .toggleTracks: toggleTracksPanel()
+        case .toggleBarMixer: toggleBarMixerPanel()
         case .toggleSetlist: toggleSetlistPanel()
         case .projectStart, .projectEnd, .nextRegion, .previousRegion, .nextTimelinePoint, .previousTimelinePoint:
             guard let song = current else { return }
@@ -658,6 +659,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var toggleTeleprompterWindow: () -> Void = {}
     public var navigateProjectTab: (Int) -> Void = { _ in }
     public var toggleTracksPanel: () -> Void = {}
+    public var toggleBarMixerPanel: () -> Void = {}
     public var toggleSetlistPanel: () -> Void = {}
     public var togglePartsPanel: () -> Void = {}
     public var onSetlistEdited: () -> Void = {}
@@ -1092,7 +1094,7 @@ public struct ShowTimelinePresentationState: Equatable {
         }
     }
     @discardableResult public func convertItems(_ ids: Set<UUID>, mode: Int) -> Bool {
-        guard canExecute(), !finishing, (0...3).contains(mode), !ids.isEmpty else { return false }
+        guard canExecute(), !finishing, (0...4).contains(mode), !ids.isEmpty else { return false }
         var edits: [(song: Int, track: Int, item: Int, id: UUID, old: Int, gain: Int)] = []
         for song in snapshot.project.songs.indices {
             for track in snapshot.project.songs[song].tracks.indices where snapshot.project.songs[song].tracks[track].kind == .standard {
@@ -2300,7 +2302,9 @@ public struct ShowTimelinePresentationState: Equatable {
             project.songs[song].tracks[index].clips.append(clip)
             project.songs[song].duration = max(project.songs[song].duration, position + length)
         }
-        return self.current?.tracks.contains(where: { $0.clips.contains(where: { $0.id == clip.id }) }) == true ? clip.id : nil
+        guard self.current?.tracks.contains(where: { $0.clips.contains(where: { $0.id == clip.id }) }) == true else { return nil }
+        send(.editSeek, value: position + length)
+        return clip.id
     }
     public func setMIDIItem(_ id: UUID, midi: MIDIItem) {
         do { try midi.validate() } catch { message = error.localizedDescription; return }
@@ -2339,6 +2343,7 @@ public struct ShowTimelinePresentationState: Equatable {
             snapshot.project.songs[song].tracks[row].clips.append(clip)
             snapshot.project.songs[song].duration = max(snapshot.project.songs[song].duration, position + clip.duration)
             markChanged()
+            send(.editSeek, value: position + clip.duration)
             return clip.id
         } catch { message = error.localizedDescription; return nil }
     }
@@ -3044,6 +3049,16 @@ public struct ShowTimelinePresentationState: Equatable {
         snapshot = loaded
         playedLiveRegionIDs = SetlistLivePlaybackTracker.normalizedMarks(project: loaded.project,
             marked: Set(loaded.project.regionSetlist?.playedLiveRegionIDs ?? []))
+    }
+    /// Add imported material without resetting the current transport or project session.
+    public func applyImportedProject(_ project: Project) throws {
+        guard project.id == snapshot.project.id else { throw ProjectError.invalid("The open project changed. Start Add Project again.") }
+        try project.validate()
+        tick()
+        try executor.applyProjectEdit(project)
+        snapshot = try executor.snapshot()
+        markChanged()
+        onProjectEdited()
     }
     public func replaceProject(_ project: Project) throws {
         try project.validate()

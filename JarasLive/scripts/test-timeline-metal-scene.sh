@@ -34,8 +34,10 @@ from pathlib import Path
 import sys
 source = Path('Apple/Shared/GridSelectionInput.swift').read_text()
 start = source.index('struct GridSelectionItem {')
-selection = source[start:source.index('#if os(macOS)', start)]
-Path(sys.argv[1]).write_text('import SwiftUI\n' + selection)
+typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]
+metrics = '\nimport AppKit\nimport CoreText\n'+typography+'\n'+source[source.index('enum GridSelectionHeaderText {'):source.index('private enum GridSelectionHeaderControls {')]
+selection = source[start:source.index('#if os(macOS)\nimport AppKit', start)]
+Path(sys.argv[1]).write_text('import SwiftUI\n' + selection + metrics)
 PY
 swiftc Apple/Shared/TimelineRenderDiagnostics.swift -O -swift-version 5 \
   Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \

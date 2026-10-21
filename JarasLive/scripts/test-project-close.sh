@@ -10,7 +10,7 @@ source=Path('Apple/Shared/JarasLiveApp.swift').read_text()
 subject=source[source.index('@MainActor final class ProjectCloseGuard'):source.rindex('\n#endif')]
 # Exercise the actual close controller, replacing only the dialog and external
 # playback/persistence dependencies. No user project or real window is closed.
-subject=subject.replace('NSAlert()', 'CloseTestAlert()')
+subject=subject.replace('NSAlert()', 'CloseTestAlert()').replace('ProjectSaveAlert()', 'CloseTestAlert()')
 documents=Path('Apple/Shared/ProjectDocuments.swift').read_text()
 opening=documents[documents.index('    @Published var canCancelOpening'):documents.index('    @Published var status')]
 opening=opening.replace('@Published ', '').replace('private func beginOpening', 'func beginOpening')

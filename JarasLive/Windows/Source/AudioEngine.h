@@ -13,6 +13,7 @@
 #include "TrackCapture.h"
 #include "TimecodeMIDI.h"
 #include "TransportFadeout.h"
+#include "AudioCallbackMetrics.h"
 namespace catlive {
 class ClipAudio;
 // Prepared readers, buffers and routing live outside the device callback.
@@ -32,6 +33,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     ~AudioEngine() override;
     std::shared_ptr<AudioDeviceManager> deviceHost;
     AudioDeviceManager &devices;
+    AudioCallbackMetrics callbackMetrics;
     AudioFormatManager formats;
     MidiKeyboardState keyboardState;
     Instrument instrument;
@@ -66,10 +68,12 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     bool preparesOffline() const { return offlineMode; }
     // Message thread only: swaps a fully prepared, unattached engine's graph.
     // The argument receives the retired graph and must be disposed off the UI.
-    void adoptPreparedSong(AudioEngine &);
+    void adoptPreparedSong(AudioEngine &, bool preservePlayback = false);
     void transport(const State &);
+    void updateTransportRouting(const State &);
     int timecodePreferred(const std::optional<ID>& region) const { return timecodeProgram.preferred(region); }
     void previewMIDIItem(const jaras::Song &,const jaras::AudioClip &);
+    void refreshItemTiming(const jaras::Song &, const jaras::AudioClip &);
     void setItemControls(const jaras::AudioClip &);
     void setMixer(const jaras::Project &, const jaras::Song &);
     void setOffline(bool enabled);
@@ -149,6 +153,14 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         else for(auto &bus:buses)if(bus->id==id){bus->held.clear();break;}
     }
     uint64 getUnderruns() const { return underruns.load(); }
+    std::set<String> activeMediaPaths() const {
+        std::set<String> paths;
+        for (const auto &voice : voices) if (voice->source)
+            paths.insert(unicodeCase(voice->source->file.getFullPathName(), false));
+        for (const auto &source : retiredSources) if (source)
+            paths.insert(unicodeCase(source->file.getFullPathName(), false));
+        return paths;
+    }
     int residentStreams() const {
         std::set<const StreamingReader*> active;
         for (const auto& voice : voices) if (voice->source) for (const auto& reader : voice->source->readers)
@@ -167,6 +179,20 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         put(result, "cacheMisses", (int64)caches); put(result, "inactiveMisses", (int64)inactive);
         put(result, "primedSources", lastPrimedSources);
         put(result, "primeWaitMilliseconds", lastPrimeWaitMilliseconds);
+        put(result, "voiceCount", (int)voices.size()); put(result, "busCount", (int)buses.size());
+        int processors = 0;
+        Array<var> trackEffects, itemEffects;
+        for (const auto &bus : buses) {
+            const auto inserted = get(bus->settings, "inserted");
+            if (!list(inserted).isEmpty()) { auto entry=object();put(entry,"track",text(bus->id));put(entry,"effects",inserted);trackEffects.add(entry); }
+        }
+        for (const auto &voice : voices) {
+            processors += voice->clipAudio ? 1 : 0;
+            const auto inserted = get(voice->fxSettings, "inserted");
+            if (!list(inserted).isEmpty()) {auto entry=object();put(entry,"item",text(voice->clipID));put(entry,"effects",inserted);itemEffects.add(entry);}
+        }
+        put(result, "clipProcessors", processors); put(result, "trackEffects", trackEffects);
+        put(result, "itemEffects", itemEffects); put(result, "masterEffects", get(masterFXSettings,"inserted"));
         return result;
     }
     double cpu() const { return devices.getCpuUsage(); }
@@ -191,6 +217,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::shared_ptr<ReaderContext> context;
         std::unique_ptr<StreamingReader> readers[2];
     };
+    // Unused prepared readers retire with the outgoing graph on its worker.
+    std::vector<std::shared_ptr<Source>> retiredSources;
     struct Voice {
         ID track, clipID;
         std::optional<double> playbackStart;
@@ -332,7 +360,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::array<std::atomic<float>, 2> masterLevels{};
     std::atomic<float> masterFXInput{0}, masterFXOutput{0};
     struct Update {
-        enum Kind { transport, mixer, item } kind = transport;
+        enum Kind { transport, mixer, item, routing } kind = transport;
         bool inputMonitoring=true;
         int midiSlot=0,midiChannel=0;
         State state;

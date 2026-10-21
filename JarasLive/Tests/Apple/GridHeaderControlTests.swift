@@ -3,7 +3,7 @@ import AppKit
 // Text rendering has its own regression suite. Removing it from both sides
 // isolates the nontext control paths and checks their surrounding state.
 enum GridSelectionHeaderText {
-    struct Title { @inline(__always) func draw(in rect: CGRect) {} }
+    struct Title { var width: CGFloat = 32; @inline(__always) func draw(in rect: CGRect) {}; @inline(__always) func drawCentered(in rect: CGRect) {} }
     static let mute = Title(), fx = Title(), activeFX = Title(), edit = Title()
     @inline(__always) static func gain(_ value: String) -> Title { Title() }
     @inline(__always) static func title(_ value: String) -> Title { Title() }

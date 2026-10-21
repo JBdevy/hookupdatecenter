@@ -212,7 +212,7 @@ class CatLiveApplication final : public JUCEApplication {
         }
         try {
             const bool previewHome = args.contains("--home-preview");
-            tooltips = std::make_unique<TooltipWindow>(nullptr, 650);
+            // Keep control descriptions for accessibility without hover popups.
             const bool projectPreview = args.contains("--project-preview");
             const bool gridImportTest = args.contains("--grid-import-test");
             const bool visualTest = args.contains("--visual-test") || projectPreview || gridImportTest;
@@ -340,7 +340,6 @@ class CatLiveApplication final : public JUCEApplication {
     }
     void shutdown() override {
         if (showMode) { showMode->stop(); showMode.reset(); }
-        tooltips.reset();
         splash.reset();
         window.reset();
         tabHost.reset();
@@ -561,7 +560,6 @@ class CatLiveApplication final : public JUCEApplication {
     std::unique_ptr<Lighting> lighting;
     std::unique_ptr<Window> window;
     std::unique_ptr<StartupSplash> splash;
-    std::unique_ptr<TooltipWindow> tooltips;
 };
 } // namespace catlive
 START_JUCE_APPLICATION(catlive::CatLiveApplication)

@@ -7,6 +7,10 @@ import Combine
 @MainActor final class DetachedSetlistWindow: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var isDetached = false
     @Published private(set) var isVisible = false
+    private func remember(detached: Bool, visible: Bool) {
+        UserDefaults.standard.set(detached, forKey: "jaras.layout.setlist.detached")
+        UserDefaults.standard.set(visible, forKey: "jaras.layout.setlist.visible")
+    }
     private(set) var window: NSWindow?
     private var host: NSHostingView<AnyView>?
     private var onDock: () -> Void = {}
@@ -14,6 +18,7 @@ import Combine
 
     func open<Content: View>(onDock: @escaping () -> Void = {}, @ViewBuilder content: () -> Content) {
         self.onDock = onDock
+        remember(detached: true, visible: true)
         if let window {
             update(content: content)
             if window.isMiniaturized { window.deminiaturize(nil) }
@@ -22,6 +27,7 @@ import Combine
         }
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        ProjectionWindow.followWorkspaceWindow(panel)
         panel.title = "CatLive · Setlist"
         panel.minSize = NSSize(width: 320, height: 300)
         panel.isReleasedWhenClosed = false
@@ -49,9 +55,10 @@ import Combine
         guard visible, let content = window.contentView, content.frame.width < 600 * factor else { return }
         window.setContentSize(NSSize(width: 600 * factor, height: content.frame.height))
     }
-    func hide() { window?.orderOut(nil); isVisible = false }
+    func hide() { remember(detached: true, visible: false); window?.orderOut(nil); isVisible = false }
     /// Programmatic teardown must not re-dock an outgoing project's Setlist.
-    func close() {
+    func close(preserveState: Bool = false) {
+        if !preserveState { remember(detached: false, visible: false) }
         window?.delegate = nil
         window?.close(); window?.contentView = nil
         window = nil; host = nil; onDock = {}

@@ -58,6 +58,7 @@
 #include "TimelineRegionLabels.h"
 #include "MultiLoopsPanel.h"
 #include "CloseProjectSheet.h"
+#include "UnifyRegionPanel.h"
 #include "RecordingProjectStep.h"
 #include "RecordingOptionsPanel.h"
 #include "TransportFadeoutPanel.h"
@@ -123,6 +124,13 @@ MacLook::MacLook() {
     setColour(ToggleButton::textColourId, Colours::white);
     setColour(ToggleButton::tickColourId, theme::green);
 }
+void MacLook::drawTooltip(Graphics &g,const String &text,int width,int height) {
+    auto bounds=juce::Rectangle<float>(0,0,(float)width,(float)height).reduced(.5f);
+    g.setColour(Colour(0xff353535)); g.fillRoundedRectangle(bounds,5);
+    g.setColour(Colour(0xff707070)); g.drawRoundedRectangle(bounds,5,1);
+    g.setColour(Colour(0xfff0f0f0)); g.setFont(theme::font(12));
+    g.drawFittedText(text,juce::Rectangle<int>(width,height).reduced(7,4),Justification::centred,4,1.f);
+}
 void MacLook::drawButtonBackground(Graphics &g, Button &b, const Colour &colour, bool over,
                                    bool down) {
     if ((bool)b.getProperties()["colourSwatch"]) {
@@ -140,6 +148,16 @@ void MacLook::drawButtonBackground(Graphics &g, Button &b, const Colour &colour,
         g.fillRoundedRectangle(bounds, 6);
         g.setColour(active ? base : Colours::white.withAlpha(.45f));
         g.drawRoundedRectangle(bounds, 6, 1);
+        return;
+    }
+    if ((bool)b.getProperties()["macMasterControl"]) {
+        const bool compact = (bool)b.getProperties()["compactTrackStyle"];
+        auto tint = b.findColour(b.getToggleState() ? TextButton::buttonOnColourId : TextButton::buttonColourId);
+        if (down) tint = compact && b.getToggleState() ? tint.withMultipliedAlpha(.75f)
+                          : Colours::white.withAlpha(compact ? .24f : .30f);
+        if (!b.isEnabled()) tint = tint.withMultipliedAlpha(.35f);
+        g.setColour(tint);
+        g.fillRoundedRectangle(b.getLocalBounds().toFloat().reduced(.6f), 3.f);
         return;
     }
     const bool plain = (bool)b.getProperties().getWithDefault("plain", false);
@@ -1370,7 +1388,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             0, std::max((double)canvas.getWidth(), length * w.pixelsPerSecond + 120));
         horizontal.setCurrentRange(horizontal.getCurrentRangeStart(), canvas.getWidth());
         vertical.setRangeLimits(
-            0, std::max(canvas.getHeight() - headerHeight(), w.rowTop(s ? (int)s->tracks.size() : 0) + 16));
+            0, std::max(canvas.getHeight() - headerHeight(), w.rowTop(s ? (int)s->tracks.size() : 0) + w.trackHeight * 2));
         vertical.setCurrentRange(w.verticalOffset, std::max(1, canvas.getHeight() - headerHeight()));
         invalidate();
     }
@@ -1515,6 +1533,14 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             horizontal.setCurrentRangeStart(horizontal.getCurrentRangeStart() + x);
         if (y != 0)
             vertical.setCurrentRangeStart(vertical.getCurrentRangeStart() + y);
+    }
+    juce::Rectangle<int> regionHeaderBounds(const ID &id) const {
+        if (const auto *song = displaySong()) for (const auto &part : song->parts) if (part.id == id) {
+            const float left = std::max(0.f, xAt(part.startTime));
+            const float right = std::min((float)canvas.getWidth(), xAt(part.endTime));
+            return juce::Rectangle<float>(left, (float)(16*regionLanes().lane(id)), std::max(1.f, right-left), 16.f).getSmallestIntegerContainer();
+        }
+        return {0, 0, 1, 16};
     }
     var state() const {
         auto v = object();
@@ -1699,7 +1725,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             const ScopeGuard measure{measurePaint};
             auto stageStart=started;int stageIndex=0;
             auto stage=[&]{const auto now=Time::getMillisecondCounterHiRes();if(!t.w.capturingSnapshot && stageIndex<(int)t.paintStages.size())t.paintStages[(size_t)stageIndex]=now-stageStart;++stageIndex;stageStart=now;};
-            g.fillAll(t.w.appearance.colour("jaras.timeline.background", 0x1e1e1e));
+            g.fillAll(t.w.appearance.colour("jaras.timeline.background", 0x161616));
             const auto *song = t.displaySong();
             if (!song)
                 return;
@@ -1788,7 +1814,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 }
             }
             g.setColour(theme::line);
-            for (int y : {t.regionHeight(), t.regionHeight()+16, t.regionHeight()+32, headerHeight()-1})
+            for (int lane = 0; lane <= t.regionLanes().count; ++lane)
+                g.drawHorizontalLine(lane * 16, 0, (float)getWidth());
+            for (int y : {t.regionHeight()+16, t.regionHeight()+32, headerHeight()-1})
                 g.drawHorizontalLine(y, 0, (float)getWidth());
             stage();
             g.saveState();
@@ -1803,7 +1831,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 const auto &track = song->tracks[row];
                 const bool trackMuted=trackTree::silenced(*song,track);
                 const auto background = t.w.trackSelected(track.id) ? theme::panel
-                    : t.w.appearance.colour("jaras.timeline.background", 0x1e1e1e);
+                    : t.w.appearance.colour("jaras.timeline.background", 0x161616);
                 g.setColour(background);
                 g.fillRect(0, y, getWidth(), height);
                 g.setColour(theme::line.withAlpha(.8f));
@@ -1844,7 +1872,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     g.saveState();g.reduceClipRegion(outline);
                     const ItemHeader header(rect,(float)getWidth(),track,clip);
                     if(!compact) {
-                        g.setColour(Colours::black.withAlpha(.16f));g.fillRect(rect.withHeight(std::min(17.f,rect.getHeight())));
+                        g.setColour(Colour(0xff303030));g.fillRect(rect.withHeight(std::min(17.f,rect.getHeight())));
                         header.draw(g,clip);
                         const float headerRight=header.visible.getRight(),nameLeft=header.titleLeft;
                         if(headerRight-nameLeft>=12) {
@@ -1908,10 +1936,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             const int channels = std::max(1, (int)clip.waveformChannels.size());
                             const float top = rect.getY() + 18.f;
                             const float laneHeight = std::max(1.f, rect.getBottom() - top - 2.f) / channels;
-                            const float amplitude = laneHeight * .98f * (float)jlimit(0., std::pow(10., 24. / 20), clip.gain.value_or(1));
+                            const float amplitude = laneHeight * .98f * (float)WaveformRenderer::gain(clip);
                             g.setColour(Colour::greyLevel(waveGray));
                             for (int channel = 0; channel < channels; ++channel) {
-                                const auto &embedded = clip.waveformChannels.empty() ? clip.waveform : clip.waveformChannels[(size_t)channel];
+                                const auto &embedded = clip.waveformChannels.empty() ? clip.waveform : clip.waveformChannels[(size_t)(clip.channelMode.value_or(0)==4 && channels>1 && channel<2 ? 1-channel : channel)];
                                 if (embedded.empty()) continue;
                                 const float middle = top + laneHeight * (channel + .5f);
                                 Path envelope;
@@ -2045,7 +2073,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
 
         void mouseMove(const MouseEvent &e) override {
-            auto cursor=MouseCursor::NormalCursor;
+            MouseCursor cursor(MouseCursor::NormalCursor);
             if(e.y>=t.regionHeight()+32 && e.y<headerHeight() && timeRangeEdge(e.position.x)) cursor=MouseCursor::LeftRightResizeCursor;
             if (const auto *song=t.w.session.song()) {
                 const int row=t.w.rowAt(e.y-headerHeight()+t.w.verticalOffset);
@@ -2055,6 +2083,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         const ItemHeader header(itemRect(row,clip),(float)getWidth(),track,clip);
                         if (!timelineGrid::movementLocked(t.w.session.project()) && header.hit(e.position,clip)==ItemHeader::none && header.resizeSide(e.position) &&
                             (track.role.id!="generatedClick" || clipEditing::projection(clip))) cursor=MouseCursor::LeftRightResizeCursor;
+                        const auto hit = header.hit(e.position,clip);
+                        if (hit == ItemHeader::fadeIn || hit == ItemHeader::fadeOut) cursor=ItemHeader::fadeCursor(hit==ItemHeader::fadeIn);
                         break;
                     }
                 }
@@ -2261,7 +2291,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             }
             if (!dragRegion.empty() || !dragMarker.empty()) {
                 const auto region=dragRegion, marker=dragMarker;
-                t.setRegionPreview(std::nullopt);
                 if (e.getDistanceFromDragStart() >= 3) t.w.perform([&] {
                     const double delta=(e.position.x-startPosition.x)/t.w.pixelsPerSecond;
                     t.w.session.edit([&](auto &p) {
@@ -2283,6 +2312,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     if (!region.empty()) t.w.session.command(t.w.session.transport().playing?jaras::CommandKind::queueRegion:jaras::CommandKind::selectRegion,region);
                     else t.w.session.command(jaras::CommandKind::editSeek,{},originalStart);
                 });
+                t.setRegionPreview(std::nullopt);
                 dragRegion.clear();dragMarker.clear();dragPreview=false;setMouseCursor(MouseCursor::NormalCursor);t.invalidate();return;
             }
             if (controlClip) {
@@ -2312,11 +2342,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     if (auto *song = t.w.session.song();
                         song && previewRow >= 0 && previewRow < (int)song->tracks.size())
                         destinationTrack = song->tracks[(size_t)previewRow].id;
-                    t.w.session.edit([&](jaras::Project &p) {
-                        if (resizeEdge)
-                            clipEditing::resize(p, id, previewStart, previewEnd);
-                        else
-                            clipEditing::move(p, id, previewStart, destinationTrack);
+                    if (resizeEdge) t.w.session.resizeItem(id, previewStart, previewEnd);
+                    else t.w.session.edit([&](jaras::Project &p) {
+                        clipEditing::move(p, id, previewStart, destinationTrack);
                     });
                     if (!resizeEdge && !destinationTrack.empty())
                         t.w.selectedTrack = destinationTrack;
@@ -2392,7 +2420,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             if(!timeRangeDragged && e.position.getDistanceFrom(startPosition)<3)return;
             const auto *song=t.w.session.song();if(!song)return;
             timeRangeDragged=true;
-            auto snap=[&](double value){return timelineGrid::snapSelection(value,*song,t.w.pixelsPerSecond,t.w.session.transport(),e.mods.isShiftDown());};
+            auto snap=[&](double value){return timelineGrid::snapSelection(value,*song,t.w.pixelsPerSecond,t.w.session.transport(),t.w.freeTimelinePosition(e.mods));};
             double from=snap(startTime),to=snap(t.timeAt(e.position.x));
             if(timeRangeBefore && timeRangeResize) {
                 if(timeRangeResize<0){from=std::min(to,timeRangeBefore->second-.001);to=timeRangeBefore->second;}
@@ -2482,7 +2510,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         double previewStart = 0, previewEnd = 0;
         double pointerPosition(double time, ModifierKeys modifiers, bool subplay) const {
             const auto *song=t.w.session.song();
-            return !subplay && song ? timelineGrid::snapCursor(time,*song,t.w.pixelsPerSecond,modifiers.isShiftDown()) : time;
+            return !subplay && song ? timelineGrid::snapCursor(time,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(modifiers)) : time;
         }
         void updateDrag(const MouseEvent &e) {
             double edge = (resizeEdge > 0 ? originalStart + clipLength : originalStart) +
@@ -2490,7 +2518,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             edge = std::max(0., edge);
             if (const auto *song = t.w.session.song())
                 edge = timelineGrid::snapSelection(edge,*song,t.w.pixelsPerSecond,
-                                                   t.w.session.transport(),e.mods.isShiftDown());
+                                                   t.w.session.transport(),t.w.freeTimelinePosition(e.mods));
             previewStart =
                 resizeEdge > 0
                     ? originalStart
@@ -2684,7 +2712,7 @@ void Workspace::paintOverChildren(Graphics &g) {
     if(externalDropPoint&&session.song()&&!externalDropFiles.empty()) {
         const auto local=timeline->getLocalPoint(this,*externalDropPoint);
         if(timeline->getLocalBounds().contains(local)&&local.y>=timeline->headerHeight()){
-            const auto at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),*session.song(),pixelsPerSecond,session.transport(),ModifierKeys::getCurrentModifiers().isShiftDown());
+            const auto at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),*session.song(),pixelsPerSecond,session.transport(),freeTimelinePosition(ModifierKeys::getCurrentModifiers()));
             const float x=timeline->getX()+timeline->xAt(at);
             const int row=rowAt(local.y-timeline->headerHeight()+verticalOffset);
             const int end=rowTop((int)session.song()->tracks.size());
@@ -3004,12 +3032,13 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
             auto found = floatingWindows.find("Mixer");
             if (found != floatingWindows.end() && found->second->isVisible()) found->second->setVisible(false);
             else showDetachedMixer();
+            refreshMixerIndicator();
             return;
         }
         footerMixerVisible = !footerMixerVisible;
         resized();
         repaint();
-    }).setTooltip("Barra Mixer");
+    }).setTooltip("Hoz-Mixer");
     static_cast<QuietButton *>(controls["railMixer"])->context = [this](Point<int> point) { mixerMenu(point); };
     button("railParts", "Parts", [this] { toggleLeftParts(); }).setTooltip("Parts");
     static_cast<QuietButton *>(controls["railParts"])->context = [this](Point<int> point) { leftPartsMenu(point); };
@@ -3092,7 +3121,17 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         const auto colour = String(id) == "play" ? theme::transportPlay : String(id) == "subplay" ? Colour(0xffffff00) : theme::panel;
         controls[id]->getProperties().set("transportColour", (int64)colour.getARGB());
     }
-    controls["masterMute"]->setColour(TextButton::buttonOnColourId, Colour(0xffff4444));
+    for (auto id : {"masterMono", "masterFX", "masterMute", "masterSolo"}) {
+        auto &control = *controls[id];
+        const bool compact = String(id) == "masterMute" || String(id) == "masterSolo";
+        control.getProperties().set("macMasterControl", true);
+        control.getProperties().set("compactTrackStyle", compact);
+        control.setColour(TextButton::buttonColourId, Colours::white.withAlpha(compact ? .12f : .22f));
+        control.setColour(TextButton::textColourOffId, Colours::white);
+        control.setColour(TextButton::textColourOnId, compact ? Colours::black : theme::green);
+    }
+    controls["masterMono"]->setColour(TextButton::buttonOnColourId, Colours::white.withAlpha(.22f));
+    controls["masterMute"]->setColour(TextButton::buttonOnColourId, Colour(0xffff4245));
     controls["masterSolo"]->setColour(TextButton::buttonOnColourId, theme::yellow);
     controls["metronome"]->setColour(TextButton::buttonOnColourId, theme::yellow);
     controls["metronome"]->setColour(TextButton::textColourOffId, Colours::white);
@@ -3126,6 +3165,20 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     timelineLock.setColour(TextButton::buttonOnColourId, theme::yellow);
     timelineLock.setColour(TextButton::textColourOffId, Colours::white);
     timelineLock.setColour(TextButton::textColourOnId, Colours::black);
+    addAndMakeVisible(timelineSnap);
+    timelineSnap.setComponentID("timelineSnap");
+    timelineSnap.getProperties().set("icon", "magnet");
+    timelineSnap.getProperties().set("flat", true);
+    timelineSnap.setColour(TextButton::buttonColourId, Colours::transparentBlack);
+    timelineSnap.setColour(TextButton::buttonOnColourId, Colours::transparentBlack);
+    timelineSnap.setWantsKeyboardFocus(false);
+    timelineSnap.setColour(TextButton::textColourOnId, theme::green);
+    timelineSnap.setColour(TextButton::textColourOffId, Colours::grey);
+    timelineSnap.onClick = [this] {
+        const auto result=appearance.set("jaras.timeline.snapEnabled", !(bool)appearance.value("jaras.timeline.snapEnabled",true));
+        if (result.failed()) showError(result.getErrorMessage());
+        updateState();
+    };
     addAndMakeVisible(trackVisibilityButton);
     trackVisibilityButton.setComponentID("trackVisibilityManager");
     trackVisibilityButton.getProperties().set("icon","visibility");
@@ -3244,18 +3297,92 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     selectionAreas.add(*timeline, "grid", [this] { return selectAllGridItems(); });
     selectionAreas.add(*setlist, "setlist", [this] { return setlist->selectAllItems(); });
     selectionAreas.activate(*timeline);
+    layoutInitialized = true;
+    restoreWorkspaceLayout();
     startTimerHz(30);
+}
+void Workspace::saveWorkspaceLayout() {
+    if (!layoutInitialized || !layoutActive || restoringLayout || !projectReady || browserVisible) return;
+    auto state = object();
+    put(state,"tracksVisible",mixerVisible); put(state,"setlistVisible",setlistVisible);
+    put(state,"mixerDetached",mixerDetached); put(state,"mixerOpen",footerMixerVisible);
+    put(state,"partsDetached",partsLeftDetached); put(state,"partsOpen",partsLeftVisible);
+    put(state,"partsRightOpen",partsRightVisible);
+    put(state,"setlistPlacement",(int)setlistPlacement); put(state,"setlistDockSide",(int)setlistDockSide);
+    put(state,"trackWidth",mixerWidth); put(state,"setlistWidth",setlistWidth);
+    put(state,"partsLeftWidth",partsLeftWidth); put(state,"partsRightWidth",partsRightWidth);
+    put(state,"mixerHeight",mixerHeightSetting); put(state,"footerHeight",footerHeightSetting);
+    for (const auto &name : {String("Mixer"), String("Parts")}) {
+        const auto at = floatingWindows.find(name);
+        const bool visible = at != floatingWindows.end() && at->second->isVisible();
+        put(state,name+"Visible",visible);
+        if (at != floatingWindows.end()) put(state,name+"Frame",at->second->getWindowStateAsString());
+        else put(state,name+"Frame",get(appearance.value("jaras.workspace.layout"),Identifier(name+"Frame")));
+    }
+    if (setlistWindow) put(state,"SetlistFrame",setlistWindow->getWindowStateAsString());
+    else put(state,"SetlistFrame",get(appearance.value("jaras.workspace.layout"),"SetlistFrame"));
+    const auto encoded=JSON::toString(state,true);
+    if (encoded == lastSavedLayout) return;
+    if (appearance.set("jaras.workspace.layout",state).wasOk()) lastSavedLayout=encoded;
+}
+void Workspace::restoreWorkspaceLayout() {
+    if (!layoutInitialized || restoringLayout) return;
+    const ScopedValueSetter<bool> restoring(restoringLayout,true);
+    appearance.reload();
+    const auto state=appearance.value("jaras.workspace.layout");
+    if (!state.isObject()) return;
+    mixerVisible=flag(state,"tracksVisible",true); setlistVisible=flag(state,"setlistVisible",true);
+    footerMixerVisible=flag(state,"mixerOpen"); mixerDetached=flag(state,"mixerDetached");
+    partsLeftVisible=flag(state,"partsOpen"); partsRightVisible=flag(state,"partsRightOpen");
+    partsLeftDetached=flag(state,"partsDetached");
+    mixerWidth=jlimit(281,900,(int)appearance.value("jaras.trackColumnWidth",num(state,"trackWidth",mixerWidth)));
+    setlistWidth=jlimit(minimumSetlistWidth,900,(int)appearance.value("jaras.setlistWidth",num(state,"setlistWidth",setlistWidth)));
+    partsLeftWidth=jlimit(160,900,(int)appearance.value("catlive.partsLeftWidth",num(state,"partsLeftWidth",partsLeftWidth)));
+    partsRightWidth=jlimit(0,900,(int)appearance.value("catlive.partsRightWidth",num(state,"partsRightWidth",partsRightWidth)));
+    mixerHeightSetting=jlimit(232,724,(int)appearance.value("jaras.footerMixerHeight",num(state,"mixerHeight",mixerHeightSetting)));
+    footerHeightSetting=jlimit(27,161,(int)appearance.value("catlive.footerDisplayHeight",num(state,"footerHeight",footerHeightSetting)));
+    const auto placement=(SetlistPlacement)jlimit(0,2,(int)num(state,"setlistPlacement",0));
+    setlistDockSide=(SetlistPlacement)jlimit(0,1,(int)num(state,"setlistDockSide",0));
+    if (projectReady && !browserVisible) {
+        const bool showSetlist=setlistVisible, showParts=partsLeftVisible;
+        setSetlistPlacement(placement);
+        setlistDockSide=(SetlistPlacement)jlimit(0,1,(int)num(state,"setlistDockSide",0));
+        setlistVisible=showSetlist; partsLeftVisible=showParts;
+        if (setlistWindow && str(state,"SetlistFrame").isNotEmpty())
+            setlistWindow->restoreWindowStateFromString(str(state,"SetlistFrame"));
+        if (mixerDetached && flag(state,"MixerVisible",true)) showDetachedMixer();
+        else if (auto at=floatingWindows.find("Mixer");at!=floatingWindows.end()) at->second->setVisible(false);
+        if (partsLeftDetached && flag(state,"PartsVisible",true)) detachLeftParts();
+        else {
+            if (!partsLeftDetached) addChildComponent(*partsLeft);
+            if (auto at=floatingWindows.find("Parts");at!=floatingWindows.end()) at->second->setVisible(false);
+        }
+        for (const auto &name : {String("Mixer"), String("Parts")})
+            if (auto at=floatingWindows.find(name);at!=floatingWindows.end() && str(state,Identifier(name+"Frame")).isNotEmpty())
+                at->second->restoreWindowStateFromString(str(state,Identifier(name+"Frame")));
+        resized(); repaint();
+    } else setlistPlacement=placement;
+    lastSavedLayout.clear();
 }
 Component &Workspace::windowCaption() { return *caption; }
 void Workspace::resetProjectTab() {
+    saveWorkspaceLayout();
     addChildComponent(*partsLeft); partsLeftDetached = false;
+    for (const auto &entry : floatingWindows)
+        if (entry.first == "Mixer" || entry.first == "Parts")
+            appearance.set("jaras.detached." + entry.first, entry.second->getWindowStateAsString());
     floatingWindows.clear(); setlistWindow.reset();
     selectedTracks.clear(); selectedTrack.clear(); collapsedGroups.clear();
     session.newProject(); projectReady = false; browserVisible = true;
     showProjectBrowser();
 }
 void Workspace::deactivateProjectTab() {
-    for (const auto &name : {String::fromUTF8("Configurações"), String::fromUTF8("Avançado")})
+    saveWorkspaceLayout();
+    layoutActive = false;
+    for (const auto &name : {"Mixer", "Parts"})
+        if (auto it = floatingWindows.find(name); it != floatingWindows.end()) it->second->setVisible(false);
+    if (setlistWindow) setlistWindow->setVisible(false);
+    for (const auto &name : {String::fromUTF8("Configurações"), String::fromUTF8("Avançado"), String("Editor de texto")})
         if (auto it = floatingWindows.find(name); it != floatingWindows.end())
             it->second->closeButtonPressed();
     session.audio.keyboardState.allNotesOff(0);
@@ -3264,6 +3391,8 @@ void Workspace::deactivateProjectTab() {
     if (nativeTransport) nativeTransport->hide();
 }
 void Workspace::activateProjectTab() {
+    layoutActive = true;
+    restoreWorkspaceLayout();
     session.audio.liveInputEnabled = true;
     actions.inputEnabled = true;
     remoteHost->presentation = [this](int panel) -> var {
@@ -3300,6 +3429,7 @@ void Workspace::activateProjectTab() {
     resized(); updateState(); repaint();
 }
 Workspace::~Workspace() {
+    saveWorkspaceLayout();
     if(externalDropCancelled)externalDropCancelled->store(true);
     nativeTransport.reset();
     stopTimer();
@@ -3369,6 +3499,13 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
         it->second->toFront(true);
         return;
     }
+    String savedPlacement;
+    if (name == "Mixer" || name == "Parts") {
+        auto previous = floatingWindows.find(name);
+        savedPlacement = previous != floatingWindows.end()
+            ? previous->second->getWindowStateAsString()
+            : appearance.value("jaras.detached." + name).toString();
+    }
     class PanelWindow final : public DocumentWindow {
       public:
         PanelWindow(const String &title)
@@ -3411,16 +3548,23 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
             if (globalKeyState) globalKeyState(down);
             return DocumentWindow::keyStateChanged(down);
         }
+        void maximiseButtonPressed() override {
+            if (auto *projection = dynamic_cast<Projection *>(getContentComponent())) {
+                projection->toggleFullScreen();
+                return;
+            }
+            DocumentWindow::maximiseButtonPressed();
+        }
         void closeButtonPressed() override {
             if (onClose)
                 onClose();
             setVisible(false);
         }
     };
-    auto window = std::make_unique<PanelWindow>(localization::translate(name));
+    auto window = std::make_unique<PanelWindow>(localization::translate(name == "Mixer" ? "Hoz-Mixer" : name));
     auto *settings = dynamic_cast<SettingsPanel *>(panel.get());
     const bool preferencesPanel = settings || dynamic_cast<AdvancedPanel *>(panel.get());
-    window->escapeCloses = preferencesPanel;
+    window->escapeCloses = preferencesPanel || name == "Editor de texto";
     window->globalKey = [safe = SafePointer<Workspace>(this),
                          settings = SafePointer<SettingsPanel>(settings)](const KeyPress &key) {
         if (settings && settings->keyPressed(key)) return true;
@@ -3446,9 +3590,12 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     window->setResizeLimits(preferencesPanel ? width : name.startsWith("Piano Roll") ? 760 : 360,
                             preferencesPanel ? height + 32 : name.startsWith("Piano Roll") ? 440 : 240, 3840, 2160);
     window->centreAroundComponent(this, width, height + 32);
+    if (savedPlacement.isNotEmpty()) window->restoreWindowStateFromString(savedPlacement);
     window->onClose = [safe = SafePointer<Workspace>(this), name, preferencesPanel,
                        closed = SafePointer<DocumentWindow>(window.get()),
                        settings = SafePointer<SettingsPanel>(settings)] {
+        if (safe && closed && (name == "Mixer" || name == "Parts"))
+            safe->appearance.set("jaras.detached." + name, closed->getWindowStateAsString());
         if (settings) settings->cancelLearning();
         if (safe && name == "Recados") safe->stage.clearNotice();
         Timer::callAfterDelay(1, [safe, name, preferencesPanel, closed] {
@@ -3468,8 +3615,7 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
 void Workspace::syncNativeTransport() {
     if (!nativeTransport) return;
     auto *peer = getPeer();
-    const bool visible = isShowing() && peer && projectReady && !browserVisible && !loginPanel &&
-        !navigation->isVisible();
+    const bool visible = isShowing() && peer && projectReady && !browserVisible && !loginPanel;
     if (!visible) { nativeTransport->hide(); return; }
     // Match ComponentPeer::handlePaint: the peer size includes the application
     // scale, while getLocalArea is still in component coordinates. Monitor DPI
@@ -3678,13 +3824,14 @@ void Workspace::resized() {
         loginPanel->setBounds(0, title, getWidth(), getHeight() - title);
         loginPanel->toFront(false);
     }
-    navigation->setBounds(0, title, getWidth(), std::max(1, getHeight() - title));
+    navigation->setBounds(rail, title + transport, getWidth() - rail,
+                          std::max(1, getHeight() - title - transport - bottom));
     if (navigation->isVisible()) navigation->toFront(false);
     caption->toFront(false);
     for (auto *child : getChildren())
         if (dynamic_cast<ModalSheet *>(child))
             child->toFront(false);
-    if (setlistWindow) setlistWindow->setVisible(editorVisible && setlistVisible && setlistPlacement==SetlistPlacement::detached);
+    if (setlistWindow) setlistWindow->setVisible(layoutActive && editorVisible && setlistVisible && setlistPlacement==SetlistPlacement::detached);
     if (!editorVisible) { if (nativeTransport) nativeTransport->hide(); return; }
     transportBounds = {rail, title, getWidth() - rail, transport};
     footerBounds = {rail, getHeight() - footerHeight, getWidth() - rail, footerHeight};
@@ -3808,7 +3955,7 @@ void Workspace::resized() {
     tracksViewport.setVisible(mixerVisible);
     tracksViewport.setBounds(mixerX, workspaceBounds.getY() + timeline->headerHeight(), left,
                              std::max(1, workspaceBounds.getHeight() - timeline->headerHeight()));
-    tracksContent.setSize(std::max(1, left - 8), std::max(tracksViewport.getHeight(), rowTop(rows.size()) + 16));
+    tracksContent.setSize(std::max(1, left - 8), std::max(tracksViewport.getHeight(), rowTop(rows.size()) + trackHeight * 2));
     for (int i = 0; i < rows.size(); ++i) {
         rows[i]->setVisible(!rowHidden(i));
         rows[i]->setBounds(0, rowTop(i), std::max(1, left - 8), rowHeight(i));
@@ -3819,6 +3966,8 @@ void Workspace::resized() {
     timelineLock.setVisible(mixerVisible);
     trackVisibilityButton.setBounds(timelineLock.getX()-30,timelineLock.getY(),24,24);
     trackVisibilityButton.setVisible(mixerVisible);
+    timelineSnap.setBounds(trackVisibilityButton.getX()-28,trackVisibilityButton.getY(),24,24);
+    timelineSnap.setVisible(mixerVisible);
     timeline->setBounds(mixerX + left, workspaceBounds.getY(),
                         std::max(1, workspaceBounds.getWidth() - left - right - sectionsWidth - leftPartsWidth),
                         workspaceBounds.getHeight());
@@ -3831,7 +3980,7 @@ void Workspace::resized() {
         partsRightDivider.setVisible(partsRightVisible&&setlistVisible);
         partsRightDivider.setBounds(partsSidebar->getX()-3,workspaceBounds.getY(),6,workspaceBounds.getHeight());
     } else if (setlistWindow) {
-        setlistWindow->setVisible(setlistVisible && editorVisible);
+        setlistWindow->setVisible(layoutActive && setlistVisible && editorVisible);
         layoutDetachedSetlist();
     }
     footer.setBounds(rail + 10, footerBounds.getY(), getWidth() - rail - 20, 27);
@@ -3845,8 +3994,7 @@ void Workspace::resized() {
     footerMixer->setBounds(0, 0, dockWidth, mixerHeight);
     if (footerMixerVisible)
         footerMixer->refresh();
-    controls["railMixer"]->setColour(TextButton::textColourOffId,
-                                     footerMixerVisible || (mixerDetached && floatingWindows.count("Mixer") && floatingWindows["Mixer"]->isVisible()) ? theme::green : Colours::white);
+    refreshMixerIndicator();
     controls["railKeyboard"]->setColour(TextButton::textColourOffId, keyboardVisible ? theme::green : Colours::white);
     controls["setlist"]->setColour(TextButton::buttonColourId, setlistVisible ? theme::green : theme::panel);
     controls["setlist"]->setColour(TextButton::textColourOffId, setlistVisible ? Colours::black : Colours::white);
@@ -4015,9 +4163,11 @@ void Workspace::rebuild() {
             tracksContent.addAndMakeVisible(row);
         }
         builtTracks = current;
+        if (builtSong != songID) {
+            verticalOffset = 0;
+            tracksViewport.setViewPosition(0, 0);
+        }
         builtSong = songID;
-        verticalOffset = 0;
-        tracksViewport.setViewPosition(0, 0);
     }
     for (auto *row : rows)
         row->refresh();
@@ -4035,21 +4185,27 @@ void Workspace::updateState() {
     if(auto *peer=getPeer()) {
         const auto main=static_cast<HWND>(peer->getNativeHandle());
         const bool sheet=dynamic_cast<ModalSheet*>(Component::getCurrentlyModalComponent())!=nullptr;
-        for(const auto &entry:floatingWindows) {
-            if(!dynamic_cast<Projection*>(entry.second->getContentComponent()))continue;
-            auto *floatingPeer=entry.second->getPeer();if(!floatingPeer)continue;
+        auto followWorkspace = [&](DocumentWindow *window, bool fullscreen) {
+            if (!window || !window->isVisible()) return;
+            auto *floatingPeer=window->getPeer();if(!floatingPeer)return;
             const auto handle=static_cast<HWND>(floatingPeer->getNativeHandle());
             const auto owner=reinterpret_cast<HWND>(GetWindowLongPtrW(handle,GWLP_HWNDPARENT));
-            if(sheet && owner==main) {
+            if ((sheet || fullscreen) && owner == main) {
                 SetWindowLongPtrW(handle,GWLP_HWNDPARENT,0);
-                SetWindowPos(handle,HWND_BOTTOM,0,0,0,0,
-                             SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
-            } else if(!sheet && owner!=main) {
+                if (sheet) SetWindowPos(handle,HWND_BOTTOM,0,0,0,0,
+                                       SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+            } else if (!sheet && !fullscreen && owner != main) {
                 SetWindowLongPtrW(handle,GWLP_HWNDPARENT,reinterpret_cast<LONG_PTR>(main));
                 SetWindowPos(handle,HWND_TOP,0,0,0,0,
                              SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
             }
+        };
+        for(const auto &entry:floatingWindows) {
+            const auto *projection = dynamic_cast<Projection*>(entry.second->getContentComponent());
+            if (projection || entry.first == "Parts")
+                followWorkspace(entry.second.get(), projection && projection->isPresentationFullscreen());
         }
+        followWorkspace(setlistWindow.get(), false);
     }
     if (fadeoutOverlay) fadeoutOverlay->update();
     if (session.transportFadeoutActive() || lastFadeoutActive)
@@ -4062,6 +4218,10 @@ void Workspace::updateState() {
                                           : String::fromUTF8("Bloquear movimento de itens, regiões e marcadores"));
     timelineLock.setEnabled(!session.busy && !session.audio.isRecording());
     trackVisibilityButton.setEnabled(!session.busy);
+    timelineSnap.setEnabled(!session.busy);
+    const bool snapEnabled=(bool)appearance.value("jaras.timeline.snapEnabled",true);
+    timelineSnap.setToggleState(snapEnabled,dontSendNotification);
+    timelineSnap.setTooltip(TRANS(snapEnabled ? "Snap on — Shift temporarily disables snapping" : "Snap off — free positioning"));
     session.audio.keyboardChannel = jlimit(0, 16, (int)appearance.value("jaras.keyboard.channel", 0));
     session.setRecordingSelection(selectedTrack, selectedTracks);
     if (recordVisualSelection != selectedTrack) {
@@ -4077,11 +4237,12 @@ void Workspace::updateState() {
         teleprompterHTTP[(size_t)i]->publish(content.payload,content.media);
     }
     controls["preview"]->setToggleState(stage.preview, dontSendNotification);
+    refreshMixerIndicator();
     controls["notices"]->setToggleState(false, dontSendNotification);
     const auto video = floatingWindows.find("Video");
     controls["video"]->setToggleState(video != floatingWindows.end() && video->second->isVisible(), dontSendNotification);
     const auto masterFX = session.project().masterFXJSON ? JSON::parse(text(*session.project().masterFXJSON)) : var();
-    controls["masterFX"]->setColour(TextButton::textColourOffId, fxchain::colour(masterFX));
+    controls["masterFX"]->setColour(TextButton::textColourOffId, fxchain::colour(masterFX, true));
     for (int i = 1; i <= 2; ++i) {
         const auto found = floatingWindows.find("Teleprompter " + String(i));
         const bool visible = found != floatingWindows.end() && found->second->isVisible();
@@ -4117,7 +4278,7 @@ void Workspace::updateState() {
     controls["masterMono"]->setButtonText(session.project().masterMono ? "" : String::fromUTF8("Estéreo"));
     controls["masterMono"]->getProperties().set("icon", session.project().masterMono ? "mono" : "");
     controls["masterMono"]->setColour(TextButton::textColourOnId, theme::green);
-    controls["masterMono"]->setColour(TextButton::buttonOnColourId, theme::display);
+    controls["masterMono"]->setColour(TextButton::buttonOnColourId, Colours::white.withAlpha(.22f));
     if (auto *s = session.song()) {
         String selectedName = text(s->name);
         if (audible.regionId)
@@ -4227,6 +4388,9 @@ void Workspace::timerCallback() {
     try { session.audio.refreshStemLatency(); }
     catch (const std::exception &e) { session.message = String::fromUTF8(e.what()); }
     const double now = Time::getMillisecondCounterHiRes() / 1000.0;
+    if (now - layoutSaveTime >= 1 && !ModifierKeys::getCurrentModifiersRealtime().isAnyMouseButtonDown()) {
+        layoutSaveTime = now; saveWorkspaceLayout();
+    }
     if (session.dirty) {
         if (!savePulseStarted) savePulseStarted = now;
         const float alpha = (float)(.74 + .26 * std::cos((now - *savePulseStarted) * MathConstants<double>::pi / .9));
@@ -4304,7 +4468,7 @@ bool Workspace::keyPressed(const KeyPress &key) {
     if (session.inspection && logger)
         logger->logMessage("QA key=" + String(key.getKeyCode()) +
                            " mods=" + String(key.getModifiers().getRawFlags()));
-    if (session.inspection && key.getKeyCode() == KeyPress::F12Key) {
+    if ((session.inspection || SystemStats::getEnvironmentVariable("CATLIVE_AUDIO_DIAGNOSTICS", {}) == "1") && key.getKeyCode() == KeyPress::F12Key) {
         capture(File::getSpecialLocation(File::userApplicationDataDirectory)
                     .getChildFile("Hook Developer/CatLive/qa/current.png"));
         return true;
@@ -4475,7 +4639,7 @@ void Workspace::filesDropped(const StringArray &files,int x,int y) {
     if(!timeline->getLocalBounds().contains(local)||local.y<timeline->headerHeight()){fileDropStatus="outside grid";return;}
     const int row=rowAt(local.y-timeline->headerHeight()+tracksViewport.getViewPositionY());
     const ID target=row>=0&&row<(int)session.song()->tracks.size()?session.song()->tracks[(size_t)row].id:ID{};
-    const double at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),*session.song(),pixelsPerSecond,session.transport(),ModifierKeys::getCurrentModifiers().isShiftDown());
+    const double at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),*session.song(),pixelsPerSecond,session.transport(),freeTimelinePosition(ModifierKeys::getCurrentModifiers()));
     Array<File> media;for(auto &path:files)media.add(File(path));
     importMediaAt(media,at,target);
     fileDropStatus=media.size()>1?"awaiting import options":"import submitted";
@@ -4561,27 +4725,50 @@ void Workspace::confirm(const String &title, const String &message, std::functio
                                  }));
 }
 void Workspace::deleteRecentProject(const File &file) {
-    if(session.busy || session.transport().playing || session.transport().subPlay.playing || session.audio.isRecording())return;
+    if(session.busy || session.audio.isRecording())return;
     const auto owner=SafePointer<Workspace>(this);
     perform([&]{
         auto plan=std::make_shared<ProjectDeletion>(file);
         auto panel=std::make_unique<ProjectDeletionPanel>(plan,[safe=owner,plan]{
             if(!safe) return;
             auto &w=*safe;
-            if(w.session.busy || w.session.transport().playing || w.session.transport().subPlay.playing || w.session.audio.isRecording())
-                throw std::runtime_error("Pare a reprodução e aguarde as operações antes de apagar o projeto.");
+            if(w.session.busy || w.session.audio.isRecording())
+                throw std::runtime_error("Conclua a gravação e aguarde as operações antes de apagar o projeto.");
             plan->validate();
-                if(w.session.document!=plan->document && w.session.dirty && w.projectReady){if(w.session.document==File{})throw std::runtime_error("Salve o projeto aberto antes de excluir outro projeto.");w.session.save(w.session.document);}
+            const bool deletingCurrent=w.session.document==plan->document;
+            if(!deletingCurrent && w.session.dirty && w.projectReady){if(w.session.document==File{})throw std::runtime_error("Salve o projeto aberto antes de excluir outro projeto.");w.session.save(w.session.document);}
+            if(deletingCurrent) {
+                // This point is reached only after the explicit destructive
+                // confirmation and countdown. Release this project's readers
+                // before Windows removes its media; keep recovery data if a
+                // filesystem error prevents completing the deletion.
+                const auto previous=w.session.snapshot();
+                const auto document=w.session.document, media=w.session.mediaDirectory;
+                const bool dirty=w.session.dirty;
                 w.floatingWindows.clear();
-                plan->remove();w.session.newProject();w.projectReady=false;w.browserVisible=true;RecentProjects::forget(plan->document);w.projectBrowser->refresh();
-                for(auto *child:w.getChildren())if(auto *sheet=dynamic_cast<ModalSheet*>(child);sheet && sheet->getName()=="Projetos")sheet->exitModalState(0);
-                if(w.browserVisible)w.showProjectBrowser();w.resized();w.repaint();
+                w.session.command(jaras::CommandKind::stopAll);
+                w.session.newProject();
+                try { plan->remove(); }
+                catch(...) {
+                    w.session.document=document; w.session.mediaDirectory=media;
+                    w.session.restoreSnapshot(previous); w.session.dirty=dirty;
+                    throw;
+                }
+                w.projectReady=false;w.browserVisible=true;
+            } else plan->remove();
+            RecentProjects::forget(plan->document);w.projectBrowser->refresh();
+            for(auto *child:w.getChildren())if(auto *sheet=dynamic_cast<ModalSheet*>(child);sheet && sheet->getName()=="Projetos") {
+                if(deletingCurrent)sheet->exitModalState(0);
+                else for(auto *content:sheet->getChildren())if(auto *browser=dynamic_cast<ProjectBrowser*>(content))browser->refresh();
+            }
+            if(deletingCurrent)w.showProjectBrowser();w.resized();w.repaint();
         });
         ModalSheet::open(*this,localization::translate("Delete project"),std::move(panel),460,298);
     });
 }
 void Workspace::newProject() { showProjectBrowser(); }
 void Workspace::showProjectBrowser() {
+    saveWorkspaceLayout();
     timeline->cancelInteraction();
     if (session.busy || session.audio.isRecording()) {
         showError("Wait for recording and imports before opening Projects.");
@@ -4631,6 +4818,7 @@ void Workspace::projectOpened(bool fitTimeline) {
             sheet->exitModalState(0);
     projectReady = true;
     browserVisible = false;
+    restoreWorkspaceLayout();
     if (session.document.existsAsFile())
         RecentProjects::remember(session.document);
     if (auto *window = findParentComponentOfClass<DocumentWindow>()) {
@@ -4644,6 +4832,7 @@ void Workspace::projectOpened(bool fitTimeline) {
     grabKeyboardFocus();
 }
 void Workspace::openProject(const File &file, std::function<void()> loaded, bool confirmed, bool allowMissing) {
+    saveWorkspaceLayout();
     if (session.busy) return;
     if (activateExistingProjectTab && activateExistingProjectTab(file)) return;
     timeline->cancelInteraction();
@@ -4651,8 +4840,8 @@ void Workspace::openProject(const File &file, std::function<void()> loaded, bool
     auto action = [safe = Component::SafePointer<Workspace>(this), file, loaded, allowMissing] {
         if (!safe || safe->session.busy) return;
         safe->perform([safe, file, loaded, allowMissing] {
-            if (safe->session.audio.isRecording() || safe->session.transport().playing || safe->session.transport().subPlay.playing)
-                throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
+            if (safe->session.audio.isRecording())
+                throw std::runtime_error("Conclua a gravação antes de abrir outro projeto.");
             // Keep the same Projects view while preparing the next document,
             // like ProjectBrowserView on Mac. A second modal obscured the
             // clicked recent and made the transition look like a separate task.
@@ -5135,8 +5324,21 @@ void Workspace::showRegionMenu(ID id, Point<int> point) {
         if(action==3){
             const auto roots=regionEditing::overlapping(*safe->session.song(),id);
             const bool existing=std::any_of(roots.begin(),roots.end(),[&](const auto &part){return regionEditing::hasChildren(*safe->session.song(),part.id);});
-            auto unify=[safe,id](String name){if(safe)safe->perform([&]{const auto songID=safe->session.song()->id;safe->session.edit([&](auto &p){regionEditing::unify(p,songID,id,name);});});};
-            if(existing)unify({});else safe->prompt(String::fromUTF8("Unificar regiões"),"Nome",{},unify);
+            const auto songID = safe->session.song()->id;
+            auto unify=[safe,id,songID](String name) {
+                bool applied = false;
+                if (safe && safe->session.song() && safe->session.song()->id == songID) safe->perform([&] {
+                    safe->session.edit([&](auto &p){regionEditing::unify(p,songID,id,name);}); applied = true;
+                });
+                return applied;
+            };
+            if (existing) unify({});
+            else {
+                auto panel = std::make_unique<UnifyRegionPanel>(unify);
+                const auto anchor = safe->getLocalArea(safe->timeline.get(), safe->timeline->regionHeaderBounds(id));
+                auto &popover = CallOutBox::launchAsynchronously(std::move(panel), anchor, safe.getComponent());
+                popover.setDismissalMouseClicksAreAlwaysConsumed(true);
+            }
         }
         if(action==4)safe->perform([&]{const auto songID=safe->session.song()->id;safe->session.edit([&](auto &p){regionEditing::disunify(p,songID,id);});});
         if(action==5)safe->exportRegions({id});
@@ -5420,14 +5622,19 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
     } else {
         if(audioItem || projection) {
             menu.addItem(9,String::fromUTF8("Criar região do item"));menu.addItem(13,"Re-render");menu.addItem(14,"Unificar itens");menu.addItem(10,"Tuner");menu.addItem(11,String::fromUTF8("Normalizar…"));
-            if(audioItem){menu.addSeparator();menu.addItem(21,"Converter Mono - L");menu.addItem(22,"Converter Mono - R");menu.addItem(23,"Converter Mono L-R");menu.addItem(20,String::fromUTF8("Converter Estéreo"));}
+            if(audioItem){menu.addSeparator();menu.addItem(24,"Inverter - LR");menu.addItem(21,"Converter Mono - L");menu.addItem(22,"Converter Mono - R");menu.addItem(23,"Converter Mono L-R");menu.addItem(20,String::fromUTF8("Converter Estéreo"));}
         }
         if(audioItem){menu.addSeparator();menu.addItem(2,muted?"Desmutar itens":"Mutar itens");}
         menu.addSeparator();menu.addItem(12,"Exportar",audioItem && !textItem);
     }
-    menu.showMenuAsync(
-        PopupMenu::Options().withTargetScreenArea({point.x, point.y, 1, 1}),
-        [safe = Component::SafePointer<Workspace>(this), id, ownerID](int action) {
+    menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x, point.y, 1, 1}),
+                       clipMenuAction(id, ownerID));
+}
+std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
+    const auto targets = clipSelected(id) && !selectedClips.empty() ? selectedClips : std::set<ID>{id};
+    const auto projectID = session.project().id;
+    const auto songID = session.song() ? session.song()->id : ID{};
+    return [safe = Component::SafePointer<Workspace>(this), id, ownerID, targets, projectID, songID](int action) {
             if (!safe || !action)
                 return;
             safe->perform([&] {
@@ -5436,7 +5643,17 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
                     w.editTextItem(id);
                     return;
                 }
-                if(action==13 || action==14 || action==31 || action==32){w.session.renderItems({id},action==14,action>=31?action-30:0);return;}
+                if(action==13 || action==14 || action==31 || action==32) {
+                    if(w.session.project().id!=projectID || !w.session.song() || w.session.song()->id!=songID)return;
+                    w.session.renderItems(action==14 ? targets : std::set<ID>{id},action==14,action>=31?action-30:0,
+                        [safe,projectID,songID](std::set<ID> rendered) {
+                            if(!safe || safe->session.project().id!=projectID || !safe->session.song() || safe->session.song()->id!=songID)return;
+                            safe->selectedClips=std::move(rendered);
+                            safe->selectedClip=safe->selectedClips.empty()?ID{}:*safe->selectedClips.begin();
+                            safe->updateState();
+                        });
+                    return;
+                }
                 if(action==15){w.openItemFX(id);return;}
                 if (action == 10) {
                     ModalSheet::open(w, "Tuner",
@@ -5484,6 +5701,15 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
                                 }
                     return;
                 }
+                if (action >= 20 && action <= 24) {
+                    if(w.session.project().id!=projectID || !w.session.song() || w.session.song()->id!=songID)return;
+                    w.session.edit([&](jaras::Project &p) {
+                        for(auto &song:p.songs) if(song.id==songID) for(auto &track:song.tracks)
+                            if(jaras::fixedTrackName(track.role).empty()) for(auto &clip:track.clips)
+                                if(targets.count(clip.id))clip.channelMode=action-20;
+                    });
+                    return;
+                }
                 w.session.edit([&](jaras::Project &p) {
                     for (auto &s : p.songs)
                         for (auto &t : s.tracks)
@@ -5492,13 +5718,11 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
                                     auto &c = t.clips[i];
                                     if (action == 2)
                                         c.muted = !c.muted;
-                                    if (action >= 20 && action <= 23)
-                                        c.channelMode = action - 20;
                                     return;
                                 }
                 });
             });
-        });
+        };
 }
 void Workspace::openMIDIEditor(ID id) {
     const auto safe = SafePointer<Workspace>(this);
@@ -5521,6 +5745,7 @@ void Workspace::openMIDIEditor(ID id) {
 void Workspace::addMIDIItem(ID trackID, double position) {
     perform([&] {
         const auto id = uuid();
+        double itemEnd = position;
         session.edit([&](jaras::Project &p) {
             if (!std::isfinite(position) || position < 0)
                 throw std::runtime_error("Posição MIDI inválida.");
@@ -5533,6 +5758,7 @@ void Workspace::addMIDIItem(ID trackID, double position) {
                         clip.name = "MIDI";
                         clip.startTime = position;
                         clip.duration = 16 * 60. / song.bpm;
+                        itemEnd = position + clip.duration;
                         clip.regionOwnerID = jaras::regionOwnerAt(song, position);
                         clip.midi.emplace();
                         clip.midi->sourceBPM = song.bpm;
@@ -5545,6 +5771,7 @@ void Workspace::addMIDIItem(ID trackID, double position) {
         selectedClip = id;
         selectedClips = {id};
         selectedTrack = trackID;
+        session.command(jaras::CommandKind::editSeek, {}, itemEnd);
         openMIDIEditor(id);
     });
 }
@@ -5581,6 +5808,7 @@ void Workspace::addTextItem(ID trackID, double position) {
             false);
         selectedClip = itemID;
         selectedClips = {itemID};
+        session.command(jaras::CommandKind::editSeek, {}, position + 10);
         editTextItem(itemID);
     });
 }
@@ -5590,7 +5818,7 @@ void Workspace::editTextItem(ID id) {
             for (const auto &clip : track.clips)
                 if (clip.id == id && clip.text && !clip.audioFile) {
                     auto safe = SafePointer<Workspace>(this);
-                    ModalSheet::open(*this, "Editor de texto",
+                    openFloating("Editor de texto",
                                      std::make_unique<TextItemPanel>(
                                          text(*clip.text),
                                          [safe, id](String draft) {
@@ -5615,7 +5843,9 @@ void Workspace::editTextItem(ID id) {
                                                              "O item de texto não existe mais.");
                                                      },
                                                      false);
-                                                 ModalSheet::dismiss(*safe);
+                                                 if (auto window = safe->floatingWindows.find("Editor de texto");
+                                                     window != safe->floatingWindows.end())
+                                                     window->second->closeButtonPressed();
                                              });
                                          }),
                                      430, 308);
@@ -5721,6 +5951,16 @@ bool Workspace::selectAllGridItems() {
     selectedClip = selectedClips.empty() ? ID{} : *selectedClips.begin();
     timeline->invalidate(); repaint(); return true;
 }
+void Workspace::refreshMixerIndicator() {
+    const auto window = floatingWindows.find("Mixer");
+    const bool visible = mixerDetached
+        ? window != floatingWindows.end() && window->second->isVisible()
+        : footerMixerVisible;
+    auto *button = controls["railMixer"];
+    const auto colour = visible ? theme::green : Colours::white;
+    if (button->findColour(TextButton::textColourOffId) != colour)
+        button->setColour(TextButton::textColourOffId, colour);
+}
 void Workspace::showDetachedMixer() {
     mixerDetached = true; footerMixerVisible = false;
     auto panel = std::make_unique<MixerPanel>(session, [this](ID id, String key) { openFX(id, key); },
@@ -5764,7 +6004,7 @@ void Workspace::showTeleprompter(int index) {
         if (safe)
             safe->showError(message);
     };
-    showPanel("Teleprompter " + String(index), std::move(panel), 800, 450);
+    openFloating("Teleprompter " + String(index), std::move(panel), 800, 450);
 }
 void Workspace::openNotices() {
     openFloating("Recados", std::make_unique<NoticePanel>(stage), 520, 430);
@@ -5830,13 +6070,13 @@ void Workspace::requestClose(std::function<void()> done, bool application) {
         return;
     }
     if (session.transport().playing || session.transport().subPlay.playing) {
-        confirm(application ? "Encerrar o CatLive?" : "Fechar aba?", String::fromUTF8("A reprodução está em andamento."),
-                [safe = Component::SafePointer<Workspace>(this), done, application] {
-                    if (safe) {
+        CloseProjectSheet::open(*this,
+                [safe = Component::SafePointer<Workspace>(this), done, application](int action) {
+                    if (safe && action == 2) {
                         safe->session.command(jaras::CommandKind::stopAll);
                         safe->requestClose(done, application);
                     }
-                });
+                }, true, application);
         return;
     }
     if (session.dirty) {
@@ -5897,10 +6137,14 @@ var Workspace::diagnostics() const {
         put(audioDevice, "bufferSizes", buffers);
         put(audioDevice, "sampleRate", device->getCurrentSampleRate());
         put(audioDevice, "bufferSize", device->getCurrentBufferSizeSamples());
+        put(audioDevice, "xruns", device->getXRunCount());
+        put(audioDevice, "open", device->isOpen());
+        put(audioDevice, "running", device->isPlaying());
         put(value, "audioDevice", audioDevice);
     }
     put(value, "missingMedia", var(session.audio.missingFiles));
     put(value, "audioUnderruns", (int64)session.audio.getUnderruns());
+    put(value, "audioCallback", session.audio.callbackMetrics.snapshot());
     put(value, "residentStreams", session.audio.residentStreams());
     put(value, "streaming", session.audio.streamDiagnostics());
     put(value, "audioPreparation", session.audio.preparationDiagnostics);
@@ -6413,12 +6657,18 @@ void Workspace::chooseSoundFont() {
                          });
 }
 void Workspace::openVideo() {
+    if (auto it = floatingWindows.find("Video"); it != floatingWindows.end()) {
+        if (it->second->isVisible()) it->second->closeButtonPressed();
+        else { it->second->setVisible(true); it->second->toFront(true); }
+        updateState();
+        return;
+    }
     auto panel = std::make_unique<Projection>(session, appearance);
     panel->error = [safe = Component::SafePointer<Workspace>(this)](String message) {
         if (safe)
             safe->showError(message);
     };
-    showPanel("Video", std::move(panel), 960, 600);
+    openFloating("Video", std::move(panel), 960, 600);
 }
 } // namespace catlive
 

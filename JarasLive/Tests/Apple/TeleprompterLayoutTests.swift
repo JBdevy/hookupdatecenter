@@ -38,6 +38,41 @@ MainActor.assumeIsolated {
         window.orderOut(nil); window.contentView = nil; window.close()
         return data
     }
+    var spacious = TeleprompterSettings()
+    spacious.clockEnabled = false; spacious.localClockEnabled = false
+    spacious.songNameEnabled = false; spacious.queueNameEnabled = false
+    spacious.progressEnabled = false; spacious.windowBorderEnabled = false
+    spacious.textBoxEnabled = false; spacious.textColor = 0xffffff
+    spacious.chordsEnabled = true; spacious.chordColor = 0x0000ff
+    func lyricFixture(_ settings: TeleprompterSettings, chords: String) -> DAWRemoteTeleprompter {
+        .init(index: 1, text: "A\nA\nA\nA", chords: chords, song: "", queued: "", progress: 0,
+              style: .init(), settings: settings)
+    }
+    func whitePixels(_ bytes: Data) -> Int {
+        let data = Array(bytes)
+        return stride(from: 0, to: data.count - 3, by: 4).reduce(0) { total, i in
+            total + (data[i] > 240 && data[i+1] > 240 && data[i+2] > 240 ? 1 : 0)
+        }
+    }
+    let withChords = whitePixels(pixels(lyricFixture(spacious, chords: "Cm")))
+    let emptyChords = whitePixels(pixels(lyricFixture(spacious, chords: "")))
+    spacious.chordsEnabled = false
+    let hiddenChords = whitePixels(pixels(lyricFixture(spacious, chords: "Cm")))
+    precondition(emptyChords > withChords && hiddenChords == emptyChords,
+                 "Hidden or absent chords must return their height to the lyric area and typography")
+    spacious.clockColor = 0x0000ff; spacious.localClockColor = 0x0000ff
+    spacious.songNameColor = 0x0000ff; spacious.queueNameColor = 0x0000ff; spacious.progressColor = 0x0000ff
+    spacious.clockBorderEnabled = false; spacious.localClockBorderEnabled = false
+    func fullFixture(_ settings: TeleprompterSettings) -> DAWRemoteTeleprompter {
+        .init(index: 1, text: "A\nA\nA\nA", chords: "", song: "Song", queued: "Next", progress: 0.5,
+              style: .init(), settings: settings)
+    }
+    let allHidden = whitePixels(pixels(fullFixture(spacious)))
+    for field in [\TeleprompterSettings.clockEnabled, \.localClockEnabled, \.songNameEnabled, \.queueNameEnabled, \.progressEnabled] {
+        var visible = spacious; visible[keyPath: field] = true
+        precondition(allHidden > whitePixels(pixels(fullFixture(visible))),
+                     "Every hidden decoration must release its height to the lyrics")
+    }
     var base = TeleprompterSettings()
     base.songNameEnabled = true; base.progressEnabled = true
     base.textCase = "original"

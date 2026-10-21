@@ -1,4 +1,13 @@
 import SwiftUI
+
+/// Display both non-destructive item gain stages without rewriting source peaks.
+enum WaveformAmplitude {
+    static func gain(item: Double?, normalization: Double?, inverted: Bool = false) -> Double {
+        let limit = pow(10.0, 24.0 / 20)
+        return min(limit, max(0, item ?? 1)) * min(limit, max(0, normalization ?? 1)) * (inverted ? -1 : 1)
+    }
+}
+
 import AVFoundation
 import Accelerate
 import Darwin

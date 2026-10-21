@@ -60,6 +60,7 @@ class Session final : private Timer {
     void configureEffects(const std::map<ID, var> &);
     String copyEffect(const ID &source, const String &effect, const ID &destination, const String &before = {});
     void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false);
+    void resizeItem(const ID &, double start, double end);
     std::vector<ID> duplicateTracks(const std::set<ID> &);
     void undo();
     void redo();
@@ -70,7 +71,7 @@ class Session final : private Timer {
                      std::function<void(String)> completion = {}, bool deferWaveform = false);
     void exportMix(const File &, int bits = 24);
     void exportAudio(ExportRequest);
-    void renderItems(std::set<ID>, bool glue = false, int midiChannels = 0);
+    void renderItems(std::set<ID>, bool glue = false, int midiChannels = 0, std::function<void(std::set<ID>)> completed = {});
     void detectRegionBPM(std::set<ID>);
     bool isDetectingBPM() const { return bpmCancellation != nullptr; }
     void cancelBPMDetection();
@@ -107,6 +108,7 @@ class Session final : private Timer {
     var snapshot() const;
     void restoreSnapshot(const var &);
     void notify();
+    bool preparingLiveAudio() const { return graphCancellation != nullptr; }
 
   private:
     void loadPrepared(const File &, var, jaras::Project);
@@ -115,15 +117,21 @@ class Session final : private Timer {
     void focusTimelineRegion(double position, bool force = false);
     void focusSetlistRegion(std::optional<ID>, bool force = false);
     struct MarkerHistory { ID song; std::optional<std::vector<jaras::TimelineMarker>> markers; };
+    struct ItemTimingHistory { ID song; jaras::AudioClip clip; double songDuration; };
+    ItemTimingHistory itemTimingHistory(const ID &) const;
+    void applyItemTiming(const ItemTimingHistory &, bool recordHistory);
+    void commitItemTiming(jaras::Project, const ID &, bool recordHistory);
     MarkerHistory markerHistory(const ID &) const;
     void applyMarkerHistory(const MarkerHistory &, bool recordHistory);
     struct HistoryEntry {
         var project;
         std::optional<MarkerHistory> markers;
         std::optional<std::map<ID, var>> effects;
+        std::optional<ItemTimingHistory> itemTiming;
         HistoryEntry(var value) : project(std::move(value)) {}
         HistoryEntry(MarkerHistory value) : markers(std::move(value)) {}
         HistoryEntry(std::map<ID, var> value) : effects(std::move(value)) {}
+        HistoryEntry(ItemTimingHistory value) : itemTiming(std::move(value)) {}
     };
     std::vector<HistoryEntry> undoHistory, redoHistory;
     std::map<ID, var> currentEffects(const std::map<ID, var> &) const;
@@ -137,6 +145,7 @@ class Session final : private Timer {
     ThreadPool bpmWorker{1};
     std::shared_ptr<std::atomic<bool>> bpmCancellation;
     std::shared_ptr<std::atomic<bool>> loadCancellation;
+    std::shared_ptr<std::atomic<bool>> graphCancellation;
     std::shared_ptr<int> alive = std::make_shared<int>(0);
     ID preparedSong;
     File recordingFile;
@@ -152,7 +161,8 @@ class Session final : private Timer {
     TransportPresentationQueues presentationQueues;
     void timerCallback() override;
     void syncClock();
-    void publishTransport(bool preserveLatency = false);
+    void publishTransport(bool preserveLatency = false, bool routingOnly = false);
     void prepare();
+    void prepareLiveGraph();
 };
 } // namespace catlive

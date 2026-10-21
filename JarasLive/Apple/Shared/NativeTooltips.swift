@@ -18,23 +18,17 @@ enum JarasLocalization {
     }
 }
 extension View {
-    @ViewBuilder func jarasHelp(_ text: String) -> some View {
-        #if os(macOS)
-        modifier(LocalizedTooltip(text: text))
-        #else
-        help(LocalizedStringKey(text))
-        #endif
+    func jarasHelp(_ text: String) -> some View {
+        modifier(LocalizedAccessibilityHint(text: text))
     }
 }
-#if os(macOS)
-/// AppKit manages tooltip timing and dismissal without adding an NSView or
-/// tracking area per control to the timeline and mixer layouts.
-private struct LocalizedTooltip: ViewModifier {
+/// Keep control descriptions available to accessibility without hover popovers
+/// or extra AppKit views participating in layout and tracking.
+private struct LocalizedAccessibilityHint: ViewModifier {
     let text: String
     @Environment(\.locale) private var locale
     func body(content: Content) -> some View {
         let localized = JarasLocalization.string(text, language: locale.identifier)
-        content.help(Text(verbatim: localized)).accessibilityHint(Text(verbatim: localized))
+        content.accessibilityHint(Text(verbatim: localized))
     }
 }
-#endif

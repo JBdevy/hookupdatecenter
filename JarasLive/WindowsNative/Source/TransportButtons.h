@@ -2,11 +2,11 @@
 // Native Windows controls. No JUCE drawing, widgets or mouse dispatch in here.
 #include <windows.h>
 #include <windowsx.h>
-#include <commctrl.h>
 #include <d2d1.h>
 #include <dwrite_3.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <string>
@@ -22,6 +22,8 @@ class TransportButtons final {
         bool active = false, enabled = true, visible = true, blocked = false;
         unsigned background = 0xff252525, foreground = 0xffffffff, activeBackground = 0xff6cbd4b;
         unsigned accent = 0;
+        // `tooltip` is retained as the native accessibility/window description;
+        // CatLive does not create hover tooltip windows.
         std::wstring text, icon, tooltip;
         bool operator==(const State &b) const {
             return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
@@ -52,9 +54,6 @@ class TransportButtons final {
             if(!registered) throw std::runtime_error("Não foi possível registrar os controles do transporte.");
             button.window=CreateWindowExW(0,L"CatLiveTransportButton",L"",WS_CHILD|WS_CLIPSIBLINGS,0,0,1,1,parent,nullptr,GetModuleHandleW(nullptr),&button);
             if(!button.window) throw std::runtime_error("Não foi possível criar os controles do transporte.");
-            button.tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,button.window,nullptr,GetModuleHandleW(nullptr),nullptr);
-            TOOLINFOW info{};info.cbSize=sizeof(info);info.hwnd=button.window;info.uId=(UINT_PTR)button.window;info.uFlags=TTF_IDISHWND|TTF_SUBCLASS;info.lpszText=const_cast<wchar_t*>(button.state.tooltip.c_str());
-            if(button.tooltip)SendMessageW(button.tooltip,TTM_ADDTOOLW,0,(LPARAM)&info);
         }
         if(!button.window) return;
         if(!(button.state==state)) {
@@ -67,19 +66,17 @@ class TransportButtons final {
             ShowWindow(button.window,state.visible?SW_SHOWNOACTIVATE:SW_HIDE);
             EnableWindow(button.window,state.enabled && !state.blocked);
             SetWindowTextW(button.window,state.tooltip.c_str());
-            TOOLINFOW info{};info.cbSize=sizeof(info);info.hwnd=button.window;info.uId=(UINT_PTR)button.window;info.lpszText=const_cast<wchar_t*>(button.state.tooltip.c_str());
-            if(button.tooltip)SendMessageW(button.tooltip,TTM_UPDATETIPTEXTW,0,(LPARAM)&info);
             InvalidateRect(button.window,nullptr,FALSE);
         }
     }
-    void hide() { for(auto &b:buttons) { if(b->window) ShowWindow(b->window,SW_HIDE);if(b->tooltip)SendMessageW(b->tooltip,TTM_POP,0,0);b->state.visible=false; } }
+    void hide() { for(auto &b:buttons) { if(b->window) ShowWindow(b->window,SW_HIDE);b->state.visible=false; } }
   private:
     static void check(HRESULT result) { if(FAILED(result)) throw std::runtime_error("Não foi possível inicializar o desenho nativo do transporte."); }
     struct Button {
         explicit Button(TransportButtons &v):owner(v){}
         ~Button(){destroy();}
-        void destroy(){target.Reset();if(tooltip&&IsWindow(tooltip))DestroyWindow(tooltip);tooltip=nullptr;if(window&&IsWindow(window))DestroyWindow(window);window=nullptr;}
-        TransportButtons &owner; HWND window=nullptr,tooltip=nullptr; State state; Click click;
+        void destroy(){target.Reset();if(window&&IsWindow(window))DestroyWindow(window);window=nullptr;}
+        TransportButtons &owner; HWND window=nullptr; State state; Click click;
         bool pressed=false,hover=false; Ptr<ID2D1HwndRenderTarget> target;
     };
     Ptr<ID2D1Factory> factory;
@@ -103,6 +100,7 @@ class TransportButtons final {
         case WM_NCDESTROY:SetWindowLongPtrW(h,GWLP_USERDATA,0);b->window=nullptr;return DefWindowProcW(h,m,w,l);
         default:return DefWindowProcW(h,m,w,l);
         }
+        return DefWindowProcW(h,m,w,l);
     }
     static D2D1_COLOR_F colour(unsigned argb) { return D2D1::ColorF(((argb>>16)&255)/255.f,((argb>>8)&255)/255.f,(argb&255)/255.f,((argb>>24)&255)/255.f); }
     void paint(Button &b) {

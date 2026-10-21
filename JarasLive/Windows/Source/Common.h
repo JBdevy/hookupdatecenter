@@ -108,8 +108,8 @@ inline String clockText(double seconds, bool hours = false) {
                  : String::formatted("%02lld:%02lld", t / 60, t % 60);
 }
 namespace theme {
-inline const Colour background{0xff1e1e1e}, panel{0xff252525}, line{0xff444444},
-    secondary{0xffb9b9b9}, display{0xff141414}, titlebar{0xff2b2b2b}, green{0xff69ed91},
+inline const Colour background{0xff161616}, panel{0xff1d1d1d}, line{0xff444444},
+    secondary{0xffb9b9b9}, display{0xff101010}, titlebar{0xff222222}, green{0xff69ed91},
     yellow{0xffffdc52}, accent{0xff79f59a}, transportPlay{0xff24f06a}, transportRed{0xff8f2847};
 inline Colour role(const std::string &id) {
     static const std::map<std::string, uint32> colours{

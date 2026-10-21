@@ -11,7 +11,7 @@ struct SettingsView: View {
     #endif
     @ObservedObject private var audio = AudioDeviceSettings.shared
     @ObservedObject private var recorder = TrackRecording.shared
-    private var audioConfigurationLocked: Bool { show.isPlaying || recorder.recording || recorder.busy }
+    private var audioConfigurationLocked: Bool { recorder.recording || recorder.busy }
     enum Section: String, CaseIterable { case general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
         var icon: String { switch self { case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
     }
@@ -86,7 +86,7 @@ struct SettingsView: View {
                         #endif
                     case .audio:
                         if audioConfigurationLocked {
-                            Label("Stop the transport before changing the audio device.", systemImage: "pause.circle.fill")
+                            Label("Finish recording before changing the audio device.", systemImage: "pause.circle.fill")
                                 .font(.jarasCallout.weight(.medium)).foregroundStyle(JarasTheme.yellow)
                                 .fixedSize(horizontal: false, vertical: true)
                         }

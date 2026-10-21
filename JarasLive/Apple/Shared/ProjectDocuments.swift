@@ -19,6 +19,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
 
 @MainActor final class ProjectDocuments: ObservableObject {
     var projectAudio: StemAudioPlayback = .shared
+    var additionalProtectedMediaURLs: () -> Set<URL> = { [] }
     var activateExistingProjectTab: ((URL) -> Bool)?
     var openInNewProjectTab: ((URL) -> Void)?
     var navigateProjectTab: ((Int) -> Void)?
@@ -37,7 +38,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     func continueNativePackageImport(_ prompt: PortableProjectImportPrompt) {
         guard nativePackagePrompt == prompt else { return }
         nativePackagePrompt = nil
-        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
             cancelNativePackageImport(); return
         }
         if prompt == .file { nativePicker = .package }
@@ -48,7 +49,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         nativePackageScope?.stopAccessingSecurityScopedResource(); nativePackageScope = nil
     }
     func chooseNativeStorage() {
-        guard !busy, !show.isPlaying else { return }
+        guard !busy else { return }
         nativePicker = .storage
     }
     private func restoreNativeStorage() {
@@ -85,7 +86,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     private func receiveNativePackageDestination(_ root: URL) {
         guard let archive = nativePendingPackage else { return }
         defer { cancelNativePackageImport() }
-        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         let scoped = root.startAccessingSecurityScopedResource()
         guard scoped else { error = "Could not access the selected folder."; return }
         do {
@@ -201,8 +202,8 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     func confirmNativeStemImport(detectBPM: Bool) {
         guard let scan, !scan.folders.isEmpty else { error = "Select folders containing audio files."; return }
-        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
-            error = "Stop playback before importing audio."; return
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
+            error = "Finish recording and pending operations before importing audio."; return
         }
         guard show.canExecute() else { error = "Project editing is not available right now."; return }
         error = ""
@@ -233,7 +234,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     func cancelNativeProjectName() { nativePendingCreation = nil }
     #endif
     func importPortablePackage(_ url: URL) {
-        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(macOS)
         guard confirmPortableImportPrompt(.destination) else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
@@ -465,13 +466,12 @@ enum PortableProjectImportPrompt: String, Identifiable {
         let recent = remoteProjectCatalog.update(self.recent, current: currentURL)
         let recording = TrackRecording.shared.recording || TrackRecording.shared.busy
         let busy = self.busy || show.saving
-        let status = busy ? "Opening project…" : recording ? "Stop recording on the Mac to open a project." :
-            show.isPlaying ? "Stop playback to open a project." : ""
+        let status = busy ? "Opening project…" : recording ? "Stop recording on the Mac to open a project." : ""
         let error = !remoteProjectError.isEmpty ? remoteProjectError : missingAudioPrompt != nil ?
             "Resolve missing audio on the Mac to continue." : self.error.isEmpty ? "" :
             "Could not open the project. Check the Mac for details."
         return .init(recent: recent, busy: busy,
-                     canOpen: !busy && !recording && !show.isPlaying && missingAudioPrompt == nil,
+                     canOpen: !busy && !recording && missingAudioPrompt == nil,
                      status: status, error: error)
     }
     func openRemoteProject(_ id: UUID) {
@@ -518,7 +518,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     @Published var pendingDeletion: ProjectFolderDeletion?
     func requestDeletion(_ url: URL) {
-        guard !busy, !show.isPlaying, !show.saving, !TrackRecording.shared.recording,
+        guard !busy, !show.saving, !TrackRecording.shared.recording,
               !TrackRecording.shared.busy, !importingAudio else { return }
         error = ""
         if RecentProjectEntry.isMissing(url) {
@@ -531,7 +531,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     func deleteProject(_ deletion: ProjectFolderDeletion) {
         guard pendingDeletion?.id == deletion.id, deletion.remainingSeconds == 0,
-              !busy, !show.isPlaying, !show.saving, !TrackRecording.shared.recording,
+              !busy, !show.saving, !TrackRecording.shared.recording,
               !TrackRecording.shared.busy, !importingAudio else { return }
         busy = true; error = ""; status = "Deleting project…"
         Task {
@@ -592,12 +592,12 @@ enum PortableProjectImportPrompt: String, Identifiable {
         }.value
     }
     var canCleanTimelineMedia: Bool {
-        ready && currentURL != nil && !busy && !show.isPlaying && !show.saving &&
+        ready && currentURL != nil && !busy && !show.saving &&
         !TrackRecording.shared.recording && !TrackRecording.shared.busy && !importingAudio
     }
     func cleanTimelineMedia() async throws {
         guard canCleanTimelineMedia, let currentURL else {
-            throw ProjectError.invalid("Stop playback, recording and imports before cleaning timeline files.")
+            throw ProjectError.invalid("Finish recording and imports before cleaning timeline files.")
         }
         busy = true
         let canExecute = show.canExecute
@@ -605,12 +605,13 @@ enum PortableProjectImportPrompt: String, Identifiable {
         defer { busy = false; show.canExecute = canExecute }
         try await show.saveForClosing()
         let project = show.snapshot.project, known = show.knownMediaPaths
+        let protectedURLs = additionalProtectedMediaURLs().union(projectAudio.activeMediaURLs)
         // Once deletion starts, undo cannot restore references to removed sources,
         // including if a later filesystem operation fails halfway through.
         show.discardClosedHistory()
         try await Task.detached(priority: .userInitiated) {
             try ProjectMediaCleanup.remember(project: project, document: currentURL, knownPaths: known)
-            try ProjectMediaCleanup.removeDeletedFiles(project: project, document: currentURL, knownPaths: known)
+            try ProjectMediaCleanup.removeDeletedFiles(project: project, document: currentURL, knownPaths: known, protectedURLs: protectedURLs)
         }.value
     }
     private func preloadTimelineWaveforms(_ project: Project, at url: URL) async {
@@ -729,6 +730,9 @@ enum PortableProjectImportPrompt: String, Identifiable {
         closeProjectEditors()
         if ready && show.hasUnsavedChanges { try await show.saveForClosing() }
         if currentURL != url { try await rememberProjectMedia() }
+        // Keep the current project playing through preparation and saving.
+        // Only its actual replacement stops this session; other tabs keep playing.
+        show.send(.stopAll)
         // Loading can still fail in the backend after model validation. Keep
         // saves attached to the previous document until replacement succeeds.
         try show.replaceProject(project)
@@ -761,7 +765,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     func open(_ url: URL) {
         if activateExistingProjectTab?(url) == true { return }
-        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         // Recent Projects and Finder can both request the document already in
         // memory. Reloading its older disk snapshot would discard current edits
         // after activate() saves them, including when the path is an alias.
@@ -826,7 +830,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     #if os(macOS)
     func chooseMigration(_ fileExtension: String) {
-        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = fileExtension == "logicx"
             ? [UTType("com.apple.logicx.project") ?? .package, .package, .folder]
@@ -901,7 +905,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         #endif
     }
     func browsePortablePackage() {
-        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(macOS)
         guard confirmPortableImportPrompt(.file) else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(filenameExtension: "ziplive") ?? .zip, .zip]
@@ -915,7 +919,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         #endif
     }
     func chooseStems(adding: Bool) {
-        guard !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         if adding {
             guard ready, currentURL != nil else {
                 clearImportSelection(); showingOpenProjectAlert = true; return
@@ -983,7 +987,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     func confirmImport(detectBPM: Bool) { guard let scan else { return }; finish(scan: scan, detectBPM: detectBPM) }
     private func finish(scan: StemScan?, detectBPM: Bool, recordingChannels: Int? = nil) {
-        guard show.canExecute(), !busy, !show.isPlaying, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard show.canExecute(), !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(iOS)
         if !(scan != nil && adding) {
             // Choose storage before showing the name alert. Presenting Files
@@ -1094,23 +1098,32 @@ enum PortableProjectImportPrompt: String, Identifiable {
                 // The new file is already saved. Do not save the old snapshot
                 // over it, or redirect later saves if backend activation fails.
                 await preloadTimelineWaveforms(result.0, at: url)
-                try show.replaceProject(result.0)
-                resetProjectSelections()
-                await store.select(url: url, savedProject: result.0)
-                projectAudio.open(directory: url.deletingLastPathComponent())
-                VideoPlayback.shared.open(directory: url.deletingLastPathComponent())
-                VideoPlayback.teleprompter.open(directory: url.deletingLastPathComponent())
-                VideoPlayback.teleprompter2.open(directory: url.deletingLastPathComponent())
-                #if os(macOS)
-                TeleprompterRemote.setProjectDirectory(url.deletingLastPathComponent())
-                #endif
-                VideoPlayback.shared.update(show.snapshot)
-                TrackRecording.shared.open(directory: url.deletingLastPathComponent(), project: show.snapshot.project.id)
-                if recordingChannels != nil {
-                    TrackRecording.shared.setArmed(Set(result.0.songs.flatMap(\.tracks).map(\.id)), active: true, requiresAudioInput: true)
+                if append {
+                    // Appending is an edit of the live session, not a project load.
+                    // Retain transport, voices, record arms and viewport state.
+                    try show.applyImportedProject(result.0)
+                    await store.select(url: url, savedProject: result.0)
+                } else {
+                    show.send(.stopAll)
+                    try show.replaceProject(result.0)
+                    resetProjectSelections()
+                    await store.select(url: url, savedProject: result.0)
+                    projectAudio.open(directory: url.deletingLastPathComponent())
+                    VideoPlayback.shared.open(directory: url.deletingLastPathComponent())
+                    VideoPlayback.teleprompter.open(directory: url.deletingLastPathComponent())
+                    VideoPlayback.teleprompter2.open(directory: url.deletingLastPathComponent())
+                    #if os(macOS)
+                    TeleprompterRemote.setProjectDirectory(url.deletingLastPathComponent())
+                    #endif
+                    VideoPlayback.shared.update(show.snapshot)
+                    TrackRecording.shared.open(directory: url.deletingLastPathComponent(), project: show.snapshot.project.id)
+                    if recordingChannels != nil {
+                        TrackRecording.shared.setArmed(Set(result.0.songs.flatMap(\.tracks).map(\.id)), active: true, requiresAudioInput: true)
+                    }
+                    show.preparePlayback()
+                    opened = UUID()
                 }
-                show.preparePlayback()
-                currentURL = url; remember(url); ready = true; clearImportSelection(); opened = UUID()
+                currentURL = url; remember(url); ready = true; clearImportSelection()
                 warnings += result.1
             } catch { self.error = error.localizedDescription }
         }

@@ -507,6 +507,7 @@ private final class FloatingStartupAnchor: NSView {
         hiddenWindows = NSApp.windows.filter { $0.isVisible }
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: StartupView.panelWidth, height: StartupView.panelHeight), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true
+        panel.appearance = NSAppearance(named: .darkAqua)
         panel.level = .floating; panel.isReleasedWhenClosed = false; panel.ignoresMouseEvents = true
         panel.contentView = NSHostingView(rootView: ClosingLogoView(state: self)
             .environment(\.locale, Locale(identifier: UserDefaults.standard.string(forKey: "jaras.language") ?? "en")))
@@ -537,6 +538,100 @@ private struct ClosingLogoView: View {
 }
 
 /// Window close and Quit share an explicit Save / Discard / Cancel decision.
+/// Save confirmation shared visually with Windows, with an explicit app logo.
+/// AppKit can omit the app icon from NSAlert sheets, so own this small surface.
+@MainActor final class ProjectSaveAlert: NSObject {
+    private final class Panel: NSPanel {
+        override var canBecomeKey: Bool { true }
+    }
+    private final class Content: NSView {
+        override var isFlipped: Bool { true }
+    }
+    private final class Action: NSButton {
+        var primary = false
+        override func draw(_ dirtyRect: NSRect) {
+            let fill = primary ? NSColor(srgbRed: 0.376, green: 0.710, blue: 0.239, alpha: 1)
+                               : NSColor(white: 0.28, alpha: 0.85)
+            (isHighlighted ? fill.blended(withFraction: 0.15, of: .black)! : fill).setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+            let style = NSMutableParagraphStyle(); style.alignment = .center
+            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: NSColor.white, .paragraphStyle: style]
+            let height = (title as NSString).size(withAttributes: attrs).height
+            (title as NSString).draw(in: NSRect(x: 4, y: (bounds.height-height)/2, width: bounds.width-8, height: height), withAttributes: attrs)
+            if window?.firstResponder === self {
+                NSColor.white.withAlphaComponent(0.5).setStroke()
+                NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: bounds.height/2, yRadius: bounds.height/2).stroke()
+            }
+        }
+    }
+    var messageText = ""
+    private var buttons: [NSButton] = []
+    private let panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 244),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+    private var finishing = false
+    override init() {
+        super.init()
+        panel.isReleasedWhenClosed = false; panel.isOpaque = false
+        panel.backgroundColor = .clear; panel.hasShadow = true
+        panel.appearance = NSAppearance(named: .darkAqua)
+    }
+    @discardableResult func addButton(withTitle title: String) -> NSButton {
+        let button = Action(title: title, target: self, action: #selector(answer(_:)))
+        button.primary = buttons.isEmpty
+        button.tag = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + buttons.count
+        button.isBordered = false; button.focusRingType = .none
+        buttons.append(button)
+        return button
+    }
+    private func prepare() {
+        let content = Content(frame: NSRect(x: 0, y: 0, width: 260, height: 244))
+        content.wantsLayer = true
+        let glass = NSVisualEffectView(frame: content.bounds)
+        glass.material = .hudWindow; glass.blendingMode = .behindWindow; glass.state = .active
+        content.addSubview(glass)
+        let tint = NSView(frame: content.bounds); tint.wantsLayer = true
+        tint.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.82).cgColor
+        content.addSubview(tint)
+        content.layer?.cornerRadius = 25; content.layer?.masksToBounds = true
+        content.layer?.borderWidth = 1; content.layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
+        let logo = NSImageView(frame: NSRect(x: 98, y: 24, width: 64, height: 64))
+        logo.image = NSApp.applicationIconImage; logo.imageScaling = .scaleProportionallyUpOrDown
+        logo.setAccessibilityLabel("CatLive")
+        content.addSubview(logo)
+        let title = NSTextField(labelWithString: messageText)
+        title.font = .systemFont(ofSize: 14, weight: .bold); title.textColor = NSColor(white: 0.87, alpha: 1)
+        title.alignment = .center; title.frame = NSRect(x: 16, y: 98, width: 228, height: 24)
+        content.addSubview(title)
+        for (index, button) in buttons.enumerated() {
+            button.frame = NSRect(x: 16, y: 132 + index * 34, width: 228, height: 28)
+            content.addSubview(button)
+        }
+        panel.contentView = content
+        panel.title = messageText
+        panel.setAccessibilityLabel(messageText)
+    }
+    @objc private func answer(_ sender: NSButton) {
+        guard !finishing else { return }; finishing = true
+        let response = NSApplication.ModalResponse(rawValue: sender.tag)
+        if let parent = panel.sheetParent { parent.endSheet(panel, returnCode: response) }
+        else { NSApp.stopModal(withCode: response) }
+    }
+    func beginSheetModal(for parent: NSWindow, completionHandler: @escaping (NSApplication.ModalResponse) -> Void) {
+        prepare()
+        parent.beginSheet(panel) { [self] response in
+            panel.orderOut(nil)
+            completionHandler(response)
+        }
+    }
+    func runModal() -> NSApplication.ModalResponse {
+        prepare(); panel.center()
+        let response = NSApp.runModal(for: panel)
+        panel.orderOut(nil)
+        return response
+    }
+}
+
 @MainActor final class ProjectCloseGuard: NSObject {
     static let shared = ProjectCloseGuard()
     private weak var window: NSWindow?
@@ -598,7 +693,7 @@ private struct ClosingLogoView: View {
     private func localized(_ key: String) -> String {
         JarasLocalization.string(key)
     }
-    func request(completion: @escaping (Bool) -> Void) {
+    func request(confirmPlayback: Bool = true, completion: @escaping (Bool) -> Void) {
         guard !pending else { focusCurrentDialog(); completion(false); return }
         guard let documents else { completion(false); return }
         // Finish the current dialog before allowing a close request to open another sheet.
@@ -620,11 +715,29 @@ private struct ClosingLogoView: View {
         }
         documents.closeNotice = ""
         pending = true
+        if confirmPlayback && (documents.show.isPlaying || DesktopProjectTabs.shared.anyPlaying) {
+            let alert = NSAlert()
+            alert.messageText = localized("Close CatLive?")
+            alert.informativeText = localized("Playback is in progress. Do you really want to close CatLive?")
+            alert.addButton(withTitle: localized("Cancel")).keyEquivalent = "\r"
+            alert.addButton(withTitle: localized("Close CatLive"))
+            let answer: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+                guard let self else { completion(false); return }
+                self.pending = false
+                guard response == .alertSecondButtonReturn else { completion(false); return }
+                // Playback continues until all close/save decisions succeed.
+                // Cancelling a later save dialog must not interrupt the music.
+                DispatchQueue.main.async { self.request(confirmPlayback: false, completion: completion) }
+            }
+            if let window { window.makeKeyAndOrderFront(nil); alert.beginSheetModal(for: window, completionHandler: answer) }
+            else { answer(alert.runModal()) }
+            return
+        }
         if !needsConfirmation {
             finishClosing(documents: documents, save: false, completion: completion)
             return
         }
-        let alert = NSAlert()
+        let alert = ProjectSaveAlert()
         alert.messageText = localized("Do you want to save this project?")
         alert.addButton(withTitle: localized("Save")).keyEquivalent = "\r"
         alert.addButton(withTitle: localized("Close without saving"))

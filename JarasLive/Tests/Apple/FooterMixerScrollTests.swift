@@ -39,7 +39,7 @@ precondition(prepared.contains(where: { $0.contains(0) }), "fast reversal prepar
 print("MIXER_1000_TRACKS_SYNCHRONOUS_DESTINATION_PREPARATION_AND_BOUNDED_CHANNEL_COUNT_OK")
 
 let document = scroll.documentView!
-precondition(document.subviews.count < 20, "channel host count remains bounded")
+precondition(document.subviews.count <= 84, "visible channels plus warm cache remain bounded")
 let existing = Set(document.subviews.map(ObjectIdentifier.init))
 let before = scroll.contentView.bounds.minX
 bar.doubleValue = (before + 10) / (document.frame.width - scroll.contentSize.width)
@@ -92,8 +92,8 @@ for width: CGFloat in [2200, 500, 1600, 420, 1800, 500] {
     let channels = scroll.documentView!.subviews
     let viewport = scroll.contentView.bounds
     let visible = channels.filter { $0.frame.intersects(viewport) }
-    precondition(channels.count <= Int(ceil(viewport.width / 153)) + 6,
-                 "a narrowed mixer must release hosts outside its bounded scroll reserve")
+    precondition(channels.count <= Int(ceil(viewport.width / 153)) + 6 + 64,
+                 "a narrowed mixer bounds its visible hosts and retained reuse cache")
     precondition(!visible.isEmpty && visible.map(\.frame.maxX).max()! >= viewport.maxX,
                  "expanding must prepare newly exposed channels synchronously")
     for channel in visible {
@@ -131,14 +131,14 @@ precondition(focusedStrip.window === window && window.firstResponder === focusPr
              "a channel owning keyboard focus or an in-flight fader keeps its control instance when shrinking")
 precondition(protectedStrip.window === window,
              "an offscreen channel with a pinned menu/button gesture must remain attached")
-precondition(scroll.documentView!.subviews.count <= 16,
-             "focus and pinning retain only their own channels, not every intervening channel")
+precondition(scroll.documentView!.subviews.count <= 16 + 64,
+             "focus and pinning retain only their own channels beyond the bounded reuse cache")
 window.makeFirstResponder(nil); protectedChannels.removeAll()
 // Same viewport uses prepare's containment fast path, which must also release
 // previously protected channels once the gesture or menu has ended.
 bar.sendAction(bar.action, to: bar.target)
-precondition(focusedStrip.superview == nil && protectedStrip.superview == nil,
-             "the next preparation releases finished focus/menu exceptions even without scrolling")
+precondition(view.cachedStrips[20]?.view === focusedStrip && view.cachedStrips[23]?.view === protectedStrip,
+             "finished focus/menu exceptions return to the bounded offscreen cache")
 window.setContentSize(NSSize(width: 500, height: 242)); view.layoutSubtreeIfNeeded()
 print("MIXER_SHRINK_PRESERVES_FOCUS_AND_PINNED_GESTURES_THEN_RELEASES_ONLY_EXCEPTIONS_OK")
 
@@ -355,12 +355,24 @@ window.orderOut(nil)
 print("MIXER_WHEEL_FX_VERTICAL_ONLY_INSIDE_VISIBLE_VIEWPORT_HORIZONTAL_AND_EMPTY_SPACE_ROUTE_TO_TRACKS_OK")
 
 slotScroll.removeFromSuperview()
+private final class FooterWindowLifecycleProbe: NSView {
+    static var attachments = 0
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { Self.attachments += 1 }
+    }
+}
+private struct FooterWindowLifecycleFixture: NSViewRepresentable {
+    func makeNSView(context: Context) -> FooterWindowLifecycleProbe { FooterWindowLifecycleProbe() }
+    func updateNSView(_ view: FooterWindowLifecycleProbe, context: Context) {}
+}
 var cacheVersions = (0..<1000).map { UInt64($0 + 100) }
 var cacheMakes: [Int: Int] = [:]
 func updateCacheFixture(count: Int = 1000) {
     view.update(width: CGFloat(count) * 86 + 7, stride: 86, count: count, versions: Array(cacheVersions.prefix(count))) { range in
         cacheMakes[range.lowerBound, default: 0] += 1
-        return AnyView(Text("Channel \(range.lowerBound) version \(cacheVersions[range.lowerBound])").frame(width: 83).padding(5))
+        return AnyView(Text("Channel \(range.lowerBound) version \(cacheVersions[range.lowerBound])").frame(width: 83).padding(5)
+            .background(FooterWindowLifecycleFixture()))
     }
 }
 func cacheMove(_ index: Int) {
@@ -372,9 +384,12 @@ updateCacheFixture(); view.layoutSubtreeIfNeeded(); cacheMove(0)
 private let initialFirst = scroll.documentView!.subviews.compactMap { $0 as? FooterMixerHostingView }.first { $0.frame.minX == 0 }!
 let initialBuilds = cacheMakes[0]!
 cacheMove(20)
-precondition(view.cachedStrips[0]?.view === initialFirst && initialFirst.window == nil,
-             "Offscreen hosts are reused from a detached cache without window layout or meter drawing")
+precondition(view.cachedStrips[0]?.view === initialFirst && initialFirst.window === window && initialFirst.visibleRect.isEmpty && initialFirst.isHidden,
+             "Offscreen hosts preserve their window environment while the clip excludes their drawing")
+let attachmentsBeforeReversal = FooterWindowLifecycleProbe.attachments
 cacheMove(0)
+precondition(FooterWindowLifecycleProbe.attachments == attachmentsBeforeReversal,
+             "Warm reversal must not detach/reattach native controls or invalidate their window environment")
 precondition(initialFirst.superview === scroll.documentView && cacheMakes[0] == initialBuilds,
              "Warm reversal reuses the same host and SwiftUI root without rebuilding its controls")
 cacheMove(20)
@@ -384,9 +399,9 @@ cacheMove(0)
 precondition(initialFirst.superview === scroll.documentView && cacheMakes[0] == initialBuilds + 1,
              "Cached roots validate the latest identity/FX version on normal scroll after offscreen edits")
 for index in stride(from: 0, to: 900, by: 20) { cacheMove(index) }
-precondition(view.cachedStrips.count <= 24 && view.cachedStrips.values.allSatisfy { $0.view.window == nil },
-             "1000-track browsing retains at most 24 detached cache entries")
+precondition(view.cachedStrips.count <= 64 && view.cachedStrips.values.allSatisfy { $0.view.window === window && $0.view.visibleRect.isEmpty && $0.view.isHidden },
+             "1000-track browsing retains at most 64 clipped cache entries")
 updateCacheFixture(count: 0)
 precondition(view.cachedStrips.isEmpty, "Deleting the track list releases detached roots")
 window.orderOut(nil)
-print("MIXER_WARM_REVERSAL_REUSES_DETACHED_BOUNDED_HOSTS_AND_INVALIDATES_OFFSCREEN_VERSIONS_OK")
+print("MIXER_WARM_REVERSAL_REUSES_ATTACHED_BOUNDED_HOSTS_AND_INVALIDATES_OFFSCREEN_VERSIONS_OK")

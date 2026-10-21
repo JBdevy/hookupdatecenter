@@ -15,14 +15,14 @@ void Engine::loadProject(Project project) {
     orderSpecialTracks(project); synchronizeTimecode(project); synchronizeRegionOwnership(project); validate(project);
     if (transport_.playing || transport_.subPlay.playing) throw std::logic_error("Stop before loading another project");
     const bool bypassed = transport_.multiLoopsBypassed;
-    project_ = std::move(project); transport_ = {}; transport_.multiLoopsBypassed = bypassed; automaticSubplayQueue_.reset(); automaticSubplayActive_ = false; finishCurrent_ = false; resumeSub_ = false; playStart_.reset(); subPlayStart_.reset();
+    project_ = std::move(project); transport_ = {}; manualSubCursor_ = false; transport_.multiLoopsBypassed = bypassed; automaticSubplayQueue_.reset(); automaticSubplayActive_ = false; finishCurrent_ = false; resumeSub_ = false; playStart_.reset(); subPlayStart_.reset();
     auto ids = order(); if (!ids.empty()) transport_.songId = ids.front();
 }
 void Engine::applyProjectEdit(Project project) {
     if (project.id != project_.id) throw std::invalid_argument("Cannot edit another project");
     orderSpecialTracks(project); synchronizeTimecode(project); synchronizeRegionOwnership(project, &project_); validate(project);
     project_ = std::move(project);
-    if (!currentSong()) { const bool bypassed = transport_.multiLoopsBypassed; transport_ = {}; transport_.multiLoopsBypassed = bypassed; auto ids = order(); if (!ids.empty()) transport_.songId = ids.front(); }
+    if (!currentSong()) { const bool bypassed = transport_.multiLoopsBypassed; transport_ = {}; manualSubCursor_ = false; transport_.multiLoopsBypassed = bypassed; auto ids = order(); if (!ids.empty()) transport_.songId = ids.front(); }
     if (!region(transport_.regionId)) { transport_.regionId.reset(); transport_.loop.enabled = false; }
     refreshAutomaticRegionQueue();
     if (!region(transport_.queuedRegionId)) { transport_.queuedRegionId.reset(); autoRegionQueue_ = false; }
@@ -44,7 +44,7 @@ void Engine::select(const ID& id) {
     playStart_ = transport_.playing ? std::optional<double>(0) : std::nullopt; subPlayStart_.reset();
     clearIgnoreNext();
     transport_.regionId.reset(); transport_.queuedRegionId.reset(); autoRegionQueue_ = false;
-    transport_.songId = id; transport_.playbackStartRegionId = playbackEntryRegion(*found, 0); transport_.subPlaybackStartRegionId.reset(); transport_.position = 0; transport_.editPosition = 0; transport_.queue.songId.reset(); transport_.subPlay = {}; automaticSubplayActive_ = false;
+    transport_.songId = id; transport_.playbackStartRegionId = playbackEntryRegion(*found, 0); transport_.subPlaybackStartRegionId.reset(); transport_.position = 0; transport_.editPosition = 0; transport_.queue.songId.reset(); transport_.subPlay = {}; manualSubCursor_ = false; automaticSubplayActive_ = false;
 }
 std::optional<ID> Engine::nextSongId() const {
     if (transport_.queue.songId) return transport_.queue.songId;
@@ -911,7 +911,7 @@ void Engine::execute(const Command& c) {
             if (part->parentRegionID && active && (active->id == *part->parentRegionID || active->parentRegionID == part->parentRegionID))
                 throw std::invalid_argument("Cannot queue a song from the active unified region");
             transport_.queuedRegionId = part->id; transport_.queueStartedAt = transport_.position;
-            transport_.subPlay.position = part->startTime; autoRegionQueue_ = false;
+            transport_.subPlay.position = part->startTime; manualSubCursor_ = false; autoRegionQueue_ = false;
         } else {
             clearIgnoreNext();
             transport_.paused = false; resumeSub_ = false;
@@ -945,7 +945,7 @@ void Engine::execute(const Command& c) {
             }
         throw std::invalid_argument("Unknown clip");
     case CommandKind::clipChannelMode:
-        if (!std::isfinite(c.value) || c.value < 0 || c.value > 3 || c.value != std::floor(c.value)) throw std::invalid_argument("Invalid item channel mode");
+        if (!std::isfinite(c.value) || c.value < 0 || c.value > 4 || c.value != std::floor(c.value)) throw std::invalid_argument("Invalid item channel mode");
         for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips)
             if (clip.id == c.target) {
                 if (!fixedTrackName(track.role).empty() && !(clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0)) throw std::invalid_argument("Special item channels cannot be changed");
@@ -1014,17 +1014,17 @@ void Engine::execute(const Command& c) {
     case CommandKind::subPlay:
         if (transport_.playing && currentSong() && !transport_.subPlay.playing) {
             automaticSubplayActive_ = false;
-            if (const auto* queued = region(transport_.queuedRegionId)) {
-                if (transport_.subPlay.position < queued->startTime || transport_.subPlay.position >= queued->endTime)
-                    transport_.subPlay.position = queued->startTime;
-            } else if (transport_.subPlay.position >= currentSong()->duration) transport_.subPlay.position = 0;
+            // Auto/prepare follows the queue until the user explicitly places
+            // the secondary cursor. Manual placement is free across the timeline.
+            if (!manualSubCursor_) if (const auto* queued = region(transport_.queuedRegionId))
+                transport_.subPlay.position = queued->startTime;
             subPlayStart_ = transport_.subPlay.position;
             transport_.subPlaybackStartRegionId = playbackEntryRegion(*currentSong(), transport_.subPlay.position);
             transport_.subPlay.playing = true;
         }
         break;
     case CommandKind::subStop: automaticSubplayActive_ = false; transport_.subPlay.playing = false; if (subPlayStart_) transport_.subPlay.position = *subPlayStart_; subPlayStart_.reset(); break;
-    case CommandKind::subSeek: automaticSubplayActive_ = false; if (currentSong()) { transport_.subPlay.position = std::clamp(c.value, 0.0, currentSong()->duration); transport_.subPlaybackStartRegionId = playbackEntryRegion(*currentSong(), transport_.subPlay.position); } break;
+    case CommandKind::subSeek: manualSubCursor_ = true; automaticSubplayActive_ = false; if (currentSong()) { transport_.subPlay.position = std::max(0.0, c.value); transport_.subPlaybackStartRegionId = playbackEntryRegion(*currentSong(), transport_.subPlay.position); } break;
     case CommandKind::stopAll: execute({CommandKind::subStop}); execute({CommandKind::stop}); break;
     case CommandKind::stop:
         automaticSubplayQueue_.reset();
@@ -1228,7 +1228,7 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
             const double lead = std::clamp(project_.regionSetlist->automaticSubplaySeconds.value_or(1), 1.0, 5.0);
             const double trigger = end - lead;
             if (transport_.position < end && transport_.position + elapsed >= trigger) {
-                transport_.subPlay.position = queued->startTime;
+                transport_.subPlay.position = queued->startTime; manualSubCursor_ = false;
                 execute({CommandKind::subPlay});
                 automaticSubplayQueue_ = queued->id;
                 automaticSubplayActive_ = true;
@@ -1237,8 +1237,7 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
         }
     }
     if (transport_.subPlay.playing && currentSong()) {
-        transport_.subPlay.position = std::min(currentSong()->duration, transport_.subPlay.position + subElapsed);
-        if (transport_.subPlay.position >= currentSong()->duration) transport_.subPlay.playing = false;
+        transport_.subPlay.position += subElapsed;
     }
     if (!transport_.playing) return;
     if (sectionDestination) {

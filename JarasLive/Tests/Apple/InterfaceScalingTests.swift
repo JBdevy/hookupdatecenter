@@ -84,6 +84,8 @@ struct Fixture: View {
  }
  let suite="CatLive.PanelScale.\(UUID())"
  let prefs=UserDefaults(suiteName:suite)!
+ precondition(InterfaceScale.percentages == [80, 90, 100, 110, 120])
+ precondition(InterfaceScale.percent(0.6) == 80 && InterfaceScale.percent(0.7) == 80)
  precondition(InterfaceScale.percent(1.5) == 120 && InterfaceScale.percent(.nan) == 100)
  let sizing=InterfaceScaling(defaults:prefs)
  let original=win.contentView
@@ -92,6 +94,6 @@ struct Fixture: View {
  precondition(win.contentView === original, "Scale preserves hosting identity and view tasks")
  prefs.removePersistentDomain(forName:suite)
  win.orderOut(nil)
- print("INTERFACE_SCALE_7_OPTIONS_PHYSICAL_CORNER_CLICKS_NATIVE_AND_SWIFTUI_OK")
+ print("INTERFACE_SCALE_5_OPTIONS_PHYSICAL_CORNER_CLICKS_NATIVE_AND_SWIFTUI_OK")
  }
 }

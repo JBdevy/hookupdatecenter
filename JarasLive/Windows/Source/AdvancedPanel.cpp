@@ -208,7 +208,7 @@ void AdvancedPanel::select(int index) {
                                 "Cor do cursor Sub Play"};
         const char *keys[]{"background", "primaryGrid", "secondaryGrid",
                            "playCursor", "editCursor",  "subPlayCursor"};
-        const uint32 defaults[]{0x1e1e1e, 0x535250, 0x333235, 0x7548dd, 0xb9e229, 0xff6f00};
+        const uint32 defaults[]{0x161616, 0x535250, 0x333235, 0x7548dd, 0xb9e229, 0xff6f00};
         for (int i = 0; i < 6; ++i)
             colourRow(names[i], String("jaras.timeline.") + keys[i], defaults[i], 142 + i * 40,
                       true);

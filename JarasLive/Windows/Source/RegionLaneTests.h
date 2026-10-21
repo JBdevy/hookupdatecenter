@@ -263,7 +263,16 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                 (double)get(belowBefore,"y")+16,"Overlapping items did not create a live lane and move following tracks down");
         require(closeEnough(part(*session.song(),"second").startTime,15) && closeEnough(clip(*session.song(),"item-second").startTime,16),
                 "Drag preview prematurely changed the session");
+        struct CommitLayoutObserver : ComponentListener {
+            std::function<void()> inspect;
+            void componentMovedOrResized(Component &,bool,bool) override { inspect(); }
+        } observer;
+        bool collapsed=false;
+        observer.inspect=[&]{ if ((int)get(state(),"headerHeight")<80) collapsed=true; };
+        for(auto *child:workspace.getChildren()) child->addComponentListener(&observer);
         canvas->mouseUp(mouse(*canvas,destination,origin,ModifierKeys::shiftModifier,true));
+        for(auto *child:workspace.getChildren()) child->removeComponentListener(&observer);
+        require(!collapsed,"Release briefly collapsed the preview lane before committing the region");
         checkGeometry(80,2);
         screenshot("region-overlap-committed.png");
         require(closeEnough(part(*session.song(),"second").startTime,10) && closeEnough(clip(*session.song(),"item-second").startTime,11) &&

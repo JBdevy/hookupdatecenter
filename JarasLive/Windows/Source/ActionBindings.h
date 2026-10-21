@@ -69,7 +69,7 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"setlistDown", "Setlist Down", 4, "cursor down"},
         {"toggleAuto", "Setlist Auto on/off", 4, ""},
         {"ignoreNext", "Ignore Next", 4, "0"},
-        {"toggleSetlist", "Setlist show/hide", 4, "F2"},
+        {"toggleSetlist", "Setlist show/hide", 4, "alt + S"},
         {"toggleMultiLoopBypass", "Multiloops BYPASS on/off", 4, ""},
         {"selectTrack", "Select Track", 5, "", true},
         {"addTrack", "Add Track", 5, "ctrl + T"},
@@ -86,7 +86,8 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"createTempoMarker", "Create tempo marker", 5, "ctrl + shift + T"},
         {"previousProjectTab", "Previous project tab", 5, ""},
         {"nextProjectTab", "Next project tab", 5, ""},
-        {"toggleTracks", "Tracks show/hide", 5, "F1"}};
+        {"toggleBarMixer", "Hoz-Mixer show/hide", 5, "alt + H"},
+        {"toggleTracks", "Track Mixer show/hide", 5, "alt + T"}};
     return definitions;
 }
 inline KeyPress normalizedActionKey(const KeyPress &key) {
@@ -150,9 +151,32 @@ class ActionBindings final : public ChangeBroadcaster,
         auto value =
             get(settings.value("catlive.actions", object()), Identifier(definition.id), object())
                 .clone();
-        if (!value.hasProperty("keyboard") && String(definition.defaultKey).isNotEmpty())
-            put(value, "keyboard",
-                KeyPress::createFromDescription(definition.defaultKey).getTextDescription());
+        const String action(definition.id);
+        const auto legacy = action == "toggleTracks" ? KeyPress(KeyPress::F1Key)
+                          : action == "toggleSetlist" ? KeyPress(KeyPress::F2Key)
+                          : action == "toggleBarMixer" ? KeyPress::createFromDescription("alt + B") : KeyPress();
+        if (legacy.isValid() && KeyPress::createFromDescription(str(value, "keyboard")) == legacy) {
+            const auto replacement = KeyPress::createFromDescription(definition.defaultKey);
+            const auto saved = settings.value("catlive.actions", object());
+            bool conflict = false;
+            for (const auto &other : actionDefinitions()) {
+                if (action == other.id) continue;
+                const auto key = str(get(saved, Identifier(other.id), object()), "keyboard");
+                if (key.isNotEmpty() && KeyPress::createFromDescription(key) == replacement) { conflict = true; break; }
+            }
+            if (!conflict) put(value, "keyboard", replacement.getTextDescription());
+        }
+        if (!value.hasProperty("keyboard") && String(definition.defaultKey).isNotEmpty()) {
+            const auto replacement = KeyPress::createFromDescription(definition.defaultKey);
+            const auto saved = settings.value("catlive.actions", object());
+            bool conflict = false;
+            for (const auto &other : actionDefinitions()) {
+                if (action == other.id) continue;
+                const auto key = str(get(saved, Identifier(other.id), object()), "keyboard");
+                if (key.isNotEmpty() && KeyPress::createFromDescription(key) == replacement) { conflict = true; break; }
+            }
+            if (!conflict) put(value, "keyboard", replacement.getTextDescription());
+        }
         if (definition.fixedKeyboard())
             put(value, "keyboard",
                 KeyPress::createFromDescription(definition.defaultKey).getTextDescription());

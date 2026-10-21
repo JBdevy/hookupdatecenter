@@ -21,9 +21,10 @@ extension EnvironmentValues {
 struct TextItemEditor: View {
     let apply: (String) -> Bool
     let close: () -> Void
+    private let showHeader: Bool
     @State private var draft: String
-    init(text: String, apply: @escaping (String) -> Bool, close: @escaping () -> Void) {
-        self.apply = apply; self.close = close
+    init(text: String, showHeader: Bool = true, apply: @escaping (String) -> Bool, close: @escaping () -> Void) {
+        self.apply = apply; self.close = close; self.showHeader = showHeader
         _draft = State(initialValue: text)
     }
     private func confirm() {
@@ -31,12 +32,12 @@ struct TextItemEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
+            if showHeader { HStack {
                 Text("Text Editor").font(.jarasHeadline)
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).accessibilityLabel("Cancel")
-            }
+            } }
             #if os(macOS)
             TextItemNotepad(text: $draft, apply: confirm, cancel: close)
                 .frame(height: 180)

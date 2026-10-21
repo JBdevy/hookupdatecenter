@@ -19,11 +19,13 @@ public enum ProjectMediaCleanup {
     /// Only files previously owned by this document can become candidates.
     /// Other documents are protected. Backup-only sources are kept with backups,
     /// so manual cleanup does not make recovery saves unusable.
-    public static func removeDeletedFiles(project: Project, document: URL, knownPaths: Set<String>, progress: @Sendable (Double) -> Void = { _ in }) throws {
+    public static func removeDeletedFiles(project: Project, document: URL, knownPaths: Set<String>, protectedURLs: Set<URL> = [], progress: @Sendable (Double) -> Void = { _ in }) throws {
         progress(0)
         let fm = FileManager.default
         let root = document.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
         var candidates = try rememberedPaths(project: project, document: document).union(knownPaths).subtracting(project.mediaPaths)
+        let protected = Set(protectedURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
+        candidates = candidates.filter { !protected.contains(root.appendingPathComponent($0).standardizedFileURL.resolvingSymlinksInPath()) }
         guard !candidates.isEmpty else { progress(1); return }
         let siblings = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         for url in siblings where url.pathExtension.lowercased() == "jl" && url.standardizedFileURL != document.standardizedFileURL {

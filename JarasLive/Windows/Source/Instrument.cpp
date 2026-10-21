@@ -34,6 +34,10 @@ struct PianoVoice final : SynthesiserVoice {
     void pitchWheelMoved(int) override {}
     void controllerMoved(int, int) override {}
     void renderNextBlock(AudioBuffer<float> &output, int start, int count) override {
+        // Synthesiser calls every voice, including unused voices. Active release
+        // tails retain their note until the envelope finishes below.
+        if (!isVoiceActive())
+            return;
         for (int n = 0; n < count; ++n) {
             float sample =
                 (float)(std::sin(phase) + .33 * std::sin(2 * phase) * std::exp(-age * 3) +

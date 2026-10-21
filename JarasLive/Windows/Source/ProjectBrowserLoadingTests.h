@@ -4,6 +4,18 @@
 
 namespace catlive::projectBrowserLoadingTests {
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Project browser keeps project actions enabled while playback runs", [&] {
+        using floatingControlTests::require;
+        ProjectBrowser browser;browser.setSize(560,424);browser.setProjectOpen(true);browser.setPlaybackRunning(true);
+        for(auto *child:browser.getChildren())if(dynamic_cast<Button*>(child)&&child->getComponentID()!="cancelProjectLoading")
+            require(child->isEnabled(),"Playback disabled a project browser action");
+        browser.beginLoading(directory.getChildFile("Another.jl"));
+        for(auto *child:browser.getChildren())if(dynamic_cast<Button*>(child))
+            require(!child->isEnabled(),"An active project import no longer protects navigation");
+        browser.finishLoading();
+        for(auto *child:browser.getChildren())if(dynamic_cast<Button*>(child)&&child->getComponentID()!="cancelProjectLoading")
+            require(child->isEnabled(),"Project actions stayed blocked after loading while playback was active");
+    });
     test("Project browser cancellation stays inline and cannot cancel a later load", [&] {
         using floatingControlTests::require;
         ProjectBrowser browser;

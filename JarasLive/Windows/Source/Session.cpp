@@ -15,6 +15,7 @@
 #include "FXSchema.h"
 #include "WaveformCache.h"
 #include "ProjectMediaRecovery.h"
+#include "ClipEditing.h"
 namespace catlive {
 namespace {
 jaras::Song emptySong(const String &name) {
@@ -58,6 +59,7 @@ Session::~Session() {
     cancelBPMDetection();
     exportCancelled = true;
     if(loadCancellation)loadCancellation->store(true);
+    if(graphCancellation)graphCancellation->store(true);
     alive.reset();
     worker.removeAllJobs(true, 30000);
     bpmWorker.removeAllJobs(true, -1);
@@ -101,8 +103,8 @@ void Session::newProject(String name) {
     notify();
 }
 void Session::createRecordingProject(String name, int channels, const File &target) {
-    if (busy || audio.isRecording() || transport().playing || transport().subPlay.playing)
-        throw std::runtime_error("Pare a reprodução e aguarde antes de criar um projeto.");
+    if (busy || audio.isRecording())
+        throw std::runtime_error("Conclua a gravação e aguarde antes de criar um projeto.");
     if (target.existsAsFile())
         throw std::runtime_error("Já existe um projeto neste local. Escolha outro nome.");
     auto project = makeRecordingProject(name, channels);
@@ -116,6 +118,13 @@ void Session::createRecordingProject(String name, int channels, const File &targ
     notify();
 }
 void Session::prepare() {
+    if (song() && preparedSong == song()->id &&
+        (transport().playing || transport().subPlay.playing)) {
+        prepareLiveGraph();
+        return;
+    }
+    if (graphCancellation) graphCancellation->store(true);
+    graphCancellation.reset();
     presentationQueues.reset();
     fadeoutRequested = false;
     fadeoutTracks.clear();
@@ -140,8 +149,8 @@ void Session::prepare() {
     }
 }
 void Session::load(const File &file) {
-    if (busy || audio.isRecording() || transport().playing || transport().subPlay.playing)
-        throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
+    if (busy || audio.isRecording())
+        throw std::runtime_error("Conclua a gravação antes de abrir outro projeto.");
     auto raw = ProjectCodec::read(file);
     loadPrepared(file, raw, ProjectCodec::decode(raw));
 }
@@ -150,6 +159,7 @@ void Session::loadPrepared(const File &file, var raw, jaras::Project p) {
     auto previous = snapshot();
     auto previousFile = document, previousMedia = mediaDirectory;
     try {
+        core.execute({jaras::CommandKind::stopAll});
         subCursorPreviewUntil = 0;
     focusedRegion.reset(); ++setlistFocusRevision;
         core.loadProject(p);
@@ -193,12 +203,100 @@ static ProjectPreparationQueue &projectPreparationQueue() {
     static ProjectPreparationQueue queue;
     return queue;
 }
+void Session::prepareLiveGraph() {
+    if (!song()) return;
+    if (graphCancellation) graphCancellation->store(true);
+    const auto cancellation = std::make_shared<std::atomic<bool>>(false);
+    graphCancellation = cancellation;
+    const auto weak = std::weak_ptr<int>(alive);
+    const auto projectCopy = project();
+    const auto songCopy = *song();
+    const auto directory = mediaDirectory;
+    const auto rate = audio.sampleRate();
+    const auto offline = audio.preparesOffline();
+    const auto state = audio.state();
+    const auto signature = JSON::toString(ProjectCodec::encode(projectCopy));
+    // The active graph stays connected. Construction, decoding and destruction
+    // of the retired graph never run on the callback or the message thread.
+    auto prepared = std::shared_ptr<AudioEngine>(new AudioEngine(rate, offline), [](AudioEngine *value) {
+        if (!projectPreparationQueue().addJob([value] { delete value; })) delete value;
+    });
+    projectPreparationQueue().addJob([this, weak, cancellation, prepared, projectCopy, songCopy,
+                                      directory, signature, state, offline] {
+        String error;
+        const auto checkpoint = [weak, cancellation] {
+            if (weak.expired() || cancellation->load()) throw NativeFX::PreparationCancelled();
+        };
+        try {
+            AudioEngine::PreparationControl control;
+            control.checkpoint = checkpoint;
+            control.pluginDispatcher = [checkpoint, weak, cancellation](std::function<void()> operation) {
+                checkpoint();
+                struct Result { WaitableEvent done; std::exception_ptr error; };
+                auto result = std::make_shared<Result>();
+                if (!MessageManager::callAsync([weak, cancellation, result, operation = std::move(operation)] {
+                    try {
+                        if (weak.expired() || cancellation->load()) throw NativeFX::PreparationCancelled();
+                        operation();
+                    } catch (...) { result->error = std::current_exception(); }
+                    result->done.signal();
+                })) throw NativeFX::PreparationCancelled();
+                while (!result->done.wait(10)) checkpoint();
+                checkpoint();
+                if (result->error) std::rethrow_exception(result->error);
+            };
+            checkpoint();
+            prepared->prepareSong(songCopy, directory,
+                projectCopy.masterFXJSON ? JSON::parse(text(*projectCopy.masterFXJSON)) : var(),
+                &projectCopy, &control);
+            prepared->setMixer(projectCopy, songCopy);
+            if (offline) prepared->setOffline(true);
+            prepared->transport(state);
+            checkpoint();
+        } catch (const std::exception &e) { error = String::fromUTF8(e.what()); }
+        catch (...) { error = String::fromUTF8("Não foi possível atualizar o áudio do projeto."); }
+        auto commit = std::make_shared<std::function<void()>>();
+        const auto weakCommit = std::weak_ptr<std::function<void()>>(commit);
+        *commit = [this, weak, cancellation, prepared, signature, error, weakCommit] {
+            if (weak.expired() || cancellation->load() || graphCancellation != cancellation) return;
+            // A recording started while preparation was in flight: retain its
+            // input/FX graph until the take is finalised, then apply the edit.
+            if (audio.isRecording()) {
+                if (auto retry = weakCommit.lock()) Timer::callAfterDelay(50, [retry] { (*retry)(); });
+                return;
+            }
+            if (error.isEmpty() &&
+                (signature != JSON::toString(ProjectCodec::encode(project())) ||
+                 audio.sampleRate() != prepared->sampleRate() ||
+                 audio.preparesOffline() != prepared->preparesOffline())) {
+                prepare(); // Coalesce edits made while the earlier graph was built.
+                return;
+            }
+            try {
+                if (error.isNotEmpty()) throw std::runtime_error(utf8(error));
+                syncClock();
+                if (cancellation->load() || graphCancellation != cancellation) return;
+                if (signature != JSON::toString(ProjectCodec::encode(project()))) {
+                    prepare();
+                    return;
+                }
+                audio.adoptPreparedSong(*prepared, true);
+                if (song()) audio.setMixer(project(), *song());
+                updateRecordArms();
+                publishTransport(true, true);
+            } catch (const std::exception &e) { message = String::fromUTF8(e.what()); }
+            if (graphCancellation == cancellation) graphCancellation.reset();
+            notify();
+        };
+        MessageManager::callAsync([commit] { (*commit)(); });
+    });
+}
 void Session::loadAsync(const File &file, std::function<void(String, double)> progress,
                         std::function<void()> beforeCommit, std::function<void(String)> completed,
                         std::function<void(StringArray)> missingMedia) {
     if (busy) return; // Single flight, including queued clicks on Recent Projects.
-    if (audio.isRecording() || transport().playing || transport().subPlay.playing)
-        throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
+    if (audio.isRecording())
+        throw std::runtime_error("Conclua a gravação antes de abrir outro projeto.");
     cancelBPMDetection();
     busy = true; exportCancelled = false;
     const auto cancellation=std::make_shared<std::atomic<bool>>(false);
@@ -332,12 +430,14 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
             try {
                 if(cancellation->load())throw NativeFX::PreparationCancelled();
                 if(error.isEmpty()) {
-                    if(audio.isRecording()||transport().playing||transport().subPlay.playing)
-                        throw std::runtime_error("Pare a reprodução antes de abrir outro projeto.");
+                    if(audio.isRecording())
+                        throw std::runtime_error("Conclua a gravação antes de abrir outro projeto.");
                     if(audio.sampleRate()!=prepared->audio->sampleRate()||audio.preparesOffline()!=prepared->audio->preparesOffline())
                         throw std::runtime_error("A configuração de áudio mudou durante a abertura. Abra o projeto novamente.");
                     if(beforeCommit)beforeCommit(); // Native editors still own the outgoing graph until here.
                     if(cancellation->load())throw NativeFX::PreparationCancelled();
+                    if (graphCancellation) graphCancellation->store(true);
+                    graphCancellation.reset();
                     audio.adoptPreparedSong(*prepared->audio);
                     static_assert(std::is_nothrow_move_constructible_v<jaras::Engine> && std::is_nothrow_move_assignable_v<jaras::Engine>);
                     std::swap(core,prepared->core);std::swap(original,prepared->raw);
@@ -452,8 +552,8 @@ void Session::save(const File &file) {
     notify();
 }
 void Session::cleanTimelineMedia(std::function<void(String)> completed) {
-    if (busy || audio.isRecording() || transport().playing || transport().subPlay.playing)
-        throw std::runtime_error("Pare a reprodução ou gravação antes de limpar as mídias.");
+    if (busy || audio.isRecording())
+        throw std::runtime_error("Conclua a gravação antes de limpar as mídias.");
     if (!document.existsAsFile())
         throw std::runtime_error("Salve o projeto antes de limpar as mídias.");
     save(document);
@@ -461,6 +561,7 @@ void Session::cleanTimelineMedia(std::function<void(String)> completed) {
     const auto raw = snapshot();
     const auto file = document;
     const auto known = observedMedia;
+    const auto activeFiles = audio.activeMediaPaths();
     busy = true;
     importProgress = 0;
     undoHistory.clear();
@@ -468,7 +569,7 @@ void Session::cleanTimelineMedia(std::function<void(String)> completed) {
     message = String::fromUTF8("Limpando mídias excluídas da timeline…");
     notify();
     const auto weak = std::weak_ptr<int>(alive);
-    worker.addJob([this, weak, projectCopy, raw, file, known, completed] {
+    worker.addJob([this, weak, projectCopy, raw, file, known, activeFiles, completed] {
         String failure;
         int removed = 0;
         try {
@@ -480,7 +581,7 @@ void Session::cleanTimelineMedia(std::function<void(String)> completed) {
                             notify();
                         }
                     });
-                });
+                }, activeFiles);
         } catch (const std::exception &e) {
             failure = String::fromUTF8(e.what());
         }
@@ -545,7 +646,7 @@ void Session::syncClock() {
                              oldPromotion != expected.subPlayPromotion);
     }
 }
-void Session::publishTransport(bool preserveLatency) {
+void Session::publishTransport(bool preserveLatency, bool routingOnly) {
     const auto &t = transport();
     AudioEngine::State state;
     state.preserveLatency = preserveLatency;
@@ -568,7 +669,8 @@ void Session::publishTransport(bool preserveLatency) {
                 state.loopStart = p.startTime;
                 state.loopEnd = p.endTime;
             }
-    audio.transport(state);
+    if (routingOnly) audio.updateTransportRouting(state);
+    else audio.transport(state);
 }
 void Session::warnTransportFadeout(String warning) {
     if (transportFadeoutWarning) transportFadeoutWarning(warning);
@@ -993,8 +1095,8 @@ void Session::applyMarkerHistory(const MarkerHistory &state, bool recordHistory)
 }
 void Session::detectRegionBPM(std::set<ID> ids) {
     if (busy || isDetectingBPM() || !song() || ids.empty()) return;
-    if (audio.isRecording() || transport().playing || transport().subPlay.playing)
-        throw std::runtime_error("Pare a reprodução antes de detectar o BPM.");
+    if (audio.isRecording())
+        throw std::runtime_error("Conclua a gravação antes de detectar o BPM.");
     const auto sourceSong = *song(); const auto projectID = project().id;
     const auto signature = clickTempo::inputSignature(sourceSong, ids);
     const auto directory = mediaDirectory; const std::weak_ptr<int> lifetime = alive;
@@ -1088,15 +1190,66 @@ std::vector<ID> Session::duplicateTracks(const std::set<ID> &targets) {
     notify();
     return result.trackIDs;
 }
+void Session::resizeItem(const ID &id, double start, double end) {
+    if (busy || !song()) return;
+    if (audio.isRecording())
+        throw std::runtime_error("Conclua a gravação antes de alterar a estrutura do projeto.");
+    syncClock();
+    auto project = core.project();
+    clipEditing::resize(project, id, start, end);
+    if (timelineGrid::changesLockedGeometry(core.project(), project))
+        throw std::runtime_error("Desbloqueie o cadeado para mover ou redimensionar itens, regiões e marcadores.");
+    commitItemTiming(std::move(project), id, true);
+}
+Session::ItemTimingHistory Session::itemTimingHistory(const ID &id) const {
+    for (const auto &song : project().songs) for (const auto &track : song.tracks)
+        for (const auto &clip : track.clips) if (clip.id == id) return {song.id, clip, song.duration};
+    throw std::runtime_error("O item não existe mais.");
+}
+void Session::applyItemTiming(const ItemTimingHistory &history, bool recordHistory) {
+    syncClock();
+    auto project = core.project();
+    for (auto &song : project.songs) if (song.id == history.song)
+        for (auto &track : song.tracks) for (auto &clip : track.clips) if (clip.id == history.clip.id) {
+            const auto &saved = history.clip;
+            clip.startTime = saved.startTime; clip.duration = saved.duration;
+            clip.sourceOffset = saved.sourceOffset; clip.loopStart = saved.loopStart; clip.loopLength = saved.loopLength;
+            clip.timecodeStartOffset = saved.timecodeStartOffset; clip.timecodeEndOffset = saved.timecodeEndOffset;
+            song.duration = history.songDuration;
+        }
+    commitItemTiming(std::move(project), history.clip.id, recordHistory);
+}
+void Session::commitItemTiming(jaras::Project project, const ID &id, bool recordHistory) {
+    const auto before = itemTimingHistory(id);
+    auto next = core;
+    // Run the same ownership/timecode normalization and validation as any edit
+    // before publishing timing to the live graph.
+    next.applyProjectEdit(std::move(project));
+    const auto *updated = next.currentSong();
+    if (!updated) return;
+    const jaras::AudioClip *item = nullptr;
+    for (const auto &track : updated->tracks)
+        for (const auto &clip : track.clips) if (clip.id == id) item = &clip;
+    if (!item) throw std::runtime_error("O item não existe mais.");
+    audio.refreshItemTiming(*updated, *item);
+    // Do not call prepare() or publishTransport(): neither transport head nor
+    // an unrelated reader, instrument, FX instance or delay history changed.
+    core.applyProjectEdit(next.project());
+    if (recordHistory) {
+        undoHistory.emplace_back(before);
+        if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
+        redoHistory.clear();
+    }
+    dirty = true;
+    notify();
+}
 void Session::edit(const std::function<void(jaras::Project &)> &change, bool rebuild, bool allowTimingEdit) {
     if (busy)
         return;
     if (rebuild && audio.isRecording())
         throw std::runtime_error("Conclua a gravação antes de alterar a estrutura do projeto.");
     syncClock();
-    if (rebuild && (transport().playing || transport().subPlay.playing))
-        throw std::runtime_error("Pare a reprodução antes de alterar a estrutura do projeto.");
-    auto before = snapshot();
+        auto before = snapshot();
     auto p = ProjectCodec::decode(before);
     change(p);
     if (!allowTimingEdit && timelineGrid::changesLockedGeometry(project(), p))
@@ -1294,8 +1447,8 @@ void Session::setTempo(double value) {
 }
 void Session::configureTiming(double bpm, int beats, int unit,
                               jaras::ProjectTimeSettings settings) {
-    if (busy || audio.isRecording() || transport().playing || transport().subPlay.playing)
-        throw std::runtime_error("Pare a reprodução antes de alterar o tempo do projeto.");
+    if (busy || audio.isRecording())
+        throw std::runtime_error("Conclua a gravação antes de alterar o tempo do projeto.");
     auto before = snapshot();
     core.setProjectTiming(bpm, beats, unit, settings);
     undoHistory.push_back(std::move(before));
@@ -1308,7 +1461,7 @@ void Session::configureTiming(double bpm, int beats, int unit,
 }
 void Session::restoreSnapshot(const var &raw) {
     auto p = ProjectCodec::decode(raw);
-    if (transport().playing || transport().subPlay.playing) core.execute({jaras::CommandKind::stopAll});
+    if (p.id != project().id) core.execute({jaras::CommandKind::stopAll});
     if (p.id == project().id) core.applyProjectEdit(std::move(p));
     else core.loadProject(std::move(p));
     original = raw;
@@ -1319,38 +1472,40 @@ void Session::restoreSnapshot(const var &raw) {
 void Session::undo() {
     if (!canUndo() || busy)
         return;
-    if (audio.isRecording() || ((transport().playing || transport().subPlay.playing) &&
-        !undoHistory.back().effects && !undoHistory.back().markers))
+    if (audio.isRecording())
         throw std::runtime_error("Pare para desfazer alterações.");
     auto value = undoHistory.back();
     if (value.effects) redoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) redoHistory.emplace_back(markerHistory(value.markers->song));
+    else if (value.itemTiming) redoHistory.emplace_back(itemTimingHistory(value.itemTiming->clip.id));
     else redoHistory.emplace_back(snapshot());
     undoHistory.pop_back();
     if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);
+    else if (value.itemTiming) applyItemTiming(*value.itemTiming, false);
     else restoreSnapshot(value.project);
 }
 void Session::redo() {
     if (!canRedo() || busy)
         return;
-    if (audio.isRecording() || ((transport().playing || transport().subPlay.playing) &&
-        !redoHistory.back().effects && !redoHistory.back().markers))
+    if (audio.isRecording())
         throw std::runtime_error("Pare para refazer alterações.");
     auto value = redoHistory.back();
     if (value.effects) undoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) undoHistory.emplace_back(markerHistory(value.markers->song));
+    else if (value.itemTiming) undoHistory.emplace_back(itemTimingHistory(value.itemTiming->clip.id));
     else undoHistory.emplace_back(snapshot());
     redoHistory.pop_back();
     if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);
+    else if (value.itemTiming) applyItemTiming(*value.itemTiming, false);
     else restoreSnapshot(value.project);
 }
 void Session::importAudio(const Array<File> &files, double at) { importMedia(files,at,{},MediaDropLayout::separateTracks,0); }
 void Session::importMedia(const Array<File> &files,double at,ID targetTrack,MediaDropLayout layout,double gap,
                           std::function<void(String)> completion, bool deferWaveform) {
     if(busy||files.isEmpty())return;
-    if(transport().playing||transport().subPlay.playing)throw std::runtime_error("Pare antes de importar mídia.");
+    if(audio.isRecording())throw std::runtime_error("Conclua a gravação antes de importar mídia.");
     if(!song()||!std::isfinite(at)||at<0||!std::isfinite(gap)||gap<0||gap>60)throw std::runtime_error("Posição ou intervalo de importação inválido.");
     auto songID=song()->id,projectID=project().id;auto directory=mediaDirectory;
     auto target=std::find_if(song()->tracks.begin(),song()->tracks.end(),[&](auto &t){return t.id==targetTrack;});
@@ -1457,34 +1612,35 @@ void Session::exportMix(const File &destination, int bits) {
     request.jobs = {job};
     exportAudio(std::move(request));
 }
-void Session::renderItems(std::set<ID> ids,bool glue,int midiChannels) {
+void Session::renderItems(std::set<ID> ids,bool glue,int midiChannels,std::function<void(std::set<ID>)> completed) {
     if(busy || !song() || ids.empty())return;
-    if(transport().playing || transport().subPlay.playing || audio.isRecording())throw std::runtime_error("Pare a reprodução antes de renderizar itens.");
+    if(audio.isRecording())throw std::runtime_error("Conclua a gravação antes de renderizar itens.");
     if(canPlay && !canPlay())throw std::runtime_error("Valide sua licença para renderizar áudio.");
     if(!mediaDirectory.isDirectory() || document==File{})throw std::runtime_error("Salve o projeto antes de renderizar itens.");
     const auto source=project();const auto sourceSong=*song();const auto directory=mediaDirectory;
     exportCancelled=false;busy=true;importProgress=0;message=String::fromUTF8(glue?"Unificando itens…":"Renderizando itens…");notify();
     auto weak=std::weak_ptr<int>(alive);
-    worker.addJob([this,weak,source,sourceSong,directory,ids,glue,midiChannels] {
+    worker.addJob([this,weak,source,sourceSong,directory,ids,glue,midiChannels,completed] {
         std::vector<itemRender::Replacement> replacements;String error;
         try{replacements=itemRender::render(source,sourceSong,directory,ids,glue,midiChannels,exportCancelled,[this,weak](double progress){MessageManager::callAsync([this,weak,progress]{if(!weak.expired()){importProgress=progress;if(changed)changed();}});});
             AudioFormatManager formats;registerAudioFormats(formats);for(auto &r:replacements)if(r.generated.existsAsFile()){std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(r.generated));if(!reader)throw std::runtime_error("Não foi possível ler o item renderizado.");r.clip.waveform=waveform(*reader);}
         }catch(const std::exception &e){error=String::fromUTF8(e.what());}
-        MessageManager::callAsync([this,weak,source,sourceSong,replacements=std::move(replacements),error]() mutable {
+        MessageManager::callAsync([this,weak,source,sourceSong,replacements=std::move(replacements),error,completed]() mutable {
             auto discard=[&]{for(const auto &r:replacements)if(r.generated!=File{})r.generated.deleteFile();};
             if(weak.expired()){discard();return;}busy=false;
             if(error.isEmpty() && (project().id!=source.id || !song() || song()->id!=sourceSong.id || exportCancelled.load()))error=String::fromUTF8("Operação cancelada.");
             if(error.isEmpty())try {edit([&](jaras::Project &p){for(auto &s:p.songs)if(s.id==sourceSong.id)for(auto &t:s.tracks)for(const auto &r:replacements)if(t.id==r.track){t.clips.erase(std::remove_if(t.clips.begin(),t.clips.end(),[&](const auto &c){return r.originals.count(c.id)>0;}),t.clips.end());t.clips.push_back(r.clip);std::stable_sort(t.clips.begin(),t.clips.end(),[](const auto &a,const auto &b){return a.startTime<b.startTime;});}});}
             catch(const std::exception &e){error=String::fromUTF8(e.what());}
             if(error.isNotEmpty())discard();message=error;notify();
+            if(error.isEmpty() && completed){std::set<ID> rendered;for(const auto &r:replacements)rendered.insert(r.clip.id);completed(std::move(rendered));}
         });
     });
 }
 void Session::exportAudio(ExportRequest request) {
     if (busy || !song())
         return;
-    if (transport().playing || transport().subPlay.playing)
-        throw std::runtime_error("Pare a reprodução antes de exportar.");
+    if (audio.isRecording())
+        throw std::runtime_error("Conclua a gravação antes de exportar.");
     if (canPlay && !canPlay())
         throw std::runtime_error("Valide sua licença para exportar áudio.");
     const auto projectCopy = project();

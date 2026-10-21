@@ -28,7 +28,7 @@ class TrackVisibilityPanel final : public Component,private ListBoxModel {
     void paint(Graphics &g) override {
         g.setColour(theme::secondary);g.setFont(theme::font(11));
         g.drawText(panel==Panel::trackMixer?String::fromUTF8("Mostrar pistas no Track Mixer e no grid")
-                                          :String::fromUTF8("Mostrar pistas na Barra Mixer"),
+                                          :String::fromUTF8("Mostrar pistas na Hoz-Mixer"),
                    16,48,getWidth()-32,22,Justification::centredLeft);
         if(ids.empty())g.drawText("Nenhuma pista",listBox.getBounds(),Justification::centred);
     }
@@ -75,7 +75,7 @@ class TrackVisibilityPanel final : public Component,private ListBoxModel {
     };
     Session &session;TrackVisibility &visibility;
     std::function<void(Panel,const ID &,bool)> changed;
-    TextButton trackTab{"Track Mixer"},barTab{"Barra Mixer"};ListBox listBox;
+    TextButton trackTab{"Track Mixer"},barTab{"Hoz-Mixer"};ListBox listBox;
     std::vector<ID> ids;Panel panel=Panel::trackMixer;
     void selectPanel(Panel next) {
         panel=next;ids.clear();

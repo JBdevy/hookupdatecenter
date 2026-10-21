@@ -7,7 +7,10 @@ python3 - "$test_dir" <<'PY'
 from pathlib import Path
 import sys
 folder=Path(sys.argv[1])
-source=Path('Apple/Shared/GridSelectionInput.swift').read_text().split('#if os(macOS)')[0]
+full=Path('Apple/Shared/GridSelectionInput.swift').read_text()
+source=full.split('#if os(macOS)\nimport AppKit')[0]
+typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]
+source += '\nimport AppKit\nimport CoreText\n'+typography+'\n'+full[full.index('enum GridSelectionHeaderText {'):full.index('private enum GridSelectionHeaderControls {')]
 folder.joinpath('metadata.swift').write_text(source)
 grid=Path('Apple/Shared/TimelineGridView.swift').read_text()
 start=grid.index('private struct ClipDragInput: View {')

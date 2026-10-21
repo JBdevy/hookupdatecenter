@@ -246,7 +246,7 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         guard !localSessionReconfiguring else { return false }
         #endif
         guard canChangeConfiguration() else {
-            error = JarasLocalization.string("Stop the transport before changing the audio device.")
+            error = JarasLocalization.string("Finish recording before changing the audio device.")
             return false
         }
         return true

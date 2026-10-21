@@ -55,7 +55,7 @@ struct MainView: View {
     @State private var presentedSessionID: UUID?
     @AppStorage("jaras.language") private var language = "en"
     @State private var navigationOpen = false
-    @State private var footerMixerOpen = false
+    @AppStorage("jaras.layout.mixer.open") private var footerMixerOpen = false
     #if os(macOS)
     @StateObject private var detachedMixer = DetachedMixerWindow()
     @StateObject private var detachedParts = DetachedPartsWindow()
@@ -63,10 +63,10 @@ struct MainView: View {
     @StateObject private var toolWindows = WorkspaceToolWindows()
     #endif
     @State private var keyboardOpen = false
-    @State private var partsLeftOpen = false
-    @State private var partsRightOpen = false
-    @State private var setlistPlacement: SetlistPlacement = .right
-    @State private var setlistDockPlacement: SetlistPlacement = .right
+    @AppStorage("jaras.layout.parts.open") private var partsLeftOpen = false
+    @AppStorage("jaras.layout.partsRight.open") private var partsRightOpen = false
+    @AppStorage("jaras.layout.setlist.placement") private var setlistPlacement: SetlistPlacement = .right
+    @AppStorage("jaras.layout.setlist.dockSide") private var setlistDockPlacement: SetlistPlacement = .right
     @State private var keyboardSettings = false
     @AppStorage("catlive.footerDisplayHeight") private var storedFooterHeight = 27.0
     @AppStorage("jaras.footerMixerHeight") private var footerMixerHeight = 232.0
@@ -86,10 +86,25 @@ struct MainView: View {
         self.show = show; self.remotePresentation = remotePresentation
         self.auth = auth; self.backend = backend; self.documents = documents
         let prefix = remotePresentation ? "jaras.remote." : "jaras."
+        _footerMixerOpen = AppStorage(wrappedValue: false, prefix + "layout.mixer.open")
+        _partsLeftOpen = AppStorage(wrappedValue: false, prefix + "layout.parts.open")
+        _partsRightOpen = AppStorage(wrappedValue: false, prefix + "layout.partsRight.open")
+        _setlistPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.placement")
+        _setlistDockPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.dockSide")
         _mixerWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnWidth")
         _mixerRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnRestoreWidth")
         _setlistWidth = AppStorage(wrappedValue: remotePresentation ? 370 : Double(SidebarWidthLimits.setlistDefault), prefix + "setlistWidth")
         _setlistRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 370 : 240, prefix + "setlistRestoreWidth")
+    }
+    private func toggleBarMixer() {
+        #if os(macOS)
+        if detachedMixer.isDetached {
+            if detachedMixer.isVisible { detachedMixer.hide() }
+            else { showDetachedMixer() }
+            return
+        }
+        #endif
+        footerMixerOpen.toggle()
     }
     private func toggleMixer() {
         Self.togglePanel(width: $mixerWidth, restore: $mixerRestoreWidth, minimum: SidebarWidthLimits.trackMixer)
@@ -138,6 +153,25 @@ struct MainView: View {
         #endif
     }
     #if os(macOS)
+    private func restoreGlobalPanels() {
+        guard !remotePresentation, DesktopProjectTabs.shared.isForeground(show) else { return }
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "jaras.layout.mixer.detached") {
+            let visible = defaults.object(forKey: "jaras.layout.mixer.visible") as? Bool ?? true
+            showDetachedMixer()
+            if !visible { detachedMixer.hide() }
+        }
+        if defaults.bool(forKey: "jaras.layout.parts.detached") {
+            let visible = defaults.object(forKey: "jaras.layout.parts.visible") as? Bool ?? true
+            partsLeftOpen = false; detachedParts.open(show: show)
+            if !visible { detachedParts.hide() }
+        }
+        if setlistPlacement == .detached {
+            let visible = defaults.object(forKey: "jaras.layout.setlist.visible") as? Bool ?? true
+            openDetachedSetlist()
+            if !visible { detachedSetlist.hide() }
+        }
+    }
     private func openDetachedSetlist() {
         detachedSetlist.setPartsVisible(partsRightOpen)
         detachedSetlist.open(onDock: { placeSetlist(setlistDockPlacement) }) {
@@ -352,7 +386,13 @@ struct MainView: View {
                 }
                 if lastObservedProjectID != projectID { lastObservedProjectID = projectID }
             }
-            .environment(\.editTextItem, { textItemTarget = $0 })
+            .environment(\.editTextItem, { id in
+                #if os(macOS)
+                toolWindows.openTextItem(show: show, id: id)
+                #else
+                textItemTarget = id
+                #endif
+            })
             #if os(macOS)
             .background(NativeTimelineModalGate(blocked: navigationOpen || textItemTarget != nil || trackEdit != nil || mappings.editing != nil))
             #else
@@ -368,9 +408,9 @@ struct MainView: View {
             .onChange(of: show.snapshot.project.id) { _ in
                 trackEdit = nil
                 #if os(macOS)
-                detachedMixer.close(); detachedSetlist.close(); detachedParts.close()
+                detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true)
                 toolWindows.closeAll()
-                setlistPlacement = setlistDockPlacement
+                restoreGlobalPanels()
                 #endif
             }
             .overlay {
@@ -410,20 +450,22 @@ struct MainView: View {
                 guard !remotePresentation else { return }
                 presentedSessionID = show.projectSessionID
                 #if os(macOS)
+                restoreGlobalPanels()
                 DAWRemoteHostBridge.bind(show)
                 ResolumeController.shared.bind(show)
                 #endif
                 mappings.bind(show)
                 show.togglePartsPanel = { partsRightOpen.toggle() }
                 show.toggleTracksPanel = { toggleMixer() }
+                show.toggleBarMixerPanel = { toggleBarMixer() }
                 show.toggleSetlistPanel = { toggleSetlist() }
             }
             #if os(macOS)
             .onChange(of: documents.projectTabIndex) { _ in
                 if !DesktopProjectTabs.shared.isForeground(show) {
-                    detachedMixer.close(); detachedSetlist.close(); detachedParts.close()
+                    detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true)
                     toolWindows.closeAll()
-                }
+                } else { restoreGlobalPanels() }
             }
             #endif
             .onChange(of: textItemTarget != nil || trackEdit != nil || mappings.editing != nil) { blocked in
@@ -437,13 +479,13 @@ struct MainView: View {
                 #endif
                 guard !remotePresentation else { return }
                 #if os(macOS)
-                detachedMixer.close(); detachedSetlist.close(); detachedParts.close()
+                detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true)
                 guard DesktopProjectTabs.shared.isForeground(show) else { return }
                 #endif
                 // SwiftUI presents the replacement .id before removing the old
                 // workspace. The old view must not erase the new callbacks.
                 guard presentedSessionID == show.projectSessionID else { return }
-                show.toggleTracksPanel = {}; show.toggleSetlistPanel = {}; show.togglePartsPanel = {}
+                show.toggleTracksPanel = {}; show.toggleBarMixerPanel = {}; show.toggleSetlistPanel = {}; show.togglePartsPanel = {}
                 #if os(macOS)
                 ResolumeController.shared.stop()
                 FXWindows.shared.closeAll()
@@ -530,22 +572,15 @@ struct MainView: View {
             MacProjectionRail(show: show)
             Spacer(minLength: 0)
             if desktopExtras {
-            Button {
-                if detachedMixer.isDetached {
-                    if detachedMixer.isVisible { detachedMixer.hide() }
-                    else { showDetachedMixer() }
-                } else {
-                    footerMixerOpen.toggle()
-                }
-            } label: {
+            Button(action: toggleBarMixer) {
                 Image(systemName: "slider.vertical.3")
                     .font(.jarasSystem(size: 16, weight: .semibold))
                     .frame(width: 30, height: 32)
                     .contentShape(Rectangle())
             }
             .foregroundStyle((footerMixerOpen || detachedMixer.isVisible) ? JarasTheme.green : JarasTheme.text)
-            .accessibilityLabel("Barra Mixer")
-            .jarasHelp("Barra Mixer")
+            .accessibilityLabel("Hoz-Mixer")
+            .jarasHelp("Hoz-Mixer")
             .contextMenu {
                 Button(LocalizedStringKey(detachedMixer.isDetached ? "Dock mixer" : "Undock mixer")) {
                     if detachedMixer.isDetached {
@@ -989,7 +1024,7 @@ private struct FooterProjectNameDisplay: View {
                                     Text(verbatim: Self.displayDate.string(from: backup.date)).font(.jarasCaption).monospacedDigit().foregroundStyle(.secondary)
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                                     .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
-                            }.buttonStyle(.plain).disabled(documents.busy || show.isPlaying || TrackRecording.shared.recording || TrackRecording.shared.busy)
+                            }.buttonStyle(.plain).disabled(documents.busy || TrackRecording.shared.recording || TrackRecording.shared.busy)
                         }
                     }
                 }.frame(height: min(410, CGFloat(backups.count) * 56))

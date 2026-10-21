@@ -98,7 +98,7 @@ class SettingsPanel final : public Component, private Timer {
     std::unique_ptr<FileChooser> pluginFolderChooser;
     void timerCallback() override {
         if (selected == 1) {
-            if (audioPageLocked != locked()) select(1);
+            if (audioPageLocked != audioConfigurationLocked()) select(1);
             return;
         }
         if (selected == 0 && showModeChoice && showModeStatus) {
@@ -119,6 +119,7 @@ class SettingsPanel final : public Component, private Timer {
         accountMessage->setText(auth.message, dontSendNotification);
         updateDevices();
     }
+    bool audioConfigurationLocked() const { return session.audio.isRecording(); }
     bool locked() const {
         return session.transport().playing || session.transport().subPlay.playing ||
                session.audio.isRecording();
@@ -311,8 +312,8 @@ class SettingsPanel final : public Component, private Timer {
         }
     }
     void applyAudio(std::function<void(AudioDeviceManager::AudioDeviceSetup &)> change) {
-        if (locked()) {
-            error(String::fromUTF8("Pare o transporte antes de alterar o dispositivo de áudio."));
+        if (audioConfigurationLocked()) {
+            error(String::fromUTF8("Conclua a gravação antes de alterar o dispositivo de áudio."));
             return;
         }
         auto setup = session.audio.devices.getAudioDeviceSetup();
@@ -340,10 +341,10 @@ class SettingsPanel final : public Component, private Timer {
             contentHeight = 510;
             label(String::fromUTF8("Escala da interface"), 152, 26, true);
             StringArray scales;
-            for (int percent = 60; percent <= 120; percent += 10) scales.add(String(percent) + "%");
-            choice("interfaceScale", scales, roundToInt(preferences.interfaceScale() * 10) - 5, 24, 188, 176,
+            for (int percent = 80; percent <= 120; percent += 10) scales.add(String(percent) + "%");
+            choice("interfaceScale", scales, roundToInt(preferences.interfaceScale() * 10) - 7, 24, 188, 176,
                    [this](int choice) {
-                       auto result = preferences.set("jaras.interface.scale", (choice + 5) / 10.0);
+                       auto result = preferences.set("jaras.interface.scale", (choice + 7) / 10.0);
                        if (result.failed()) error(result.getErrorMessage());
                    });
             label(localization::translate("Show Mode"), 240, 26, true);
@@ -429,7 +430,7 @@ class SettingsPanel final : public Component, private Timer {
         repaint();
     }
     void audioPage() {
-        audioPageLocked = locked();
+        audioPageLocked = audioConfigurationLocked();
         auto &manager = session.audio.devices;
         const auto setup = manager.getAudioDeviceSetup();
         StringArray types;
@@ -439,15 +440,15 @@ class SettingsPanel final : public Component, private Timer {
         choice("Driver", types, types.indexOf(manager.getCurrentAudioDeviceType()) + 1, 24, 102,
                260,
                [this, types](int id) {
-                   if (locked())
+                   if (audioConfigurationLocked())
                        return;
                    session.audio.devices.setCurrentAudioDeviceType(types[id - 1], true);
                    saveAudio();
                    refreshLater();
                })
-            .setEnabled(!locked());
-        if (locked())
-            label(String::fromUTF8("Pare o transporte antes de alterar o dispositivo de áudio."),
+            .setEnabled(!audioConfigurationLocked());
+        if (audioConfigurationLocked())
+            label(String::fromUTF8("Conclua a gravação antes de alterar o dispositivo de áudio."),
                   136, 28, false, theme::yellow);
         auto *type = manager.getCurrentDeviceTypeObject();
         if (!type) {
@@ -455,7 +456,9 @@ class SettingsPanel final : public Component, private Timer {
                   false, theme::secondary);
             return;
         }
-        type->scanForDevices();
+        // Opening a settings window uses the device manager's current catalog.
+        // Hardware enumeration belongs to the explicit refresh action; rescanning
+        // every page rebuild can stall device notifications during playback.
         auto inputNames = type->getDeviceNames(true), outputNames = type->getDeviceNames(false);
         inputNames.insert(0, "None");
         outputNames.insert(0, "None");
@@ -472,7 +475,7 @@ class SettingsPanel final : public Component, private Timer {
                            s.inputChannels.setRange(0, 2, true);
                    });
                })
-            .setEnabled(!locked());
+            .setEnabled(!audioConfigurationLocked());
         label(String::fromUTF8("Dispositivo de áudio — Saída"), 256, 26, true);
         choice(String::fromUTF8("Saída"), outputNames,
                setup.outputDeviceName.isEmpty() ? 1
@@ -484,7 +487,7 @@ class SettingsPanel final : public Component, private Timer {
                        s.useDefaultOutputChannels = true;
                    });
                })
-            .setEnabled(!locked());
+            .setEnabled(!audioConfigurationLocked());
         auto *device = manager.getCurrentAudioDevice();
         label(device ? String(device->getActiveOutputChannels().countNumberOfSetBits()) +
                            String::fromUTF8(" canais de saída")
@@ -504,7 +507,7 @@ class SettingsPanel final : public Component, private Timer {
                 if (id > 0 && id <= rates.size())
                     applyAudio([rates, id](auto &s) { s.sampleRate = rates[id - 1]; });
             });
-            rateChoice.setEnabled(!locked());
+            rateChoice.setEnabled(!audioConfigurationLocked());
             rateChoice.setComponentID("audioSampleRate");
             auto sizes = device->getAvailableBufferSizes();
             choices.clear();
@@ -519,21 +522,24 @@ class SettingsPanel final : public Component, private Timer {
                 if (id > 0 && id <= sizes.size())
                     applyAudio([sizes, id](auto &s) { s.bufferSize = sizes[id - 1]; });
             });
-            bufferChoice.setEnabled(!locked());
+            bufferChoice.setEnabled(!audioConfigurationLocked());
             bufferChoice.setComponentID("audioBufferSize");
             if (manager.getCurrentAudioDeviceType() == "Windows Audio")
                 label(String::fromUTF8("Modo compartilhado: o Windows define o buffer.\nPara outras opções, selecione baixa latência, modo exclusivo ou ASIO em Driver."),
                       620, 56, false, theme::secondary);
             if (device->hasControlPanel())
                 button(String::fromUTF8("Painel do dispositivo"), 24, 686, 210, [this] {
-                    if (locked()) return;
+                    if (audioConfigurationLocked()) return;
                     if (auto *current = session.audio.devices.getCurrentAudioDevice()) current->showControlPanel();
                     refreshLater();
-                }).setEnabled(!locked());
+                }).setEnabled(!audioConfigurationLocked());
         }
         label(String::fromUTF8("Buffers menores reduzem a latência e usam mais CPU."), 534, 26,
               false, theme::secondary);
-        button("Atualizar dispositivos", 24, 574, 190, [this] { refreshLater(); });
+        button("Atualizar dispositivos", 24, 574, 190, [this] {
+            if (auto *current = session.audio.devices.getCurrentDeviceTypeObject()) current->scanForDevices();
+            refreshLater();
+        });
         contentHeight = 740;
     }
     void midiPage() {

@@ -31,7 +31,6 @@ struct GridSelectionItem {
     static let headerHeight: CGFloat = 17
     static let headerReadoutFontSize: CGFloat = 9
     static let headerFontSize: CGFloat = headerReadoutFontSize
-    private static let panReadoutWidth: CGFloat = 40
     private static let readoutGap: CGFloat = 0.5
     static let bodyInset: CGFloat = headerHeight + 1
     let id: UUID
@@ -64,22 +63,47 @@ struct GridSelectionItem {
     var laneIndex: Int = 0
     var headerRect: CGRect { visibleHeader ?? rect }
     private var controlStart: CGFloat { headerRect.minX + 2 * Self.headerScale }
-    var muteRect: CGRect? { editable && headerRect.width >= 21 * Self.headerScale ? CGRect(x: controlStart, y: rect.minY, width: 17 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
-    var fxRect: CGRect? { editable && (!midiEditable || hasFX) && headerRect.width >= 41 * Self.headerScale ? CGRect(x: controlStart + 18 * Self.headerScale, y: rect.minY, width: 20 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
-    private var gainKnobOffset: CGFloat { midiEditable ? 39 * Self.headerScale : 70 * Self.headerScale + Self.panReadoutWidth + 2 * Self.readoutGap }
-    var gainKnobMinimumWidth: CGFloat { gainKnobOffset + (midiEditable ? 18 : 19) * Self.headerScale }
-    var gainKnobRect: CGRect? { editable && headerRect.width >= gainKnobMinimumWidth ? CGRect(x: controlStart + gainKnobOffset, y: rect.minY, width: 15 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
-    var phaseRect: CGRect? { editable && !midiEditable && headerRect.width >= 57 * Self.headerScale ? CGRect(x: controlStart + 39 * Self.headerScale, y: rect.minY, width: 15 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
-    var panKnobRect: CGRect? { editable && !midiEditable && headerRect.width >= 74 * Self.headerScale ? CGRect(x: controlStart + 55 * Self.headerScale, y: rect.minY, width: 15 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
+    // Pack controls in display order, using the rendered readout widths.
+    private static func readoutWidth(_ text: String) -> CGFloat {
+        #if os(macOS)
+        return ceil(GridSelectionHeaderText.gain(text).width) + 2
+        #else
+        return ceil((text as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: headerReadoutFontSize, weight: .semibold)]).width) + 2
+        #endif
+    }
+    private func controlRect(x: CGFloat, width: CGFloat) -> CGRect? {
+        guard editable, x + width + 2 <= headerRect.maxX else { return nil }
+        return CGRect(x: x, y: rect.minY, width: width, height: min(Self.headerHeight, rect.height))
+    }
+    var gainKnobMinimumWidth: CGFloat { 21 * Self.headerScale }
+    var gainKnobRect: CGRect? {
+        guard headerRect.width >= gainKnobMinimumWidth else { return nil }
+        return controlRect(x: controlStart, width: 15 * Self.headerScale)
+    }
+    var muteRect: CGRect? {
+        guard let value = gainLabelRect else { return nil }
+        return controlRect(x: value.maxX + 1, width: 17 * Self.headerScale)
+    }
+    var fxRect: CGRect? {
+        guard !midiEditable || hasFX, let mute = muteRect else { return nil }
+        return controlRect(x: mute.maxX + 1, width: 20 * Self.headerScale)
+    }
+    var phaseRect: CGRect? {
+        guard !midiEditable, let fx = fxRect else { return nil }
+        return controlRect(x: fx.maxX + 1, width: 15 * Self.headerScale)
+    }
+    var panKnobRect: CGRect? {
+        guard let phase = phaseRect else { return nil }
+        return controlRect(x: phase.maxX + 1, width: 15 * Self.headerScale)
+    }
     var panLabel: String {
         let value = pan.isFinite ? min(1, max(-1, pan)) : 0
         let percent = Int((abs(value) * 100).rounded())
         return percent == 0 ? "Center" : "\(value < 0 ? "L" : "R")-\(percent)%"
     }
     var panLabelRect: CGRect? {
-        guard let knob = panKnobRect, headerRect.maxX - knob.maxX >= Self.panReadoutWidth + 2 * Self.headerScale else { return nil }
-        // Reserve the same width for every value so adjusting pan never moves volume.
-        return CGRect(x: knob.maxX + Self.readoutGap, y: rect.minY, width: Self.panReadoutWidth, height: min(Self.headerHeight, rect.height))
+        guard let knob = panKnobRect else { return nil }
+        return controlRect(x: knob.maxX + Self.readoutGap, width: Self.readoutWidth(panLabel))
     }
     var panPosition: Double { (min(1, max(-1, pan)) + 1) / 2 }
     func draggingPan(by delta: CGFloat) -> Double { min(1, max(-1, pan - Double(delta) / 60)) }
@@ -87,24 +111,17 @@ struct GridSelectionItem {
     var gainLabelRect: CGRect? { gainLabelRect(text: nil) }
     func gainLabelRect(text: String?) -> CGRect? {
         guard let knob = gainKnobRect else { return nil }
-        let width = max(32, ceil(CGFloat((text ?? gainLabel).count) * 4.75) + 6)
-        guard headerRect.maxX - knob.maxX >= width + 3 * Self.headerScale else { return nil }
-        return CGRect(x: knob.maxX + Self.readoutGap, y: rect.minY, width: width, height: min(Self.headerHeight, rect.height))
+        return controlRect(x: knob.maxX + Self.readoutGap, width: Self.readoutWidth(text ?? gainLabel))
     }
+
     var editRect: CGRect? { textEditable && headerRect.width >= 33 * Self.headerScale ? CGRect(x: controlStart, y: rect.minY, width: 30 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
     var titleInset: CGFloat { headerTitleInset(gainLabel: nil) }
     func headerTitleInset(gainLabel: String?) -> CGFloat {
-        let rightEdge: CGFloat
-        if let label = gainLabelRect(text: gainLabel) { rightEdge = label.maxX }
-        else if let knob = gainKnobRect { rightEdge = knob.maxX }
-        else if let label = panLabelRect { rightEdge = label.maxX }
-        else if let knob = panKnobRect ?? phaseRect { rightEdge = knob.maxX }
-        else if let fx = fxRect { rightEdge = fx.maxX }
-        else if let mute = muteRect { rightEdge = mute.maxX }
-        else if let edit = editRect { rightEdge = edit.maxX }
-        else { return 2 }
+        let controls = [gainKnobRect, gainLabelRect(text: gainLabel), muteRect, fxRect, phaseRect, panKnobRect, panLabelRect, editRect]
+        guard let rightEdge = controls.compactMap({ $0?.maxX }).max() else { return 2 }
         return rightEdge - headerRect.minX + 1
     }
+
     func visibleLeftHeader(in viewport: CGRect, titleWidth: CGFloat, gainLabel: String? = nil) -> Self {
         var item = self
         let left = max(rect.minX, viewport.minX), right = min(rect.maxX, viewport.maxX)
@@ -144,9 +161,9 @@ struct GridSelectionItem {
         return result
     }
     func fadeSide(at point: CGPoint) -> Bool? {
-        let left = fadeHandleRect(true)?.contains(point) == true
-        let right = fadeHandleRect(false)?.contains(point) == true
-        if left && right { return point.y < fadeTop + 3.5 }
+        let left = fadeHandleRect(true)?.insetBy(dx: -2, dy: -2).intersection(CGRect(x: rect.minX, y: fadeTop, width: rect.width, height: rect.maxY - fadeTop)).contains(point) == true
+        let right = fadeHandleRect(false)?.insetBy(dx: -2, dy: -2).intersection(CGRect(x: rect.minX, y: fadeTop, width: rect.width, height: rect.maxY - fadeTop)).contains(point) == true
+        if left && right { return abs(point.x - (fadeHandleRect(true)?.midX ?? rect.minX)) <= abs(point.x - (fadeHandleRect(false)?.midX ?? rect.maxX)) }
         return left ? true : right ? false : nil
     }
     func draggingFade(left: Bool, delta: CGFloat) -> Double {
@@ -361,6 +378,10 @@ enum GridSelectionHeaderText {
                 } else { shapedTitle = nil }
             } else { completeWidth = nil; shapedTitle = nil }
         }
+        func drawCentered(in rect: CGRect) {
+            let height = min(rect.height, ceil(text.size().height))
+            draw(in: CGRect(x: rect.minX, y: rect.midY - height / 2, width: rect.width, height: height))
+        }
         func draw(in rect: CGRect) {
             guard rect.width > 0, rect.height > 0, let graphics = NSGraphicsContext.current else { return }
             let context = graphics.cgContext, flipped = graphics.isFlipped
@@ -473,6 +494,7 @@ enum GridSelectionHeaderText {
 /// origins change; needles retain the exact continuous gain/pan values.
 private enum GridSelectionHeaderControls {
     static let backgroundColor = NSColor.black.withAlphaComponent(0.28)
+    static let buttonBackgroundColor = NSColor.white.withAlphaComponent(0.10)
     private static let green = NSColor(calibratedRed: 0.2, green: 1, blue: 0.55, alpha: 1)
     private static let ring: NSBezierPath = {
         let radius = 4.5 * GridSelectionItem.headerScale
@@ -1099,9 +1121,26 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         // cursorUpdate/mouseMoved. Registering every item edge, knob and button
         // again on each playback scroll duplicated that hit-testing work.
     }
+    private static let fadeInCursor = fadeCursor(left: true)
+    private static let fadeOutCursor = fadeCursor(left: false)
+    private static func fadeCursor(left: Bool) -> NSCursor {
+        let image = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { _ in
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: 3, y: left ? 3 : 13))
+            path.curve(to: NSPoint(x: 13, y: left ? 13 : 3),
+                       controlPoint1: NSPoint(x: 7, y: left ? 3 : 13),
+                       controlPoint2: NSPoint(x: 8, y: left ? 13 : 3))
+            path.lineCapStyle = .round
+            NSColor.black.setStroke(); path.lineWidth = 3; path.stroke()
+            NSColor.white.setStroke(); path.lineWidth = 1.5; path.stroke()
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: 8, y: 8))
+    }
     func pointerCursor(at point: CGPoint) -> NSCursor {
         guard let item = hitItem(at: point) else { return .arrow }
-        if item.fadeSide(at: point) != nil || item.fadeShape(at: point) != nil { return .crosshair }
+        if let left = item.fadeSide(at: point) { return left ? Self.fadeInCursor : Self.fadeOutCursor }
+        if item.fadeShape(at: point) != nil { return .crosshair }
         if item.panKnobRect?.contains(point) == true { return .resizeUpDown }
         if item.gainKnobRect?.contains(point) == true { return .resizeUpDown }
         if item.fxRect?.contains(point) == true || item.muteRect?.contains(point) == true || item.editRect?.contains(point) == true { return .pointingHand }
@@ -1200,7 +1239,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 normalize.target = self; menu.addItem(normalize)
                 if self.item(id: contextItem)?.editable == true {
                     menu.addItem(.separator())
-                    for (mode, title) in [(1,"Convert Mono - L"), (2,"Convert Mono - R"), (3,"Convert Mono L-R"), (0,"Convert Stereo")] {
+                    for (mode, title) in [(4,"Swap - LR"), (1,"Convert Mono - L"), (2,"Convert Mono - R"), (3,"Convert Mono L-R"), (0,"Convert Stereo")] {
                         let option = NSMenuItem(title: JarasLocalization.string(title), action: #selector(convertSelection(_:)), keyEquivalent: "")
                         option.tag = mode; option.target = self; menu.addItem(option)
                     }
@@ -1327,13 +1366,13 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         for drawing in projection.drawings {
                 let item = drawing.item
                 if let rect = item.muteRect {
-                    (item.muted ? NSColor.systemRed : GridSelectionHeaderControls.backgroundColor).setFill(); rect.fill()
-                    GridSelectionHeaderText.mute.draw(in: rect.insetBy(dx: 1, dy: 0))
+                    (item.muted ? NSColor.systemRed : GridSelectionHeaderControls.buttonBackgroundColor).setFill(); rect.fill()
+                    GridSelectionHeaderText.mute.drawCentered(in: rect.insetBy(dx: 1, dy: 0))
                 }
                 if let rect = item.fxRect {
-                    (item.fxBypassed ? NSColor.systemRed : GridSelectionHeaderControls.backgroundColor).setFill(); rect.fill()
+                    (item.fxBypassed ? NSColor.systemRed : GridSelectionHeaderControls.buttonBackgroundColor).setFill(); rect.fill()
                     (item.hasFX && !item.fxBypassed ? GridSelectionHeaderText.activeFX : GridSelectionHeaderText.fx)
-                        .draw(in: rect.insetBy(dx: 1, dy: 0))
+                        .drawCentered(in: rect.insetBy(dx: 1, dy: 0))
                 }
                 if let rect = item.editRect {
                     GridSelectionHeaderControls.backgroundColor.setFill(); rect.fill()

@@ -62,6 +62,7 @@ private:
     TransportState transport_;
     bool finishCurrent_ = false;
     bool resumeSub_ = false;
+    bool manualSubCursor_ = false;
     std::optional<double> playStart_, subPlayStart_;
     std::vector<ID> order() const;
     void select(const ID& id);

@@ -460,18 +460,19 @@ final class ProjectCursorTests: XCTestCase {
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: .empty(name: "Window actions"))
         show.performAction(.normalizeItems); XCTAssertEqual(show.normalizeItemsRequest, 1)
         show.performAction(.createTempoMarker); XCTAssertEqual(show.tempoMarkerRequest, 1)
-        var videoVisible = false, teleprompterVisible = false, tracksVisible = true, setlistVisible = true, audioUpdates = 0
+        var videoVisible = false, teleprompterVisible = false, tracksVisible = true, setlistVisible = true, barVisible = false, audioUpdates = 0
         show.toggleVideoWindow = { videoVisible.toggle() }
         show.toggleTeleprompterWindow = { teleprompterVisible.toggle() }
         show.toggleTracksPanel = { tracksVisible.toggle() }
+        show.toggleBarMixerPanel = { barVisible.toggle() }
         show.toggleSetlistPanel = { setlistVisible.toggle() }
         show.audioUpdate = { _,_ in audioUpdates += 1 }
         let loads = executor.loadCount, snapshots = executor.snapshotCount
-        for action in [DAWAction.toggleVideo, .toggleTeleprompter, .toggleTracks, .toggleSetlist] { show.performAction(action) }
-        XCTAssertTrue(videoVisible); XCTAssertTrue(teleprompterVisible)
+        for action in [DAWAction.toggleVideo, .toggleTeleprompter, .toggleTracks, .toggleSetlist, .toggleBarMixer] { show.performAction(action) }
+        XCTAssertTrue(videoVisible); XCTAssertTrue(teleprompterVisible); XCTAssertTrue(barVisible)
         XCTAssertFalse(tracksVisible); XCTAssertFalse(setlistVisible)
-        for action in [DAWAction.toggleVideo, .toggleTeleprompter, .toggleTracks, .toggleSetlist] { show.performAction(action) }
-        XCTAssertFalse(videoVisible); XCTAssertFalse(teleprompterVisible)
+        for action in [DAWAction.toggleVideo, .toggleTeleprompter, .toggleTracks, .toggleSetlist, .toggleBarMixer] { show.performAction(action) }
+        XCTAssertFalse(videoVisible); XCTAssertFalse(teleprompterVisible); XCTAssertFalse(barVisible)
         XCTAssertTrue(tracksVisible); XCTAssertTrue(setlistVisible)
         XCTAssertEqual(executor.loadCount, loads); XCTAssertEqual(executor.snapshotCount, snapshots)
         XCTAssertEqual(audioUpdates, 0); XCTAssertFalse(show.hasUnsavedChanges)

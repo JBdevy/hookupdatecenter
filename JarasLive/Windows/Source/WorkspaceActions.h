@@ -142,7 +142,9 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         session.configureSetlist(state);
     } else if (action == "toggleTracks")
         showMixer();
-    else if (action == "toggleSetlist") {
+    else if (action == "toggleBarMixer") {
+        if (auto button = controls["railMixer"]; button && button->onClick) button->onClick();
+    } else if (action == "toggleSetlist") {
         setlistVisible = !setlistVisible;
         resized();
     } else if (action == "toggleParts")

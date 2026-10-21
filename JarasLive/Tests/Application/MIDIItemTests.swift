@@ -77,8 +77,9 @@ final class MIDIItemTests: XCTestCase {
 
 @MainActor private final class MIDIEditExecutor: CommandExecutor {
     var project=Project.empty(name:"MIDI")
+    var editPosition: Double = 0
     func load(_ project:Project) throws {self.project=project}
-    func snapshot() throws -> ShowSnapshot {ShowSnapshot(project:project,transport:TransportState(playing:false,songId:project.songs.first?.id,position:0,queue:QueueState(),loop:LoopState(enabled:false),subPlay:SubPlayState(playing:false,position:0)))}
+    func snapshot() throws -> ShowSnapshot {ShowSnapshot(project:project,transport:TransportState(playing:false,songId:project.songs.first?.id,position:editPosition,editPosition:editPosition,queue:QueueState(),loop:LoopState(enabled:false),subPlay:SubPlayState(playing:false,position:0)))}
     func playbackSnapshot() throws -> PlaybackSnapshot {PlaybackSnapshot(transport:try snapshot().transport)}
     func applyProjectEdit(_ value:Project) throws {try value.validate();project=value}
     func setRecordingChannels(_ track: UUID, channel: Int) throws { project.songs[0].tracks[0].recordingChannels = channel }
@@ -91,7 +92,7 @@ final class MIDIItemTests: XCTestCase {
             else { project.songs[index].tracks.append(track) }
         }
     }
-    func execute(_ command:ShowCommand,target:UUID?,value:Double) throws {}
+    func execute(_ command:ShowCommand,target:UUID?,value:Double) throws { if command == .editSeek { editPosition = value } }
     func addTrack(id:UUID,name:String,role:TrackRole) throws {}
     func advance(_ elapsed:Double) {}
     func finishCurrentSong(_ enabled:Bool) {}
@@ -305,9 +306,11 @@ extension MIDIItemTests {
     @MainActor func testCreateEditUndoRedoEncryptedSaveResizeAndSplit() throws {
         let executor=MIDIEditExecutor()
         var project=Project.empty(name:"MIDI")
+    var editPosition: Double = 0
         let track=Track(id:UUID(),name:"Piano",role:.keys);project.songs[0].tracks=[track]
         let show=try ShowController(executor:executor,persistence:MemoryProjectStore(),initialProject:project)
         let id=try XCTUnwrap(show.addMIDIItem(track:track.id,start:2,duration:2))
+        XCTAssertEqual(show.snapshot.transport.editPosition,4)
         var midi=MIDIItem(notes:[MIDINote(start:0,length:2,pitch:60)],sourceBPM:120)
         show.setMIDIItem(id,midi:midi)
         XCTAssertEqual(show.current?.tracks[0].clips[0].midi,midi)

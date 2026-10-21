@@ -112,7 +112,18 @@ class MultiLoopsPanel final : public Component {
         next.setEnabled(stage != 2 || (validPair(draft) && !bypass));
         int y = 0;
         if (stage == 0) {
-            button("+",0,0,30,[this] { draft = {}; draft.id = uuid(); stage = 1; name.setText({}); refreshLater(); })->setEnabled(!bypass);
+            const bool enoughMarkers = markers().size() >= 2;
+            auto *add = button("+",0,0,30,[this] {
+                if (markers().size() < 2) {
+                    error(localization::translate("Create at least 2 section markers enabled for looping in this song before creating a multiloop."));
+                    return;
+                }
+                draft = {}; draft.id = uuid(); stage = 1; name.setText({}); refreshLater();
+            });
+            // Dim the action without swallowing the click that explains why.
+            add->setAlpha(enoughMarkers ? 1.f : .4f);
+            add->setEnabled(!bypass || !enoughMarkers);
+            add->setTooltip(localization::translate("Create multiloop"));
             button("Total Loop",40,0,110,[this, active=part->totalLoop.value_or(false)] { change([&](auto &p) { p.totalLoop = !active; }); },part->totalLoop.value_or(false));
             y = 40;
             for (const auto &loop : part->multiLoops) {

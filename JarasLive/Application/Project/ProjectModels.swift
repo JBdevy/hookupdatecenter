@@ -595,7 +595,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     guard (clip.waveformChannels ?? []).allSatisfy({ $0.allSatisfy { $0.isFinite && (0...1).contains($0) } }) else { throw ProjectError.invalid("Invalid channel waveform") }
                     guard clip.audioRate.isFinite, (1.0/32...32).contains(clip.audioRate) else { throw ProjectError.invalid("Invalid audio playback rate.") }
                     if let reference = clip.tempoBasePlaybackRate { guard reference.isFinite, (1.0/32...32).contains(reference) else { throw ProjectError.invalid("Invalid tempo playback reference.") } }
-                    guard clip.channelMode == nil || (0...3).contains(clip.channelMode!) else { throw ProjectError.invalid("Invalid item channel mode") }
+                    guard clip.channelMode == nil || (0...4).contains(clip.channelMode!) else { throw ProjectError.invalid("Invalid item channel mode") }
                 guard (clip.pitchSemitones ?? 0).isFinite, (-12...12).contains(clip.pitchSemitones ?? 0) else { throw ProjectError.invalid("Invalid item pitch") }
                 guard clip.normalizationGain == nil || (clip.normalizationGain!.isFinite && clip.normalizationGain! >= 0 && clip.normalizationGain! <= pow(10, 24.0 / 20)) else { throw ProjectError.invalid("Invalid normalization gain") }
                     guard [clip.fadeInCurve, clip.fadeInSCurve, clip.fadeOutCurve, clip.fadeOutSCurve].allSatisfy({ $0 == nil || ($0!.isFinite && (-1...1).contains($0!)) }) else { throw ProjectError.invalid("Invalid fade curve") }
@@ -791,7 +791,7 @@ public struct TrackLanes: Equatable {
         // Lay out existing material first. A new take stays below the material
         // it overlaps, even if recording starts before that material begins.
         for clip in ordered where clip.recordingLane == nil {
-            let lane = ends.firstIndex(where: { $0 <= clip.startTime }) ?? ends.count
+            let lane = ends.firstIndex(where: { $0 <= clip.startTime + 1e-9 }) ?? ends.count
             if lane == ends.count { ends.append(0) }
             ends[lane] = clip.startTime + clip.duration
             lanes[clip.id] = lane
@@ -812,7 +812,7 @@ public struct TrackLanes: Equatable {
     /// No overlapping item means lane zero, regardless of items elsewhere.
     public func recordingLane(start: Double, duration: Double, clips: [AudioClip]) -> Int {
         let end = start + duration
-        return clips.lazy.filter { $0.startTime < end && $0.startTime + $0.duration > start }
+        return clips.lazy.filter { $0.startTime < end - 1e-9 && $0.startTime + $0.duration > start + 1e-9 }
             .compactMap { lanes[$0.id] }.max().map { $0 + 1 } ?? 0
     }
 }

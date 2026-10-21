@@ -31,6 +31,7 @@ class TransportFadeoutOverlay;
 class MacLook final : public MacPopupMenuLook {
   public:
     MacLook();
+    void drawTooltip(Graphics &,const String &,int,int) override;
     void drawButtonBackground(Graphics &, Button &, const Colour &, bool, bool) override;
     void drawButtonText(Graphics &, TextButton &, bool, bool) override;
     void drawToggleButton(Graphics &, ToggleButton &, bool, bool) override;
@@ -147,6 +148,7 @@ class Workspace final : public Component,
     friend struct PartsDividerTests;
     friend struct TrackVisibilityTests;
     friend struct MasterMixerTests;
+    friend struct WorkspaceLayoutTests;
     class Caption;
     Session &session;
     Auth &auth;
@@ -203,6 +205,11 @@ class Workspace final : public Component,
     int footerLeftWidth = 155, footerRightWidth = 230;
     juce::Rectangle<int> footerSongBounds;
     bool mixerDetached = false;
+    bool layoutInitialized = false, layoutActive = true, restoringLayout = false;
+    double layoutSaveTime = 0;
+    String lastSavedLayout;
+    void saveWorkspaceLayout();
+    void restoreWorkspaceLayout();
     enum class SetlistPlacement { right, left, detached };
     SetlistPlacement setlistPlacement = SetlistPlacement::right;
     SetlistPlacement setlistDockSide = SetlistPlacement::right;
@@ -213,9 +220,11 @@ class Workspace final : public Component,
     void layoutDetachedSetlist();
     void resizePartsWidth(bool left, int delta);
     void showDetachedMixer();
+    void refreshMixerIndicator();
     void mixerMenu(Point<int>);
     ResourceUsage resourceUsage;
-    TextButton addTrack{"+"}, timelineLock, trackVisibilityButton;
+    TextButton addTrack{"+"}, timelineLock, trackVisibilityButton, timelineSnap;
+    bool freeTimelinePosition(ModifierKeys mods) const { return !(bool)appearance.value("jaras.timeline.snapEnabled", true) || mods.isShiftDown(); }
     std::unique_ptr<FileChooser> chooser;
     std::unique_ptr<FileLogger> logger;
     bool mixerVisible = true, setlistVisible = true, keyboardVisible = false,
@@ -296,6 +305,7 @@ class Workspace final : public Component,
     void specialTrackAction(ID,const String &);
     void editTrack(ID);
     void showClipMenu(ID, Point<int>);
+    std::function<void(int)> clipMenuAction(ID, ID ownerID = {});
     void openMIDIEditor(ID);
     void addMIDIItem(ID, double);
     void editTextItem(ID);

@@ -15,6 +15,8 @@ class Projection final : public Component, private Timer {
     void mouseDoubleClick(const MouseEvent &) override;
     bool keyPressed(const KeyPress &) override;
     void refreshVideoAppearance();
+    void toggleFullScreen();
+    bool isPresentationFullscreen() const { return presenting; }
     std::function<void(String)> error;
     std::function<void()> configure;
 
@@ -48,7 +50,6 @@ class Projection final : public Component, private Timer {
     float textSize = 36;
     bool loaded = false;
     void timerCallback() override;
-    void toggleFullScreen();
     juce::Rectangle<int> windowedBounds;
     int windowedTitleHeight = 32;
     bool presenting = false, windowedOnTop = false, windowedMaximised = false;

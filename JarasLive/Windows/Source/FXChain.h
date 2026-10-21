@@ -39,8 +39,8 @@ inline void setEnabled(var &value, const String &key, bool on) {
     const auto property = enabledKey(key);
     if (property.isNotEmpty()) put(value, Identifier(property), on);
 }
-inline Colour colour(const var &value) {
-    return list(get(value, "inserted")).isEmpty() ? Colours::white : allBypassed(value) ? Colour(0xffff3b30) : theme::green;
+inline Colour colour(const var &value, bool master = false) {
+    return list(get(value, "inserted")).isEmpty() ? Colours::white : allBypassed(value) ? Colour(master ? 0xffff4245 : 0xffff3b30) : theme::green;
 }
 inline void change(Session &session, const std::vector<ID> &targets, bool remove) {
     std::map<ID, var> changes;

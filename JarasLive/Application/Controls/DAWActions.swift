@@ -10,7 +10,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     case setlistUp, setlistDown, toggleAuto, splitItems, ignoreNext
     case projectStart, projectEnd, nextRegion, previousRegion, nextTimelinePoint, previousTimelinePoint
     case toggleVideo, toggleTeleprompter, normalizeItems, createTempoMarker
-    case toggleTracks, toggleSetlist, toggleMultiLoopBypass
+    case toggleTracks, toggleBarMixer, toggleSetlist, toggleMultiLoopBypass
 
     public static let visible = allCases
     public var needsTrack: Bool { [.selectTrack, .muteTrack, .soloTrack, .volumeTrack, .panTrack].contains(self) }
@@ -62,7 +62,8 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .previousTimelinePoint: return "Previous marker or region boundary"
         case .toggleVideo: return "Video window on/off"
         case .toggleTeleprompter: return "Teleprompter window on/off"
-        case .toggleTracks: return "Tracks show/hide"
+        case .toggleTracks: return "Track Mixer show/hide"
+        case .toggleBarMixer: return "Hoz-Mixer show/hide"
         case .toggleSetlist: return "Setlist show/hide"
         case .toggleMultiLoopBypass: return "Multiloops BYPASS on/off"
         }
@@ -97,8 +98,9 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .previousTimelinePoint: (key, modifiers, label) = (14, 0, "E")
         case .toggleVideo: (key, modifiers, label) = (9, option | shift, "⌥⇧V")
         case .toggleTeleprompter: (key, modifiers, label) = (17, option | shift, "⌥⇧T")
-        case .toggleTracks: (key, modifiers, label) = (122, 0, "F1")
-        case .toggleSetlist: (key, modifiers, label) = (120, 0, "F2")
+        case .toggleTracks: (key, modifiers, label) = (17, option, "⌥T")
+        case .toggleBarMixer: (key, modifiers, label) = (4, option, "⌥H")
+        case .toggleSetlist: (key, modifiers, label) = (1, option, "⌥S")
         case .volumeTrack, .panTrack, .muteMaster, .soloMaster, .volumeMaster: return nil
         }
         return ControlInput(kind: "keyboard", label: label, key: key, modifiers: modifiers)
@@ -154,6 +156,15 @@ public struct DAWActionBindings: Codable, Equatable {
             // Move the old default only when the replacement is free. Keep
             // custom/unbound shortcuts and both bindings when a conflict exists.
             stored[index].keyboard = replacement
+        }
+        // Upgrade the previous panel defaults without replacing custom mappings.
+        for (action, oldKey, oldModifiers) in [(DAWAction.toggleTracks, UInt16(122), UInt(0)), (.toggleSetlist, 120, 0), (.toggleBarMixer, 11, 1 << 19)] {
+            if let index = stored.firstIndex(where: { $0.action == action }),
+               stored[index].keyboard?.key == oldKey, stored[index].keyboard?.modifiers == oldModifiers,
+               let replacement = action.defaultKeyboard,
+               !stored.contains(where: { $0.action != action && $0.matches(replacement) }) {
+                stored[index].keyboard = replacement
+            }
         }
         entries = DAWAction.allCases.map { action in
             var binding = stored.first { $0.action == action } ?? DAWActionBinding(action: action)

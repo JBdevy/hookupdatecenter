@@ -57,10 +57,18 @@
 #include "MIDITakePlaybackTests.h"
 #include "RegionLaneTests.h"
 #include "MasterMixerTests.h"
+#include "WorkspaceLayoutTests.h"
 #include "WorkspaceSetlistPresentationTests.h"
 #include "SetlistSearchTests.h"
 #include "RemoteSetlistSelectionTests.h"
 #include "TrackVisibilityTests.h"
+#include "LiveItemResizeTests.h"
+#include "LiveSessionEditTests.h"
+#include "StreamingReaderTests.h"
+#include "AudioGainRenderTests.h"
+#include "ClipAudioReadTests.h"
+#include "LongTimelineAudioTests.h"
+#include "InstrumentRenderTests.h"
 namespace catlive {
 namespace {
 void expect(bool condition, const String &message) {
@@ -113,10 +121,13 @@ int runTests(const File &directory) {
     StringArray passed, skipped;
     String failed;
     auto test = [&](const String &name, const std::function<void()> &work) {
+        directory.getChildFile("progress.log").appendText("RUN " + name + "\n");
         try {
             work();
+            directory.getChildFile("progress.log").appendText("PASS " + name + "\n");
             passed.add(name);
         } catch (const std::exception &e) {
+            directory.getChildFile("progress.log").appendText("FAIL " + name + ": " + String::fromUTF8(e.what()) + "\n");
             failed += name + ": " + String::fromUTF8(e.what()) + "\n";
         }
     };
@@ -234,6 +245,13 @@ int runTests(const File &directory) {
     addPartsPanelTests(directory, test);
     stemGraphTests::registerTests(directory, test, skipped);
     mediaImportTests::registerTests(directory, test);
+    liveItemResizeTests::registerTests(directory, test);
+    liveSessionEditTests::registerTests(directory, test);
+    streamingReaderTests::registerTests(directory, test);
+    audioGainRenderTests::registerTests(directory, test);
+    clipAudioReadTests::registerTests(directory, test);
+    longTimelineAudioTests::registerTests(directory, test);
+    instrumentRenderTests::registerTests(test);
     gridMediaClipboardTests::registerTests(test);
     floatingControlTests::registerTests(directory,test);
     projectOpenTests::registerTests(directory,test);
@@ -250,6 +268,7 @@ int runTests(const File &directory) {
     addTrackVisibilityTests(directory,test);
     addWorkspaceSetlistPresentationTests(directory,test);
     masterMixerTests::registerTests(directory,test);
+    workspaceLayoutTests::registerTests(directory,test);
     test("Transport Fadeout waits for silence, cancels and blocks Subplay without changing saved faders", [&] {
         Session session; session.inspection = true;
         auto p = projectFixture();
@@ -328,8 +347,23 @@ int runTests(const File &directory) {
         expect(!session.transportFadeoutActive() && !session.transport().playing && session.trackDisplayVolume(id, volume) == volume, "Ordinary Stop retained fading fader");
         session.command(jaras::CommandKind::play);
         session.toggleTransportFadeout(true, {id}, 2);
+        render(480);
+        const auto beforeRebuild = session.audio.state();
+        const auto fadingGain = session.audio.trackFadeoutGain(id);
         session.restoreSnapshot(session.snapshot());
-        expect(!session.transportFadeoutActive() && !session.trackFaderLocked(id), "Rebuilding audio retained stale Fadeout controls");
+        expect(session.preparingLiveAudio(), "Same-project restore did not prepare its live graph asynchronously");
+        const auto rebuildDeadline = Time::getMillisecondCounterHiRes() + 15000;
+        while (session.preparingLiveAudio() && Time::getMillisecondCounterHiRes() < rebuildDeadline)
+            liveSessionEditTests::dispatch();
+        expect(!session.preparingLiveAudio(), "Same-project restore did not finish preparing its live graph");
+        liveItemResizeTests::assertClocks(beforeRebuild, session.audio.state());
+        expect(session.transportFadeoutActive() && session.trackFaderLocked(id) && session.transport().playing &&
+                   session.audio.trackFadeoutGain(id) == fadingGain,
+               "Same-project restore reset the running Fadeout or released its selected fader");
+        session.newProject();
+        expect(!session.transportFadeoutActive() && !session.trackFaderLocked(id) &&
+                   !session.audio.trackFadeoutActive() && !session.transport().playing,
+               "Opening a new project retained the previous project's Fadeout controls");
     });
     test("Movement lock persists, prevents geometry edits and preserves tempo metadata and undo", [&] {
         Session session;
@@ -441,6 +475,17 @@ int runTests(const File &directory) {
         expect(extent(curved,50)<10 && extent(curved,150)>50,"Fine curves not reflected in waveform pixels");
         expect(std::abs(data->range(0,0,1).second-.4f)<.001f,"Fade modified source peaks");
         PNGImageFormat png;auto out=directory.getChildFile("waveform-fades.png").createOutputStream();png.writeImageToStream(curved,*out);
+        clip.fadeIn.reset();clip.fadeOut.reset();clip.gain=.5;clip.normalizationGain=1;
+        const auto half=extent(render(),100);clip.normalizationGain=2;const auto normalized=extent(render(),100);
+        expect(normalized>half*1.8&&normalized<half*2.2,"Normalization gain does not rescale cached waveform pixels");
+        clip.gain=.25;clip.normalizationGain=4;expect(std::abs(extent(render(),100)-normalized)<=1,"Item and normalization gains do not multiply");
+        const auto positive=(uint16)WaveformCache::encode(.1f);
+        for(int i=0;i<188;++i){bytes[i*4+2]=(uint8)positive;bytes[i*4+3]=(uint8)(positive>>8);}
+        const auto above=render();clip.phaseInverted=true;const auto below=render();
+        const auto mass=[](const Image &image,bool upper){int count=0;for(int y=upper?18:58;y<(upper?58:98);++y)count+=image.getPixelAt(100,y).getAlpha();return count;};
+        expect(mass(above,true)>mass(above,false)*5&&mass(below,false)>mass(below,true)*5,"Phase inversion does not reflect asymmetric waveform vertically");
+        expect(std::abs(extent(above,100)-extent(below,100))<=1,"Phase inversion collapsed the waveform envelope");
+        expect(std::abs(data->range(0,0,1).second-.4f)<.001f,"Gain or polarity rewrote source peaks");
     });
     test("Waveform physical columns retain transients and scroll without repartitioning", [&] {
         auto data=std::make_shared<WaveformCache::Data>();
@@ -618,6 +663,26 @@ int runTests(const File &directory) {
         session.redo();
         expect(session.transport().regionId==regionID && session.transport().editPosition==14 && session.song()->tracks[0].clips[0].gain==.25,"Redo lost context or gain");
     });
+    test("Secondary audio clock runs independently outside all items and regions", [&] {
+        auto p=projectFixture(); auto &song=p.songs[0]; song.tracks.clear();
+        AudioEngine engine; engine.prepareOffline(48000); engine.prepareSong(song,directory,{},&p);
+        AudioEngine::State state; state.subPlaying=true; state.subPosition=song.duration+10;
+        engine.transport(state); AudioBuffer<float> output(2,480);
+        engine.render(output.getArrayOfWritePointers(),2,480);
+        expect(engine.state().subPlaying && std::abs(engine.state().subPosition-(song.duration+10.01))<.00001,
+               "secondary clock stopped or reset beyond the arrangement");
+        expect(!engine.state().playing && output.getMagnitude(0,480)==0,"empty secondary playback must be silent without starting main");
+        state=engine.state(); state.subPlaying=false; engine.transport(state);
+        engine.render(output.getArrayOfWritePointers(),2,480);
+        expect(!engine.state().subPlaying,"secondary Stop did not reach audio thread");
+    });
+    test("Touching duplicated items tolerate arithmetic rounding but real overlaps split lanes", [&] {
+        jaras::Track track; track.role.id="other";
+        jaras::AudioClip original; original.id="a"; original.startTime=10; original.duration=.1;
+        auto copy=original; copy.id="b"; copy.startTime=std::nextafter(10.1,0.);
+        track.clips={original,copy}; expect(ItemLanes(track).count==1,"touching items use one lane");
+        track.clips[1].startTime=10.099; expect(ItemLanes(track).count==2,"real overlaps keep separate lanes");
+    });
     test("Overlapping audio items use separate Mac lanes and preserve recording take order", [&] {
         jaras::Track track; track.role.id="other";
         auto add=[&](ID id,double start,double length,std::optional<int> recording={}) {
@@ -649,7 +714,7 @@ int runTests(const File &directory) {
         jaras::Track track; track.role.id="other";
         jaras::AudioClip clip;clip.id="clip";clip.duration=10;clip.fadeIn=2;clip.fadeOut=3;
         ItemHeader header({-80,100,400,60},600,track,clip);
-        expect(header.muteRect.getX()==2.6f && !header.gainLabel.isEmpty(),"Clipped item header loses its controls");
+        expect(header.gainRect.getX()==2.6f && !header.gainLabel.isEmpty(),"Clipped item header loses its controls");
         const std::vector<std::pair<ItemHeader::Control,juce::Rectangle<float>>> controls{
             {ItemHeader::mute,header.muteRect},{ItemHeader::fx,header.fxRect},{ItemHeader::phase,header.phaseRect},
             {ItemHeader::pan,header.panRect},{ItemHeader::gain,header.gainRect}};
@@ -780,7 +845,7 @@ int runTests(const File &directory) {
         expect(tempoEditing::bpm(*session.song(),10)==120,"Undo restores tempo");
     });
     test("Selected tracks share one neutral grid highlight and preserve grid colours", [&] {
-        const Colour base(0xff1e1e1e), selected(0xff252525), primary(0xff535250);
+        const Colour base(0xff161616), selected(0xff1d1d1d), primary(0xff535250);
         const auto secondary=Colour(0xff333235).withAlpha(.85f);
         Image pixels(Image::RGB,96,64,true);
         {
@@ -1164,9 +1229,13 @@ int runTests(const File &directory) {
         expect(std::abs(preferences.interfaceScale() - 1.f) < 1e-6, "First-install default");
         expect(preferences.set("jaras.interface.scale", 1.1).wasOk(), "Scale saved");
         expect(std::abs(Appearance(file).interfaceScale() - 1.1f) < 1e-6, "Scale restored");
-        for (int percent = 60; percent <= 120; percent += 10) {
+        for (int percent = 80; percent <= 120; percent += 10) {
             expect(preferences.set("jaras.interface.scale", percent / 100.0).wasOk(), "Save scale option");
             expect(std::abs(Appearance(file).interfaceScale() - percent / 100.f) < 1e-6, "Restore scale option");
+        }
+        for (double legacy : {.6, .7}) {
+            expect(preferences.set("jaras.interface.scale", legacy).wasOk(), "Legacy small scale saved");
+            expect(std::abs(Appearance(file).interfaceScale() - .8f) < 1e-6, "Legacy scale upgrades to 80 percent");
         }
         expect(preferences.set("jaras.interface.scale", 1.5).wasOk(), "Legacy scale saved");
         expect(std::abs(Appearance(file).interfaceScale() - 1.2f) < 1e-6, "Legacy scale is limited to 120 percent");
@@ -2116,6 +2185,28 @@ int runTests(const File &directory) {
         light.refresh();
         expect(light.buildExports().empty(), "Clearing export selection selected everything again");
     });
+    test("LR swap persists and exchanges actual playback and rendered stereo samples", [&] {
+        const auto folder=directory.getNonexistentChildFile("swap-lr-audio","");folder.createDirectory();
+        {
+            auto file=folder.getChildFile("signal.wav");auto stream=file.createOutputStream();WavAudioFormat wav;
+            std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.release(),48000,2,24,{},0));
+            expect(writer!=nullptr,"Cannot create LR fixture");AudioBuffer<float> pcm(2,48000);
+            for(int n=0;n<48000;++n){pcm.setSample(0,n,.1f);pcm.setSample(1,n,.2f);}
+            expect(writer->writeFromAudioSampleBuffer(pcm,0,48000),"Cannot write LR fixture");
+        }
+        {
+            auto p=projectFixture();auto &song=p.songs[0];song.duration=1;song.parts.clear();song.markers.reset();p.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+            auto &track=song.tracks[0];track.volume=1;track.pan=0;track.phaseInverted=false;track.fxJSON.reset();track.automationJSON.reset();track.patch=jaras::OutputPatch{1,2};track.outputs.reset();
+            jaras::AudioClip clip;clip.id=uuid();clip.duration=1;clip.audioFile=jaras::AudioFile{"signal.wav",{}};clip.channelMode=4;track.clips={clip};
+            jaras::validate(p);auto decoded=ProjectCodec::decode(ProjectCodec::encode(p));expect(decoded.songs[0].tracks[0].clips[0].channelMode==4,"Swap LR did not survive project roundtrip");
+            auto engine=std::make_unique<AudioEngine>();engine->prepareOffline(48000);engine->prepareSong(song,folder,{},&p);engine->setOffline(true);engine->setMixer(p,song);
+            AudioBuffer<float> output(2,512);AudioEngine::State state;state.playing=true;state.position=.25;engine->transport(state);engine->render(output.getArrayOfWritePointers(),2,512);
+            expect(std::abs(output.getSample(0,100)-.2)<.0001&&std::abs(output.getSample(1,100)-.1)<.0001,"Swap LR did not exchange actual playback samples");
+            std::atomic<bool> cancel{false};auto rendered=itemRender::render(p,song,folder,{clip.id},false,0,cancel,{});
+            AudioFormatManager formats;registerAudioFormats(formats);std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(rendered[0].generated));expect(reader!=nullptr,"Cannot read swapped output");AudioBuffer<float> printed(2,512);reader->read(&printed,0,512,12000,true,true);
+            expect(std::abs(printed.getSample(0,100)-.2)<.0001&&std::abs(printed.getSample(1,100)-.1)<.0001,"Re-render/export did not bake LR swap");
+        }
+    });
     test("WASAPI-independent stereo render, mixer, Sub Play, seek and sample loop", [&] {
         auto folder = directory.getChildFile("Audio");
         folder.createDirectory();
@@ -2135,6 +2226,7 @@ int runTests(const File &directory) {
             }
             expect(writer->writeFromAudioSampleBuffer(buffer, 0, 48000), "WAV fixture failed");
         }
+
         {
             auto p=projectFixture();auto &song=p.songs[0];song.duration=1;song.parts.clear();song.markers.reset();p.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
             auto &track=song.tracks[0];track.volume=1;track.pan=0;track.phaseInverted=false;track.fxJSON.reset();track.automationJSON.reset();

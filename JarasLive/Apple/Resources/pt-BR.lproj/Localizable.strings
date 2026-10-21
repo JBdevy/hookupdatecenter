@@ -757,7 +757,8 @@
 "Global" = "Global";
 "Free" = "Livre";
 "Relative" = "Relativo";
-"Tracks show/hide" = "Ocultar/mostrar Tracks";
+"Track Mixer show/hide" = "Mostrar/ocultar Track Mixer";
+"Hoz-Mixer show/hide" = "Mostrar/ocultar Hoz-Mixer";
 "Setlist show/hide" = "Ocultar/mostrar Setlist";
 "Divisions" = "Divisões";
 "Grid divisions" = "Divisões da grade";
@@ -864,7 +865,7 @@
 
 "Polyphonic" = "Polifônico";
 
-"Drag to resize mixer" = "Arraste para redimensionar a Barra Mixer";
+"Drag to resize mixer" = "Arraste para redimensionar a Hoz-Mixer";
 
 "Show blocks in the teleprompter" = "Mostrar blocos no teleprompter";
 
@@ -1745,3 +1746,24 @@
 "Post-fader" = "Pós-fader";
 "Pre-FX" = "Pré-FX";
 "Post-FX" = "Pós-FX";
+/* Confirm application close while any project tab is playing. */
+"Close CatLive?" = "Encerrar o CatLive?";
+"Playback is in progress. Do you really want to close CatLive?" = "A reprodução está em andamento. Deseja realmente encerrar o CatLive?";
+"Close CatLive" = "Encerrar CatLive";
+"Create at least 2 section markers enabled for looping in this song before creating a multiloop." = "Crie pelo menos 2 marcadores de trecho habilitados para loop nesta música antes de criar um multiloop.";
+
+"Timeline snapping" = "Encaixe na timeline";
+"Snap on — Shift temporarily disables snapping" = "Ímã ativado — Shift desativa o encaixe temporariamente";
+"Snap off — free positioning" = "Ímã desativado — posicionamento livre";
+
+"Remote · Right-click to configure" = "Remote · Clique direito para configurar";
+
+"Hoz-Mixer" = "Hoz-Mixer";
+
+"Swap - LR" = "Inverter - LR";
+
+"Finish recording before changing the audio device." = "Conclua a gravação antes de alterar o dispositivo de áudio.";
+
+"Finish recording and pending operations before importing audio." = "Conclua a gravação e as operações pendentes antes de importar áudio.";
+
+"Finish recording and imports before cleaning timeline files." = "Conclua a gravação e as importações antes de limpar os arquivos da timeline.";

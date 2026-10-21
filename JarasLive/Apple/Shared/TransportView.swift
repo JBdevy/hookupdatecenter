@@ -126,7 +126,7 @@ struct TransportView: View {
                             Button { showingResolume = true } label: {
                                 Text(verbatim: title).font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 64, height: 25).contentShape(Rectangle())
                                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
-                            }.buttonStyle(.plain).accessibilityLabel(title)
+                            }.buttonStyle(.plain).accessibilityLabel(title).jarasHelp(title)
                         }
                         }
                         #endif
@@ -136,7 +136,7 @@ struct TransportView: View {
                         }.buttonStyle(.plain).jarasHelp("Export").accessibilityLabel("Export")
                         Button(action: openSettings) {
                             Image(systemName: "gearshape").frame(width: 32, height: 25).contentShape(Rectangle())
-                        }.buttonStyle(.plain).accessibilityLabel("Configurações")
+                        }.buttonStyle(.plain).accessibilityLabel("Configurações").jarasHelp("Configurações")
                     }
                 }
                 HStack(spacing: remainingSpacing) {
@@ -1122,6 +1122,7 @@ private struct RemoteToggleButton: View {
             }.lineLimit(1)
         }.buttonStyle(TransportButtonStyle(color: remote.enabled ? JarasTheme.green : JarasTheme.transportRed, active: true, activeForeground: remote.enabled ? .black : .white, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
             .accessibilityLabel("Remote").accessibilityValue(remote.enabled ? "On" : "Off")
+            .jarasHelp("Remote · Right-click to configure")
             #if os(macOS)
             .popover(isPresented: $settings) { DAWRemoteHostView() }
             .immediateRightClick { settings = true }

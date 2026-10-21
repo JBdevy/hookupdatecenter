@@ -27,6 +27,12 @@ import Foundation
         precondition(layout.items[later.id]?.clip.recordingLane == 0, "no empty space above a non-overlapping take")
         layout.update(later.id, start: 11)
         precondition(layout.items[later.id]?.clip.recordingLane == 2, "actual capture start rechecks overlaps")
+        var adjacent = track
+        adjacent.clips = [AudioClip(id: UUID(), name: "Original", startTime: 10, duration: 0.1),
+                          AudioClip(id: UUID(), name: "Copy", startTime: 10.1.nextDown, duration: 0.1)]
+        precondition(TrackLanes(track: adjacent).count == 1, "rounded touching edges share one lane")
+        adjacent.clips[1].startTime = 10.099
+        precondition(TrackLanes(track: adjacent).count == 2, "real overlaps retain separate lanes")
         layout.clear()
         precondition(layout.items.isEmpty)
         print("RECORDING_LIVE_LANES_OVERLAP_GROWTH_FINALIZATION_AND_NO_GRID_INVALIDATION_OK")

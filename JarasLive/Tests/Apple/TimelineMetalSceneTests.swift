@@ -156,7 +156,20 @@ clip.gain = pow(10, 24.0 / 20)
 let louder = audioStrokes(scene(clip))
 precondition(abs(louder[0].scale.y / stereoAudio[0].scale.y - Float(pow(10, 24.0 / 20))) < 0.0001,
              "waveform gain must continue scaling above 0 dB up to +24 dB")
-clip.gain = 1
+clip.gain = 0.5; clip.normalizationGain = 4
+let normalized = scene(clip), normalizedAudio = audioStrokes(normalized)
+precondition(abs(normalizedAudio[0].scale.y / stereoAudio[0].scale.y - 2) < 0.0001,
+             "normalization must multiply item gain in the real timeline builder")
+precondition(!stereo.hasSameContent(as: normalized), "normalization must invalidate waveform presentation")
+clip.phaseInverted = true
+let inverted = audioStrokes(scene(clip))
+precondition(inverted[0].scale.y == -normalizedAudio[0].scale.y && inverted[0].block === normalizedAudio[0].block,
+             "phase inversion reflects waveform without rewriting or decoding source data")
+clip.gain = 1; clip.normalizationGain = nil; clip.phaseInverted = nil; clip.channelMode = 4
+let swapped = audioStrokes(scene(clip))
+precondition(swapped.count == stereoAudio.count && zip(swapped, stereoAudio).allSatisfy { $0.channel == 1 - $1.channel && $0.translation == $1.translation },
+             "LR swap keeps stereo lanes and exchanges source channels")
+clip.channelMode = 0
 for mode in [1, 2, 3] {
     clip.channelMode = mode
     let strokes = audioStrokes(scene(clip))

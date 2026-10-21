@@ -92,9 +92,8 @@ class NormalizationPanel final : public Component {
             const double target = std::stod(input, &parsed);
             if (parsed != input.size() || !std::isfinite(target) || target < -60 || target > 12)
                 throw std::runtime_error("Informe um alvo entre -60 e +12.");
-            if (session.busy || session.transport().playing ||
-                session.transport().subPlay.playing || session.audio.isRecording())
-                throw std::runtime_error("Pare a reprodução ou gravação antes de normalizar.");
+            if (session.busy || session.audio.isRecording())
+                throw std::runtime_error("Conclua a gravação e aguarde as operações antes de normalizar.");
             std::optional<jaras::AudioClip> selected;
             if (auto *song = session.song())
                 for (const auto &track : song->tracks)

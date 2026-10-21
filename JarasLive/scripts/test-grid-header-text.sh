@@ -16,7 +16,8 @@ cache=source[source.index('enum GridSelectionHeaderText {'):source.index('struct
 draw='                let pixels = CGSize(width: size.width * scale.width, height: size.height * scale.height)'
 assert cache.count(draw) == 1, 'Update the rasterization probe after a source change'
 cache=cache.replace(draw, '                GridHeaderRasterProbe.count += 1\n'+draw)
-Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nimport CoreText\n'+item+'\n'+cache+'\n'+Path('Tests/Apple/GridHeaderTextTests.swift').read_text())
+typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]
+Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nimport CoreText\n'+typography+'\n'+item+'\n'+cache+'\n'+Path('Tests/Apple/GridHeaderTextTests.swift').read_text())
 PY
 swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 -target "$(uname -m)-apple-macos12.0" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

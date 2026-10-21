@@ -120,7 +120,8 @@ inline bool replacePaths(var &raw, const std::map<String, String> &replacements)
     return changed;
 }
 inline int removeDeleted(const jaras::Project &project, const var &raw, const File &document,
-                         const Paths &known, const std::function<void(double)> &progress = {}) {
+                         const Paths &known, const std::function<void(double)> &progress = {},
+                         const std::set<String> &activeFiles = {}) {
     auto report = [&](double value) {
         if (progress)
             progress(value);
@@ -171,6 +172,7 @@ inline int removeDeleted(const jaras::Project &project, const var &raw, const Fi
             !seen.insert(normalized).second)
             continue;
         auto source = root.getChildFile(text(path));
+        if (activeFiles.count(unicodeCase(source.getFullPathName(), false))) continue;
         if (!source.existsAsFile() || !plainPath(root, source))
             continue;
         if (backupPaths.count(normalized)) {

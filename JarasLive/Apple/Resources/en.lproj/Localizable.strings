@@ -757,7 +757,8 @@
 "Global" = "Global";
 "Free" = "Free";
 "Relative" = "Relative";
-"Tracks show/hide" = "Tracks show/hide";
+"Track Mixer show/hide" = "Track Mixer show/hide";
+"Hoz-Mixer show/hide" = "Hoz-Mixer show/hide";
 "Setlist show/hide" = "Setlist show/hide";
 "Divisions" = "Divisions";
 "Grid divisions" = "Grid divisions";
@@ -1711,3 +1712,24 @@
 "Post-fader" = "Post-fader";
 "Pre-FX" = "Pre-FX";
 "Post-FX" = "Post-FX";
+/* Confirm application close while any project tab is playing. */
+"Close CatLive?" = "Close CatLive?";
+"Playback is in progress. Do you really want to close CatLive?" = "Playback is in progress. Do you really want to close CatLive?";
+"Close CatLive" = "Close CatLive";
+"Create at least 2 section markers enabled for looping in this song before creating a multiloop." = "Create at least 2 section markers enabled for looping in this song before creating a multiloop.";
+
+"Timeline snapping" = "Timeline snapping";
+"Snap on — Shift temporarily disables snapping" = "Snap on — Shift temporarily disables snapping";
+"Snap off — free positioning" = "Snap off — free positioning";
+
+"Remote · Right-click to configure" = "Remote · Right-click to configure";
+
+"Hoz-Mixer" = "Hoz-Mixer";
+
+"Swap - LR" = "Swap - LR";
+
+"Finish recording before changing the audio device." = "Finish recording before changing the audio device.";
+
+"Finish recording and pending operations before importing audio." = "Finish recording and pending operations before importing audio.";
+
+"Finish recording and imports before cleaning timeline files." = "Finish recording and imports before cleaning timeline files.";

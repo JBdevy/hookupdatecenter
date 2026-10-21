@@ -430,8 +430,7 @@ import Combine
             button.wantsLayer = true; button.layer?.cornerRadius = 3
             button.layer?.backgroundColor = (value.enabled ? NSColor.white.withAlphaComponent(0.12) : NSColor.systemRed.withAlphaComponent(0.75)).cgColor
             button.contentTintColor = value.enabled ? .secondaryLabelColor : .white
-            button.setAccessibilityLabel("Bypass · " + value.name)
-            button.toolTip = JarasLocalization.string("Bypass") + " · " + value.name
+            button.setAccessibilityLabel(JarasLocalization.string("Bypass") + " · " + value.name)
             return button
         }
         let text = NSTextField(labelWithString: value.name); text.lineBreakMode = .byTruncatingTail

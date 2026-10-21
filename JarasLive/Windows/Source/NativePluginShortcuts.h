@@ -17,7 +17,8 @@ class NativePluginShortcuts final {
     inline static std::vector<std::weak_ptr<State>> windows;
     static bool nativeTextInput(HWND focus) {
         GUITHREADINFO info{};info.cbSize=sizeof(info);
-        if(GetGUIThreadInfo(GetCurrentThreadId(),&info)&&info.hwndCaret)return true;
+        if(GetGUIThreadInfo(GetCurrentThreadId(),&info) && focus && info.hwndCaret &&
+           (info.hwndCaret==focus || IsChild(focus,info.hwndCaret)))return true;
         for(auto hwnd=focus;hwnd;hwnd=GetParent(hwnd)){
             wchar_t name[128]{};GetClassNameW(hwnd,name,128);auto type=String(name).toLowerCase();
             if(type=="edit"||type.contains("richedit")||type.contains("textinput"))return true;
@@ -48,7 +49,9 @@ class NativePluginShortcuts final {
                 if(!(GetWindowLongPtrW(current->root,GWL_STYLE)&WS_VISIBLE)||!(message.hwnd==current->root||IsChild(current->root,message.hwnd)))continue;
                 ++current->received;
                 if(up){const bool consumed=current->consumed.erase(message.wParam)!=0;if(current->keyState)current->keyState(false);if(consumed)message.message=WM_NULL;break;}
-                if(nativeTextInput(GetFocus())) { ++current->textRejected; break; }
+                auto focus=GetFocus();
+                if (!focus || (focus!=current->root && !IsChild(current->root,focus))) focus=message.hwnd;
+                if(nativeTextInput(focus)) { ++current->textRejected; break; }
                 if((message.lParam&(LPARAM(1)<<30))&&current->consumed.count(message.wParam)){message.message=WM_NULL;break;}
                 // A release outside the plug-in window must not leave a sticky shortcut.
                 if(!(message.lParam&(LPARAM(1)<<30)))current->consumed.erase(message.wParam);

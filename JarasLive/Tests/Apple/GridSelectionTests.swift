@@ -253,7 +253,7 @@ let stationaryItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 1000, y: 550,
 grid.items = [stationaryItem]
 let cursorTargets: [(CGPoint, NSCursor)] = [
     (CGPoint(x: 1002, y: 590), .resizeLeftRight),
-    (CGPoint(x: 1002, y: 570), .crosshair),
+    (CGPoint(x: 1002, y: 570), grid.pointerCursor(at: CGPoint(x: 1002, y: 570))),
     (CGPoint(x: stationaryItem.panKnobRect!.midX, y: stationaryItem.panKnobRect!.midY), .resizeUpDown),
     (CGPoint(x: stationaryItem.gainKnobRect!.midX, y: stationaryItem.gainKnobRect!.midY), .resizeUpDown),
     (CGPoint(x: stationaryItem.muteRect!.midX, y: stationaryItem.muteRect!.midY), .pointingHand)
@@ -341,7 +341,7 @@ for points in [(CGPoint(x: 102,y: 130),CGPoint(x: 80,y: 130)),(CGPoint(x: 218,y:
     _ = grid.handlePointerEvent(event(.leftMouseUp,points.1))
 }
 precondition(resized.count == 4 && resized[0].0 && !resized[2].0 && resized[3].1)
-precondition(abs(grid.items[0].muteRect!.minX - grid.items[0].rect.minX - 2 * GridSelectionItem.headerScale) < 0.000001,
+precondition(abs(grid.items[0].gainKnobRect!.minX - grid.items[0].rect.minX - 2 * GridSelectionItem.headerScale) < 0.000001,
              "header controls start near the left edge with the repeat notch below")
 let edgeSeeksBefore = seeks.count
 for x in [101.0, 219.0] {
@@ -590,7 +590,12 @@ for pair in [(CGPoint(x: 102, y: 120), CGPoint(x: 502, y: 120)),
 }
 precondition(fades.count == 4 && fades[0].0 && !fades[2].0 && fades.allSatisfy { $0.1 == 10 }, "both fades can span the entire expanded item")
 precondition(fades[1].2 && fades[3].2, "release commits once per fade gesture")
-precondition(grid.pointerCursor(at: CGPoint(x: 102, y: 120)) === NSCursor.crosshair)
+let fadeInPointer = grid.pointerCursor(at: CGPoint(x: 102, y: 120))
+let fadeOutPointer = grid.pointerCursor(at: CGPoint(x: 498, y: 120))
+precondition(fadeInPointer !== NSCursor.crosshair && fadeInPointer !== fadeOutPointer)
+precondition(fadeLayout.fadeSide(at: CGPoint(x: 111, y: 127)) == nil, "fade hotspot stays near its grip")
+precondition(fadeLayout.fadeSide(at: CGPoint(x: 489, y: 127)) == nil, "fade-out hotspot stays near its grip")
+precondition(fadeInPointer.image.size == NSSize(width: 16, height: 16) && fadeOutPointer.image.size == NSSize(width: 16, height: 16))
 precondition(grid.pointerCursor(at: CGPoint(x: 102, y: 130)) === NSCursor.resizeLeftRight)
 grid.updateSelection([])
 precondition(grid.hitTest(grid.convert(CGPoint(x: 102, y: 130), to: grid.superview)) === grid,
@@ -606,7 +611,7 @@ grid.cursorUpdate(with: event(.mouseMoved, CGPoint(x: 498, y: 130)))
 precondition(NSCursor.current == NSCursor.resizeLeftRight,
              "right edges keep the resize cursor after AppKit cursor-rect resets")
 grid.mouseMoved(with: event(.mouseMoved, CGPoint(x: 102, y: 120)))
-precondition(NSCursor.current == NSCursor.crosshair,
+precondition(NSCursor.current == fadeInPointer,
              "below-header fades use their distinct cursor instead of the trim cursor")
 print("GRID_FADE_CORNERS_FULL_ITEM_LENGTH_PREVIEW_COMMIT_AND_EDGE_CURSOR_OK")
 var fineChanges: [(Bool, Bool, Double, Bool)] = []
@@ -792,8 +797,8 @@ grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100, y: 100, width: 2
 var phaseClicks: [UUID] = [], panEdits: [(UUID, Double, Bool)] = []
 grid.phase = { phaseClicks.append($0) }; grid.pan = { panEdits.append(($0,$1,$2)) }
 let phaseRect = grid.items[0].phaseRect!, panRect = grid.items[0].panKnobRect!
-precondition(phaseRect.maxX < panRect.minX && panRect.maxX < grid.items[0].gainKnobRect!.minX && grid.items[0].gainLabelRect!.minX > grid.items[0].gainKnobRect!.maxX,
-             "volume is the last knob, immediately before its dB value")
+precondition(phaseRect.maxX < panRect.minX && grid.items[0].gainLabelRect!.maxX < grid.items[0].muteRect!.minX && grid.items[0].gainLabelRect!.minX > grid.items[0].gainKnobRect!.maxX,
+             "volume and its dB value come first, followed by mute, FX, phase and pan")
 let beforeMixSeeks = seeks.count
 _ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: phaseRect.midX, y: phaseRect.midY)))
 _ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: phaseRect.midX, y: phaseRect.midY)))
@@ -814,7 +819,7 @@ for (value, text) in [(0.0, "Center"), (-0.5, "L-50%"), (0.75, "R-75%"), (-1.0, 
     labeledPan.pan = value
     precondition(labeledPan.panLabel == text)
     precondition(labeledPan.panLabelRect!.minX > labeledPan.panKnobRect!.maxX)
-    precondition(labeledPan.panLabelRect!.maxX < labeledPan.gainKnobRect!.minX)
+    precondition(labeledPan.gainLabelRect!.maxX < labeledPan.panKnobRect!.minX)
     precondition(labeledPan.gainKnobRect == originalGainKnob, "pan values must not shift the volume control")
 }
 for width in 20...200 {

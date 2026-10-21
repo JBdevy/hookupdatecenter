@@ -10,12 +10,17 @@ let originalFrame = output.frame, originalStyle = output.styleMask, originalLeve
 func click(_ type: NSEvent.EventType, count: Int) {
     output.sendEvent(NSEvent.mouseEvent(with: type,location: NSPoint(x: 100,y: 100),modifierFlags: [],timestamp: ProcessInfo.processInfo.systemUptime,windowNumber: output.windowNumber,context: nil,eventNumber: 1,clickCount: count,pressure: 1)!)
 }
+let retainedContent = output.contentView
+let retainedWindowNumber = output.windowNumber
 for screen in NSScreen.screens {
     output.toggleProjectionFullscreen(on: screen)
     precondition(output.isProjectionFullscreen && output.frame == screen.frame, "presentation fills only the requested display")
     precondition(output.styleMask == .borderless && output.canBecomeKey && !output.hasShadow)
-    precondition(application.presentationOptions == presentation && main.frame == mainFrame && main.styleMask == mainStyle, "second-display presentation never changes the main interface or application menu/Dock visibility")
+    precondition(application.presentationOptions.contains([.hideDock, .hideMenuBar]), "fullscreen hides the system menu and Dock without using an always-on-top window")
+    precondition(main.frame == mainFrame && main.styleMask == mainStyle, "presentation never resizes or moves the main interface")
     output.toggleProjectionFullscreen()
+    precondition(output.contentView === retainedContent && output.windowNumber == retainedWindowNumber, "fullscreen transitions retain the native window and rendered content")
+    precondition(application.presentationOptions == presentation, "leaving fullscreen restores system chrome")
     precondition(!output.isProjectionFullscreen && output.frame == originalFrame && output.styleMask == originalStyle && output.level == originalLevel && output.collectionBehavior == originalBehavior)
 }
 click(.leftMouseDown,count: 2)
@@ -78,7 +83,19 @@ func front(_ a: NSWindow, _ b: NSWindow) -> Bool {
 }
 activate(main)
 for w in projections { activate(w) }
-main.addChildWindow(tools, ordered: .above)
+precondition(projections.allSatisfy { $0.parent == nil }, "projections are independent windows, not attached children")
+let projectionFrames = projections.map(\.frame)
+main.setFrameOrigin(NSPoint(x: main.frame.minX + 100, y: main.frame.minY + 70)); pump()
+precondition(projections.map(\.frame) == projectionFrames, "moving the workspace must not move video or teleprompters")
+for screen in NSScreen.screens {
+    projections[0].setFrameOrigin(NSPoint(x: screen.visibleFrame.minX + 20, y: screen.visibleFrame.minY + 20))
+    let placed = projections[0].frame
+    activate(main)
+    precondition(projections[0].isVisible && projections[0].frame == placed && projections[0].parent == nil,
+                 "projection keeps its independent placement when the workspace is activated on another display")
+}
+
+ProjectionWindow.followWorkspaceWindow(tools)
 activate(tools); pump()
 precondition(projections.allSatisfy { front(tools, $0) }, "FX opened last stays above video and both teleprompters")
 activate(projections[0]); pump()
@@ -91,5 +108,9 @@ projections[1].toggleProjectionFullscreen(); activate(tools); pump()
 precondition(projections[1].level == .normal && front(tools, projections[1]), "fullscreen does not pin video over editing windows")
 main.removeChildWindow(tools); activate(tools); activate(main)
 precondition(projections.allSatisfy { front(tools, $0) }, "independent configuration windows retain priority after clicking the main workspace")
+projections[2].toggleProjectionFullscreen()
+projections[1].close()
+precondition(application.presentationOptions.contains([.hideDock, .hideMenuBar]), "closing one projection keeps chrome hidden while another is fullscreen")
 projections.forEach { $0.close() }; tools.close(); main.close()
+precondition(application.presentationOptions == presentation, "closing the last fullscreen projection restores presentation options")
 print("PROJECTION_LAST_CLICKED_WINDOW_ORDER_OK")
