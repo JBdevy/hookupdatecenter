@@ -1083,13 +1083,22 @@ int runTests(const File &directory) {
         handle->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));handle->mouseDrag(event(end,anchor,ModifierKeys::leftButtonModifier,true));
         expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Preview leaves stored project unchanged");
         auto previewImage=canvas->createComponentSnapshot(canvas->getLocalBounds());
+        // Drag previews are coalesced at 60 Hz; let the native timer publish a frame.
+        const auto previewDeadline=Time::getMillisecondCounterHiRes()+500;
+        while(previewImage.getPixelAt(75,140).getRed()<=100 && Time::getMillisecondCounterHiRes()<previewDeadline) {
+            floatingControlTests::pump();
+            previewImage=canvas->createComponentSnapshot(canvas->getLocalBounds());
+        }
         expect(previewImage.getPixelAt(75,140).getRed()>100,"Grid item grows with its mixer row before mouse release");
+        expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Published preview leaves stored project unchanged");
         handle->mouseUp(event(end,anchor,0,true));
         expect(session.song()->tracks.front().heightScale.value_or(1)>1.4,"Only dragged row grows");
         for(size_t i=1;i<session.song()->tracks.size();++i)expect(session.song()->tracks[i].heightScale.value_or(1)==1,"Other rows keep their heights");
         session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"One undo restores row height");
         handle->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));handle->mouseDrag(event(end,anchor,ModifierKeys::leftButtonModifier,true));handle->keyPressed(KeyPress(KeyPress::escapeKey));handle->mouseUp(event(end,anchor,0,true));
+        for(int frame=0;frame<4;++frame)floatingControlTests::pump();
         expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Escape cancels resize without a project mutation");
+        expect(canvas->createComponentSnapshot(canvas->getLocalBounds()).getPixelAt(75,140).getRed()<100,"Cancelled preview cannot return on a later timer frame");
     });
     test("Track drop destination matches group indicator and preserves routes and descendants", [&] {
         jaras::Song song;auto make=[](const char *id,std::optional<ID> parent={}){jaras::Track t;t.id=id;t.name=id;t.role.id="other";t.parentTrackID=parent;t.patch=jaras::OutputPatch{parent?-2:0,2};return t;};
