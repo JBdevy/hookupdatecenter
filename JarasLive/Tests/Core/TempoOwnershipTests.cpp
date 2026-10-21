@@ -16,7 +16,8 @@ static TimelineMarker tempo(ID id,double position,std::optional<ID> owner,double
 static Project fixture() {
     Project project;project.id="tempo-tail-project";project.name="Owned tails";
     Song song{"tempo-tail-song","Song",40,120,{},{}};
-    song.regionOwnershipInitialized=true;song.timeSettings=ProjectTimeSettings{};song.timeSettings->timebase=ProjectTimebase::relative;
+    // Explicit ownership in this fixture is already migrated; legacy repair is tested separately.
+    song.regionOwnershipInitialized=true;song.regionOwnershipVersion=3;song.timeSettings=ProjectTimeSettings{};song.timeSettings->timebase=ProjectTimebase::relative;
     song.parts={{"a","A",0,16},{"b","B",10,30},{"group","Unified",0,30}};
     song.parts[0].parentRegionID="group";song.parts[1].parentRegionID="group";
     Track track;track.id="audio";track.name="Audio";track.role={"other"};
