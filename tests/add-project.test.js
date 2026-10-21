@@ -160,6 +160,45 @@ function main() {
   assert.strictEqual(decoratedResult.groupFolders.get('sanfonas').name, '#SANFONA');
   assert.strictEqual(decoratedResult.groupFolders.get('guitarras').directChildren.length, 2);
   assert.strictEqual(decoratedResult.groupFolders.get('sanfonas').directChildren.length, 2);
+  // Metals already live in a mixed folder: new instruments belong there too.
+  // Two incoming categories target the same folder; close it only once.
+  const mixed = '<REAPER_PROJECT 0.1 "7.0/x64" 1700000000\n' + [
+    ['#OUTROS', 1, 1], ['METAIS', 0, 0], ['BASS', 2, -1],
+    ['Minha pasta', 1, 1], ['Guitarra Solo', 2, -1], ['Last', 0, 0]
+  ].map(([name, type, delta]) => `  <TRACK\n    NAME "${name}"\n    ISBUS ${type} ${delta}\n  >`).join('\n') + '\n>\n';
+  const mixedIncoming = makeAudit('Nova', ['Sax', 'FX 1', 'FX 2', 'Baixo', 'Guitarra'].map(name => makeFile(name)));
+  const mixedResult = inspectRppProject(buildAddProjectRpp(mixed, auditAddProjectRpp(mixed, mixedIncoming)));
+  const parentName = (model, name) => model.tracks[model.tracks.find(t => t.name === name).parentIndex]?.name;
+  assert.deepStrictEqual(mixedResult.tracks.filter(t => t.isFolder).map(t => t.name), ['#OUTROS', 'Minha pasta']);
+  for (const name of ['METAIS', 'BASS', 'Sax', 'FX 1', 'FX 2']) assert.strictEqual(parentName(mixedResult, name), '#OUTROS');
+  assert.strictEqual(parentName(mixedResult, 'Guitarra'), 'Minha pasta');
+  assert.strictEqual(parentName(mixedResult, 'Last'), undefined);
+  const mixedBefore = inspectRppProject(mixed);
+  assert.deepStrictEqual(mixedResult.tracks.filter(t => mixedBefore.tracks.some(old => old.name === t.name)).map(t => t.name), mixedBefore.tracks.map(t => t.name));
+  const repeatedMixed = inspectRppProject(buildAddProjectRpp(mixedResult.text, auditAddProjectRpp(mixedResult.text, mixedIncoming)));
+  assert.deepStrictEqual(repeatedMixed.tracks.map(t => [t.name, t.parentIndex]), mixedResult.tracks.map(t => [t.name, t.parentIndex]));
+
+  // An outer folder closes on its last nested child. Appending a direct child
+  // must retain the inner closing delta and the following root track.
+  const nested = '<REAPER_PROJECT 0.1 "7.0/x64" 1700000000\n' + [
+    ['#OUTROS', 1, 1], ['Baixo', 0, 0], ['Subgrupo', 1, 1], ['Piano', 2, -2], ['Last', 0, 0]
+  ].map(([name, type, delta]) => `  <TRACK\n    NAME "${name}"\n    ISBUS ${type} ${delta}\n  >`).join('\n') + '\n>\n';
+  const nestedIncoming = makeAudit('Nova', [makeFile('FX 1')]);
+  const nestedResult = inspectRppProject(buildAddProjectRpp(nested, auditAddProjectRpp(nested, nestedIncoming)));
+  assert.strictEqual(parentName(nestedResult, 'Piano'), 'Subgrupo');
+  assert.strictEqual(parentName(nestedResult, 'FX 1'), '#OUTROS');
+  assert.strictEqual(parentName(nestedResult, 'Last'), undefined);
+  const bothLevelsIncoming = makeAudit('Nova', [makeFile('FX 1'), makeFile('Synth')]);
+  const bothLevels = inspectRppProject(buildAddProjectRpp(nested, auditAddProjectRpp(nested, bothLevelsIncoming)));
+  assert.strictEqual(parentName(bothLevels, 'Piano'), 'Subgrupo');
+  assert.strictEqual(parentName(bothLevels, 'Synth'), 'Subgrupo');
+  assert.strictEqual(parentName(bothLevels, 'FX 1'), '#OUTROS');
+  assert.strictEqual(parentName(bothLevels, 'Last'), undefined);
+  const standalone = '<REAPER_PROJECT 0.1 "7.0/x64" 1700000000\n  <TRACK\n    NAME "METAIS"\n    ISBUS 0 0\n  >\n  <TRACK\n    NAME "Last"\n    ISBUS 0 0\n  >\n>\n';
+  const standaloneIncoming = makeAudit('Nova', [makeFile('Sax')]);
+  const standaloneResult = inspectRppProject(buildAddProjectRpp(standalone, auditAddProjectRpp(standalone, standaloneIncoming)));
+  assert.deepStrictEqual(standaloneResult.tracks.map(t => t.name), ['METAIS', 'Sax', 'Last']);
+  assert(standaloneResult.tracks.every(t => !t.isFolder && t.parentIndex == null));
   process.stdout.write('Add Project: testes concluídos com sucesso.\n');
 }
 

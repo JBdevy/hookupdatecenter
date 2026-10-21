@@ -322,8 +322,14 @@ enum StemProjectImporter {
         let oldEnd = max(arrangement.parts.map(\.endTime).max() ?? 0, arrangement.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0)
         let offset = oldEnd
         let existingFolders = Set(arrangement.tracks.compactMap(\.parentTrackID)).union(arrangement.tracks.filter {
-            $0.kind == .standard && $0.role == .other && $0.parentTrackID == nil && $0.clips.isEmpty && !js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()!.isEmpty
+            $0.kind == .standard && $0.role == .other && $0.parentTrackID == nil && $0.clips.isEmpty && $0.name.trimmingCharacters(in: .whitespaces).hasPrefix("#") && !js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()!.isEmpty
         }.map(\.id))
+        let existingIndices = Dictionary(uniqueKeysWithValues: arrangement.tracks.enumerated().map { ($0.element.id, $0.offset) })
+        let existingLayout: [[String: Any]] = arrangement.tracks.enumerated().filter { $0.element.kind == .standard }.map { index, track in
+            ["index": index, "name": track.name, "isFolder": existingFolders.contains(track.id),
+             "parentIndex": track.parentTrackID.flatMap { existingIndices[$0] } as Any? ?? NSNull()]
+        }
+        var rootAnchors: [UUID: UUID] = [:]
         var keys: [String: Int] = [:]
         for (index, track) in arrangement.tracks.enumerated() where track.kind == .standard && !existingFolders.contains(track.id) {
             let key = js.objectForKeyedSubscript("canonicalExistingTrackKey")!.call(withArguments: [track.name])!.toString()!
@@ -367,16 +373,19 @@ enum StemProjectImporter {
             for group in audit.groups {
                 let members = group.tracks.compactMap { keys[$0.key] }.filter { $0 >= existingTrackCount }
                 guard !members.isEmpty else { continue }
-                let folder = arrangement.tracks.first { existingFolders.contains($0.id) && js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()! == group.key }
-                let color = folder?.color ?? UInt32(group.colorHex.dropFirst(), radix: 16) ?? 0x55acbe
-                let parent = folder?.id ?? UUID()
-                if folder == nil { arrangement.tracks.append(Track(id: parent, name: group.name, role: .other, color: color)) }
-                for index in members where arrangement.tracks[index].id != parent {
-                    if arrangement.tracks[index].parentTrackID != parent {
-                        arrangement.tracks[index].parentTrackID = parent
+                struct Destination: Decodable { var folderIndex: Int?; var anchorIndex: Int? }
+                let target = try call("existingImportGroupDestination", args: [existingLayout, group.key], context: js, as: Destination.self)
+                let folder = target.folderIndex.map { arrangement.tracks[$0] }
+                let anchor = target.anchorIndex.map { arrangement.tracks[$0] }
+                let color = folder?.color ?? anchor?.color ?? UInt32(group.colorHex.dropFirst(), radix: 16) ?? 0x55acbe
+                let parent: UUID? = folder?.id ?? (anchor == nil ? UUID() : nil)
+                if folder == nil, let parent { arrangement.tracks.append(Track(id: parent, name: group.name, role: .other, color: color)) }
+                for index in members {
+                    arrangement.tracks[index].parentTrackID = parent
+                    if parent != nil {
                         arrangement.tracks[index].patch = .masterGroup
                         arrangement.tracks[index].secondaryPatch = nil; arrangement.tracks[index].outputs = nil
-                    }
+                    } else if let anchor { rootAnchors[arrangement.tracks[index].id] = anchor.id }
                     // Keep the folder saturated; new children use its softened hue.
                     let r = (color >> 16) & 255, g = (color >> 8) & 255, b = color & 255
                     func soft(_ value: UInt32) -> UInt32 { value + (255 - value) * 28 / 100 }
@@ -389,11 +398,19 @@ enum StemProjectImporter {
             // a different category or no parent at all.
             let additions = Array(arrangement.tracks.dropFirst(existingTrackCount))
             var ordered = Array(arrangement.tracks.prefix(existingTrackCount))
-            let newRoots = additions.filter { $0.parentTrackID == nil }
+            let newRoots = additions.filter { $0.parentTrackID == nil && rootAnchors[$0.id] == nil }
             if existingTrackCount == 0 {
                 ordered += newRoots.filter { js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()! != "percussivo" }
                 ordered += newRoots.filter { js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()! == "percussivo" }
             } else { ordered += newRoots }
+            var lastRootInsertion: [UUID: UUID] = [:]
+            for track in additions where rootAnchors[track.id] != nil {
+                let anchor = rootAnchors[track.id]!
+                let previous = lastRootInsertion[anchor] ?? anchor
+                if let index = ordered.firstIndex(where: { $0.id == previous }) { ordered.insert(track, at: index + 1) }
+                else { ordered.append(track) }
+                lastRootInsertion[anchor] = track.id
+            }
             let parents = Dictionary(uniqueKeysWithValues: arrangement.tracks.map { ($0.id, $0.parentTrackID) })
             func belongs(_ track: Track, to parent: UUID) -> Bool {
                 var ancestor = track.parentTrackID

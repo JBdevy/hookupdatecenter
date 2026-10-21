@@ -456,6 +456,77 @@ final class StemImportTests: XCTestCase {
         XCTAssertEqual(tracks.first { $0.name == "Guitarra Solo" }?.parentTrackID, guitars.id)
         XCTAssertEqual(tracks.filter { $0.id == guitar.id || $0.id == accordion.id }.map { $0.clips.count }, [1,1])
     }
+    func testAppendUsesExistingCategoryMembersInCustomAndMixedFolders() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try fixture(root, folder: "Song", file: "Sax.wav")
+        for name in ["FX 1", "FX 2", "Baixo", "Guitarra"] { _ = try fixture(root, folder: "Song", file: name + ".wav") }
+        var base = Project.empty(name: "Existing")
+        let others = Track(id: UUID(), name: "#OUTROS", role: .other)
+        var metal = Track(id: UUID(), name: "METAIS", role: .other)
+        metal.parentTrackID = others.id; metal.patch = .masterGroup
+        var bass = Track(id: UUID(), name: "BASS", role: .bass)
+        bass.parentTrackID = others.id; bass.patch = OutputPatch(firstChannel: 4, channelCount: 2)
+        let guitars = Track(id: UUID(), name: "Meus instrumentos", role: .other)
+        var guitar = Track(id: UUID(), name: "Guitarra Solo", role: .guitar)
+        guitar.parentTrackID = guitars.id
+        let last = Track(id: UUID(), name: "Last", role: .other)
+        base.songs[0].tracks = [others, metal, bass, guitars, guitar, last]
+        let scan = try StemProjectImporter.scan([folder])
+        let result = try StemProjectImporter.build(scan: scan, remove: "", base: base, destination: root.appendingPathComponent("Show.jl"))
+        let tracks = result.songs[0].tracks, ids = Set(base.songs[0].tracks.map(\.id))
+        XCTAssertEqual(tracks.filter { ids.contains($0.id) }.map(\.id), base.songs[0].tracks.map(\.id))
+        for original in base.songs[0].tracks {
+            var found = try XCTUnwrap(tracks.first { $0.id == original.id }); found.clips = original.clips
+            XCTAssertEqual(found, original, "Existing track metadata must stay untouched")
+        }
+        XCTAssertFalse(tracks.contains { ["Metais", "Outros", "Guitarras"].contains($0.name) })
+        for name in ["Sax", "FX 1", "FX 2"] { XCTAssertEqual(tracks.first { $0.name == name }?.parentTrackID, others.id) }
+        XCTAssertEqual(tracks.first { $0.name == "Guitarra" }?.parentTrackID, guitars.id)
+        XCTAssertEqual(tracks.first { $0.id == bass.id }?.clips.count, 1)
+        let repeated = try StemProjectImporter.build(scan: scan, remove: "", base: result, destination: root.appendingPathComponent("Show.jl"))
+        XCTAssertEqual(repeated.songs[0].tracks.map(\.id), tracks.map(\.id))
+    }
+
+    func testAppendKeepsNewCategorySiblingBesideStandaloneTrack() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try fixture(root, folder: "Song", file: "Sax.wav")
+        var base = Project.empty(name: "Existing")
+        let metal = Track(id: UUID(), name: "METAIS", role: .other)
+        let last = Track(id: UUID(), name: "Last", role: .other)
+        base.songs[0].tracks = [metal, last]
+        let result = try StemProjectImporter.build(scan: StemProjectImporter.scan([folder]), remove: "", base: base, destination: root.appendingPathComponent("Show.jl"))
+        XCTAssertEqual(result.songs[0].tracks.map(\.name), ["METAIS", "Sax", "Last"])
+        XCTAssertTrue(result.songs[0].tracks.allSatisfy { $0.parentTrackID == nil })
+    }
+
+    func testAppendRealProjectFixturePreservesEveryExistingTrack() throws {
+        guard let input = ProcessInfo.processInfo.environment["CATLIVE_ADD_PROJECT_FIXTURE"],
+              let manifest = ProcessInfo.processInfo.environment["CATLIVE_ADD_PROJECT_FILES"] else {
+            throw XCTSkip("Set the read-only project JSON and incoming filenames to verify a real arrangement")
+        }
+        let base = try JSONDecoder().decode(Project.self, from: Data(contentsOf: URL(fileURLWithPath: input)))
+        let names = try JSONDecoder().decode([String].self, from: Data(contentsOf: URL(fileURLWithPath: manifest)))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Use tiny WAVs with the exact incoming names; the customer's media and document are read-only.
+        for name in names { _ = try fixture(root, folder: "vai na marcha", file: URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent + ".wav") }
+        let scan = try StemProjectImporter.scan([root.appendingPathComponent("vai na marcha")])
+        let result = try StemProjectImporter.build(scan: scan, remove: "", base: base, destination: root.appendingPathComponent("Show.jl"))
+        let tracks = result.songs[0].tracks, originals = base.songs[0].tracks, ids = Set(originals.map(\.id))
+        XCTAssertEqual(tracks.filter { ids.contains($0.id) }.map(\.id), originals.map(\.id))
+        for original in originals {
+            var found = try XCTUnwrap(tracks.first { $0.id == original.id }); found.clips = original.clips
+            XCTAssertEqual(found, original)
+        }
+        let oldFolders = Set(originals.compactMap(\.parentTrackID))
+        XCTAssertEqual(Set(tracks.compactMap(\.parentTrackID)), oldFolders, "No new category folders are needed in this arrangement")
+        let others = try XCTUnwrap(originals.first { $0.name == "#OUTROS" })
+        XCTAssertEqual(tracks.first { $0.name == "Sax" }?.parentTrackID, others.id)
+        print("REAL_ADD_PROJECT_OK original=\(originals.count) final=\(tracks.count) new=\(tracks.filter { !ids.contains($0.id) }.map(\.name))")
+    }
+
     func testParallelImportFailureRollsBackOnlyItsOwnMediaDirectory() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

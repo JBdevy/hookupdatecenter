@@ -38,6 +38,23 @@ function groupKeyFromFolderName(folderName) {
   return '';
 }
 
+// Shared with CatLive's embedded import rules. A category can live in any
+// user-named folder, or loose in the arrangement. Resolve only where NEW
+// tracks belong; this function never changes existing parents or order.
+function existingImportGroupDestination(tracks, groupKey) {
+  const named = tracks.find(track => track.isFolder && groupKeyFromFolderName(track.name) === groupKey);
+  if (named) return { folderIndex: named.index, anchorIndex: null };
+  const members = tracks.filter(track => {
+    if (track.isFolder) return false;
+    const classification = classifyCreateProjectTrack(`${track.name}.wav`);
+    return classification.recognized && resolveCreateProjectTrackGroup(classification.name).key === groupKey;
+  });
+  const grouped = members.find(track => track.parentIndex != null && tracks.some(folder => folder.index === track.parentIndex && folder.isFolder));
+  if (grouped) return { folderIndex: grouped.parentIndex, anchorIndex: null };
+  const loose = members.filter(track => track.parentIndex == null);
+  return { folderIndex: null, anchorIndex: loose.length ? loose[loose.length - 1].index : null };
+}
+
 function parseTopLevelTrackRanges(lines) {
   const tracks = [];
   for (let index = 0; index < lines.length; index += 1) {
@@ -198,7 +215,7 @@ function auditAddProjectRpp(rppText, incomingAudit, { projectPath = '' } = {}) {
       action: existing ? 'reuse' : 'create',
       existingTrackName: existing?.name || '',
       existingTrackIndex: existing?.index ?? null,
-      targetGroupExists: model.groupFolders.has(group.key)
+      targetGroupExists: existingImportGroupDestination(model.tracks, group.key).folderIndex != null
     };
   });
   const groups = shifted.groups.map((group) => ({
@@ -272,17 +289,31 @@ function buildAddProjectRpp(rppText, audit) {
     tracks: newTracks.filter((track) => track.groupKey === group.key).sort(compareTracks)
   })).filter((group) => group.tracks.length);
 
+  // Several categories may already share one folder (e.g. brass, bass and
+  // effects in Outros). Insert them together so its closing delta moves once.
+  const destinations = new Map();
+  const newFolderChunks = [];
   for (const group of auditGroups) {
-    const existingFolder = model.groupFolders.get(group.key);
-    if (!existingFolder) {
+    const target = existingImportGroupDestination(model.tracks, group.key);
+    if (target.folderIndex != null) {
+      if (!destinations.has(target.folderIndex)) destinations.set(target.folderIndex, []);
+      destinations.get(target.folderIndex).push(...group.tracks);
+    } else if (target.anchorIndex != null) {
+      const anchor = model.tracks[target.anchorIndex], chunks = [];
+      group.tracks.forEach(track => chunks.push(...buildTrackChunk(track, audit.songs, itemCounter, anchor.color || group.color, false)));
+      addInsertion(insertions, anchor.end + 1, chunks);
+    } else {
       const chunks = [...buildFolderTrackChunk(group)];
       group.tracks.forEach((track, index) => {
         chunks.push(...buildTrackChunk(track, audit.songs, itemCounter, group.color, index === group.tracks.length - 1));
       });
-      addInsertion(insertions, model.rootClosingLine, chunks);
-      continue;
+      newFolderChunks.push(...chunks);
     }
-
+  }
+  const tailInsertions = new Map();
+  for (const [folderIndex, tracks] of destinations) {
+    const existingFolder = model.tracks[folderIndex];
+    const group = { tracks: tracks.sort(compareTracks), color: existingFolder.color };
     const directChildren = existingFolder.directChildren.map((index) => model.tracks[index]);
     const color = existingFolder.color || group.color;
     const beforeTargets = new Map();
@@ -310,16 +341,33 @@ function buildAddProjectRpp(rppText, audit) {
       if (!closingTrack || closingTrack.isBusLineIndex < 0 || closingTrack.folderDelta >= 0) {
         throw new Error(`Não foi possível inserir novas pistas dentro do grupo ${existingFolder.name}.`);
       }
-      replacements.set(closingTrack.isBusLineIndex, '    ISBUS 0 0');
-      const chunks = [];
-      tailTracks.forEach((track, index) => {
-        let chunk = buildTrackChunk(track, audit.songs, itemCounter, color, index === tailTracks.length - 1);
-        if (index === tailTracks.length - 1) chunk = replaceFolderClosingDelta(chunk, closingTrack.folderDelta);
-        chunks.push(...chunk);
-      });
-      addInsertion(insertions, closingTrack.end + 1, chunks);
+      if (!tailInsertions.has(closingTrack.index)) tailInsertions.set(closingTrack.index, []);
+      tailInsertions.get(closingTrack.index).push({ folder: existingFolder, tracks: tailTracks, color });
     }
   }
+
+  // Nested folders can end on the same original track. Keep each closing
+  // level until its new children have been inserted, deepest folder first.
+  for (const [closingIndex, batches] of tailInsertions) {
+    const closingTrack = model.tracks[closingIndex];
+    batches.sort((a, b) => b.folder.depthBefore - a.folder.depthBefore);
+    const remainingDelta = batches[0].folder.depthBefore + 1 - closingTrack.depthBefore;
+    replacements.set(closingTrack.isBusLineIndex, `    ISBUS ${remainingDelta < 0 ? 2 : 0} ${remainingDelta}`);
+    const chunks = [];
+    batches.forEach((batch, batchIndex) => {
+      const nextDepth = batchIndex + 1 < batches.length ? batches[batchIndex + 1].folder.depthBefore + 1 : closingTrack.depthAfter;
+      const closingDelta = nextDepth - (batch.folder.depthBefore + 1);
+      batch.tracks.forEach((track, index) => {
+        const last = index === batch.tracks.length - 1;
+        let chunk = buildTrackChunk(track, audit.songs, itemCounter, batch.color, last);
+        if (last) chunk = replaceFolderClosingDelta(chunk, closingDelta);
+        chunks.push(...chunk);
+      });
+    });
+    addInsertion(insertions, closingTrack.end + 1, chunks);
+  }
+
+  addInsertion(insertions, model.rootClosingLine, newFolderChunks);
 
   const recordPathLine = model.lines.findIndex((line) => /^  RECORD_PATH\s+/.test(line));
   if (recordPathLine >= 0) replacements.set(recordPathLine, '  RECORD_PATH "Media" ""');
