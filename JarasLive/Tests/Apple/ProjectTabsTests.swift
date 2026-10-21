@@ -18,7 +18,7 @@ struct TestFX { var instrumentKeys: [String] = []; var externalPlugins: [TestPlu
 enum TestRecordingMode { case midi, audio }
 struct TestTrack { var id = UUID(); var fx: TestFX?; var recordingMode = TestRecordingMode.midi }
 struct TestSong { var tracks: [TestTrack] = [] }
-struct TestProject { var id = UUID(); var name = "Unsaved"; var songs: [TestSong] = [] }
+struct TestProject { var id = UUID(); var name = "Unsaved"; var songs: [TestSong] = []; var mediaPaths: Set<String> = [] }
 struct TestSnapshot { var project = TestProject() }
 @MainActor final class ShowController {
     var snapshot = TestSnapshot()
@@ -31,6 +31,7 @@ struct TestSnapshot { var project = TestProject() }
 }
 @MainActor final class StemAudioPlayback {
     static var shared = StemAudioPlayback(engine: AVAudioEngine())
+    var activeMediaURLs: Set<URL> = []
     var armedMIDIRecordingTracks: Set<UUID> = []
     var allowed = true, closed = false, midi: [(UInt8, UInt8, UInt8)] = []
     init(engine: AVAudioEngine, auxiliarySelectedHardware: Bool = false) {}
@@ -58,6 +59,7 @@ struct TestSnapshot { var project = TestProject() }
     var projectTabIndex = 0
     var currentURL: URL?
     var recent: [URL] = []
+    var additionalProtectedMediaURLs: () -> Set<URL> = { [] }
     var activateExistingProjectTab: ((URL) -> Bool)?
     var openInNewProjectTab: ((URL) -> Void)?
     var navigateProjectTab: ((Int) -> Void)?
@@ -126,6 +128,14 @@ enum ProjectTabNavigation {
         let second = tabs.projects[1]
         precondition(first.show.isPlaying && first.show.hasUnsavedChanges && first.show.stops == 0)
         precondition(first.projectAudio !== second.projectAudio)
+        let liveMedia = URL(fileURLWithPath: "/fixtures/active.wav")
+        first.projectAudio.activeMediaURLs = [liveMedia]
+        first.show.snapshot.project.mediaPaths = ["Stems/first.wav"]
+        second.show.snapshot.project.mediaPaths = ["Stems/second.wav"]
+        let firstMedia = URL(fileURLWithPath: "/fixtures/Stems/first.wav").standardizedFileURL.resolvingSymlinksInPath()
+        let secondMedia = URL(fileURLWithPath: "/fixtures/Stems/second.wav").standardizedFileURL.resolvingSymlinksInPath()
+        precondition(second.documents.additionalProtectedMediaURLs() == [liveMedia, firstMedia])
+        precondition(first.documents.additionalProtectedMediaURLs() == [secondMedia])
         second.show.hasUnsavedChanges = true; second.show.isPlaying = true
         let remoteTabs = DAWRemoteHostBridge.projectTabsProvider()
         precondition(remoteTabs.map(\.id) == [first.remoteProjectTabID, second.remoteProjectTabID])
@@ -177,6 +187,7 @@ enum ProjectTabNavigation {
         for _ in 0..<10 { try await Task.sleep(nanoseconds: 1_000_000) }
         precondition(tabs.projects.count == 1 && tabs.active === second)
         precondition(first.projectAudio.closed && second.show.isPlaying)
+        precondition(second.documents.additionalProtectedMediaURLs().isEmpty)
         precondition(first.show.saves == 1)
         tabs.setLicenseAllowed(false)
         precondition(!first.show.isPlaying && !second.show.isPlaying)
