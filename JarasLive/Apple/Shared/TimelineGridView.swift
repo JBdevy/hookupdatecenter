@@ -47,7 +47,7 @@ enum TimelineSnapPreference {
     static let key = "jaras.timeline.snapEnabled"
     static var enabled: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
 }
-private struct TimelineMagnetIcon: Shape {
+struct TimelineMagnetIcon: Shape {
     func path(in rect: CGRect) -> Path {
         var p = Path()
         p.move(to: CGPoint(x: 4, y: 3)); p.addLine(to: CGPoint(x: 4, y: 13))

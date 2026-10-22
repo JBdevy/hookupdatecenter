@@ -9,11 +9,14 @@ struct DAWActionsList: View {
     @State private var inputKind = "keyboard"
     #endif
     @State private var category = DAWActionCategory.transport
-    private var categories: [DAWActionCategory] {
+    private var categories: [DAWActionCategory] { DAWActionCategory.allCases }
+    private var categoryActions: [DAWAction] {
         #if os(iOS)
-        [.transport, .volume, .mute, .solo, .setlist]
+        // Native iPad has a Track Mixer and teleprompter panel, but no separate
+        // Hoz-Mixer/video windows or local project tabs to control.
+        category.actions.filter { ![.toggleBarMixer, .toggleVideo, .previousProjectTab, .nextProjectTab].contains($0) }
         #else
-        DAWActionCategory.allCases
+        category.actions
         #endif
     }
     private struct ResetRequest { let action: DAWAction; let kind: String }
@@ -21,15 +24,13 @@ struct DAWActionsList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             categoryTabs
-            #if os(macOS)
             Picker("Input", selection: $inputKind) {
                 Text("Keyboard").tag("keyboard")
                 Text("MIDI").tag("midi")
             }.pickerStyle(.segmented)
-            #endif
             Text("Actions are saved for all projects.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             if !mappings.error.isEmpty { Text(mappings.error).font(.jarasCaption).foregroundStyle(.red) }
-            ForEach(category.actions.filter { inputKind == "midi" ? $0.supportsMIDI : !$0.continuous }, id: \.self) { action in
+            ForEach(categoryActions.filter { inputKind == "midi" ? $0.supportsMIDI : !$0.continuous }, id: \.self) { action in
                 let binding = mappings.actions.binding(action)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {

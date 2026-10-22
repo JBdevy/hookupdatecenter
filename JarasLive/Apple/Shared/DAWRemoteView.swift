@@ -952,6 +952,12 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var itemLayoutCache = DAWRemoteItemLayoutCache()
     @State private var setlistRowsCache = DAWRemoteSetlistRowsCache()
     @StateObject private var trackScrolling = RemoteTrackScrollController()
+    @ObservedObject private var trackVisibility = TrackVisibilityPreferences.shared
+    @State private var hardwareModifiers: HardwareKeyboardModifiers = []
+    @State private var deletingTracks: (project: UUID, song: UUID, ids: Set<UUID>)?
+    @State private var splittingItems: (project: UUID, song: UUID, ids: Set<UUID>, position: Double)?
+    @State private var nativeNormalization = false
+    @State private var nativeMarker: TimelineMarker?
     @AppStorage("jaras.remote.mixerHidden") private var mixerHidden = false
     @AppStorage("jaras.remote.trackWidth") private var savedTrackFraction = 0.30
     @AppStorage("jaras.remote.setlistWidth") private var savedSetlistFraction = 0.32
@@ -1008,6 +1014,14 @@ private struct RemoteSidebarRail<Content: View>: View {
     private var mainSetlistVisible: Bool {
         !prompterFullscreen && (prompterPanel == nil ? panelWidths.setlist > 0 : prompterSetlistFraction > 0)
     }
+    private func toggleMainTrackMixer() {
+        finishPanelResize()
+        let current = panelWidths
+        let restored = savedTrackFraction.isFinite && savedTrackFraction > 0 ? savedTrackFraction : 0.30
+        let expand = prompterPanel != nil || mixerCollapsed
+        showPrompter(nil)
+        persistPanelWidths(.init(track: expand ? min(restored, 1 - current.setlist) : 0, setlist: current.setlist))
+    }
     private func toggleMainSetlist() {
         finishPanelResize()
         let current = panelWidths
@@ -1036,21 +1050,26 @@ private struct RemoteSidebarRail<Content: View>: View {
         DAWRemoteTimelinePresentation.region(in: state)
     }
     private var visibleTracks: [DAWRemoteState.Track] {
-        guard local else { return itemLayoutCache.tracks(state.tracks, within: gridRegion) }
-        guard let move = regionMovePreview, let original = localShow?.current else { return state.tracks }
-        let song = original.previewMovingRegion(move.id, to: move.start)
+        guard local, let original = localShow?.current else { return itemLayoutCache.tracks(state.tracks, within: gridRegion) }
+        let hidden = trackVisibility.state(for: state.project).effectiveHidden(in: original.tracks, area: .trackMixer)
+        let visible = state.tracks.filter { !hidden.contains($0.id) }
+        var song = regionMovePreview.map { original.previewMovingRegion($0.id, to: $0.start) } ?? original
+        if let move = trackScrolling.itemMove {
+            song = song.movingItems(move.items, anchor: move.anchor, start: move.start, track: move.track) ?? song
+        }
+        guard regionMovePreview != nil || trackScrolling.itemMove != nil else { return visible }
         let sourceTracks = Dictionary(uniqueKeysWithValues: song.tracks.map { ($0.id, $0) })
-        return state.tracks.map { source in
+        let sourceClips = Dictionary(uniqueKeysWithValues: state.tracks.flatMap(\.clips).map { ($0.id, $0) })
+        return visible.map { source in
             guard let native = sourceTracks[source.id] else { return source }
             var track = source
             let lanes = TrackLanes(track: native)
-            let clips = Dictionary(uniqueKeysWithValues: native.clips.map { ($0.id, $0) })
             track.laneCount = lanes.count
-            for index in track.clips.indices {
-                if let clip = clips[track.clips[index].id] {
-                    track.clips[index].start = clip.startTime
-                    track.clips[index].lane = lanes.lanes[clip.id] ?? 0
-                }
+            track.clips = native.clips.compactMap { clip in
+                guard var result = sourceClips[clip.id] else { return nil }
+                result.start = clip.startTime; result.duration = clip.duration
+                result.lane = lanes.lanes[clip.id] ?? 0
+                return result
             }
             return track
         }
@@ -1068,6 +1087,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             duplicateQueueWarning = true
             return
         }
+        if local, action == .selectRegion { trackScrolling.selectionScope = .setlist }
         send(.init(project: state.project, song: state.song, action: action, target: target, value: value, playlist: playlist))
     }
     private func updatePanelSubscription() {
@@ -1075,7 +1095,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         let panel = UIDevice.current.userInterfaceIdiom == .phone ? (observer && phonePanel.subscription > 2 ? 0 : phonePanel.subscription) : (prompterPanel?.rawValue ?? (noticesOpen ? 3 : 0))
         action(.remotePanel, value: Double(panel))
     }
-    var body: some View {
+    private var workspaceContent: some View {
         VStack(spacing: 0) {
             if !observer, let tabs = state.projectTabs, tabs.count > 1 {
                 RemoteProjectTabStrip(tabs: tabs, enabled: controlsEnabled && state.projects?.busy != true) {
@@ -1138,7 +1158,10 @@ private struct RemoteSidebarRail<Content: View>: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .onChange(of: state.project) { _ in editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; tempoStepPending = false; pitchStepPending = false }
+    }
+    private var workspaceState: some View {
+        workspaceContent
+        .onChange(of: state.project) { _ in editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; trackScrolling.pointerReset = UUID(); deletingTracks = nil; splittingItems = nil; nativeMarker = nil; nativeNormalization = false; tempoStepPending = false; pitchStepPending = false }
         .onAppear {
             if local, let localShow {
                 localShow.togglePartsPanel = { [open = $sectionsOpen, list = $sectionsInList] in
@@ -1146,24 +1169,81 @@ private struct RemoteSidebarRail<Content: View>: View {
                     list.wrappedValue = true; open.wrappedValue = !wasOpen
                 }
                 localShow.toggleSetlistPanel = { toggleMainSetlist() }
+                localShow.toggleTracksPanel = { toggleMainTrackMixer() }
+                localShow.toggleTeleprompterWindow = { showPrompter(prompterPanel == .first ? nil : .first) }
             }
         }
         .onReceive(localShow?.$setlistNavigationRequest.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { request in
             guard local, let request, let localShow, let song = localShow.current else { return }
             let parts = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
             let entries: [SetlistEntry] = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search).compactMap { entry in
-                guard case .region(let row) = entry, let part = parts[row.region.id] else { return nil }
+                guard case .region(let row) = entry, let part = localShow.playlistRegion(row.region.id) ?? parts[row.region.id] else { return nil }
                 return .region(part, number: row.number ?? 0)
             }
-            localShow.stepRegion(request.direction, entries: entries)
+            if !entries.isEmpty {
+                trackScrolling.selectionScope = .setlist
+                localShow.stepRegion(request.direction, entries: entries)
+            }
         }
         .onChange(of: state.bpm) { _ in tempoStepPending = false }
         .onChange(of: state.pitchSemitones) { _ in pitchStepPending = false }
         .onChange(of: state.pitchRegion) { _ in tempoStepPending = false; pitchStepPending = false }
         .onChange(of: state.tracks.map(\.id)) { ids in selectedTracks.formIntersection(ids) }
+        .onChange(of: visibleItemIDs) { ids in
+            if local { trackScrolling.itemSelection.retain(ids) }
+        }
         .onChange(of: state.tracks.filter { $0.emphasized == true }.map(\.id)) { ids in
             if local { selectedTracks = Set(ids) }
         }
+    }
+    private var nativeEditingWorkspace: some View {
+        workspaceState
+        .background {
+            if local {
+                IpadHardwareKeyboard(enabled: nativeInputEnabled,
+                    onKey: handleNativeKey, onModifiersChanged: { hardwareModifiers = $0; trackScrolling.modifiers = $0 })
+            }
+        }
+        .alert("Delete selected tracks and their items?", isPresented: Binding(
+            get: { deletingTracks != nil }, set: { if !$0 { deletingTracks = nil } }), presenting: deletingTracks) { request in
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                if request.project == state.project, request.song == state.song { deleteNativeTracks(request.ids) }
+            }
+        }
+        .alert("Split selected items at the edit cursor?", isPresented: Binding(
+            get: { splittingItems != nil }, set: { if !$0 { splittingItems = nil } }), presenting: splittingItems) { request in
+            Button("Cancel", role: .cancel) { }
+            Button("Split") {
+                if request.project == state.project, request.song == state.song { localShow?.splitItems(request.ids, at: request.position) }
+            }
+        }
+        .sheet(isPresented: $nativeNormalization) {
+            if let localShow, let documents = DAWRemoteHostBridge.documents {
+                ItemNormalizationEditor(show: localShow, documents: documents, items: trackScrolling.itemSelection.items,
+                    close: { nativeNormalization = false })
+            }
+        }
+        .sheet(item: $nativeMarker) { marker in
+            if marker.isTempo { TempoMarkerEditor(marker: marker, save: { localShow?.setMarker($0) }) }
+            else {
+                NameColorEditor(title: marker.isSection ? "Section marker" : "Editar marcador", initialName: marker.name,
+                    initialColor: marker.color, save: { name, color in
+                        var edited = marker; edited.name = name; edited.color = color; localShow?.setMarker(edited)
+                    }, maximumNameLength: marker.isSection ? TimelineMarker.maximumSectionNameLength : TimelineMarker.maximumNameLength)
+            }
+        }
+        .onReceive(localShow?.$addTrackRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
+            if nativeInputEnabled { addTrack?() }
+        }
+        .onReceive(localShow?.$splitItemsRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in beginNativeSplit() }
+        .onReceive(localShow?.$normalizeItemsRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
+            if nativeInputEnabled, !trackScrolling.itemSelection.items.isEmpty { nativeNormalization = true }
+        }
+        .onReceive(localShow?.$tempoMarkerRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in beginNativeMarker(tempo: true) }
+    }
+    var body: some View {
+        nativeEditingWorkspace
         .background(RemoteKeyboardDismissal(active: searchFocused) { searchFocused = false })
         .background(RemoteSidebarEdgeReveal(active:
             sidebarHidden && controlsEnabled && state.projects?.busy != true &&
@@ -1179,6 +1259,117 @@ private struct RemoteSidebarRail<Content: View>: View {
                     .disabled(state.projects?.busy == true)
             }
         }
+    }
+    private var visibleItemIDs: Set<UUID> { Set(visibleTracks.flatMap(\.clips).map(\.id)) }
+    private var nativeInputEnabled: Bool {
+        local && !observer && controlsEnabled && state.projects?.busy != true && !creatingPlaylist &&
+        editingEntry == nil && !trackActionsOpen && !confirmingRemoval && !duplicateQueueWarning &&
+        !settingsOpen && !projectsOpen && !playlistPickerOpen && !timerOpen && !noticesOpen &&
+        !confirmSave && deletingTracks == nil && splittingItems == nil && !nativeNormalization &&
+        nativeMarker == nil && !searchFocused
+    }
+    private func handleNativeKey(_ event: HardwareKeyboardEvent) -> Bool {
+        guard event.phase == .down, let show = localShow else { return false }
+        if ControlMappings.shared.editing != nil { return ControlMappings.shared.handleHardwareKey(event) }
+        let flags = event.modifiers
+        let command = flags == .command || flags == .control
+        let shiftCommand = flags == [.command, .shift] || flags == [.control, .shift]
+        if command || shiftCommand {
+            switch event.keyCode {
+            case 6: // Undo / Redo
+                if !event.isRepeat { if shiftCommand { show.redo() } else { show.undo() } }
+                return true
+            case 1 where command: if !event.isRepeat { Task { await show.save() } }; return true
+            case 0 where command:
+                if trackScrolling.selectionScope == .tracks {
+                    selectedTracks = Set(visibleTracks.filter { groupableTracks.contains($0.id) }.map(\.id))
+                    show.setMixerTrackSelection(selectedTracks, anchor: selectedTracks.first)
+                } else if trackScrolling.selectionScope == .grid {
+                    trackScrolling.itemSelection.replace(Set(visibleTracks.flatMap(\.clips).map(\.id)))
+                }
+                return true
+            case 8, 7:
+                guard command, trackScrolling.selectionScope == .grid else { return false }
+                if !event.isRepeat { _ = show.copyItems(trackScrolling.itemSelection.items, moving: event.keyCode == 7) }
+                return true
+            case 9 where command:
+                if !event.isRepeat {
+                    let pasted = show.pasteItems()
+                    if !pasted.isEmpty { trackScrolling.itemSelection.replace(pasted); trackScrolling.selectionScope = .grid }
+                }
+                return true
+            case 2 where command:
+                if !event.isRepeat {
+                    if trackScrolling.selectionScope == .tracks { show.duplicateTracks(selectedTracks) }
+                    else if trackScrolling.selectionScope == .grid {
+                        let ids = show.duplicateItems(trackScrolling.itemSelection.items)
+                        if !ids.isEmpty { trackScrolling.itemSelection.replace(ids) }
+                    }
+                }
+                return true
+            default: break
+            }
+        }
+        if flags.isEmpty, event.keyCode == 51 || event.keyCode == 117 {
+            if !event.isRepeat { deleteNativeSelection() }
+            return true
+        }
+        if flags.isEmpty, event.keyCode == 53 {
+            if !event.isRepeat {
+                trackScrolling.pointerReset = UUID()
+                show.send(.escape)
+                trackScrolling.itemSelection.replace([]); selectedTracks = []
+                show.setMixerTrackSelection([], anchor: nil)
+            }
+            return true
+        }
+        if (flags == .shift || flags == .option), event.keyCode == 46 {
+            if !event.isRepeat { beginNativeMarker(section: flags == .option) }
+            return true
+        }
+        if flags == .shift, event.keyCode == 15 {
+            if !event.isRepeat { show.regionsFromSelection(trackScrolling.itemSelection.items) }
+            return true
+        }
+        return ControlMappings.shared.handleHardwareKey(event)
+    }
+    private func deleteNativeSelection() {
+        guard let show = localShow, let song = show.current else { return }
+        switch trackScrolling.selectionScope {
+        case .grid:
+            show.deleteItems(trackScrolling.itemSelection.items.intersection(visibleTracks.flatMap(\.clips).map(\.id)))
+            trackScrolling.itemSelection.retain(Set(show.current?.tracks.flatMap(\.clips).map(\.id) ?? []))
+        case .tracks:
+            let ids = selectedTracks.intersection(song.tracks.map(\.id))
+            guard !ids.isEmpty else { return }
+            if show.snapshot.project.tracksContainItems(ids) { deletingTracks = (state.project, song.id, ids) }
+            else { deleteNativeTracks(ids) }
+        case .setlist:
+            if let id = show.focusedRegion { requestRemoval(.deleteRegion, id: id, playlist: state.selectedPlaylist) }
+        }
+    }
+    private func deleteNativeTracks(_ ids: Set<UUID>) {
+        guard let show = localShow else { return }
+        show.deleteTracks(ids)
+        selectedTracks.formIntersection(show.current?.tracks.map(\.id) ?? [])
+        show.setMixerTrackSelection(selectedTracks, anchor: selectedTracks.first)
+    }
+    private func beginNativeSplit() {
+        guard nativeInputEnabled, let show = localShow, let song = show.current else { return }
+        let time = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
+        let ids = Set(song.tracks.flatMap(\.clips).filter {
+            trackScrolling.itemSelection.items.contains($0.id) && $0.startTime < time && $0.startTime + $0.duration > time
+        }.map(\.id))
+        if !ids.isEmpty { splittingItems = (state.project, song.id, ids, time) }
+    }
+    private func beginNativeMarker(section: Bool = false, tempo: Bool = false) {
+        guard nativeInputEnabled, let show = localShow, let song = show.current else { return }
+        let position = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
+        guard show.canCreateMarker(at: position, tempo: tempo), !section || show.canCreateSectionMarker(at: position) else { return }
+        let settings = song.tempoSection(at: position)
+        nativeMarker = TimelineMarker(id: UUID(), name: tempo ? "TEMPO" : "", position: position, color: 0x51ef93,
+            tempoBPM: tempo ? settings.bpm : nil, tempoBeats: tempo ? settings.beats : nil,
+            tempoUnit: tempo ? settings.unit : nil, tempoTimebase: tempo ? .global : nil, section: section ? true : nil)
     }
     private func hideSidebar() {
         finishPanelResize(); finishPrompterResize()
@@ -1263,7 +1454,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     case .mixer: trackMixer
                     case .setlist: setlist
                     case .grid:
-                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openItemFX: openItemFX,
+                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openItemFX: openItemFX,
                             control: { action($0, target: $1, value: $2) }, preview: { scrubPosition = $0 }, seek: { position in
                                 scrubPosition = nil
                                 if local { action(.seek, value: position); return }
@@ -1537,12 +1728,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                             .frame(width: railButton, height: 44).contentShape(Rectangle())
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).accessibilityLabel("Abrir barra lateral")
                     Button { withAnimation(.easeOut(duration: 0.16)) {
-                        let current = panelWidths
-                        let restored = savedTrackFraction.isFinite && savedTrackFraction > 0 ? savedTrackFraction : 0.30
-                        let expand = prompterPanel != nil || mixerCollapsed
-                        showPrompter(nil)
-                        persistPanelWidths(.init(track: expand ? restored : 0, setlist: current.setlist))
-                        livePanelWidths = nil; trackResizeStart = nil; setlistResizeStart = nil
+                        toggleMainTrackMixer()
                     } } label: {
                         Image(systemName: "slider.horizontal.3")
                             .font(.jarasSystem(size: 15, weight: .semibold))
@@ -1634,7 +1820,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 let widths = start.resizingTrack(by: translation / panelSpace)
                                 if panelWidths != widths { livePanelWidths = widths }
                             }, ended: finishPanelResize)
-                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openItemFX: openItemFX,
+                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openItemFX: openItemFX,
                             control: { action($0, target: $1, value: $2) },
                             preview: { scrubPosition = $0 }, seek: { position in
                                 scrubPosition = nil
@@ -2062,19 +2248,12 @@ private struct RemoteSidebarRail<Content: View>: View {
             // Match the grid's region, marker and time lanes so both lists
             // start at the same screen Y and have identical scroll limits.
             if local {
-                HStack(spacing: 6) {
-                    Button {
-                        editingTracks.toggle()
-                        if !editingTracks { trackReordering.cancel() }
-                    } label: {
-                        Text(editingTracks ? "Done" : "Edit").lineLimit(1).minimumScaleFactor(0.8)
-                            .frame(maxWidth: .infinity, minHeight: 32).contentShape(Rectangle())
-                    }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(editingTracks ? JarasTheme.green : JarasTheme.text)
-                    Button { addTrack?() } label: {
-                        Text(verbatim: "Add").lineLimit(1).frame(maxWidth: .infinity, minHeight: 32).contentShape(Rectangle())
-                    }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(JarasTheme.green)
-                }.font(.jarasSystem(size: 11, weight: .semibold)).padding(.horizontal, 6)
-                    .frame(height: RemoteNativeGridMetrics.rulerAreaHeight(local: local)).background(RemoteSurface.panel)
+                if let localShow {
+                    IpadTimelineToolbar(show: localShow, addTrack: { addTrack?() }, editing: Binding(
+                        get: { editingTracks }, set: { editingTracks = $0; if !$0 { trackReordering.cancel() } }))
+                        .padding(.horizontal, 4)
+                        .frame(height: RemoteNativeGridMetrics.rulerAreaHeight(local: local)).background(RemoteSurface.panel)
+                }
             } else { masterStrip }
             HStack(spacing: 1) {
                 RemoteTrackScrollRail(controller: trackScrolling).frame(width: 28)
@@ -2089,6 +2268,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 editing: local && editingTracks, selected: selectedTracks.contains(track.id),
                                 selection: selectedTracks, groupGuides: guides, isGroup: folders.contains(track.id),
                                 select: { toggleTrackSelection(track.id) }, selectionMenu: {
+                                    trackScrolling.selectionScope = .tracks
                                     if !selectedTracks.contains(track.id) { selectedTracks = [track.id]; localShow?.setMixerTrackSelection(selectedTracks, anchor: track.id) }
                                     trackActionsOpen = true
                                 }, openPatch: openPatch.map { callback in {
@@ -2115,7 +2295,13 @@ private struct RemoteSidebarRail<Content: View>: View {
         }
     }
     private func toggleTrackSelection(_ id: UUID) {
-        if editingTracks {
+        trackScrolling.selectionScope = .tracks
+        if hardwareModifiers.contains(.shift), let anchor = localShow?.selectedTrackForActions,
+           let first = visibleTracks.firstIndex(where: { $0.id == anchor }), let last = visibleTracks.firstIndex(where: { $0.id == id }) {
+            selectedTracks = Set(visibleTracks[min(first, last)...max(first, last)].map(\.id))
+            localShow?.setMixerTrackSelection(selectedTracks, anchor: anchor)
+            return
+        } else if editingTracks || !hardwareModifiers.intersection([.command, .control]).isEmpty {
             if !selectedTracks.insert(id).inserted { selectedTracks.remove(id) }
         } else { selectedTracks = [id] }
         localShow?.setMixerTrackSelection(selectedTracks, anchor: id)
@@ -2364,6 +2550,13 @@ private struct NativeRemoteSettingsView: View {
     }
 }
 
+private struct IpadNativeItemMove: Equatable {
+    let items: Set<UUID>
+    let anchor: UUID
+    let start: Double
+    let track: UUID
+}
+
 /// The center grid renders native clip geometry from the Mac state.
 private enum RemoteNativeGridMetrics {
     static let regionHeight: CGFloat = 24
@@ -2383,6 +2576,7 @@ private struct RemoteNativeTimeline: View {
     var local = false
     var localShow: ShowController? = nil
     var timelineFocus: IpadTimelineFocus? = nil
+    var editorEnabled = true
     @Binding var regionDrag: IpadRegionMovePreview?
     var openRegionActions: ((UUID) -> Void)? = nil
     var openItemMenu: ((UUID) -> Void)? = nil
@@ -2390,6 +2584,10 @@ private struct RemoteNativeTimeline: View {
     @State private var viewport = IpadTimelineViewport()
     @State private var gestureControl = IpadTimelineGestureControl()
     @State private var followsPlayback = true
+    @State private var pointerStart: (project: UUID, song: Song, item: UUID?, time: Double, point: CGPoint, selection: TimelinePointerSelection)?
+    @State private var pointerDragged = false
+    @State private var drawingMIDI = false
+    @State private var selectionRectangle: CGRect?
     let control: (DAWRemoteCommand.Action, UUID, Double) -> Void
     let preview: (Double) -> Void
     let seek: (Double) -> Void
@@ -2408,7 +2606,11 @@ private struct RemoteNativeTimeline: View {
     }
     private var presentationSong: Song? {
         guard let song = localShow?.current else { return nil }
-        return regionDrag.map { song.previewMovingRegion($0.id, to: $0.start) } ?? song
+        let preview = regionDrag.map { song.previewMovingRegion($0.id, to: $0.start) } ?? song
+        if let move = scrolling.itemMove {
+            return preview.movingItems(move.items, anchor: move.anchor, start: move.start, track: move.track) ?? preview
+        }
+        return preview
     }
     private func visibleMarkers(song: Song?) -> [TimelineMarker] {
         let markers = song?.markers ?? (state.markers ?? []).map {
@@ -2438,10 +2640,45 @@ private struct RemoteNativeTimeline: View {
                         Rectangle().fill(Color.white.opacity(0.22)).frame(height: 1 / displayScale).allowsHitTesting(false)
                     }
                     .frame(minHeight: max(0, geometry.size.height - RemoteNativeGridMetrics.rulerAreaHeight(local: local) - 1), alignment: .top)
+                    .overlay(alignment: .topLeading) {
+                        if let rectangle = selectionRectangle {
+                            Rectangle().fill(JarasTheme.green.opacity(0.16))
+                                .overlay(Rectangle().stroke(JarasTheme.green, lineWidth: 1))
+                                .frame(width: rectangle.width, height: rectangle.height)
+                                .offset(x: rectangle.minX, y: rectangle.minY).allowsHitTesting(false)
+                        }
+                    }
+                    .background {
+                        if local {
+                            IpadTimelinePointerProbe(enabled: editorEnabled && localShow?.canControl() == true,
+                                reset: scrolling.pointerReset, accepts: { point in
+                                    guard let hit = pointerItems(width: width).first(where: { $0.rect.contains(point) }) else { return true }
+                                    // Header buttons retain their normal SwiftUI click behavior.
+                                    return point.y - hit.rect.minY >= GridSelectionItem.headerHeight || point.x - hit.rect.minX >= 68
+                                }, wantsAutoScroll: { point in
+                                    guard pointerDragged else { return false }
+                                    if point.x < 20 || point.x > width - 20 { return true }
+                                    guard let scroll = scrolling.gridScrollView else { return false }
+                                    let y = point.y - scroll.contentOffset.y
+                                    return y < 24 || y > scroll.bounds.height - 24
+                                }, event: { handlePointer($0, width: width) }, wheel: { delta, modifiers in
+                                    if modifiers.contains(.command) || modifiers.contains(.control) {
+                                        scrolling.resizeTracks(exp(Double(delta.y) * 0.006)); scrolling.finishResizingTracks()
+                                    } else if modifiers.contains(.shift) || abs(delta.x) > abs(delta.y) {
+                                        pauseFollowing(); viewport.pan(pixels: Double(delta.x == 0 ? delta.y : delta.x), width: width)
+                                    } else { viewport.zoom(factor: exp(Double(delta.y) * 0.009), centeredOn: zoomCursor) }
+                                })
+                        }
+                    }
                     #if os(iOS)
                     .background(RemoteTrackScrollProbe(controller: scrolling, isGrid: true, gridTap: { fraction in
                         guard local || (!state.playing && region != nil) else { return }
-                        seek(start + fraction * span)
+                        let time = start + fraction * span
+                        if local, let song {
+                            seek(TimelineTempo.snap(time, song: song, pixelsPerSecond: width / span,
+                                enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift),
+                                includeHiddenDivisions: true, includeItemEdges: true))
+                        } else { seek(time) }
                     }))
                     #endif
                 }.background {
@@ -2522,7 +2759,14 @@ private struct RemoteNativeTimeline: View {
                     })
                 }
             }
-            .onAppear { if local { viewport.reset(duration: state.duration); viewport.center(on: zoomCursor) } }
+            .onAppear {
+                scrolling.pointerEditing = local
+                if local { viewport.reset(duration: state.duration); viewport.center(on: zoomCursor) }
+            }
+            .onDisappear { scrolling.pointerEditing = false; cancelPointer() }
+            .onChange(of: scrolling.pointerReset) { _ in cancelPointer() }
+            .onChange(of: state.project) { _ in cancelPointer() }
+            .onChange(of: localShow?.timelineMovementLocked) { locked in if locked == true { cancelPointer() } }
             .onChange(of: timelineFocus) { request in
                 if local, let request { gestureControl.cancelMotion(); followsPlayback = true; viewport.center(on: request.position) }
             }
@@ -2547,6 +2791,123 @@ private struct RemoteNativeTimeline: View {
             }
             .accessibilityAction(named: Text("Zoom in")) { if local { viewport.zoom(factor: 1.5, anchor: 0.5) } }
             .accessibilityAction(named: Text("Zoom out")) { if local { viewport.zoom(factor: 1 / 1.5, anchor: 0.5) } }
+    }
+    private func pointerItems(width: CGFloat) -> [(id: UUID, track: UUID, rect: CGRect)] {
+        var rows: [(UUID, UUID, CGRect)] = []
+        var y: CGFloat = 0
+        for track in tracks {
+            let lane = DAWRemoteItemLayout.laneHeight(track, scale: scrolling.heightScale)
+            for clip in track.clips where clip.start < end && clip.start + clip.duration > start {
+                let left = max(start, clip.start), right = min(end, clip.start + clip.duration)
+                rows.append((clip.id, track.id, CGRect(x: (left - start) / span * width,
+                    y: y + CGFloat(clip.lane ?? 0) * lane, width: (right - left) / span * width, height: lane)))
+            }
+            y += DAWRemoteItemLayout.rowHeight(track, scale: scrolling.heightScale) + 1
+        }
+        return rows
+    }
+    private func pointerTrack(at y: CGFloat) -> UUID? {
+        var top: CGFloat = 0
+        for track in tracks {
+            let height = DAWRemoteItemLayout.rowHeight(track, scale: scrolling.heightScale)
+            if y >= top && y <= top + height { return track.id }
+            top += height + 1
+        }
+        return nil
+    }
+    private func cancelPointer() {
+        pointerStart = nil; pointerDragged = false; drawingMIDI = false; selectionRectangle = nil; scrolling.itemMove = nil
+    }
+    private func handlePointer(_ event: IpadTimelinePointerEvent, width: CGFloat) {
+        guard local, let show = localShow, let song = show.current else { return }
+        scrolling.modifiers = event.modifiers
+        let hits = pointerItems(width: width)
+        let time = max(0, start + Double(event.position.x / max(1, width)) * span)
+        if event.phase == .began {
+            pauseFollowing(); scrolling.selectionScope = .grid
+            let item = hits.first { $0.rect.contains(event.position) }?.id
+            pointerStart = (show.snapshot.project.id, song, item, time, event.position, scrolling.itemSelection)
+            pointerDragged = false
+            drawingMIDI = item == nil && !event.secondary && !event.modifiers.intersection([.command, .control]).isEmpty
+            if !event.secondary {
+                scrolling.itemSelection.begin(item, additive: !event.modifiers.intersection([.command, .control]).isEmpty)
+            }
+            return
+        }
+        guard let initial = pointerStart, initial.project == show.snapshot.project.id, initial.song.id == song.id else {
+            cancelPointer(); return
+        }
+        if event.phase == .cancelled { scrolling.itemSelection = initial.selection; cancelPointer(); return }
+        if event.distance >= 3 { pointerDragged = true }
+        if pointerDragged, event.secondary {
+            let firstX = (initial.time - start) / span * width
+            let rectangle = CGRect(x: min(firstX, event.position.x), y: min(initial.point.y, event.position.y),
+                width: abs(firstX - event.position.x), height: abs(initial.point.y - event.position.y))
+            selectionRectangle = rectangle
+            var ids = Set(hits.filter { $0.rect.intersects(rectangle) }.map(\.id))
+            if !event.modifiers.intersection([.command, .control, .shift]).isEmpty { ids.formUnion(initial.selection.items) }
+            if scrolling.itemSelection.items != ids { scrolling.itemSelection.replace(ids) }
+        } else if pointerDragged, drawingMIDI, !show.timelineMovementLocked {
+            selectionRectangle = CGRect(x: min((initial.time - start) / span * width, event.position.x), y: initial.point.y - 10,
+                width: abs((initial.time - time) / span * width), height: 20)
+        } else if pointerDragged, let anchor = initial.item, !show.timelineMovementLocked,
+                  let original = initial.song.tracks.flatMap(\.clips).first(where: { $0.id == anchor }),
+                  let target = pointerTrack(at: event.position.y) {
+            if !pointerDragged || scrolling.itemSelection.anchor != anchor || !scrolling.itemSelection.items.contains(anchor) { scrolling.itemSelection.beginDrag() }
+            let ids = scrolling.itemSelection.items
+            let transport = show.snapshot.transport
+            let proposed = original.startTime + time - initial.time
+            let snapped = TimelineTempo.snap(proposed, song: initial.song, pixelsPerSecond: width / span,
+                cursor: transport.editPosition ?? transport.position,
+                enabled: TimelineSnapPreference.enabled && !event.modifiers.contains(.shift),
+                otherCursors: [transport.position] + (transport.subPlay.playing ? [transport.subPlay.position] : []),
+                includeItemEdges: true, excludingItems: ids)
+            if initial.song.movingItems(ids, anchor: anchor, start: snapped, track: target) != nil {
+                let move = IpadNativeItemMove(items: ids, anchor: anchor, start: snapped, track: target)
+                if scrolling.itemMove != move { scrolling.itemMove = move }
+            } else { scrolling.itemMove = nil }
+        } else if pointerDragged { scrolling.itemMove = nil }
+        if event.phase == .ended {
+            if event.secondary {
+                if !pointerDragged, let item = initial.item {
+                    if !scrolling.itemSelection.items.contains(item) { scrolling.itemSelection.replace([item]) }
+                    openItemMenu?(item)
+                }
+            } else {
+                if let move = scrolling.itemMove, pointerDragged {
+                    show.moveItems(move.items, anchor: move.anchor, start: move.start, track: move.track)
+                }
+                scrolling.itemSelection.end(dragged: pointerDragged)
+                if drawingMIDI, pointerDragged, !show.timelineMovementLocked, let track = pointerTrack(at: initial.point.y) {
+                    let enabled = TimelineSnapPreference.enabled && !event.modifiers.contains(.shift)
+                    let from = TimelineTempo.snap(min(initial.time, time), song: song, pixelsPerSecond: width / span,
+                        enabled: enabled, includeHiddenDivisions: true, includeItemEdges: true)
+                    let to = TimelineTempo.snap(max(initial.time, time), song: song, pixelsPerSecond: width / span,
+                        enabled: enabled, includeHiddenDivisions: true, includeItemEdges: true)
+                    if to > from, let created = show.addMIDIItem(track: track, start: from, duration: to - from) {
+                        scrolling.itemSelection.replace([created])
+                    }
+                }
+                if !pointerDragged {
+                    if let track = pointerTrack(at: initial.point.y) {
+                        show.setMixerTrackSelection([track], anchor: track)
+                    }
+                    let snapped = TimelineTempo.snap(time, song: song, pixelsPerSecond: width / span,
+                        enabled: TimelineSnapPreference.enabled && !event.modifiers.contains(.shift),
+                        includeHiddenDivisions: true, includeItemEdges: true)
+                    seek(snapped)
+                }
+            }
+            cancelPointer()
+        } else if pointerDragged {
+            if event.position.x < 20 { viewport.pan(pixels: 8, width: width) }
+            else if event.position.x > width - 20 { viewport.pan(pixels: -8, width: width) }
+            if let scroll = scrolling.gridScrollView {
+                let visibleY = event.position.y - scroll.contentOffset.y
+                if visibleY < 24 { scrolling.pointerScroll(-8) }
+                else if visibleY > scroll.bounds.height - 24 { scrolling.pointerScroll(8) }
+            }
+        }
     }
     private func gridMarks(width: CGFloat, preview: Song? = nil) -> [TimelineTimeRuler.Tick] {
         var sections = (state.gridTempo ?? []).map {
@@ -2605,7 +2966,9 @@ private struct RemoteNativeTimeline: View {
     private func regionDestination(_ id: UUID, original: Double, translation: Double, width: Double) -> Double {
         guard let song = localShow?.current else { return original }
         return TimelineTempo.snap(original + translation / max(1, width) * span, song: song,
-            pixelsPerSecond: width / span, excludingRegion: id)
+            pixelsPerSecond: width / span, cursor: localShow?.snapshot.transport.editPosition ?? position,
+            enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift),
+            excludingRegion: id, includeItemEdges: true)
     }
     private func regionLane(width: CGFloat, song: Song?) -> some View {
         ZStack(alignment: .topLeading) {
@@ -2622,7 +2985,8 @@ private struct RemoteNativeTimeline: View {
                             pauseFollowing(); openRegionActions?(part.id)
                         }, moved: { translation in
                             // Use original document coordinates throughout the gesture.
-                            guard let original = localShow?.current?.parts.first(where: { $0.id == part.id }) else { return }
+                            guard localShow?.timelineMovementLocked == false,
+                                  let original = localShow?.current?.parts.first(where: { $0.id == part.id }) else { return }
                             pauseFollowing()
                             regionDrag = IpadRegionMovePreview(id: part.id, start: regionDestination(part.id, original: original.startTime, translation: translation, width: width))
                         }, ended: { cancelled in
@@ -2717,9 +3081,25 @@ private struct RemoteNativeTimeline: View {
             scrolling: scrolling, local: local, nativeTrack: nativeSong?.tracks.first(where: { $0.id == track.id }), nativeSong: nativeSong,
             nativeDirectory: local ? DAWRemoteHostBridge.documents?.currentURL?.deletingLastPathComponent() : nil,
             nativeRevision: localShow?.projectRevision ?? 0, selectedItem: scrolling.selectedItem,
+            selectedItems: scrolling.itemSelection.items, movementLocked: localShow?.timelineMovementLocked ?? false,
+            cursorPosition: { [weak show = localShow] in
+                guard let transport = show?.snapshot.transport else { return nil }
+                return transport.editPosition ?? transport.position
+            },
             selectTrack: { localShow?.setMixerTrackSelection([track.id], anchor: track.id) },
             beginResize: { pauseFollowing() }, resizeItem: { id, left, right in localShow?.resizeItem(id, start: left, end: right) },
-            openItemMenu: openItemMenu, openItemFX: openItemFX, control: control).equatable()
+            openItemMenu: openItemMenu, openItemFX: openItemFX, control: { action, id, value in
+                let ids = scrolling.itemSelection.items
+                if local, ids.contains(id), ids.count > 1, let show = localShow {
+                    switch action {
+                    case .clipGain: show.setItemsMix(ids, gain: value)
+                    case .clipMute:
+                        let muted = show.current?.tracks.flatMap(\.clips).first(where: { $0.id == id })?.muted == true
+                        show.setItemsMix(ids, muted: !muted)
+                    default: control(action, id, value)
+                    }
+                } else { control(action, id, value) }
+            }).equatable()
     }
 
 }
@@ -2749,6 +3129,9 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     var nativeDirectory: URL? = nil
     var nativeRevision: UInt64 = 0
     var selectedItem: UUID? = nil
+    var selectedItems: Set<UUID> = []
+    var movementLocked = false
+    var cursorPosition: () -> Double? = { nil }
     var selectTrack: (() -> Void)? = nil
     var beginResize: (() -> Void)? = nil
     var resizeItem: ((UUID, Double, Double) -> Void)? = nil
@@ -2763,7 +3146,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
             lhs.track.silenced == rhs.track.silenced &&
             lhs.track.laneCount == rhs.track.laneCount && lhs.track.heightScale == rhs.track.heightScale && lhs.track.emphasized == rhs.track.emphasized &&
             lhs.width == rhs.width && lhs.displayScale == rhs.displayScale && lhs.heightScale == rhs.heightScale &&
-            lhs.selectedItem == rhs.selectedItem && lhs.start == rhs.start && lhs.end == rhs.end && lhs.span == rhs.span && lhs.nativeRevision == rhs.nativeRevision && lhs.nativeDirectory == rhs.nativeDirectory && lhs.hasRegion == rhs.hasRegion && lhs.local == rhs.local &&
+            lhs.selectedItem == rhs.selectedItem && lhs.selectedItems == rhs.selectedItems && lhs.movementLocked == rhs.movementLocked && lhs.start == rhs.start && lhs.end == rhs.end && lhs.span == rhs.span && lhs.nativeRevision == rhs.nativeRevision && lhs.nativeDirectory == rhs.nativeDirectory && lhs.hasRegion == rhs.hasRegion && lhs.local == rhs.local &&
             lhs.backgroundColor == rhs.backgroundColor && lhs.primaryColor == rhs.primaryColor &&
             lhs.secondaryColor == rhs.secondaryColor && lhs.gridLines == rhs.gridLines &&
             lhs.marks.elementsEqual(rhs.marks) { $0.time == $1.time && $0.primary == $1.primary }
@@ -2786,7 +3169,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         }
     }
     private func resize(_ id: UUID, left: Bool, translation: Double, finished: Bool, cancelled: Bool) {
-        guard local, let nativeSong, let nativeTrack,
+        guard local, !movementLocked, let nativeSong, let nativeTrack,
               let clip = nativeTrack.clips.first(where: { $0.id == id }) else { return }
         if cancelled { resizing = nil; return }
         if resizing == nil { beginResize?(); resizing = IpadItemResizePreview(original: clip, candidate: clip, secondsPerPoint: span / max(1, width)) }
@@ -2794,7 +3177,9 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         let original = preview.original
         let edge = left ? original.startTime : original.startTime + original.duration
         let target = TimelineTempo.snap(max(0, edge + translation * preview.secondsPerPoint), song: nativeSong,
-                                       pixelsPerSecond: 1 / preview.secondsPerPoint)
+                                       pixelsPerSecond: 1 / preview.secondsPerPoint, cursor: cursorPosition(),
+                                       enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift),
+                                       includeItemEdges: true, excludingItems: [id])
         let lower = left ? min(target, original.startTime + original.duration - 0.01) : original.startTime
         let upper = left ? original.startTime + original.duration : max(original.startTime + 0.01, target)
         let unchanged = lower == original.startTime && upper == original.startTime + original.duration
@@ -2839,6 +3224,11 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     select: local ? { scrolling.selectedItem = clip.id; selectTrack?() } : nil,
                     openMenu: openItemMenu.map { callback in { callback(clip.id) } }, openFX: openItemFX.map { callback in { callback(clip.id) } })
                     .equatable()
+                    .overlay {
+                        if local && selectedItems.contains(clip.id) {
+                            RoundedRectangle(cornerRadius: 3).strokeBorder(Color.white, lineWidth: 1.5).allowsHitTesting(false)
+                        }
+                    }
                     .frame(width: itemWidth, height: DAWRemoteItemLayout.laneHeight(track, scale: heightScale))
                     .offset(x: (left - start) / span * width, y: Double(clip.lane ?? 0) * DAWRemoteItemLayout.laneHeight(track, scale: heightScale))
             }
@@ -2847,7 +3237,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     start: start, end: end, span: span, width: width, heightScale: heightScale, revision: nativeRevision)
                     .allowsHitTesting(false)
             }
-            if local, let selectedItem, let clip = previewClips.first(where: { $0.id == selectedItem }) {
+            if local, !movementLocked, let selectedItem, let clip = previewClips.first(where: { $0.id == selectedItem }) {
                 let laneHeight = DAWRemoteItemLayout.laneHeight(track, scale: heightScale)
                 ForEach([true, false], id: \.self) { left in
                     let edge = left ? clip.start : clip.start + clip.duration
@@ -3737,7 +4127,17 @@ private final class IpadMixerMeterView: UIView {
 }
 
 @MainActor private final class RemoteTrackScrollController: NSObject, ObservableObject {
-    @Published var selectedItem: UUID?
+    enum SelectionScope { case grid, tracks, setlist }
+    @Published var selectionScope: SelectionScope = .grid
+    @Published var itemSelection = TimelinePointerSelection()
+    @Published var itemMove: IpadNativeItemMove?
+    @Published var pointerReset = UUID()
+    var pointerEditing = false
+    var modifiers: HardwareKeyboardModifiers = []
+    var selectedItem: UUID? {
+        get { itemSelection.anchor }
+        set { itemSelection.replace(newValue.map { [$0] } ?? []); selectionScope = .grid }
+    }
     @Published private(set) var heightScale = DAWRemoteItemLayout.heightScale(
         UserDefaults.standard.object(forKey: "jaras.remote.trackHeightScale") as? Double ?? 1)
     private var pinchStartScale: Double?
@@ -3818,6 +4218,7 @@ private final class IpadMixerMeterView: UIView {
         gridTap?(min(1, max(0, Double(x / scroll.bounds.width))))
     }
     private func receiveGridTap(_ touch: UITouch) -> Bool {
+        if pointerEditing && touch.type == .indirectPointer { return false }
         var view = touch.view
         while let candidate = view, candidate !== gridScrollView {
             if candidate is UIControl { return false }
@@ -3838,6 +4239,7 @@ private final class IpadMixerMeterView: UIView {
         area.hold?()
     }
     fileprivate func receiveItemHold(_ touch: UITouch) -> Bool {
+        if pointerEditing && touch.type == .indirectPointer { return false }
         var view = touch.view
         while let candidate = view, candidate !== gridScrollView {
             if candidate is UIControl { return false }
@@ -3898,6 +4300,13 @@ private final class IpadMixerMeterView: UIView {
                 speed *= pow(CGFloat(UIScrollView.DecelerationRate.normal.rawValue), delta * 1000)
             }
         }
+    }
+    func pointerScroll(_ delta: CGFloat) {
+        guard let grid = gridScrollView else { return }
+        let offset = DAWRemoteScrollRange.clamp(Double(grid.contentOffset.y + delta), content: Double(grid.contentSize.height),
+            viewport: Double(grid.bounds.height), topInset: Double(grid.adjustedContentInset.top), bottomInset: Double(grid.adjustedContentInset.bottom))
+        grid.setContentOffset(CGPoint(x: grid.contentOffset.x, y: offset), animated: false)
+        scrollView?.setContentOffset(CGPoint(x: scrollView?.contentOffset.x ?? 0, y: offset), animated: false)
     }
     func step(_ direction: Int) {
         momentum?.cancel(); momentum = nil

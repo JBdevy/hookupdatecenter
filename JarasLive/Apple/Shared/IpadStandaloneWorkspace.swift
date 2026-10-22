@@ -108,7 +108,7 @@ import Combine
         guard running else { return }
         running = false; subscriptions.removeAll()
         if ControlMappings.shared.endNativeSession(mappingSession) {
-            show?.togglePartsPanel = {}; show?.toggleSetlistPanel = {}
+            show?.togglePartsPanel = {}; show?.toggleSetlistPanel = {}; show?.toggleTracksPanel = {}; show?.toggleTeleprompterWindow = {}
         }
         DAWRemoteSession.nativeHost.stop()
         for index in 1...2 { TeleprompterRemote.panel(index).setEnabled(false) }
@@ -659,7 +659,7 @@ final class IpadTimelineGestureView: UIView, UIGestureRecognizerDelegate {
         // Decide from the initial touch, before a divider drag crosses into the
         // grid. Testing only at shouldBegin would steal a neighboring handle.
         guard inputEnabled, bounds.contains(touch.location(in: self)) else { return false }
-        if gestureRecognizer === panRecognizer && touch.location(in: self).y < 48 { return false }
+        if gestureRecognizer === panRecognizer && (touch.type == .indirectPointer || touch.location(in: self).y < 48) { return false }
         stopInertia()
         var touched = touch.view
         while let view = touched {

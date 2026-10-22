@@ -385,6 +385,28 @@ struct MappingTransferRequest: Identifiable {
         if editing != nil { if mode == "midi" { candidate = input; error = "" }; return }
         execute(input)
     }
+    /// The UIKit adapter has already checked text focus, presentation and scene
+    /// activity. Reuse the persisted Mac bindings and the same execution path.
+    @discardableResult func handleHardwareKey(_ event: HardwareKeyboardEvent) -> Bool {
+        guard event.phase == .down, !event.isModifier, show != nil, transferRequest == nil else { return false }
+        if editing != nil {
+            if event.keyCode == 53 { editing = nil; return true }
+            if [36, 76].contains(event.keyCode) { if !event.isRepeat, candidate != nil { save() }; return true }
+            guard mode == "keyboard" else { return true }
+            if event.modifiers.contains(.command), [12, 13, 1].contains(event.keyCode) { return true }
+            if !event.isRepeat { candidate = event.input; error = "" }
+            return true
+        }
+        if event.modifiers == .command, [8, 7, 9].contains(event.keyCode) { return false }
+        let input = event.input
+        let mappedAction = actions.matching(input)
+        guard current.contains(where: { $0.input.matches(input) }) || mappedAction != nil else { return false }
+        // AppKit's Setlist responder owns held-arrow navigation. UIKit delivers
+        // it here instead, while toggle Actions must still run only once.
+        let repeats = mappedAction?.repeats == true || mappedAction == .setlistUp || mappedAction == .setlistDown
+        if !event.isRepeat || repeats { execute(input) }
+        return true
+    }
     #if os(macOS)
     func handleKey(_ event: NSEvent) -> Bool {
         guard NSApp.isActive, transferRequest == nil else { return false }
@@ -456,6 +478,12 @@ struct ControlMappingEditor: View {
                 if !mappings.error.isEmpty { Text(LocalizedStringKey(mappings.error)).foregroundStyle(.red).font(.jarasCaption) }
                 HStack { Button("Cancel") { mappings.editing = nil }; Spacer(); Button("Save") { mappings.save() }.disabled(mappings.candidate == nil) }
             }.padding(22).frame(width: 360).background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 10)).shadow(radius: 16)
+                .background {
+                    #if os(iOS)
+                    IpadHardwareKeyboard(enabled: mappings.editing != nil && mappings.transferRequest == nil,
+                        onKey: mappings.handleHardwareKey)
+                    #endif
+                }
                 .alert("This control is already mapped.", isPresented: Binding(get: { mappings.transferRequest != nil }, set: { if !$0 { mappings.cancelTransfer() } }), presenting: mappings.transferRequest) { request in
                     Button("Cancel", role: .cancel) { mappings.cancelTransfer() }
                     Button("Transfer mapping") { mappings.confirmTransfer(request) }.keyboardShortcut(.defaultAction)
