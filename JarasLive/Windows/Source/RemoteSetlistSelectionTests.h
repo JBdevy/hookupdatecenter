@@ -52,6 +52,33 @@ inline void click(SetlistRows &rows,int row) {
         Time::getCurrentTime(),1,false));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Setlist group drag retains selected songs until release and a plain click collapses on mouse-up",[&] {
+        struct Model final : ListBoxModel {
+            SetlistRows &rows;int clicks=0;
+            explicit Model(SetlistRows &value):rows(value) {}
+            int getNumRows() override {return 4;}
+            void paintListBoxItem(int,Graphics &,int,int,bool) override {}
+            void listBoxItemClicked(int row,const MouseEvent &) override {++clicks;rows.selectRow(row,false,true);}
+        };
+        SetlistRows rows;Model model(rows);rows.setModel(&model);rows.setSize(300,200);rows.updateContent();
+        rows.selectRangeOfRows(0,1);
+        auto *row=rows.getViewport()->getViewedComponent()->getChildComponent(0);
+        require(row,"First Setlist row missing");
+        const Point<float> start{20,15};
+        const auto event=[&](Point<float> at,bool moved) {
+            return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,
+                ModifierKeys(ModifierKeys::leftButtonModifier),1,0,0,0,0,row,row,Time::getCurrentTime(),start,
+                Time::getCurrentTime(),1,moved);
+        };
+        row->mouseDown(event(start,false));
+        require(rows.getSelectedRows().size()==2 && model.clicks==0,"Mouse-down collapsed selection before drag");
+        row->mouseDrag(event({20,90},true));row->mouseUp(event({20,90},true));
+        require(rows.getSelectedRows().size()==2 && model.clicks==0,"Group drag activated a single song");
+        row->mouseDown(event(start,false));row->mouseUp(event(start,false));
+        require(rows.getSelectedRows().size()==1 && rows.getSelectedRows().contains(0) && model.clicks==1,
+                ("Plain click must select its song only on release: selected="+std::to_string(rows.getSelectedRows().size())+" clicks="+std::to_string(model.clicks)+" bounds="+row->getBounds().toString().toStdString()).c_str());
+        rows.setModel(nullptr);
+    });
     test("Remote region commands select and reveal the same Setlist row as local clicks, including repeated selections and unified children",[&] {
         const auto project=fixture();const auto &parts=project.songs[0].parts;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);

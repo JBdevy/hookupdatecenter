@@ -13,6 +13,7 @@ enum Entry { case region(Part, Int); var id: UUID { switch self { case .region(l
  let selectedRegionPlaylist: Part? = Part(id:UUID(),name:"Playlist")
  @Published var setlistEntries: [Entry] = (0..<4).map { .region(Part(id:UUID(),name:"Song \($0)"),$0) }
  @Published var setlistRevision: UInt64 = 0
+ @Published var selection: Set<UUID> = []
  var moves = 0
  func moveSetlistEntries(_ ids:Set<UUID>,relativeTo target:UUID,after:Bool) {
   guard !ids.contains(target) else { return }
@@ -27,12 +28,15 @@ struct LockedRegionDrag: ViewModifier { func body(content:Content)->some View { 
 // INSERT_SETLIST_DRAG
 struct Fixture: View {
  @ObservedObject var show:ShowController
- @State private var selection:Set<UUID>=[]
  var body:some View {
   ScrollView { LazyVStack(spacing:4) {
    ForEach(show.setlistEntries,id:\.id) { entry in
-    Button {} label:{Text(entry.id.uuidString.prefix(8)).frame(width:280,height:34).background(Color.gray.opacity(0.3)).contentShape(Rectangle())}.buttonStyle(.plain)
-     .modifier(PlaylistRegionDrag(show:show,playlist:show.selectedRegionPlaylist!.id,entry:entry.id,block:false,selection:$selection))
+    Button {} label:{Text(entry.id.uuidString.prefix(8)).frame(width:280,height:34).background(Color.gray.opacity(0.3)).contentShape(Rectangle())}.buttonStyle(SetlistPressStyle(select: {
+      let flags = NSApp.currentEvent?.modifierFlags ?? []
+      if flags.contains(.command) { if !show.selection.insert(entry.id).inserted { show.selection.remove(entry.id) } }
+      else if !(NSApp.currentEvent?.type == .leftMouseDown && show.selection.count > 1 && show.selection.contains(entry.id)) { show.selection = [entry.id] }
+     }))
+     .modifier(PlaylistRegionDrag(show:show,playlist:show.selectedRegionPlaylist!.id,entry:entry.id,block:false,selection:$show.selection, released: { show.selection = [entry.id] }))
    }
    Spacer(minLength:0)
   }.padding(10) }.frame(width:300,height:240)
@@ -77,6 +81,18 @@ MainActor.assumeIsolated {
  precondition(show.moves==moves && show.setlistEntries.map(\.id)==original,"Escape must cancel without reordering")
  drag(from:point(150,27),to:point(450,118))
  precondition(show.moves==moves && show.setlistEntries.map(\.id)==original,"dropping outside must cancel without reordering")
+ show.selection = Set(original.prefix(2)); pump(0.2)
+ drag(from:point(150,27),to:point(150,150))
+ precondition(show.setlistEntries.map(\.id)==[original[2],original[3],original[0],original[1]],
+              "dragging a selected row preserves and moves both songs in their original order")
+ precondition(show.selection == Set(original.prefix(2)), "a group drag must not collapse selection")
+ let groupMoves=show.moves
+ let click=point(150,103)
+ DispatchQueue.global().async { event(.mouseMoved,click);event(.leftMouseDown,click);event(.leftMouseUp,click) }
+ pump(0.8)
+ precondition(show.selection == [original[0]] && show.moves == groupMoves,
+              "releasing a plain click without dragging collapses to the clicked song")
+ print("SETLIST_MULTI_SELECTION_DRAG_AND_RELEASE_CLICK_OK")
  print("SETLIST_REAL_MOUSE_DROP_BEFORE_AFTER_AND_CANCEL_CLEANUP_OK")
  window.close()
 }

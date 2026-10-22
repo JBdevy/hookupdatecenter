@@ -202,6 +202,13 @@ struct SongListView: View {
         #else
         let extending = false, toggling = false
         #endif
+        #if os(macOS)
+        // Keep the complete drag payload until a plain click is released.
+        if !extending && !toggling && NSApp.currentEvent?.type == .leftMouseDown,
+           show.selectedRegionPlaylist != nil,
+           let part = show.current?.parts.first(where: { $0.id == id }), part.parentRegionID == nil,
+           selectedEntries.count > 1 && selectedEntries.contains(id) { return }
+        #endif
         if extending, let anchor = entrySelectionAnchor.map(visibleFocusID),
            let first = visible.firstIndex(where: { $0.id == anchor }), let last = visible.firstIndex(where: { $0.id == id }) {
             let range = Set(visible[min(first,last)...max(first,last)].map(\.id))
@@ -346,7 +353,7 @@ struct SongListView: View {
                                             editingMultipleSymbols = true
                                         } else { editingBlockSymbol = block.showsSymbol; editingEntry = EntryEdit(id: block.id, name: block.name, color: block.color, block: true) }
                                     }
-                                    .modifier(PlaylistRegionDrag(show: show, playlist: playlist?.id, entry: block.id, block: true, selection: $selectedEntries, name: block.name))
+                                    .modifier(PlaylistRegionDrag(show: show, playlist: playlist?.id, entry: block.id, block: true, selection: $selectedEntries, name: block.name, released: { selectEntry(block.id, visible: visible) }))
                                     .id(block.id)
                             case .region(let region, let number):
                             let active = displayedPlaying?.id == region.id
@@ -389,7 +396,7 @@ struct SongListView: View {
                                     }
                                     }
                                 }
-                                .modifier(PlaylistRegionDrag(show: show, playlist: playlist?.id, entry: region.id, block: false, selection: $selectedEntries, locked: region.parentRegionID != nil, name: region.name))
+                                .modifier(PlaylistRegionDrag(show: show, playlist: playlist?.id, entry: region.id, block: false, selection: $selectedEntries, locked: region.parentRegionID != nil, name: region.name, released: { selectEntry(region.id, visible: visible) }))
                                 .id(region.id)
                             }
                         }
@@ -1580,6 +1587,7 @@ private struct PlaylistRegionDrag: ViewModifier {
     @Binding var selection: Set<UUID>
     var locked = false
     var name = ""
+    var released: () -> Void = {}
     @ObservedObject private var drag = SetlistReorderState.shared
     private var insertionAfter: Bool? { drag.target == entry && drag.scope == scope ? drag.after : nil }
     private var scope: String { (show.current?.id.uuidString ?? "") + ":" + (playlist?.uuidString ?? "all") }
@@ -1613,7 +1621,10 @@ private struct PlaylistRegionDrag: ViewModifier {
             // A native source follows the row after LazyVStack reorders it and
             // reports cancellation, without replacing row identities or data.
             content.background(SetlistNativeDrag(identity: scope + ":" + entry.uuidString,
-                                                 name: name, state: drag, payload: dragPayload))
+                                                 name: name, state: drag, payload: dragPayload, released: {
+                let flags = NSApp.currentEvent?.modifierFlags ?? []
+                if flags.intersection([.command, .control, .shift]).isEmpty, selection.count > 1, selection.contains(entry) { released() }
+            }))
             #else
             content.onDrag { NSItemProvider(object: dragPayload() as NSString) }
             #endif
@@ -1626,9 +1637,10 @@ private struct SetlistNativeDrag: NSViewRepresentable {
     let name: String
     let state: SetlistReorderState
     let payload: () -> String
+    let released: () -> Void
     func makeNSView(context: Context) -> SetlistNativeDragView { SetlistNativeDragView() }
     func updateNSView(_ view: SetlistNativeDragView, context: Context) {
-        view.identity = identity; view.name = name; view.state = state; view.payload = payload
+        view.identity = identity; view.name = name; view.state = state; view.payload = payload; view.released = released
     }
 }
 private final class SetlistNativeDragView: NSView {
@@ -1636,6 +1648,7 @@ private final class SetlistNativeDragView: NSView {
     var name = ""
     weak var state: SetlistReorderState?
     var payload: (() -> String)?
+    var released: (() -> Void)?
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -1664,7 +1677,15 @@ private final class SetlistNativeDragView: NSView {
         }
     }
     private func handle(_ event: NSEvent) -> Bool {
-        if event.type == .leftMouseUp { pressedRow = nil; start = nil; return false }
+        if event.type == .leftMouseUp {
+            let row = pressedRow, origin = start, identity = pressedIdentity
+            reset()
+            if let row, let origin, row.window === event.window, row.identity == identity,
+               hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) < 4 {
+                row.released?()
+            }
+            return false
+        }
         if event.type == .leftMouseDown {
             pressedRow = nil; start = nil
             guard let window = event.window, window.attachedSheet == nil,

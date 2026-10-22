@@ -6,11 +6,16 @@ namespace catlive {
     class SetlistRows final : public Component {
         struct Row final : Component {
             SetlistRows &list; int index; std::unique_ptr<Component> drawer;
+            bool deferredClick=false, dragged=false;
             Row(SetlistRows &l,int i):list(l),index(i) {}
             void paint(Graphics &g) override { if(list.model) list.model->paintListBoxItem(index,g,getWidth(),getHeight(),list.selected.contains(index)); }
             void resized() override { if(drawer)drawer->setBounds(getLocalBounds()); }
             void mouseDown(const MouseEvent &e) override {
+                deferredClick=false;dragged=false;
                 if(!list.model)return;
+                deferredClick=!e.mods.isPopupMenu() && !e.mods.isShiftDown() &&
+                    !e.mods.isCommandDown() && !e.mods.isCtrlDown() &&
+                    list.selected.contains(index) && list.selected.size()>1;
                 if(!e.mods.isPopupMenu()) {
                     if(e.mods.isShiftDown()&&list.anchor>=0)list.selectRangeOfRows(std::min(list.anchor,index),std::max(list.anchor,index));
                     else if(e.mods.isCommandDown()||e.mods.isCtrlDown()) {
@@ -20,11 +25,20 @@ namespace catlive {
                     } else if(!list.selected.contains(index))list.selectRow(index,false,true);
                     list.anchor=index;
                 }
-                list.model->listBoxItemClicked(index,e);
+                if(!deferredClick)list.model->listBoxItemClicked(index,e);
+            }
+            void mouseUp(const MouseEvent &e) override {
+                const bool click=deferredClick && !dragged && !e.mouseWasDraggedSinceMouseDown() && getLocalBounds().contains(e.getPosition());
+                deferredClick=false;
+                if(click && list.model) {
+                    list.selectRow(index,false,true);
+                    list.model->listBoxItemClicked(index,e);
+                }
             }
             void mouseDoubleClick(const MouseEvent &e) override { if(list.model&&!e.mods.isPopupMenu())list.model->listBoxItemDoubleClicked(index,e); }
             void mouseDrag(const MouseEvent &e) override {
                 if(!list.model||!e.mouseWasDraggedSinceMouseDown()||e.mods.isPopupMenu())return;
+                dragged=true;
                 if(auto *container=DragAndDropContainer::findParentDragContainerFor(this);container&&!container->isDragAndDropActive()) {
                     auto description=list.model->getDragSourceDescription(list.selected);
                     if(!description.isVoid())container->startDragging(description,&list);
