@@ -3,7 +3,7 @@ class Workspace::Setlist final : public Component,
                                  public DragAndDropContainer,
                                  public DragAndDropTarget,
                                  private ListBoxModel,
-                                 private ChangeListener {
+                                 private ChangeListener, private Timer {
   public:
     explicit Setlist(Workspace &owner) : w(owner) {
         w.appearance.addChangeListener(this);
@@ -68,7 +68,7 @@ class Workspace::Setlist final : public Component,
         bypass.onClick = [this] {
             w.perform([&] { w.session.command(jaras::CommandKind::toggleMultiLoopBypass); });
         };
-        live.setColour(TextButton::buttonColourId, Colour(0xffff3030));
+        live.setColour(TextButton::buttonColourId, theme::liveOffRed);
         live.setColour(TextButton::buttonOnColourId, theme::green);
         live.setColour(TextButton::textColourOffId, Colours::black);
         live.setColour(TextButton::textColourOnId, Colours::black);
@@ -802,17 +802,30 @@ class Workspace::Setlist final : public Component,
     bool isInterestedInDragSource(const SourceDetails &details) override {
         return !searching && selectedPlaylist() && str(details.description, "type") == "catlive-playlist-regions";
     }
-    void itemDragMove(const SourceDetails &details) override {
-        auto local = details.localPosition - list.getPosition();
-        list.getViewport()->autoScroll(local.x, local.y, 24, 12);
-        dropRow = jlimit(0, (int)entries.size(), list.insertionRow(local.y + scrollY()));
+    void itemDragEnter(const SourceDetails &details) override { itemDragMove(details); }
+    void updateDropPosition() {
+        const auto local=list.getLocalPoint(nullptr,Desktop::getMousePosition());
+        list.getViewport()->autoScroll(local.x,local.y,40,18);
+        dropRow=jlimit(0,(int)entries.size(),list.insertionRow(local.y+scrollY()));
         repaint();
     }
+    void timerCallback() override {
+        if(!isDragAndDropActive() || !ModifierKeys::getCurrentModifiersRealtime().isAnyMouseButtonDown()) {
+            stopTimer();dropRow=-1;repaint();return;
+        }
+        updateDropPosition();
+    }
+    void itemDragMove(const SourceDetails &) override {
+        if(!isTimerRunning()) startTimerHz(30);
+        updateDropPosition();
+    }
     void itemDragExit(const SourceDetails &) override {
+        stopTimer();
         dropRow = -1;
         repaint();
     }
     void itemDropped(const SourceDetails &details) override {
+        stopTimer();
         if (searching || !selectedPlaylist())
             return;
         const auto payload = listValues(details.description);

@@ -352,22 +352,19 @@ private struct NativeTrackMixerControls<Meter: View, Activity: View, Controls: V
             controlSize: controlSize, dynamicTypeSize: dynamicTypeSize))
     }
     var body: some View {
-        // Create this above GeometryReader: resizing evaluates only the reader,
-        // while model/environment changes create fresh content for the same hosts.
+        // Geometry changes only propose native frames; model/environment
+        // changes create fresh content for the same retained hosts.
         // Row actions are supplied by the current content closures, including
         // the grid's stable FX/text relays. Only geometry reuses this snapshot;
         // model/action or supported environment changes replace its content.
         let snapshot = TrackMixerNativeContent(meter: hosted(meter()),
             activity: hosted(activity()), controls: hosted(controls()))
-        return GeometryReader { geometry in
-            NativeTrackMixerControlsBridge(track: track, size: geometry.size, meterWidth: meterWidth, standard: standard, snapshot: snapshot)
-                .frame(width: geometry.size.width, height: geometry.size.height)
-        }
+        return NativeTrackMixerControlsBridge(track: track, meterWidth: meterWidth, standard: standard, snapshot: snapshot)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 private struct NativeTrackMixerControlsBridge: NSViewRepresentable {
     let track: UUID
-    let size: CGSize
     let meterWidth: CGFloat
     let standard: Bool
     let snapshot: TrackMixerNativeContent
@@ -381,9 +378,16 @@ private struct NativeTrackMixerControlsBridge: NSViewRepresentable {
             view.snapshot = snapshot
             view.meter.rootView = snapshot.meter; view.activity.rootView = snapshot.activity; view.controls.rootView = snapshot.controls
         }
-        view.logicalSize = size
-        if view.frame.size != size { view.setFrameSize(size) }
         view.place()
+    }
+    @available(macOS 13, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TrackMixerNativeControlView, context: Context) -> CGSize? {
+        // Adopt this layout pass directly. A GeometryReader plus the previous
+        // native fittingSize feeds the old height back into the next row and
+        // leaves its controls centered/clipped inside the new frame.
+        let size = proposal.replacingUnspecifiedDimensions(by: CGSize(width: 248, height: 64))
+        nsView.logicalSize = size
+        return size
     }
 }
 private final class TrackMixerControlHost: NSHostingView<AnyView> {
@@ -455,7 +459,9 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
     let controls = TrackMixerControlHost(rootView: AnyView(Color.clear))
     var meterWidth: CGFloat = 40
     var standard = true
-    var logicalSize: CGSize?
+    var logicalSize: CGSize? {
+        didSet { if oldValue != logicalSize { needsLayout = true } }
+    }
     var snapshot: TrackMixerNativeContent?
     var track: UUID?
     private weak var visibilityClip: NSClipView?
@@ -593,10 +599,13 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
         func update(_ host: NSView, _ frame: CGRect) {
             host.isHidden = frame.width <= 0 || frame.height <= 0
             if host.frame != frame {
+                let resized = host.frame.size != frame.size
                 host.frame = frame
-                host.needsLayout = true
-                host.layoutSubtreeIfNeeded()
-                host.needsDisplay = true
+                // Commit all row frames before AppKit lays out their controls.
+                // Forcing a nested SwiftUI layout here repeats window-wide work
+                // for every row at the compact boundary, including detached rows.
+                // Moving a compact strip alone does not change its own layout.
+                if resized { host.needsLayout = true; host.needsDisplay = true }
             }
         }
         update(meter, frames[0]); update(activity, frames[1])
@@ -636,7 +645,10 @@ struct TrackMixerRow: View, Equatable {
     }
     static func == (lhs: Self, rhs: Self) -> Bool {
         #if os(macOS)
-        let sameHeightMode = lhs.compactHeight == rhs.compactHeight && lhs.minimalHeight == rhs.minimalHeight // Rebuild only when crossing a control-layout threshold.
+        // Native/legacy layout already hides and repositions the retained
+        // controls from its proposed height. These iPad-only content inputs
+        // must not rebuild every hosted root when crossing 64 or 56 points.
+        let sameHeightMode = true
         #else
         let sameHeightMode = lhs.compactHeight == rhs.compactHeight && lhs.minimalHeight == rhs.minimalHeight
         #endif
@@ -2176,6 +2188,7 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
         let state = TrackReorderState.shared
         state.begin(track: row.track)
         let source = TrackDragSource(); source.state = state
+        source.edgeScroll.begin(from: row)
         source.onEnd = { [weak self] in self?.pressedTrack = nil }
         state.source = source
         let item = NSDraggingItem(pasteboardWriter: ("jaras-track:" + row.track.uuidString) as NSString)
@@ -2288,11 +2301,12 @@ private struct TrackDragTitle: NSViewRepresentable {
         view.compact = compact; view.title = title; view.foreground = foreground; view.project = project; view.track = track; view.state = state; view.select = select
     }
 }
-private final class TrackDragSource: NSObject, NSDraggingSource {
+@MainActor private final class TrackDragSource: NSObject, NSDraggingSource {
+    let edgeScroll = NativeDragEdgeScroll()
     weak var state: TrackReorderState?
     var onEnd: (() -> Void)?
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .move }
-    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { state?.finish(); onEnd?() }
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { edgeScroll.stop(); state?.finish(); onEnd?() }
 }
 private final class TrackDragTitleView: NSView {
     var compact = false { didSet { if compact != oldValue { cachedLabel = nil; needsDisplay = true } } }
@@ -2346,6 +2360,7 @@ private final class TrackDragTitleView: NSView {
         self.down = nil
         state.begin(track: track)
         let source = TrackDragSource(); source.state = state; state.source = source
+        source.edgeScroll.begin(from: self)
         let item = NSDraggingItem(pasteboardWriter: ("jaras-track:" + track.uuidString) as NSString)
         let size = NSSize(width: max(1, bounds.width), height: 28)
         // The drag preview has its own native background rather than the

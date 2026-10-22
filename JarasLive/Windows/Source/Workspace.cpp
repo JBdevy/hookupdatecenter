@@ -10,6 +10,7 @@
 #include "Projection.h"
 #include "PortablePackage.h"
 #include "PortableExportPanel.h"
+#include "ProjectSavePanel.h"
 #include "TimelinePlaybackFollow.h"
 #include "ProjectMigration.h"
 #include "MissingMediaPanel.h"
@@ -1293,7 +1294,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
     }
     void mouseDrag(const MouseEvent &e) override {
         if(dragging && e.getDistanceFromDragStart()>8 && track() && jaras::fixedTrackName(track()->role).empty() && w.session.song()) {
-            dragging=false;w.startDragging(trackDrop::description(w.session.project(),*w.session.song(),id),this);
+            dragging=false;w.scrollingTrackDrag=id;w.startDragging(trackDrop::description(w.session.project(),*w.session.song(),id),this);
         }
     }
     void mouseUp(const MouseEvent &) override {dragging=false;setMouseCursor(MouseCursor::NormalCursor);}
@@ -1937,7 +1938,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             const int channels = std::max(1, (int)clip.waveformChannels.size());
                             const float top = rect.getY() + 18.f;
                             const float laneHeight = std::max(1.f, rect.getBottom() - top - 2.f) / channels;
-                            const float amplitude = laneHeight * .98f * (float)WaveformRenderer::gain(clip);
+                            const float amplitude = WaveformRenderer::fullScale(laneHeight) * (float)WaveformRenderer::gain(clip);
                             g.setColour(Colour::greyLevel(waveGray));
                             for (int channel = 0; channel < channels; ++channel) {
                                 const auto &embedded = clip.waveformChannels.empty() ? clip.waveform : clip.waveformChannels[(size_t)(clip.channelMode.value_or(0)==4 && channels>1 && channel<2 ? 1-channel : channel)];
@@ -1992,7 +1993,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         for (int channel = 0; channel < preview.channels; ++channel) {
                             Path peaks;
                             int column = -1; float low = 0, high = 0;
-                            const float middle = body.getY()+laneHeight*(channel+.5f), amplitude = laneHeight*.98f;
+                            const float middle = body.getY()+laneHeight*(channel+.5f), amplitude = WaveformRenderer::fullScale(laneHeight);
                             auto emit = [&] {
                                 if (column >= 0) peaks.addRectangle((float)column, middle-high*amplitude,
                                     1.f, std::max(1.f, (high-low)*amplitude));
@@ -2524,7 +2525,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         void commitControl() {
             if (!controlClip) return;
             const auto value=*controlClip;
-            controlClip.reset(); controlKind=ItemHeader::none;
             bool committed=false;
             t.w.perform([&] { t.w.session.edit([&](jaras::Project &project) {
                 for(auto &song:project.songs) for(auto &track:song.tracks) for(auto &clip:track.clips) if(clip.id==value.id) {
@@ -2533,6 +2533,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     clip.fadeInCurve=value.fadeInCurve; clip.fadeInSCurve=value.fadeInSCurve; clip.fadeOutCurve=value.fadeOutCurve; clip.fadeOutSCurve=value.fadeOutSCurve;
                 }
             },false); previewControl(value); committed=true; });
+            controlClip.reset(); controlKind=ItemHeader::none;
+            repaint();
             if(!committed) t.w.perform([&]{previewControl(controlOriginal);});
         }
         double startTime = 0, originalStart = 0, clipLength = 0;
@@ -3032,8 +3034,17 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     static_cast<QuietButton &>(*controls["save"]).context = [this](Point<int>) {
         if (!projectReady || session.busy || session.audio.isRecording()) return;
         auto safe = SafePointer<Workspace>(this);
-        showPanel("Exportar para CatLive iPadOS", std::make_unique<PortableExportPanel>(session,
-            [safe](std::function<void()> saved) { if (safe) safe->chooseSave(false, std::move(saved)); }), 540, 376);
+        auto panel=std::make_unique<ProjectSavePanel>(text(session.project().name), [safe](String name) {
+            if(!safe) return;
+            const auto previous=safe->session.document;
+            safe->session.renameProject(name);
+            if(previous!=File()) { RecentProjects::forget(previous); RecentProjects::remember(safe->session.document); }
+            else safe->chooseSave(false);
+        }, [safe] {
+            if(safe) safe->showPanel("Exportar para CatLive iPadOS", std::make_unique<PortableExportPanel>(safe->session,
+                [safe](std::function<void()> saved) { if(safe) safe->chooseSave(false,std::move(saved)); }),540,376);
+        });
+        CallOutBox::launchAsynchronously(std::move(panel),controls["save"]->getScreenBounds(),nullptr);
     };
     button("mixer", "Tracks", [this] {
         mixerVisible = !mixerVisible;
@@ -3160,9 +3171,9 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["mixer"]->setColour(TextButton::textColourOffId, theme::green);
     controls["setlist"]->setColour(TextButton::buttonColourId, theme::green);
     controls["setlist"]->setColour(TextButton::textColourOffId, Colours::black);
-    controls["video"]->setColour(TextButton::buttonColourId, theme::transportRed);
-    for(auto id:{"tp1","tp2","preview"})controls[id]->setColour(TextButton::buttonColourId,theme::transportRed);
-    controls["loop"]->setColour(TextButton::buttonColourId, theme::transportRed);
+    controls["video"]->setColour(TextButton::buttonColourId, theme::liveOffRed);
+    for(auto id:{"tp1","tp2","preview"})controls[id]->setColour(TextButton::buttonColourId,theme::liveOffRed);
+    controls["loop"]->setColour(TextButton::buttonColourId, theme::liveOffRed);
     controls["loop"]->setColour(TextButton::buttonOnColourId, theme::yellow);
     controls["subplay"]->setColour(TextButton::buttonOnColourId, Colour(0xffffff00));
     controls["subplay"]->setColour(TextButton::textColourOffId, Colours::black);
@@ -3191,7 +3202,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["remote"]->setColour(TextButton::textColourOffId, Colours::black);
     controls["record"]->setColour(TextButton::textColourOffId, Colours::white);
     controls["record"]->setColour(TextButton::textColourOnId, Colours::white);
-    controls["record"]->setColour(TextButton::buttonColourId, theme::transportRed);
+    controls["record"]->setColour(TextButton::buttonColourId, theme::liveOffRed);
     controls["record"]->setButtonText("REC");
     for (auto spec : std::initializer_list<std::pair<const char *, const char *>>{
              {"play", "play"}, {"subplay", "play"}, {"record", "record"},
@@ -3340,6 +3351,9 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         session.cancelTransportFadeout();
     });
     addChildComponent(*fadeoutOverlay);
+    session.audioOutputWarning = [safe = SafePointer<Workspace>(this)](String text) {
+        if(safe) safe->showError(localization::translate(text));
+    };
     session.transportFadeoutWarning = [safe = SafePointer<Workspace>(this)](String text) {
         if (safe && safe->fadeoutOverlay) safe->fadeoutOverlay->showWarning(std::move(text));
     };
@@ -3492,6 +3506,7 @@ Workspace::~Workspace() {
     session.selectionChanged = {};
     session.tick = {};
     session.transportFadeoutWarning = {};
+    session.audioOutputWarning = {};
     auth.changed = {};
     tracksViewport.removeMouseListener(this);
     tracksViewport.setViewedComponent(nullptr, false);
@@ -4461,6 +4476,23 @@ void Workspace::timerCallback() {
     for (auto *row : rows) if (row->isShowing()) row->repaint(0, 0, 22 + row->groupIndent(), row->getHeight());
     controls["remote"]->setColour(TextButton::buttonColourId, remoteHost->enabled() ? theme::green : theme::transportRed);
     controls["remote"]->setColour(TextButton::textColourOffId, remoteHost->enabled() ? Colours::black : Colours::white);
+    if(!scrollingTrackDrag.empty()) {
+        if(!isDragAndDropActive() || !ModifierKeys::getCurrentModifiersRealtime().isAnyMouseButtonDown()) scrollingTrackDrag.clear();
+        else if(const auto *song=session.song()) {
+            const auto point=tracksViewport.getLocalPoint(nullptr,Desktop::getMousePosition());
+            if(tracksViewport.getLocalBounds().contains(point)) {
+                if(tracksViewport.autoScroll(point.x,point.y,40,18)) {
+                    const int row=rowAt(point.y+tracksViewport.getViewPositionY());
+                    if(row>=0 && row<(int)song->tracks.size()) {
+                        const auto &target=song->tracks[(size_t)row];
+                        const bool after=point.y+tracksViewport.getViewPositionY()-rowTop(row)>rowHeight(row)/2;
+                        trackDropPreview=trackDrop::resolve(*song,scrollingTrackDrag,target.id,after,point.x<16);
+                        trackDropBlocked=trackDropPreview?ID{}:target.id;repaint();
+                    }
+                }
+            }
+        }
+    }
     int y = tracksViewport.getViewPositionY();
     if (y != verticalOffset) {
         verticalOffset = y;

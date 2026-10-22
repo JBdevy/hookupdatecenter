@@ -131,6 +131,19 @@ precondition(loudSource.alpha(40, 40) > 200 && quietSource.alpha(40, 40) == 0,
     "same-position source envelopes must never reuse another file's GPU pixels")
 precondition(render([envelopeFrame(loudEnvelope)]).bytes == loudSource.bytes)
 print("METAL_DERIVED_ENVELOPES_PRESERVE_SOURCE_IDENTITY_AND_GPU_PIXELS_OK")
+// Constant signed PCM envelopes test actual GPU pixels at known dBFS.
+for level: Float in [0.25, 0.5, 1] {
+    let source = envelopeFixture("calibration-\(level)", level)
+    let lane = CGRect(x: 10, y: 20, width: 108, height: 80)
+    let stroke = MetalWaveformStroke(block: source, channel: 0,
+        scale: SIMD2(10, Float(WaveformAmplitude.fullScale(channelHeight: lane.height))),
+        translation: SIMD2(20, 60), clip: lane, color: SIMD4(repeating: 1), itemRect: lane)
+    let pixels = render([stroke])
+    let rows = (20..<100).filter { pixels.alpha(40, $0) > 100 }
+    precondition(abs(Float(rows.count) - 79 * level) <= 2, "waveform must show absolute PCM amplitude, not twice its gain")
+    precondition(pixels.alpha(40, 19) == 0 && pixels.alpha(40, 100) == 0, "full scale remains inside its own lane")
+}
+print("METAL_WAVEFORM_ABSOLUTE_DBFS_CALIBRATION_OK")
 let original = render([waveform()])
 precondition(original.maximumAlpha(36, 26) > 180 && original.maximumAlpha(68, 74) > 180)
 precondition(original.maximumAlpha(36, 50) == 0, "do not replace actual samples by a synthetic centerline")

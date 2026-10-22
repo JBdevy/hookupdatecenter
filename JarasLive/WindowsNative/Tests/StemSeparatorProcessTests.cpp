@@ -8,8 +8,8 @@
 #include <windows.h>
 using namespace catlive::native::stem;
 void require(bool ok,const char *message){if(!ok)throw std::runtime_error(message);}
-int realtime(const Paths &paths) {
-    constexpr unsigned rate=48000,block=256,frames=rate*8;
+int realtime(const Paths &paths,unsigned rate) {
+    constexpr unsigned block=256;const unsigned frames=rate*30;
     Processor processor(paths,rate,false);Mix mix;mix.enabled=true;mix.gains.fill(.5f);processor.configure(mix);
     const auto startup=std::chrono::steady_clock::now();
     while(!processor.status().ready) {
@@ -17,7 +17,7 @@ int realtime(const Paths &paths) {
         require(std::chrono::steady_clock::now()-startup<std::chrono::seconds(180),"Realtime model warmup timed out");
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    processor.activate();require(processor.availableLatency()==72000,"Production latency contract differs");
+    processor.activate();require(processor.availableLatency()==rate*3/2,"Production latency contract differs");
     HANDLE timer=CreateWaitableTimerExW(nullptr,nullptr,0x2,TIMER_ALL_ACCESS);
     if(!timer)timer=CreateWaitableTimerW(nullptr,FALSE,nullptr);
     require(timer!=nullptr,"Cannot create realtime cadence timer");
@@ -50,7 +50,7 @@ int main(int argc,char **argv) {
     if(argc!=4&&argc!=5){std::cerr<<"usage: CatStemProcessTests python.exe StemIdentityWorker.py model.th [--realtime]\n";return 2;}
     try {
         const Paths fixture{std::filesystem::u8path(argv[1]),std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3])};
-        if(argc==5){require(std::string(argv[4])=="--realtime","Unknown mode");return realtime(fixture);}
+        if(argc==5){require(std::string(argv[4])=="--realtime","Unknown mode");for(unsigned rate:{44100,48000})realtime(fixture,rate);return 0;}
         for(unsigned rate:{44100,48000,96000}) {
             Processor p(fixture,rate,true);Mix mix;mix.enabled=true;p.configure(mix);p.waitReady();
             std::array<float,256> left{},right{};const auto delay=p.latency();unsigned clock=0;

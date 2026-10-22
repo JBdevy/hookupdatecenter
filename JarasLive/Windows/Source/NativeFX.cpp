@@ -12,7 +12,7 @@ struct NativeFX::Effect {
     std::array<native::vst3::MIDIEvent,4096> midi{};
     std::vector<std::unique_ptr<dsp::IIR::Filter<float>>> eq[2];
     dsp::Compressor<float> compressor;
-    dsp::Limiter<float> limiter;
+    float limiterCeiling = 1, limiterRelease = 0, limiterGain = 1;
     Reverb reverb;
     std::unique_ptr<signalsmith::stretch::SignalsmithStretch<float>> pitch;
     AudioBuffer<float> pitchInput;
@@ -34,7 +34,6 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
     unsupported.clear();
     auto append = [&](String kind, const String &key, const var &value) {
         if(kind==native::stem::effectName) {
-            if(!stemDevelopmentTesting)return; // Windows: Em desenvolvimento; keep dry audio and saved state.
             if(!get(value,"stemMix").isObject())return; // legacy offline-only Mac project
             auto e=std::make_unique<Effect>();e->kind=kind;e->key=key;
             e->stemMix.enabled=flag(value,"stemSeparatorEnabled");
@@ -46,7 +45,7 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                 if(flag(sources[i],"solo"))e->stemMix.soloMask|=1u<<i;
             }
             if(previous)for(const auto &old:previous->effects)
-                if(old->key==key&&old->stem&&old->stem->sampleRate()==unsigned(sampleRate)&&old->stem->isOffline()==offline)e->stem=old->stem;
+                if(old->key==key&&old->stem&&old->stem->sampleRate()==unsigned(sampleRate)&&old->stem->isOffline()==offline&&(!e->stemMix.enabled||old->stem->status().state!="fault"))e->stem=old->stem;
             if(!e->stem)e->stem=std::make_shared<native::stem::Processor>(native::stem::Paths::bundled(),unsigned(sampleRate),offline,prewarm&&e->stemMix.enabled);
             e->stem->configure(e->stemMix);
             effects.push_back(std::move(e));return;
@@ -141,9 +140,8 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
         }
         if (kind == "Limiter") {
             auto limiter = get(value, "limiter");
-            e->limiter.prepare(spec);
-            e->limiter.setThreshold((float)jlimit(-24.0, 0.0, num(limiter, "ceiling", -.1)));
-            e->limiter.setRelease((float)jlimit(10.0, 3000.0, num(limiter, "release", .1) * 1000));
+            e->limiterCeiling = Decibels::decibelsToGain((float)jlimit(-24.0, 0.0, num(limiter, "ceiling", -.1)));
+            e->limiterRelease = (float)std::exp(-1.0 / (sampleRate * jlimit(.01, 3.0, num(limiter, "release", .1))));
             e->makeup =
                 Decibels::decibelsToGain((float)jlimit(-24.0, 24.0, num(limiter, "inputGain")));
         }
@@ -320,8 +318,16 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
                 e->compressor.process(context);
                 buffer.applyGain(0, samples, e->makeup);
             } else {
-                buffer.applyGain(0, samples, e->makeup);
-                e->limiter.process(context);
+                // Match the Mac's linked, zero-lookahead sample-peak ceiling.
+                // JUCE's limiter normalizes to 0 dB after its threshold stage;
+                // using threshold as a ceiling therefore amplified quiet audio.
+                auto *left = buffer.getWritePointer(0), *right = buffer.getWritePointer(1);
+                for (int n = 0; n < samples; ++n) {
+                    const float peak = std::max(std::abs(left[n]), std::abs(right[n])) * e->makeup;
+                    const float target = e->makeup * std::min(1.f, e->limiterCeiling / std::max(1.e-20f, peak));
+                    e->limiterGain = target < e->limiterGain ? target : target + (e->limiterGain - target) * e->limiterRelease;
+                    left[n] *= e->limiterGain; right[n] *= e->limiterGain;
+                }
             }
         }
         if (e->kind == "Reverb") {

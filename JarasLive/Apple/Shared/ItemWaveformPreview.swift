@@ -28,11 +28,30 @@ import SwiftUI
         }
     }
     @Published private(set) var state: State?
+    private var awaitingPresentation = false
+    /// Retain the last drag frame until the base layer has rendered that value.
+    func finish(committed clip: AudioClip?) {
+        guard let state, let clip, state.applying(to: clip) == clip else { clear(); return }
+        awaitingPresentation = true
+    }
+    func didPresent(_ song: Song) {
+        guard awaitingPresentation, let expected = state,
+              let clip = song.tracks.lazy.flatMap(\.clips).first(where: { $0.id == expected.id }),
+              expected.applying(to: clip) == clip else { return }
+        // Presentation can happen inside an NSViewRepresentable update.
+        // Publish after that update, checking for a newer drag before clearing.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.awaitingPresentation, self.state == expected else { return }
+            self.clear()
+        }
+    }
     func update(id: UUID, gain: Double) {
+        awaitingPresentation = false
         let next = State(id: id, adjustment: .gain(gain))
         if state != next { state = next }
     }
     func updateFade(_ source: AudioClip, fadeIn: Bool, seconds: Double) {
+        awaitingPresentation = false
         guard seconds.isFinite else { return }
         let value = min(source.duration, max(0, seconds))
         guard value != (fadeIn ? source.fadeIn : source.fadeOut) ?? 0 else { clear(); return }
@@ -40,11 +59,12 @@ import SwiftUI
         if state != next { state = next }
     }
     func updateShape(_ source: AudioClip, fadeIn: Bool, sCurve: Bool, value: Double) {
+        awaitingPresentation = false
         guard value.isFinite else { return }
         let value = min(1, max(-1, value)), curve = source.fadeCurve(fadeIn)
         guard value != (sCurve ? curve.sCurve : curve.curvature) else { clear(); return }
         let next = State(id: source.id, adjustment: .shape(fadeIn: fadeIn, sCurve: sCurve, value: value))
         if state != next { state = next }
     }
-    func clear() { if state != nil { state = nil } }
+    func clear() { awaitingPresentation = false; if state != nil { state = nil } }
 }

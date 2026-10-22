@@ -475,6 +475,27 @@ int runTests(const File &directory) {
         session.command(jaras::CommandKind::stopAll);
         expect(Session::subCursorOpacity(.1)==1 && Session::subCursorOpacity(.6)==.3f && Session::subCursorOpacity(1)==1,"SubPlay blink differs from Mac 0.9s cycle");
     });
+    test("Project rename preserves identity and redirects Save without moving media", [&] {
+        Session s; s.newProject("Before");
+        auto folder=directory.getChildFile("rename-project");folder.createDirectory();
+        const auto old=folder.getChildFile("Before.jl"), next=folder.getChildFile("After.jl");
+        s.save(old); const auto id=s.project().id; const auto sync=s.project().projectSyncID;
+        s.renameProject("After");
+        expect(!old.existsAsFile() && next.existsAsFile() && s.document==next,"Rename did not move the document");
+        expect(s.project().id==id && s.project().projectSyncID==sync && s.mediaDirectory==folder,"Rename changed identity or media root");
+        s.save(s.document);
+        expect(ProjectCodec::decode(ProjectCodec::read(next)).name=="After","Future Save missed the renamed document");
+        old.replaceWithText("preserve"); bool rejected=false;
+        try{s.renameProject("Before");}catch(...){rejected=true;}
+        expect(rejected && old.loadFileAsString()=="preserve" && s.document==next,"Rename overwrote another file");
+    });
+    test("Missing selected audio output rejects every Play attempt", [&] {
+        Session s;s.newProject("Missing output");s.audio.deviceSessionRequested=true;
+        for(int attempt=0;attempt<2;++attempt) {
+            bool rejected=false;try{s.command(jaras::CommandKind::play);}catch(const std::exception &e){rejected=String(e.what()).contains("disconnected");}
+            expect(rejected && !s.transport().playing,"Missing output allowed Play or omitted the warning");
+        }
+    });
     test("Waveform pixels follow fade curves without altering cached peaks", [&] {
         auto data=std::make_shared<WaveformCache::Data>();data->duration=1;data->sampleRate=48000;data->frames=48000;data->sourceChannels=data->storedChannels=1;
         data->levels.push_back({256,0,188});data->owned.setSize(188*4,true);
@@ -485,11 +506,15 @@ int runTests(const File &directory) {
         const auto render=[&]{Image image(Image::ARGB,200,100,true);Graphics g(image);WaveformRenderer::draw(g,cache,data,clip,{0,0,200,100},{0,0,200,100},200,Colours::white);return image;};
         const auto extent=[](const Image &image,int x){int count=0;for(int y=18;y<98;++y)if(image.getPixelAt(x,y).getAlpha()>100)++count;return count;};
         auto linear=render();const auto full=extent(linear,100),left=extent(linear,50),right=extent(linear,150);
-        expect(full>55 && left>25 && left<38 && right>25 && right<38,"Waveform does not shrink at fade-in/out");
+        expect(full>=30 && full<=33 && left>=14 && left<=18 && right>=14 && right<=18,"Waveform does not shrink at fade-in/out");
         clip.fadeInCurve=1;clip.fadeInSCurve=1;clip.fadeOutCurve=-1;clip.fadeOutSCurve=-1;auto curved=render();
-        expect(extent(curved,50)<10 && extent(curved,150)>50,"Fine curves not reflected in waveform pixels");
+        expect(extent(curved,50)<10 && extent(curved,150)>25,"Fine curves not reflected in waveform pixels");
         expect(std::abs(data->range(0,0,1).second-.4f)<.001f,"Fade modified source peaks");
         PNGImageFormat png;auto out=directory.getChildFile("waveform-fades.png").createOutputStream();png.writeImageToStream(curved,*out);
+        clip.fadeIn.reset();clip.fadeOut.reset();clip.gain=2.5;
+        const auto fullScale=extent(render(),100);
+        clip.gain=1.25; const auto minus6=extent(render(),100);
+        expect(fullScale>=76 && fullScale<=80 && minus6>=37 && minus6<=41,"Absolute PCM waveform calibration differs from 0 dBFS / -6 dBFS");
         clip.fadeIn.reset();clip.fadeOut.reset();clip.gain=.5;clip.normalizationGain=1;
         const auto half=extent(render(),100);clip.normalizationGain=2;const auto normalized=extent(render(),100);
         expect(normalized>half*1.8&&normalized<half*2.2,"Normalization gain does not rescale cached waveform pixels");
@@ -2218,6 +2243,29 @@ int runTests(const File &directory) {
             for(int n=0;n<48000;++n){pcm.setSample(0,n,.1f);pcm.setSample(1,n,.2f);}
             expect(writer->writeFromAudioSampleBuffer(pcm,0,48000),"Cannot write LR fixture");
         }
+        // Measure the rendered PCM, not only the fader's label conversion.
+        for (const auto gains : {std::array<double,3>{0,0,0}, {-3,0,0}, {-6,0,0},
+                                 {-12,0,0}, {6,0,0}, {0,-3,0}, {-3,-3,0}, {0,0,-3}}) {
+            auto p=projectFixture(); auto &song=p.songs[0]; song.duration=1;
+            song.parts.clear(); song.markers.reset(); p.masterAutomationJSON.reset();
+            p.masterVolume=std::pow(10.0,gains[2]/20.0);
+            p.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+            jaras::Track group; group.id=uuid(); group.name="Calibration group";
+            group.volume=std::pow(10.0,gains[1]/20.0); group.patch=jaras::OutputPatch{0,2};
+            jaras::Track child; child.id=uuid(); child.name="Calibration input";
+            child.parentTrackID=group.id; child.patch=jaras::OutputPatch{-2,2};
+            child.volume=std::pow(10.0,gains[0]/20.0);
+            jaras::AudioClip clip; clip.id=uuid(); clip.duration=1;
+            clip.audioFile=jaras::AudioFile{"signal.wav",{}}; child.clips={clip}; song.tracks={group,child};
+            AudioEngine calibrated; calibrated.prepareOffline(48000);
+            calibrated.prepareSong(song,folder,{},&p); calibrated.setOffline(true); calibrated.setMixer(p,song);
+            AudioEngine::State state; state.playing=true; state.position=.1; calibrated.transport(state);
+            AudioBuffer<float> out(2,512);
+            for(int i=0;i<32;++i) calibrated.render(out.getArrayOfWritePointers(),2,512);
+            const auto measured=20.0*std::log10(std::abs(out.getSample(0,100))/.1);
+            expect(std::abs(measured-(gains[0]+gains[1]+gains[2]))<.01,
+                   "Track/group/master faders must apply the displayed dB to rendered audio");
+        }
         {
             auto p=projectFixture();auto &song=p.songs[0];song.duration=1;song.parts.clear();song.markers.reset();p.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
             auto &track=song.tracks[0];track.volume=1;track.pan=0;track.phaseInverted=false;track.fxJSON.reset();track.automationJSON.reset();track.patch=jaras::OutputPatch{1,2};track.outputs.reset();
@@ -2744,9 +2792,122 @@ int runTests(const File &directory) {
         session.audio.render(buffer.getArrayOfWritePointers(), 2, 480);
         expect(std::abs(buffer.getSample(0, 100) - .1f * Decibels::decibelsToGain(6.f)) < .002f, "Live FX redo did not restore processing");
     });
+    test("CatStem editor preserves independent source controls and saved settings", [&] {
+        auto settings=fxschema::defaults();put(settings,"stemMix",stemMix::defaults());put(settings,"stemSeparatorEnabled",true);
+        var saved;int commits=0;
+        CatStemEditor editor("Stereo source",[&]{return settings;},[&](var value,bool commit){
+            if(commit){saved=JSON::parse(JSON::toString(value));++commits;}
+        },[]{native::stem::Status value;value.state="running";value.ready=true;return value;});
+        editor.setSize(560,470);
+        auto *gain=dynamic_cast<Slider*>(editor.findChildWithID("catStemGain0"));
+        auto *mute=dynamic_cast<Button*>(editor.findChildWithID("catStemMute1"));
+        auto *solo=dynamic_cast<Button*>(editor.findChildWithID("catStemSolo2"));
+        auto *enabled=dynamic_cast<Button*>(editor.findChildWithID("catStemEnabled"));
+        expect(gain&&mute&&solo&&enabled,"Missing CatStem source controls");
+        gain->setValue(-6,sendNotificationSync);mute->setToggleState(true,sendNotification);solo->setToggleState(true,sendNotification);
+        auto sources=list(get(get(saved,"stemMix"),"sources"));
+        expect(commits>=3&&sources.size()==5,"CatStem changes were not committed");
+        expect(std::abs(num(sources[0],"gain")-Decibels::decibelsToGain(-6.))<1.e-6,"CatStem gain calibration changed on save");
+        expect(flag(sources[1],"mute")&&!flag(sources[0],"mute")&&flag(sources[2],"solo"),"CatStem controls changed another source");
+        auto snapshot=editor.createComponentSnapshot(editor.getLocalBounds());
+        auto stream=directory.getChildFile("catstem-editor.png").createOutputStream();
+        expect(stream&&PNGImageFormat().writeImageToStream(snapshot,*stream),"Cannot capture CatStem editor");
+        enabled->setToggleState(false,sendNotification);
+        expect(!flag(saved,"stemSeparatorEnabled")&&!gain->isEnabled(),"CatStem bypass was not saved/displayed");
+        expect(list(get(get(saved,"stemMix"),"sources")).size()==5,"Bypass discarded the source mix");
+    });
+    test("Native limiter respects its output ceiling and links stereo peaks without automatic makeup", [&] {
+        for(double rate:{44100.,48000.}) {
+            auto settings=fxschema::defaults();put(settings,"inserted",Array<var>{"Limiter"});put(settings,"limiterEnabled",true);
+            auto parameters=object();put(parameters,"ceiling",-6);put(parameters,"inputGain",12);put(parameters,"release",.1);put(settings,"limiter",parameters);
+            NativeFX limiter;limiter.prepare(settings,rate);
+            AudioBuffer<float> signal(2,4096);const float ceiling=Decibels::decibelsToGain(-6.f);
+            for(int block=0;block<8;++block) {
+                for(int n=0;n<4096;++n){const float sample=(n%31==0?2.f:.2f)*(n%2?1.f:-1.f);signal.setSample(0,n,sample);signal.setSample(1,n,sample*.25f);}
+                limiter.process(signal,4096);
+                for(int n=0;n<4096;++n){
+                    expect(std::abs(signal.getSample(0,n))<=ceiling+1.e-6f,"Limiter exceeded its chosen output ceiling");
+                    expect(std::abs(signal.getSample(1,n)-signal.getSample(0,n)*.25f)<1.e-6f,"Limiter changed stereo balance");
+                }
+            }
+        }
+    });
+    test("Every native FX survives live insertion edits bypass and removal with variable buffers", [&] {
+        for (int rate : {44100,48000}) {
+            const auto folder=directory.getChildFile("native-fx-continuity-"+String(rate)); folder.createDirectory();
+            const auto file=folder.getChildFile("tone.wav");
+            auto sample=[&](int channel,int64 frame) { return (float)((channel==0?.03:.015)*std::sin(
+                frame*MathConstants<double>::twoPi*(channel==0?1000:700)/rate+.2)); };
+            {
+                auto stream=file.createOutputStream(); expect(stream!=nullptr,"Cannot create native FX fixture");
+                stream->setPosition(0);stream->truncate();WavAudioFormat wav;
+                std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(),rate,2,24,{},0));
+                expect(writer!=nullptr,"Cannot create native FX WAV writer");stream.release();
+                AudioBuffer<float> tone(2,rate*30);
+                for(int c=0;c<2;++c)for(int n=0;n<tone.getNumSamples();++n)tone.setSample(c,n,sample(c,n));
+                expect(writer->writeFromAudioSampleBuffer(tone,0,tone.getNumSamples()),"Cannot write native FX tone");
+            }
+            for(const String kind : {"EQ","Compressor","Limiter","Delay","Reverb","Pitch"}) {
+                Session session;session.inspection=true;session.audio.prepareOffline(rate);session.mediaDirectory=folder;
+                auto project=projectFixture();auto &song=project.songs[0];song.duration=30;song.parts.clear();song.markers.reset();
+                project.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+                song.timeSettings.emplace();song.timeSettings->timebase=jaras::ProjectTimebase::free;
+                jaras::Track group;group.id=uuid();group.name="Group";
+                jaras::Track track;track.id=uuid();track.name="Signal";track.parentTrackID=group.id;
+                track.outputs={{-2,2}};
+                jaras::AudioClip clip;clip.id=uuid();clip.name="Signal";clip.duration=30;clip.audioFile=jaras::AudioFile{"tone.wav",{}};
+                track.clips={clip};song.tracks={group,track};project.savedCursor=jaras::SavedProjectCursor{song.id,0};
+                session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);session.command(jaras::CommandKind::play);
+                AudioBuffer<float> output(2,2048);
+                for(int n=0;n<24;++n)session.audio.render(output.getArrayOfWritePointers(),2,512);
+                auto settings=fxschema::defaults(true);
+                const String enabled=kind=="EQ"?"eqEnabled":kind=="Compressor"?"compressorEnabled":kind=="Limiter"?"limiterEnabled":
+                    kind=="Delay"?"delayEnabled":kind=="Reverb"?"reverbEnabled":"pitchEnabled";
+                for(int stage=0;stage<9;++stage) {
+                    if(stage==1){put(settings,"inserted",Array<var>{kind});put(settings,Identifier(enabled),true);}
+                    if(stage==2||stage==5)put(settings,Identifier(enabled),false);
+                    if(stage==3||stage==6)put(settings,Identifier(enabled),true);
+                    if(stage==4) {
+                        if(kind=="EQ") { auto band=object();put(band,"frequency",1000);put(band,"gain",-6);put(settings,"bands",Array<var>{band}); }
+                        if(kind=="Compressor"){put(settings,"threshold",0);put(settings,"ratio",1);put(settings,"makeup",-6);}
+                        if(kind=="Limiter"){auto parameters=object();put(parameters,"ceiling",-24);put(parameters,"inputGain",12);put(settings,"limiter",parameters);}
+                        if(kind=="Delay"){put(settings,"delayTime",.06);put(settings,"delayMix",30);put(settings,"feedback",30);}
+                        if(kind=="Reverb"){put(settings,"reverbRoom",2);put(settings,"reverbDecay",.4);put(settings,"reverbMix",30);}
+                        if(kind=="Pitch")put(settings,"pitchSemitones",3);
+                    }
+                    if(stage==7)settings=fxschema::defaults(true);
+                    if(stage==8){
+                        settings=fxschema::defaults(true);put(settings,Identifier(enabled),true);
+                        auto nested=settings.clone();put(nested,"inserted",Array<var>{kind});
+                        auto instance=object();put(instance,"id","repeat");put(instance,"kind",kind);put(instance,"settings",nested);
+                        put(settings,"instances",Array<var>{instance});put(settings,"inserted",Array<var>{kind,"Native:repeat"});
+                    }
+                    const auto position=session.audio.state().position;
+                    session.configureEffects(track.id,settings);
+                    expect(session.audio.state().playing&&session.audio.state().position==position,"Native FX edit stopped or moved transport");
+                    int rendered=0;const bool dry=stage==0||stage==2||stage==5||stage==7;
+                    const int priming=kind=="Pitch"&&(stage==4||stage==6)?(int)(rate*.15):0;
+                    const String context=kind+" stage "+String(stage)+" rate "+String(rate);
+                    for(int block=0;block<36;++block) {
+                        const int sizes[]{64,128,256,512,1024,2048},count=sizes[block%6];
+                        const auto firstFrame=(int64)std::llround(session.audio.state().position*rate);
+                        session.audio.render(output.getArrayOfWritePointers(),2,count);
+                        for(int c=0;c<2;++c){double energy=0;float error=0;
+                            for(int n=0;n<count;++n){const auto value=output.getSample(c,n);
+                                expect(std::isfinite(value)&&std::abs(value)<.15f,context+": invalid PCM or overshoot");
+                                energy+=value*value;error=std::max(error,std::abs(value-sample(c,firstFrame+n)));
+                            }
+                            if(rendered>priming)expect(energy/count>.00000025,context+": audio dropout, block "+String(block)+" channel "+String(c));
+                            if(dry&&rendered>rate*.25)expect(error<.0001f,context+": bypass/removal changed scheduled PCM");
+                        }
+                        rendered+=count;
+                    }
+                }
+            }
+        }
+    });
     test("Failed batch FX restores live audio and preserves the existing redo transaction", [&] {
-        // Exercise the dormant engine's validation failure without starting a worker.
-        const ScopedValueSetter<bool> developmentScope(stemDevelopmentTesting,true);
+        // Reject malformed settings before a model worker is started.
         Session session;
         session.inspection=true;session.mediaDirectory=directory.getChildFile("Audio");
         auto project=projectFixture();

@@ -69,3 +69,13 @@ Normal launches never load demonstration material automatically.
 Distribution
 This is a development build. See validation-status.txt for actual verified coverage
 and remaining Mac parity work. Check THIRD-PARTY-NOTICES.txt before distribution.
+
+CatStemSeparation 5
+Insert CatStem on one track or audio item and use the five source faders, Mute,
+Solo and bypass. The mix is saved in the project and remains active when its
+editor closes. The installer includes the model and inference runtime.
+Preparing the model does not block the audio callback. If inserted during Play,
+stop once after preparation to activate its latency compensation. Real-time
+availability depends on the measured processing speed of the computer. The
+engine compensates the model's 1.5-second processing delay across audio routes;
+this effect is not intended for zero-latency microphone monitoring.

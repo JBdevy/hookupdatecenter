@@ -8,6 +8,13 @@ from pathlib import Path
 import sys
 root=Path(sys.argv[1]);s=Path('Apple/Shared/TrackMixerRow.swift').read_text()
 parts=['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n', Path('Application/Transport/TransportFadeout.swift').read_text().split('extension ShowController {')[0], ('// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1])]
+# Exercise the real row equality gate, including the height-mode inputs supplied
+# by TimelineGridView. Omitting them from the fixture concealed boundary rebuilds.
+a=s.index('        #if os(macOS)', s.index('    static func ==', s.index('struct TrackMixerRow:')))
+b=s.index('        return lhs.show', a)
+parts.append('private struct FixtureHeightMode { let compactHeight: Bool; let minimalHeight: Bool }\n'
+             'private func productionHeightModesEqual(_ lhs: FixtureHeightMode, _ rhs: FixtureHeightMode) -> Bool {\n'
+             +s[a:b]+'return sameHeightMode\n}')
 for begin,end in [('struct TrackMixerHeightGeometry','\n#endif'),('private struct CompactTrackButtonStyle:','private struct TrackPanFader:'),('private struct DirectVolumeSlider:','\n#endif'),('private struct TrackDragTitle:','\n#endif')]:
  a=s.index(begin);parts.append(s[a:s.index(end,a)])
 m=Path('Apple/Shared/StemAudioPlayback.swift').read_text()
@@ -15,6 +22,10 @@ a=m.index('@MainActor final class TrackMeterLevel');parts.append(m[a:m.index('//
 a=m.index('/// Uses the existing stereo readings');parts.append(m[a:m.index('\n#if os(macOS)\nprivate final class PreparedSoundFont',a)])
 v=Path('Apple/Shared/TimelineGridView.swift').read_text()
 a=v.index('private struct TimelineTrackRowsContainer');parts.append(v[a:v.index('private struct TimelineMixerIdentity',a)])
+edge=Path('Apple/Shared/GridScrollView.swift').read_text()
+a=edge.index('@MainActor final class NativeDragEdgeScroll')
+parts.append(edge[a:edge.index('\n#endif',a)])
+parts.append('private class GridNativeScrollView: NSScrollView { func prepareSelectionScroll(to: CGPoint, horizontal: Bool) {} }')
 parts.append('''
 private enum AutomationTarget { enum Kind { case pan, volume } }
 @MainActor private final class ShowController: ObservableObject { let transportFadeout = TransportFadeout(); var projectSessionID = UUID(); @Published var snapshot = 0; func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind) -> Double? { nil } }
@@ -39,6 +50,8 @@ parts.append(Path('Tests/Apple/TrackMixerNativeControlsTests.swift').read_text()
 root.joinpath('main.swift').write_text('\n'.join(parts))
 PY
 swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift -O -target "$(uname -m)-apple-macos12.0" Apple/Shared/JarasLegacyLayout.swift "$test_dir/main.swift" -o "$test_dir/test"
+"$test_dir/test" --automatic-height
+"$test_dir/test" --mode-transition
 "$test_dir/test" --geometry
 "$test_dir/test" --behavior
 if [[ "${1:-}" == "--benchmark" ]]; then

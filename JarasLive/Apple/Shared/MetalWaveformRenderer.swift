@@ -78,16 +78,18 @@ struct MetalWaveformFrame {
 #if os(macOS)
 struct MetalWaveformView: NSViewRepresentable {
     let frame: MetalWaveformFrame
+    var didPresent: ((MetalWaveformFrame) -> Void)? = nil
     static var supportsMetal: Bool { MetalWaveformRenderer.isSupported }
     func makeNSView(context: Context) -> MetalWaveformSurface { MetalWaveformSurface() }
-    func updateNSView(_ view: MetalWaveformSurface, context: Context) { view.submit(frame) }
+    func updateNSView(_ view: MetalWaveformSurface, context: Context) { view.didPresent = didPresent; view.submit(frame) }
 }
 #else
 struct MetalWaveformView: UIViewRepresentable {
     let frame: MetalWaveformFrame
+    var didPresent: ((MetalWaveformFrame) -> Void)? = nil
     static var supportsMetal: Bool { MetalWaveformRenderer.isSupported }
     func makeUIView(context: Context) -> MetalWaveformSurface { MetalWaveformSurface() }
-    func updateUIView(_ view: MetalWaveformSurface, context: Context) { view.submit(frame) }
+    func updateUIView(_ view: MetalWaveformSurface, context: Context) { view.didPresent = didPresent; view.submit(frame) }
 }
 #endif
 
@@ -101,6 +103,7 @@ typealias MetalWaveformContainerBase = UIView
 /// always uses the viewport's native pixel size; a previous bitmap is never
 /// enlarged or translated to impersonate a waveform at another scale.
 final class MetalWaveformSurface: MetalWaveformContainerBase {
+    var didPresent: ((MetalWaveformFrame) -> Void)?
     private let renderer = MetalWaveformRenderView()
     private var latest: MetalWaveformFrame?
     private var presented: MetalWaveformFrame?
@@ -124,6 +127,7 @@ final class MetalWaveformSurface: MetalWaveformContainerBase {
             guard let self else { return }
             self.presented = frame
             self.applyPresentationGeometry()
+            self.didPresent?(frame)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

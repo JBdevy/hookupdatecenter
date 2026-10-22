@@ -97,7 +97,7 @@ struct RecordingGridOverlay: View {
                             width: rect.width, height: max(0,channelHeight-1))
                         channelInk.clip(to: Path(channelRect))
                         let middle = bodyTop+channelHeight*(Double(channel)+0.5)
-                        let transform = CGAffineTransform(a: scale, b: 0, c: 0, d: channelHeight*0.98,
+                        let transform = CGAffineTransform(a: scale, b: 0, c: 0, d: WaveformAmplitude.fullScale(channelHeight: channelHeight),
                             tx: rect.minX+Double(geometry.start)/waveform.rate*scale, ty: middle)
                         let wave = geometry.paths[channel].applying(transform)
                         if geometry.isPeakEnvelope { channelInk.fill(wave, with: .color(waveColor)) }

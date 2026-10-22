@@ -538,7 +538,7 @@ func testSpectrumWorker(rate: Double) {
         engine.connect(gain, to: engine.mainMixerNode, format: format)
         chain.attach(to: engine, input: player, format: format,
                      destinations: [AVAudioConnectionPoint(node: gain, bus: 0)])
-        precondition(chain.output === gain, "single item destination avoids an extra output mixer")
+        precondition(chain.output !== gain, "item FX retains its stable mixer boundaries across live inserts")
         precondition(chain.equalizer === chain.compressor)
         let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate * 2))!
         input.frameLength = input.frameCapacity
@@ -655,7 +655,45 @@ func testSpectrumWorker(rate: Double) {
     }
     print("INLINE_TRACK_MASTER_PEAKS_PCM_AND_UNPATCHED_CLOCK_OK")
 }
-try MainActor.assumeIsolated { try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
+@MainActor func testDefaultEQTrackFanout() throws {
+    for rate in [44100.0, 48000.0] {
+        for blockSize in [64, 128, 512, 1024, 2048] {
+            let engine = AVAudioEngine(), player = AVAudioPlayerNode(), mix = AVAudioMixerNode(), processed = AVAudioMixerNode()
+            let controls = JarasEqualizer.makeNode(), master = AVAudioMixerNode(), group = AVAudioMixerNode()
+            let chain = NativeEffectsChain(), format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+            try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 4096)
+            for node in [player, mix, processed, controls, master, group] { engine.attach(node) }
+            engine.connect(player, to: mix, format: format)
+            chain.attach(to: engine, input: mix, format: format, destinations: [AVAudioConnectionPoint(node: processed, bus: 0)])
+            engine.connect(processed, to: controls, format: format)
+            engine.connect(controls, to: [AVAudioConnectionPoint(node: master, bus: 0), AVAudioConnectionPoint(node: group, bus: 0)], fromBus: 0, format: format)
+            engine.connect(master, to: engine.mainMixerNode, fromBus: 0, toBus: 0, format: format)
+            engine.connect(group, to: engine.mainMixerNode, fromBus: 0, toBus: 1, format: format)
+            master.outputVolume = 0; group.outputVolume = 1
+            let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate * 3))!
+            pcm.frameLength = pcm.frameCapacity
+            for ch in 0..<2 { for n in 0..<Int(pcm.frameLength) { pcm.floatChannelData![ch][n] = Float(0.3 * sin(Double(n) * 2 * .pi * 1000 / rate)) } }
+            player.scheduleBuffer(pcm); try engine.start(); player.play()
+            let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096)!
+            var settings = NativeFXSettings()
+            for stage in 0..<3 {
+                if stage == 1 { settings.appendNative("EQ"); chain.apply(settings); chain.observe(["EQ"]) }
+                if stage == 2 { settings.eqEnabled = false; chain.apply(settings) }
+                var samples = [Float]()
+                for block in 0..<max(8, Int(rate * 0.3) / blockSize) {
+                    let result = try engine.renderOffline(AVAudioFrameCount(blockSize), to: out)
+                    precondition(result == .success, "track fanout render failed at block size \(blockSize)")
+                    if block >= 4 { samples.append(contentsOf: UnsafeBufferPointer(start: out.floatChannelData![0], count: Int(out.frameLength))) }
+                }
+                let level = rms(samples[...]), peak = samples.map { abs($0) }.max() ?? 0
+                precondition(level > 0.20 && level < 0.23 && peak < 0.34, "default EQ corrupts track PCM: rate=\(rate) frames=\(blockSize) stage=\(stage) rms=\(level) peak=\(peak)")
+            }
+            engine.stop()
+        }
+    }
+    print("DEFAULT_EQ_LIVE_INSERT_GROUP_FANOUT_VARIABLE_BUFFERS_OK")
+}
+try MainActor.assumeIsolated { try testDefaultEQTrackFanout(); try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
 
 
 let spectrumStart = EQSpectrum(input: Array(repeating: -72, count: EQSpectrum.binCount), output: Array(repeating: -48, count: EQSpectrum.binCount))

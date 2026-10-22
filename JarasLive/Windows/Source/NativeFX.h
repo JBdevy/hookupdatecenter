@@ -3,8 +3,6 @@
 #include "../../WindowsNative/Source/StemSeparator.h"
 #include "../../WindowsNative/Source/VST3Host.h"
 namespace catlive {
-// Enabled only by the isolated --self-test harness, never by the application.
-inline bool stemDevelopmentTesting = false;
 struct AutomationProgram;
 class NativeFX {
 public:

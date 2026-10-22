@@ -26,8 +26,12 @@ public:
     void paint(Graphics &g)override{
         const auto amplitude=read();if(amplitude<=0)return;
         const auto db=std::round(20*std::log10(amplitude)*100)/100;
-        g.setColour(colour());g.setFont(theme::semiboldFont(8));
-        g.drawText((db>=0?"+":"")+String(db,2),getLocalBounds(),Justification::centred,false);
+        const auto text=(db>=0?"+":"")+String(db,2);
+        const auto font=theme::semiboldFont(8);g.setFont(font);
+        const auto field=getLocalBounds().toFloat().withSizeKeepingCentre(std::min((float)getWidth(),GlyphArrangement::getStringWidth(font,text)+4.f),std::min(12.f,(float)getHeight()));
+        if(db>=0){g.setColour(Colours::black);g.fillRoundedRectangle(field,2);}
+        g.setColour(db>=0?Colours::red:colour());
+        g.drawText(text,field,Justification::centred,false);
     }
     void mouseDown(const MouseEvent &e)override{if(e.mods.isLeftButtonDown()){clear();repaint();}}
 };

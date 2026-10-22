@@ -279,6 +279,11 @@ enum AppStartupPresentation {
             #endif
             audio.onError = { [weak show] error in show?.message = error.localizedDescription }
             #if os(macOS)
+            show.validateAudioOutput = { try AudioDeviceSettings.shared.requireSelectedOutput() }
+            audio.onOutputDisconnected = { [weak show] in
+                guard let show, show.isPlaying else { return }
+                show.audioOutputDisconnected("Audio device disconnected. Playback stopped.")
+            }
             do { try audio.startDeviceSession() } catch { audio.onError(error) }
             #else
             AudioDeviceSettings.shared.mobileSessionEvent = { [weak self] event in self?.handleMobileAudioEvent(event) }

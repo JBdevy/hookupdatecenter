@@ -6,6 +6,8 @@ import Foundation
     let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 80, height: 100))
     let document = NSView(frame: NSRect(x: 0, y: 0, width: 80, height: 10_000))
     scroll.documentView = document; window.contentView = scroll
+    precondition(abs(20 * log10(TrackMeterLevel.PeakHold.muteThreshold) - 30) < 1e-9,
+                 "Automatic peak protection starts at +30 dB")
     let held = TrackMeterLevel()
     var peakPublications = 0
     let peakSubscription = held.peakHold.$decibels.dropFirst().sink { _ in peakPublications += 1 }
@@ -122,10 +124,11 @@ import Foundation
     level.peakHold.record(pow(10, 3.0 / 20))
     let peakText = (meterLayer("meter-peak") as! CATextLayer).string as! NSAttributedString
     precondition(peakText.string == "+3.00" && !meterLayer("meter-peak").isHidden)
-    precondition(peakText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == NSColor.white)
-    precondition(meterLayer("meter-peak").frame.minX == 13 && meterLayer("meter-peak").frame.minY > meterLayer("meter-scale-1").frame.minY)
-    precondition(meterLayer("meter-peak").frame == emptyPeakFrame,
-                 "a peak never changes the rectangle geometry or surrounding meter layout")
+    precondition(peakText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == NSColor.red)
+    precondition(meterLayer("meter-peak").frame.minX >= 13 && meterLayer("meter-peak").frame.minY > meterLayer("meter-scale-1").frame.minY)
+    precondition(emptyPeakFrame.contains(meterLayer("meter-peak").frame)
+                 && meterLayer("meter-peak").backgroundColor == NSColor.black.cgColor,
+                 "Clipping adds a tight black field inside the reserved readout without changing meter layout")
     let peakPoint = NSPoint(x: emptyPeakFrame.midX, y: emptyPeakFrame.midY)
     precondition(meter.hitTest(meter.convert(peakPoint, to: meter.superview)) === meter,
                  "only the peak-number rectangle receives the reset click")
@@ -211,9 +214,11 @@ import Foundation
         "The preexisting narrow stereo bar backgrounds are preserved")
     for decibels in [-0.01, 0.0, 3.0] {
         level.peakHold.clear(); level.peakHold.record(pow(10, decibels / 20))
-        precondition(numberColor("meter-peak") == .systemGreen,
-            "Peak color follows the name below, at and above zero dB")
+        precondition(numberColor("meter-peak") == (decibels >= 0 ? .red : .systemGreen),
+            "Peak is red from zero dB and follows the name below zero")
+        precondition(meterLayer("meter-peak").backgroundColor == (decibels >= 0 ? NSColor.black.cgColor : nil))
     }
+    level.peakHold.clear(); level.peakHold.record(pow(10, -24.0 / 20))
     meter.layer = CALayer()
     precondition(meter.layer?.backgroundColor == nil && (0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden } && numberColor("meter-peak") == .systemGreen,
         "Replacing the backing layer preserves the transparent column with only the measured peak visible")

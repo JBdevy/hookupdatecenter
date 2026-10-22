@@ -5,6 +5,9 @@ namespace catlive {
 // Source-anchored min/max columns at physical-pixel resolution; real PCM
 // extrema at close zoom. Connected contours keep fractional pans continuous.
 struct WaveformRenderer {
+    // ±1 PCM (0 dBFS) reaches the channel clipping border, not half that level.
+    static float fullScale(float channelHeight) { return std::max(0.f, channelHeight - 1.f) * .5f; }
+
     static double gain(const jaras::AudioClip &clip) {
         const auto limit=std::pow(10.,24./20);
         return jlimit(0.,limit,clip.gain.value_or(1)) * jlimit(0.,limit,clip.normalizationGain.value_or(1)) * (clip.phaseInverted.value_or(false) ? -1 : 1);
@@ -38,7 +41,7 @@ struct WaveformRenderer {
         const double visibleEnd = std::min(clip.duration, (viewport.getRight() - item.getX()) / pixelsPerSecond);
         if (visibleEnd <= visibleStart) return;
         const double loop = clip.loopLength.value_or(0), loopStart = clip.loopStart.value_or(0);
-        const float amplitude = height * .98f * (float)gain(clip);
+        const float amplitude = fullScale(height) * (float)gain(clip);
         const FadeEnvelope fade(clip, item.getX(), pixelsPerSecond);
         const float physical = jlimit(1.f, 8.f, g.getInternalContext().getPhysicalPixelScaleFactor());
         const auto step = WaveformCache::step(data->sampleRate, sourceScale * physical / 2.0);

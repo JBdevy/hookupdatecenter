@@ -14,6 +14,9 @@ lanes=lanes.replace('public ', '').replace('init(track: Track) {', 'init(track: 
 cache=grid[grid.index('@MainActor private final class TrackLayoutCache'):grid.index('@MainActor private final class RegionOverlapCache')]
 row_start=grid.index('@MainActor private struct TrackRowLayout')
 rows=grid[row_start:grid.index('private struct TimelineHeader:', row_start)]
+start=grid.index('                                        let heightRatio = slot.height')
+end=grid.index('                                            let silenced',start)
+mixer='\n@MainActor private func retainedMixerHeights(_ rows: TrackRowLayout, index: Int, slotHeight: CGFloat) -> (CGFloat, CGFloat) {\n'+grid[start:end].replace('slot.height','slotHeight')+'\nreturn (audioHeight, envelopeHeight)\n}\n'
 stubs='''import SwiftUI
 struct TrackAutomation {
  var enabled = true
@@ -32,7 +35,7 @@ final class RecordingLaneLayout {
  func count(for id: UUID, existing: Int) -> Int { max(existing, counts[id] ?? 1) }
 }
 '''
-Path(sys.argv[1]).write_text(stubs+geometry+lanes+cache+rows+Path('Application/Project/TeleprompterSettings.swift').read_text()+Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()+'\n'+Path('Tests/Apple/TrackHeightLayoutTests.swift').read_text())
+Path(sys.argv[1]).write_text(stubs+geometry+lanes+cache+rows+mixer+Path('Application/Project/TeleprompterSettings.swift').read_text()+Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()+'\n'+Path('Tests/Apple/TrackHeightLayoutTests.swift').read_text())
 PY
 swiftc -O -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

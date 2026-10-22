@@ -321,8 +321,12 @@ class SettingsPanel final : public Component, private Timer {
         const auto result = session.audio.devices.setAudioDeviceSetup(setup, true);
         if (result.isNotEmpty())
             error(result);
-        else
-            saveAudio();
+        else {
+            // A missing device at launch has no callback yet. Attach it when
+            // the user explicitly selects an available output.
+            const auto opened = session.audio.openDevice();
+            if (opened.isNotEmpty()) error(opened); else saveAudio();
+        }
         refreshLater();
     }
     void select(int index) {

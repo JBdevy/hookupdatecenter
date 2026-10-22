@@ -476,6 +476,26 @@ var Session::snapshot() const {
     auto p=project();captureExternalProjectState(audio,p);
     return ProjectCodec::encode(p, original);
 }
+void Session::renameProject(String value) {
+    jaras::projectSync::requireWritable();
+    if (busy || audio.isRecording()) throw std::runtime_error("Finish the current operation before renaming the project.");
+    const auto name = value.trim(), stem = name.upToFirstOccurrenceOf(".", false, false).toUpperCase();
+    StringArray reserved {"CON", "PRN", "AUX", "NUL"};
+    for (int i=1;i<=9;++i) { reserved.add("COM"+String(i)); reserved.add("LPT"+String(i)); }
+    if (name.isEmpty() || name.length()>180 || name.endsWithChar('.') || name.containsAnyOf("<>:\"/\\|?*") ||
+        reserved.contains(stem) || std::any_of(name.begin(),name.end(),[](juce_wchar c){return c<32;}))
+        throw std::runtime_error("Enter a valid project name.");
+    const auto previous = document;
+    const auto destination = previous == File() ? File() : previous.getSiblingFile(name+".jl");
+    if (destination != previous && destination.exists()) throw std::runtime_error("A project with this name already exists.");
+    edit([&](jaras::Project &p){p.name=utf8(name);},false);
+    if (previous != File()) {
+        save(previous);
+        if (destination != previous && !previous.moveFileTo(destination)) throw std::runtime_error("Could not rename the project file.");
+        document=destination;
+        notify();
+    }
+}
 void Session::save(const File &file) {
     jaras::projectSync::requireWritable();
     if (audio.isRecording())
@@ -770,6 +790,10 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
         throw std::runtime_error("Conclua a gravação antes de mudar a posição ou a música.");
     syncClock();
     const bool start = kind == jaras::CommandKind::play || kind == jaras::CommandKind::subPlay;
+    if (start) {
+        const auto unavailable=audio.outputAvailabilityError();
+        if (unavailable.isNotEmpty()) throw std::runtime_error(utf8(unavailable));
+    }
     if (start && canPlay && !canPlay()) {
         message = String::fromUTF8("Faça login ou ative o trial para reproduzir.");
         notify();
@@ -1793,6 +1817,12 @@ void Session::reorderSong(ID id, int direction) {
 }
 void Session::timerCallback() {
     try {
+        if ((transport().playing || transport().subPlay.playing) && audio.outputAvailabilityError().isNotEmpty()) {
+            core.execute({jaras::CommandKind::stopAll}); publishTransport(); cancelTransportFadeout();
+            message="Audio device disconnected. Playback stopped.";
+            if(audioOutputWarning) audioOutputWarning(message);
+            notify();
+        }
         if (audio.isRecording() && audio.recordedSamples() > 0 && !audio.state().playing) {
             toggleRecording();
             return;

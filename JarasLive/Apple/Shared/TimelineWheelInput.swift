@@ -53,8 +53,9 @@ private struct TimelineTrackHeightWheelTransition {
     static let duration = 0.065
     func value(at time: Double) -> CGFloat {
         let progress = min(1, max(0, (time - began) / Self.duration))
-        let eased = 1 - (1 - progress) * (1 - progress)
-        return from + (to - from) * CGFloat(0.6 + 0.4 * eased)
+        // Keep successive display frames close in size. Applying 60% of a
+        // notch immediately makes all following rows jump before smoothing.
+        return from + (to - from) * CGFloat(0.15 + 0.85 * progress)
     }
 }
 

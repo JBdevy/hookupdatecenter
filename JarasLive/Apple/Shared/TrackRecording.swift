@@ -941,7 +941,7 @@ private struct RecordingButtonStyle: ButtonStyle {
             .lineLimit(1).minimumScaleFactor(0.75)
             .frame(width: width, height: height)
             .foregroundStyle(transport ? Color.white : active ? Color.black : Color.red)
-            .background(transport ? JarasTheme.transportRed.opacity(configuration.isPressed ? 0.85 : 1) :
+            .background(transport ? (active ? JarasTheme.transportRed : JarasTheme.liveOffRed).opacity(configuration.isPressed ? 0.85 : 1) :
                 active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
                 JarasTheme.text.opacity(configuration.isPressed ? 0.24 : 0.12))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))

@@ -29,6 +29,7 @@ enum JarasTheme {
     static let accent = Color(hex: 0x79f59a)
     static let green = Color(hex: 0x69ed91)
     static let transportPlay = Color(hex: 0x24f06a)
+    static let liveOffRed = Color(hex: 0xff3030)
     static let transportRed = Color(hex: 0x8f2847)
     static let purple = Color(hex: 0xb8b8b8)
     static let yellow = Color(hex: 0xffdc52)

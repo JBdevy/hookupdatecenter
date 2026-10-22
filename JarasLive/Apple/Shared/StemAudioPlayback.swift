@@ -144,7 +144,7 @@ import SwiftUI
         @Published private(set) var decibels: Double?
         private var maximum = 0.0
         static let displayThreshold = pow(10.0, -24.0 / 20)
-        static let muteThreshold = pow(10.0, 20.0 / 20)
+        static let muteThreshold = pow(10.0, 30.0 / 20)
         func record(_ amplitude: Double) {
             guard amplitude.isFinite, amplitude >= Self.displayThreshold, amplitude > maximum else { return }
             maximum = amplitude
@@ -856,7 +856,14 @@ struct TimecodePlaybackSpan {
                 self.engine.mainMixerNode.outputVolume = self.licenseAllowed && self.outputAllowed ? 1 : 0
                 guard !self.engine.isRunning || self.outputFormatChanged else { return }
                 try self.reconfigureDevice()
-            } catch { self.onError(error) }
+            } catch {
+                #if os(macOS)
+                if self.usesSelectedHardware && !AudioDeviceSettings.shared.outputDeviceIsBound {
+                    self.stop(); self.engine.stop(); self.onOutputDisconnected?()
+                }
+                #endif
+                self.onError(error)
+            }
         }
     }
     /// Reconnect the output and resume both heads from the current transport.
@@ -1118,6 +1125,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         masterConfigured = true
     }
     var onPeakLimit: ((UUID) -> Void)?
+    var onOutputDisconnected: (() -> Void)?
     var onError: (Error) -> Void = { _ in }
     private var suspendedEffectChains: [NativeEffectsChain] = []
     #if os(iOS)
@@ -3995,8 +4003,17 @@ struct VerticalTrackMeter: NSViewRepresentable {
         if pendingPeak {
             peakLabel.isHidden = !showScale
             if showScale {
+                let clipping = (peakDB ?? -24) >= 0
                 let text = NSAttributedString(string: peakDB.map { String(format: "%+.2f", $0) } ?? "",
-                    attributes: [.font: peakOnly ? Self.peakFont : Self.compactScalePeakFont, .foregroundColor: textColor])
+                    attributes: [.font: peakOnly ? Self.peakFont : Self.compactScalePeakFont,
+                                 .foregroundColor: clipping ? NSColor.red : textColor])
+                let left: CGFloat = peakOnly ? 21 : 13
+                let available = max(0, bounds.width - left)
+                let width = clipping ? min(available, ceil(text.size().width) + 4) : available
+                peakLabel.frame.origin.x = left + (available - width) / 2
+                peakLabel.frame.size.width = width
+                peakLabel.backgroundColor = clipping ? NSColor.black.cgColor : nil
+                peakLabel.cornerRadius = 2
                 if (peakLabel.string as? NSAttributedString) != text { peakLabel.string = text }
             }
             pendingPeak = false
@@ -4062,7 +4079,7 @@ struct TrackPeakReadout: View {
     @ObservedObject var peak: TrackMeterLevel.PeakHold
     var compact = false
     var foreground: Color = .white
-    var redAtZero = false
+    var redAtZero = true
     private var fontSize: CGFloat {
         #if os(macOS)
         return 8
@@ -4083,6 +4100,8 @@ struct TrackPeakReadout: View {
                 .font(.jarasSystem(size: fontSize, weight: .bold, design: .monospaced))
                 .lineLimit(1).minimumScaleFactor(0.8)
                 .foregroundStyle(redAtZero && (peak.decibels ?? -24) >= 0 ? Color.red : foreground)
+                .padding(.horizontal, 2).padding(.vertical, 1)
+                .background(RoundedRectangle(cornerRadius: 2).fill((peak.decibels ?? -24) >= 0 ? Color.black : .clear))
                 .frame(width: readoutWidth, height: 12)
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Reset peak")

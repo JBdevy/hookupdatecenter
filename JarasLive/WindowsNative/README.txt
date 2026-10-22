@@ -107,14 +107,28 @@ uses the same CST1 framing, epochs, bounded queues, crossfade and five-source
 mixture consistency as the Mac worker. It must pass its measured realtime
 deadline and sustained throughput check before accepting realtime processing.
 
-This worker is not yet connected to the CatLive Windows audio callback or FX
-menu. Native worker I/O, latency compensation, state/mix controls and installer
-integration remain necessary. Do not describe this validation runtime as a
-shipping CatStem feature.
+The Windows application connects this worker to track/item FX, with five saved
+source gains, mute, solo, bypass, undo and export. Model loading and IPC run off
+the audio callback. The audio callback uses bounded queues; it never waits for
+inference. The verified runtime and FP32 graph are included in ZIP/installer.
 
-Windows CPU benchmark (2026-10-16, user's Intel notebook): 0.740–0.805 s per
-steady inference, 0.763 s with nonzero input, against a 0.302 s compute budget
-and 0.186 s hop. Five-stem mixture reconstruction error was 4.66e-10. This
-CPU path is not realtime eligible on this notebook; app integration must not
-silently enable it and cause underruns. Accelerated or offline processing
-remains to be implemented and validated before exposing the feature.
+OpenVINO uses an available Intel GPU or CPU, falling back to the pinned Torch
+backend if needed. Warmup checks sustained throughput before admitting realtime
+processing. A device that misses the deadline retains original audio and exposes
+an error in the editor; it must not slow down playback. One realtime inference
+worker is admitted at a time. Offline export has its own worker lease.
+
+The fixed model delay is 66150 frames at 44100 Hz (1.5 seconds), rescaled to the
+host rate. Parallel tracks, sends, direct hardware routes, the audible cursor,
+and exports compensate for this delay. A newly loaded worker is admitted at a
+stopped transport boundary so enabling it cannot jump a running show. This is
+not zero-latency microphone monitoring.
+
+Validation commands:
+  CatStemProcessTests.exe python.exe stream_windows.py model.th --realtime
+uses the actual production model for 30 seconds each at 44100 and 48000 Hz,
+checking finite PCM, reconstruction, deadlines and underrun/overrun counters.
+  Windows/scripts/test-catstem-runtime.ps1
+uses a separate identity worker to verify exact samples through groups, sends,
+hardware routing, both heads, loops, part jumps, seeking, bypass and export.
+The identity tests never replace or modify the production worker or model.

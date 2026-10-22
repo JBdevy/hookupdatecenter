@@ -521,6 +521,7 @@ public struct ShowTimelinePresentationState: Equatable {
         catch { message = error.localizedDescription; return false }
     }
     @Published public var message = ""
+    public var validateAudioOutput: () throws -> Void = {}
     @Published public var modalNotice: String?
     @Published public private(set) var lastSavedAt: String?
     public var current: Song? { snapshot.project.songs.first { $0.id == snapshot.transport.songId } }
@@ -1479,6 +1480,15 @@ public struct ShowTimelinePresentationState: Equatable {
         } catch { message = error.localizedDescription }
     }
     public var selectedLoopArea: () -> ClosedRange<Double>? = { nil }
+    public func audioOutputDisconnected(_ notice: String) {
+        do {
+            try executor.execute(.stopAll, target: nil, value: 0)
+            snapshot = try executor.snapshot()
+            audioUpdate(snapshot, audioProjectRevision)
+            onStop()
+        } catch { message = error.localizedDescription }
+        message = notice; modalNotice = notice
+    }
     public func send(_ command: ShowCommand, target: UUID? = nil, value: Double = 0) {
         guard !ProjectSyncControl.following else { return }
         if command == .subPlay, transportFadeout.active {
@@ -1499,6 +1509,10 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         guard [.pause, .stop, .stopAll, .subStop].contains(command) || (canControl() && !finishing) else { return }
         do {
+            if command == .play || command == .subPlay {
+                do { try validateAudioOutput() }
+                catch { message = error.localizedDescription; modalNotice = message; return }
+            }
             let previous = (command == .queueRegion || command == .escape) ? try executor.playbackSnapshot().transport : snapshot.transport
             if command == .play, let block = selectedSetlistBlock {
                 // Resolve at Play time so edits/reordering keep the audible target
@@ -3069,6 +3083,15 @@ public struct ShowTimelinePresentationState: Equatable {
         guard !hasUnsavedChanges else {
             throw ProjectError.invalid("The project changed while saving. Save again before closing.")
         }
+    }
+    public func renameProject(_ name: String) throws {
+        guard canControl(), !finishing, !saving else { throw ProjectError.invalid("No project is open for saving.") }
+        let name = try ProjectName.validated(name)
+        guard snapshot.project.name != name else { return }
+        var project = snapshot.project; project.name = name
+        try executor.applyProjectEdit(project)
+        snapshot = try executor.snapshot()
+        markChanged(refreshAudio: false); onProjectEdited()
     }
     public func save() async {
         let session = projectSessionID

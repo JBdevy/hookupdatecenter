@@ -28,6 +28,7 @@ final class NativeEffectsChain {
     let delay = AVAudioUnitDelay()
     let reverb = JarasDynamics.makeReverb()
     private var itemInputMix: AVAudioMixerNode?
+    private var trackEntryMix: AVAudioMixerNode?
     private let outputMix = AVAudioMixerNode()
     private var outputDestination: AVAudioNode?
     private var instanceNodes: [String: AVAudioNode] = [:]
@@ -290,6 +291,17 @@ final class NativeEffectsChain {
             engine.attach(outputMix)
             if !destinations.isEmpty { engine.connect(outputMix, to: destinations, fromBus: 0, format: format) }
         }
+        if reorderable, let source = input as? AVAudioMixerNode, let destination = output as? AVAudioMixerNode {
+            // A permanent silent branch keeps upstream players clocked while
+            // the independently connected FX entry is rewired. Never replace
+            // the source fanout during a live edit (AVAudioEngine resets it).
+            let entry = AVAudioMixerNode(); engine.attach(entry)
+            trackEntryMix = entry; self.input = entry
+            let anchorBus = destination.nextAvailableInputBus == 0 ? 1 : destination.nextAvailableInputBus
+            engine.connect(source, to: [AVAudioConnectionPoint(node: entry, bus: 0),
+                AVAudioConnectionPoint(node: destination, bus: anchorBus)], fromBus: 0, format: format)
+            source.destination(forMixer: destination, bus: anchorBus)!.volume = 0
+        }
         apply(NativeFXSettings())
         if let itemInputMix, let first = connected.first {
             // Keep an inaudible connection alive through every graph edit.
@@ -313,6 +325,12 @@ final class NativeEffectsChain {
         if instrumentMix != nil && !keys.contains("Instruments") { keys.insert("Instruments", at: 0) }
         var includedNodes = Set<ObjectIdentifier>()
         let ordered: [AVAudioNode] = keys.compactMap { key in
+            // TimePitch's bypass still buffers audio; a disabled/zero shift
+            // must take the dry path without adding transform latency.
+            if next.kind(of: key) == "Pitch" {
+                let value = next.settings(for: key)
+                if !next.effectKeys.contains(key) || value.pitchEnabled != true || value.semitones == 0 { return nil }
+            }
             if let node = instanceNodes[key] { return node }
             switch key {
             case "Instruments": return instrumentMix
@@ -371,6 +389,7 @@ final class NativeEffectsChain {
         for node in nodes { engine.detach(node) }
         if let instrumentMix { engine.detach(instrumentMix) }
         if let itemInputMix { engine.detach(itemInputMix) }; itemInputMix = nil
+        if let trackEntryMix { engine.detach(trackEntryMix) }; trackEntryMix = nil
         if outputDestination == nil { engine.detach(outputMix) }
         outputDestination = nil; connected.removeAll(); self.engine = nil; input = nil
         preparedEffects = ["EQ"]

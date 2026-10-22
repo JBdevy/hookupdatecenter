@@ -516,6 +516,22 @@ enum PortableProjectImportPrompt: String, Identifiable {
         recent.removeAll { $0 == url }; recent.insert(url, at: 0); recent = Array(recent.prefix(20))
         persistRecentProjects()
     }
+    func renameProject(_ value: String) async throws {
+        guard ready, !busy, !show.saving, let currentURL else { throw ProjectError.invalid("No project is open for saving.") }
+        let name = try ProjectName.validated(value)
+        let destination = currentURL.deletingLastPathComponent().appendingPathComponent(name).appendingPathExtension("jl")
+        guard destination == currentURL || !FileManager.default.fileExists(atPath: destination.path) else {
+            throw ProjectError.invalid("A project with this name already exists.")
+        }
+        busy = true
+        defer { busy = false }
+        try show.renameProject(name)
+        try await show.flushProject()
+        try await store.rename(to: destination, id: show.snapshot.project.id)
+        self.currentURL = destination
+        recent.removeAll { $0.standardizedFileURL == currentURL.standardizedFileURL }
+        remember(destination)
+    }
     @Published var pendingDeletion: ProjectFolderDeletion?
     func requestDeletion(_ url: URL) {
         guard !busy, !show.saving, !TrackRecording.shared.recording,

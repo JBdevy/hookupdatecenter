@@ -42,6 +42,19 @@ MainActor.assumeIsolated {
     let data = try! JSONEncoder().encode(remoteSecond)
     precondition(try! JSONDecoder().decode(DAWRemoteState.Track.self, from: data).heightScale == 1.5)
 
+    for envelopeCount in 0...4 {
+        let track = Track(automation: TrackAutomation(envelopes: Array(repeating: .init(), count: envelopeCount)))
+        let layout = TrackRowLayout(tracks: [track], baseHeight: 96)
+        let (audio, envelope) = retainedMixerHeights(layout, index: 0, slotHeight: layout.heights[0])
+        precondition(audio == layout.audioHeights[0] && envelope == layout.envelopeHeights[0],
+                     "Visible controls occupy the full audio row regardless of envelope count")
+        for retainedHeight: CGFloat in [24,64,240] {
+            let (audio, envelope) = retainedMixerHeights(layout, index: 0, slotHeight: retainedHeight)
+            precondition(abs(audio + CGFloat(envelopeCount) * envelope - retainedHeight) < 1e-9,
+                         "Retained mixer content must fill the slot with neither gaps nor overlap")
+        }
+    }
+    print("TRACK_MIXER_AUDIO_AND_ZERO_TO_FOUR_ENVELOPE_ROWS_FILL_CURRENT_AND_RETAINED_HEIGHT_OK")
     let snapshotCache = TrackLayoutCache(), unchangedKey = TimelineRenderKey(revision: 10)
     let first = Track(clips: [AudioClip(startTime: 0, duration: 8), AudioClip(startTime: 1, duration: 2)])
     let second = Track(clips: [AudioClip(startTime: 3, duration: 2)])

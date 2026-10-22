@@ -334,7 +334,7 @@ enum TimelineMetalWaveformFrameBuilder {
             let channels = (mode == 0 || mode == 4) ? header.channels : 1
             let channelHeight = max(0, rect.maxY - waveTop - 2) / Double(channels)
             guard channelHeight > 0 else { continue }
-            let amplitude = channelHeight * 0.98 * WaveformAmplitude.gain(item: item.clip.gain, normalization: item.clip.normalizationGain, inverted: item.clip.phaseInverted == true)
+            let amplitude = WaveformAmplitude.fullScale(channelHeight: channelHeight) * WaveformAmplitude.gain(item: item.clip.gain, normalization: item.clip.normalizationGain, inverted: item.clip.phaseInverted == true)
             let localItem = rect.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
             for (fragmentIndex, fragment) in item.fragments.enumerated() {
                 var visibleSeams = ClipRepetitionBoundaries(clip: fragment,

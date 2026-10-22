@@ -40,6 +40,9 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::atomic<bool> instrumentAllowed{false};
     std::atomic<bool> liveInputEnabled{true};
     void loadSoundFont(const File &);
+    // Enforced only for a real device session; offline rendering stays independent.
+    bool deviceSessionRequested = false;
+    String outputAvailabilityError() const;
     String openDevice();
     void configureDeviceChannels(const BigInteger &inputs, const BigInteger &outputs);
     void configureMetronome(const var &);

@@ -54,6 +54,19 @@ public actor DocumentProjectStore: ProjectPersistence {
         savedVersion = try? DocumentVersion.read(url)
         savedMediaPaths = project.mediaPaths
     }
+    /// Renaming keeps the media directory and project identity intact.
+    public func rename(to destination: URL, id: UUID) throws {
+        guard let url, projectID == id, destination.deletingLastPathComponent() == url.deletingLastPathComponent() else {
+            throw ProjectError.invalid("The open project changed before saving. The project was not saved.")
+        }
+        guard destination != url else { return }
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw ProjectError.invalid("A project with this name already exists.")
+        }
+        try FileManager.default.moveItem(at: url, to: destination)
+        self.url = destination
+        savedVersion = try? DocumentVersion.read(destination)
+    }
     public func deselect() { url = nil; projectID = nil; savedVersion = nil; savedMediaPaths = nil }
     public func load() async throws -> Project? {
         guard let url else { return nil }
@@ -189,5 +202,17 @@ public enum ProjectBackups {
             try? fm.removeItem(at: folder)
             throw error
         }
+    }
+}
+
+public enum ProjectName {
+    public static func validated(_ value: String) throws -> String {
+        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stem = name.split(separator: ".").first.map(String.init)?.uppercased() ?? ""
+        let reserved = ["CON", "PRN", "AUX", "NUL"] + (1...9).flatMap { ["COM\($0)", "LPT\($0)"] }
+        guard !name.isEmpty, name.count <= 180, !name.hasSuffix("."),
+              name.rangeOfCharacter(from: CharacterSet(charactersIn: "<>:\"/\\|?*").union(.controlCharacters)) == nil,
+              !reserved.contains(stem) else { throw ProjectError.invalid("Enter a valid project name.") }
+        return name
     }
 }

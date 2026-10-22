@@ -3,6 +3,56 @@
     let own = ax.accessibilityRole() == .button ? [ax] : []
     return own + (ax.accessibilityChildren() ?? []).flatMap { axButtons($0, depth: depth + 1) }
 }
+@MainActor private func verifyAutomaticHeightLayout() {
+    let fixture = FixtureWindow(candidate: true, kinds: Array(repeating: .standard, count: 47))
+    fixture.window.orderFront(nil)
+    fixture.settle()
+    defer { fixture.window.close() }
+    for height in [120.0,60,90,63,64,24,80,44,105,63,96,24,70,64,128,56,72] {
+        fixture.state.height = height
+        fixture.host.setFrameSize(CGSize(width: 248, height: 47 * height))
+        // Only the normal run loop may present this resize. A manual layout,
+        // display or bitmap capture would conceal the delayed-refresh bug.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+        let owners = descendants(fixture.host, of: TrackMixerNativeControlView.self)
+        for row in owners where !row.isHidden {
+            let frame = row.convert(row.bounds, to: fixture.host)
+            let index = (frame.minY / height).rounded()
+            expect(abs(frame.minY - index * height) <= 1 && abs(frame.height - height) <= 1,
+                   "Row geometry lags resize to \(height): \(frame)")
+            let title = descendants(row.controls, of: TrackDragTitleView.self).first!
+            let titleFrame = title.convert(title.bounds, to: row)
+            let controlsHeight: CGFloat = height >= 64 ? 64 : 24
+            let y = (height >= 64 ? 0 : (height - 24) / 2) + TrackMixerHeightGeometry.titleY(controlsHeight)
+            expect(abs(titleFrame.minY - y) <= 1,
+                   "Native title lags resize to \(height): expected \(y), actual \(titleFrame), host \(row.controls.frame)")
+            expect(titleFrame.minY >= 0 && titleFrame.maxY <= height + 1,
+                   "Controls crossed the track boundary during resize")
+        }
+    }
+    print("MIXER_HEIGHT_AUTOMATIC_PRESENTATION_47_ROWS_NO_MANUAL_REDRAW_OK")
+}
+@MainActor private func verifyHeightModeTransition() {
+    let fixture = FixtureWindow(candidate: true, kinds: Array(repeating: .standard, count: 47))
+    fixture.window.orderFront(nil)
+    defer { fixture.window.close() }
+    fixture.change(68)
+    let rows = descendants(fixture.host, of: TrackMixerNativeControlView.self)
+    let snapshots = rows.map { $0.snapshot }
+    var timings: [(height: Double, milliseconds: Double)] = []
+    Counts.reset()
+    for height in [66.0,64.1,63.9,62,58,56.1,55.9,54,55.9,56.1,62,63.9,64.1,66,68] {
+        let start = ProcessInfo.processInfo.systemUptime
+        fixture.change(height)
+        timings.append((height, (ProcessInfo.processInfo.systemUptime - start) * 1000))
+        for (row, snapshot) in zip(rows, snapshots) {
+            expect(row.snapshot === snapshot,
+                "Crossing fader visibility at \(height) must not replace row content")
+        }
+    }
+    expect(Counts.update == 0, "Height thresholds must only reposition retained controls")
+    print("MIXER_FADER_BOUNDARIES_47_ROWS_ZERO_ROOT_UPDATES_OK timings=\(timings) layouts=\(Counts.slotLayouts)")
+}
 @MainActor private func verifyBehavior() {
     verifyFooterGainReadout()
     verifyFooterPanReadout()
@@ -169,8 +219,13 @@
     expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) === meter, "Timeline control shortcut must route the peak number to its native meter")
     expect(row.hitTest(row.superview!.convert(peakPoint, from: nil)) === meter,
         "The ordinary native route must reach the peak even underneath the full-width controls host")
-    expect(peak.frame.minX == 21 && peak.backgroundColor == nil,
-        "The peak reset target is transparent and sits after the MIDI bar")
+    expect(peak.frame.minX >= 21 && peak.backgroundColor == NSColor.black.cgColor,
+        "Clipping peak must sit after the MIDI bar on a tight black background")
+    let text = (peak as! CATextLayer).string as! NSAttributedString
+    expect(peak.frame.width <= ceil(text.size().width) + 4,
+           "Clipping background must fit only the peak number")
+    expect((text.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor) == NSColor.red,
+           "Clipping number must be red")
     let bar = meter.layer!.sublayers!.first { $0.name == "meter-background-0" }!
     let barPoint = meter.convert(NSPoint(x: 2, y: bar.frame.midY), to: nil)
     // The peak now occupies the lower-right corner; probe the unused space
@@ -249,7 +304,13 @@ private struct FixtureRow: View, Equatable {
     let actionStep: Int
     let project: UUID
     let track: UUID
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.candidate == rhs.candidate && lhs.kind == rhs.kind && lhs.state === rhs.state && lhs.title == rhs.title && lhs.value == rhs.value && lhs.actionStep == rhs.actionStep && lhs.project == rhs.project && lhs.track == rhs.track }
+    let compactHeight: Bool
+    let minimalHeight: Bool
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        productionHeightModesEqual(.init(compactHeight: lhs.compactHeight, minimalHeight: lhs.minimalHeight),
+                                   .init(compactHeight: rhs.compactHeight, minimalHeight: rhs.minimalHeight)) &&
+        lhs.candidate == rhs.candidate && lhs.kind == rhs.kind && lhs.state === rhs.state && lhs.title == rhs.title && lhs.value == rhs.value && lhs.actionStep == rhs.actionStep && lhs.project == rhs.project && lhs.track == rhs.track
+    }
     private var lowerTitle: Bool { kind != .teleprompter }
     private var meter: some View { VerticalTrackMeter(meter: state.meter, showScale: true, peakOnly: true).clipped() }
     private var midi: some View { Color.green.frame(width: 4).allowsHitTesting(false) }
@@ -297,7 +358,7 @@ private struct Fixture: View {
     var body: some View {
         TimelineTrackRowsContainer(width: state.width, height: max(795, CGFloat(kinds.count) * state.height), top: 0, offsets: kinds.indices.map { CGFloat($0) * state.height }, rowHeights: kinds.map { _ in state.height }) {
             ForEach(kinds.indices, id: \.self) { index in
-                FixtureRow(candidate: candidate, kind: kinds[index], state: state, title: state.title, value: state.value, actionStep: state.actionStep, project: state.project, track: state.track).equatable().frame(height: state.height).clipped().jarasPlaced(at: index)
+                FixtureRow(candidate: candidate, kind: kinds[index], state: state, title: state.title, value: state.value, actionStep: state.actionStep, project: state.project, track: state.track, compactHeight: state.height < 64, minimalHeight: state.height < 56).equatable().frame(height: state.height).clipped().jarasPlaced(at: index)
             }
         }.frame(width: state.width, height: max(795, CGFloat(kinds.count) * state.height), alignment: .topLeading)
          .environment(\.locale, Locale(identifier: state.locale))
@@ -343,7 +404,7 @@ private func descendants<T: NSView>(_ view: NSView, of type: T.Type) -> [T] { (v
 }
 @MainActor private func run() {
 _ = NSApplication.shared
-if CommandLine.arguments.contains("--behavior") { verifyBehavior() } else if CommandLine.arguments.contains("--geometry") {
+if CommandLine.arguments.contains("--automatic-height") { verifyAutomaticHeightLayout() } else if CommandLine.arguments.contains("--mode-transition") { verifyHeightModeTransition() } else if CommandLine.arguments.contains("--behavior") { verifyBehavior() } else if CommandLine.arguments.contains("--geometry") {
     for kind in Kind.allCases {
         let baseline = FixtureWindow(candidate: false, kinds: [kind])
         let candidate = FixtureWindow(candidate: true, kinds: [kind])

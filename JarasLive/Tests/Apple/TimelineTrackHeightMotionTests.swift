@@ -194,6 +194,12 @@ precondition(switchedValues.count == afterSwitch, "precise input cancels the pre
 directMotion.cancel()
 print("TRACK_HEIGHT_PRECISE_INPUT_UNCHANGED_AND_CANCELS_WHEEL_TRANSITION_OK")
 
+let evenStep = TimelineTrackHeightWheelTransition(from: 64, to: 84, began: 0)
+let presentedSteps = (0...4).map { evenStep.value(at: Double($0) / 60) }
+precondition(presentedSteps[0] > 64 && presentedSteps[0] <= 68,
+             "Wheel response starts promptly without applying most of the notch at once")
+precondition(zip(presentedSteps, presentedSteps.dropFirst()).allSatisfy { $1 - $0 <= 5 },
+             "Successive 60-Hz frames stay close instead of a large first jump")
 for sign in [-1.0, 1.0] {
     let limitMotion = TimelineTrackHeightMotion()
     var limitValues: [CGFloat] = []

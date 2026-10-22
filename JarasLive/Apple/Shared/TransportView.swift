@@ -183,6 +183,7 @@ struct TransportView: View {
                     #endif
                     Spacer(minLength: 0)
                     ProjectSaveButton(pending: show.needsSave, saving: show.saving, message: show.message,
+                                      projectName: show.snapshot.project.name, rename: documents.map { documents in { name in try await documents.renameProject(name) } },
                                       exportToIPad: documents == nil ? nil : { showingPortableExport = true }) { Task { await show.save() } }
                     Spacer(minLength: 0)
                     PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist", tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
@@ -708,9 +709,15 @@ private struct ProjectSaveButton: View {
     let pending: Bool
     let saving: Bool
     let message: String
+    var projectName = ""
+    var rename: ((String) async throws -> Void)? = nil
     var exportToIPad: (() -> Void)? = nil
     let action: () -> Void
     @State private var confirmingSave = false
+    @State private var showingOptions = false
+    @State private var draftName = ""
+    @State private var renameError = ""
+    @State private var renaming = false
     var body: some View {
         Button { if pending { confirmingSave = true } } label: {
             Label(LocalizedStringKey(saving ? "Salvando…" : pending ? "Save" : "Salvo"), systemImage: pending ? "square.and.arrow.down" : "checkmark")
@@ -724,7 +731,20 @@ private struct ProjectSaveButton: View {
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).disabled(saving)
             #if os(macOS)
-            .immediateRightClick { exportToIPad?() }
+            .immediateRightClick { draftName = projectName; renameError = ""; showingOptions = true }
+            .popover(isPresented: $showingOptions, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Project name").font(.headline)
+                    TextField("Project name", text: $draftName).textFieldStyle(.roundedBorder)
+                        .onSubmit { saveName() }.disabled(renaming)
+                    if !renameError.isEmpty { Text(verbatim: JarasLocalization.string(renameError)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+                    Button("Save") { saveName() }.disabled(rename == nil || renaming || draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if let exportToIPad {
+                        Divider()
+                        Button("Exportar para CatLive iPadOS") { showingOptions = false; exportToIPad() }
+                    }
+                }.padding(16).frame(width: 320)
+            }
             #endif
             .keyboardShortcut("s", modifiers: .command)
             .alert(Text(verbatim: confirmingSave ? JarasLocalization.string("Do you want to save this project?") : ""), isPresented: $confirmingSave) {
@@ -732,6 +752,15 @@ private struct ProjectSaveButton: View {
                 Button("Save") { action() }.keyboardShortcut(.defaultAction)
             }
             .jarasHelp(message.isEmpty ? "Save" : message)
+    }
+    private func saveName() {
+        guard let rename, !renaming else { return }
+        renaming = true; renameError = ""
+        Task { @MainActor in
+            defer { renaming = false }
+            do { try await rename(draftName); showingOptions = false }
+            catch { renameError = error.localizedDescription }
+        }
     }
 }
 private struct JarasSavePulse: ViewModifier {
@@ -1053,7 +1082,7 @@ private struct RepeatControl: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) { Image(systemName: "repeat") }
-            .buttonStyle(TransportButtonStyle(color: active ? JarasTheme.yellow : JarasTheme.transportRed, active: active, inactiveOpacity: 1, fontSize: TransportControlMetrics.font, width: max(30, (buttonWidth / 2).rounded()), height: TransportControlMetrics.height))
+            .buttonStyle(TransportButtonStyle(color: active ? JarasTheme.yellow : JarasTheme.liveOffRed, active: active, inactiveOpacity: 1, fontSize: TransportControlMetrics.font, width: max(30, (buttonWidth / 2).rounded()), height: TransportControlMetrics.height))
             .modifier(JarasBlink(active: active, interval: 0.55, lowOpacity: 0.45))
             .accessibilityLabel("Repeat").jarasHelp("Repeat (R)")
     }
@@ -1073,8 +1102,8 @@ private struct VideoToggleButton: View {
             .lineLimit(1)
             .frame(width: buttonWidth, height: TransportControlMetrics.height)
             .foregroundStyle(video.visible ? Color.black : JarasTheme.text)
-            .background(RoundedRectangle(cornerRadius: 5).fill(video.visible ? JarasTheme.green : JarasTheme.transportRed))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(video.visible ? JarasTheme.green : JarasTheme.transportRed))
+            .background(RoundedRectangle(cornerRadius: 5).fill(video.visible ? JarasTheme.green : JarasTheme.liveOffRed))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(video.visible ? JarasTheme.green : JarasTheme.liveOffRed))
             .contentShape(Rectangle())
         }
             .buttonStyle(.plain)

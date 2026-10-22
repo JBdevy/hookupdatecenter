@@ -150,6 +150,7 @@ jobs:
         working-directory: JarasLive
         run: |
           bash scripts/test-audio.sh
+          JARAS_AUDIO_TEST_SOURCE=Tests/Apple/NativeFXPlaybackTests.swift bash scripts/test-audio.sh
           bash scripts/test-timecode.sh
           bash scripts/test-timecode-signal.sh
 

@@ -421,12 +421,24 @@ struct EQKernel {
         if((before&1)==0 && before!=consumedGeneration) {
             for(unsigned n=0;n<requested;n++) for(unsigned j=0;j<5;j++) target[n][j]=pending[n][j].load(std::memory_order_relaxed);
             if(generation.load(std::memory_order_acquire)==before) {
+                const auto previousSections=activeSections;
                 activeSections=requested;
                 consumedGeneration=before; coefficientsSettled=false;
-                for(unsigned n=0;n<requested;n++) for(unsigned j=0;j<5;j++) desired[n][j]=target[n][j];
+                for(unsigned n=0;n<requested;n++) {
+                    // A newly inserted filter has no meaningful previous state.
+                    // Interpolating its denominator from identity creates a
+                    // different resonant filter before the requested EQ exists.
+                    const bool fresh = mix==0 || n>=previousSections;
+                    for(unsigned j=0;j<5;j++) {
+                        desired[n][j]=target[n][j];
+                        if(fresh) coefficients[n][j]=target[n][j];
+                    }
+                    if(fresh) for(unsigned ch=0;ch<2;ch++) z1[ch][n]=z2[ch][n]=0;
+                }
             }
         }
         const auto sections=activeSections;
+        if(on && mix==0) for(unsigned ch=0;ch<2;ch++) for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
         for(unsigned frame=0;frame<frames;frame++) {
             const double targetMix=on?1.0:0.0;
             if(mix!=targetMix) { mix += (targetMix-mix)*0.02; if(std::abs(targetMix-mix)<(on?1e-14:1e-6)) mix=targetMix; }

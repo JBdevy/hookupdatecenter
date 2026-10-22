@@ -95,8 +95,8 @@ inline void render(const jaras::Project &p, const File &media, int channels,
 }
 template <typename Test>
 void registerTests(const File &directory, Test &test, StringArray &skipped) {
-    test("CatStem development placeholder preserves dry audio and adds no latency", [&] {
-        auto configuration=settings();
+    test("Legacy offline-only CatStem settings preserve dry audio without a worker", [&] {
+        auto configuration=settings(); configuration.getDynamicObject()->removeProperty("stemMix");
         const auto saved=JSON::toString(configuration);
         for(bool offline : {false,true}) {
             NativeFX effects; effects.prepare(configuration,rate,nullptr,offline);
@@ -107,8 +107,8 @@ void registerTests(const File &directory, Test &test, StringArray &skipped) {
             require(!effects.hasActiveStem() && effects.latencyFrames()==0 && effects.unsupported.isEmpty(),
                     "Unavailable CatStem must not start a worker, delay audio or report an unsupported effect");
             for(int ch=0;ch<2;++ch)for(int n=0;n<128;++n)
-                require(pcm.getSample(ch,n)==original.getSample(ch,n),"Placeholder changed dry audio");
-            require(JSON::toString(configuration)==saved,"Placeholder changed the saved Mac-compatible settings");
+                require(pcm.getSample(ch,n)==original.getSample(ch,n),"Legacy settings changed dry audio");
+            require(JSON::toString(configuration)==saved,"Legacy settings changed the saved Mac-compatible settings");
         }
     });
     // runTests is only called by Main's --self-test branch. The environment
@@ -116,7 +116,6 @@ void registerTests(const File &directory, Test &test, StringArray &skipped) {
     if (SystemStats::getEnvironmentVariable("CATLIVE_STEM_IDENTITY_TEST", {}) != "1") {
         skipped.add("CatStem graph identity worker (CATLIVE_STEM_IDENTITY_TEST=1)"); return;
     }
-    const ScopedValueSetter<bool> developmentScope(stemDevelopmentTesting,true);
     bool fixtureReady = false;
     test("CatStem graph fixture is isolated from the production model worker", [&] {
         const auto paths = native::stem::Paths::bundled();

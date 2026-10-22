@@ -151,13 +151,21 @@ bool AudioEngine::trackFadeoutComplete() const noexcept {
     return value.active && value.remaining == 0;
 }
 bool AudioEngine::trackFadeoutActive() const noexcept { return transportFadeout.block().active; }
+String AudioEngine::outputAvailabilityError() const {
+    if (!deviceSessionRequested || offlineMode) return {};
+    auto *device=devices.getCurrentAudioDevice();
+    if (!device || !device->isOpen() || !device->isPlaying() || device->getActiveOutputChannels().isZero())
+        return "The selected audio output is disconnected.";
+    return {};
+}
 String AudioEngine::openDevice() {
+    deviceSessionRequested = true;
     if (attached)
         return {};
     auto preferences = File::getSpecialLocation(File::userApplicationDataDirectory)
                            .getChildFile("Hook Developer/CatLive/audio-device.xml");
     auto saved = XmlDocument::parse(preferences);
-    auto error = devices.getCurrentAudioDevice() ? String{} : devices.initialise(0, 2, saved.get(), true);
+    auto error = devices.getCurrentAudioDevice() ? String{} : devices.initialise(0, 2, saved.get(), saved == nullptr);
     if (error.isEmpty()) {
         devices.addAudioCallback(this);
         devices.removeMidiInputDeviceCallback({}, this);

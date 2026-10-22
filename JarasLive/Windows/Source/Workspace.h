@@ -130,7 +130,7 @@ class Workspace final : public Component,
     std::map<String, int> actionInvocations;
     class Timeline;
     std::optional<trackDrop::Destination> trackDropPreview;
-    ID trackDropBlocked;
+    ID trackDropBlocked, scrollingTrackDrag;
     std::optional<Point<int>> externalDropPoint;
     std::vector<externalMedia::Preview> externalDropFiles;
     std::shared_ptr<std::atomic<bool>> externalDropCancelled;

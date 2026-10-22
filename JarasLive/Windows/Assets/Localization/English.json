@@ -1320,5 +1320,12 @@
   "bars": "bars",
   "Config Init": "Config Init",
   "Initial playback": "Initial playback",
-  "Overlapping item ignored on this special-track layer. The rest of the project was imported.": "Overlapping item ignored on this special-track layer. The rest of the project was imported."
+  "Overlapping item ignored on this special-track layer. The rest of the project was imported.": "Overlapping item ignored on this special-track layer. The rest of the project was imported.",
+  "Enter a valid project name.": "Enter a valid project name.",
+  "A project with this name already exists.": "A project with this name already exists.",
+  "Could not rename the project file.": "Could not rename the project file.",
+  "Finish the current operation before renaming the project.": "Finish the current operation before renaming the project.",
+  "CatStem pronto. Pare o transporte para ativar a compensação.": "CatStem is ready. Stop transport to activate latency compensation.",
+  "Tempo real · 5 stems": "Real time · 5 stems",
+  "Preparando CatStem…": "Preparing CatStem…"
 }

@@ -732,7 +732,7 @@ struct SetlistFooterControls: View {
                     HStack(spacing: 4) {
                         control("ByPass", width: width, color: Color(hex: bypassed ? 0xffd600 : 0xff3030),
                                 highlighted: bypassed, blinking: bypassed, action: toggleBypass)
-                        control("Live", width: width, color: liveEnabled ? JarasTheme.green : Color(hex: 0xff3030),
+                        control("Live", width: width, color: liveEnabled ? JarasTheme.green : JarasTheme.liveOffRed,
                                 highlighted: liveEnabled, action: requestLiveToggle)
                         control("Parts", width: width, color: partsOpen ? JarasTheme.green : JarasTheme.panel,
                                 highlighted: partsOpen, darkText: partsOpen, action: toggleParts)
@@ -1636,10 +1636,11 @@ private final class SetlistNativeDragView: NSView {
         if window != nil { SetlistNativeDragRouter.shared.add(self) }
     }
 }
-private final class SetlistNativeDragSource: NSObject, NSDraggingSource {
+@MainActor private final class SetlistNativeDragSource: NSObject, NSDraggingSource {
+    let edgeScroll = NativeDragEdgeScroll()
     weak var state: SetlistReorderState?
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .move }
-    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { state?.finish() }
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { edgeScroll.stop(); state?.finish() }
 }
 @MainActor private final class SetlistNativeDragRouter {
     static let shared = SetlistNativeDragRouter()
@@ -1676,6 +1677,7 @@ private final class SetlistNativeDragSource: NSObject, NSDraggingSource {
         pressedRow = nil; self.start = nil
         let text = payload()
         let source = SetlistNativeDragSource(); source.state = state; state.source = source
+        source.edgeScroll.begin(from: row)
         let item = NSDraggingItem(pasteboardWriter: text as NSString)
         let size = NSSize(width: max(80, min(300, row.bounds.width)), height: 34)
         let title = NSAttributedString(string: row.name, attributes: [.font: NSFont.jarasSystemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.labelColor])

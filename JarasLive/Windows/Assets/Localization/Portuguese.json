@@ -1320,5 +1320,12 @@
   "bars": "compassos",
   "Config Init": "Config Init",
   "Initial playback": "Reprodução inicial",
-  "Overlapping item ignored on this special-track layer. The rest of the project was imported.": "Item sobreposto ignorado nesta camada da pista especial. O restante do projeto foi importado."
+  "Overlapping item ignored on this special-track layer. The rest of the project was imported.": "Item sobreposto ignorado nesta camada da pista especial. O restante do projeto foi importado.",
+  "Enter a valid project name.": "Digite um nome válido para o projeto.",
+  "A project with this name already exists.": "Já existe um projeto com esse nome.",
+  "Could not rename the project file.": "Não foi possível renomear o arquivo do projeto.",
+  "Finish the current operation before renaming the project.": "Conclua a operação atual antes de renomear o projeto.",
+  "CatStem pronto. Pare o transporte para ativar a compensação.": "CatStem pronto. Pare o transporte para ativar a compensação.",
+  "Tempo real · 5 stems": "Tempo real · 5 stems",
+  "Preparando CatStem…": "Preparando CatStem…"
 }

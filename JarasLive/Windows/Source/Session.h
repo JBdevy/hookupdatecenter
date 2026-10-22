@@ -30,6 +30,7 @@ class Session final : private Timer {
     uint64 revision = 0;
     std::function<void()> changed, tick, selectionChanged;
     std::function<void(String)> transportFadeoutWarning;
+    std::function<void(String)> audioOutputWarning;
     void toggleTransportFadeout(bool enabled, const std::set<ID> &tracks, double seconds);
     void cancelTransportFadeout();
     void updateTransportFadeout();
@@ -47,6 +48,7 @@ class Session final : private Timer {
                    std::function<void()> beforeCommit, std::function<void(String)> completed,
                    std::function<void(StringArray)> missingMedia = {});
     void save(const File &);
+    void renameProject(String);
     void cleanTimelineMedia(std::function<void(String)> completed);
     jaras::projectSync::Frame projectSyncFrame() { syncClock(); return core.projectSyncFrame(); }
     void applyProjectSync(const jaras::projectSync::Frame &, double elapsed, bool first, std::optional<ID> focused = {});
