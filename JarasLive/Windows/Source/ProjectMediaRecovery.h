@@ -1,5 +1,6 @@
 #pragma once
 #include "ProjectCodec.h"
+#include "CatDynamicsAssets.h"
 namespace catlive::projectMediaRecovery {
 inline StringArray missingPaths(const jaras::Project &project, const File &directory) {
     std::set<std::string> references;
@@ -9,6 +10,7 @@ inline StringArray missingPaths(const jaras::Project &project, const File &direc
         for (const auto &clip : track.clips)
             if (clip.audioFile) references.insert(clip.audioFile->path);
     }
+    dynamicsAssets::collect(project, references);
     StringArray missing;
     for (const auto &path : references)
         if (!ProjectCodec::resolveMedia(directory, path).existsAsFile()) missing.add(text(path));

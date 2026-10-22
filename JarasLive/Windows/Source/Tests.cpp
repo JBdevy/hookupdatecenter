@@ -29,6 +29,7 @@
 #include "MixerPanel.h"
 #include "DesktopLayout.h"
 #include "EffectsPanel.h"
+#include "CatDynamicsTests.h"
 #include "FXChain.h"
 #include "ItemRender.h"
 #include "SetlistShareText.h"
@@ -2872,6 +2873,7 @@ int runTests(const File &directory) {
         expect(!flag(saved,"stemSeparatorEnabled")&&!gain->isEnabled(),"CatStem bypass was not saved/displayed");
         expect(list(get(get(saved,"stemMix"),"sources")).size()==5,"Bypass discarded the source mix");
     });
+    dynamicsTests::run(test, expect, directory);
     test("Native limiter respects its output ceiling and links stereo peaks without automatic makeup", [&] {
         for(double rate:{44100.,48000.}) {
             auto settings=fxschema::defaults();put(settings,"inserted",Array<var>{"Limiter"});put(settings,"limiterEnabled",true);

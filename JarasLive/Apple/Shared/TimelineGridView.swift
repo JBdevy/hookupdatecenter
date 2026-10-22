@@ -797,6 +797,15 @@ private struct TimelineGridContent: View, Equatable {
             }).environment(\.locale, locale)
         }
     }
+    private func itemMixTargets(_ id: UUID) -> Set<UUID> {
+        selectedClips.contains(id) ? selectedClips : [id]
+    }
+    private func muteSelectedItems(_ id: UUID) {
+        guard let song = show.current,
+              let clip = song.tracks.filter({ $0.kind == .standard }).flatMap(\.clips).first(where: { $0.id == id }) else { return }
+        show.setItemsMix(itemMixTargets(id), muted: clip.muted != true)
+    }
+
     #if os(macOS)
     private func makeNativeBaseConfiguration(song: Song, originalSong: Song, rows: TrackRowLayout,
                                              metadata: TimelineRenderMetadata, selectionInput: GridSelectionInput,
@@ -890,14 +899,6 @@ private struct TimelineGridContent: View, Equatable {
     /// Editing actions change with project/selection state, not each zoom frame.
     /// Read the scale committed to the native input, so an in-flight zoom
     /// cannot make editing jump ahead of the displayed geometry.
-    private func itemMixTargets(_ id: UUID) -> Set<UUID> {
-        selectedClips.contains(id) ? selectedClips : [id]
-    }
-    private func muteSelectedItems(_ id: UUID) {
-        guard let song = show.current,
-              let clip = song.tracks.filter({ $0.kind == .standard }).flatMap(\.clips).first(where: { $0.id == id }) else { return }
-        show.setItemsMix(itemMixTargets(id), muted: clip.muted != true)
-    }
     private func makeSelectionInput(originalSong: Song, song: Song, rows: TrackRowLayout,
                                     rulerHeight: CGFloat, extent: Double,
                                     selectionLayout: GridSelectionLayout) -> GridSelectionInput {

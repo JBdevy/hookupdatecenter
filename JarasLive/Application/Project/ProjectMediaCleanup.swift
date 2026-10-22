@@ -93,6 +93,9 @@ public enum ProjectMediaCleanup {
                     }
                 }
             }
+            if !backup.mediaPaths.intersection(replacements.keys).isEmpty {
+                backup.remapFXSamples(replacements); changed = true
+            }
             if changed {
                 let dates = try fm.attributesOfItem(atPath: url.path).filter { $0.key == .creationDate || $0.key == .modificationDate }
                 try ProjectDocumentCodec.writeEncoded(ProjectDocumentCodec.encode(backup), to: url)

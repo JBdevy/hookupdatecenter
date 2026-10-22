@@ -1,6 +1,7 @@
 #import "JarasEffects.h"
 #include "JarasOutputChannelMap.hpp"
 #include "JarasRealtimeClock.hpp"
+#include "../../Core/Include/CatDynamicsDSP.hpp"
 #include <TargetConditionals.h>
 #import <Accelerate/Accelerate.h>
 #if defined(__x86_64__)
@@ -588,9 +589,87 @@ struct EQKernel {
 
 #include <vector>
 #include <algorithm>
+// Samples are decoded into a fresh processor by the control thread. Ownership
+// crosses at a render boundary using exchanges; retired storage is reclaimed
+// only by the control thread, never by the audio callback.
+struct CatTriggerSnapshot {
+    catlive::dsp::Trigger processor;
+    CatTriggerSnapshot *retiredNext = nullptr;
+};
+struct CatDynamicsKernel {
+    bool trigger = false;
+    std::array<std::atomic<double>,8> parameters{};
+    std::atomic<bool> filterOutput{false};
+    std::atomic<double> sampleDuration{0};
+    std::atomic<CatTriggerSnapshot*> pending{nullptr}, retired{nullptr};
+    CatTriggerSnapshot *current = nullptr; // renderer-owned
+    catlive::dsp::Gate gate;
+    double blend = 0;
+    ~CatDynamicsKernel() { delete pending.exchange(nullptr); delete current; collect(); }
+    void collect() {
+        auto entry=retired.exchange(nullptr,std::memory_order_acquire);
+        while(entry) { auto next=entry->retiredNext; delete entry; entry=next; }
+    }
+    void publish(std::unique_ptr<CatTriggerSnapshot> sample) {
+        delete pending.exchange(sample.release(),std::memory_order_acq_rel);
+        collect();
+    }
+    void reset() { gate.reset(); if(current) current->processor.reset(); }
+    void process(AudioBufferList *buffers,unsigned frames,double rate,bool enabled) {
+        if(auto sample=pending.exchange(nullptr,std::memory_order_acq_rel)) {
+            auto previous=current; current=sample;
+            if(previous) {
+                auto head=retired.load(std::memory_order_relaxed);
+                do { previous->retiredNext=head; }
+                while(!retired.compare_exchange_weak(head,previous,std::memory_order_release,std::memory_order_relaxed));
+            }
+        }
+        if(!enabled && blend==0) return;
+        if(!buffers->mNumberBuffers || !buffers->mBuffers[0].mData) return;
+        auto left=static_cast<float*>(buffers->mBuffers[0].mData);
+        auto right=buffers->mNumberBuffers>1?static_cast<float*>(buffers->mBuffers[1].mData):nullptr;
+        if(trigger) {
+            catlive::dsp::TriggerParameters p;
+            p.threshold=parameters[0].load(); p.retrigger=parameters[1].load();
+            p.gain=parameters[2].load(); p.mix=parameters[3].load();
+            p.attack=parameters[4].load(); p.decay=parameters[5].load();
+            p.sustain=parameters[6].load(); p.release=parameters[7].load();
+            if(current) current->processor.setParameters(p);
+        } else {
+            catlive::dsp::GateParameters p;
+            p.threshold=parameters[0].load(); p.attack=parameters[1].load();
+            p.decay=parameters[2].load(); p.hold=parameters[3].load();
+            p.release=parameters[4].load(); p.highPass=parameters[5].load();
+            p.lowPass=parameters[6].load(); p.filterOutput=filterOutput.load();
+            gate.setParameters(p);
+        }
+        // Fixed scratch slices preserve stereo linkage and a five-ms bypass
+        // ramp for any AU block size, with no render-time allocation.
+        std::array<float,512> dryLeft{},dryRight{};
+        const double step=1/std::max(1.0,rate*.005),target=enabled?1:0;
+        for(unsigned offset=0;offset<frames;) {
+            const unsigned count=std::min(512u,frames-offset);
+            const bool ramping=blend!=target;
+            if(ramping) {
+                std::copy_n(left+offset,count,dryLeft.data());
+                if(right) std::copy_n(right+offset,count,dryRight.data());
+            }
+            if(trigger) { if(current) current->processor.process(left+offset,right?right+offset:nullptr,count,rate); }
+            else gate.process(left+offset,right?right+offset:nullptr,count,rate);
+            if(ramping) for(unsigned frame=0;frame<count;++frame) {
+                blend=enabled?std::min(1.0,blend+step):std::max(0.0,blend-step);
+                left[offset+frame]=float(dryLeft[frame]+(left[offset+frame]-dryLeft[frame])*blend);
+                if(right) right[offset+frame]=float(dryRight[frame]+(right[offset+frame]-dryRight[frame])*blend);
+            }
+            offset+=count;
+            if(!enabled && blend==0) { reset(); break; }
+        }
+    }
+};
 struct DynamicsKernel {
     EffectAnalysis inputAnalysis, outputAnalysis;
     bool reverb = false, limiter = false;
+    std::unique_ptr<CatDynamicsKernel> catDynamics;
     double rate = 48000, envelope = 0, gain = 1, mix = 0;
     std::atomic<bool> enabled{false}, resetRequested{false};
     std::atomic<bool> meteringEnabled{false};
@@ -603,6 +682,7 @@ struct DynamicsKernel {
     DynamicsKernel() { for(auto &v:params) v.store(0); for(auto &v:peaks) v.store(0); }
     void prepare(double sampleRate) {
         rate=sampleRate; envelope=0; gain=1; mix=0;
+        if(catDynamics) { catDynamics->reset(); catDynamics->blend=enabled.load()?1:0; }
         positions.fill(0); damping.fill(0);
         for(auto &v:peaks) v.store(0);
         for(unsigned ch=0;ch<2;ch++) lowState[ch]=highState[ch]=0;
@@ -611,12 +691,14 @@ struct DynamicsKernel {
     void process(AudioBufferList *buffers, unsigned frames) {
         if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
             envelope=0; gain=1; positions.fill(0); damping.fill(0);
+            if(catDynamics) catDynamics->reset();
             for (auto& line : delays) std::fill(line.begin(), line.end(), 0);
             for (unsigned ch=0; ch<2; ++ch) lowState[ch]=highState[ch]=0;
             for (auto& peak : peaks) peak.store(0);
         }
 
         const bool on=enabled.load(std::memory_order_relaxed);
+        if(catDynamics) { catDynamics->process(buffers,frames,rate,on); return; }
         // Most per-item chains are prepared but bypassed. Preserve the ramp
         // when switching off, and read peaks only while an editor needs them.
         if (!reverb && !on && !meteringEnabled.load(std::memory_order_relaxed) && fabs(gain-1)<1e-7) {
@@ -728,6 +810,10 @@ struct DynamicsKernel {
     if((self=[super initWithComponentDescription:d options:o error:e])) {
         kernel.reverb=d.componentSubType=='JLRV';
         kernel.limiter=d.componentSubType=='JLLM';
+        if(d.componentSubType=='JLTG' || d.componentSubType=='JLG2') {
+            kernel.catDynamics=std::make_unique<CatDynamicsKernel>();
+            kernel.catDynamics->trigger=d.componentSubType=='JLTG';
+        }
         AVAudioFormat *format=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
         _input=[[AUAudioUnitBus alloc] initWithFormat:format error:e]; _output=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
         _inputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];
@@ -747,7 +833,8 @@ struct DynamicsKernel {
         ScopedAudioDenormals denormals;
         if(!pull) return kAudioUnitErr_NoConnection;
         auto status=pull(flags,time,frames,0,output);
-        if(status==noErr) { state->inputAnalysis.capture(output,frames); state->process(output,frames); state->outputAnalysis.capture(output,frames); }
+        if(status==noErr) { state->inputAnalysis.capture(output,frames); state->process(output,frames); state->outputAnalysis.capture(output,frames);
+            if(state->catDynamics && state->catDynamics->trigger) *flags &= ~kAudioUnitRenderAction_OutputIsSilence; }
         return status;
     };
 }
@@ -806,9 +893,9 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
 + (AVAudioUnitEffect *)make:(OSType)subtype {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        for(NSNumber *type in @[@((unsigned)'JLCP'),@((unsigned)'JLRV'),@((unsigned)'JLLM')]) {
+        for(NSNumber *type in @[@((unsigned)'JLCP'),@((unsigned)'JLRV'),@((unsigned)'JLLM'),@((unsigned)'JLTG'),@((unsigned)'JLG2')]) {
             AudioComponentDescription d={kAudioUnitType_Effect,type.unsignedIntValue,'Jara',0,0};
-            [AUAudioUnit registerSubclass:JarasDynamicsAudioUnit.class asComponentDescription:d name:type.unsignedIntValue=='JLCP'?@"CatLive Compressor":(type.unsignedIntValue=='JLLM'?@"CatLive Limiter":@"CatLive Reverb") version:1];
+            [AUAudioUnit registerSubclass:JarasDynamicsAudioUnit.class asComponentDescription:d name:type.unsignedIntValue=='JLCP'?@"CatLive Compressor":(type.unsignedIntValue=='JLLM'?@"CatLive Limiter":(type.unsignedIntValue=='JLTG'?@"CatLive Trigger":(type.unsignedIntValue=='JLG2'?@"Cat Gate":@"CatLive Reverb"))) version:1];
         }
     });
     AudioComponentDescription d={kAudioUnitType_Effect,subtype,'Jara',0,0};
@@ -817,6 +904,54 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
 + (AVAudioUnitEffect *)makeCompressor { return [self make:'JLCP']; }
 + (AVAudioUnitEffect *)makeReverb { return [self make:'JLRV']; }
 + (AVAudioUnitEffect *)makeLimiter { return [self make:'JLLM']; }
++ (AVAudioUnitEffect *)makeTrigger { return [self make:'JLTG']; }
++ (AVAudioUnitEffect *)makeGate { return [self make:'JLG2']; }
++ (double)triggerSampleDuration:(AVAudioUnitEffect *)node {
+    auto &k=dynamicsKernel(node); return k.catDynamics?k.catDynamics->sampleDuration.load():0;
+}
++ (BOOL)loadTriggerSample:(AVAudioUnitEffect *)node url:(NSURL *)url error:(NSError **)error {
+    auto &k=dynamicsKernel(node);
+    if(!k.catDynamics || !k.catDynamics->trigger) return NO;
+    auto sample=std::make_unique<CatTriggerSnapshot>();
+    double duration=0;
+    if(url) {
+        const auto fail=[&](NSString *message) {
+            if(error) *error=[NSError errorWithDomain:@"CatLive.Trigger" code:1 userInfo:@{NSLocalizedDescriptionKey:message}];
+            return NO;
+        };
+        const NSString *extension=url.pathExtension.lowercaseString;
+        if(![extension isEqualToString:@"wav"] && ![extension isEqualToString:@"mp3"])
+            return fail(@"Choose a WAV or MP3 sample.");
+        AVAudioFile *file=[[AVAudioFile alloc] initForReading:url commonFormat:AVAudioPCMFormatFloat32 interleaved:NO error:error];
+        if(!file) return NO;
+        const double rate=file.processingFormat.sampleRate;
+        const auto channels=file.processingFormat.channelCount;
+        if(channels<1 || channels>2 || !std::isfinite(rate) || rate<=0 || file.length<=0 || double(file.length)/rate>60)
+            return fail(@"Choose a mono or stereo sample up to 60 seconds.");
+        AVAudioPCMBuffer *buffer=[[AVAudioPCMBuffer alloc] initWithPCMFormat:file.processingFormat frameCapacity:AVAudioFrameCount(file.length)];
+        if(!buffer || ![file readIntoBuffer:buffer error:error] || !buffer.floatChannelData || !buffer.frameLength) return NO;
+        std::vector<float> left(buffer.floatChannelData[0],buffer.floatChannelData[0]+buffer.frameLength),right;
+        if(channels==2) right.assign(buffer.floatChannelData[1],buffer.floatChannelData[1]+buffer.frameLength);
+        duration=double(buffer.frameLength)/rate;
+        sample->processor.setSample(std::move(left),std::move(right),rate);
+    }
+    k.catDynamics->publish(std::move(sample));
+    k.catDynamics->sampleDuration.store(duration);
+    return YES;
+}
++ (void)configureTrigger:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold retrigger:(double)retrigger gain:(double)gain mix:(double)mix attack:(double)attack decay:(double)decay sustain:(double)sustain release:(double)release {
+    auto &k=dynamicsKernel(node); if(!k.catDynamics) return;
+    const double values[]={threshold,retrigger,gain,mix,attack,decay,sustain,release};
+    for(unsigned i=0;i<8;++i) k.catDynamics->parameters[i].store(values[i]);
+    k.catDynamics->collect(); k.enabled.store(enabled);
+}
++ (void)configureGate:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold attack:(double)attack decay:(double)decay hold:(double)hold release:(double)release highPass:(double)highPass lowPass:(double)lowPass filterOutput:(BOOL)filterOutput {
+    auto &k=dynamicsKernel(node); if(!k.catDynamics) return;
+    const double values[]={threshold,attack,decay,hold,release,highPass,lowPass};
+    for(unsigned i=0;i<7;++i) k.catDynamics->parameters[i].store(values[i]);
+    k.catDynamics->filterOutput.store(filterOutput); k.enabled.store(enabled);
+}
+
 + (void)configureLimiter:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gain:(double)gain ceiling:(double)ceiling release:(double)release {
     auto &k=dynamicsKernel(node);
     if(!std::isfinite(gain) || !std::isfinite(ceiling) || !std::isfinite(release)) return;

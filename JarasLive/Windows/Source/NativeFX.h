@@ -14,8 +14,13 @@ public:
     using Dispatcher = std::function<void(std::function<void()>)>;
     NativeFX();~NativeFX();
     void swap(NativeFX &) noexcept;
+    // Call while the render owner is stopped/locked, immediately before replacement.
+    void adoptDynamicsState(NativeFX &previous) noexcept;
+    struct DynamicsPreview { std::array<double,8> trigger{}; std::array<double,7> gate{}; bool filterOutput=false; };
+    static DynamicsPreview dynamicsPreview(const var &);
+    void previewDynamics(const String &key, const DynamicsPreview &) noexcept;
     void prepare(const var& settings,double sampleRate,const NativeFX *previous=nullptr,bool offline=false,bool prewarm=true,
-                 const Dispatcher &pluginDispatcher = {});
+                 const Dispatcher &pluginDispatcher = {}, const File &mediaDirectory = {});
     void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN());
     bool hasExternal() const;
     void applyAutomation(const AutomationProgram &, double time);

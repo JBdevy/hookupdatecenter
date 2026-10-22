@@ -1046,6 +1046,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         bus.internalSend.outputVolume = 0
         let destinations = [AVAudioConnectionPoint(node: bus.masterSend, bus: 0), AVAudioConnectionPoint(node: bus.groupSend, bus: 0), AVAudioConnectionPoint(node: bus.internalSend, bus: 0)] + bus.hardware.map { AVAudioConnectionPoint(node: $0, bus: 0) }
         engine.connect(bus.processedMix, to: bus.controls, format: format)
+        bus.effects.mediaDirectory = directory
         bus.effects.attach(to: engine, input: bus.mix, format: format, destinations: [AVAudioConnectionPoint(node: bus.processedMix, bus: 0)])
         engine.connect(bus.silence, to: bus.mix, fromBus: 0, toBus: 0, format: format)
         // Build the upstream path before its fanout. On an already running
@@ -1149,6 +1150,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             metronome = generator
             MetronomeSettings.shared.changed = { [weak self] in self?.refreshMetronome() }
         }
+        masterEffects.mediaDirectory = directory
         masterEffects.attach(to: engine, input: masterBus, format: format)
         engine.connect(masterEffects.output, to: masterChannelMode, format: format)
         engine.connect(masterChannelMode, to: masterGain, format: format)
@@ -1419,6 +1421,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         return frames
     }
+    func effectSampleError(_ target: UUID?, effect: String) -> String? { effects(for: target)?.sampleErrors[effect] }
     func effectPeaks(_ track: UUID?, effect: String) -> [Float] { effects(for: track)?.effectPeaks(effect) ?? [0,0,0,0] }
     func compressorPeaks(for target: UUID?) -> [Float] { effects(for: target)?.compressorPeaks() ?? [0,0,0,0] }
     func meter(for id: UUID) -> TrackMeterLevel {
@@ -1733,7 +1736,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         guard let voice = voices.removeValue(forKey: key) else { return }
         if let position, voice.clip.muted != true, voice.clip.fxBypassed != true, (voice.clip.gain ?? 1) > 0,
            let settings = voice.clip.fx, voice.effects != nil {
-            var duration = 0.0
+            var duration = voice.effects?.triggerTailDuration ?? 0
             if settings.delayEnabled && settings.delayMix > 0 {
                 let repeats = settings.feedback <= 0 ? 1 : max(1, ceil(log(0.001) / log(settings.feedback / 100)))
                 duration += min(120, settings.delayTime * repeats)
@@ -1857,6 +1860,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // rewiring can invalidate an active player's scheduled file segments.
         if voice.effects == nil {
             let chain = NativeEffectsChain(reorderable: false)
+            chain.mediaDirectory = directory
             chain.attach(to: engine, input: voice.usesStretch ? voice.rateClock : voice.player, format: voice.file.processingFormat,
                          destinations: [AVAudioConnectionPoint(node: voice.gain, bus: 0)])
             chain.observe(analysisEffects[voice.clip.id.uuidString] ?? [])
@@ -2448,6 +2452,7 @@ return false
         } else {
             voice = MIDITakeVoice(track: track, clip: key.clip)
             engine.attach(voice.source); engine.attach(voice.controls); engine.attach(voice.gain)
+            voice.effects.mediaDirectory = directory
             voice.effects.attach(to: engine, input: voice.source, format: hardwareFormat,
                 destinations: [AVAudioConnectionPoint(node: voice.controls, bus: 0)])
             engine.connect(voice.controls, to: voice.gain, format: hardwareFormat)

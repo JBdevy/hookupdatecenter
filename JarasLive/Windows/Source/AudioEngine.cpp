@@ -489,6 +489,12 @@ void AudioEngine::refreshStemLatency(){
     }
 }
 native::stem::Status AudioEngine::stemStatus(const ID &id,const String &key)const {if(auto *fx=effects(id))return fx->stemStatus(key);return {};}
+void AudioEngine::previewDynamics(const ID &id, const String &key, const var &settings) {
+    const auto snapshot = NativeFX::dynamicsPreview(settings);
+    if (trackCapture) trackCapture->previewDynamics(id, key, snapshot);
+    const ScopedLock lock(devices.getAudioCallbackLock());
+    for (int head = 0; head < (id.empty() ? 1 : 2); ++head) if (auto *fx = effects(id, head)) fx->previewDynamics(key, snapshot);
+}
 void AudioEngine::previewStemMix(const ID &id,const String &key,const native::stem::Mix &mix){for(int h=0;h<(id.empty()?1:2);h++)if(auto *fx=effects(id,h))fx->previewStemMix(key,mix);}
 void AudioEngine::waitForStems(){masterFX.waitForStems();for(auto &bus:buses)bus->fx[0].waitForStems();for(auto &voice:voices)voice->fx[0].waitForStems();}
 void AudioEngine::checkStemErrors()const{masterFX.checkStemErrors();for(auto &bus:buses)bus->fx[0].checkStemErrors();for(auto &voice:voices)voice->fx[0].checkStemErrors();}
@@ -514,9 +520,9 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
     NativeFX prepared[2];
     auto saved = settings.clone();
     const auto sampleRate = rate.load();
-    prepared[0].prepare(saved, sampleRate, effects(id),offlineMode,true);
+    prepared[0].prepare(saved, sampleRate, effects(id),offlineMode,true,{},instrumentDirectory);
     if (!id.empty())
-        prepared[1].prepare(saved, sampleRate, effects(id,1),offlineMode,false);
+        prepared[1].prepare(saved, sampleRate, effects(id,1),offlineMode,false,{},instrumentDirectory);
     if (trackCapture) trackCapture->updateEffects(id, saved);
     const bool running=playing.load()||subPlaying.load()||presentationTailing.load();
     for(int h=0;h<(id.empty()?1:2);h++){
@@ -543,6 +549,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
                 voice->midiInstrument = instrument;
                 if (shared) replaceSharedMIDI(voice->bus, *shared);
             }
+            prepared[0].adoptDynamicsState(voice->fx[0]); prepared[1].adoptDynamicsState(voice->fx[1]);
             voice->fx[0].swap(prepared[0]);
             voice->fx[1].swap(prepared[1]);
             std::swap(voice->fxSettings, saved);
@@ -581,6 +588,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
         const ScopedLock lock(devices.getAudioCallbackLock());
         if(preparedLatency)installLatencyPlan(preparedLatency,running);
         if (id.empty()) {
+            prepared[0].adoptDynamicsState(masterFX);
             masterFX.swap(prepared[0]);
             std::swap(masterFXSettings, saved);
             if (changeMIDI)
@@ -588,6 +596,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
         } else
             for (auto &bus : buses)
                 if (bus->id == id) {
+                    prepared[0].adoptDynamicsState(bus->fx[0]); prepared[1].adoptDynamicsState(bus->fx[1]);
                     bus->fx[0].swap(prepared[0]);
                     bus->fx[1].swap(prepared[1]);
                     for(auto &expected:bus->externalExpected)expected=-1;
@@ -673,7 +682,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
         jaras::validateRouting(song);
         masterAutomation.prepare(project && project->masterAutomationJSON ? JSON::parse(text(*project->masterAutomationJSON)) : var());
         masterFXSettings = masterSettings;
-        masterFX.prepare(masterSettings, rate.load(),nullptr,offlineMode,true,pluginDispatcher);
+        masterFX.prepare(masterSettings, rate.load(),nullptr,offlineMode,true,pluginDispatcher,directory);
         try {
             masterMIDI = std::make_unique<MIDIPlayback>(std::vector<PlaybackNote>{}, masterSettings,
                                                         directory, rate.load());
@@ -717,7 +726,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 missingFiles.addIfNotAlreadyThere(String::fromUTF8(e.what()));
             }
             for (int h=0;h<2;h++)
-                bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0,pluginDispatcher);
+                bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0,pluginDispatcher,directory);
             bus->fx[1].shareStems(bus->fx[0]);
             bus->automation.prepare(track.automationJSON ? JSON::parse(text(*track.automationJSON))
                                                          : var());
@@ -876,7 +885,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 }
                 for (int h = 0; h < 2; ++h) {
                     voice->processed[h].setSize(2, 4096);
-                    voice->fx[h].prepare(voice->fxSettings,rate.load(),nullptr,offlineMode,h==0,pluginDispatcher);
+                    voice->fx[h].prepare(voice->fxSettings,rate.load(),nullptr,offlineMode,h==0,pluginDispatcher,directory);
                     for (auto value : voice->fx[h].unsupported)
                         unsupported.addIfNotAlreadyThere(text(clip.name) + ": " + value);
                 }
@@ -2091,7 +2100,7 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice *d) {
     cancelTrackFadeout();
     rate = d->getCurrentSampleRate();
     configureDeviceChannels(d->getActiveInputChannels(), d->getActiveOutputChannels());
-    masterFX.prepare(masterFXSettings, rate.load(),nullptr,offlineMode);
+    masterFX.prepare(masterFXSettings, rate.load(),nullptr,offlineMode,true,{},instrumentDirectory);
     midiInput.reset(rate.load());
     for (auto &slot : midiSlots)
         slot.reset(rate.load());
@@ -2102,7 +2111,7 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice *d) {
         if (bus->midi)
             bus->midi->prepare(rate.load());
         for(int h=0;h<2;h++)
-            bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0);
+            bus->fx[h].prepare(bus->settings,rate.load(),nullptr,offlineMode,h==0,{},instrumentDirectory);
         bus->fx[1].shareStems(bus->fx[0]);
     }
     for (auto &voice : voices) {
@@ -2110,7 +2119,7 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice *d) {
             voice->clipAudio->prepare(rate.load());
         for (auto &expected : voice->midiExpected) expected=-1;
         for(int h=0;h<2;h++)
-            voice->fx[h].prepare(voice->fxSettings,rate.load(),nullptr,offlineMode,h==0);
+            voice->fx[h].prepare(voice->fxSettings,rate.load(),nullptr,offlineMode,h==0,{},instrumentDirectory);
         voice->fx[1].shareStems(voice->fx[0]);
     }
     latencyPlan.reset();activateStemLatency();latencyPlan=makeLatencyPlan();publishLatency();

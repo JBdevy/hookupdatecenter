@@ -24,6 +24,51 @@ final class NativeEffectsChain {
     let equalizer: AVAudioUnitEffect
     let compressor: AVAudioUnitEffect
     private var limiter: AVAudioUnitEffect?
+    private var trigger: AVAudioUnitEffect?
+    private var gate: AVAudioUnitEffect?
+    /// Paths in project documents stay relative; every graph owns its folder.
+    var mediaDirectory: URL? {
+        didSet {
+            if mediaDirectory != oldValue { triggerSamplePaths.removeAll(); settings = nil }
+        }
+    }
+    var triggerTailDuration: Double {
+        guard let settings else { return 0 }
+        return settings.effectKeys.reduce(0) { total, key in
+            guard settings.kind(of: key) == "CatLive Trigger", settings.isEnabled(key),
+                  let node = key == "CatLive Trigger" ? trigger : instanceNodes[key] as? AVAudioUnitEffect else { return total }
+            return total + JarasDynamics.triggerSampleDuration(node)
+        }
+    }
+    private var triggerSamplePaths: [String: String] = [:]
+    private(set) var sampleErrors: [String: String] = [:]
+    private func configureTrigger(_ node: AVAudioUnitEffect, key: String, value: NativeFXSettings, enabled: Bool) {
+        let p = value.triggerParameters
+        let path = p.samplePath ?? ""
+        if triggerSamplePaths[key] != path {
+            triggerSamplePaths[key] = path
+            do {
+                let url: URL?
+                if path.isEmpty { url = nil }
+                else if path.hasPrefix("/") { url = URL(fileURLWithPath: path) }
+                else if let mediaDirectory { url = mediaDirectory.appendingPathComponent(path) }
+                else { throw ProjectError.invalid("The project folder is unavailable.") }
+                try JarasDynamics.loadTriggerSample(node, url: url)
+                sampleErrors[key] = nil
+            } catch {
+                try? JarasDynamics.loadTriggerSample(node, url: nil)
+                sampleErrors[key] = error.localizedDescription
+            }
+        }
+        JarasDynamics.configureTrigger(node, enabled: enabled, threshold: p.threshold, retrigger: p.retrigger,
+            gain: p.gain, mix: p.mix, attack: p.attack, decay: p.decay, sustain: p.sustain, release: p.release)
+    }
+    private func configureGate(_ node: AVAudioUnitEffect, value: NativeFXSettings, enabled: Bool) {
+        let p = value.gateParameters
+        JarasDynamics.configureGate(node, enabled: enabled, threshold: p.threshold, attack: p.attack,
+            decay: p.decay, hold: p.hold, release: p.release, highPass: p.highPass,
+            lowPass: p.lowPass, filterOutput: p.filterOutput)
+    }
     private var pitch: AVAudioUnitTimePitch?
     let delay = AVAudioUnitDelay()
     let reverb = JarasDynamics.makeReverb()
@@ -55,6 +100,8 @@ final class NativeEffectsChain {
                 case "EQ": node = JarasEqualizer.makeNode()
                 case "Compressor": node = JarasDynamics.makeCompressor()
                 case "Limiter": node = JarasDynamics.makeLimiter()
+                case "CatLive Trigger": node = JarasDynamics.makeTrigger()
+                case "Cat Gate": node = JarasDynamics.makeGate()
                 case "Pitch": let pitch = AVAudioUnitTimePitch(); pitch.rate = 1; pitch.overlap = 8; node = pitch
                 case "Delay": node = AVAudioUnitDelay()
                 default: node = JarasDynamics.makeReverb()
@@ -70,6 +117,10 @@ final class NativeEffectsChain {
             case "Limiter":
                 let parameters = value.limiterParameters
                 JarasDynamics.configureLimiter(node as! AVAudioUnitEffect, enabled: value.limiterEnabled == true, gain: parameters.inputGain, ceiling: parameters.ceiling, release: parameters.release)
+            case "CatLive Trigger":
+                configureTrigger(node as! AVAudioUnitEffect, key: key, value: value, enabled: value.triggerEnabled == true)
+            case "Cat Gate":
+                configureGate(node as! AVAudioUnitEffect, value: value, enabled: value.gateEnabled == true)
             case "Pitch":
                 let pitch = node as! AVAudioUnitTimePitch
                 pitch.pitch = Float(value.semitones * 100); pitch.bypass = value.pitchEnabled != true || value.semitones == 0
@@ -243,9 +294,9 @@ final class NativeEffectsChain {
     #endif
     private var nodes: [AVAudioUnit] {
         #if os(macOS)
-        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + (stemSeparatorNode.map { [$0] } ?? []) + Array(externalNodes.values)
+        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + (trigger.map { [$0] } ?? []) + (gate.map { [$0] } ?? []) + (stemSeparatorNode.map { [$0] } ?? []) + Array(externalNodes.values)
         #else
-        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + (stemSeparatorNode.map { [$0] } ?? [])
+        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + (trigger.map { [$0] } ?? []) + (gate.map { [$0] } ?? []) + (stemSeparatorNode.map { [$0] } ?? [])
         #endif
     }
     var output: AVAudioNode { outputDestination ?? outputMix }
@@ -337,6 +388,8 @@ final class NativeEffectsChain {
             case "EQ": return equalizer
             case "Compressor": return compressor
             case "Limiter": return limiter
+            case "CatLive Trigger": return trigger
+            case "Cat Gate": return gate
             case "Pitch": return pitch
             case "Delay": return delay
             case "Reverb": return reverb
@@ -398,6 +451,7 @@ final class NativeEffectsChain {
         externalNodes.removeAll(); failedExternalPlugins.removeAll()
         #endif
         stemSeparatorNode = nil; stemSeparatorStarted = false; stemSeparatorError = nil
+        trigger = nil; gate = nil; triggerSamplePaths.removeAll(); sampleErrors.removeAll()
     }
     func apply(_ next: NativeFXSettings) {
         let rate = max(8000, format?.sampleRate ?? equalizer.outputFormat(forBus: 0).sampleRate)
@@ -443,6 +497,16 @@ final class NativeEffectsChain {
             JarasDynamics.configureLimiter(limiter, enabled: next.inserted.contains("Limiter") && next.limiterEnabled == true,
                 gain: parameters.inputGain, ceiling: parameters.ceiling, release: parameters.release)
         }
+        if next.inserted.contains("CatLive Trigger"), trigger == nil {
+            let node = JarasDynamics.makeTrigger(); trigger = node; engine?.attach(node)
+        }
+        if let trigger { configureTrigger(trigger, key: "CatLive Trigger", value: next,
+            enabled: next.inserted.contains("CatLive Trigger") && next.triggerEnabled == true) }
+        if next.inserted.contains("Cat Gate"), gate == nil {
+            let node = JarasDynamics.makeGate(); gate = node; engine?.attach(node)
+        }
+        if let gate { configureGate(gate, value: next,
+            enabled: next.inserted.contains("Cat Gate") && next.gateEnabled == true) }
         configureInstances(next, rate: rate)
         connect(next)
         if !next.inserted.contains(NativeFXSettings.stemSeparator), let node = stemSeparatorNode {
@@ -452,6 +516,7 @@ final class NativeEffectsChain {
         let nativeRetained = Set((next.instances ?? []).filter { next.inserted.contains($0.effectKey) }.map(\.effectKey))
         for key in Set(instanceNodes.keys).subtracting(nativeRetained) {
             if let node = instanceNodes.removeValue(forKey: key) { engine?.detach(node) }
+            triggerSamplePaths[key] = nil; sampleErrors[key] = nil
         }
         #if os(macOS)
         for identifier in Set(externalNodes.keys).subtracting(retained) {
@@ -490,7 +555,7 @@ final class NativeEffectsChain {
             switch settings?.kind(of: key) {
             case "EQ": JarasEqualizer.setAnalysisEnabled(node as! AVAudioUnitEffect, enabled: enabled)
             case "Compressor", "Limiter": JarasDynamics.setCompressorMeteringEnabled(node as! AVAudioUnitEffect, enabled: enabled)
-            case "Reverb":
+            case "Reverb", "CatLive Trigger", "Cat Gate":
                 JarasDynamics.setAnalysisEnabled(node as! AVAudioUnitEffect, input: true, enabled: enabled)
                 JarasDynamics.setAnalysisEnabled(node as! AVAudioUnitEffect, input: false, enabled: enabled)
             default: break
@@ -501,6 +566,12 @@ final class NativeEffectsChain {
         if let limiter { JarasDynamics.setCompressorMeteringEnabled(limiter, enabled: effects.contains("Limiter")) }
         JarasDynamics.setAnalysisEnabled(reverb, input: true, enabled: effects.contains("Reverb"))
         JarasDynamics.setAnalysisEnabled(reverb, input: false, enabled: effects.contains("Reverb"))
+        for (key, node) in [("CatLive Trigger", trigger), ("Cat Gate", gate)] {
+            if let node {
+                JarasDynamics.setAnalysisEnabled(node, input: true, enabled: effects.contains(key))
+                JarasDynamics.setAnalysisEnabled(node, input: false, enabled: effects.contains(key))
+            }
+        }
         observesDelay = effects.contains("Delay"); updateDelayAnalysis()
     }
     private func detachDelayAnalysis() {
@@ -568,10 +639,13 @@ final class NativeEffectsChain {
         if let node = instanceNodes[effect] {
             switch settings?.kind(of: effect) {
             case "Compressor", "Limiter": return JarasDynamics.takeCompressorPeaks(node as! AVAudioUnitEffect).map(\.floatValue)
-            case "Reverb": return JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: true).map(\.floatValue) + JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: false).map(\.floatValue)
+            case "Reverb", "CatLive Trigger", "Cat Gate": return JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: true).map(\.floatValue) + JarasDynamics.analysisPeaks(node as! AVAudioUnitEffect, input: false).map(\.floatValue)
             case "Delay": return delayPeaks(instanceDelayProbes[effect]?.0) + delayPeaks(instanceDelayProbes[effect]?.1)
             default: return [0,0,0,0]
             }
+        }
+        if let node = effect == "CatLive Trigger" ? trigger : (effect == "Cat Gate" ? gate : nil) {
+            return JarasDynamics.analysisPeaks(node, input: true).map(\.floatValue) + JarasDynamics.analysisPeaks(node, input: false).map(\.floatValue)
         }
         let now = ProcessInfo.processInfo.systemUptime
         if now - meterTime > 1.0 / 40 {
@@ -604,9 +678,10 @@ final class RecordingInputProcessor {
     private var position = 0.0
     private(set) var latency: Int
     private var settings: NativeFXSettings
-    init(format: AVAudioFormat, settings: NativeFXSettings) throws {
+    init(format: AVAudioFormat, settings: NativeFXSettings, mediaDirectory: URL? = nil) throws {
         // Native track processors use a stereo bus even for a mono input.
         self.settings = settings
+        chain.mediaDirectory = mediaDirectory
         let stereo = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate, channels: 2)!
         let feed = Feed(stereo); self.feed = feed
         output = AVAudioPCMBuffer(pcmFormat: stereo, frameCapacity: 4096)!

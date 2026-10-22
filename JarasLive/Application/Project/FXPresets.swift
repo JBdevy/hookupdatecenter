@@ -32,6 +32,8 @@ public struct FXPreset: Codable, Equatable, Identifiable {
             let kind = settings.kind(of: effect)
             var isolated = NativeFXSettings().merging(effect: kind, from: settings.settings(for: effect))
             isolated.inserted = [kind]; isolated.setEnabled(kind, enabled: true)
+            // Samples belong to the current project, not the global parameter preset.
+            if kind == "CatLive Trigger" { isolated.trigger?.samplePath = nil }
             try isolated.validate()
             native = isolated
         }
@@ -49,7 +51,11 @@ public struct FXPreset: Codable, Equatable, Identifiable {
             guard let native else { throw ProjectError.invalid("Empty effect preset") }
             try native.validate()
             let enabled = settings.isEnabled(effect)
-            result = settings.merging(effect: effect, from: native)
+            var parameters = native
+            if settings.kind(of: effect) == "CatLive Trigger" {
+                parameters.triggerParameters.samplePath = settings.settings(for: effect).trigger?.samplePath
+            }
+            result = settings.merging(effect: effect, from: parameters)
             result.setEnabled(effect, enabled: enabled)
         }
         try result.validate()

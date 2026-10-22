@@ -1,5 +1,6 @@
 #pragma once
 #include "ProjectCodec.h"
+#include "CatDynamicsAssets.h"
 namespace catlive::mediaCleanup {
 using Paths = std::set<std::string>;
 inline Paths references(const jaras::Project &project) {
@@ -14,6 +15,7 @@ inline Paths references(const jaras::Project &project) {
                 if (clip.audioFile)
                     result.insert(clip.audioFile->path);
         }
+    dynamicsAssets::collect(project, result);
     return result;
 }
 inline bool mediaPath(const String &path) {

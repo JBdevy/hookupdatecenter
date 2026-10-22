@@ -51,6 +51,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void captureExternalEffects(const ID &, var &) const;
     native::stem::Status stemStatus(const ID &,const String &)const;
     void waitForStems();
+    void previewDynamics(const ID &, const String &, const var &);
     void previewStemMix(const ID &,const String &,const native::stem::Mix &);
     void checkStemErrors()const;
     void refreshStemLatency();

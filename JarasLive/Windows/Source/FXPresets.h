@@ -7,6 +7,8 @@ inline void erase(var &value, const Identifier &key) {
 inline const StringArray &fields(const String &kind) {
     static const std::map<String, StringArray> values{
         {"CatStemSeparation 5", {"stemSeparatorEnabled", "stemMix"}},
+        {"CatLive Trigger", {"triggerEnabled", "trigger"}},
+        {"Cat Gate", {"gateEnabled", "gate"}},
         {"EQ", {"eqEnabled", "bands"}},
         {"Compressor", {"compressorEnabled", "threshold", "ratio", "attack", "release", "makeup"}},
         {"Limiter", {"limiterEnabled", "limiter"}}, {"Pitch", {"pitchEnabled", "pitchSemitones"}},
@@ -25,15 +27,23 @@ inline var parameters(const String &kind, const var &settings) {
     auto value = object();
     for (const auto &key : fields(kind)) if (parameter(key) && !get(settings, Identifier(key)).isVoid())
         put(value, Identifier(key), get(settings, Identifier(key)).clone());
+    if (kind == "CatLive Trigger") { auto trigger = get(value, "trigger"); if (trigger.isObject()) erase(trigger, "samplePath"); }
     return value;
 }
 inline void apply(const String &kind, var &settings, const var &preset) {
     if (str(preset, "plugin") != identity(kind, settings) || !get(preset, "native").isObject())
         throw std::runtime_error("This preset belongs to another plugin.");
+    const auto samplePath = str(get(settings, "trigger"), "samplePath");
     auto value = get(preset, "native");
     for (const auto &key : fields(kind)) if (parameter(key)) {
         erase(settings, Identifier(key));
         if (!get(value, Identifier(key)).isVoid()) put(settings, Identifier(key), get(value, Identifier(key)).clone());
+    }
+    if (kind == "CatLive Trigger") {
+        auto trigger = get(settings, "trigger");
+        if (!trigger.isObject()) { trigger = object(); put(settings, "trigger", trigger); }
+        erase(trigger, "samplePath");
+        if (samplePath.isNotEmpty()) put(trigger, "samplePath", samplePath);
     }
 }
 inline bool matches(const String &kind, const var &settings, const var &preset) {

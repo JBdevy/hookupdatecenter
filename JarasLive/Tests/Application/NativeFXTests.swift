@@ -1,6 +1,41 @@
 import XCTest
 @testable import JarasApplication
 final class NativeFXTests: XCTestCase {
+    func testTriggerGatePersistenceInstancesAndSampleOwnership() throws {
+        var project = Project.empty(name: "Trigger and gate")
+        var fx = NativeFXSettings()
+        fx.appendNative("CatLive Trigger"); fx.appendNative("Cat Gate")
+        fx.triggerParameters.samplePath = "Stems/Kick.wav"
+        fx.gateParameters.threshold = -35
+        let second = fx.appendNative("CatLive Trigger")
+        var draft = fx.settings(for: second)
+        draft.triggerParameters.samplePath = "Stems/Snare.mp3"
+        draft.triggerParameters.sustain = 0.25
+        fx = fx.merging(effect: second, from: draft)
+        fx.setEnabled("CatLive Trigger", enabled: false)
+        XCTAssertTrue(fx.isEnabled(second)); XCTAssertFalse(fx.isEnabled("CatLive Trigger"))
+        try fx.validateForClip()
+        project.masterFX = fx
+        XCTAssertEqual(project.mediaPaths, ["Stems/Kick.wav", "Stems/Snare.mp3"])
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)
+        let preset = try FXPreset(name: "Soft snare", settings: fx, effect: second)
+        XCTAssertNil(preset.native?.trigger?.samplePath)
+        let applied = try preset.applying(to: fx, effect: second)
+        XCTAssertEqual(applied.settings(for: second).trigger?.samplePath, "Stems/Snare.mp3")
+        let restored = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(fx))
+        XCTAssertEqual(restored, fx)
+        project.remapFXSamples(["Stems/Kick.wav":"Stems/Kick-001.wav"])
+        XCTAssertEqual(project.mediaPaths, ["Stems/Kick-001.wav", "Stems/Snare.mp3"])
+        let parameter = NativeFXParameter(effect: second, key: .triggerGain, name: "Gain", range: -24...24)
+        XCTAssertTrue(parameter.apply(127, to: &fx)); XCTAssertEqual(fx.settings(for: second).triggerParameters.gain, 24)
+        XCTAssertEqual(fx.triggerParameters.gain, 0)
+        fx.removeEffect(second); XCTAssertEqual(fx.samplePaths, ["Stems/Kick.wav"])
+        fx.gateParameters.highPass = 10000; fx.gateParameters.lowPass = 5000
+        XCTAssertThrowsError(try fx.validate())
+        fx.gateParameters = NativeGateSettings(); fx.triggerParameters.samplePath = "../kick.wav"
+        XCTAssertThrowsError(try fx.validate())
+    }
+
     func testRemovedEffectReinsertsFreshWithoutChangingOtherStages() throws {
         var fx = NativeFXSettings()
         fx.appendNative("EQ"); fx.appendNative("Compressor"); fx.appendNative("Delay")

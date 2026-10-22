@@ -1760,3 +1760,17 @@
 "Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings." = "Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings.";
 
 "Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings." = "Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings.";
+
+"Load sample…" = "Load sample…";
+
+"No sample loaded" = "No sample loaded";
+
+"Save the project before loading a sample." = "Save the project before loading a sample.";
+
+"Choose a WAV or MP3 sample." = "Choose a WAV or MP3 sample.";
+
+"Choose a mono or stereo sample up to 60 seconds." = "Choose a mono or stereo sample up to 60 seconds.";
+
+"WAV / MP3 · Mono / Stereo · 60 s max" = "WAV / MP3 · Mono / Stereo · 60 s max";
+
+"The project folder is unavailable." = "The project folder is unavailable.";

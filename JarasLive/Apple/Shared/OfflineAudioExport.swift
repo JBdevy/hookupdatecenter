@@ -332,9 +332,10 @@ final class OfflineAudioExport {
                 engine.connect(bus.gain, to: matrix, format: format)
                 engine.connect(matrix, to: bus.pan, format: format)
             } else { engine.connect(bus.gain,to: bus.pan,format: format) }
-            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || !fx.instrumentKeys.isEmpty || fx.isEnabled(NativeFXSettings.stemSeparator) {
+            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.triggerEnabled == true || fx.gateEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || !fx.instrumentKeys.isEmpty || fx.isEnabled(NativeFXSettings.stemSeparator) {
                 let effects = NativeEffectsChain(); bus.effects = effects
                 effectChains.append(effects)
+                effects.mediaDirectory = mediaDirectory
                 effects.attach(to: engine,input: bus.mix,format: format,destinations: [AVAudioConnectionPoint(node: bus.processedMix,bus: 0)])
                 effects.apply(fx)
                 transportClocks.append((effects, origin ?? writers[0].job.start))
@@ -421,10 +422,11 @@ final class OfflineAudioExport {
             if (clip.gain ?? 1) <= 0 { player.volume = 0 }
             let fx = clip.fxBypassed == true ? NativeFXSettings() : (clip.fx ?? NativeFXSettings())
             var itemEffects: NativeEffectsChain?
-            if clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || fx.isEnabled(NativeFXSettings.stemSeparator) {
+            if clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.triggerEnabled == true || fx.gateEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || fx.isEnabled(NativeFXSettings.stemSeparator) {
                 let effects = NativeEffectsChain()
                 itemEffects = effects
                 effectChains.append(effects)
+                effects.mediaDirectory = mediaDirectory
                 effects.attach(to: engine,input: source,format: sourceFormat,destinations: [AVAudioConnectionPoint(node: gain,bus: 0)])
                 effects.apply(fx); effects.setSourcePolarity(clip.phaseInverted == true); effects.setSourceGain(clip.normalizationGain ?? 1); effects.setSourceChannelMode(clip.channelMode ?? 0)
                 transportClocks.append((effects, start))
@@ -469,6 +471,7 @@ final class OfflineAudioExport {
                 let controls = JarasEqualizer.makeNode(), gain = AVAudioUnitEQ(numberOfBands: 0)
                 engine.attach(source); engine.attach(controls); engine.attach(gain)
                 let itemEffects = NativeEffectsChain(); effectChains.append(itemEffects)
+                itemEffects.mediaDirectory = mediaDirectory
                 itemEffects.attach(to: engine, input: source, format: format,
                     destinations: [AVAudioConnectionPoint(node: controls, bus: 0)])
                 itemEffects.apply(clip.fx ?? NativeFXSettings())

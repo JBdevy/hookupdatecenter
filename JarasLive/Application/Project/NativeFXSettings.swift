@@ -139,6 +139,37 @@ public struct NativeStemMix: Codable, Equatable, Sendable {
         return sources.map { $0.mute || (soloed && !$0.solo) ? 0 : $0.gain }
     }
 }
+public struct NativeTriggerSettings: Codable, Equatable, Sendable {
+    public var samplePath: String?
+    public var threshold = -30.0, retrigger = 0.08, gain = 0.0, mix = 100.0
+    public var attack = 0.0, decay = 0.1, sustain = 1.0, release = 0.02
+    public init() {}
+    public func validate() throws {
+        guard [threshold,retrigger,gain,mix,attack,decay,sustain,release].allSatisfy(\.isFinite),
+              (-80...0).contains(threshold), (0.005...2).contains(retrigger), (-24...24).contains(gain),
+              (0...100).contains(mix), (0...10).contains(attack), (0...10).contains(decay),
+              (0...1).contains(sustain), (0...20).contains(release) else { throw ProjectError.invalid("Invalid trigger settings") }
+        if let samplePath {
+            guard !samplePath.isEmpty, !samplePath.hasPrefix("/"), !samplePath.contains("\\"),
+                  !samplePath.contains(":"), samplePath.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != ".." && $0 != "." }),
+                  ["wav","mp3"].contains(URL(fileURLWithPath: samplePath).pathExtension.lowercased())
+            else { throw ProjectError.invalid("Invalid trigger sample path") }
+        }
+    }
+}
+public struct NativeGateSettings: Codable, Equatable, Sendable {
+    public var threshold = -40.0, attack = 0.001, decay = 0.02, hold = 0.05, release = 0.1
+    public var highPass = 20.0, lowPass = 20000.0
+    public var filterOutput = false
+    public init() {}
+    public func validate() throws {
+        guard [threshold,attack,decay,hold,release,highPass,lowPass].allSatisfy(\.isFinite),
+              (-80...0).contains(threshold), (0...2).contains(attack), (0...2).contains(decay),
+              (0...2).contains(hold), (0...5).contains(release),
+              (20...20000).contains(highPass), (20...20000).contains(lowPass), highPass <= lowPass
+        else { throw ProjectError.invalid("Invalid gate settings") }
+    }
+}
 public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instances: [NativeFXInstance]?
 
@@ -146,8 +177,20 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instrumentID: String?
     public var instrumentParameters: InstrumentParameters?
     public var inserted: [String] = []
-    public static let order = ["Instruments", "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"]
+    public static let order = ["Instruments", "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatLive Trigger", "Cat Gate"]
     public static let stemSeparator = "CatStemSeparation 5"
+    public var triggerEnabled: Bool?
+    public var trigger: NativeTriggerSettings?
+    public var triggerParameters: NativeTriggerSettings {
+        get { trigger ?? NativeTriggerSettings() }
+        set { trigger = newValue }
+    }
+    public var gateEnabled: Bool?
+    public var gate: NativeGateSettings?
+    public var gateParameters: NativeGateSettings {
+        get { gate ?? NativeGateSettings() }
+        set { gate = newValue }
+    }
     public var stemSeparatorEnabled: Bool?
     public var stemMix: NativeStemMix?
     public var stemParameters: NativeStemMix {
@@ -183,6 +226,8 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
         for instance in instances ?? [] { try instance.settings.validateForClip() }
     }
     public func validate() throws {
+        try trigger?.validate()
+        try gate?.validate()
         try stemMix?.validate()
         try limiter?.validate()
         try instrumentParameters?.validate()
@@ -254,12 +299,12 @@ extension NativeFXSettings {
     public func isEnabled(_ effect: String) -> Bool {
         if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }
         if let plugin = externalPlugins?.first(where: { $0.effectKey == effect }) { return !plugin.bypassed }
-        switch effect { case Self.stemSeparator: return stemSeparatorEnabled == true && stemMix != nil; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
+        switch effect { case "CatLive Trigger": return triggerEnabled == true; case "Cat Gate": return gateEnabled == true; case Self.stemSeparator: return stemSeparatorEnabled == true && stemMix != nil; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
     }
     public mutating func setEnabled(_ effect: String, enabled: Bool) {
         if let index = instances?.firstIndex(where: { $0.effectKey == effect }), let kind = instances?[index].kind { instances?[index].settings.setEnabled(kind, enabled: enabled); return }
         if let index = externalPlugins?.firstIndex(where: { $0.effectKey == effect }) { externalPlugins?[index].bypassed = !enabled; return }
-        switch effect { case Self.stemSeparator:
+        switch effect { case "CatLive Trigger": triggerEnabled = enabled; case "Cat Gate": gateEnabled = enabled; case Self.stemSeparator:
             stemSeparatorEnabled = enabled
             // Older projects used CatStem only as an offline editor. Opening
             // them must not silently insert a new high-latency audio processor.
@@ -274,6 +319,8 @@ extension NativeFXSettings {
             return next
         }
         switch effect {
+        case "CatLive Trigger": next.triggerEnabled = draft.triggerEnabled; next.trigger = draft.trigger
+        case "Cat Gate": next.gateEnabled = draft.gateEnabled; next.gate = draft.gate
         case Self.stemSeparator: next.stemSeparatorEnabled = draft.stemSeparatorEnabled; next.stemMix = draft.stemMix
         case "Instruments": next.instrumentID = draft.instrumentID; next.instrumentParameters = draft.instrumentParameters
         case "EQ": next.eqEnabled = draft.eqEnabled; next.bands = draft.bands
@@ -294,6 +341,7 @@ public enum EffectPresentation {
     public static func title(_ effect: String) -> String {
         switch effect {
         case NativeFXSettings.stemSeparator: return NativeFXSettings.stemSeparator
+        case "CatLive Trigger", "Cat Gate": return effect
         case "EQ": return "CatLive EQ"
         case "Reverb": return "CatLive Reverb"
         case "Pitch": return "CatLive Pitch"
@@ -302,5 +350,18 @@ public enum EffectPresentation {
         case "Limiter": return "CatLive Limiter"
         default: return "CatLive Instruments"
         }
+    }
+}
+
+public extension NativeFXSettings {
+    var samplePaths: Set<String> {
+        var paths = Set<String>()
+        if inserted.contains("CatLive Trigger"), let path = trigger?.samplePath { paths.insert(path) }
+        for instance in instances ?? [] where inserted.contains(instance.effectKey) { paths.formUnion(instance.settings.samplePaths) }
+        return paths
+    }
+    mutating func remapSamples(_ mapping: [String:String]) {
+        if let path = trigger?.samplePath, let replacement = mapping[path] { trigger?.samplePath = replacement }
+        for i in (instances ?? []).indices { instances?[i].settings.remapSamples(mapping) }
     }
 }

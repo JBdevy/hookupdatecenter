@@ -8,6 +8,8 @@ inline var settings(const Session &session, const ID &id) {
     return {};
 }
 inline String enabledKey(const String &kind) {
+    if (kind == "CatLive Trigger") return "triggerEnabled";
+    if (kind == "Cat Gate") return "gateEnabled";
     if (kind == "CatStemSeparation 5") return "stemSeparatorEnabled";
     for (auto name : {"EQ", "Compressor", "Limiter", "Pitch", "Delay", "Reverb"})
         if (kind == name) return kind.toLowerCase() + "Enabled";

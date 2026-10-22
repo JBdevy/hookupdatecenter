@@ -57,6 +57,14 @@ NS_ASSUME_NONNULL_BEGIN
 + (AVAudioUnitEffect *)makeItemEqualizerCompressor;
 + (AVAudioUnitEffect *)makeCompressor;
 + (AVAudioUnitEffect *)makeLimiter;
++ (AVAudioUnitEffect *)makeTrigger;
++ (AVAudioUnitEffect *)makeGate;
+/// Decoding happens on the graph control thread. Rendering owns the published
+/// immutable sample and never opens a file, allocates or releases its storage.
++ (double)triggerSampleDuration:(AVAudioUnitEffect *)node;
++ (BOOL)loadTriggerSample:(AVAudioUnitEffect *)node url:(nullable NSURL *)url error:(NSError **)error;
++ (void)configureTrigger:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold retrigger:(double)retrigger gain:(double)gain mix:(double)mix attack:(double)attack decay:(double)decay sustain:(double)sustain release:(double)release;
++ (void)configureGate:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold attack:(double)attack decay:(double)decay hold:(double)hold release:(double)release highPass:(double)highPass lowPass:(double)lowPass filterOutput:(BOOL)filterOutput;
 + (void)configureLimiter:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gain:(double)gain ceiling:(double)ceiling release:(double)release;
 + (AVAudioUnitEffect *)makeReverb;
 + (void)configureCompressor:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold ratio:(double)ratio attack:(double)attack release:(double)release gain:(double)gain;

@@ -30,6 +30,7 @@ class TrackCapture {
         bool postFader = true, postFX = true;
         float gain = 1;
         var effects;
+        File mediaDirectory;
     };
     struct Take {
         ID track;
@@ -148,9 +149,18 @@ class TrackCapture {
     // plugins before handing the new isolated chain to the writer.
     void updateEffects(const ID &track, const var &settings) {
         for (auto &entry : entries) if (entry.target.track == track && entry.target.postFX && !entry.target.midi) {
-            auto next = std::make_unique<NativeFX>(); next->prepare(settings, rate);
+            auto next = std::make_unique<NativeFX>(); next->prepare(settings, rate, nullptr, false, true, {}, entry.target.mediaDirectory);
             std::lock_guard<std::mutex> lock(entry.processing->mutex);
             entry.processing->pending = std::move(next);
+            entry.processing->dynamics.clear();
+        }
+    }
+    // Parameter previews are consumed by the disk worker; capture's device callback
+    // only enqueues PCM and never takes this mutex or constructs processors.
+    void previewDynamics(const ID &track, const String &key, const NativeFX::DynamicsPreview &snapshot) {
+        for (auto &entry : entries) if (entry.target.track == track && entry.target.postFX && !entry.target.midi) {
+            std::lock_guard<std::mutex> lock(entry.processing->mutex);
+            entry.processing->dynamics[key] = snapshot;
         }
     }
     void setGain(const ID &track, float gain) noexcept {
@@ -283,6 +293,7 @@ class TrackCapture {
     struct ProcessingState {
         std::mutex mutex;
         std::unique_ptr<NativeFX> pending;
+        std::map<String, NativeFX::DynamicsPreview> dynamics;
         std::atomic<bool> failed{false};
     };
     // Only the disk worker invokes this processor. The callback enqueues the
@@ -295,7 +306,7 @@ class TrackCapture {
               postFader(target.postFader), block(2, 4096), state(std::move(state)) {
             usesFloatingPointData = true;
             if (target.postFX) {
-                effects.prepare(target.effects, rate);
+                effects.prepare(target.effects, rate, nullptr, false, true, {}, target.mediaDirectory);
                 latency = effects.latencyFrames();
             }
             skip = latency;
@@ -312,11 +323,13 @@ class TrackCapture {
         bool write(const int **data, int count) override {
             try {
                 std::unique_ptr<NativeFX> next;
-                { std::lock_guard<std::mutex> lock(state->mutex); next.swap(state->pending); }
+                std::map<String, NativeFX::DynamicsPreview> previews;
+                { std::lock_guard<std::mutex> lock(state->mutex); next.swap(state->pending); previews.swap(state->dynamics); }
                 if (next) {
                     while (!gains.empty() && !state->failed.load()) { block.clear(); emit(std::min<int64>(4096, (int64)gains.size() + skip)); }
-                    effects.swap(*next); latency = effects.latencyFrames(); skip = latency;
+                    next->adoptDynamicsState(effects); effects.swap(*next); latency = effects.latencyFrames(); skip = latency;
                 }
+                for (const auto &[key, parameters] : previews) effects.previewDynamics(key, parameters);
                 for (int at = 0; at < count; at += 4096) {
                     const int length = std::min(4096, count - at);
                     for (int ch = 0; ch < 2; ++ch)

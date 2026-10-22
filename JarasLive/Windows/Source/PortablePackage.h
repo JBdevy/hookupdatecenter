@@ -170,6 +170,7 @@ inline void exportPackage(const var &saved, const File &directory, const File &a
             for (auto &clip : track.clips)
                 rewrite(clip.audioFile);
         }
+    dynamicsAssets::rewrite(project, mapping);
     auto document = ProjectCodec::seal(JSON::toString(ProjectCodec::encode(project, raw), true, 17));
     require(document.getSize() <= 134217728, "The project document is too large.");
     records["Project.jl"] = packageZIP::fingerprint("Project.jl", document);

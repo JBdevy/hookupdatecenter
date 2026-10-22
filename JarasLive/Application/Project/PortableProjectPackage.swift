@@ -169,6 +169,7 @@ public enum PortableProjectPackage {
             rewrite(&project.songs[s].tracks[t].audioFile); rewrite(&project.songs[s].tracks[t].clickSound)
             for c in project.songs[s].tracks[t].clips.indices { rewrite(&project.songs[s].tracks[t].clips[c].audioFile) }
         }}
+        project.remapFXSamples(mapping)
         let document = try ProjectDocumentCodec.encode(project)
         guard document.count <= limits.maximumDocumentBytes else { throw invalid("The project document is too large.") }
         records["Project.jl"] = record("Project.jl", data: document)

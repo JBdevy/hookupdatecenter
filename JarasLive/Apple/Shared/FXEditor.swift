@@ -1,4 +1,6 @@
 import SwiftUI
+import UniformTypeIdentifiers
+import Combine
 
 private struct OpenFXKey: EnvironmentKey { static let defaultValue: (UUID?, String) -> Void = { _, _ in } }
 private struct OpenClipFXChainKey: EnvironmentKey { static let defaultValue: (UUID) -> Void = { _ in } }
@@ -29,6 +31,9 @@ struct FXEditor: View {
     private let fallbackSettings: NativeFXSettings
     @State private var selected: UUID?
     @State private var changed = false
+    @State private var choosingSample = false
+    @State private var sampleBusy = false
+    @State private var sampleError = ""
     init(show: ShowController, track: UUID?, clip: UUID? = nil, clipChainEditor: Bool = false, effect: String, close: @escaping () -> Void) {
         self.show = show; self.track = track; self.clip = clip; self.clipChainEditor = clipChainEditor; self.close = close; effectKey = effect; project = show.snapshot.project.id
         let chain = clip.map { show.clipFXSettings($0) } ?? show.fxSettings(track)
@@ -64,6 +69,8 @@ struct FXEditor: View {
             }
             switch page {
             case "Instruments": InstrumentParameterEditor(name: InstrumentLibrary.displayName(settings.instrumentID), category: InstrumentLibrary.category(settings.instrumentID), parameters: Binding(get: { settings.instrumentParameters ?? InstrumentLibrary.parameters(settings.instrumentID) }, set: { settings.instrumentParameters = $0 }))
+            case "CatLive Trigger": triggerEditor
+            case "Cat Gate": gateEditor
             case "EQ": equalizer
             case "Compressor":
                 Toggle("Enabled", isOn: $settings.compressorEnabled).toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
@@ -113,6 +120,11 @@ struct FXEditor: View {
                 }.padding(18).background(JarasTheme.display).cornerRadius(10)
 
             }
+        }.fileImporter(isPresented: $choosingSample, allowedContentTypes: ["wav","mp3"].compactMap { UTType(filenameExtension: $0) }) { result in
+            switch result {
+            case .success(let url): importSample(url)
+            case .failure(let error): sampleError = error.localizedDescription
+            }
         }.environment(\.fxMIDIScope, FXMIDIScope(track: track, clip: clip, effect: effectKey))
         #if os(iOS)
         .padding(12).frame(maxWidth: .infinity, minHeight: compactControls ? 260 : 410)
@@ -141,6 +153,71 @@ struct FXEditor: View {
             #if os(macOS)
             .onExitCommand(perform: close)
             #endif
+    }
+    private var triggerEditor: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Toggle("Enabled", isOn: Binding(get: { settings.triggerEnabled == true }, set: { settings.triggerEnabled = $0 }))
+                    .toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
+                Spacer()
+                Button("Load sample…") { choosingSample = true }.disabled(sampleBusy)
+                if sampleBusy { ProgressView().controlSize(.small) }
+            }
+            Text(settings.trigger?.samplePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? String(localized: "No sample loaded"))
+                .font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10).background(JarasTheme.display).cornerRadius(8)
+            if !sampleError.isEmpty { Text(LocalizedStringKey(sampleError)).font(.jarasCaption).foregroundStyle(.red) }
+            TriggerSampleStatus(target: audioTarget, effect: effectKey)
+            Text("WAV / MP3 · Mono / Stereo · 60 s max").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            HStack(spacing: 12) {
+            EffectVerticalMeters(track: audioTarget, effect: effectKey)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 18) {
+                FXKnob("Threshold", value: $settings.triggerParameters.threshold, range: -80...0, unit: "dB", reset: -30, parameter: .triggerThreshold)
+                FXKnob("Retrigger", value: $settings.triggerParameters.retrigger, range: 0.005...2, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.08, parameter: .triggerRetrigger)
+                FXKnob("Gain", value: $settings.triggerParameters.gain, range: -24...24, unit: "dB", reset: 0, parameter: .triggerGain)
+                FXKnob("Mix", value: $settings.triggerParameters.mix, range: 0...100, unit: "%", reset: 100, parameter: .triggerMix)
+                FXKnob("Attack", value: $settings.triggerParameters.attack, range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .triggerAttack)
+                FXKnob("Decay", value: $settings.triggerParameters.decay, range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.1, parameter: .triggerDecay)
+                FXKnob("Sustain", value: $settings.triggerParameters.sustain, range: 0...1, unit: "%", multiplier: 100, reset: 1, parameter: .triggerSustain)
+                FXKnob("Release", value: $settings.triggerParameters.release, range: 0...20, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.02, parameter: .triggerRelease)
+            }
+            }.padding(14).background(JarasTheme.display).cornerRadius(10)
+        }
+    }
+    private var gateEditor: some View {
+        VStack(spacing: 16) {
+            Toggle("Enabled", isOn: Binding(get: { settings.gateEnabled == true }, set: { settings.gateEnabled = $0 }))
+                .toggleStyle(.switch).tint(JarasTheme.green).mapFXMIDI(.enabled, name: "Enabled", range: 0...1)
+            HStack(spacing: 12) {
+            EffectVerticalMeters(track: audioTarget, effect: effectKey)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 22) {
+                FXKnob("Threshold", value: $settings.gateParameters.threshold, range: -80...0, unit: "dB", reset: -40, parameter: .gateThreshold)
+                FXKnob("Attack", value: $settings.gateParameters.attack, range: 0...2, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.001, parameter: .gateAttack)
+                FXKnob("Decay", value: $settings.gateParameters.decay, range: 0...2, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.02, parameter: .gateDecay)
+                FXKnob("Hold", value: $settings.gateParameters.hold, range: 0...2, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.05, parameter: .gateHold)
+                FXKnob("Release", value: $settings.gateParameters.release, range: 0...5, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.1, parameter: .gateRelease)
+                FXKnob("High-pass", value: Binding(get: { settings.gateParameters.highPass }, set: { settings.gateParameters.highPass = min($0, settings.gateParameters.lowPass) }), range: 20...20000, unit: "Hz", logarithmic: true, reset: 20, parameter: .gateHighPass)
+                FXKnob("Low-pass", value: Binding(get: { settings.gateParameters.lowPass }, set: { settings.gateParameters.lowPass = max($0, settings.gateParameters.highPass) }), range: 20...20000, unit: "Hz", logarithmic: true, reset: 20000, parameter: .gateLowPass)
+            }
+            }.padding(18).background(JarasTheme.display).cornerRadius(10)
+        }
+    }
+    private func importSample(_ source: URL) {
+        guard show.canControl(), let directory = StemAudioPlayback.shared.mediaDirectory else {
+            sampleError = String(localized: "Save the project before loading a sample."); return
+        }
+        sampleBusy = true; sampleError = ""
+        Task {
+            defer { sampleBusy = false }
+            do {
+                let path = try await Task.detached(priority: .userInitiated) { try TriggerSampleImport.copy(source, to: directory) }.value
+                let chain = clip.map { show.clipFXSettings($0) } ?? show.fxSettings(track)
+                guard show.snapshot.project.id == project, chain.inserted.contains(effectKey) else {
+                    try? FileManager.default.removeItem(at: directory.appendingPathComponent(path)); return
+                }
+                settings.triggerParameters.samplePath = path
+            } catch { sampleError = error.localizedDescription }
+        }
     }
     private var equalizer: some View {
         VStack(spacing: 10) {
@@ -408,3 +485,16 @@ private final class EQAddBandView: NSView {
     override func rightMouseDown(with event: NSEvent) { let point = convert(event.locationInWindow, from: nil); add?(point.x,point.y) }
 }
 #endif
+
+private struct TriggerSampleStatus: View {
+    let target: UUID?
+    let effect: String
+    @State private var message: String?
+    private let clock = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+    var body: some View {
+        Group {
+            if let message { Text(LocalizedStringKey(message)).font(.jarasCaption).foregroundStyle(.red) }
+        }.onAppear { refresh() }.onReceive(clock) { _ in refresh() }
+    }
+    private func refresh() { message = StemAudioPlayback.shared.effectSampleError(target, effect: effect) }
+}

@@ -8,6 +8,7 @@
 #include "FXChain.h"
 #include "FXSchema.h"
 #include "CatStemEditor.h"
+#include "CatDynamicsEditor.h"
 namespace catlive {
 namespace fxui {
 class EnableButton final : public ToggleButton {
@@ -31,7 +32,9 @@ class EnableButton final : public ToggleButton {
     }
 };
 inline String enabledKey(const String &kind) {
-    return kind == "CatStemSeparation 5" ? "stemSeparatorEnabled"
+    return kind == "CatLive Trigger" ? "triggerEnabled"
+           : kind == "Cat Gate" ? "gateEnabled"
+           : kind == "CatStemSeparation 5" ? "stemSeparatorEnabled"
            : kind == "EQ"            ? "eqEnabled"
            : kind == "Compressor"  ? "compressorEnabled"
            : kind == "Delay"       ? "delayEnabled"
@@ -54,6 +57,16 @@ inline void enable(const String &kind, var &settings, bool value) {
 }
 inline void defaults(var &s) {
     s = s.isObject() ? fxschema::complete(s, true) : fxschema::defaults(true);
+    if (!get(s, "trigger").isObject()) {
+        auto trigger = object();
+        for (const auto &[key, value] : std::map<String, double>{{"threshold",-30},{"retrigger",.08},{"gain",0},{"mix",100},{"attack",0},{"decay",.1},{"sustain",1},{"release",.02}}) put(trigger, Identifier(key), value);
+        put(s, "trigger", trigger);
+    }
+    if (!get(s, "gate").isObject()) {
+        auto gate = object();
+        for (const auto &[key, value] : std::map<String, double>{{"threshold",-40},{"attack",.001},{"decay",.02},{"hold",.05},{"release",.1},{"highPass",20},{"lowPass",20000}}) put(gate, Identifier(key), value);
+        put(gate, "filterOutput", false); put(s, "gate", gate);
+    }
     if (get(s, "pitchSemitones").isVoid()) put(s, "pitchSemitones", 0.);
     if (!get(s, "limiter").isObject()) {
         auto l = object();
@@ -474,7 +487,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         g.setColour(Colour(0xff202020));
         g.fillRect(0, getHeight() - 40, 190, 40);
         auto r = content();
-        if(kind()=="CatStemSeparation 5"||kind()=="External")return;
+        if(kind()=="CatStemSeparation 5"||kind()=="External"||dynamicsEditor)return;
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(14));
         if (kind().isEmpty()) {
@@ -517,6 +530,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         enabled.setBounds(eq ? r.getX() : r.getCentreX() - 55, headerY + 76, 110, 24);
         if(externalEditor)externalEditor->setBounds(190,40,std::max(1,getWidth()-190),std::max(1,getHeight()-40));
         if(stemEditor)stemEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
+        if(dynamicsEditor)dynamicsEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
         graph.setBounds(r.getX(), headerY + 102, r.getWidth(),
                         std::max(40, getHeight() - headerY - 141));
         for (int i = 0; i < rooms.size(); ++i)
@@ -541,6 +555,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     uint64 loadedRevision = ~uint64(0);
     ListBox chain;
     TextButton add, remove, removeEffect, savePreset, defaultPreset;
+    std::unique_ptr<CatDynamicsEditor> dynamicsEditor;
     std::unique_ptr<ExternalEffectEditor> externalEditor;
     String externalEditorKey;
     void openExternalEditor() {
@@ -659,13 +674,14 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
 
     void show() {
         stemEditor.reset();
+        dynamicsEditor.reset();
         knobs.clear();
         refreshPresets();
         const auto k = kind();
         if(k=="External")openExternalEditor();else externalEditor.reset();
         const bool available = k.isNotEmpty() && fxui::enabledKey(k).isNotEmpty();
-        enabled.setVisible(available&&k!="CatStemSeparation 5"&&k!="External");
-        removeEffect.setVisible(k.isNotEmpty()&&k!="External");
+        enabled.setVisible(available&&k!="CatStemSeparation 5"&&k!="External"&&k!="CatLive Trigger"&&k!="Cat Gate");
+        removeEffect.setVisible(k.isNotEmpty()&&k!="External"&&k!="CatLive Trigger"&&k!="Cat Gate");
         remove.setEnabled(k.isNotEmpty());
         for (int i = 0; i < rooms.size(); ++i) {
             rooms[i]->setVisible(k == "Reverb");
@@ -683,6 +699,12 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         if(k!="External")fxui::defaults(s);
         enabled.setToggleState(fxui::isEnabled(k, s), dontSendNotification);
         graph.settings = s;
+        if (k == "CatLive Trigger" || k == "Cat Gate") {
+            const auto dynamicsKey = key();
+            dynamicsEditor = std::make_unique<CatDynamicsEditor>(k, session.mediaDirectory, [this] { return current(); }, [this] { commit(); chain.repaint(); }, error,
+                [this, dynamicsKey] { session.audio.previewDynamics(track, dynamicsKey, current()); });
+            addAndMakeVisible(*dynamicsEditor);
+        }
         if(k=="CatStemSeparation 5") {
             auto stemKey=key();
             stemEditor=std::make_unique<CatStemEditor>(trackName,[this]{return current();},[this,stemKey](var value,bool save){

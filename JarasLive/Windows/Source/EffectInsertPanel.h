@@ -15,6 +15,8 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"}, 1);
         if (allowInstruments) effect.addItem(String::fromUTF8("Instrumentos"), 7);
         if (allowStemSeparator) effect.addItem("CatStemSeparation 5", 9);
+        effect.addItem("CatLive Trigger", 10);
+        effect.addItem("Cat Gate", 11);
         effect.setSelectedId(1, dontSendNotification);
         effect.onChange = [this] {
             selected.clear();
@@ -65,7 +67,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         confirm.setColour(TextButton::buttonColourId, Colour(0xff63b641));
         confirm.onClick = [this] {
             const StringArray kinds{"EQ",     "Compressor", "Pitch",      "Delay",
-                                    "Reverb", "Limiter",    "Instruments", "External", "CatStemSeparation 5"};
+                                    "Reverb", "Limiter",    "Instruments", "External", "CatStemSeparation 5", "CatLive Trigger", "Cat Gate"};
             if (apply(kinds[effect.getSelectedId() - 1], selected))
                 dismiss();
         };

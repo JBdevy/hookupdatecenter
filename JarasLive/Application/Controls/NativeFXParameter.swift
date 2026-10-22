@@ -4,6 +4,7 @@ import Foundation
 /// or EQ bands change order. They never identify a band by its array position.
 public struct NativeFXParameter: Codable, Equatable, Sendable {
     public enum Key: String, Codable, Sendable {
+        case triggerThreshold, triggerRetrigger, triggerGain, triggerMix, triggerAttack, triggerDecay, triggerSustain, triggerRelease, gateThreshold, gateAttack, gateDecay, gateHold, gateRelease, gateHighPass, gateLowPass
         case limiterGain, limiterCeiling, limiterRelease
         case pitchSemitones
         case enabled, threshold, ratio, makeup, attack, release
@@ -51,6 +52,21 @@ public struct NativeFXParameter: Codable, Equatable, Sendable {
         }
         let value = value(normalized: normalized), enabled = normalized >= 0.5
         switch key {
+        case .triggerThreshold: settings.triggerParameters.threshold = value
+        case .triggerRetrigger: settings.triggerParameters.retrigger = value
+        case .triggerGain: settings.triggerParameters.gain = value
+        case .triggerMix: settings.triggerParameters.mix = value
+        case .triggerAttack: settings.triggerParameters.attack = value
+        case .triggerDecay: settings.triggerParameters.decay = value
+        case .triggerSustain: settings.triggerParameters.sustain = value
+        case .triggerRelease: settings.triggerParameters.release = value
+        case .gateThreshold: settings.gateParameters.threshold = value
+        case .gateAttack: settings.gateParameters.attack = value
+        case .gateDecay: settings.gateParameters.decay = value
+        case .gateHold: settings.gateParameters.hold = value
+        case .gateRelease: settings.gateParameters.release = value
+        case .gateHighPass: settings.gateParameters.highPass = min(value, settings.gateParameters.lowPass)
+        case .gateLowPass: settings.gateParameters.lowPass = max(value, settings.gateParameters.highPass)
         case .stemGain, .stemMute, .stemSolo:
             guard let source, (0..<5).contains(source) else { return false }
             var mix = settings.stemParameters
@@ -142,6 +158,21 @@ public extension NativeFXParameter {
     func currentValue(in chain: NativeFXSettings) -> Double {
         let s = chain.settings(for: effect), p = s.instrumentParameters ?? InstrumentParameters()
         switch key {
+        case .triggerThreshold: return s.triggerParameters.threshold
+        case .triggerRetrigger: return s.triggerParameters.retrigger
+        case .triggerGain: return s.triggerParameters.gain
+        case .triggerMix: return s.triggerParameters.mix
+        case .triggerAttack: return s.triggerParameters.attack
+        case .triggerDecay: return s.triggerParameters.decay
+        case .triggerSustain: return s.triggerParameters.sustain
+        case .triggerRelease: return s.triggerParameters.release
+        case .gateThreshold: return s.gateParameters.threshold
+        case .gateAttack: return s.gateParameters.attack
+        case .gateDecay: return s.gateParameters.decay
+        case .gateHold: return s.gateParameters.hold
+        case .gateRelease: return s.gateParameters.release
+        case .gateHighPass: return s.gateParameters.highPass
+        case .gateLowPass: return s.gateParameters.lowPass
         case .stemGain, .stemMute, .stemSolo:
             guard let source, (0..<5).contains(source) else { return minimum }
             let item = s.stemParameters.sources[source]
@@ -219,6 +250,16 @@ public extension NativeFXParameter {
                     add(.bandSlope, prefix+"Slope", 0...7, band: band.id, choices: ["6", "12", "24", "36", "48", "72", "96", "192"])
                     add(.bandType, prefix+"Type", 0...4, band: band.id, choices: ["bell", "lowCut", "highCut", "lowShelf", "highShelf"])
                 }
+            case "CatLive Trigger":
+                add(.triggerThreshold, "Threshold", -80...0); add(.triggerRetrigger, "Retrigger", 0.005...2, log: true)
+                add(.triggerGain, "Gain", -24...24); add(.triggerMix, "Mix", 0...100)
+                add(.triggerAttack, "Attack", 0...10, log: true); add(.triggerDecay, "Decay", 0...10, log: true)
+                add(.triggerSustain, "Sustain", 0...1); add(.triggerRelease, "Release", 0...20, log: true)
+            case "Cat Gate":
+                add(.gateThreshold, "Threshold", -80...0); add(.gateAttack, "Attack", 0...2, log: true)
+                add(.gateDecay, "Decay", 0...2, log: true); add(.gateHold, "Hold", 0...2, log: true)
+                add(.gateRelease, "Release", 0...5, log: true)
+                add(.gateHighPass, "High-pass", 20...20000, log: true); add(.gateLowPass, "Low-pass", 20...20000, log: true)
             case "Compressor":
                 add(.threshold, "Threshold", -60...0); add(.ratio, "Ratio", 1...20); add(.makeup, "Gain", -12...24)
                 add(.attack, "Attack", 0.0001...0.2, log: true); add(.release, "Release", 0.01...3, log: true)

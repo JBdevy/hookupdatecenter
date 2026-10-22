@@ -526,6 +526,7 @@ void Session::save(const File &file) {
                 if (clip.audioFile)
                     paths.insert(clip.audioFile->path);
         }
+    dynamicsAssets::collect(p, paths);
     for (const auto &id : instrumentAssets::identities(p)) {
         auto source = instrumentAssets::resolve(id, mediaDirectory),
              dest = targetDir.getChildFile("Instruments/" + id + ".sf2");
@@ -1074,6 +1075,7 @@ void Session::toggleRecording() {
             target.postFader = track.recordingPostFader.value_or(true);
             target.postFX = track.recordingPostFX.value_or(true);
             target.gain = (float)track.volume;
+            target.mediaDirectory = mediaDirectory;
             target.effects = track.fxJSON ? JSON::parse(text(*track.fxJSON)) : var{};
             if (target.postFX) audio.captureExternalEffects(track.id, target.effects);
             RecordingItem item;

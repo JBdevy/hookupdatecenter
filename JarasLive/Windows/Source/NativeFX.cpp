@@ -1,8 +1,34 @@
 #include "NativeFX.h"
 #include "Automation.h"
+#include "CatDynamicsAssets.h"
+#include "Include/CatDynamicsDSP.hpp"
 #include "../ThirdParty/Signalsmith/signalsmith-stretch.h"
 namespace catlive {
+namespace {
+catlive::dsp::TriggerParameters readTriggerParameters(const var &settings) {
+    const auto p = get(settings, "trigger"); catlive::dsp::TriggerParameters parameters;
+    parameters.threshold = num(p, "threshold", -30); parameters.retrigger = num(p, "retrigger", .08);
+    parameters.gain = num(p, "gain", 0); parameters.mix = num(p, "mix", 100);
+    parameters.attack = num(p, "attack", 0); parameters.decay = num(p, "decay", .1);
+    parameters.sustain = num(p, "sustain", 1); parameters.release = num(p, "release", .02);
+    return parameters;
+}
+catlive::dsp::GateParameters readGateParameters(const var &settings) {
+    const auto p = get(settings, "gate"); catlive::dsp::GateParameters parameters;
+    parameters.threshold = num(p, "threshold", -40); parameters.attack = num(p, "attack", .001);
+    parameters.decay = num(p, "decay", .02); parameters.hold = num(p, "hold", .05);
+    parameters.release = num(p, "release", .1); parameters.highPass = num(p, "highPass", 20);
+    parameters.lowPass = num(p, "lowPass", 20000); parameters.filterOutput = flag(p, "filterOutput");
+    return parameters;
+}
+}
 struct NativeFX::Effect {
+    catlive::dsp::Trigger trigger;
+    catlive::dsp::Gate gate;
+    catlive::dsp::TriggerParameters triggerParameters;
+    catlive::dsp::GateParameters gateParameters;
+    String sampleIdentity;
+    double sampleRate = 48000;
     String kind;
     String key, externalConfiguration, pluginID;
     bool bypassed = false, retiredStem=false;
@@ -10,14 +36,14 @@ struct NativeFX::Effect {
     std::shared_ptr<native::stem::Processor> stem;
     native::stem::Mix stemMix;
     std::array<native::vst3::MIDIEvent,4096> midi{};
-    std::vector<std::unique_ptr<dsp::IIR::Filter<float>>> eq[2];
-    dsp::Compressor<float> compressor;
+    std::vector<std::unique_ptr<juce::dsp::IIR::Filter<float>>> eq[2];
+    juce::dsp::Compressor<float> compressor;
     float limiterCeiling = 1, limiterRelease = 0, limiterGain = 1;
     Reverb reverb;
     std::unique_ptr<signalsmith::stretch::SignalsmithStretch<float>> pitch;
     AudioBuffer<float> pitchInput;
     std::unique_ptr<AudioBuffer<float>> wet;
-    dsp::IIR::Filter<float> highpass[2], lowpass[2];
+    juce::dsp::IIR::Filter<float> highpass[2], lowpass[2];
     AudioBuffer<float> delay;
     int delayPosition = 0, delaySamples = 1;
     float feedback = 0, mix = 0, makeup = 1;
@@ -28,11 +54,73 @@ void NativeFX::swap(NativeFX &other)noexcept {
     effects.swap(other.effects);
     unsupported.swapWith(other.unsupported);
 }
+NativeFX::DynamicsPreview NativeFX::dynamicsPreview(const var &settings) {
+    const auto trigger = readTriggerParameters(settings); const auto gate = readGateParameters(settings);
+    return {{trigger.threshold,trigger.retrigger,trigger.gain,trigger.mix,trigger.attack,trigger.decay,trigger.sustain,trigger.release},
+            {gate.threshold,gate.attack,gate.decay,gate.hold,gate.release,gate.highPass,gate.lowPass},gate.filterOutput};
+}
+void NativeFX::previewDynamics(const String &key, const DynamicsPreview &snapshot) noexcept {
+    for (auto &effect : effects) if (effect->key == key) {
+        if (effect->kind == "CatLive Trigger") {
+            const auto &v = snapshot.trigger;
+            effect->triggerParameters = {v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7]}; effect->trigger.setParameters(effect->triggerParameters);
+        } else if (effect->kind == "Cat Gate") {
+            const auto &v = snapshot.gate;
+            effect->gateParameters = {v[0],v[1],v[2],v[3],v[4],v[5],v[6],snapshot.filterOutput}; effect->gate.setParameters(effect->gateParameters);
+        }
+    }
+}
+void NativeFX::adoptDynamicsState(NativeFX &previous) noexcept {
+    for (auto &next : effects) for (auto &old : previous.effects) {
+        if (next->key != old->key || next->kind != old->kind || next->sampleRate != old->sampleRate) continue;
+        if (next->kind == "CatLive Trigger" && next->sampleIdentity == old->sampleIdentity && old->trigger.hasSample()) {
+            std::swap(next->trigger, old->trigger); next->trigger.setParameters(next->triggerParameters);
+        } else if (next->kind == "Cat Gate") {
+            std::swap(next->gate, old->gate); next->gate.setParameters(next->gateParameters);
+        }
+    }
+}
 void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *previous,bool offline,bool prewarm,
-                       const Dispatcher &pluginDispatcher) {
+                       const Dispatcher &pluginDispatcher, const File &mediaDirectory) {
     effects.clear();
     unsupported.clear();
     auto append = [&](String kind, const String &key, const var &value) {
+        if (kind == "CatLive Trigger" || kind == "Cat Gate") {
+            if (!flag(value, kind == "CatLive Trigger" ? Identifier("triggerEnabled") : Identifier("gateEnabled"))) return;
+            auto e = std::make_unique<Effect>(); e->kind = kind; e->key = key; e->sampleRate = sampleRate;
+            if (kind == "CatLive Trigger") {
+                const auto p = get(value, "trigger");
+                const auto parameters = readTriggerParameters(value);
+                e->triggerParameters = parameters; e->trigger.setParameters(parameters);
+                const auto path = str(p, "samplePath");
+                if (path.isNotEmpty()) {
+                    try {
+                        auto file = ProjectCodec::resolveMedia(mediaDirectory, utf8(path));
+                        e->sampleIdentity = file.getFullPathName() + ":" + String(file.getSize()) + ":" + String(file.getLastModificationTime().toMilliseconds());
+                        const bool reuse = previous && std::any_of(previous->effects.begin(), previous->effects.end(), [&](const auto &old) {
+                            return old->kind == kind && old->key == key && old->sampleRate == sampleRate && old->sampleIdentity == e->sampleIdentity && old->trigger.hasSample();
+                        });
+                        if (!reuse) {
+                        AudioFormatManager formats; registerAudioFormats(formats);
+                        auto reader = dynamicsAssets::reader(file, formats);
+                        const int frames = (int)reader->lengthInSamples;
+                        AudioBuffer<float> decoded(2, frames);
+                        if (!reader->read(&decoded, 0, frames, 0, true, true)) throw std::runtime_error("Could not read the trigger sample.");
+                        std::vector<float> left(decoded.getReadPointer(0), decoded.getReadPointer(0) + frames);
+                        const auto *right = decoded.getReadPointer(reader->numChannels > 1 ? 1 : 0);
+                        e->trigger.setSample(std::move(left), std::vector<float>(right, right + frames), reader->sampleRate);
+                        }
+                    } catch (const std::exception &error) {
+                        // Missing FX media must not prevent playback or recording.
+                        unsupported.addIfNotAlreadyThere(kind + ": " + path + " - " + String::fromUTF8(error.what()));
+                    }
+                }
+            } else {
+                const auto parameters = readGateParameters(value);
+                e->gateParameters = parameters; e->gate.setParameters(parameters);
+            }
+            effects.push_back(std::move(e)); return;
+        }
         if(kind==native::stem::effectName) {
             if(!get(value,"stemMix").isObject())return; // legacy offline-only Mac project
             auto e=std::make_unique<Effect>();e->kind=kind;e->key=key;
@@ -71,7 +159,7 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
         }
         auto e = std::make_unique<Effect>();
         e->kind = kind;
-        dsp::ProcessSpec spec{sampleRate, 4096, 2};
+        juce::dsp::ProcessSpec spec{sampleRate, 4096, 2};
         if (kind == "Pitch") {
             e->pitch = std::make_unique<signalsmith::stretch::SignalsmithStretch<float>>(0);
             e->pitch->presetDefault(2, (float)sampleRate);
@@ -87,21 +175,21 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                 auto q = jlimit(.1, 18.0, num(band, "q", .707));
                 auto gain = Decibels::decibelsToGain(jlimit(-24.0, 24.0, num(band, "gain")));
                 auto type = str(band, "type", "bell");
-                dsp::IIR::Coefficients<float>::Ptr coefficients;
+                juce::dsp::IIR::Coefficients<float>::Ptr coefficients;
                 if (type == "lowCut")
-                    coefficients = dsp::IIR::Coefficients<float>::makeHighPass(
+                    coefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass(
                         sampleRate, (float)frequency, (float)q);
                 else if (type == "highCut")
-                    coefficients = dsp::IIR::Coefficients<float>::makeLowPass(
+                    coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass(
                         sampleRate, (float)frequency, (float)q);
                 else if (type == "lowShelf")
-                    coefficients = dsp::IIR::Coefficients<float>::makeLowShelf(
+                    coefficients = juce::dsp::IIR::Coefficients<float>::makeLowShelf(
                         sampleRate, (float)frequency, (float)q, (float)gain);
                 else if (type == "highShelf")
-                    coefficients = dsp::IIR::Coefficients<float>::makeHighShelf(
+                    coefficients = juce::dsp::IIR::Coefficients<float>::makeHighShelf(
                         sampleRate, (float)frequency, (float)q, (float)gain);
                 else
-                    coefficients = dsp::IIR::Coefficients<float>::makePeakFilter(
+                    coefficients = juce::dsp::IIR::Coefficients<float>::makePeakFilter(
                         sampleRate, (float)frequency, (float)q, (float)gain);
                 const bool cut = type == "lowCut" || type == "highCut";
                 int order = jlimit(1, 32, (int)num(band, "slope", 12) / 6),
@@ -112,7 +200,7 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                         if (cut && order == 1) {
                             double k = std::tan(MathConstants<double>::pi * frequency / sampleRate),
                                    b0 = (type == "lowCut" ? 1 : k) / (1 + k);
-                            stageCoefficients = new dsp::IIR::Coefficients<float>(
+                            stageCoefficients = new juce::dsp::IIR::Coefficients<float>(
                                 (float)b0, (float)(type == "lowCut" ? -b0 : b0), 0, 1,
                                 (float)((k - 1) / (k + 1)), 0);
                         } else if (cut) {
@@ -120,12 +208,12 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                                 (float)(1 / (2 * std::sin(MathConstants<double>::pi *
                                                           (2 * stage + 1) / (2 * order))));
                             stageCoefficients =
-                                type == "lowCut" ? dsp::IIR::Coefficients<float>::makeHighPass(
+                                type == "lowCut" ? juce::dsp::IIR::Coefficients<float>::makeHighPass(
                                                        sampleRate, (float)frequency, butterworthQ)
-                                                 : dsp::IIR::Coefficients<float>::makeLowPass(
+                                                 : juce::dsp::IIR::Coefficients<float>::makeLowPass(
                                                        sampleRate, (float)frequency, butterworthQ);
                         }
-                        auto filter = std::make_unique<dsp::IIR::Filter<float>>(stageCoefficients);
+                        auto filter = std::make_unique<juce::dsp::IIR::Filter<float>>(stageCoefficients);
                         filter->reset();
                         e->eq[ch].push_back(std::move(filter));
                     }
@@ -167,9 +255,9 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
             e->mix = (float)jlimit(0.0, 1.0, num(value, "reverbMix", 20) / 100);
             e->reverb.setParameters(params);
             for (int ch = 0; ch < 2; ++ch) {
-                e->highpass[ch].coefficients = dsp::IIR::Coefficients<float>::makeHighPass(
+                e->highpass[ch].coefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass(
                     sampleRate, (float)jlimit(20.0, 2000.0, num(value, "reverbLowCut", 80)));
-                e->lowpass[ch].coefficients = dsp::IIR::Coefficients<float>::makeLowPass(
+                e->lowpass[ch].coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass(
                     sampleRate, (float)jlimit(2000.0, std::min(20000.0, sampleRate * .45),
                                               num(value, "reverbHighCut", 12000)));
             }
@@ -297,6 +385,10 @@ void NativeFX::applyAutomation(const AutomationProgram &program, double time) {
 void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds) {
     ScopedNoDenormals noDenormals;
     for (auto &e : effects) {
+        if (e->kind == "CatLive Trigger" && e->trigger.hasSample())
+            e->trigger.process(buffer.getWritePointer(0), buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr, samples, e->sampleRate);
+        if (e->kind == "Cat Gate")
+            e->gate.process(buffer.getWritePointer(0), buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr, samples, e->sampleRate);
         if(e->stem) { e->stem->process(buffer.getWritePointer(0),buffer.getWritePointer(1),unsigned(samples),std::isfinite(stemSeconds)?stemSeconds:seconds,playing); }
         if(e->plugin&&!e->bypassed) {
             native::vst3::Transport transport;transport.seconds=seconds;transport.quarterNotes=seconds*2;transport.playing=playing;
@@ -321,9 +413,9 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
                         data[n] = filter->processSample(data[n]);
             }
         if (e->kind == "Compressor" || e->kind == "Limiter") {
-            dsp::AudioBlock<float> block(buffer);
+            juce::dsp::AudioBlock<float> block(buffer);
             auto sub = block.getSubBlock(0, (size_t)samples);
-            dsp::ProcessContextReplacing<float> context(sub);
+            juce::dsp::ProcessContextReplacing<float> context(sub);
             if (e->kind == "Compressor") {
                 e->compressor.process(context);
                 buffer.applyGain(0, samples, e->makeup);

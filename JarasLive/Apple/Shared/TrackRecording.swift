@@ -52,12 +52,12 @@ private final class CaptureWriter: @unchecked Sendable {
         var gain: Float
         var position: Double?
         var droppedFramesAtStart: UInt = 0
-        init(target: CaptureTarget,url: URL,file: AVAudioFile,buffer: AVAudioPCMBuffer) throws {
+        init(target: CaptureTarget,url: URL,file: AVAudioFile,buffer: AVAudioPCMBuffer, mediaDirectory: URL) throws {
             self.target=target; self.url=url; self.file=file; self.buffer=buffer
             gain = target.postFader ? target.gain : 1
             if target.postFX, let settings = target.effects,
                settings.effectKeys.contains(where: { settings.isEnabled($0) }) {
-                processor = try RecordingInputProcessor(format: buffer.format, settings: settings)
+                processor = try RecordingInputProcessor(format: buffer.format, settings: settings, mediaDirectory: mediaDirectory)
             } else { processor = nil }
             skipFrames = processor?.latency ?? 0
             waveform = try LiveRecordedWaveform(rate: buffer.format.sampleRate, channels: target.channelCount)
@@ -80,7 +80,7 @@ private final class CaptureWriter: @unchecked Sendable {
             let settings: [String: Any] = [AVFormatIDKey:kAudioFormatLinearPCM, AVSampleRateKey:sampleRate, AVNumberOfChannelsKey:target.channelCount, AVLinearPCMBitDepthKey:target.format.hasSuffix("16pcm") ? 16 : (target.format == "wav32" || target.format.hasSuffix("32pcm")) ? 32 : 24, AVLinearPCMIsFloatKey:target.format == "wav32", AVLinearPCMIsBigEndianKey:aiff, AVLinearPCMIsNonInterleaved:false]
             let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
             guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw ProjectError.invalid("Could not allocate recording buffer") }
-        let take = try Take(target: target, url: url, file: file, buffer: buffer)
+        let take = try Take(target: target, url: url, file: file, buffer: buffer, mediaDirectory: directory)
         take.droppedFramesAtStart = ring.droppedFrames
         return take
     }
@@ -156,7 +156,7 @@ private final class CaptureWriter: @unchecked Sendable {
                     // change; otherwise removing a lookahead FX shifts the take.
                     try self.flushLatency(take)
                     if let processor = take.processor { try processor.update(settings) }
-                    else { take.processor = try RecordingInputProcessor(format: take.buffer.format, settings: settings) }
+                    else { take.processor = try RecordingInputProcessor(format: take.buffer.format, settings: settings, mediaDirectory: self.directory) }
                     take.skipFrames = take.processor?.latency ?? 0
                 }
             } catch { self.failure = error }

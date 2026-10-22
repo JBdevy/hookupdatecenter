@@ -603,7 +603,13 @@ public extension Project {
         }
     }
     var mediaPaths: Set<String> {
-        Set(songs.flatMap(\.tracks).flatMap { track in track.clips.compactMap { $0.audioFile?.path } + [track.audioFile?.path, track.clickSound?.path].compactMap { $0 } })
+        var paths = Set(songs.flatMap(\.tracks).flatMap { track in track.clips.compactMap { $0.audioFile?.path } + [track.audioFile?.path, track.clickSound?.path].compactMap { $0 } })
+        paths.formUnion(masterFX?.samplePaths ?? [])
+        for track in songs.flatMap(\.tracks) {
+            paths.formUnion(track.fx?.samplePaths ?? [])
+            for clip in track.clips { paths.formUnion(clip.fx?.samplePaths ?? []) }
+        }
+        return paths
     }
 }
 
@@ -763,9 +769,7 @@ public enum ProjectAudioRecovery {
     }
 
     public static func missingPaths(in project: Project, directory: URL) -> [String] {
-        let paths = Set(project.songs.flatMap(\.tracks).flatMap { track in
-            [track.audioFile?.path, track.clickSound?.path].compactMap { $0 } + track.clips.compactMap { $0.audioFile?.path }
-        })
+        let paths = project.mediaPaths
         return paths.filter { path in
             let url = directory.appendingPathComponent(path)
             return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) != true
@@ -831,5 +835,15 @@ public extension Song {
             result.duration = max(result.duration, clip.startTime + clip.duration)
         }
         return result
+    }
+}
+
+public extension Project {
+    mutating func remapFXSamples(_ mapping: [String:String]) {
+        masterFX?.remapSamples(mapping)
+        for s in songs.indices { for t in songs[s].tracks.indices {
+            songs[s].tracks[t].fx?.remapSamples(mapping)
+            for c in songs[s].tracks[t].clips.indices { songs[s].tracks[t].clips[c].fx?.remapSamples(mapping) }
+        }}
     }
 }
