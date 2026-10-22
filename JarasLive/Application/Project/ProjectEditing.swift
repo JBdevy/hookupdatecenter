@@ -736,6 +736,13 @@ public extension AudioClip {
     func resized(start: Double, end: Double) -> AudioClip {
         guard start.isFinite, end.isFinite, start >= 0, end - start >= 0.01 else { return self }
         var clip = self
+        if clip.audioFile != nil && clip.loopLength == nil {
+            let actualStart = max(start, clip.startTime - clip.sourceOffset / clip.audioRate)
+            guard end - actualStart >= 0.01 else { return self }
+            clip.sourceOffset = max(0, clip.sourceOffset + (actualStart - clip.startTime) * clip.audioRate)
+            clip.startTime = actualStart; clip.duration = end - actualStart
+            return clip
+        }
         let loopStart = clip.loopStart ?? clip.sourceOffset
         let loopLength = clip.loopLength ?? clip.duration * clip.audioRate
         clip.loopStart = loopStart; clip.loopLength = loopLength
@@ -798,5 +805,31 @@ public enum ProjectAudioRecovery {
             }
         }
         return Result(recovered: recovered, remaining: missingPaths(in: project, directory: directory), errors: errors)
+    }
+}
+
+public extension Song {
+    /// One translation for the entire selection; reject an incompatible destination atomically.
+    func movingItems(_ ids: Set<UUID>, anchor: UUID, start: Double, track destination: UUID?) -> Song? {
+        guard start.isFinite, let source = tracks.firstIndex(where: { $0.clips.contains { $0.id == anchor } }),
+              let item = tracks[source].clips.first(where: { $0.id == anchor }) else { return nil }
+        let target = destination.flatMap { id in tracks.firstIndex(where: { $0.id == id }) } ?? source
+        let rows = target - source
+        let selected = tracks.enumerated().flatMap { row, track in track.clips.filter { ids.contains($0.id) }.map { (row, $0) } }
+        guard !selected.isEmpty else { return nil }
+        let delta = max(start - item.startTime, -(selected.map { $0.1.startTime }.min() ?? 0))
+        var result = self
+        for row in result.tracks.indices { result.tracks[row].clips.removeAll { ids.contains($0.id) } }
+        for (row, original) in selected {
+            let to = row + rows
+            guard tracks.indices.contains(to), tracks[row].kind != .timecode,
+                  row == to || (tracks[row].kind == .standard && tracks[to].kind == .standard) || original.isProjectionMedia else { return nil }
+            var clip = original; clip.startTime += delta
+            guard result.tracks[to].canPlaceItem(start: clip.startTime, duration: clip.duration, media: clip.isProjectionMedia) else { return nil }
+            clip.regionOwnerID = regionOwner(at: clip.startTime)
+            result.tracks[to].clips.append(clip)
+            result.duration = max(result.duration, clip.startTime + clip.duration)
+        }
+        return result
     }
 }

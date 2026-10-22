@@ -1328,5 +1328,12 @@
   "Finish the current operation before renaming the project.": "Finish the current operation before renaming the project.",
   "Tempo real · 5 stems": "Real time · 5 stems",
   "Preparando CatStem…": "Preparing CatStem…",
-  "Open file location": "Open file location"
+  "Open file location": "Open file location",
+  "Relative timebase": "Relative timebase",
+  "Enable relative timebase?": "Enable relative timebase?",
+  "Disable relative timebase?": "Disable relative timebase?",
+  "Enable": "Enable",
+  "Disable": "Disable",
+  "Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings.": "Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings.",
+  "Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings.": "Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings."
 }

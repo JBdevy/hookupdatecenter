@@ -356,10 +356,22 @@ public extension TimelineTempo {
     static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool = true,
                      cursor: Double? = nil, enabled: Bool = true,
                      otherCursors: [Double] = [], excludingRegion: UUID? = nil, excludingMarker: UUID? = nil,
-                     includeHiddenDivisions: Bool = false, includeItemEdges: Bool = false) -> Double {
+                     includeHiddenDivisions: Bool = false, includeItemEdges: Bool = false, excludingItems: Set<UUID> = []) -> Double {
         guard time.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 0 }
         let position = max(0, time)
         guard enabled else { return position }
+        // Cursor and media edges win over musical divisions inside a screen-space capture radius.
+        var strong: Double?
+        func considerStrong(_ anchor: Double) {
+            guard anchor.isFinite, anchor >= 0, abs(anchor - position) * pixelsPerSecond <= 12 + 1e-9 else { return }
+            if strong == nil || abs(anchor - position) < abs(strong! - position) || (abs(anchor - position) == abs(strong! - position) && anchor < strong!) { strong = anchor }
+        }
+        if let cursor { considerStrong(cursor) }
+        for cursor in otherCursors { considerStrong(cursor) }
+        if includeItemEdges {
+            for track in song.tracks { for item in track.clips where !excludingItems.contains(item.id) { considerStrong(item.startTime); considerStrong(item.startTime + item.duration) } }
+        }
+        if let strong { return strong }
         let section = song.tempoSection(at: position)
         // Cursor precision follows the configured musical division, independently
         // of the drawing density. This computes one candidate, not hidden grid lines.
@@ -388,7 +400,7 @@ public extension TimelineTempo {
         }
         for marker in song.markers ?? [] where marker.id != excludingMarker { consider(marker.position) }
         if includeItemEdges {
-            for track in song.tracks { for item in track.clips {
+            for track in song.tracks { for item in track.clips where !excludingItems.contains(item.id) {
                 consider(item.startTime)
                 consider(item.startTime + item.duration)
             } }

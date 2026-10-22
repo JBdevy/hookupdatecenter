@@ -596,6 +596,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var export: (Set<UUID>) -> Void = { _ in }
     var selectRow: (CGFloat) -> Void = { _ in }
     var pointerDown: (NSEvent) -> Void = { _ in }
+    var marqueeBegan: () -> Void = {}
     var fileLocation: ((UUID) -> URL?)? = nil
     var itemGuide: CGRect? = nil
     func projected(pixelsPerSecond: CGFloat, itemGuide: CGRect?) -> Self {
@@ -622,6 +623,7 @@ struct GridSelectionInput: NSViewRepresentable {
         else { view.items = items }
         view.updateSelection(selected)
         view.fileLocation = fileLocation
+        view.marqueeBegan = marqueeBegan
         view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
@@ -714,6 +716,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private(set) var heldItemGuide: CGRect? { didSet { if heldItemGuide != oldValue { needsDisplay = true } } }
     var selected = Set<UUID>()
     var selectionChanged: ((Set<UUID>) -> Void)?
+    var marqueeBegan: (() -> Void)?
     var createRegion: ((UUID) -> Void)?
     var resize: ((UUID, Bool, CGFloat, Bool) -> Void)?
     var fadeShape: ((UUID, Bool, Bool, Double, Bool) -> Void)?
@@ -833,7 +836,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private func positionedHeader(_ source: GridSelectionItem, viewport: CGRect, origin: CGPoint, gainLabel: String? = nil) -> GridSelectionItem {
         guard let name = source.name else { return source }
         var item = source
-        if liveHeaderGain?.id == item.id { item.gain = liveHeaderGain!.value }
+        if let liveHeaderGain, liveHeaderGain.id == item.id || (selected.contains(liveHeaderGain.id) && selected.contains(item.id)) { item.gain = liveHeaderGain.value }
         if let liveFade, liveFade.id == item.id {
             if let sCurve = liveFade.sCurve {
                 if liveFade.left { if sCurve { item.fadeInSCurve = liveFade.seconds } else { item.fadeInCurve = liveFade.seconds } }
@@ -883,14 +886,14 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             guard source.name != nil, source.rect.width >= 20,
                   source.rect.maxX >= visible.minX, source.rect.minX <= visible.maxX else { return nil }
             var source = source
-            if liveHeaderGain?.id == source.id { source.gain = liveHeaderGain!.value }
+            if let liveHeaderGain, liveHeaderGain.id == source.id || (selected.contains(liveHeaderGain.id) && selected.contains(source.id)) { source.gain = liveHeaderGain.value }
             let visibleWidth = max(0, min(source.rect.maxX, origin.x + viewport.width) - max(source.rect.minX, origin.x))
             let gainLabel = source.editable && visibleWidth >= source.gainKnobMinimumWidth ? source.gainLabel : nil
             var item = positionedHeader(source, viewport: viewport, origin: origin, gainLabel: gainLabel)
             let dx = viewport.minX - origin.x, dy = viewport.minY - origin.y
             item.rect = item.rect.offsetBy(dx: dx, dy: dy)
             item.visibleHeader = item.visibleHeader?.offsetBy(dx: dx, dy: dy)
-            if liveHeaderPan?.id == item.id { item.pan = liveHeaderPan!.value }
+            if let liveHeaderPan, liveHeaderPan.id == item.id || (selected.contains(liveHeaderPan.id) && selected.contains(item.id)) { item.pan = liveHeaderPan.value }
             let fadeRects = item.fadeDrawingRects(in: body)
             drawings.append(HeaderDrawing(item: item, gainLabel: gainLabel))
             return HeaderPixels(id: item.id, rect: item.headerRect, name: item.name!, gain: item.gain, pan: item.pan,
@@ -976,9 +979,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         pressedHeader = nil; headerPressCancelled = false
     }
     override var acceptsFirstResponder: Bool { true }
+    private var collapseSelectionOnRelease: UUID?
     override func mouseDown(with event: NSEvent) {
         // This view consumes native clicks before later event monitors run.
         // Report the editing area before selecting the item's owning track.
+        collapseSelectionOnRelease = nil
         pointerDown?(event)
         window?.makeFirstResponder(self)
         heldItemGuide = nil
@@ -989,7 +994,6 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         pressedHeader = nil; headerPressCancelled = false
         guard let item = hitItem(at: timeline) else {
             if createMIDI != nil && !event.modifierFlags.intersection([.command,.control]).isEmpty { midiStart = timeline; return }
-            selected.removeAll(); selectionChanged?([]); needsDisplay = true
             pendingSeek = timeline; return
         }
         if let shape = item.fadeShape(at: timeline) {
@@ -1022,12 +1026,15 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let additive = !event.modifierFlags.intersection([.command, .control]).isEmpty
         if additive {
             if selected.contains(item.id) { selected.remove(item.id) } else { selected.insert(item.id) }
-        } else { selected = [item.id] }
-        selectionChanged?(selected)
+        } else { collapseSelectionOnRelease = item.id }
+        if additive { selectionChanged?(selected) }
         movingAllowed = item.movable
         draggedItem = item.id; dragStart = event.locationInWindow; dragOrigin = timeline
     }
     override func mouseDragged(with event: NSEvent) {
+        if let draggedItem, !selected.contains(draggedItem), hypot(event.locationInWindow.x - dragStart.x, event.locationInWindow.y - dragStart.y) >= 3 {
+            selected = [draggedItem]; selectionChanged?(selected)
+        }
         if let start = midiStart {
             let point = timelinePoint(event)
             selectionRect = CGRect(x: min(start.x, point.x), y: start.y - 10, width: max(1, abs(point.x - start.x)), height: 20)
@@ -1069,6 +1076,13 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         else if movingAllowed { move?(id, translation, dragOrigin.y + translation.height, false) }
     }
     override func mouseUp(with event: NSEvent) {
+        if !hasDragged {
+            if let id = collapseSelectionOnRelease { selected = [id]; selectionChanged?(selected) }
+            else if draggedItem == nil, pendingSeek != nil, pressedHeader == nil {
+                selected.removeAll(); selectionChanged?([]); needsDisplay = true
+            }
+        }
+        collapseSelectionOnRelease = nil
         if let start = midiStart {
             let end = timelinePoint(event).x
             midiStart = nil; selectionRect = nil; needsDisplay = true
@@ -1214,6 +1228,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         guard anchor != nil else { return }
         selectionPointerInWindow = event.locationInWindow
         guard selectionRect != nil || hypot(event.locationInWindow.x-anchorInWindow.x, event.locationInWindow.y-anchorInWindow.y) >= 3 else { return }
+        if selectionRect == nil { marqueeBegan?() }
         updateMarqueeSelection()
         if selectionScrollTimer == nil {
             lastSelectionScrollTime = ProcessInfo.processInfo.systemUptime

@@ -152,6 +152,8 @@ private struct TimelineGridContent: View, Equatable {
     @State private var regionToDelete: (project: UUID, song: UUID, region: UUID)?
     @State private var confirmingRegionDelete = false
     @State private var confirmingBPMDetection = false
+    @State private var confirmingTimebase = false
+    @State private var pendingTimebase: (project: UUID, song: UUID, relative: Bool)?
     @State private var bpmRegions: [UUID] = []
     @State private var bpmWorker: Task<Void, Never>?
     @State private var reRenderWorker: Task<Void, Never>?
@@ -582,6 +584,20 @@ private struct TimelineGridContent: View, Equatable {
                                         }.buttonStyle(.plain).accessibilityLabel("Visibilidade das pistas")
                                             .jarasHelp("Visibilidade das pistas")
                                     }
+                                    if !remotePresentation {
+                                        Button {
+                                            pendingTimebase = (show.snapshot.project.id, originalSong.id, originalSong.projectTime.timebase != .relative)
+                                            confirmingTimebase = true
+                                        } label: {
+                                            Image(systemName: "arrow.left.and.right")
+                                                .font(.jarasSystem(size: 13, weight: .semibold))
+                                                .foregroundStyle(originalSong.projectTime.timebase == .relative ? JarasTheme.green : Color.yellow)
+                                                .frame(width: 24, height: 24).contentShape(Rectangle())
+                                        }.buttonStyle(.plain)
+                                            .accessibilityLabel("Relative timebase")
+                                            .accessibilityIdentifier("timeline-timebase")
+                                            .accessibilityValue(originalSong.projectTime.timebase == .relative ? "Enabled" : "Disabled")
+                                    }
                                     Button { show.setTimelineMovementLocked(!show.timelineMovementLocked) } label: {
                                         Image(systemName: show.timelineMovementLocked ? "lock.fill" : "lock.open")
                                     }
@@ -694,6 +710,21 @@ private struct TimelineGridContent: View, Equatable {
         .sheet(item: $itemExport) { ItemAudioExportView(request: $0) }
         .sheet(isPresented: $showingItemTuner) { ItemTunerEditor(show: show, items: tuningItems) }
         .sheet(isPresented: $showingNormalize) { ItemNormalizationEditor(show: show, documents: documents, items: normalizingItems) }
+        .alert(Text(verbatim: JarasLocalization.string(pendingTimebase?.relative == true ? "Enable relative timebase?" : "Disable relative timebase?")), isPresented: $confirmingTimebase) {
+            Button("Cancel", role: .cancel) { pendingTimebase = nil }
+            Button(pendingTimebase?.relative == true ? "Enable" : "Disable") {
+                guard let pending = pendingTimebase, pending.project == show.snapshot.project.id,
+                      let song = show.current, song.id == pending.song else { pendingTimebase = nil; return }
+                var settings = song.projectTime
+                settings.timebase = pending.relative ? .relative : .free
+                if show.configureProjectTime(bpm: song.bpm, beats: song.meterBeats, unit: song.meterUnit, settings: settings) {
+                    GlobalProjectTiming(bpm: song.bpm, beats: song.meterBeats, unit: song.meterUnit, settings: settings).save()
+                }
+                pendingTimebase = nil
+            }
+        } message: {
+            Text(LocalizedStringKey(pendingTimebase?.relative == true ? "Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings." : "Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings."))
+        }
         .alert(Text(verbatim: confirmingSplit ? JarasLocalization.string("Split selected items at the edit cursor?") : ""), isPresented: $confirmingSplit) {
             Button("Cancel", role: .cancel) { itemsToSplit = [] }
             Button("Split") { show.splitItems(itemsToSplit, at: splitPosition); itemsToSplit = [] }
@@ -859,6 +890,14 @@ private struct TimelineGridContent: View, Equatable {
     /// Editing actions change with project/selection state, not each zoom frame.
     /// Read the scale committed to the native input, so an in-flight zoom
     /// cannot make editing jump ahead of the displayed geometry.
+    private func itemMixTargets(_ id: UUID) -> Set<UUID> {
+        selectedClips.contains(id) ? selectedClips : [id]
+    }
+    private func muteSelectedItems(_ id: UUID) {
+        guard let song = show.current,
+              let clip = song.tracks.filter({ $0.kind == .standard }).flatMap(\.clips).first(where: { $0.id == id }) else { return }
+        show.setItemsMix(itemMixTargets(id), muted: clip.muted != true)
+    }
     private func makeSelectionInput(originalSong: Song, song: Song, rows: TrackRowLayout,
                                     rulerHeight: CGFloat, extent: Double,
                                     selectionLayout: GridSelectionLayout) -> GridSelectionInput {
@@ -866,7 +905,7 @@ private struct TimelineGridContent: View, Equatable {
         var input = GridSelectionInput(origin: .zero, headerHeight: rulerHeight, items: [], selected: selectedClips, selectionChanged: { next in
             selectedClips = next
             selectedClip = selectionLayout.items.first { next.contains($0.id) }?.id
-        }, mute: { id in if originalSong.tracks.contains(where: { $0.kind == .standard && $0.clips.contains { $0.id == id } }) { show.send(.clipMute, target: id) } }, move: { id, translation, pointerY, ended in
+        }, mute: { id in muteSelectedItems(id) }, move: { id, translation, pointerY, ended in
             guard !show.timelineMovementLocked else { clearClipDrag(); return }
             let pixelsPerSecond = projection.pixelsPerSecond
 
@@ -920,17 +959,22 @@ private struct TimelineGridContent: View, Equatable {
                 }
             }
         }, gain: { id, value, ended in
-            show.previewItemGain(id, gain: value)
+            let targets = itemMixTargets(id)
+            for target in targets { show.previewItemGain(target, gain: value) }
             let original = show.current?.tracks.lazy.flatMap(\.clips).first { $0.id == id }
-            itemWaveformPreview.update(id: id, gain: value)
+            itemWaveformPreview.update(id: id, gain: value, targets: targets)
             if ended {
-                show.setItemGain(id, gain: value)
-                if original?.gain == value { itemWaveformPreview.clear() }
+                if targets.count > 1 { show.setItemsMix(targets, gain: value) }
+                else { show.setItemGain(id, gain: value) }
+                if targets.count == 1 && original?.gain == value { itemWaveformPreview.clear() }
                 else { itemWaveformPreview.finish(committed: show.current?.tracks.lazy.flatMap(\.clips).first { $0.id == id }) }
             }
         }, phase: { show.toggleItemPhase($0) }, pan: { id, value, ended in
-            if ended { show.setItemPan(id, pan: value) }
-            else { show.previewItemPan(id, pan: value) }
+            let targets = itemMixTargets(id)
+            if ended {
+                if targets.count > 1 { show.setItemsMix(targets, pan: value) }
+                else { show.setItemPan(id, pan: value) }
+            } else { for target in targets { show.previewItemPan(target, pan: value) } }
         }, fx: { id, bypass in
             if bypass { show.toggleClipFXAllBypass(id) }
             else { openClipFXChain(id) }
@@ -958,6 +1002,7 @@ private struct TimelineGridContent: View, Equatable {
             selectedTrack = id
             selectedTracks = [id]
         }, pointerDown: { EditorSelectionRouter.shared.handlePointer($0) })
+        input.marqueeBegan = { show.pauseTimelineFollow() }
         input.fileLocation = { id in
             guard let directory = documents.currentURL?.deletingLastPathComponent(),
                   let clip = originalSong.tracks.flatMap(\.clips).first(where: { $0.id == id }),
@@ -1035,7 +1080,7 @@ private struct TimelineGridContent: View, Equatable {
                 selectedClip = selectedClips.contains(clip.id) ? clip.id : selectedClips.first
             } else {
                 selectedClip = clip.id
-                selectedClips = [clip.id]
+                if !selectedClips.contains(clip.id) { selectedClips = [clip.id] }
             }
         }, resize: { left, delta, ended in
             guard !show.timelineMovementLocked else { resizingItem = nil; return }
@@ -1051,7 +1096,7 @@ private struct TimelineGridContent: View, Equatable {
         }, fade: { left, seconds, ended in
             if ended { show.setItemFade(clip.id, fadeIn: left, seconds: seconds); itemWaveformPreview.clear() }
             else { show.previewItemFade(clip.id, fadeIn: left, seconds: seconds); itemWaveformPreview.updateFade(clip, fadeIn: left, seconds: seconds) }
-        }, mute: track.kind == .standard ? { show.send(.clipMute, target: clip.id) } : nil,
+        }, mute: track.kind == .standard ? { muteSelectedItems(clip.id) } : nil,
            cancel: { clearClipDrag(); resizingItem = nil }) { translation, pointerY, ended in
             // A gesture belongs to the item pressed until mouse-up.
             guard !show.timelineMovementLocked, track.kind != .timecode, movingClip == nil || movingClip == clip.id else { clearClipDrag(); return }
@@ -1132,6 +1177,10 @@ private struct TimelineGridContent: View, Equatable {
         return provisionalTrack!.id
     }
     private func commitClipDrag(_ id: UUID) {
+        if selectedClips.contains(id), selectedClips.count > 1 {
+            show.moveItems(selectedClips, anchor: id, start: movingStart, track: movingTrack)
+            return
+        }
         if let provisionalTrack, movingTrack == provisionalTrack.id {
             show.moveClipToNewStandardTrack(id, start: movingStart, newTrack: provisionalTrack)
         } else { show.moveClip(id, start: movingStart, track: movingTrack) }
@@ -1494,6 +1543,9 @@ private struct TimelineGridContent: View, Equatable {
     }
     private func previewClipMove(_ song: Song) -> Song {
         guard let movingClip else { return song }
+        if selectedClips.contains(movingClip), selectedClips.count > 1 {
+            return song.movingItems(selectedClips, anchor: movingClip, start: movingStart, track: movingTrack) ?? song
+        }
         var result = song
         if let provisionalTrack, movingTrack == provisionalTrack.id { result.tracks.append(provisionalTrack) }
         for track in result.tracks.indices {
@@ -1522,7 +1574,8 @@ private struct TimelineGridContent: View, Equatable {
         return TimelineTempo.snap(time, song: song, pixelsPerSecond: pixelsPerSecond, regionEnds: snappingRegionEnds,
                                   cursor: transport.editPosition ?? transport.position,
                                   otherCursors: [transport.position] + (transport.subPlay.playing ? [transport.subPlay.position] : []),
-                                  excludingRegion: excludingRegion)
+                                  excludingRegion: excludingRegion, includeItemEdges: true,
+                                  excludingItems: movingClip.map { selectedClips.union([$0]) } ?? resizingItem.map { Set([$0]) } ?? [])
     }
     private func gridPosition(_ time: Double, song: Song, pixelsPerSecond: Double, freePositioning: Bool? = nil) -> Double {
         #if os(macOS)
@@ -4910,9 +4963,15 @@ private struct ItemWaveformPreviewOverlay: View {
     let renderMetadata: TimelineRenderMetadata
     @Environment(\.colorScheme) private var colorScheme
     var body: some View {
-        if let state = preview.state,
-           let index = song.tracks.firstIndex(where: { $0.clips.contains { $0.id == state.id } }),
-           let source = song.tracks[index].clips.first(where: { $0.id == state.id }) {
+        if let state = preview.state {
+            ForEach(Array(state.ids).sorted { $0.uuidString < $1.uuidString }, id: \.self) { previewID in
+                previewItem(state, id: previewID)
+            }
+        }
+    }
+    @ViewBuilder private func previewItem(_ state: ItemWaveformPreview.State, id: UUID) -> some View {
+        if let index = song.tracks.firstIndex(where: { $0.clips.contains { $0.id == id } }),
+           let source = song.tracks[index].clips.first(where: { $0.id == id }) {
             let track = song.tracks[index]
             let lane = CGFloat(rows.lanes[index].lanes[source.id] ?? 0)
             let y = rulerHeight + rows.offsets[index] + lane * rows.laneHeights[index] + 3

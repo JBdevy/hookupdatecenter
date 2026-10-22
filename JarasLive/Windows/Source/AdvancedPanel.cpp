@@ -42,6 +42,7 @@ class ColourEditor final : public Component {
 AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function<void(String)> fail)
     : appearance(settings), session(value), error(std::move(fail)) {
     setName("Advanced");
+    timerCallback();startTimerHz(4);
     setWantsKeyboardFocus(true);
     const StringArray names{String::fromUTF8("Tempo do projeto"),
                             "Timeline",

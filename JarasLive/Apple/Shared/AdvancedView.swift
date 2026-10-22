@@ -32,7 +32,7 @@ struct AdvancedView: View {
 
     init(show: ShowController, documents: ProjectDocuments? = nil, close: (() -> Void)? = nil) {
         self.show = show; self.documents = documents; self.close = close
-        let timing = GlobalProjectTiming.load() ?? show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming()
+        let timing = show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming.load() ?? GlobalProjectTiming()
         _bpm = State(initialValue: String(format: "%g", timing.bpm))
         _beats = State(initialValue: String(timing.beats))
         _unit = State(initialValue: String(timing.unit))
@@ -95,6 +95,9 @@ struct AdvancedView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #endif
         .foregroundStyle(JarasTheme.text).background(JarasTheme.background)
+        .onChange(of: show.current?.projectTime.timebase) { value in
+            if let value { settings.timebase = value }
+        }
     }
     private func finish() { if let close { close() } else { dismiss() } }
     private var timingControls: some View {

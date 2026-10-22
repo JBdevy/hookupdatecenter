@@ -12,7 +12,7 @@ inline jaras::Project fixture(const File &folder) {
     WavAudioFormat format;
     std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.get(), 48000, 2, 24, {}, 0));
     require(writer != nullptr, "Cannot create live-resize WAV"); stream.release();
-    AudioBuffer<float> samples(2, 48000);
+    AudioBuffer<float> samples(2, 48000 * 3);
     for (int n = 0; n < samples.getNumSamples(); ++n) {
         samples.setSample(0, n, .125f); samples.setSample(1, n, .0625f);
     }

@@ -1780,3 +1780,17 @@
 "A project with this name already exists." = "Já existe um projeto com esse nome.";
 
 "Open file location" = "Abrir local do arquivo";
+
+"Relative timebase" = "Timebase relativo";
+
+"Enable relative timebase?" = "Ativar Timebase relativo?";
+
+"Disable relative timebase?" = "Desativar Timebase relativo?";
+
+"Enable" = "Ativar";
+
+"Disable" = "Desativar";
+
+"Relative timebase: changing the project BPM adjusts item duration and playback speed to follow the tempo. With Free timebase, changing the project BPM preserves item duration and playback speed. Tempo markers with their own timebase keep their individual settings." = "Relativo: mudar o BPM do projeto ajusta a duração e a velocidade dos itens para acompanhar o andamento. No modo Livre, mudar o BPM preserva a duração e a velocidade dos itens. Marcadores de tempo com Timebase próprio continuam seguindo suas configurações individuais.";
+
+"Free timebase: changing the project BPM changes the grid without stretching or shortening items. Item duration and playback speed are preserved. Tempo markers with their own timebase keep their individual settings." = "Livre: mudar o BPM do projeto altera a grade sem esticar nem encurtar os itens. A duração e a velocidade dos itens são preservadas. Marcadores de tempo com Timebase próprio continuam seguindo suas configurações individuais.";

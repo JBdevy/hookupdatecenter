@@ -1,5 +1,7 @@
 #pragma once
 #include "Common.h"
+#include <set>
+#include <limits>
 #include "TimelineMovementLock.h"
 namespace catlive::timelineGrid {
 // Mac stores a zoom factor from .001 to 8192, at ten points per second.
@@ -37,10 +39,15 @@ inline std::vector<double> clickBeats(const jaras::Song &song,const jaras::Audio
 }
 // Match TimelineTempo.snap: visible divisions plus region/marker/cursor anchors.
 inline double snap(double time, const jaras::Song &song, double scale, bool free,
-                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false) {
+                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false, const std::set<ID> *excludedItems = nullptr) {
     if (!std::isfinite(time) || !std::isfinite(scale) || scale <= 0) return 0;
     const double position=std::max(0.,time);
     if (free || !std::isfinite(scale) || scale<=0) return position;
+    double strong=position, strongDistance=std::numeric_limits<double>::infinity();
+    auto considerStrong=[&](double anchor){const double distance=std::abs(anchor-position);if(std::isfinite(anchor)&&anchor>=0&&distance*scale<=12+1e-9&&(distance<strongDistance||(distance==strongDistance&&anchor<strong))){strong=anchor;strongDistance=distance;}};
+    if(transport){considerStrong(transport->editPosition);considerStrong(transport->position);if(transport->subPlay.playing)considerStrong(transport->subPlay.position);}
+    if(includeItemEdges)for(const auto &track:song.tracks)for(const auto &clip:track.clips)if(!excludedItems||!excludedItems->count(clip.id)){considerStrong(clip.startTime);considerStrong(clip.startTime+clip.duration);}
+    if(std::isfinite(strongDistance))return strong;
     auto map=sections(song,std::max(song.duration,position)+1);
     Section active{0,song.duration,song.bpm,song.beatsPerBar,song.beatUnit};
     for(const auto &section:map) if(section.start<=position && position<section.end) {active=section;break;}
@@ -57,7 +64,7 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
     if(step>0)consider(std::min(active.end,active.start+std::round((position-active.start)/step)*step));
     for(const auto &part:song.parts){consider(part.startTime);consider(part.endTime);}
     if(song.markers)for(const auto &marker:*song.markers)consider(marker.position);
-    if(includeItemEdges) for(const auto &track:song.tracks) for(const auto &clip:track.clips) {
+    if(includeItemEdges) for(const auto &track:song.tracks) for(const auto &clip:track.clips) if(!excludedItems||!excludedItems->count(clip.id)) {
         consider(clip.startTime);consider(clip.startTime+clip.duration);
     }
     if(transport) {
@@ -67,8 +74,8 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
     return nearest;
 }
 inline double snapSelection(double time, const jaras::Song &song, double scale,
-                            const jaras::TransportState &transport, bool free) {
-    return snap(time,song,scale,free,false,&transport);
+                            const jaras::TransportState &transport, bool free, const std::set<ID> *excludedItems = nullptr) {
+    return snap(time,song,scale,free,false,&transport,true,excludedItems);
 }
 inline double snapCursor(double time, const jaras::Song &song, double scale, bool free) {
     return snap(time,song,scale,free,true,nullptr,true);

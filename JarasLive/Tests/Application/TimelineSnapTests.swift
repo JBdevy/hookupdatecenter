@@ -90,3 +90,17 @@ final class TimelineSnapTests: XCTestCase {
     }
 
 }
+
+extension TimelineSnapTests {
+    func testNearbyCursorAndItemEdgesWinAgainstCloserGridLines() {
+        var song = Project.empty(name: "Strong anchors").songs[0]
+        song.bpm = 120; song.parts = []; song.markers = []; song.duration = 20
+        let item = AudioClip(id: UUID(), name: "Anchor", startTime: 1.09, duration: 1.04)
+        var track = Track(id: UUID(), name: "Audio", role: .other); track.clips = [item]; song.tracks = [track]
+        XCTAssertEqual(TimelineTempo.snap(1.01, song: song, pixelsPerSecond: 100, includeItemEdges: true),1.09)
+        XCTAssertEqual(TimelineTempo.snap(2.01, song: song, pixelsPerSecond: 100, includeItemEdges: true),2.13)
+        XCTAssertEqual(TimelineTempo.snap(1.01, song: song, pixelsPerSecond: 100, cursor: 1.1),1.1)
+        XCTAssertEqual(TimelineTempo.snap(1.01, song: song, pixelsPerSecond: 100, includeItemEdges: true, excludingItems: [item.id]),1)
+        XCTAssertEqual(TimelineTempo.snap(1.01, song: song, pixelsPerSecond: 100, enabled: false, includeItemEdges: true),1.01)
+    }
+}

@@ -14,6 +14,16 @@ inline double timelineCenteredZoomOffset(double position, double scale, double c
 struct TimelinePlaybackFollowPolicy {
     std::optional<double> previousPosition;
     String previousSource;
+    std::optional<jaras::TransportState> manualPause;
+    void pause(const jaras::TransportState &state) { manualPause=state;reset(); }
+    bool isPaused(const jaras::TransportState &state) {
+        if(!manualPause)return false;
+        const auto &before=*manualPause;
+        if(before.playing!=state.playing || before.subPlay.playing!=state.subPlay.playing || before.songId!=state.songId ||
+           (state.playing && before.regionId!=state.regionId) ||
+           (state.subPlay.playing && before.subPlaybackStartRegionId!=state.subPlaybackStartRegionId))manualPause.reset();
+        return manualPause.has_value();
+    }
     void reset() {
         previousPosition.reset();
         previousSource.clear();

@@ -1041,6 +1041,21 @@ public struct ShowTimelinePresentationState: Equatable {
             }
         }
     }
+    public func setItemsMix(_ ids: Set<UUID>, gain: Double? = nil, pan: Double? = nil, muted: Bool? = nil) {
+        guard gain.map({ $0.isFinite && $0 >= 0 }) ?? true,
+              pan.map({ $0.isFinite && (-1...1).contains($0) }) ?? true else { return }
+        editProject { project in
+            for song in project.songs.indices {
+                for track in project.songs[song].tracks.indices where project.songs[song].tracks[track].kind == .standard {
+                    for item in project.songs[song].tracks[track].clips.indices where ids.contains(project.songs[song].tracks[track].clips[item].id) {
+                        if let gain { project.songs[song].tracks[track].clips[item].gain = min(pow(10, 24.0 / 20), gain) }
+                        if let pan { project.songs[song].tracks[track].clips[item].pan = pan == 0 ? nil : pan }
+                        if let muted { project.songs[song].tracks[track].clips[item].muted = muted }
+                    }
+                }
+            }
+        }
+    }
     public func previewItemGain(_ id: UUID, gain: Double) { audioItemGain(id, gain) }
     public func setItemGain(_ id: UUID, gain: Double) {
         guard canControl(), !finishing, gain.isFinite, gain >= 0 else { return }
@@ -2816,6 +2831,14 @@ public struct ShowTimelinePresentationState: Equatable {
             snapshot.project.songs[song].parts[region].color = color
             markChanged(refreshAudio: false)
         }
+        catch { message = error.localizedDescription }
+    }
+    public func moveItems(_ ids: Set<UUID>, anchor: UUID, start: Double, track: UUID?) {
+        guard canControl(), !finishing, !timelineMovementLocked,
+              let index = snapshot.project.songs.firstIndex(where: { $0.id == current?.id }),
+              let moved = snapshot.project.songs[index].movingItems(ids, anchor: anchor, start: start, track: track) else { return }
+        var project = snapshot.project; project.songs[index] = moved
+        do { try project.validate(); try executor.applyProjectEdit(project); snapshot = try executor.snapshot(); markChanged() }
         catch { message = error.localizedDescription }
     }
     public func moveClip(_ id: UUID, start: Double, track: UUID?) {

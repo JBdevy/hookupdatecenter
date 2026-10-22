@@ -846,7 +846,9 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
     }
     startTimerHz(transport().playing || transport().subPlay.playing ? 60 : 8);
     if (fadeoutRequested && !completingFadeout && !transport().playing) cancelTransportFadeout();
-    if (kind == jaras::CommandKind::selectRegion && old == transport().songId && selectionChanged)
+    const bool stoppedAtQueuedSelection = (kind == jaras::CommandKind::stop || kind == jaras::CommandKind::stopAll) &&
+        !transport().playing && (beforeCommand.regionId != transport().regionId || beforeCommand.editPosition != transport().editPosition);
+    if ((kind == jaras::CommandKind::selectRegion || stoppedAtQueuedSelection) && old == transport().songId && selectionChanged)
         selectionChanged();
     else
         notify();

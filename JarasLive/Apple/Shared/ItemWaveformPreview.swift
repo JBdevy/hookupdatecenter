@@ -1,10 +1,12 @@
 import SwiftUI
 
-/// Transient gain and fade changes are observed only by the active item's drawing layer.
+/// Transient gain and fade changes are observed only by the affected items' drawing layers.
 /// They never mutate project arrays, waveform storage or structural layout keys.
 @MainActor final class ItemWaveformPreview: ObservableObject {
     struct State: Equatable {
         let id: UUID
+        var targets: Set<UUID> = []
+        var ids: Set<UUID> { targets.isEmpty ? [id] : targets }
         enum Adjustment: Equatable {
             case gain(Double)
             case fade(fadeIn: Bool, seconds: Double)
@@ -36,8 +38,9 @@ import SwiftUI
     }
     func didPresent(_ song: Song) {
         guard awaitingPresentation, let expected = state,
-              let clip = song.tracks.lazy.flatMap(\.clips).first(where: { $0.id == expected.id }),
-              expected.applying(to: clip) == clip else { return }
+              case let clips = song.tracks.flatMap(\.clips).filter({ expected.ids.contains($0.id) }),
+              clips.count == expected.ids.count,
+              clips.allSatisfy({ expected.applying(to: $0) == $0 }) else { return }
         // Presentation can happen inside an NSViewRepresentable update.
         // Publish after that update, checking for a newer drag before clearing.
         DispatchQueue.main.async { [weak self] in
@@ -45,9 +48,9 @@ import SwiftUI
             self.clear()
         }
     }
-    func update(id: UUID, gain: Double) {
+    func update(id: UUID, gain: Double, targets: Set<UUID> = []) {
         awaitingPresentation = false
-        let next = State(id: id, adjustment: .gain(gain))
+        let next = State(id: id, targets: targets, adjustment: .gain(gain))
         if state != next { state = next }
     }
     func updateFade(_ source: AudioClip, fadeIn: Bool, seconds: Double) {

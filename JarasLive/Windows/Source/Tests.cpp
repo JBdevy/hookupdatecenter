@@ -571,6 +571,17 @@ int runTests(const File &directory) {
             expect(tall>0,"A short transient disappeared in the physical-pixel overview");
         }
     });
+    test("Marquee follow pause survives mouse release and cursor edits until playback changes", [&] {
+        TimelinePlaybackFollowPolicy policy;jaras::TransportState state;
+        state.playing=true;state.songId=uuid();state.regionId=uuid();
+        policy.pause(state);expect(policy.isPaused(state),"Marquee did not pause following");
+        state.position=42;expect(policy.isPaused(state),"Playback ticks or mouse release resumed following");
+        state.editPosition=80;expect(policy.isPaused(state),"Editing the cursor resumed following");
+        policy.reset();expect(policy.isPaused(state),"Viewport reset cleared the manual pause");
+        state.regionId=uuid();expect(!policy.isPaused(state),"Changing the playing song did not resume following");
+        policy.pause(state);state.playing=false;expect(!policy.isPaused(state),"Stop did not expire the manual pause");
+        state.playing=true;policy.pause(state);state.subPlay.playing=true;expect(!policy.isPaused(state),"SubPlay handoff did not resume following");
+    });
     test("Continuous scroll matches Mac and none does not change the viewport", [&] {
         TimelinePlaybackFollowPolicy policy;
         expect(!policy.destination(39,10,10000,0,800,"main",1),"Scroll before viewport midpoint");
@@ -950,11 +961,13 @@ int runTests(const File &directory) {
         song.markers=std::vector<jaras::TimelineMarker>{marker,tempo};
         jaras::TransportState transport;transport.editPosition=15.37;transport.position=16.39;
         auto checkPosition=[&](double actual,double wanted,const char *message){expect(std::abs(actual-wanted)<1e-7,message);};
+        auto gridOnly=song;gridOnly.tracks.clear();
         for(double scale:{1.,20.,100.,1000.}) {
-            checkPosition(timelineGrid::snapCursor(2.21,song,scale,false),2.,"Cursor uses configured subdivisions at every zoom");
+            checkPosition(timelineGrid::snapCursor(2.21,gridOnly,scale,false),2.,"Cursor uses configured subdivisions at every zoom");
             checkPosition(timelineGrid::snapCursor(2.21,song,scale,true),2.21,"Shift bypasses cursor grid");
-            checkPosition(timelineGrid::snapCursor(10.91,song,scale,false),11.25,"Cursor restarts snap phase at tempo change");
+            checkPosition(timelineGrid::snapCursor(10.91,gridOnly,scale,false),11.25,"Cursor restarts snap phase at tempo change");
             for(double target:{3.13,7.17,9.23}) {
+                if(scale==1)continue;
                 checkPosition(timelineGrid::snapSelection(target+.001,song,scale,transport,false),target,"Items snap to region start/end and marker");
                 checkPosition(timelineGrid::snapSelection(target+.001,song,scale,transport,true),target+.001,"Shift bypasses item anchors");
             }
@@ -965,6 +978,49 @@ int runTests(const File &directory) {
         }
         checkPosition(timelineGrid::snapSelection(15.371,song,100,transport,false),15.37,"Item snaps to edit cursor");
         checkPosition(timelineGrid::snapCursor(15.371,song,100,false),15.25,"Edit cursor must not snap back to its old position");
+    });
+    test("Timebase shortcut confirms both modes, preserves item timing and supports Undo", [&] {
+        for(bool initiallyRelative:{false,true})for(bool accept:{false,true}) {
+            auto project=projectFixture();auto settings=jaras::ProjectTimeSettings{};
+            settings.timebase=initiallyRelative?jaras::ProjectTimebase::relative:jaras::ProjectTimebase::free;
+            settings.divisions=2;settings.affectsAutomationLength=false;
+            project.songs[0].timeSettings=settings;
+            Session session;session.inspection=true;session.audio.prepareOffline(48000);
+            session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+            Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("timebase-shortcut",".json"));workspace.setSize(1366,768);
+            auto *button=dynamic_cast<TextButton *>(uiFeatureTests::find(workspace,"timelineTimebase"));
+            auto *lock=uiFeatureTests::find(workspace,"timelineMovementLock");
+            expect(button && lock && button->onClick,"Timebase shortcut missing");
+            expect(button->getRight()<lock->getX(),"Timebase shortcut is not left of the lock");
+            expect(button->getToggleState()==initiallyRelative,"Timebase button did not reflect the project");
+            expect(button->findColour(TextButton::textColourOnId)==theme::green && button->findColour(TextButton::textColourOffId)==theme::yellow,"Timebase colours do not match the requested states");
+            button->onClick();
+            expect(session.song()->timeSettings->timebase==settings.timebase,"Opening confirmation already changed Timebase");
+            auto *action=dynamic_cast<Button *>(uiFeatureTests::find(workspace,accept?"timebaseApply":"timebaseCancel"));
+            expect(action && action->onClick,"Timebase confirmation action missing");action->onClick();floatingControlTests::pump();
+            const auto expected=accept?!initiallyRelative:initiallyRelative;
+            expect((session.song()->timeSettings->timebase==jaras::ProjectTimebase::relative)==expected,"Timebase confirmation did not apply or cancel correctly");
+            expect(button->getToggleState()==expected,"Timebase button did not refresh after confirmation");
+            const auto &before=project.songs[0].tracks[0].clips[0],&after=session.song()->tracks[0].clips[0];
+            expect(session.song()->bpm==project.songs[0].bpm && before.id==after.id && before.startTime==after.startTime && before.duration==after.duration && before.playbackRate==after.playbackRate && before.sourceOffset==after.sourceOffset,"Changing Timebase modified BPM or items before a tempo edit");
+            expect(session.song()->timeSettings->divisions==2 && !session.song()->timeSettings->affectsAutomationLength,"Shortcut overwrote unrelated timing settings");
+            if(accept){session.undo();expect(button->getToggleState()==initiallyRelative,"Undo did not restore Timebase indicator");}
+        }
+    });
+    test("Stopping at a queued song reveals its region in the grid", [&] {
+        auto project=projectFixture();project.regionSetlist=jaras::RegionSetlist{};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        const auto first=project.songs[0].parts[0],next=project.songs[0].parts[1];
+        session.command(jaras::CommandKind::selectRegion,first.id);
+        session.command(jaras::CommandKind::play);
+        session.command(jaras::CommandKind::queueRegion,next.id);
+        int reveals=0;
+        session.selectionChanged=[&]{++reveals;expect(!session.transport().playing,"Grid reveal ran before Stop committed");};
+        session.command(jaras::CommandKind::stop);
+        expect(session.transport().regionId==next.id,"Stop did not select the queued region");
+        expect(std::abs(session.transport().editPosition-next.startTime)<1e-7,"Stop did not move the edit cursor to the queued region");
+        expect(reveals==1,"Stop did not request the same grid reveal as direct selection");
     });
     test("Edit cursor clicks and ruler drags snap unless Shift is held", [&] {
         auto project=projectFixture();auto &song=project.songs.front();song.parts.clear();song.markers.reset();song.tracks.clear();song.bpm=120;song.beatsPerBar=4;song.beatUnit=4;
@@ -3981,22 +4037,22 @@ int runTests(const File &directory) {
         clip.sourceOffset = 30;
         const auto preview = clipEditing::resizedSource(clip, 17, 35);
         expect(clip.startTime==20 && clip.duration==10 && !clip.loopLength, "Resize preview mutated the saved item");
-        expect(preview.sourceOffset==44 && preview.loopLength==20 && preview.duration==18, "Live resize preview differs from committed source loop");
+        expect(preview.sourceOffset==24 && !preview.loopLength && preview.duration==18, "Live resize preview differs from committed source loop");
         const auto outline=itemOutline(preview,{0,0,360,60},360,20);
         const auto seams=itemLoopSeams(preview,{0,0,360,60},360,20);
-        expect(!seams.empty(),"Extended item has no repeated-source cuts");
+        expect(seams.empty(),"Expanding an ordinary trim must not create repeated-source cuts");
         for(auto seam:seams) expect(!outline.contains(seam,59) && outline.contains(seam,50),"Bottom triangular cut not visible during edge drag");
         const ItemHeader edges({0,0,360,60},360,song.tracks[0],preview);
         expect(edges.resizeSide({9,56})==-1 && edges.resizeSide({351,56})==1 && !edges.resizeSide({180,56}),"Edge grab tolerance differs from Mac");
         clipEditing::resize(p, id, 23, 28);
-        expect(clip.sourceOffset == 36 && clip.loopStart == 30 && clip.loopLength == 20 &&
+        expect(clip.sourceOffset == 36 && !clip.loopStart && !clip.loopLength &&
                    clip.duration == 5,
                "Audio trim changed the source loop");
         clipEditing::resize(p, id, 17, 31);
-        expect(clip.sourceOffset == 44 && clip.loopLength == 20 && clip.duration == 14,
+        expect(clip.sourceOffset == 24 && !clip.loopLength && clip.duration == 14,
                "Audio extension failed to wrap the original source");
         auto portable = ProjectCodec::decode(ProjectCodec::encode(p, {}));
-        expect(portable.songs[0].tracks[0].clips[0].loopLength == 20,
+        expect(!portable.songs[0].tracks[0].clips[0].loopLength,
                "Trim loop was lost through project serialization");
         clip.audioFile.reset();
         clip.loopLength.reset();

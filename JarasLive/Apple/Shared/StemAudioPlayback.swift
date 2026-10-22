@@ -320,6 +320,45 @@ struct TimecodePlaybackSpan {
     private struct OnsetKey: Hashable { let path: String; let first: AVAudioFramePosition; let frames: AVAudioFrameCount }
     private var onsetPreparationKey: String?
     private var preparedOnsets: [OnsetKey: AVAudioPCMBuffer] = [:]
+    private let syncDiagnosticsEnabled = ProcessInfo.processInfo.environment["CATLIVE_AUDIO_SYNC_DIAGNOSTICS"] == "1"
+    private let syncDiagnosticsQueue = DispatchQueue(label: "CatLive.audioSyncDiagnostics", qos: .utility)
+    private func recordSyncDiagnostics(_ keys: [VoiceKey], phase: String) {
+        guard syncDiagnosticsEnabled else { return }
+        let now = mach_absolute_time()
+        let records: [[String: Any]] = keys.compactMap { key in
+            guard let voice = voices[key] else { return nil }
+            let node = voice.player.lastRenderTime
+            let player = node.flatMap { voice.player.playerTime(forNodeTime: $0) }
+            return ["phase": phase, "host": now, "head": key.head, "item": voice.clip.id.uuidString,
+                    "name": voice.clip.name, "track": voice.track.uuidString,
+                    "clipStart": voice.clip.startTime, "offset": voice.clip.sourceOffset,
+                    "rate": voice.clip.audioRate, "pitchCents": voice.pitch,
+                    "fileRate": voice.file.processingFormat.sampleRate,
+                    "firstSourceFrame": voice.scheduledSourceStart,
+                    "onsetSample": voice.scheduledOnset?.sampleTime ?? -1,
+                    "onsetHost": voice.scheduledOnset?.hostTime ?? 0,
+                    "nodeSample": node?.sampleTime ?? -1, "nodeHost": node?.hostTime ?? 0,
+                    "playerSample": player?.sampleTime ?? -1, "playerRate": player?.sampleRate ?? 0,
+                    "processingDelay": voice.scheduledProcessingDelay,
+                    "headHost": headAudioClock[key.head]?.host ?? 0,
+                    "headPosition": headAudioClock[key.head]?.position ?? -1,
+                    "sourceClock": sourcePositionAtRenderClock(voice) ?? -1,
+                    "gainHost": voice.gain.lastRenderTime?.hostTime ?? 0,
+                    "gainSample": voice.gain.lastRenderTime?.sampleTime ?? -1,
+                    "stretchHost": voice.stretch.lastRenderTime?.hostTime ?? 0,
+                    "stretchSample": voice.stretch.lastRenderTime?.sampleTime ?? -1,
+                    "masterHost": engine.outputNode.lastRenderTime?.hostTime ?? 0,
+                    "masterSample": engine.outputNode.lastRenderTime?.sampleTime ?? -1]
+        }
+        guard !records.isEmpty, let data = try? JSONSerialization.data(withJSONObject: records) else { return }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("catlive-audio-sync-\(ProcessInfo.processInfo.processIdentifier).jsonl")
+        syncDiagnosticsQueue.async {
+            if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+            guard let file = try? FileHandle(forWritingTo: url) else { return }
+            defer { try? file.close() }
+            do { try file.seekToEnd(); try file.write(contentsOf: data); try file.write(contentsOf: Data([10])) } catch { }
+        }
+    }
     private var voices: [VoiceKey: Voice] = [:]
     private var retiredVoices: [Voice] = []
     /// File sources still retained by the graph must survive timeline cleanup,
@@ -1537,6 +1576,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         let pool = idleVoices[track] ?? []
         func matches(_ voice: Voice) -> Bool {
             (voice.clip.frozenMIDI == true) == (clip.frozenMIDI == true) &&
+                abs(voice.clip.audioRate - clip.audioRate) < 0.000001 &&
+                abs(voice.pitch - (clipPitches[clip.id] ?? 0)) < 0.000001 &&
                 voice.file.processingFormat.isEqual(file.processingFormat) &&
                 voice.usesStretch == (!realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(clipPitches[clip.id] ?? 0) >= 0.000001)
         }
@@ -1662,6 +1703,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
     }
     #endif
+    static func requiresSourceClockRenewal(source: AVAudioTime?, reference: AVAudioTime?, latency: Double) -> Bool {
+        guard let source, let reference, source.isHostTimeValid, reference.isHostTimeValid,
+              reference.hostTime > source.hostTime else { return false }
+        let age = AVAudioTime.seconds(forHostTime: reference.hostTime - source.hostTime)
+        return age > max(0.1, max(0, latency) + 0.05)
+    }
     private func warmPlayer(_ voice: Voice) {
         JarasVoiceGain.setRenderEnabled(voice.gain, enabled: true)
         guard let silence = AVAudioPCMBuffer(pcmFormat: voice.file.processingFormat, frameCapacity: 256) else { return }
@@ -3492,6 +3539,29 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             }
             if !engine.isRunning { try startEngineIfNeeded() }
             startMeterClock()
+            // A suspended TimePitch/Varispeed path can resume with a current
+            // sample counter but a host timestamp from its previous rate epoch.
+            // stop()/AU reset does not necessarily clear that converter epoch.
+            // Never extrapolate this pair into an audible onset: renew only the
+            // affected idle path before choosing the shared playback deadline.
+            if realtime, mobileOutput == nil, let outputTime = engine.outputNode.lastRenderTime, outputTime.isHostTimeValid {
+                for index in scheduled.indices {
+                    let (key, old, first, count, delay) = scheduled[index]
+                    guard Self.requiresSourceClockRenewal(source: old.player.lastRenderTime, reference: outputTime,
+                                                         latency: old.player.outputPresentationLatency) else { continue }
+                    setVoice(nil, for: key)
+                    detach(old)
+                    var fresh = try makeVoice(track: old.track, clip: old.clip, file: old.file)
+                    fresh.continuousSource = old.continuousSource
+                    fresh.player.volume = old.player.volume
+                    fresh.player.pan = old.player.pan
+                    let gain = old.clip.gain ?? 1
+                    JarasVoiceGain.setDecibels(fresh.gain, decibels: old.clip.muted == true || gain <= 0 ? -96 : min(24, max(-96, 20 * log10(max(0.0000001, gain)))))
+                    warmPlayer(fresh)
+                    setVoice(fresh, for: key)
+                    scheduled[index] = (key, fresh, first, count, delay)
+                }
+            }
             let referenceLatency = realtime && !scheduled.isEmpty ? (metronome?.node.outputPresentationLatency ?? masterBus.outputPresentationLatency) : 0
             func processingDelay(_ voice: Voice) -> Double {
                 guard realtime else { return 0 }
@@ -3570,6 +3640,17 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 DispatchQueue.concurrentPerform(iterations: commands.count) { commands[$0]() }
             } else { for command in startCommands { command() } }
             if !realtime { for (_, voice, _, _, _) in scheduled { voice.player.play() } }
+            if syncDiagnosticsEnabled && !scheduled.isEmpty {
+                let keys = scheduled.map { $0.0 }, generation = headAudioClock[head]?.host
+                recordSyncDiagnostics(keys, phase: "scheduled")
+                Task { @MainActor [weak self] in
+                    for delay: UInt64 in [300_000_000, 1_700_000_000, 3_000_000_000] {
+                        try? await Task.sleep(nanoseconds: delay)
+                        guard let self, self.headAudioClock[head]?.host == generation else { return }
+                        self.recordSyncDiagnostics(keys, phase: "rendering")
+                    }
+                }
+            }
         }
         if let jump = preparedJump {
             // The generator deduplicates this deadline. Retry until its previous

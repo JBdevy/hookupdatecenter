@@ -25,6 +25,17 @@ setbuf(stdout, nil)
     return peak
 }
 @MainActor func run() throws {
+// Captured during the real "Pense em Jesus" failure: the Click and Voz
+// Guia had current sample counters, but the latter retained a host epoch
+// 1.869 seconds behind. A sample-valid timestamp alone is not safe to reuse.
+let clickClock = AVAudioTime(hostTime: 1174177059980, sampleTime: 29201918, atRate: 44100)
+let voiceClock = AVAudioTime(hostTime: 1174132199066, sampleTime: 29201920, atRate: 44100)
+precondition(StemAudioPlayback.requiresSourceClockRenewal(source: voiceClock, reference: clickClock, latency: 0.09396825396825396), "Obsolete source epoch would delay a current stem")
+precondition(!StemAudioPlayback.requiresSourceClockRenewal(source: clickClock, reference: clickClock, latency: 0.09396825396825396), "Healthy source clocks must remain reusable")
+let shortPrefetch = AVAudioTime(hostTime: clickClock.hostTime - AVAudioTime.hostTime(forSeconds: 0.04), sampleTime: 29201918, atRate: 48000)
+precondition(!StemAudioPlayback.requiresSourceClockRenewal(source: shortPrefetch, reference: clickClock, latency: 0.09396825396825396), "Normal converter buffering is not an obsolete epoch")
+precondition(!StemAudioPlayback.requiresSourceClockRenewal(source: AVAudioTime(sampleTime: 0, atRate: 44100), reference: clickClock, latency: 0.09396825396825396), "A cold player has no old host epoch to renew")
+print("STALE_SOURCE_CLOCK_REAL_CAPTURE_REGRESSION_OK")
 let meter = TrackMeterLevel()
 meter.update(peak: 0.01, elapsed: 1.0 / 30)
 precondition(meter.level > 0, "quiet audio must register")

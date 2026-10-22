@@ -2,7 +2,7 @@
 #include "Appearance.h"
 #include "Session.h"
 namespace catlive {
-class AdvancedPanel final : public Component {
+class AdvancedPanel final : public Component, private Timer {
   public:
     AdvancedPanel(Appearance &, Session &, std::function<void(String)>);
     void paint(Graphics &) override;
@@ -37,6 +37,13 @@ class AdvancedPanel final : public Component {
                      std::function<void(int)>);
     ToggleButton &toggle(const String &, const String &, bool, int);
     void colourRow(const String &, const String &, uint32, int, bool = false);
+    std::optional<jaras::ProjectTimebase> observedTimebase;
+    void timerCallback() override {
+        const auto current=session.song()?session.song()->timeSettings.value_or(jaras::ProjectTimeSettings{}).timebase:jaras::ProjectTimebase::free;
+        if(observedTimebase && *observedTimebase!=current && timebase)
+            timebase->setSelectedId(current==jaras::ProjectTimebase::relative?2:1,dontSendNotification);
+        observedTimebase=current;
+    }
     void applyTiming();
 };
 } // namespace catlive

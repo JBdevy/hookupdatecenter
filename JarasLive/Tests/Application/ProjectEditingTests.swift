@@ -247,20 +247,21 @@ final class ProjectEditingTests: XCTestCase {
         XCTAssertEqual(TrackLanes(track: project.songs[0].tracks[0]).count, 21)
         try project.validate()
     }
-    func testResizeRepeatsOriginalSourceAndKeepsSplitGain() throws {
+    func testResizeKeepsOriginalSourceWithoutCreatingLoopAndKeepsSplitGain() throws {
         var project = fixture(); let original = project.songs[0].tracks[0].clips[0]
         project.resizeItem(original.id, start: 25, end: 90)
         let expanded = project.songs[0].tracks[0].clips[0]
-        XCTAssertEqual(expanded.loopStart, 0)
-        XCTAssertEqual(expanded.loopLength, 40)
-        XCTAssertEqual(expanded.sourceOffset, 30)
-        XCTAssertEqual(expanded.duration, 65)
+        XCTAssertNil(expanded.loopStart)
+        XCTAssertNil(expanded.loopLength)
+        XCTAssertEqual(expanded.sourceOffset, 0)
+        XCTAssertEqual(expanded.startTime,30)
+        XCTAssertEqual(expanded.duration, 60)
         XCTAssertEqual(expanded.audioFile, original.audioFile)
         XCTAssertEqual(expanded.waveform, original.waveform)
         project.songs[0].tracks[0].clips[0].gain = 0.5
         project.splitItems([original.id], at: 40)
         XCTAssertEqual(project.songs[0].tracks[0].clips.map(\.gain), [0.5,0.5])
-        XCTAssertEqual(project.songs[0].tracks[0].clips[1].waveform, original.waveform)
+        XCTAssertEqual(project.songs[0].tracks[0].clips.flatMap(\.waveform), original.waveform)
         try project.validate()
     }
     func testManualCleanupKeepsRecoverableBackups() throws {
@@ -289,5 +290,42 @@ final class ProjectEditingTests: XCTestCase {
         let restored = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(fx))
         XCTAssertEqual(restored, fx)
         fx.setEnabled("Instruments", enabled: true); XCTAssertTrue(fx.isEnabled("Instruments"))
+    }
+}
+
+extension ProjectEditingTests {
+    func testGroupItemMovePreservesOffsetsTracksAndClampsAsAGroup() throws {
+        var song = Project.empty(name: "Group drag").songs[0]
+        let first = AudioClip(id: UUID(), name: "First", startTime: 2, duration: 1)
+        let second = AudioClip(id: UUID(), name: "Second", startTime: 5, duration: 1)
+        var a = Track(id: UUID(), name: "A", role: .other); a.clips = [first]
+        var b = Track(id: UUID(), name: "B", role: .other); b.clips = [second]
+        let c = Track(id: UUID(), name: "C", role: .other)
+        song.tracks = [a,b,c]
+        let ids: Set<UUID> = [first.id,second.id]
+        let moved = try XCTUnwrap(song.movingItems(ids, anchor: first.id, start: 8, track: b.id))
+        XCTAssertTrue(moved.tracks[0].clips.isEmpty)
+        XCTAssertEqual(moved.tracks[1].clips[0].startTime,8)
+        XCTAssertEqual(moved.tracks[2].clips[0].startTime,11)
+        let clamped = try XCTUnwrap(song.movingItems(ids, anchor: second.id, start: 0, track: nil))
+        XCTAssertEqual(clamped.tracks[0].clips[0].startTime,0)
+        XCTAssertEqual(clamped.tracks[1].clips[0].startTime,3)
+        XCTAssertNil(song.movingItems(ids, anchor: first.id, start: 8, track: c.id))
+        XCTAssertEqual(song.tracks[0].clips[0].startTime,2)
+    }
+}
+
+extension ProjectEditingTests {
+    func testSplitThenExpandRecoversOriginalAudioInsteadOfRepeatingTheCut() throws {
+        var project = fixture(); let original = project.songs[0].tracks[0].clips[0]
+        project.splitItems([original.id], at:35)
+        let right = project.songs[0].tracks[0].clips[1]
+        project.resizeItem(right.id,start:30,end:50)
+        let restored = project.songs[0].tracks[0].clips.first { $0.id == right.id }!
+        XCTAssertEqual(restored.sourceOffset,0)
+        XCTAssertEqual(restored.duration,20)
+        XCTAssertEqual(restored.audioFile,original.audioFile)
+        XCTAssertNil(restored.loopLength)
+        XCTAssertNil(restored.loopStart)
     }
 }

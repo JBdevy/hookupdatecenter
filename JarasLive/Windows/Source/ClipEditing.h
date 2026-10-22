@@ -81,9 +81,15 @@ inline std::pair<double,double> constrainedEdges(const jaras::Track &track,const
 inline jaras::AudioClip resizedSource(jaras::AudioClip clip, double start, double end) {
     if (!std::isfinite(start) || !std::isfinite(end) || start < 0 || end - start < .01)
         return clip;
+    if(clip.audioFile && !clip.loopLength) {
+        const double actualStart=std::max(start,clip.startTime-clip.sourceOffset/clip.playbackRate);
+        if(end-actualStart<.01)return clip;
+        clip.sourceOffset=std::max(0.,clip.sourceOffset+(actualStart-clip.startTime)*clip.playbackRate);
+        clip.startTime=actualStart;clip.duration=end-actualStart;
+        return clip;
+    }
     const double loopStart = clip.loopStart.value_or(clip.sourceOffset);
-    const double loopLength =
-        clip.loopLength.value_or(clip.duration * clip.playbackRate);
+    const double loopLength = clip.loopLength.value_or(clip.duration * clip.playbackRate);
     if (!std::isfinite(loopLength) || loopLength <= 0)
         throw std::runtime_error("Duração da fonte inválida.");
     const double offset = clip.sourceOffset - loopStart +
@@ -118,9 +124,9 @@ inline void resize(jaras::Project &project, const ID &id, double start, double e
                             clip.timecodeStartOffset = start - region->startTime;
                             clip.timecodeEndOffset = end - region->endTime;
                         }
-                    } else { clip = resizedSource(clip, start, end); }
                     clip.startTime = start;
                     clip.duration = end - start;
+                    } else { clip = resizedSource(clip, start, end); }
                     song.duration = std::max(song.duration, end);
                     return;
                 }

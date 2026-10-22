@@ -89,15 +89,22 @@ grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100,y: 100,width: 60,
               GridSelectionItem(id: third, rect: CGRect(x: 400,y: 300,width: 80,height: 30))]
 var selections: [Set<UUID>] = []
 grid.selectionChanged = { selections.append($0) }
+var marqueeStarts = 0, followPausedByMarquee = false
+// The controller keeps this pause after release, just like a ruler click.
+grid.marqueeBegan = { marqueeStarts += 1; followPausedByMarquee = true }
 func event(_ type: NSEvent.EventType, _ point: CGPoint, modifiers: NSEvent.ModifierFlags = [], clicks: Int = 1) -> NSEvent {
     NSEvent.mouseEvent(with: type, location: grid.convert(point, to: nil), modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: clicks, pressure: 1)!
 }
 func drag(_ from: CGPoint, _ to: CGPoint, modifiers: NSEvent.ModifierFlags = []) {
+    let starts = marqueeStarts; followPausedByMarquee = false
     precondition(grid.handlePointerEvent(event(.rightMouseDown, from, modifiers: modifiers)))
+    precondition(marqueeStarts == starts, "A context-menu click must not pause playback following")
     precondition(grid.handlePointerEvent(event(.rightMouseDragged, to, modifiers: modifiers)))
+    precondition(marqueeStarts == starts + 1 && followPausedByMarquee, "Starting a marquee must pause playback following once")
     // A delayed hosting update must not overwrite an in-progress selection.
     grid.updateSelection([])
     precondition(grid.handlePointerEvent(event(.rightMouseUp, to, modifiers: modifiers)))
+    precondition(marqueeStarts == starts + 1 && followPausedByMarquee, "Mouse release must not resume playback following")
 }
 for pair in [(CGPoint(x: 90,y: 90),CGPoint(x: 300,y: 190)),
              (CGPoint(x: 300,y: 190),CGPoint(x: 90,y: 90)),

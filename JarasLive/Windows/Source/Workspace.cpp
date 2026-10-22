@@ -15,6 +15,7 @@
 #include "ProjectMigration.h"
 #include "MissingMediaPanel.h"
 #include "ValidationNoticePanel.h"
+#include "TimebaseConfirmationPanel.h"
 #include "ImportNoticePanel.h"
 #include "AdvancedPanel.h"
 #include "SettingsPanel.h"
@@ -1452,8 +1453,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         else if (cursor > left + rightLimit + 0.5)
             horizontal.setCurrentRangeStart(std::max(0.0, cursor - rightLimit), sendNotificationSync);
     }
+    void pausePlaybackFollow() { followPolicy.pause(w.session.presentationTransport()); }
     void followPlayback() {
         const auto state = w.session.presentationTransport();
+        if(followPolicy.isPaused(state))return;
         if (!w.appearance.continuousScroll() || !(state.playing || state.subPlay.playing)) { followPolicy.reset(); return; }
         if (gestureMode != 0 || Component::isMouseButtonDownAnywhere() || Component::getNumCurrentlyModalComponents() != 0) return;
         const double position = state.subPlay.playing ? state.subPlay.position : state.position;
@@ -1839,13 +1842,24 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 g.setColour(theme::line.withAlpha(.8f));
                 g.drawHorizontalLine(y + height - 1, 0, (float)getWidth());
                 drawGrid((float)y, (float)(y + height));
-                const bool movingHere = movingClipPreview && previewRow == (int)row;
-                for (size_t itemIndex = 0; itemIndex < track.clips.size() + (movingHere ? 1 : 0); ++itemIndex) {
-                    const bool movedItem = itemIndex == track.clips.size();
-                    const auto &sourceClip = movedItem ? *movingClipPreview : track.clips[itemIndex];
-                    if (!movedItem && movingClipPreview && sourceClip.id == movingClipPreview->id) continue;
-                    const auto &clip = controlClip && controlClip->id == sourceClip.id ? *controlClip
+                const bool groupMove = movingClipPreview && !resizeEdge && t.w.selectedClips.count(dragClip) && t.w.selectedClips.size()>1;
+                auto renderedClips = track.clips;
+                if(groupMove) {
+                    renderedClips.erase(std::remove_if(renderedClips.begin(),renderedClips.end(),[&](const auto &clip){return t.w.selectedClips.count(clip.id)!=0;}),renderedClips.end());
+                    double earliest=originalStart;
+                    for(const auto &source:song->tracks)for(const auto &clip:source.clips)if(t.w.selectedClips.count(clip.id))earliest=std::min(earliest,clip.startTime);
+                    const double delta=std::max(previewStart-originalStart,-earliest);
+                    for(int from=0;from<(int)song->tracks.size();++from) if(from+previewRow-sourceRow==(int)row)
+                        for(auto clip:song->tracks[(size_t)from].clips)if(t.w.selectedClips.count(clip.id)){clip.startTime+=delta;renderedClips.push_back(std::move(clip));}
+                }
+                const bool movingHere = !groupMove && movingClipPreview && previewRow == (int)row;
+                for (size_t itemIndex = 0; itemIndex < renderedClips.size() + (movingHere ? 1 : 0); ++itemIndex) {
+                    const bool movedItem = itemIndex == renderedClips.size();
+                    const auto &sourceClip = movedItem ? *movingClipPreview : renderedClips[itemIndex];
+                    if (!groupMove && !movedItem && movingClipPreview && sourceClip.id == movingClipPreview->id) continue;
+                    auto clip = controlClip && controlClip->id == sourceClip.id ? *controlClip
                         : resizedClipPreview && resizedClipPreview->id == sourceClip.id ? *resizedClipPreview : sourceClip;
+                    if(controlClip && controlSelection.count(sourceClip.id)) applySelectedControl(clip,*controlClip);
                     const int itemHeight = t.w.itemLaneHeight((int)row);
                     const int itemY = y + (movedItem ? previewLane : t.w.itemLanes((int)row).lane(clip.id))*itemHeight;
                     float left = t.xAt(clip.startTime),
@@ -2096,6 +2110,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             setMouseCursor(cursor);
         }
         void mouseDown(const MouseEvent &e) override {
+            collapseSelectionOnRelease.clear(); clearSelectionOnRelease=false;
             t.setRegionPreview(std::nullopt);
             t.stopGesture();
             startTime = t.timeAt(e.position.x);
@@ -2117,6 +2132,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     if(choice==1)safe->t.w.editMarker({},time);if(choice==2)safe->t.w.editTempoMarker({},time);
                 });return;
             }
+            if(e.y<headerHeight() && e.mods.isLeftButtonDown())t.pausePlaybackFollow();
             if (editHeadHit && e.mods.isLeftButtonDown() && !e.mods.isAltDown()) {
                 mainDrag = true;
                 subDrag = false;
@@ -2188,11 +2204,13 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                 if (e.mods.isCtrlDown() || e.mods.isShiftDown()) {
                                     if (t.w.selectedClips.empty() && !t.w.selectedClip.empty()) t.w.selectedClips.insert(t.w.selectedClip);
                                     if (!t.w.selectedClips.erase(c.id)) t.w.selectedClips.insert(c.id);
-                                } else t.w.selectedClips = {c.id};
+                                } else collapseSelectionOnRelease=c.id;
                             }
                             t.w.selectedClip = t.w.selectedClips.count(c.id) ? c.id : t.w.selectedClips.empty() ? ID{} : *t.w.selectedClips.begin();
                             if (const auto control=ItemHeader(itemRect(row,c),(float)getWidth(),track,c).hit(e.position,c); control!=ItemHeader::none) {
                                 controlKind=control;
+                                controlSelection=t.w.selectedClips.count(c.id)?t.w.selectedClips:std::set<ID>{c.id};
+                                collapseSelectionOnRelease.clear();
                                 controlClip=c;
                                 controlOriginal=c;
                                 controlTrack=track.id;
@@ -2213,10 +2231,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 }
             if (!e.mods.isPopupMenu() && !e.mods.isCtrlDown())
                 t.w.perform([&] { t.w.session.command(e.mods.isAltDown() ? jaras::CommandKind::subSeek : jaras::CommandKind::editSeek, {}, pointerPosition(startTime,e.mods,e.mods.isAltDown())); });
-            t.w.clearItemSelection();
+            clearSelectionOnRelease=true;
         }
 
         void mouseDrag(const MouseEvent &e) override {
+            if(!dragClip.empty() && !t.w.selectedClips.count(dragClip) && e.getDistanceFromDragStart() > 4) {t.w.selectedClips={dragClip};t.w.selectedClip=dragClip;}
             if (timeRangeGesture) { updateTimeRange(e); return; }
             if (rightSelection) { updateAreaSelection(e); return; }
             if (timelineGrid::movementLocked(t.w.session.project()) &&
@@ -2271,6 +2290,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             }
         }
         void mouseUp(const MouseEvent &e) override {
+            if(e.getDistanceFromDragStart() < 4) {
+                if(!collapseSelectionOnRelease.empty()) { t.w.selectedClips={collapseSelectionOnRelease}; t.w.selectedClip=collapseSelectionOnRelease; }
+                else if(clearSelectionOnRelease) t.w.clearItemSelection();
+            }
+            collapseSelectionOnRelease.clear();clearSelectionOnRelease=false;
             if (timeRangeGesture) {
                 updateTimeRange(e);timeRangeGesture=false;
                 if(!timeRangeDragged && timeRangeRight) t.w.perform([&]{t.w.session.command(jaras::CommandKind::subSeek,{},startTime);});
@@ -2351,7 +2375,22 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         destinationTrack = song->tracks[(size_t)previewRow].id;
                     if (resizeEdge) t.w.session.resizeItem(id, previewStart, previewEnd);
                     else t.w.session.edit([&](jaras::Project &p) {
-                        clipEditing::move(p, id, previewStart, destinationTrack);
+                        if(t.w.selectedClips.count(id) && t.w.selectedClips.size()>1) {
+                            for(auto &song:p.songs) if(song.id==t.w.session.song()->id) {
+                                struct Selected {int row;jaras::AudioClip clip;};std::vector<Selected> items;
+                                double earliest=originalStart;
+                                for(int row=0;row<(int)song.tracks.size();++row) for(const auto &clip:song.tracks[(size_t)row].clips) if(t.w.selectedClips.count(clip.id)) {items.push_back({row,clip});earliest=std::min(earliest,clip.startTime);}
+                                const double delta=std::max(previewStart-originalStart,-earliest);
+                                const int rows=previewRow-sourceRow;
+                                for(const auto &item:items) if(item.row+rows<0 || item.row+rows>=(int)song.tracks.size()) throw std::runtime_error("Cannot move the selection beyond the available tracks.");
+                                for(auto &track:song.tracks) track.clips.erase(std::remove_if(track.clips.begin(),track.clips.end(),[&](const auto &clip){return t.w.selectedClips.count(clip.id)!=0;}),track.clips.end());
+                                for(const auto &item:items) {
+                                    song.tracks[(size_t)item.row].clips.push_back(item.clip);
+                                    clipEditing::move(p,item.clip.id,item.clip.startTime+delta,song.tracks[(size_t)(item.row+rows)].id);
+                                }
+                                break;
+                            }
+                        } else clipEditing::move(p, id, previewStart, destinationTrack);
                     });
                     if (!resizeEdge && !destinationTrack.empty())
                         t.w.selectedTrack = destinationTrack;
@@ -2445,6 +2484,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         void updateAreaSelection(const MouseEvent &e) {
             selectionPointer = e.position;
             if (!selectionBox && e.position.getDistanceFrom(startPosition) < 3.f) return;
+            if (!selectionBox) t.pausePlaybackFollow();
             updateMarqueeSelection();
             if (!isTimerRunning()) { selectionScrollTime = Time::getMillisecondCounterHiRes(); startTimerHz(60); }
         }
@@ -2511,6 +2551,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
         std::optional<jaras::AudioClip> controlClip, resizedClipPreview, movingClipPreview;
         jaras::AudioClip controlOriginal;
+        std::set<ID> controlSelection;
         ID controlTrack; int controlRow=-1;
         ItemHeader::Control controlKind=ItemHeader::none;
         juce::Rectangle<float> itemRect(int row, const jaras::AudioClip &clip) const {
@@ -2518,9 +2559,19 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             return {t.xAt(clip.startTime), (float)(headerHeight()+t.w.rowTop(row)-t.w.verticalOffset+t.w.itemLanes(row).lane(clip.id)*h+3),
                     std::max(2.f,(float)(clip.duration*t.w.pixelsPerSecond)-2), (float)h-6};
         }
-        void previewControl(const jaras::AudioClip &clip) {
-            if(clip.midi){if(const auto *song=t.w.session.song())t.w.session.audio.previewMIDIItem(*song,clip);}
-            else t.w.session.audio.setItemControls(clip);
+        void applySelectedControl(jaras::AudioClip &clip,const jaras::AudioClip &value) const {
+            if(controlKind==ItemHeader::gain)clip.gain=value.gain;
+            else if(controlKind==ItemHeader::pan)clip.pan=value.pan;
+            else if(controlKind==ItemHeader::mute)clip.muted=value.muted;
+        }
+        bool sharedControl() const {return controlKind==ItemHeader::gain || controlKind==ItemHeader::pan || controlKind==ItemHeader::mute;}
+        void previewControl(const jaras::AudioClip &value) {
+            if(const auto *song=t.w.session.song())for(const auto &track:song->tracks)for(auto clip:track.clips)
+                if(clip.id==value.id || (sharedControl() && controlSelection.count(clip.id))) {
+                    if(clip.id==value.id)clip=value;else applySelectedControl(clip,value);
+                    if(clip.midi)t.w.session.audio.previewMIDIItem(*song,clip);
+                    else t.w.session.audio.setItemControls(clip);
+                }
         }
         void commitControl() {
             if (!controlClip) return;
@@ -2531,7 +2582,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     clip.gain=value.gain; clip.pan=value.pan; clip.phaseInverted=value.phaseInverted; clip.muted=value.muted;
                     clip.fadeIn=value.fadeIn; clip.fadeOut=value.fadeOut; clip.fxBypassed=value.fxBypassed;
                     clip.fadeInCurve=value.fadeInCurve; clip.fadeInSCurve=value.fadeInSCurve; clip.fadeOutCurve=value.fadeOutCurve; clip.fadeOutSCurve=value.fadeOutSCurve;
-                }
+                } else if(sharedControl() && controlSelection.count(clip.id))applySelectedControl(clip,value);
             },false); previewControl(value); committed=true; });
             controlClip.reset(); controlKind=ItemHeader::none;
             repaint();
@@ -2539,7 +2590,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
         double startTime = 0, originalStart = 0, clipLength = 0;
         Point<float> startPosition;
-        ID dragClip, dragRegion, dragMarker;
+        ID dragClip, dragRegion, dragMarker, collapseSelectionOnRelease;
+        bool clearSelectionOnRelease=false;
         int regionEdge=0;
         bool mainDrag = false, subDrag = false;
         int sourceRow = 0;
@@ -2554,9 +2606,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             double edge = (resizeEdge > 0 ? originalStart + clipLength : originalStart) +
                           t.timeAt(e.position.x) - startTime;
             edge = std::max(0., edge);
+            auto excluded = t.w.selectedClips; excluded.insert(dragClip);
             if (const auto *song = t.w.session.song())
                 edge = timelineGrid::snapSelection(edge,*song,t.w.pixelsPerSecond,
-                                                   t.w.session.transport(),t.w.freeTimelinePosition(e.mods));
+                                                   t.w.session.transport(),t.w.freeTimelinePosition(e.mods), &excluded);
             previewStart =
                 resizeEdge > 0
                     ? originalStart
@@ -3227,6 +3280,32 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     timelineLock.setColour(TextButton::buttonOnColourId, theme::yellow);
     timelineLock.setColour(TextButton::textColourOffId, Colours::white);
     timelineLock.setColour(TextButton::textColourOnId, Colours::black);
+    addAndMakeVisible(timelineTimebase);
+    timelineTimebase.setComponentID("timelineTimebase");
+    timelineTimebase.setTitle("Relative timebase");
+    timelineTimebase.getProperties().set("icon", "itemTimebase");
+    timelineTimebase.getProperties().set("flat", true);
+    timelineTimebase.setWantsKeyboardFocus(false);
+    timelineTimebase.setColour(TextButton::buttonColourId, Colours::transparentBlack);
+    timelineTimebase.setColour(TextButton::buttonOnColourId, Colours::transparentBlack);
+    timelineTimebase.setColour(TextButton::textColourOffId, theme::yellow);
+    timelineTimebase.setColour(TextButton::textColourOnId, theme::green);
+    timelineTimebase.onClick = [safe=Component::SafePointer<Workspace>(this)] {
+        if(!safe)return;
+        const auto *song=safe->session.song();if(!song)return;
+        const auto project=safe->session.project().id,songID=song->id;
+        const bool relative=song->timeSettings.value_or(jaras::ProjectTimeSettings{}).timebase!=jaras::ProjectTimebase::relative;
+        auto panel=std::make_unique<TimebaseConfirmationPanel>(relative,
+            [safe,project,songID,relative] {
+                if(!safe || safe->session.project().id!=project || !safe->session.song() || safe->session.song()->id!=songID)return;
+                safe->perform([&]{const auto current=*safe->session.song();auto settings=current.timeSettings.value_or(jaras::ProjectTimeSettings{});
+                    settings.timebase=relative?jaras::ProjectTimebase::relative:jaras::ProjectTimebase::free;
+                    safe->session.configureTiming(current.bpm,current.beatsPerBar,current.beatUnit,settings);
+                });
+            });
+        const int height=panel->preferredHeight();
+        ModalSheet::open(*safe,localization::translate("Relative timebase"),std::move(panel),416,height);
+    };
     addAndMakeVisible(timelineSnap);
     timelineSnap.setComponentID("timelineSnap");
     timelineSnap.getProperties().set("icon", "magnet");
@@ -4033,7 +4112,9 @@ void Workspace::resized() {
     addTrack.setVisible(mixerVisible);
     timelineLock.setBounds(addTrack.getX() - 30, addTrack.getY(), 24, 24);
     timelineLock.setVisible(mixerVisible);
-    trackVisibilityButton.setBounds(timelineLock.getX()-30,timelineLock.getY(),24,24);
+    timelineTimebase.setBounds(timelineLock.getX()-30,timelineLock.getY(),24,24);
+    timelineTimebase.setVisible(mixerVisible);
+    trackVisibilityButton.setBounds(timelineTimebase.getX()-30,timelineLock.getY(),24,24);
     trackVisibilityButton.setVisible(mixerVisible);
     timelineSnap.setBounds(trackVisibilityButton.getX()-28,trackVisibilityButton.getY(),24,24);
     timelineSnap.setVisible(mixerVisible);
@@ -4282,6 +4363,9 @@ void Workspace::updateState() {
     lastFadeoutActive = session.transportFadeoutActive();
     const bool movementLocked = session.project().timelineMovementLocked.value_or(false);
     timelineLock.setToggleState(movementLocked, dontSendNotification);
+    const bool relativeTimebase=session.song() && session.song()->timeSettings.value_or(jaras::ProjectTimeSettings{}).timebase==jaras::ProjectTimebase::relative;
+    timelineTimebase.setToggleState(relativeTimebase,dontSendNotification);
+    timelineTimebase.setEnabled(session.song() && !session.busy && !session.audio.isRecording());
     timelineLock.getProperties().set("icon", movementLocked ? "lock" : "unlock");
     timelineLock.setTooltip(movementLocked ? String::fromUTF8("Desbloquear movimento no grid")
                                           : String::fromUTF8("Bloquear movimento de itens, regiões e marcadores"));
@@ -5995,6 +6079,7 @@ void Workspace::pasteGridItems(bool duplicate) {
 }
 void Workspace::selectMixerTrack(const ID &id, ModifierKeys mods, bool clearItems, bool footer) {
     trackSelectionFromFooter=footer;
+    if(clearItems) { if(footer && footerMixer)selectionAreas.activate(*footerMixer);else selectionAreas.activate(tracksViewport); }
     if (mods.isPopupMenu() && trackSelected(id)) return;
     if (mods.isShiftDown() && !trackSelectionAnchor.empty() && session.song()) {
         const auto &tracks = session.song()->tracks;

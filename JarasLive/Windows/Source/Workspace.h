@@ -223,7 +223,7 @@ class Workspace final : public Component,
     void refreshMixerIndicator();
     void mixerMenu(Point<int>);
     ResourceUsage resourceUsage;
-    TextButton addTrack{"+"}, timelineLock, trackVisibilityButton, timelineSnap;
+    TextButton addTrack{"+"}, timelineLock, trackVisibilityButton, timelineSnap, timelineTimebase;
     bool freeTimelinePosition(ModifierKeys mods) const { return !(bool)appearance.value("jaras.timeline.snapEnabled", true) || mods.isShiftDown(); }
     std::unique_ptr<FileChooser> chooser;
     std::unique_ptr<FileLogger> logger;
