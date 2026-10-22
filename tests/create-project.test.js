@@ -139,6 +139,16 @@ async function main() {
   assert.strictEqual(classifyCreateProjectTrack('Vinheta.wav', 'Música').name, 'Vinheta');
   assert.strictEqual(classifyCreateProjectTrack('Fantasy.wav', 'Música').name, 'Fantasia');
   assert.strictEqual(classifyCreateProjectTrack('drums.wav', 'Música').name, 'Bateria');
+  for (const name of ['drum.wav', 'DRUMM.wav', 'Drumms.mp3', '03_DRUM_Música.wav']) {
+    const result = classifyCreateProjectTrack(name, 'Música');
+    assert.strictEqual(result.name, 'Bateria', name);
+    assert.strictEqual(result.recognized, true, name);
+  }
+  assert.strictEqual(classifyCreateProjectTrack('DRUMM L.wav', 'Música').name, 'Bateria L');
+  assert.strictEqual(classifyCreateProjectTrack('Steel Drum.wav', 'Música').name, 'Steel Pan');
+  assert.strictEqual(classifyCreateProjectTrack('Frame Drum.wav', 'Música').name, 'Frame Drum');
+  assert.strictEqual(classifyCreateProjectTrack('Drummond.wav', 'Música').recognized, false);
+  assert.strictEqual(classifyCreateProjectTrack('Drummer.wav', 'Música').recognized, false);
   assert.strictEqual(classifyCreateProjectTrack('batera.wav', 'Música').name, 'Bateria');
   assert.strictEqual(classifyCreateProjectTrack('CX.wav', 'Música').name, 'Caixa');
   assert.strictEqual(classifyCreateProjectTrack('SD.wav', 'Música').name, 'Surdo');

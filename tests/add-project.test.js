@@ -129,6 +129,17 @@ function main() {
   assert.strictEqual(namedTrackIncoming.reusedTrackCount, 2);
   assert.strictEqual(namedTrackIncoming.newTrackCount, 0);
 
+  let drumsRpp = buildCreateProjectRpp(makeAudit('Base', [makeFile('Bateria')]), { platform: 'win32' });
+  const drumsHierarchy = inspectRppProject(drumsRpp).tracks.map(t => [t.name, t.parentIndex, t.folderDelta]);
+  for (const alias of ['drum', 'DRUMM', 'Drumms']) {
+    const drumsAudit = auditAddProjectRpp(drumsRpp, makeAudit(alias, [makeFile(alias)]));
+    assert.strictEqual(drumsAudit.reusedTrackCount, 1, alias);
+    assert.strictEqual(drumsAudit.newTrackCount, 0, alias);
+    drumsRpp = buildAddProjectRpp(drumsRpp, drumsAudit);
+    assert.deepStrictEqual(inspectRppProject(drumsRpp).tracks.map(t => [t.name, t.parentIndex, t.folderDelta]), drumsHierarchy);
+  }
+  assert.strictEqual((drumsRpp.match(/\n    <ITEM/g) || []).length, 4);
+
   const guideOnlyRpp = buildCreateProjectRpp(makeAudit('Guia existente', [makeFile('Guia', 2)]), { platform: 'win32' });
   const internalIncoming = auditAddProjectRpp(guideOnlyRpp, makeAudit('Internos novos', [makeFile('Click', 2), makeFile('Regência', 2)]));
   const orderedInternalRpp = buildAddProjectRpp(guideOnlyRpp, internalIncoming);
