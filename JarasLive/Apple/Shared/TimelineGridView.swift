@@ -1334,6 +1334,14 @@ private struct TimelineGridContent: View, Equatable {
     }
     private var deleteTarget: GridDeleteTarget {
         guard let song = show.current else { return .none }
+        #if os(macOS)
+        switch EditorSelectionRouter.shared.activeScope(in: NSApp.keyWindow) {
+        case .tracks: return GridDeleteTarget(items: [], tracks: selectedTracks, song: song, visibility: visibility)
+        case .grid: return GridDeleteTarget(items: selectedClips, tracks: [], song: song, visibility: visibility)
+        case .setlist: return .none
+        case nil: break
+        }
+        #endif
         return GridDeleteTarget(items: selectedClips, tracks: selectedTracks, song: song, visibility: visibility)
     }
     private func deleteSelection() {
@@ -5584,9 +5592,8 @@ final class RegionShortcutView: NSView {
     /// Both native event monitors consult the same priority before the setlist.
     /// Window-scoped owners avoid stale selections from another project window.
     static func handleSelectedObjectsDelete(_ event: NSEvent) -> Bool {
-        guard !envelopeOwnsEditingKey(event), [51,117].contains(event.keyCode), event.modifierFlags.intersection([.shift,.command,.control,.option]).isEmpty,
-              let owner = owners.allObjects.first(where: { $0.window != nil && $0.window === event.window && $0.acceptsDelete }),
-              owner.hasDeletionSelection?() == true else { return false }
+        guard !envelopeOwnsEditingKey(event), !SetlistKeyView.ownsDelete(event), [51,117].contains(event.keyCode), event.modifierFlags.intersection([.shift,.command,.control,.option]).isEmpty,
+              let owner = owners.allObjects.first(where: { $0.window != nil && $0.window === event.window && $0.acceptsDelete && !$0.isHiddenOrHasHiddenAncestor && $0.visibleRect.width > 0 && $0.hasDeletionSelection?() == true }) else { return false }
         if !event.isARepeat { owner.delete?() }
         return true
     }

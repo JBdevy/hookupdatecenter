@@ -4656,7 +4656,8 @@ bool Workspace::keyPressed(const KeyPress &key) {
     }
     if (code == KeyPress::deleteKey || code == KeyPress::backspaceKey) {
         ++shortcutCount;
-        if (!selectedClip.empty())
+        if (selectionAreas.activeScope() == "setlist") return setlist->deleteSelectedEntries();
+        if (selectionAreas.activeScope() != "tracks" && (!selectedClip.empty() || !selectedClips.empty()))
             perform([&] {
                 const auto ids = selectedClips.empty() ? std::set<ID>{selectedClip} : selectedClips;
                 session.edit([&](auto &project) {
@@ -4666,7 +4667,7 @@ bool Workspace::keyPressed(const KeyPress &key) {
                 });
                 clearItemSelection();
             });
-        else if (!selectedTrack.empty() || !selectedTracks.empty()) {
+        else if (selectionAreas.activeScope() == "tracks" && (!selectedTrack.empty() || !selectedTracks.empty())) {
             const auto ids = selectedTracks.empty() ? std::set<ID>{selectedTrack} : selectedTracks;
             confirm(ids.size() == 1 ? "Excluir pista?" : "Excluir " + String((int)ids.size()) + " pistas?",
                     String::fromUTF8("Esta ação pode ser desfeita."),

@@ -1367,6 +1367,12 @@ final class SetlistKeyView: NSView {
     var released: (() -> Void)?
     var delete: (() -> Void)?
     private static weak var deleteOwner: SetlistKeyView?
+    static func ownsDelete(_ event: NSEvent) -> Bool {
+        guard let owner = deleteOwner else { return false }
+        return event.window === owner.window && owner.acceptsNavigation &&
+            !(owner.window?.firstResponder is any TimelineGridKeyboardTarget) &&
+            !owner.isHiddenOrHasHiddenAncestor && owner.visibleRect.width > 0
+    }
     static func handleDelete(_ event: NSEvent) -> Bool {
         guard !RegionShortcutView.envelopeOwnsEditingKey(event) else { return false }
         if RegionShortcutView.handleSelectedObjectsDelete(event) { return true }

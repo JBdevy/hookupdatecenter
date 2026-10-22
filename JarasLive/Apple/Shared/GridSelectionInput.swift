@@ -987,6 +987,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         pressedHeader = nil; headerPressCancelled = false
         guard let item = hitItem(at: timeline) else {
             if createMIDI != nil && !event.modifierFlags.intersection([.command,.control]).isEmpty { midiStart = timeline; return }
+            selected.removeAll(); selectionChanged?([]); needsDisplay = true
             pendingSeek = timeline; return
         }
         if let shape = item.fadeShape(at: timeline) {

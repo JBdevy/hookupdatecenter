@@ -3693,6 +3693,10 @@ final class EditorSelectionAreaView: NSView {
             }).first { focus.setObject(area, forKey: window) }
 
     }
+    func activeScope(in window: NSWindow?) -> EditorSelectionArea.Scope? {
+        guard let window, let area = focus.object(forKey: window), area.window === window, !area.isHiddenOrHasHiddenAncestor else { return nil }
+        return area.scope
+    }
     func selectAll(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection([.command, .control, .shift, .option])
         guard event.type == .keyDown, flags == .command || flags == .control,

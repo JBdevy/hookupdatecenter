@@ -1,5 +1,7 @@
 import AppKit
 
+enum EditorSelectionRouter { static let shared = Router(); struct Router { func selectAll(_ event: NSEvent) -> Bool { false } } }
+
 final class DeleteTestWindow: NSWindow {
     override var isKeyWindow: Bool { true }
 }
@@ -42,18 +44,20 @@ func deletion(_ code: UInt16 = 51, repeatKey: Bool = false, flags: NSEvent.Modif
     NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: target.windowNumber, context: nil, characters: "\u{7f}", charactersIgnoringModifiers: "\u{7f}", isARepeat: repeatKey, keyCode: code)!
 }
 items = 2; tracks = 1
-precondition(SetlistKeyView.handleDelete(deletion()), "setlist monitor must delegate selected items first")
-precondition(deletedItems == 2 && deletedTracks == 0 && deletedRegions == 0)
-precondition(SetlistKeyView.handleDelete(deletion(117)), "Forward Delete must target selected tracks next")
-precondition(deletedTracks == 1 && deletedRegions == 0)
-precondition(SetlistKeyView.handleDelete(deletion()), "only an empty grid selection allows region deletion")
-precondition(deletedRegions == 1)
+precondition(SetlistKeyView.handleDelete(deletion()), "Active setlist owns Delete despite stale grid selections")
+precondition(deletedRegions == 1 && deletedItems == 0 && deletedTracks == 0)
+let outside = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: -10,y: -10), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 1)!
+setlist.notePointerEvent(outside)
+precondition(RegionShortcutView.handleSelectedObjectsDelete(deletion()))
+precondition(deletedItems == 2 && deletedTracks == 0)
+precondition(RegionShortcutView.handleSelectedObjectsDelete(deletion(117)))
+precondition(deletedTracks == 1)
 items = 1
-precondition(RegionShortcutView.handleSelectedObjectsDelete(deletion()), "either native monitor preserves the same priority")
+precondition(RegionShortcutView.handleSelectedObjectsDelete(deletion()))
 precondition(deletedItems == 3 && deletedRegions == 1)
 items = 1; tracks = 1
-precondition(SetlistKeyView.handleDelete(deletion(repeatKey: true)))
-precondition(items == 1 && tracks == 1, "held Delete cannot cascade through items, tracks and regions")
+precondition(RegionShortcutView.handleSelectedObjectsDelete(deletion(repeatKey: true)))
+precondition(items == 1 && tracks == 1, "held Delete cannot cascade through selections")
 precondition(!SetlistKeyView.handleDelete(deletion(flags: .command)))
 let envelope = AutomationLaneView(frame: NSRect(x: 350, y: 40, width: 200, height: 100))
 host.addSubview(envelope)

@@ -1,5 +1,6 @@
 import AppKit
 
+
 final class ClipboardTestApplication: NSApplication {
     var targetWindow: NSWindow?
     var forwarded: [String] = []
@@ -21,7 +22,7 @@ final class NativeTimelineInputGate {
     func isBlocked(_ window: NSWindow?) -> Bool { blocked }
     func cancelActiveResize(for window: NSWindow?) -> Bool { false }
 }
-enum SetlistKeyView { static func handleDelete(_ event: NSEvent) -> Bool { false } }
+enum SetlistKeyView { static func ownsDelete(_ event: NSEvent) -> Bool { false }; static func handleDelete(_ event: NSEvent) -> Bool { false } }
 
 let app = ClipboardTestApplication.shared as! ClipboardTestApplication
 let first = ClipboardTestWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)

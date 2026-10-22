@@ -128,6 +128,28 @@ class Workspace::Setlist final : public Component,
         list.repaint();
         return true;
     }
+    bool deleteSelectedEntries() {
+        auto targets = selectedEntryIDs();
+        for (const auto &entry : entries) if (entry.block || entry.child) targets.erase(entry.id);
+        if (targets.empty()) return true;
+        if (!selectedPlaylist()) { w.deleteRegions(targets, true); return true; }
+        const auto playlist = selectedPlaylist()->id;
+        w.confirm("Remover da playlist", String::fromUTF8("Remover as músicas selecionadas da playlist?"),
+            [self=SafePointer<Setlist>(this),targets,playlist] {
+                if (!self) return;
+                auto state = self->currentState();
+                for (auto &list : state.playlists) if (list.id == playlist) {
+                    if (state.blocks) for (auto &block : *state.blocks) if (block.playlistId == playlist && block.beforeRegionId && targets.count(*block.beforeRegionId)) {
+                        auto next = std::find(list.regionIds.begin(), list.regionIds.end(), *block.beforeRegionId);
+                        while (next != list.regionIds.end() && targets.count(*next)) ++next;
+                        block.beforeRegionId = next == list.regionIds.end() ? std::optional<ID>{} : std::optional<ID>{*next};
+                    }
+                    list.regionIds.erase(std::remove_if(list.regionIds.begin(), list.regionIds.end(), [&](const auto &id) { return targets.count(id) != 0; }), list.regionIds.end());
+                }
+                self->apply(state);
+            });
+        return true;
+    }
     bool keyPressed(const KeyPress &key) override {
         if (dynamic_cast<TextEditor *>(Component::getCurrentlyFocusedComponent()))
             return retryEditorShortcut(key);
