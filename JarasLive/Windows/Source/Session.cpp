@@ -1061,7 +1061,7 @@ void Session::toggleRecording() {
                     utf8(localization::translate("Choose the input in the Patch of track %s.").replace("%s", text(track.name))));
             const auto encoding = recordingEncoding::resolve(track.recordingFormat, advancedFormat, bits, bitrate);
             if (!target.midi)
-                target.file = mediaDirectory.getChildFile("Stems/Recordings")
+                target.file = mediaDirectory.getChildFile("Stems")
                                   .getNonexistentChildFile(
                                       File::createLegalFileName(text(track.name)) + "-" +
                                           Time::getCurrentTime().formatted("%Y%m%d-%H%M%S") + "-" +

@@ -3,8 +3,8 @@ import Foundation
 /// Allocate once per import batch, including names retained for Undo.
 struct MediaFileNames {
     private var used: Set<String> = []
-    init(directory: URL) {
-        if let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
+    init(directory: URL?) {
+        if let directory, let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
             for case let url as URL in files where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
                 used.insert(url.lastPathComponent.lowercased())
             }

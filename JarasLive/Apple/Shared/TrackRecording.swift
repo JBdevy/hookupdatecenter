@@ -71,7 +71,7 @@ private final class CaptureWriter: @unchecked Sendable {
         for target in targets { takes.append(try makeTake(target)) }
     }
     private func makeTake(_ target: CaptureTarget) throws -> Take {
-        let folder = directory.appendingPathComponent("Stems/Recordings", isDirectory: true)
+        let folder = directory.appendingPathComponent("Stems", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             guard target.input.firstChannel >= 1, target.input.firstChannel + target.input.channelCount - 1 <= channels else { throw ProjectError.invalid("Selected recording input is unavailable.") }
             let aiff = target.format.hasPrefix("aiff")
@@ -228,7 +228,7 @@ private final class CaptureWriter: @unchecked Sendable {
                     let duration = Double(take.frames) / self.sampleRate
                     let overview = try StemProjectImporter.audioOverview(url, duration: duration)
                     let clip = AudioClip(id: take.target.id, name: take.target.name, startTime: take.position ?? fallbackStart, duration: duration, waveform: overview.waveform,
-                        audioFile: AudioFile(path: "Stems/Recordings/" + url.lastPathComponent), waveformChannels: overview.channels, recordingLane: take.target.lane)
+                        audioFile: AudioFile(path: "Stems/" + url.lastPathComponent), waveformChannels: overview.channels, recordingLane: take.target.lane)
                     items.append(CapturedItem(track: take.target.track, clip: clip))
                 } catch { message = error.localizedDescription }
             }
@@ -668,7 +668,7 @@ private final class CaptureWriter: @unchecked Sendable {
         }
         #endif
         let audioTracks = tracks.filter { $0.recordingMode != .midi }
-        if !audioTracks.isEmpty, !AudioDestinationSpace.confirm(at: directory.appendingPathComponent("Stems/Recordings", isDirectory: true)) { return }
+        if !audioTracks.isEmpty, !AudioDestinationSpace.confirm(at: directory.appendingPathComponent("Stems", isDirectory: true)) { return }
         busy = true; self.show = show; error = ""; previewSession = UUID()
         Task {
             do {

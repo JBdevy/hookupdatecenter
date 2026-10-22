@@ -42,7 +42,7 @@ struct FXInsertEditor: View {
         #endif
         if targets.count == 1 { result.append(NativeFXSettings.stemSeparator) }
         #if os(macOS)
-        result.append("External")
+        result.insert("External", at: 0)
         #endif
         return result
     }

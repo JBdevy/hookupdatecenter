@@ -489,7 +489,8 @@ public enum ReaperProjectImporter {
         catch { warnings.insert("Master automation ignored: %@", warnings.errorDescription(error)) }
         if try recovered("REAPER project setting ignored", 1.0) { try root.number("PLAYRATE", default: 1) } != 1 { warnings.insert(unsupported) }
         let base = source.deletingLastPathComponent()
-        let mediaRoot = "Stems/REAPER-" + UUID().uuidString
+        let mediaRoot = "Stems"
+        var importedNames = MediaFileNames(directory: nil)
         var media: [String: ProjectMigration.Media] = [:]
         var lengths: [String: Double] = [:]
         func reference(_ path: String, projection: Bool = false) throws -> ProjectMigration.Media {
@@ -502,7 +503,7 @@ public enum ReaperProjectImporter {
             let candidate = normalized.hasPrefix("/") ? URL(fileURLWithPath: normalized) : base.appendingPathComponent(normalized)
             // Only use the explicit reference; ambiguous basename searches belong to recovery.
             let found = !windowsAbsolute && (try? candidate.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true ? candidate : nil
-            let result = ProjectMigration.Media(relativePath: (projection ? mediaRoot.replacingOccurrences(of: "Stems/", with: "Videos/") : mediaRoot) + "/\(media.count + 1)/" + name, source: found)
+            let result = ProjectMigration.Media(relativePath: (projection ? "Videos" : mediaRoot) + "/" + importedNames.allocate(name), source: found)
             media[key] = result
             return result
         }

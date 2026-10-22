@@ -11,10 +11,10 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
           dismiss(std::move(close)), list("Instrument catalog", this), allowsInstruments(allowInstruments) {
         setComponentID("effectInsertPanel");
         addAndMakeVisible(effect); effect.setComponentID("effectKind");
+        effect.addItem("Externo (VST3)", 8);
         effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"}, 1);
         if (allowInstruments) effect.addItem(String::fromUTF8("Instrumentos"), 7);
         if (allowStemSeparator) effect.addItem("CatStemSeparation 5", 9);
-        effect.addItem("Externo (VST3)", 8);
         effect.setSelectedId(1, dontSendNotification);
         effect.onChange = [this] {
             selected.clear();

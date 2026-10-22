@@ -22,12 +22,19 @@ private enum CatStemRenderer {
     }
     static func run(_ request: CatStemRequest, runtime: URL, worker: URL,
                     cancellation: AudioExportCancellation,
-                    progress: @escaping @Sendable (Double, String) -> Void) throws -> (URL, [Track]) {
+                    progress: @escaping @Sendable (Double, String) -> Void) throws -> ([URL], [Track]) {
         let fm = FileManager.default
-        let folder = request.directory.appendingPathComponent("Stems/CatStem-" + UUID().uuidString, isDirectory: true)
+        let folder = fm.temporaryDirectory.appendingPathComponent("CatStem-" + UUID().uuidString, isDirectory: true)
+        let stemDirectory = request.directory.appendingPathComponent("Stems", isDirectory: true)
+        try fm.createDirectory(at: stemDirectory, withIntermediateDirectories: true)
+        var names = MediaFileNames(directory: stemDirectory)
+        var published: [URL] = []
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         var success = false
-        defer { if !success { try? fm.removeItem(at: folder) } }
+        defer {
+            try? fm.removeItem(at: folder)
+            if !success { for file in published { try? fm.removeItem(at: file) } }
+        }
         func checkCancellation() throws { if cancellation.cancelled { throw CancellationError() } }
         try checkCancellation()
         progress(0, "Preparando o áudio…")
@@ -94,9 +101,11 @@ private enum CatStemRenderer {
                 throw ProjectError.invalid("O áudio separado tem duração ou formato incorreto.")
             }
             let overview = try StemProjectImporter.audioOverview(url, duration: request.clip.duration)
+            let destination = stemDirectory.appendingPathComponent(names.allocate((request.clip.name as NSString).deletingPathExtension + " - " + stem.rawValue + ".wav"))
+            try fm.moveItem(at: url, to: destination); published.append(destination)
             var clip = AudioClip(id: UUID(), name: request.clip.name + " · " + stem.rawValue,
                                  startTime: request.clip.startTime, duration: request.clip.duration,
-                                 waveform: overview.waveform, audioFile: AudioFile(path: "Stems/" + folder.lastPathComponent + "/" + url.lastPathComponent))
+                                 waveform: overview.waveform, audioFile: AudioFile(path: "Stems/" + destination.lastPathComponent))
             clip.waveformChannels = overview.channels
             var track = Track(id: UUID(), name: stem.rawValue + " · " + request.clip.name, role: stem.role, color: stem.color)
             track.clips = [clip]; track.parentTrackID = request.track.parentTrackID
@@ -109,7 +118,7 @@ private enum CatStemRenderer {
         for name in ["input.wav", "worker.log", "progress.json"] { try? fm.removeItem(at: folder.appendingPathComponent(name)) }
         try checkCancellation()
         success = true
-        return (folder, tracks)
+        return (published, tracks)
     }
 }
 
@@ -136,7 +145,7 @@ private enum CatStemRenderer {
         Task {
             defer { running = false; documents.busy = false }
             do {
-                let (folder, tracks) = try await Task.detached(priority: .utility) {
+                let (files, tracks) = try await Task.detached(priority: .utility) {
                     try CatStemRenderer.run(request, runtime: runtime, worker: worker, cancellation: token) { fraction, text in
                         Task { @MainActor [weak self] in
                             guard let self, self.running, !token.cancelled else { return }
@@ -148,7 +157,7 @@ private enum CatStemRenderer {
                     if token.cancelled { throw CancellationError() }
                     try show.insertSeparatedStems(tracks, song: request.song.id, sourceTrack: request.track.id,
                                                   original: request.clip, project: request.project.id)
-                } catch { try? FileManager.default.removeItem(at: folder); throw error }
+                } catch { for file in files { try? FileManager.default.removeItem(at: file) }; throw error }
                 progress = 1; status = "Pronto — o original foi preservado e silenciado."
             } catch is CancellationError { status = "Separação cancelada." }
             catch {

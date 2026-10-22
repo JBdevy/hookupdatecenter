@@ -5692,11 +5692,13 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
     bool textItem = false, audioItem = false, midiItem = false, muted = false;
     bool projection = false, hasFX = false;
     ID ownerID;
+    bool fileItem = false;
     if (const auto *song = session.song())
         for (const auto &track : song->tracks)
             for (const auto &clip : track.clips)
                 if (clip.id == id) {
                     ownerID = track.id;
+                    fileItem = clip.audioFile.has_value() && !clip.midi;
                     textItem = clip.text && !clip.audioFile;
                     audioItem = jaras::fixedTrackName(track.role).empty();
                     midiItem = clip.midi.has_value();
@@ -5704,6 +5706,9 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
                     projection = track.role.id == "video" && clip.audioFile.has_value();
                     hasFX = clip.fxJSON && !list(get(JSON::parse(text(*clip.fxJSON)), "inserted")).isEmpty();
                 }
+    if (fileItem && (!clipSelected(id) || selectedClips.size() <= 1)) {
+        menu.addItem(40, localization::translate("Open file location")); menu.addSeparator();
+    }
     if (midiItem) {
         menu.addItem(2,muted?"Desmutar itens":"Mutar itens");menu.addItem(31,"Converter Mono");menu.addItem(32,String::fromUTF8("Converter Estéreo"));menu.addItem(14,"Unificar itens");if(hasFX)menu.addItem(15,"FX");
     } else {
@@ -5726,6 +5731,12 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                 return;
             safe->perform([&] {
                 auto &w = *safe;
+                if (action == 40) {
+                    if (w.session.project().id != projectID || !w.session.song() || w.session.song()->id != songID) return;
+                    for (const auto &track : w.session.song()->tracks) for (const auto &clip : track.clips)
+                        if (clip.id == id && clip.audioFile) ProjectCodec::resolveMedia(w.session.mediaDirectory, clip.audioFile->path).revealToUser();
+                    return;
+                }
                 if (action == 8) {
                     w.editTextItem(id);
                     return;

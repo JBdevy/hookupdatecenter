@@ -172,7 +172,9 @@ public enum LogicProjectImporter {
         var mixers: [Data: MixerSettings] = [:]
         var sequences: [Int: String] = [:]
         var sequenceRecords: [Int: Record] = [:]
-        let mediaFolder = "Stems/Logic-" + UUID().uuidString
+        let mediaFolder = "Stems"
+        var importedNames = MediaFileNames(directory: nil)
+        var importedPaths: [Int: String] = [:]
         for record in records {
             do {
             switch record.tag {
@@ -378,7 +380,8 @@ public enum LogicProjectImporter {
                 }
                 let end = start + duration
                 guard end > 0 else { continue }
-                let path = "\(mediaFolder)/\(fileID)/\(file.name)"
+                let path = importedPaths[Int(fileID)] ?? "\(mediaFolder)/\(importedNames.allocate(file.name))"
+                importedPaths[Int(fileID)] = path
                 media[path] = Media(relativePath: path, source: file.source)
                 var clip = AudioClip(id: UUID(), name: try region.text(74), startTime: max(0, start), duration: end - max(0, start),
                                      sourceOffset: sourceFrame / file.rate + max(0, -start), audioFile: AudioFile(path: path))

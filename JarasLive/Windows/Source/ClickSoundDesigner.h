@@ -52,8 +52,8 @@ class ClickSoundDesigner final : public Component {
             if(!safe || !fc.getResult().existsAsFile())return;
             const auto source=fc.getResult(),directory=safe->session.mediaDirectory;
             const auto project=safe->session.project().id;
-            const String relative="Stems/Click/"+text(uuid())+"/"+source.getFileName();
-            const auto destination=directory.getChildFile(relative);
+            const auto destination=directory.getChildFile("Stems").getNonexistentChildFile(source.getFileNameWithoutExtension(),source.getFileExtension(),false);
+            const String relative="Stems/"+destination.getFileName();
             safe->busy=true;safe->refresh();
             worker().addJob([safe,source,destination,project,relative]{
                 String failure;

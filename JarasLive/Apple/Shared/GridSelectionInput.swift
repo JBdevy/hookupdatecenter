@@ -596,6 +596,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var export: (Set<UUID>) -> Void = { _ in }
     var selectRow: (CGFloat) -> Void = { _ in }
     var pointerDown: (NSEvent) -> Void = { _ in }
+    var fileLocation: ((UUID) -> URL?)? = nil
     var itemGuide: CGRect? = nil
     func projected(pixelsPerSecond: CGFloat, itemGuide: CGRect?) -> Self {
         var input = self
@@ -620,6 +621,7 @@ struct GridSelectionInput: NSViewRepresentable {
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
+        view.fileLocation = fileLocation
         view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
@@ -1304,9 +1306,18 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         }
         self.anchor = nil; selectionRect = nil; needsDisplay = true
     }
+    var fileLocation: ((UUID) -> URL?)?
+    @objc private func revealContextFile() {
+        guard selected.count == 1, let contextItem, let url = fileLocation?(contextItem) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
     func itemContextMenu(for contextItem: UUID) -> NSMenu {
         self.contextItem = contextItem
         let menu = NSMenu()
+        if selected.count == 1, fileLocation?(contextItem) != nil {
+            let reveal = NSMenuItem(title: JarasLocalization.string("Open file location"), action: #selector(revealContextFile), keyEquivalent: "")
+            reveal.target = self; menu.addItem(reveal); menu.addItem(.separator())
+        }
         if item(id: contextItem)?.midiEditable == true {
             let muted = selectedMIDIItems.allSatisfy(\.muted)
             let toggle = NSMenuItem(title: JarasLocalization.string(muted ? "Unmute items" : "Mute items"), action: #selector(muteMIDISelection), keyEquivalent: "")

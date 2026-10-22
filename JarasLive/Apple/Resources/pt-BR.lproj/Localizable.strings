@@ -1778,3 +1778,5 @@
 
 "Enter a valid project name." = "Digite um nome válido para o projeto.";
 "A project with this name already exists." = "Já existe um projeto com esse nome.";
+
+"Open file location" = "Abrir local do arquivo";

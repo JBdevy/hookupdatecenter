@@ -493,8 +493,13 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
             name = path;
         require(name.isNotEmpty() && name != ".." && !name.containsChar(':'),
                 "REAPER: invalid media filename.");
-        auto relative = utf8(String(video ? "Videos/REAPER/" : "Stems/REAPER/") +
-                             String(references.size() + 1) + "/" + name);
+        const String folder = video ? "Videos/" : "Stems/";
+        auto relative = utf8(folder + name);
+        int suffix = 1;
+        while (result.media.count(relative)) {
+            const auto extension = File(name).getFileExtension();
+            relative = utf8(folder + name.dropLastCharacters(extension.length()) + "-" + String(suffix++).paddedLeft('0',3) + extension);
+        }
         references[path] = relative;
         result.media[relative] = candidate.existsAsFile() ? candidate : File();
         if (!candidate.existsAsFile())

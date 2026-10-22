@@ -132,7 +132,7 @@ precondition(loudSource.alpha(40, 40) > 200 && quietSource.alpha(40, 40) == 0,
 precondition(render([envelopeFrame(loudEnvelope)]).bytes == loudSource.bytes)
 print("METAL_DERIVED_ENVELOPES_PRESERVE_SOURCE_IDENTITY_AND_GPU_PIXELS_OK")
 // Constant signed PCM envelopes test actual GPU pixels at known dBFS.
-for level: Float in [0.25, 0.5, 1] {
+for level: Float in [0.25, 0.5, pow(10, -1.4 / 20), 1] {
     let source = envelopeFixture("calibration-\(level)", level)
     let lane = CGRect(x: 10, y: 20, width: 108, height: 80)
     let stroke = MetalWaveformStroke(block: source, channel: 0,

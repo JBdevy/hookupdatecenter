@@ -455,6 +455,7 @@ MigratedProject readLogicProject(const File &bundle) {
         bool mute;
     };
     std::map<uint64, Reference> files;
+    std::map<uint64, std::string> importedPaths;
     std::map<std::pair<uint64, uint64>, Bytes> regions;
     std::map<uint64, String> names, identifiers;
     std::map<String, Mixer> mixers;
@@ -656,7 +657,16 @@ MigratedProject readLogicProject(const File &bundle) {
                         "Logic: invalid audio bounds.");
                 if (end <= 0)
                     continue;
-                auto path = utf8("Stems/Logic/" + String((int64)fileID) + "/" + file.name);
+                auto path=importedPaths[fileID];
+                if (path.empty()) {
+                    path=utf8("Stems/" + file.name);
+                    int suffix=1;
+                    while(result.media.count(path)) {
+                        const auto extension=File(file.name).getFileExtension();
+                        path=utf8("Stems/" + file.name.dropLastCharacters(extension.length()) + "-" + String(suffix++).paddedLeft('0',3) + extension);
+                    }
+                    importedPaths[fileID]=path;
+                }
                 result.media[path] = file.source;
                 jaras::AudioClip clip;
                 clip.id = uuid();

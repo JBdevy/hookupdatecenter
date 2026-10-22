@@ -78,7 +78,6 @@ enum StemProjectImporter {
             guard destinationKind == nil || destinationKind == .standard else { throw ProjectError.invalid("Audio files must be dropped on a standard audio track") }
         }
         let fm = FileManager.default
-        let batch = UUID().uuidString
         var audioNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Stems"))
         var videoNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Videos"))
         let projectDirectory = destination.deletingLastPathComponent().resolvingSymlinksInPath()
@@ -100,12 +99,10 @@ enum StemProjectImporter {
                     copied = existing
                 } else {
                     let name = isVideo ? videoNames.allocate(url.lastPathComponent) : audioNames.allocate(url.lastPathComponent)
-                    let folder = projectDirectory.appendingPathComponent((isVideo ? "Videos/" : "Stems/") + batch, isDirectory: true)
-                    if !folders.contains(folder) {
-                        try fm.createDirectory(at: folder, withIntermediateDirectories: true); folders.append(folder)
-                    }
+                    let folder = projectDirectory.appendingPathComponent((isVideo ? "Videos" : "Stems"), isDirectory: true)
+                    try fm.createDirectory(at: folder, withIntermediateDirectories: true)
                     copied = folder.appendingPathComponent(name)
-                    try fm.copyItem(at: url, to: copied)
+                    try fm.copyItem(at: url, to: copied); folders.append(copied)
                     if isVideo { try videoMedia.register(copied) } else { try audioMedia.register(copied) }
                 }
                 let basePath = (projectDirectory.path as NSString).resolvingSymlinksInPath
@@ -341,12 +338,12 @@ enum StemProjectImporter {
             keys[channel.key] = arrangement.tracks.count
             arrangement.tracks.append(Track(id: UUID(), name: channel.name, role: role, color: Track.defaultStandardColor))
         }
-        // A unique import directory makes rollback safe and keeps existing media untouched.
-        let relativeFolder = "Stems/" + UUID().uuidString
+        // Allocate unique filenames and roll back only files owned by this import.
+        let relativeFolder = "Stems"
         let media = destination.deletingLastPathComponent().appendingPathComponent(relativeFolder)
         try fm.createDirectory(at: media, withIntermediateDirectories: true)
+        var jobs: [MediaImportJob] = []
         do {
-            var jobs: [MediaImportJob] = []
             var fileNames = MediaFileNames(directory: destination.deletingLastPathComponent().appendingPathComponent("Stems"))
             for (songIndex, song) in audit.songs.enumerated() {
                 arrangement.parts.append(Part(id: UUID(), name: song.name, startTime: song.start + offset, endTime: song.end + offset, color: [0x53be8c,0xddad54,0x7a93dd,0xbf79b8,0x55acbe][songIndex % 5]))
@@ -434,6 +431,6 @@ enum StemProjectImporter {
             project.updatedAt = ISO8601DateFormatter().string(from: Date())
             try project.validate()
             return project
-        } catch { try? fm.removeItem(at: media); throw error }
+        } catch { for job in jobs { try? fm.removeItem(at: job.copied) }; throw error }
     }
 }

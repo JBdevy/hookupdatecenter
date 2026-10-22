@@ -863,7 +863,7 @@ private struct TimelineGridContent: View, Equatable {
                                     rulerHeight: CGFloat, extent: Double,
                                     selectionLayout: GridSelectionLayout) -> GridSelectionInput {
         let projection = GridSelectionProjection()
-        return GridSelectionInput(origin: .zero, headerHeight: rulerHeight, items: [], selected: selectedClips, selectionChanged: { next in
+        var input = GridSelectionInput(origin: .zero, headerHeight: rulerHeight, items: [], selected: selectedClips, selectionChanged: { next in
             selectedClips = next
             selectedClip = selectionLayout.items.first { next.contains($0.id) }?.id
         }, mute: { id in if originalSong.tracks.contains(where: { $0.kind == .standard && $0.clips.contains { $0.id == id } }) { show.send(.clipMute, target: id) } }, move: { id, translation, pointerY, ended in
@@ -958,6 +958,13 @@ private struct TimelineGridContent: View, Equatable {
             selectedTrack = id
             selectedTracks = [id]
         }, pointerDown: { EditorSelectionRouter.shared.handlePointer($0) })
+        input.fileLocation = { id in
+            guard let directory = documents.currentURL?.deletingLastPathComponent(),
+                  let clip = originalSong.tracks.flatMap(\.clips).first(where: { $0.id == id }),
+                  clip.midi == nil, let file = clip.audioFile else { return nil }
+            return URL(fileURLWithPath: file.path, relativeTo: directory).standardizedFileURL
+        }
+        return input
     }
     #endif
     private func makeTimelineDrawing(viewport: CGRect, song: Song, rows: TrackRowLayout,

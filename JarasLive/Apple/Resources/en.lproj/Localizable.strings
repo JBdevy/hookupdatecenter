@@ -1744,3 +1744,5 @@
 
 "Enter a valid project name." = "Enter a valid project name.";
 "A project with this name already exists." = "A project with this name already exists.";
+
+"Open file location" = "Open file location";
