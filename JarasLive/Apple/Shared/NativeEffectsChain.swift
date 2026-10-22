@@ -293,11 +293,19 @@ final class NativeEffectsChain {
     }
     #endif
     private var nodes: [AVAudioUnit] {
+        var result: [AVAudioUnit] = [equalizer]
+        if equalizer !== compressor { result.append(compressor) }
+        result.append(delay)
+        result.append(reverb)
+        if let pitch { result.append(pitch) }
+        if let limiter { result.append(limiter) }
+        if let trigger { result.append(trigger) }
+        if let gate { result.append(gate) }
+        if let stemSeparatorNode { result.append(stemSeparatorNode) }
         #if os(macOS)
-        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + (trigger.map { [$0] } ?? []) + (gate.map { [$0] } ?? []) + (stemSeparatorNode.map { [$0] } ?? []) + Array(externalNodes.values)
-        #else
-        return (equalizer === compressor ? [equalizer, delay, reverb] : [equalizer, compressor, delay, reverb]) + (pitch.map { [$0] } ?? []) + (limiter.map { [$0] } ?? []) + (trigger.map { [$0] } ?? []) + (gate.map { [$0] } ?? []) + (stemSeparatorNode.map { [$0] } ?? [])
+        for node in externalNodes.values { result.append(node) }
         #endif
+        return result
     }
     var output: AVAudioNode { outputDestination ?? outputMix }
     func setSourceChannelMode(_ mode: Int) { JarasEqualizer.setInputChannelMode(equalizer, mode: Int32(mode)) }
