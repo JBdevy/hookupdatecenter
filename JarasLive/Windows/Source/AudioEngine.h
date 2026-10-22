@@ -50,8 +50,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::shared_ptr<native::vst3::Processor> externalEffect(const ID &, const String &) const;
     void captureExternalEffects(const ID &, var &) const;
     native::stem::Status stemStatus(const ID &,const String &)const;
+    std::array<std::shared_ptr<analysis::Capture>, 2> eqAnalysis(const ID &, const String &key) const;
     void waitForStems();
     void previewDynamics(const ID &, const String &, const var &);
+    void previewNativeParameters(const ID &, const String &key, const String &kind, const var &, const var &chainSettings = {});
     void previewStemMix(const ID &,const String &,const native::stem::Mix &);
     void checkStemErrors()const;
     void refreshStemLatency();

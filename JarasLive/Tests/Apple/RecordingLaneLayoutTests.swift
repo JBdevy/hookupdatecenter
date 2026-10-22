@@ -35,6 +35,23 @@ import Foundation
         precondition(TrackLanes(track: adjacent).count == 2, "real overlaps retain separate lanes")
         layout.clear()
         precondition(layout.items.isEmpty)
+        let isolated = AudioClip(id: UUID(), name: "Full height", startTime: 30, duration: 5)
+        track.clips.append(isolated)
+        let rows = TrackRowLayout(tracks: [track], baseHeight: 100)
+        precondition(rows.lanes[0].count == 2)
+        precondition(rows.itemLaneHeight(isolated.id, track: 0) == rows.audioHeights[0])
+        precondition(rows.itemLaneOffset(isolated.id, track: 0) == 0)
+        precondition(rows.itemLaneHeight(committed.id, track: 0) == rows.audioHeights[0] / 2)
+        precondition(rows.itemLaneOffset(committed.id, track: 0) == rows.audioHeights[0] / 2)
+        let live = AudioClip(id: UUID(), name: "Live", startTime: 31, duration: 1)
+        RecordingLaneLayout.shared.reserve(track: track, clip: live)
+        let during = TrackRowLayout(tracks: [track], baseHeight: 100)
+        precondition(during.itemLaneHeight(isolated.id, track: 0) == during.laneHeights[0],
+                     "active take reserves conventional height rather than covering an existing full-height item")
+        RecordingLaneLayout.shared.remove(live.id)
+        let stopped = TrackRowLayout(tracks: [track], baseHeight: 100)
+        precondition(stopped.itemLaneHeight(isolated.id, track: 0) == stopped.audioHeights[0])
+        print("TRACK_ROW_LOCAL_HEIGHT_RECORDING_RESERVATION_AND_STOP_RESTORATION_OK")
         print("RECORDING_LIVE_LANES_OVERLAP_GROWTH_FINALIZATION_AND_NO_GRID_INVALIDATION_OK")
     }
 }

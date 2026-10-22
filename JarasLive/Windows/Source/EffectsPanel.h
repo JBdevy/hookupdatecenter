@@ -179,6 +179,29 @@ class EQGraph final : public Component {
         setWantsKeyboardFocus(true);
         setComponentID("eqGraph");
     }
+    ~EQGraph() override { clearAnalysis(); }
+    void updateAnalysis(const std::array<std::shared_ptr<analysis::Capture>, 2> &next) {
+        for (std::size_t i = 0; i < sources.size(); ++i) if (sources[i] != next[i]) {
+            if (sources[i]) sources[i]->removeReader();
+            sources[i] = next[i];
+            lastSerial[i] = sources[i] ? sources[i]->serial() : 0;
+            if (sources[i]) sources[i]->addReader();
+        }
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < sources.size(); ++i) if (sources[i]) {
+            analysisRate = sources[i]->sampleRate();
+            if (sources[i]->read(frames[count]) && frames[count].serial != lastSerial[i]) {
+                lastSerial[i] = frames[count].serial; ++count;
+            }
+        }
+        const double now = Time::getMillisecondCounterHiRes() * .001;
+        spectrum = analyzer.analyze(frames.data(), count, lastAnalysis > 0 ? now - lastAnalysis : .05);
+        lastAnalysis = now; repaint();
+    }
+    void clearAnalysis() {
+        for (auto &source : sources) { if (source) source->removeReader(); source.reset(); }
+        lastSerial.fill(0); lastAnalysis = 0; analyzer.reset(); spectrum = {};
+    }
     void paint(Graphics &g) override {
         g.setColour(theme::display);
         g.fillRoundedRectangle(getLocalBounds().toFloat(), 5);
@@ -193,10 +216,11 @@ class EQGraph final : public Component {
             g.drawHorizontalLine((int)yAt(db), area.getX(), area.getRight());
         g.setColour(theme::secondary.withAlpha(.7f));
         g.drawHorizontalLine((int)yAt(0), area.getX(), area.getRight());
+        paintAnalysis(g, area);
         std::vector<dsp::IIR::Coefficients<float>::Ptr> filters;
         for (const auto &band : bands)
             if (flag(band, "enabled", true)) {
-                const auto f = (float)jlimit(20., 20000., num(band, "frequency", 1000)),
+                const auto f = (float)jlimit(20., std::min(20000., analysisRate * .45), num(band, "frequency", 1000)),
                            q = (float)jlimit(.1, 18., num(band, "q", .707));
                 const auto gain = Decibels::decibelsToGain((float)num(band, "gain"));
                 const auto type = str(band, "type", "bell");
@@ -205,7 +229,7 @@ class EQGraph final : public Component {
                     const int order = jlimit(1, 32, (int)num(band, "slope", 12) / 6);
                     for (int stage = 0; stage < std::max(1, order / 2); ++stage) {
                         if (order == 1) {
-                            double k = std::tan(MathConstants<double>::pi * f / 48000.),
+                            double k = std::tan(MathConstants<double>::pi * f / analysisRate),
                                    b0 = (type == "lowCut" ? 1 : k) / (1 + k);
                             filters.push_back(new C((float)b0, (float)(type == "lowCut" ? -b0 : b0),
                                                     0, 1, (float)((k - 1) / (k + 1)), 0));
@@ -213,20 +237,20 @@ class EQGraph final : public Component {
                             const auto sq =
                                 (float)(1 / (2 * std::sin(MathConstants<double>::pi *
                                                           (2 * stage + 1) / (2 * order))));
-                            filters.push_back(type == "lowCut" ? C::makeHighPass(48000, f, sq)
-                                                               : C::makeLowPass(48000, f, sq));
+                            filters.push_back(type == "lowCut" ? C::makeHighPass(analysisRate, f, sq)
+                                                               : C::makeLowPass(analysisRate, f, sq));
                         }
                     }
                 } else
-                    filters.push_back(type == "lowShelf"    ? C::makeLowShelf(48000, f, q, gain)
-                                      : type == "highShelf" ? C::makeHighShelf(48000, f, q, gain)
-                                                            : C::makePeakFilter(48000, f, q, gain));
+                    filters.push_back(type == "lowShelf"    ? C::makeLowShelf(analysisRate, f, q, gain)
+                                      : type == "highShelf" ? C::makeHighShelf(analysisRate, f, q, gain)
+                                                            : C::makePeakFilter(analysisRate, f, q, gain));
             }
         Path response;
         for (int x = (int)area.getX(); x < area.getRight(); ++x) {
             double magnitude = 1;
             for (const auto &f : filters)
-                magnitude *= f->getMagnitudeForFrequency(frequencyAt((float)x), 48000);
+                magnitude *= f->getMagnitudeForFrequency(std::min(frequencyAt((float)x), analysisRate * .49), analysisRate);
             const auto y = yAt(Decibels::gainToDecibels(magnitude, -120.));
             if (x == (int)area.getX())
                 response.startNewSubPath((float)x, y);
@@ -344,6 +368,44 @@ class EQGraph final : public Component {
     }
 
   private:
+    std::array<std::shared_ptr<analysis::Capture>, 2> sources;
+    std::array<std::uint64_t, 2> lastSerial{};
+    std::array<analysis::Frame, 2> frames;
+    analysis::Analyzer analyzer;
+    analysis::Spectrum spectrum;
+    double lastAnalysis = 0, analysisRate = 48000;
+    void paintAnalysis(Graphics &g, juce::Rectangle<float> area) {
+        auto path = [&](const std::array<float, analysis::binCount> &levels) {
+            Path result;
+            if (std::none_of(levels.begin(), levels.end(), [](float db) { return db > -95.9f; })) return result;
+            const float step = area.getWidth() / float(levels.size() - 1);
+            auto y = [&](int index) { return area.getY() + area.getHeight() * (6.f - jlimit(-96.f, 6.f, levels[std::size_t(index)])) / 102.f; };
+            auto tangent = [&](int index) {
+                if (index == 0) return y(1) - y(0);
+                if (index == int(levels.size() - 1)) return y(index) - y(index - 1);
+                const auto left = y(index) - y(index - 1), right = y(index + 1) - y(index);
+                return left * right > 0 ? 2 * left * right / (left + right) : 0.f;
+            };
+            float previous = y(0), previousTangent = tangent(0);
+            result.startNewSubPath(area.getX(), previous);
+            for (int index = 1; index < int(levels.size()); ++index) {
+                const auto x = area.getX() + float(index) * step, next = y(index), nextTangent = tangent(index);
+                result.cubicTo(x - step * 2 / 3, previous + previousTangent / 3,
+                               x - step / 3, next - nextTangent / 3, x, next);
+                previous = next; previousTangent = nextTangent;
+            }
+            return result;
+        };
+        auto output = path(spectrum.output), input = path(spectrum.input);
+        if (!output.isEmpty()) {
+            auto fill = output; fill.lineTo(area.getRight(), area.getBottom()); fill.lineTo(area.getX(), area.getBottom()); fill.closeSubPath();
+            g.setColour(theme::green.withAlpha(.12f)); g.fillPath(fill);
+            g.setColour(theme::green.withAlpha(.75f)); g.strokePath(output, PathStrokeType(1, PathStrokeType::curved, PathStrokeType::rounded));
+        }
+        if (!input.isEmpty()) { g.setColour(Colours::white.withAlpha(.38f)); g.strokePath(input, PathStrokeType(1, PathStrokeType::curved, PathStrokeType::rounded)); }
+        g.setColour(Colours::white.withAlpha(.5f)); g.setFont(theme::font(9));
+        g.drawText("RTA  INPUT / OUTPUT", area.reduced(8).removeFromTop(15), Justification::centredRight);
+    }
     int selected = -1;
     bool dragging = false, wheelBandHeld = false;
     double wheelRemainder = 0;
@@ -456,6 +518,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         graph.changed = [this] {
             auto s = current();
             put(s, "bands", get(graph.settings, "bands"));
+            session.audio.previewNativeParameters(track,key(),kind(),current(),settings);
             repaint();
         };
         graph.commit = [this] { commit(); };
@@ -689,6 +752,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
                                      dontSendNotification);
         }
         graph.setVisible(k == "EQ");
+        if (k != "EQ") graph.clearAnalysis();
         enabled.checkbox = k == "EQ";
         if (!available) {
             resized();
@@ -771,6 +835,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             [this, property, multiplier, group](double value) {
                 auto s = group.isNotEmpty() ? get(current(), Identifier(group)) : current();
                 put(s, Identifier(property), value / multiplier);
+                session.audio.previewNativeParameters(track,key(),kind(),current(),settings);
             },
             [this] { commit(); }));
         addAndMakeVisible(k);
@@ -980,6 +1045,8 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         } catch (const std::exception &e) { error(String::fromUTF8(e.what())); }
     }
     void timerCallback() override {
+        if (isShowing() && graph.isVisible()) graph.updateAnalysis(session.audio.eqAnalysis(track, key()));
+        else graph.clearAnalysis();
         if(externalEditor&&!externalEditor->uses(session.audio.externalEffect(track,externalEditorKey))) {externalEditor.reset();openExternalEditor();}
         for(auto plugin:list(get(settings,"externalPlugins")))if(auto processor=session.audio.externalEffect(track,"External:"+str(plugin,"id")))
             if(processor->consumeEdited())session.dirty=true;

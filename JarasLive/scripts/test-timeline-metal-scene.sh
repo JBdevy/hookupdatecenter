@@ -39,11 +39,20 @@ metrics = '\nimport AppKit\nimport CoreText\n'+typography+'\n'+source[source.ind
 selection = source[start:source.index('#if os(macOS)\nimport AppKit', start)]
 Path(sys.argv[1]).write_text('import SwiftUI\n' + selection + metrics)
 PY
+python3 - "$test_dir/TrackRows.swift" <<'PY'
+from pathlib import Path
+import sys
+source = Path('Apple/Shared/LiveRecordingPreview.swift').read_text()
+recording = source[source.index('@MainActor final class RecordingLaneLayout'):source.index('struct RecordingGridOverlay')]
+grid = Path('Apple/Shared/TimelineGridView.swift').read_text()
+rows = grid[grid.index('@MainActor private struct TrackRowLayout {'):grid.index('\nprivate struct TimelineHeader:')]
+Path(sys.argv[1]).write_text('import Foundation\nimport Combine\n' + recording + rows.replace('@MainActor private struct TrackRowLayout', '@MainActor struct TrackRowLayout'))
+PY
 swiftc Apple/Shared/TimelineRenderDiagnostics.swift -O -swift-version 5 \
   Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
   Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift \
   Application/Project/ClipRepetition.swift Application/Project/AudioFileRead.swift "$test_dir/TimelineAudioWaveform.swift" \
   Apple/Shared/MetalWaveformRenderer.swift "$test_dir/TimelineMetalWaveforms.swift" \
-  "$test_dir/GridSelectionGeometry.swift" "$test_dir/main.swift" -o "$test_dir/test"
+  "$test_dir/GridSelectionGeometry.swift" "$test_dir/TrackRows.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

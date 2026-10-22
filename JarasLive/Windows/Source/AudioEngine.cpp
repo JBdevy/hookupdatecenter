@@ -489,11 +489,33 @@ void AudioEngine::refreshStemLatency(){
     }
 }
 native::stem::Status AudioEngine::stemStatus(const ID &id,const String &key)const {if(auto *fx=effects(id))return fx->stemStatus(key);return {};}
+std::array<std::shared_ptr<analysis::Capture>, 2> AudioEngine::eqAnalysis(const ID &id, const String &key) const {
+    std::array<std::shared_ptr<analysis::Capture>, 2> result;
+    // Only retain the ring owners under the callback lock. PCM snapshots and
+    // FFT work run after this short scope, entirely outside the audio thread.
+    const ScopedLock lock(devices.getAudioCallbackLock());
+    for (int head = 0; head < (id.empty() ? 1 : 2); ++head)
+        if (auto *chain = effects(id, head)) result[std::size_t(head)] = chain->eqAnalysis(key);
+    return result;
+}
 void AudioEngine::previewDynamics(const ID &id, const String &key, const var &settings) {
     const auto snapshot = NativeFX::dynamicsPreview(settings);
     if (trackCapture) trackCapture->previewDynamics(id, key, snapshot);
     const ScopedLock lock(devices.getAudioCallbackLock());
     for (int head = 0; head < (id.empty() ? 1 : 2); ++head) if (auto *fx = effects(id, head)) fx->previewDynamics(key, snapshot);
+}
+void AudioEngine::previewNativeParameters(const ID &id, const String &key, const String &kind, const var &settings, const var &chainSettings) {
+    if (kind == "Instruments") {
+        // SF2 controls are atomic in SoundFontRenderer. Configuration clones
+        // its document values here on the UI thread, never under the device lock.
+        for (auto &bus : buses) if (bus->id == id && bus->midi) bus->midi->configure(chainSettings);
+        return;
+    }
+    const auto snapshot=NativeFX::parameterPreview(kind,settings,rate.load());
+    if (snapshot.kind==NativeFX::ParameterPreview::none) return;
+    if (trackCapture) trackCapture->previewNativeParameters(id,key,snapshot);
+    const ScopedLock lock(devices.getAudioCallbackLock());
+    for (int head=0;head<(id.empty()?1:2);++head) if (auto *fx=effects(id,head)) fx->previewParameters(key,snapshot);
 }
 void AudioEngine::previewStemMix(const ID &id,const String &key,const native::stem::Mix &mix){for(int h=0;h<(id.empty()?1:2);h++)if(auto *fx=effects(id,h))fx->previewStemMix(key,mix);}
 void AudioEngine::waitForStems(){masterFX.waitForStems();for(auto &bus:buses)bus->fx[0].waitForStems();for(auto &voice:voices)voice->fx[0].waitForStems();}

@@ -9,19 +9,36 @@ struct InstrumentParameterEditor: View {
     private func envelope(_ key: WritableKeyPath<InstrumentParameters, Double>) -> Binding<Double> {
         Binding(get: { parameters[keyPath: key] }, set: { parameters[keyPath: key] = $0 })
     }
+    private var pagePicker: some View {
+        Picker("Parameters", selection: $page) {
+            Text("Envelope").tag("Envelope")
+            Text("Velocity").tag("Velocity")
+            Text("Cutoff").tag("Cutoff")
+            Text("Controller").tag("Controller")
+        }.pickerStyle(.segmented).labelsHidden()
+    }
+    @ViewBuilder private func knobs<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        #if os(iOS)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 12)], spacing: 18, content: content)
+        #else
+        HStack(spacing: 8, content: content)
+        #endif
+    }
     var body: some View {
         VStack(spacing: 24) {
+            #if os(iOS)
+            VStack(alignment: .leading, spacing: 14) {
+                Label(name, systemImage: "pianokeys").font(.jarasTitle2.weight(.semibold))
+                pagePicker
+            }
+            #else
             HStack {
                 Image(systemName: "pianokeys").foregroundStyle(JarasTheme.green)
                 Text(name).font(.jarasTitle2.weight(.semibold))
                 Spacer()
-                Picker("Parameters", selection: $page) {
-                    Text("Envelope").tag("Envelope")
-                    Text("Velocity").tag("Velocity")
-                    Text("Cutoff").tag("Cutoff")
-                    Text("Controller").tag("Controller")
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 380)
+                pagePicker.frame(width: 380)
             }
+            #endif
             if page == "Envelope" {
             Canvas { context, size in
                 let inset = 16.0, height = size.height - inset * 2, width = size.width - inset * 2
@@ -43,7 +60,7 @@ struct InstrumentParameterEditor: View {
                 context.fill(area, with: .linearGradient(Gradient(colors: [color.opacity(0.35), color.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
                 context.stroke(curve, with: .color(color), lineWidth: 2)
             }.frame(minHeight: 130, maxHeight: 220).background(JarasTheme.display).cornerRadius(8)
-            HStack(spacing: 8) {
+            knobs {
                 FXKnob("Attack", value: envelope(\.attack), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .instrumentAttack)
                 FXKnob("Hold", value: envelope(\.hold), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 10, parameter: .instrumentHold)
                 FXKnob("Decay", value: envelope(\.decay), range: 0.001...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 10, parameter: .instrumentDecay)
@@ -97,7 +114,7 @@ struct InstrumentParameterEditor: View {
                 Text("Cutoff envelope").font(.jarasTitle3.weight(.semibold))
                 Spacer()
             }.padding(18).background(JarasTheme.display).cornerRadius(10)
-            HStack(spacing: 8) {
+            knobs {
                 FXKnob("Attack", value: filter(\.attack), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .cutoffAttack)
                 FXKnob("Hold", value: filter(\.hold), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .cutoffHold)
                 FXKnob("Decay", value: filter(\.decay), range: 0.001...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.3, parameter: .cutoffDecay)

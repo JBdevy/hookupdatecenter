@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>CatLive</title>
+  <link rel="stylesheet" href="context-menu.css">
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="app-effects.css" data-effects-style="true">
+</head>
+<body>
+  <main id="app">
+    <header id="transport">
+      <section id="master" aria-label="Master">
+        <div class="master-heading"><strong>MASTER</strong><button id="master-fx" aria-label="Master FX">FX</button><output id="master-value">+0.0 dB</output></div>
+        <input id="master-volume" type="range" min="0" max="1" step="0.001" aria-label="Master volume">
+        <div class="master-meter"><i></i><i></i></div><button id="master-peak" class="peak" aria-label="Reset master peak"></button>
+      </section>
+      <section class="transport-main">
+        <div class="transport-controls">
+          <button id="open" data-pt="Abrir projeto" data-en="Open project">Abrir projeto</button>
+          <button id="save" data-pt="Salvar" data-en="Save">Salvar</button>
+          <button id="undo" aria-label="Undo">↶</button><button id="redo" aria-label="Redo">↷</button>
+          <button id="account" data-pt="Conta" data-en="Account">Conta</button>
+          <span class="spacer"></span>
+          <button id="stop" class="transport-button" aria-label="Stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
+          <button id="play" class="transport-button play" aria-label="Play"><svg viewBox="0 0 24 24"><path d="M7 4L21 12 7 20Z"/></svg></button>
+          <button id="pause" class="transport-button" aria-label="Pause"><svg viewBox="0 0 24 24"><path d="M7 5H10V19H7ZM14 5H17V19H14Z"/></svg></button>
+          <output class="display clock" id="clock">00:00:00</output>
+          <output class="display" id="bpm">120 <small>BPM</small></output>
+          <output class="display" id="meter">4/4</output>
+        </div>
+        <div class="song-display"><span id="project-name">CatLive</span><strong id="region-name">—</strong><output id="region-time">00:00</output></div>
+      </section>
+    </header>
+    <section id="workspace">
+      <nav id="sidebar" aria-label="Panels"><button id="track-toggle" aria-label="Track Mixer">T</button><button id="setlist-toggle" aria-label="Setlist">S</button></nav>
+      <section id="track-panel" aria-label="Track Mixer">
+        <header id="track-tools"><strong>TRACK MIXER</strong><button id="add-track" aria-label="Add track">+</button></header>
+        <div id="tracks" tabindex="-1"></div>
+        <div id="track-divider" role="separator" aria-label="Track Mixer width" aria-orientation="vertical"></div>
+      </section>
+      <section id="grid-panel" aria-label="Timeline">
+        <div id="ruler"><canvas id="ruler-canvas"></canvas></div>
+        <div id="grid" tabindex="-1"><canvas id="grid-canvas"></canvas><div id="edit-cursor"></div><div id="playhead"></div></div>
+        <div id="timeline-scroll"><div></div></div>
+      </section>
+      <aside id="setlist-panel" aria-label="Setlist">
+        <header class="setlist-title">SETLIST</header>
+        <button id="playlist" aria-haspopup="menu" aria-expanded="false">All Regions <span>⌄</span></button>
+        <div id="setlist" tabindex="-1"></div>
+        <footer><span id="setlist-count"></span><output id="setlist-duration">00:00:00</output></footer>
+      </aside>
+    </section>
+    <footer id="status"><span id="document-name"></span><span id="notice" role="status"></span><span id="version">CatLive Version 1.09</span></footer>
+  </main>
+  <dialog id="message"><form method="dialog"><h2></h2><p></p><div class="dialog-actions"></div></form></dialog>
+  <dialog id="account-dialog"><form><h2>CatLive</h2><p id="account-state"></p><label id="email-label">E-mail<input id="account-email" type="email" autocomplete="email" required></label><label id="cpf-label">CPF<input id="account-cpf" type="text" inputmode="numeric" autocomplete="off" required></label><label id="device-label" hidden>Nome do dispositivo<input id="account-device" type="text" autocomplete="off"></label><div class="dialog-actions"><button type="submit" id="account-submit">Entrar</button><button type="button" id="account-close">Fechar</button></div></form></dialog>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

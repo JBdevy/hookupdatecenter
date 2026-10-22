@@ -2,14 +2,13 @@
 #include <BinaryData.h>
 namespace catlive::theme {
 namespace {
-// Inter, bundled on both desktop platforms.
-// Compact Windows text requested for the notebook display. Keep component
-// bounds and the application's DPI/UI scale independent of typography.
+// Inter, bundled on both desktop platforms. Keep component bounds and the
+// application's DPI/UI scale independent of typography. Tiny Windows labels
+// retain at least 10.8px EM (the selected-song display size) rather than collapsing to 7–8px at 100-percent scale.
 constexpr float windowsTextScale = .9f;
 Font calibrated(Typeface::Ptr face, float points) {
-    // Keep the outlines at their natural aspect ratio. Stretching every glyph
-    // to match another font's widths makes small text less legible on Windows.
-    return Font(FontOptions(face).withPointHeight(points * windowsTextScale));
+    // Preserve natural glyph proportions instead of compressing text to fit.
+    return Font(FontOptions(face).withPointHeight(std::max(10.8f, points * windowsTextScale)));
 }
 }
 Font mediumFont(float size) {

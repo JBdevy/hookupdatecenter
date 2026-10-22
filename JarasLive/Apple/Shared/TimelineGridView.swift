@@ -333,7 +333,7 @@ private struct TimelineGridContent: View, Equatable {
                         song.tracks.enumerated().flatMap { index, track -> [GridSelectionItem] in
                         let y = rulerHeight + rows.offsets[index]
                         return track.clips.map { clip in
-                            GridSelectionItem(id: clip.id, rect: CGRect(x: clip.startTime, y: y + CGFloat(rows.lanes[index].lanes[clip.id] ?? 0) * rows.laneHeights[index] + 3, width: clip.duration, height: rows.laneHeights[index] - 6), gain: clip.gain ?? 1, phaseInverted: clip.phaseInverted == true, pan: clip.pan ?? 0, editable: track.kind == .standard || clip.isProjectionMedia, resizable: !show.timelineMovementLocked, movable: !show.timelineMovementLocked && (track.kind != .timecode || clip.isProjectionMedia), contextActions: track.kind == .standard || clip.isProjectionMedia, audioExportable: track.kind == .standard && clip.midi == nil && (clip.audioFile ?? track.audioFile) != nil, midiEditable: clip.midi != nil, textEditable: track.kind.isText && !clip.isProjectionMedia, name: renderMetadata.itemTitle(for: clip, track: track), muted: clip.muted == true, hasFX: !(clip.fx?.inserted.isEmpty ?? true), fxBypassed: clip.fxBypassed == true, duration: clip.duration, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0, fadeInCurve: clip.fadeInCurve ?? 0, fadeInSCurve: clip.fadeInSCurve ?? 1, fadeOutCurve: clip.fadeOutCurve ?? 0, fadeOutSCurve: clip.fadeOutSCurve ?? 1, trackIndex: index, laneIndex: rows.lanes[index].lanes[clip.id] ?? 0)
+                            GridSelectionItem(id: clip.id, rect: CGRect(x: clip.startTime, y: y + rows.itemLaneOffset(clip.id, track: index) + 3, width: clip.duration, height: rows.itemLaneHeight(clip.id, track: index) - 6), gain: clip.gain ?? 1, phaseInverted: clip.phaseInverted == true, pan: clip.pan ?? 0, editable: track.kind == .standard || clip.isProjectionMedia, resizable: !show.timelineMovementLocked, movable: !show.timelineMovementLocked && (track.kind != .timecode || clip.isProjectionMedia), contextActions: track.kind == .standard || clip.isProjectionMedia, audioExportable: track.kind == .standard && clip.midi == nil && (clip.audioFile ?? track.audioFile) != nil, midiEditable: clip.midi != nil, textEditable: track.kind.isText && !clip.isProjectionMedia, name: renderMetadata.itemTitle(for: clip, track: track), muted: clip.muted == true, hasFX: !(clip.fx?.inserted.isEmpty ?? true), fxBypassed: clip.fxBypassed == true, duration: clip.duration, fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0, fadeInCurve: clip.fadeInCurve ?? 0, fadeInSCurve: clip.fadeInSCurve ?? 1, fadeOutCurve: clip.fadeOutCurve ?? 0, fadeOutSCurve: clip.fadeOutSCurve ?? 1, trackIndex: index, laneIndex: rows.lanes[index].localLane(for: clip.id), laneHeightRatio: rows.itemLaneRatio(clip.id, track: index))
                         }
                     }
                     }
@@ -408,8 +408,7 @@ private struct TimelineGridContent: View, Equatable {
                                             ZStack(alignment: .topLeading) {
                                         ForEach(Array(originalSong.tracks.enumerated()).filter { index, track in track.clips.contains { $0.id == movingClip } || (rulerHeight + rows.offsets[index] + rows.heights[index] >= visibleY - 512 && rulerHeight + rows.offsets[index] <= visibleY + geometry.size.height + 1024) }, id: \.element.id) { index, track in
                                             ForEach(track.clips.filter { $0.id == movingClip || ($0.startTime <= visibleEnd && $0.startTime + $0.duration >= visibleStart) }) { clip in
-                                                let lane: CGFloat = CGFloat(rows.lanes[index].lanes[clip.id] ?? 0)
-                                                let itemY: CGFloat = rulerHeight + rows.offsets[index] + lane * rows.laneHeights[index] + 3
+                                                let itemY: CGFloat = rulerHeight + rows.offsets[index] + rows.itemLaneOffset(clip.id, track: index) + 3
                                                 tabletItemInput(clip, track: track, index: index, rows: rows, song: song, originalSong: originalSong,
                                                     pixelsPerSecond: pixelsPerSecond, itemY: itemY, rulerHeight: rulerHeight, extent: extent)
                                             }
@@ -1068,7 +1067,7 @@ private struct TimelineGridContent: View, Equatable {
                                               itemY: CGFloat, rulerHeight: CGFloat, extent: Double) -> some View {
         ClipDragInput(item: GridSelectionItem(id: clip.id,
             rect: CGRect(x: clip.startTime * pixelsPerSecond + 1, y: itemY,
-                width: max(2, clip.duration * pixelsPerSecond - 2), height: rows.laneHeights[index] - 6),
+                width: max(2, clip.duration * pixelsPerSecond - 2), height: rows.itemLaneHeight(clip.id, track: index) - 6),
             editable: track.kind == .standard || clip.isProjectionMedia, resizable: !show.timelineMovementLocked, movable: !show.timelineMovementLocked && (track.kind != .timecode || clip.isProjectionMedia),
             muted: clip.muted == true, duration: clip.duration,
             fadeIn: clip.fadeIn ?? 0, fadeOut: clip.fadeOut ?? 0, fadeInCurve: clip.fadeInCurve ?? 0, fadeInSCurve: clip.fadeInSCurve ?? 1, fadeOutCurve: clip.fadeOutCurve ?? 0, fadeOutSCurve: clip.fadeOutSCurve ?? 1), originY: itemY, click: { point in
@@ -1115,7 +1114,7 @@ private struct TimelineGridContent: View, Equatable {
                 clearClipDrag()
             }
         }
-        .frame(width: max(2, clip.duration * pixelsPerSecond), height: rows.laneHeights[index] - 6)
+        .frame(width: max(2, clip.duration * pixelsPerSecond), height: rows.itemLaneHeight(clip.id, track: index) - 6)
         .offset(x: clip.startTime * pixelsPerSecond, y: itemY)
             .contextMenu {
                 if track.kind.isText && !clip.isProjectionMedia { Button("Edit") { editTextItem(clip.id) } }
@@ -1721,8 +1720,8 @@ private struct TimelineGridContent: View, Equatable {
                 } else {
                     hasFallbackItems = true; hasFallbackWaveforms = hasFallbackWaveforms || waveform
                     fallbackItems.append(CGRect(x: clip.startTime,
-                        y: rulerHeight + rows.offsets[index] + CGFloat(rows.lanes[index].lanes[clip.id] ?? 0) * rows.laneHeights[index] + 3,
-                        width: clip.duration, height: rows.laneHeights[index] - 6))
+                        y: rulerHeight + rows.offsets[index] + rows.itemLaneOffset(clip.id, track: index) + 3,
+                        width: clip.duration, height: rows.itemLaneHeight(clip.id, track: index) - 6))
                 }
             }
         }
@@ -2023,8 +2022,8 @@ private struct TimelineGridContent: View, Equatable {
                 let clip = track.clips[clipIndex]
                 guard value.itemIDs.contains(clip.id) else { continue }
                 let rect = CGRect(x: clip.startTime * scale + 1,
-                    y: y + CGFloat(value.rows.lanes[index].lanes[clip.id] ?? 0) * value.rows.laneHeights[index] + 3,
-                    width: max(2, clip.duration * scale - 2), height: value.rows.laneHeights[index] - 6)
+                    y: y + value.rows.itemLaneOffset(clip.id, track: index) + 3,
+                    width: max(2, clip.duration * scale - 2), height: value.rows.itemLaneHeight(clip.id, track: index) - 6)
                 guard rect.width > 0, rect.height > 0, rect.intersects(tile.insetBy(dx: -6, dy: -6)) else { continue }
                 let selected = value.selectedClips.contains(clip.id), silenced = trackSilenced || clip.muted == true
                 let compact = rect.width < 20
@@ -2034,10 +2033,11 @@ private struct TimelineGridContent: View, Equatable {
                 func alpha(_ color: SIMD4<Float>, _ value: Float) -> SIMD4<Float> { SIMD4(color.x, color.y, color.z, value) }
                 let top = alpha(color, compact ? (silenced ? 0.55 : 0.88) : (silenced ? 0.55 : 1))
                 let bottom = alpha(color, compact ? top.w : (silenced ? 0.25 : selected ? 1 : 0.78))
-                let border = selected ? SIMD4<Float>(105.0 / 255, 237.0 / 255, 145.0 / 255, 1) : alpha(color, 0.75)
+                let border = selected ? SIMD4<Float>(128.0 / 255, 1, 156.0 / 255, 1) : alpha(color, 0.75)
                 let item = MetalTimelineItem(rect: rect.offsetBy(dx: -tile.minX, dy: -tile.minY),
                     topColor: top, bottomColor: bottom, borderColor: border,
-                    cornerRadius: compact ? 0 : 3, borderWidth: selected ? 1.5 : compact ? 0 : 0.6,
+                    cornerRadius: compact ? 0 : 3, borderWidth: selected ? 3 : compact ? 0 : 0.6,
+                    borderBackdropWidth: selected ? 5 : 0,
                     headerHeight: compact ? 0 : Float(rect.height <= 26 ? rect.height : min(GridSelectionItem.headerHeight, rect.height)))
                 let fragments = value.metadata.fragments(for: clip)
                 let visible = max(clip.startTime, (tile.minX - 4) / scale)...max(clip.startTime, (tile.maxX + 4) / scale)
@@ -4449,7 +4449,7 @@ struct TimelineDrawing: View, Equatable {
                     guard !nativeAudioItems.contains(clip.id) else { continue }
                     let silenced = trackSilenced || clip.muted == true
                     let selected = selectedClips.contains(clip.id)
-                    let rect = CGRect(x: clip.startTime * scale + 1, y: y + CGFloat(rows.lanes[index].lanes[clip.id] ?? 0) * rows.laneHeights[index] + 3, width: max(2, clip.duration * scale - 2), height: rows.laneHeights[index] - 6)
+                    let rect = CGRect(x: clip.startTime * scale + 1, y: y + rows.itemLaneOffset(clip.id, track: index) + 3, width: max(2, clip.duration * scale - 2), height: rows.itemLaneHeight(clip.id, track: index) - 6)
                     guard rect.intersects(tile.insetBy(dx: -6, dy: -6)) else { continue }
                     drawTimelineItem(clip, track: track, title: metadata.itemTitle(for: clip, track: track), rect: rect, selected: selected, silenced: silenced, scale: scale, tile: tile, context: &context, mediaDirectory: mediaDirectory, tempoSegments: !MetalWaveformRenderer.isSupported && metadata.affectsAudio ? metadata.fragments(for: clip) : nil, missingAudio: (clip.audioFile ?? track.audioFile).map { missingAudioPaths.contains($0.path) } ?? false, waveformOwner: waveformOwner, drawWaveform: !MetalWaveformRenderer.isSupported, clickTiming: track.kind == .click ? clickTiming : [])
                 }
@@ -4580,8 +4580,8 @@ private struct TimelineMetalWaveformLayer: View {
                 guard !excludedClips.contains(source.id) else { continue }
                 let clip = preview ?? source
                 let rect = CGRect(x: clip.startTime * scale + 1,
-                    y: y + CGFloat(rows.lanes[index].lanes[clip.id] ?? 0) * rows.laneHeights[index] + 3,
-                    width: max(2, clip.duration * scale - 2), height: rows.laneHeights[index] - 6)
+                    y: y + rows.itemLaneOffset(clip.id, track: index) + 3,
+                    width: max(2, clip.duration * scale - 2), height: rows.itemLaneHeight(clip.id, track: index) - 6)
                 guard clip.midi == nil, rect.height > 26, rect.intersects(viewport), let file = clip.audioFile ?? track.audioFile,
                       !missingAudioPaths.contains(file.path) else { continue }
                 let silenced = metadata.isSilenced(track) || clip.muted == true
@@ -4971,9 +4971,8 @@ private struct ItemWaveformPreviewOverlay: View {
         if let index = song.tracks.firstIndex(where: { $0.clips.contains { $0.id == id } }),
            let source = song.tracks[index].clips.first(where: { $0.id == id }) {
             let track = song.tracks[index]
-            let lane = CGFloat(rows.lanes[index].lanes[source.id] ?? 0)
-            let y = rulerHeight + rows.offsets[index] + lane * rows.laneHeights[index] + 3
-            let height = rows.laneHeights[index] - 6
+            let y = rulerHeight + rows.offsets[index] + rows.itemLaneOffset(source.id, track: index) + 3
+            let height = rows.itemLaneHeight(source.id, track: index) - 6
             let clip = state.applying(to: source)
             let silenced = renderMetadata.isSilenced(track) || source.muted == true
             TimelineWaveformReadinessLayer(observesWaveforms: !MetalWaveformRenderer.isSupported) { waveformRevision in
@@ -5206,17 +5205,22 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
         path.addQuadCurve(to: CGPoint(x: rect.minX + radius, y: rect.minY), control: rect.origin)
         path.closeSubpath()
     }
+    defer {
+        if selected {
+            context.stroke(path, with: .color(.black), lineWidth: 5)
+            context.stroke(path, with: .color(Color(hex: 0x80ff9c)), lineWidth: 3)
+        }
+    }
     if compact {
         context.fill(path, with: .color(color.opacity(silenced ? 0.55 : 0.88)))
-        if selected { context.stroke(path, with: .color(JarasTheme.green), lineWidth: 1.5) }
     } else {
         context.fill(path, with: .linearGradient(Gradient(colors: [color.opacity(silenced ? 0.55 : 1), color.opacity(silenced ? 0.25 : selected ? 1 : 0.78)]), startPoint: rect.origin, endPoint: CGPoint(x: rect.minX, y: rect.maxY)))
-        context.stroke(path, with: .color(selected ? JarasTheme.green : color.opacity(0.75)), lineWidth: selected ? 1.5 : 0.6)
+        if !selected { context.stroke(path, with: .color(color.opacity(0.75)), lineWidth: 0.6) }
     }
     var titleContext = context
     if !compact {
     titleContext.clip(to: path)
-    titleContext.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height <= 26 ? rect.height : min(GridSelectionItem.headerHeight, rect.height))), with: .color(Color(hex: 0x303030)))
+    titleContext.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height <= 26 ? rect.height : min(GridSelectionItem.headerHeight, rect.height))), with: .color(Color(hex: 0x484848)))
     #if !os(macOS)
     let controls = GridSelectionItem(id: clip.id, rect: rect, gain: clip.gain ?? 1, phaseInverted: clip.phaseInverted == true, pan: clip.pan ?? 0, editable: track.kind == .standard || clip.isProjectionMedia, textEditable: track.kind.isText && !clip.isProjectionMedia)
     #if os(macOS)
@@ -5835,9 +5839,12 @@ final class RegionShortcutView: NSView {
     let offsets: [CGFloat]
     let totalHeight: CGFloat
     init(tracks: [Track], baseHeight: CGFloat) {
+        let recordingTracks = Set(RecordingLaneLayout.shared.items.values.map(\.track))
         let lanes = tracks.map { track in
             var layout = TrackLanes(track: track)
-            layout.count = RecordingLaneLayout.shared.count(for: track.id, existing: layout.count)
+            if recordingTracks.contains(track.id) {
+                layout.reserveRecordingLanes(count: RecordingLaneLayout.shared.count(for: track.id, existing: layout.count))
+            }
             return layout
         }
         self.init(lanes: lanes, baseHeight: baseHeight, scales: tracks.map { TrackHeightGeometry.scale($0.heightScale) }, envelopeCounts: tracks.map { $0.automation?.visibleEnvelopes.count ?? 0 })
@@ -5863,6 +5870,15 @@ final class RegionShortcutView: NSView {
         var running: CGFloat = 0
         offsets = heights.map { value in defer { running += value }; return running }
         totalHeight = running
+    }
+    func itemLaneRatio(_ clipID: UUID, track index: Int) -> CGFloat {
+        CGFloat(lanes[index].count) / CGFloat(max(1, lanes[index].localCount(for: clipID)))
+    }
+    func itemLaneHeight(_ clipID: UUID, track index: Int) -> CGFloat {
+        laneHeights[index] * itemLaneRatio(clipID, track: index)
+    }
+    func itemLaneOffset(_ clipID: UUID, track index: Int) -> CGFloat {
+        CGFloat(lanes[index].localLane(for: clipID)) * itemLaneHeight(clipID, track: index)
     }
 }
 

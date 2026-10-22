@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(CatLiveWindows VERSION 1.1.0 LANGUAGES C CXX)
-set(CATLIVE_VERSION "1.08" CACHE STRING "Public CatLive version (X.XX)")
+set(CATLIVE_VERSION "1.09" CACHE STRING "Public CatLive version (X.XX)")
 if(NOT CATLIVE_VERSION MATCHES "^[0-9]+\\.[0-9][0-9]$")
     message(FATAL_ERROR "CATLIVE_VERSION must use X.XX format.")
 endif()
@@ -90,6 +90,34 @@ target_sources(CatLive PRIVATE Source/Main.cpp Source/Session.cpp Source/Project
     "${CATLIVEROOT}/WindowsNative/Source/StemSeparator.cpp"
     ThirdParty/QRCode/qrcodegen.cpp
     ThirdParty/Monocypher/monocypher.c ThirdParty/Monocypher/monocypher-ed25519.c)
+option(CATLIVE_NATIVE_FRONTEND "Build the optional --native-ui Windows presentation" ON)
+if(CATLIVE_NATIVE_FRONTEND)
+    include(cmake/WebView2.cmake)
+    target_sources(CatLive PRIVATE Source/NativeFrontendHost.cpp Source/FrontendBridge.cpp)
+    target_link_libraries(CatLive PRIVATE CatLiveWebView2Loader)
+    target_compile_definitions(CatLive PRIVATE CATLIVE_NATIVE_FRONTEND=1)
+    add_custom_command(TARGET CatLive POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CATLIVEROOT}/WindowsNative/ui" "$<TARGET_FILE_DIR:CatLive>/native-ui"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/native-ui/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CATLIVEROOT}/Resources/Fonts/Inter" "$<TARGET_FILE_DIR:CatLive>/native-ui/fonts"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/Licenses/WebView2"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CATLIVE_WEBVIEW2_SDK}/LICENSE.txt" "${CATLIVE_WEBVIEW2_SDK}/NOTICE.txt" "$<TARGET_FILE_DIR:CatLive>/Licenses/WebView2")
+    install(DIRECTORY "${CATLIVEROOT}/WindowsNative/ui/" DESTINATION native-ui)
+    install(DIRECTORY "${CATLIVEROOT}/Resources/Fonts/Inter/" DESTINATION native-ui/fonts)
+    install(FILES "${CATLIVE_WEBVIEW2_SDK}/LICENSE.txt" "${CATLIVE_WEBVIEW2_SDK}/NOTICE.txt" DESTINATION Licenses/WebView2)
+    add_executable(NativeFrontendHostTests "${CATLIVEROOT}/WindowsNative/Tests/NativeFrontendHostTests.cpp" Source/NativeFrontendHost.cpp)
+    target_include_directories(NativeFrontendHostTests PRIVATE Source)
+    target_compile_definitions(NativeFrontendHostTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_compile_options(NativeFrontendHostTests PRIVATE /utf-8)
+    target_link_libraries(NativeFrontendHostTests PRIVATE CatLiveWebView2Loader)
+    # WebView2 controllers require an interactive desktop; CI services and SSH
+    # sessions deliberately do not run this window test as part of headless CTest.
+    option(CATLIVE_FRONTEND_INTERACTIVE_TESTS "Run real HWND/WebView2 tests in an interactive Windows desktop" OFF)
+    if(CATLIVE_FRONTEND_INTERACTIVE_TESTS)
+        add_test(NAME NativeFrontendHostTests COMMAND NativeFrontendHostTests)
+        set_tests_properties(NativeFrontendHostTests PROPERTIES TIMEOUT 30)
+    endif()
+endif()
 target_include_directories(CatLive PRIVATE ThirdParty/Monocypher)
 find_path(CATLIVE_FFMPEG_INCLUDE_DIR NAMES libavcodec/avcodec.h
     HINTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/ffmpeg-8.1.2")
@@ -118,6 +146,12 @@ target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_MODAL_LOOPS_PERMITTED=0 NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_compile_options(CatLive PRIVATE /utf-8 /bigobj)
 enable_testing()
+add_executable(Direct2DTextTests "${CATLIVEROOT}/WindowsNative/Tests/Direct2DTextTests.cpp")
+target_compile_definitions(Direct2DTextTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(Direct2DTextTests PRIVATE /utf-8)
+target_link_libraries(Direct2DTextTests PRIVATE d3d11 dxgi d2d1 dwrite windowscodecs ole32)
+# Requires a usable Windows graphics adapter, but creates no visible window and
+# never takes keyboard focus. Run explicitly on the validation PC, not CI VMs.
 foreach(name ProjectSync Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership TempoOwnership Timecode TimecodePlayback ClickTrack)
     add_executable(${name}Tests "${CATLIVEROOT}/Tests/Core/${name}Tests.cpp")
     target_link_libraries(${name}Tests PRIVATE CatLiveCore)

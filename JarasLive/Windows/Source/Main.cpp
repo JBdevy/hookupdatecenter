@@ -6,6 +6,10 @@
 #include "ProjectMigration.h"
 #include "DesktopLayout.h"
 #include "NativeWindowBounds.h"
+#if CATLIVE_NATIVE_FRONTEND
+#include "NativeFrontendHost.h"
+#include "FrontendBridge.h"
+#endif
 #include <BinaryData.h>
 namespace catlive {
 class ProjectTabButton final : public QuietButton {
@@ -274,6 +278,12 @@ class CatLiveApplication final : public JUCEApplication {
                 auth->restore();
             }
             if (!visualTest && !previewHome) { showMode = ShowMode::shared(); showMode->start(); }
+#if CATLIVE_NATIVE_FRONTEND
+            if (args.contains("--native-ui")) {
+                startNativeFrontend(args);
+                return;
+            }
+#endif
             firstWorkspace = std::make_unique<Workspace>(*session, *auth, *lighting, previewHome, appearanceFile);
             auto *content = firstWorkspace.get();
             tabWorkspaces.push_back(content); tabSessions.push_back(session.get());
@@ -350,6 +360,10 @@ class CatLiveApplication final : public JUCEApplication {
     void shutdown() override {
         if (showMode) { showMode->stop(); showMode.reset(); }
         splash.reset();
+#if CATLIVE_NATIVE_FRONTEND
+        nativeBridge.reset();
+        nativeFrontend.reset();
+#endif
         window.reset();
         tabHost.reset();
         extraTabs.clear();
@@ -360,6 +374,9 @@ class CatLiveApplication final : public JUCEApplication {
         setApplicationReturnValue(testResult);
     }
     void systemRequestedQuit() override {
+#if CATLIVE_NATIVE_FRONTEND
+        if (nativeBridge && !closing) { nativeBridge->requestClose(); return; }
+#endif
         if(jaras::projectSync::readOnly()) {
             if(tabHost && tabHost->current)tabHost->current->showError(String::fromUTF8("Project Sync: o PC B está seguindo o PC A. Desative a sincronização antes de encerrar."));
             return;
@@ -376,6 +393,18 @@ class CatLiveApplication final : public JUCEApplication {
         quit();
     }
     void anotherInstanceStarted(const String &arguments) override {
+#if CATLIVE_NATIVE_FRONTEND
+        if (!closing && nativeFrontend) {
+            nativeFrontend->show();
+            auto args = StringArray::fromTokens(arguments, true);
+            for (auto arg : args)
+                if (File::isAbsolutePath(arg.unquoted()) && File(arg.unquoted()).hasFileExtension("jl;bkjl;ziplive;zip")) {
+                    if (nativeBridge) nativeBridge->openProject(File(arg.unquoted()));
+                    break;
+                }
+            return;
+        }
+#endif
         if (closing || !window) return;
         window->toFront(true);
         auto args = StringArray::fromTokens(arguments, true);
@@ -388,6 +417,64 @@ class CatLiveApplication final : public JUCEApplication {
     }
 
   private:
+#if CATLIVE_NATIVE_FRONTEND
+    void startNativeFrontend(const StringArray& args) {
+        // Retain the shipping Session, authorization and audio device. Only the
+        // presentation changes: no Workspace or hidden JUCE editor is created.
+        tabSessions.push_back(session.get());
+        nativeBridge = std::make_unique<FrontendBridge>(*session, *auth, [this](const String& json) {
+            if (nativeFrontend) nativeFrontend->postJSON(utf8(json));
+        });
+        nativeBridge->onCloseApproved = [this] {
+            if (closing) return;
+            closing = true;
+            session->command(jaras::CommandKind::stopAll);
+            session->audio.instrumentAllowed = false;
+            if (nativeFrontend) nativeFrontend->close();
+            quit();
+        };
+        const auto executable = File::getSpecialLocation(File::currentExecutableFile).getParentDirectory();
+        const auto cache = File(SystemStats::getEnvironmentVariable("LOCALAPPDATA",
+            File::getSpecialLocation(File::userApplicationDataDirectory).getFullPathName()))
+            .getChildFile("Hook Developer/CatLive/NativeFrontend");
+        NativeFrontendHost::Options options;
+        options.assetDirectory = executable.getChildFile("native-ui").getFullPathName().toWideCharPointer();
+        options.userDataDirectory = cache.getFullPathName().toWideCharPointer();
+        options.title = (String("CatLive Version ") + getApplicationVersion() + " — Interface Windows (avaliação)").toWideCharPointer();
+        NativeFrontendHost::Callbacks actions;
+        actions.message = [this](std::string json) {
+            if (nativeBridge && !closing) nativeBridge->receive(String::fromUTF8(json.data(), static_cast<int>(json.size())));
+        };
+        actions.ready = [this, args] {
+            if (closing) return;
+            splash.reset();
+            if (nativeFrontend) nativeFrontend->show();
+            if (nativeBridge) nativeBridge->publishSnapshot();
+            for (const auto& argument : args)
+                if (File::isAbsolutePath(argument) && File(argument).hasFileExtension("jl;bkjl;ziplive;zip")) {
+                    if (nativeBridge) nativeBridge->openProject(File(argument));
+                    break;
+                }
+        };
+        actions.closeRequested = [this] { systemRequestedQuit(); };
+        actions.error = [this](std::string error) {
+            // Fail visibly without opening a second editor or granting access.
+            MessageManager::callAsync([this, error = std::move(error)] {
+                if (closing) return;
+                splash.reset();
+                const auto message = String::fromUTF8(error.c_str());
+                MessageBoxW(nativeFrontend ? nativeFrontend->handle() : nullptr,
+                    message.toWideCharPointer(), L"CatLive", MB_OK | MB_ICONERROR);
+                testResult = 1;
+                quit();
+            });
+        };
+        nativeFrontend = std::make_unique<NativeFrontendHost>(std::move(options), std::move(actions));
+        nativeBridge->setOwnerWindow(nativeFrontend->handle());
+    }
+    std::unique_ptr<NativeFrontendHost> nativeFrontend;
+    std::unique_ptr<FrontendBridge> nativeBridge;
+#endif
     void beginClosing() {
         if (closing) return;
         closing = true;

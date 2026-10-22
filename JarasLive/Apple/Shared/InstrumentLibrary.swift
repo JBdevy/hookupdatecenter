@@ -378,18 +378,33 @@ struct InstrumentBrowser: View {
     @Binding var selected: String?
     @ObservedObject private var library = InstrumentLibrary.shared
     @State private var category: InstrumentCategory = .pianos
+    private var touchHeight: CGFloat {
+        #if os(iOS)
+        return 44
+        #else
+        return 28
+        #endif
+    }
     var body: some View {
         VStack(alignment: .leading,spacing: 10) {
+            #if os(iOS)
+            Picker("Category", selection: $category) {
+                ForEach(InstrumentCategory.allCases) { entry in
+                    Text(LocalizedStringKey(entry.rawValue)).tag(entry)
+                }
+            }.pickerStyle(.menu).tint(JarasTheme.green).frame(minHeight: touchHeight)
+            #else
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 82), spacing: 5)], spacing: 5) {
                     ForEach(InstrumentCategory.allCases) { entry in
                         Button { category = entry } label: {
                             Text(LocalizedStringKey(entry.rawValue)).font(.jarasSystem(size: 12, weight: .semibold))
-                                .frame(maxWidth: .infinity).frame(height: 28)
+                                .frame(maxWidth: .infinity).frame(height: touchHeight)
                                 .background(category == entry ? JarasTheme.green.opacity(0.25) : JarasTheme.display)
                                 .clipShape(RoundedRectangle(cornerRadius: 5)).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
             }
+            #endif
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 5) {
                     if !InstrumentLibrary.catalog.contains(where: { $0.category == category }) {
@@ -398,7 +413,7 @@ struct InstrumentBrowser: View {
                     ForEach(InstrumentLibrary.catalog.filter { $0.category == category }) { instrument in
                         HStack(spacing: 12) {
                             Button { selected = instrument.id } label: {
-                                HStack { Image(systemName: "pianokeys"); Text(instrument.name); Spacer() }.frame(maxWidth: .infinity).frame(height: 32).contentShape(Rectangle())
+                                HStack { Image(systemName: "pianokeys"); Text(instrument.name); Spacer() }.frame(maxWidth: .infinity).frame(height: max(32, touchHeight)).contentShape(Rectangle())
                             }.buttonStyle(.plain).disabled(!library.downloaded.contains(instrument.id))
                             if let progress = library.progress[instrument.id] {
                                 ProgressView(value: progress).frame(width: 90).tint(JarasTheme.green)
@@ -406,7 +421,9 @@ struct InstrumentBrowser: View {
                             } else if library.downloaded.contains(instrument.id) {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(JarasTheme.green)
                             } else {
-                                Button("Download") { library.download(instrument.id) }.disabled(library.sources[instrument.id] == nil)
+                                Button { library.download(instrument.id) } label: {
+                                    Text("Download").frame(minHeight: touchHeight)
+                                }.disabled(library.sources[instrument.id] == nil)
                             }
                         }.padding(.horizontal,12).padding(.vertical,3)
                             .background(selected == instrument.id ? JarasTheme.green.opacity(0.2) : JarasTheme.display)

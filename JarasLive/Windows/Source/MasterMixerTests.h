@@ -166,7 +166,7 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
             wheel(*track,{20,20},-.1f,0);
             require(mixer.scrollX()==32,"Horizontal gesture was swallowed by overflowing FX slots");
             reset();wheel(*track,{20,20},.0001f,-.1f,ModifierKeys::shiftModifier);
-            require(mixer.scrollX()==32,"Shift-wheel was redirected into the vertical FX list");
+            require(mixer.scrollX()==0&&!mixer.isSlotsOnly(),"A short Shift-wheel gesture scrolled the mixer or changed its layout");
             reset();
             for(auto *strip:{track,master}) {
                 wheel(*strip,{20,20},0,-.1f);slotClick(*strip);
@@ -249,6 +249,11 @@ inline void MasterMixerTests::run(const File &directory) {
                         require(strip->getLocalBounds().contains(control->getBounds()) &&
                                 !geometry.name.intersects(control->getBounds()),"Compact track name overlaps or clips a mixer control");
                     }
+                    require(!strip->peak->getBounds().intersects(strip->fader.getBounds()),
+                            "Peak readout overlaps the mixer fader");
+                    for(const auto *value:{"-30.00","+24.00"})
+                        require(GlyphArrangement::getStringWidth(theme::semiboldFont(8),value)+4.f<=strip->peak->getWidth(),
+                                "Peak readout clips its two-decimal value at the minimum text size");
                     require(strip->fader.getHeight()>=115,"Compact mixer sacrificed the fader to keep FX slots");
                     if(height<=255)require(geometry.slots.isEmpty()&&strip->visibleSlots()==0&&strip->slotAt({20,20})<0,
                         "Compact mixer still paints or hit-tests hidden FX slots");

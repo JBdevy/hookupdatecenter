@@ -88,9 +88,6 @@ final class NativeEffectsChain {
     }
     private func configureInstances(_ next: NativeFXSettings, rate: Double) {
         for instance in next.instances ?? [] where next.inserted.contains(instance.effectKey) {
-            #if os(iOS)
-            guard instance.kind != "Instruments" else { continue }
-            #endif
             let key = instance.effectKey, value = instance.settings
             let node: AVAudioNode
             if let existing = instanceNodes[key] { node = existing }

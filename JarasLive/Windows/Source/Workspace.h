@@ -148,6 +148,7 @@ class Workspace final : public Component,
     friend struct PartsDividerTests;
     friend struct TrackVisibilityTests;
     friend struct MasterMixerTests;
+    friend struct HozMixerFocusTests;
     friend struct WorkspaceLayoutTests;
     class Caption;
     Session &session;
@@ -266,6 +267,7 @@ class Workspace final : public Component,
     int rowBodyHeight(int index) const;
     const ItemLanes &itemLanes(int index) const;
     int itemLaneHeight(int index) const;
+    ItemLanes::Geometry itemGeometry(int index, const ID &clip, const ItemLanes *preview = nullptr) const;
     mutable uint64 itemLayoutRevision = ~uint64(0);
     mutable std::vector<ItemLanes> itemLayouts;
     int rowTop(int index) const;
@@ -299,6 +301,8 @@ class Workspace final : public Component,
     void handleMasterMenu(int choice, bool barMixer);
     void setBarMixerMasterRight(bool);
     void syncBarMixerMasterSide();
+    void setHozMixerSlotsOnly(bool);
+    void syncHozMixerMode();
     void editMasterColour();
     void showTrackMenu(ID, Point<int>);
     void createTrack();

@@ -107,6 +107,24 @@ let farZoom = render([], items: [enormous])
 precondition(red(farZoom, 64, 50) == 255 && farZoom.alpha(64, 3) == 0, "extreme zoom draws only bounded visible geometry")
 print("METAL_ITEM_GRADIENT_HEADER_OUTLINE_NOTCH_RETINA_BATCH_AND_PRE_WAVEFORM_OK")
 
+// Selection remains distinct even when the track itself is bright green. The
+// dark backing separates the outline from both the item and the grid at 1x/2x.
+for density: Float in [1, 2] {
+    let selected = MetalTimelineItem(rect: CGRect(x: 10, y: 10, width: 100, height: 100),
+        topColor: SIMD4(0, 1, 0, 1), bottomColor: SIMD4(0, 1, 0, 1),
+        borderColor: SIMD4(128.0 / 255, 1, 156.0 / 255, 1),
+        cornerRadius: 3, borderWidth: 3, borderBackdropWidth: 5)
+    let pixels = render([], density: density, items: [selected])
+    let y = Int(60 * density)
+    precondition(green(pixels, Int(10 * density), y) > 240 && red(pixels, Int(10 * density), y) > 115,
+        "Selected item must have a bright, opaque outline")
+    precondition(green(pixels, Int(12 * density), y) < 170,
+        "Dark backing must separate the selected outline from a green item")
+    precondition(pixels.alpha(Int(6 * density), y) == 0 && green(pixels, Int(20 * density), y) == 255,
+        "Selection must stay bounded and leave the interior color unchanged")
+}
+print("METAL_SELECTION_OUTLINE_CONTRAST_ON_GREEN_AT_1X_AND_2X_OK")
+
 func waveform(scale: SIMD2<Float> = SIMD2(1, 32), translation: SIMD2<Float> = SIMD2(20, 50), channel: Int = 0,
               clip: CGRect = item, colour: SIMD4<Float> = SIMD4(0.7, 0.7, 0.7, 0.8)) -> MetalWaveformStroke {
     MetalWaveformStroke(block: block, channel: channel, scale: scale, translation: translation,

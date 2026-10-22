@@ -25,6 +25,7 @@ class Workspace::Setlist final : public Component,
         };
         addAndMakeVisible(playlistMenu);
         playlistMenu.setName("Escolher playlist");
+        playlistMenu.setComponentID("setlistPlaylistSelector");
         playlistMenu.context = [this] { playlistOptions(currentState().selectedId, false); };
         playlistMenu.open = [this] { choosePlaylist(); };
         playlistMenu.getProperties().set("outlined", true);
@@ -193,7 +194,7 @@ class Workspace::Setlist final : public Component,
 
         if (entries.empty())
             g.drawFittedText(search.getText().isEmpty() ? "No regions" : "No matching songs", 16,
-                             searching ? 122 : 92, getWidth() - 32, 44, Justification::centred, 2);
+                             searching ? 122 : 92, getWidth() - 32, 44, Justification::centred, 2, 1.f);
     }
     void refresh() {
         refreshing = true;
@@ -463,11 +464,17 @@ class Workspace::Setlist final : public Component,
     SetlistRows list;
     class PlaylistBox final : public ComboBox {
       public:
+        PlaylistBox() {
+            setWantsKeyboardFocus(false);
+            setMouseClickGrabsKeyboardFocus(false);
+        }
         std::function<void()> context, open;
         void mouseDown(const MouseEvent &e) override { if(e.mods.isPopupMenu()) { if(context)context(); } else if(open)open(); }
         void mouseUp(const MouseEvent &) override {}
         bool keyPressed(const KeyPress &key) override {
-            if(key==KeyPress::spaceKey || key==KeyPress::returnKey || key==KeyPress::downKey) { if(open)open();return true; }
+            // Space belongs to the transport, including after dismissing the
+            // playlist callout. Let it bubble to the normal workspace routing.
+            if(key==KeyPress::returnKey || key==KeyPress::downKey) { if(open)open();return true; }
             return false;
         }
     } playlistMenu;

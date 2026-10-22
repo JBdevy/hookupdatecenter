@@ -61,6 +61,9 @@ struct GridSelectionItem {
     // horizontal index are reused; only the row projection changes.
     var trackIndex: Int? = nil
     var laneIndex: Int = 0
+    // Component-local lanes can occupy a multiple/fraction of the track's
+    // conventional lane height. Keep this immutable alongside the item ID.
+    var laneHeightRatio: CGFloat = 1
     var headerRect: CGRect { visibleHeader ?? rect }
     private var controlStart: CGFloat { headerRect.minX + 2 * Self.headerScale }
     // Pack controls in display order, using the rendered readout widths.
@@ -238,6 +241,13 @@ final class GridSelectionLayout {
     let items: [GridSelectionItem]
     let timeCoordinates: Bool
     private let ids: [UUID: Int]
+    private struct RowIdentity: Hashable {
+        let y: CGFloat
+        let height: CGFloat
+        let track: Int?
+        let lane: Int
+        let ratio: CGFloat
+    }
     private struct Row {
         let minY: CGFloat
         let maxY: CGFloat
@@ -254,8 +264,9 @@ final class GridSelectionLayout {
         func rectangle(_ item: GridSelectionItem) -> CGRect {
             guard let track = item.trackIndex, offsets.indices.contains(track), laneHeights.indices.contains(track) else { return item.rect }
             var rect = item.rect
-            rect.origin.y = top + offsets[track] + CGFloat(item.laneIndex) * laneHeights[track] + 3
-            rect.size.height = max(0, laneHeights[track] - 6)
+            let height = laneHeights[track] * item.laneHeightRatio
+            rect.origin.y = top + offsets[track] + CGFloat(item.laneIndex) * height + 3
+            rect.size.height = max(0, height - 6)
             return rect
         }
     }
@@ -265,8 +276,12 @@ final class GridSelectionLayout {
         self.items = items; self.timeCoordinates = timeCoordinates
         rowProjection = nil
         ids = Dictionary(items.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
-        let groups = Dictionary(grouping: items.indices, by: { items[$0].rect.minY })
-        rows = groups.map { y, indices in
+        let groups = Dictionary(grouping: items.indices) { index in
+            let item = items[index]
+            return RowIdentity(y: item.rect.minY, height: item.rect.height,
+                               track: item.trackIndex, lane: item.laneIndex, ratio: item.laneHeightRatio)
+        }
+        rows = groups.map { identity, indices in
             let ordered = indices.sorted {
                 let left = items[$0].rect.minX, right = items[$1].rect.minX
                 return left == right ? $0 < $1 : left < right
@@ -276,9 +291,9 @@ final class GridSelectionLayout {
                 maximum = max(maximum, items[index].rect.maxX)
                 return maximum
             }
-            return Row(minY: y, maxY: indices.map { items[$0].rect.maxY }.max() ?? y,
+            return Row(minY: identity.y, maxY: identity.y + identity.height,
                        indices: ordered, starts: ordered.map { items[$0].rect.minX }, maximumEnds: ends)
-        }.sorted { $0.minY < $1.minY }
+        }.sorted { $0.minY == $1.minY ? ($0.indices.first ?? 0) < ($1.indices.first ?? 0) : $0.minY < $1.minY }
         var maximum = -CGFloat.infinity
         rowMaximumEnds = rows.map { row in
             maximum = max(maximum, row.maxY)
@@ -297,7 +312,7 @@ final class GridSelectionLayout {
             let rect = projection.rectangle(original.items[row.indices[0]])
             return Row(minY: rect.minY, maxY: rect.maxY, indices: row.indices,
                        starts: row.starts, maximumEnds: row.maximumEnds)
-        }
+        }.sorted { $0.minY == $1.minY ? ($0.indices.first ?? 0) < ($1.indices.first ?? 0) : $0.minY < $1.minY }
         var maximum = -CGFloat.infinity
         rowMaximumEnds = rows.map { row in
             maximum = max(maximum, row.maxY)
@@ -316,8 +331,8 @@ final class GridSelectionLayout {
         }
         return item
     }
-    /// Candidates retain the original per-row paint/hit order even when clips
-    /// overlap or their storage order differs from their timeline positions.
+    /// Candidates retain the original paint/hit order even when clips occupy
+    /// different local lane heights or storage differs from timeline order.
     func candidates(in rect: CGRect, pixelsPerSecond: CGFloat) -> [Int] {
         guard !rows.isEmpty, pixelsPerSecond > 0, pixelsPerSecond.isFinite else { return [] }
         // Include the fixed item inset and minimum two-point clip width.
@@ -335,11 +350,11 @@ final class GridSelectionLayout {
                     if items[itemIndex].rect.maxX >= left { matching.append(itemIndex) }
                     index += 1
                 }
-                result.append(contentsOf: matching.sorted())
+                result.append(contentsOf: matching)
             }
             rowIndex += 1
         }
-        return result
+        return result.sorted()
     }
     private static func lowerBound(_ values: [CGFloat], _ value: CGFloat) -> Int {
         var low = 0, high = values.count

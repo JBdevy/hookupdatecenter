@@ -1,5 +1,3 @@
-#import <TargetConditionals.h>
-#if TARGET_OS_OSX
 #import "JarasSoundFont.h"
 #include "CatMIDISequenceBridge.h"
 #include <atomic>
@@ -256,5 +254,3 @@ struct InstrumentRenderer {
 }
 - (void)silence { _renderer->silenceRequested.store(true); }
 @end
-
-#endif

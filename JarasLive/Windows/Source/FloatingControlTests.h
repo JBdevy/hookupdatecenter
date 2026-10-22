@@ -56,6 +56,47 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         session.undo();require(JSON::toString(session.snapshot())==before,"One Undo did not restore group, items and FX exactly");
         session.redo();require(session.song()->tracks.size()==1,"One Redo did not remove the selection");
     });
+    test("Closing the Setlist playlist selector returns Space to transport without stealing text or modal input", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(fixture()));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);
+        Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("playlist-focus",".json"));
+        w.setSize(1366,768);w.addToDesktop(ComponentPeer::windowIsTemporary);w.setVisible(true);w.grabKeyboardFocus();pump();
+        auto *selector=dynamic_cast<ComboBox *>(uiFeatureTests::find(w,"setlistPlaylistSelector"));
+        require(selector,"Setlist playlist selector missing");
+        require(!selector->getWantsKeyboardFocus()&&!selector->getMouseClickGrabsKeyboardFocus(),
+                "Playlist mouse click still takes transport keyboard focus");
+        const Point<float> at{10,10};
+        selector->mouseDown(MouseEvent(Desktop::getInstance().getMainMouseSource(),at,
+            ModifierKeys(ModifierKeys::leftButtonModifier),1,0,0,0,0,selector,selector,
+            Time::getCurrentTime(),at,Time::getCurrentTime(),1,false));pump();
+        auto *callout=dynamic_cast<CallOutBox *>(Component::getCurrentlyModalComponent());
+        require(callout,"Playlist mouse click did not open the picker");
+        require(!w.keyPressed(KeyPress(KeyPress::spaceKey))&&!session.transport().playing,
+                "Space escaped the open playlist modal");
+        callout->dismiss();pump();
+        require(!Component::getCurrentlyModalComponent(),"Playlist picker failed to close");
+        require(!selector->keyPressed(KeyPress(KeyPress::spaceKey)),"Closed playlist selector still consumes Space");
+        auto *peer=w.getPeer();require(peer,"Workspace native peer missing");
+        require(peer->handleKeyPress(KeyPress(KeyPress::spaceKey))&&session.transport().playing,
+                "Space after dismissing playlist did not start playback");
+        require(!Component::getCurrentlyModalComponent(),"Space reopened the playlist picker");
+        peer->handleKeyPress(KeyPress(KeyPress::spaceKey));
+        require(session.transport().playing,"Held Space toggled playback repeatedly");
+        peer->handleKeyUpOrDown(false);peer->handleKeyPress(KeyPress(KeyPress::spaceKey));
+        require(!session.transport().playing,"Space after release did not stop playback");peer->handleKeyUpOrDown(false);
+        // Even focus assigned by an accessibility client must bubble Space.
+        selector->setWantsKeyboardFocus(true);selector->grabKeyboardFocus();pump();
+        peer->handleKeyPress(KeyPress(KeyPress::spaceKey));
+        require(session.transport().playing&&!Component::getCurrentlyModalComponent(),
+                "Focused playlist selector reopened instead of routing Space");
+        peer->handleKeyUpOrDown(false);peer->handleKeyPress(KeyPress(KeyPress::spaceKey));peer->handleKeyUpOrDown(false);
+        require(!session.transport().playing,"Focused selector failed to route Stop");
+        TextEditor editor;w.addAndMakeVisible(editor);editor.setBounds(300,100,200,25);editor.grabKeyboardFocus();pump();
+        peer->handleKeyPress(KeyPress(KeyPress::spaceKey,ModifierKeys(),L' '));
+        require(editor.getText()==" "&&!session.transport().playing&&!Component::getCurrentlyModalComponent(),
+                "Typing Space in a text field triggered playback or playlist picker");
+    });
     test("FX window routes transport and undo while preserving text, local keys and held Space", [&] {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(fixture()));session.audio.setOffline(true);
         Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("floating-keys",".json"));w.setSize(1366,768);

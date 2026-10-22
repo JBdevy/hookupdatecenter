@@ -340,8 +340,10 @@ void Engine::moveRegion(const ID& id, double start) {
             start = repelRegionMarkers(song, region, start);
             const double oldStart = region.startTime, oldEnd = region.endTime, delta = start - oldStart;
             for (auto& track : song.tracks) for (auto& clip : track.clips)
-                if (regionOwns(song, id, clip.regionOwnerID))
+                if (regionOwns(song, id, clip.regionOwnerID)) {
                     clip.startTime = std::max(0.0, clip.startTime + delta);
+                    song.duration = std::max(song.duration, clip.startTime + clip.duration);
+                }
             for (auto& child : song.parts) if (child.parentRegionID == id) { child.startTime += delta; child.endTime += delta; }
             // Follow persisted membership, including a special region's children.
             if (song.markers) for (auto& marker : *song.markers) {

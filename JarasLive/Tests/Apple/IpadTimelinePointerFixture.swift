@@ -82,6 +82,8 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         func recognizers() -> [UIGestureRecognizer] {
             (window!.gestureRecognizers ?? []).filter { $0.delegate === capture }
         }
+        expect(Bundle.main.object(forInfoDictionaryKey: "UIApplicationSupportsIndirectInputEvents") as? Bool == true,
+               "Bundle must opt into real indirect pointer events on iPadOS 16")
         let attached = recognizers()
         expect(attached.count == 2, "Pointer and wheel must attach once to the UIWindow")
         guard let pointer = attached.first(where: { $0 is IpadGridPointerRecognizer }) as? IpadGridPointerRecognizer,
@@ -104,7 +106,7 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         let editor = UITextView(frame: CGRect(x: 100, y: 150, width: 100, height: 40)); surface.addSubview(editor)
         expect(!capture.gestureRecognizer(pointer, shouldReceive: PointerTouch(target: editor, point: point)), "UITextView captured")
         let protectedWheel = WheelRecognizer(); protectedWheel.samplePoint = CGPoint(x: 120, y: 120)
-        expect(!capture.gestureRecognizerShouldBegin(protectedWheel), "Wheel captured a nested control")
+        expect(capture.gestureRecognizerShouldBegin(protectedWheel), "Grid wheel must zoom over item header controls")
         protectedWheel.samplePoint = CGPoint(x: 120, y: 170)
         expect(!capture.gestureRecognizerShouldBegin(protectedWheel), "Wheel captured a text view")
         protectedWheel.samplePoint = CGPoint(x: 10, y: 10)
@@ -207,6 +209,56 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         capture.detach()
         expect(recognizers().isEmpty, "Detached probe leaked window recognizers")
         capture.removeFromSuperview()
+        // Real nested scroll views reproduce the wheel-owner competition that a
+        // flat UIView fixture cannot catch. Event payloads remain synthetic.
+        let mixer = UIScrollView(frame: CGRect(x: 20, y: 100, width: 180, height: 300))
+        let grid = UIScrollView(frame: CGRect(x: 220, y: 100, width: 400, height: 300))
+        mixer.contentSize = CGSize(width: 180, height: 1400)
+        grid.contentSize = CGSize(width: 400, height: 1400)
+        mixer.panGestureRecognizer.allowedScrollTypesMask = [.continuous, .discrete]
+        grid.panGestureRecognizer.allowedScrollTypesMask = [.continuous, .discrete]
+        let mixerTouches = mixer.panGestureRecognizer.allowedTouchTypes
+        let gridTouches = grid.panGestureRecognizer.allowedTouchTypes
+        workspace.view.addSubview(mixer); workspace.view.addSubview(grid)
+        let gridContent = UIView(frame: CGRect(origin: .zero, size: grid.contentSize))
+        grid.addSubview(gridContent)
+        let gridCapture = IpadTimelinePointerView(frame: gridContent.bounds)
+        gridCapture.accepts = { _ in true }; gridCapture.setEnabled(true, reset: UUID())
+        gridContent.addSubview(gridCapture)
+        await wait()
+        let owned = (window!.gestureRecognizers ?? []).filter { $0.delegate === gridCapture }
+        let gridWheel = owned.first { $0 is UIPanGestureRecognizer }!
+        let gridPointer = owned.first { $0 is IpadGridPointerRecognizer }!
+        expect(grid.panGestureRecognizer.allowedScrollTypesMask.isEmpty, "Grid UIScrollView still competes for mouse/trackpad wheel")
+        expect(mixer.panGestureRecognizer.allowedScrollTypesMask == [.continuous, .discrete], "Grid wheel policy disabled TrackMixer scrolling")
+        expect(grid.isScrollEnabled && grid.panGestureRecognizer.isEnabled && grid.panGestureRecognizer.allowedTouchTypes == gridTouches,
+               "Grid wheel policy disabled touch pan")
+        expect(mixer.panGestureRecognizer.allowedTouchTypes == mixerTouches, "Grid wheel policy changed mixer touch input")
+        grid.setContentOffset(CGPoint(x: 0, y: 300), animated: false)
+        mixer.setContentOffset(CGPoint(x: 0, y: 300), animated: false)
+        let nestedWheel = WheelRecognizer(); nestedWheel.samplePoint = CGPoint(x: 150, y: 400)
+        var zoom = 1.0
+        gridCapture.wheel = { delta, _ in zoom *= exp(Double(delta.y) * 0.009) }
+        expect(gridCapture.gestureRecognizerShouldBegin(nestedWheel), "Visible grid wheel rejected after vertical scroll")
+        nestedWheel.delta = CGPoint(x: 0, y: 20)
+        gridCapture.perform(NSSelectorFromString("wheelChanged:"), with: nestedWheel)
+        expect(zoom > 1 && grid.contentOffset.y == 300, "Grid wheel failed to zoom without vertical movement")
+        nestedWheel.samplePoint = CGPoint(x: 150, y: 200)
+        expect(!gridCapture.gestureRecognizerShouldBegin(nestedWheel), "Clipped grid content captured wheel outside viewport")
+        nestedWheel.samplePoint = CGPoint(x: -100, y: 400)
+        expect(!gridCapture.gestureRecognizerShouldBegin(nestedWheel), "Grid zoom captured wheel over TrackMixer")
+        let finger = PointerTouch(target: gridContent, point: grid.convert(CGPoint(x: 150,y: 400), to: window), kind: .direct)
+        expect(!gridCapture.gestureRecognizer(gridPointer, shouldReceive: finger), "Grid pointer intercepted touch scroll")
+        expect(!gridCapture.gestureRecognizer(gridWheel, shouldRecognizeSimultaneouslyWith: grid.panGestureRecognizer),
+               "Grid wheel simultaneously moves native vertical scroll")
+        gridCapture.setEnabled(false, reset: UUID())
+        expect(grid.panGestureRecognizer.allowedScrollTypesMask == [.continuous, .discrete], "Disabled grid input did not restore native wheel policy")
+        gridCapture.setEnabled(true, reset: UUID())
+        expect(grid.panGestureRecognizer.allowedScrollTypesMask.isEmpty, "Re-enabling grid input lost zoom wheel ownership")
+        expect(mixer.panGestureRecognizer.allowedScrollTypesMask == [.continuous, .discrete], "Toggling grid input disabled mixer wheel")
+        gridCapture.detach()
+        expect(grid.panGestureRecognizer.allowedScrollTypesMask == [.continuous, .discrete], "Detaching grid pointer failed to restore native wheel policy")
+        gridCapture.removeFromSuperview(); grid.removeFromSuperview(); mixer.removeFromSuperview()
         write(failures.isEmpty ? "IPAD_TIMELINE_POINTER_UIKIT_OK assertions=\(assertions)" : "FAIL: " + failures.joined(separator: "; "))
     }
     func write(_ output: String) {

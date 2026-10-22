@@ -841,6 +841,8 @@ public struct PlaybackSnapshot: Codable, Sendable { public var transport: Transp
 public struct TrackLanes: Equatable {
     public var lanes: [UUID: Int] = [:]
     public var count: Int = 1
+    private var localCounts: [UUID: Int] = [:]
+    private var localLanes: [UUID: Int] = [:]
     public init(track: Track) {
         var ends: [Double] = []
         let ordered = track.clips.sorted {
@@ -867,6 +869,37 @@ public struct TrackLanes: Equatable {
             placed.append(clip)
         }
         count = max(1, (lanes.values.max() ?? 0) + 1)
+        // Connected overlap components have independent vertical geometry.
+        // A gap (including exactly touching edges) releases the whole height;
+        // a long item connecting two overlaps keeps a stable lane throughout.
+        var component: [AudioClip] = []
+        var componentEnd = -Double.infinity
+        func finishComponent() {
+            guard !component.isEmpty else { return }
+            let used = Set(component.compactMap { lanes[$0.id] }).sorted()
+            let compact = Dictionary(uniqueKeysWithValues: used.enumerated().map { ($0.element, $0.offset) })
+            for clip in component {
+                localCounts[clip.id] = max(1, used.count)
+                localLanes[clip.id] = compact[lanes[clip.id] ?? 0] ?? 0
+            }
+            component.removeAll(keepingCapacity: true)
+        }
+        for clip in ordered {
+            if clip.startTime >= componentEnd - 1e-9 { finishComponent() }
+            if component.isEmpty { componentEnd = clip.startTime + clip.duration }
+            else { componentEnd = max(componentEnd, clip.startTime + clip.duration) }
+            component.append(clip)
+        }
+        finishComponent()
+    }
+    public func localCount(for clipID: UUID) -> Int { localCounts[clipID] ?? count }
+    public func localLane(for clipID: UUID) -> Int { localLanes[clipID] ?? lanes[clipID] ?? 0 }
+    /// An active take grows independently of the project snapshot. Reserve the
+    /// conventional lanes until Stop commits its complete overlap component.
+    public mutating func reserveRecordingLanes(count reserved: Int) {
+        count = max(count, reserved)
+        localCounts.removeAll(keepingCapacity: true)
+        localLanes.removeAll(keepingCapacity: true)
     }
     /// No overlapping item means lane zero, regardless of items elsewhere.
     public func recordingLane(start: Double, duration: Double, clips: [AudioClip]) -> Int {
@@ -1008,6 +1041,7 @@ public extension Song {
                     result.duration = max(result.duration, newEnd)
                 } else if itemBelongs(clip, to: id) {
                     result.tracks[track].clips[index].startTime = max(0, clip.startTime + delta)
+                    result.duration = max(result.duration, result.tracks[track].clips[index].startTime + clip.duration)
                 }
             }
         }

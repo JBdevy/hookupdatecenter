@@ -19,7 +19,7 @@ for begin,end in [('struct TrackMixerHeightGeometry','\n#endif'),('private struc
  a=s.index(begin);parts.append(s[a:s.index(end,a)])
 m=Path('Apple/Shared/StemAudioPlayback.swift').read_text()
 a=m.index('@MainActor final class TrackMeterLevel');parts.append(m[a:m.index('/// Item edges',a)])
-a=m.index('/// Uses the existing stereo readings');parts.append(m[a:m.index('\n#if os(macOS)\nprivate final class PreparedSoundFont',a)])
+a=m.index('/// Uses the existing stereo readings');parts.append(m[a:m.index('private final class PreparedSoundFont',a)])
 v=Path('Apple/Shared/TimelineGridView.swift').read_text()
 a=v.index('private struct TimelineTrackRowsContainer');parts.append(v[a:v.index('private struct TimelineMixerIdentity',a)])
 edge=Path('Apple/Shared/GridScrollView.swift').read_text()

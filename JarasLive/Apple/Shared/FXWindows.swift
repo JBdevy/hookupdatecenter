@@ -37,9 +37,6 @@ struct FXInsertEditor: View {
     #endif
     private var availableEffects: [String] {
         var result = NativeFXSettings.order.filter { $0 != "Instruments" || (clip == nil && track != nil && targets.count == 1) }
-        #if os(iOS)
-        result.removeAll { $0 == "Instruments" }
-        #endif
         if targets.count == 1 { result.append(NativeFXSettings.stemSeparator) }
         #if os(macOS)
         result.insert("External", at: 0)
@@ -186,7 +183,13 @@ struct FXInsertEditor: View {
                     #if os(iOS)
                     .buttonStyle(StageButtonStyle(color: JarasTheme.green))
                     #endif
-                }.padding(20).frame(width: effect == "Instruments" ? 440 : 360).foregroundStyle(JarasTheme.text)
+                }.padding(20)
+                #if os(macOS)
+                .frame(width: effect == "Instruments" ? 440 : 360)
+                #else
+                .frame(maxWidth: .infinity)
+                #endif
+                .foregroundStyle(JarasTheme.text)
         .onAppear { instrument = (clip.map(show.clipFXSettings) ?? show.fxSettings(track)).instrumentID; resize(210) }
         .onChange(of: effect) { value in resize(value == "Instruments" ? 500 : value == "External" ? 310 : 210) }
         #if os(macOS)

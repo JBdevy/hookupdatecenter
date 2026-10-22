@@ -39,7 +39,7 @@ inline std::vector<double> clickBeats(const jaras::Song &song,const jaras::Audio
 }
 // Match TimelineTempo.snap: visible divisions plus region/marker/cursor anchors.
 inline double snap(double time, const jaras::Song &song, double scale, bool free,
-                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false, const std::set<ID> *excludedItems = nullptr) {
+                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false, const std::set<ID> *excludedItems = nullptr, const ID *excludedRegion = nullptr) {
     if (!std::isfinite(time) || !std::isfinite(scale) || scale <= 0) return 0;
     const double position=std::max(0.,time);
     if (free || !std::isfinite(scale) || scale<=0) return position;
@@ -62,7 +62,7 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
     double nearest=0,distance=position;
     auto consider=[&](double anchor) {if(!std::isfinite(anchor)||anchor<0)return;const auto d=std::abs(anchor-position);if(d<distance||(d==distance&&anchor<nearest)){nearest=anchor;distance=d;}};
     if(step>0)consider(std::min(active.end,active.start+std::round((position-active.start)/step)*step));
-    for(const auto &part:song.parts){consider(part.startTime);consider(part.endTime);}
+    for(const auto &part:song.parts) if(!excludedRegion || part.id!=*excludedRegion){consider(part.startTime);consider(part.endTime);}
     if(song.markers)for(const auto &marker:*song.markers)consider(marker.position);
     if(includeItemEdges) for(const auto &track:song.tracks) for(const auto &clip:track.clips) if(!excludedItems||!excludedItems->count(clip.id)) {
         consider(clip.startTime);consider(clip.startTime+clip.duration);

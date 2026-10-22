@@ -1491,6 +1491,7 @@
 "Could not access the selected file." = "Could not access the selected file.";
 
 "Arm an audio track before recording." = "Arm an audio track before recording.";
+"Arm at least one track before recording." = "Arm at least one track before recording.";
 "The region and its contents will be deleted." = "The region and its contents will be deleted.";
 
 "Open Remote on another device and choose this iPad." = "Open Remote on another device and choose this iPad.";

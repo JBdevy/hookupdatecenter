@@ -294,10 +294,8 @@ final class OfflineAudioExport {
             changed = needed.count != before
         }
         var voices: [Voice] = []
-        #if os(macOS)
         var midiSamplers: [JarasSoundFont] = []
         defer { midiSamplers.forEach { $0.silence() } }
-        #endif
         var clickGenerators: [JarasMetronomeGenerator] = []
         defer { withExtendedLifetime(clickGenerators) {} }
         var starts: [(AVAudioPlayerNode,AVAudioTime,Double)] = []
@@ -530,7 +528,6 @@ final class OfflineAudioExport {
                 }))
             }
             #endif
-#if os(macOS)
             for key in fx.instrumentKeys where fx.isEnabled(key) {
                 if cancellation.cancelled { throw CancellationError() }
                 guard let source = instruments[key], let destination = effects.instrumentInput(for: key) else {
@@ -554,7 +551,6 @@ final class OfflineAudioExport {
                 }))
                 midiSamplers.append(sampler)
             }
-#endif
 
         }
         func addClick(track: Track, clips: [AudioClip], bus: Bus, start: Double, end: Double) throws {

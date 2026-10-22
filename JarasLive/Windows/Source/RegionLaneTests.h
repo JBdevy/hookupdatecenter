@@ -46,6 +46,41 @@ inline MouseEvent mouse(Component &canvas, Point<float> at, Point<float> anchor,
 }
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Region movement preserves long audio tails, MIDI and explicit loose ownership across saves", [] {
+        auto project=fixture();auto &song=project.songs[0];song.duration=31;
+        auto &audio=song.tracks[1].clips[0];audio.startTime=15;audio.duration=15.153840445;
+        auto midi=audio;midi.id="midi-tail";midi.audioFile.reset();midi.midi.emplace();
+        song.tracks[1].clips.push_back(midi);
+        const auto original=ProjectCodec::encode(project);
+        song.tracks[0].clips[0].regionOwnerID.reset();
+        auto restored=ProjectCodec::decode(ProjectCodec::encode(project,original));
+        require(!restored.songs[0].tracks[0].clips[0].regionOwnerID,
+                "Save resurrected a detached item's stale owner from the original document");
+        jaras::Engine engine;engine.loadProject(restored);
+        const auto before=*engine.currentSong();
+        const auto preview=previewRegionEdit(before,"second",35,50,false);
+        require(preview.has_value(),"Long-tail audio/MIDI region preview failed");
+        engine.moveRegion("second",35);
+        for(const auto &id:{"item-second","midi-tail"}) {
+            require(closeEnough(clip(*preview,id).startTime,35) && closeEnough(clip(*engine.currentSong(),id).startTime,35),
+                    "Audio or MIDI extending beyond the region stayed behind");
+            require(closeEnough(clip(*engine.currentSong(),id).duration,15.153840445),"Region drag changed media duration");
+        }
+        engine.loadProject(ProjectCodec::decode(ProjectCodec::encode(engine.project())));
+        engine.moveRegion("second",15);
+        require(closeEnough(clip(*engine.currentSong(),"item-second").startTime,15) &&
+                closeEnough(clip(*engine.currentSong(),"midi-tail").startTime,15),"Save/reopen lost region membership");
+        require(closeEnough(clip(*engine.currentSong(),"item-first").startTime,1),"Move acquired a loose item");
+    });
+    test("Region marker repulsion uses the same zoom-aware margin and direction as Mac", [] {
+        const auto song=fixture().songs[0];
+        const auto &region=part(song,"second");
+        RegionMarkerRepulsion repulsion(song,region,1);
+        require(closeEnough(repulsion.resolve(4),3),"Leftward collision did not repel to the left edge");
+        require(closeEnough(repulsion.resolve(4.8),5),"Nearest right edge not chosen");
+        require(closeEnough(repulsion.resolve(10),10),"Unrelated marker changed free movement");
+        require(closeEnough(repulsion.resolve(-10),0),"Region may move before project start");
+    });
     test("Timeline region names and fractional BPM labels match the Mac display strings", [] {
         struct NameCase {const char *source;const char *display;};
         for (const auto &entry:std::initializer_list<NameCase>{

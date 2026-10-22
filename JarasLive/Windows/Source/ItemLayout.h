@@ -5,10 +5,16 @@ namespace catlive {
 // ProjectModels.TrackLanes: simultaneous items occupy distinct visual lanes.
 struct ItemLanes {
     std::map<ID, int> lanes;
+    struct Placement { int lane = 0, count = 1; };
+    std::map<ID, Placement> placements;
     int count = 1;
-    explicit ItemLanes(const jaras::Track &track) {
-        std::vector<const jaras::AudioClip *> ordered, placed, takes;
-        for (const auto &clip : track.clips) ordered.push_back(&clip);
+    static std::vector<const jaras::AudioClip*> references(const jaras::Track &track) {
+        std::vector<const jaras::AudioClip*> result;result.reserve(track.clips.size());
+        for(const auto &clip:track.clips)result.push_back(&clip);return result;
+    }
+    explicit ItemLanes(const jaras::Track &track):ItemLanes(references(track)) {}
+    explicit ItemLanes(std::vector<const jaras::AudioClip*> ordered) {
+        std::vector<const jaras::AudioClip *> placed, takes;
         const auto chronological = [](const auto *a, const auto *b) {
             return a->startTime != b->startTime ? a->startTime < b->startTime : a->id < b->id;
         };
@@ -32,8 +38,29 @@ struct ItemLanes {
                     lane = std::max(lane, lanes.at(other->id) + 1);
             lanes[clip->id] = lane; placed.push_back(clip); count = std::max(count, lane + 1);
         }
+        // Only items connected by a real temporal overlap share vertical space.
+        // An isolated clip fills the row even if other songs have multiple takes.
+        for (size_t first=0; first<ordered.size();) {
+            size_t last=first+1;
+            double end=ordered[first]->startTime+ordered[first]->duration;
+            while(last<ordered.size() && ordered[last]->startTime<end-1e-9) {
+                end=std::max(end,ordered[last]->startTime+ordered[last]->duration);++last;
+            }
+            std::set<int> used;
+            for(size_t i=first;i<last;++i)used.insert(lanes.at(ordered[i]->id));
+            std::map<int,int> compact;int next=0;for(int lane:used)compact.emplace(lane,next++);
+            for(size_t i=first;i<last;++i)placements.emplace(ordered[i]->id,Placement{compact.at(lanes.at(ordered[i]->id)),(int)used.size()});
+            first=last;
+        }
     }
     int lane(const ID &id) const { const auto at = lanes.find(id); return at == lanes.end() ? 0 : at->second; }
+    Placement placement(const ID &id) const { const auto at=placements.find(id);return at==placements.end()?Placement{}:at->second; }
+    struct Geometry { float top, height; };
+    Geometry geometry(const ID &id, float bodyHeight, bool recording = false) const {
+        const auto p=recording?Placement{lane(id),count}:placement(id);
+        const float height=bodyHeight/std::max(1,p.count);
+        return {p.lane*height,height};
+    }
 };
 // ClipRepetitionBoundaries: show visible source repeats, skipping subpixel seams.
 inline std::vector<float> itemLoopSeams(const jaras::AudioClip &clip, juce::Rectangle<float> bounds, float viewportWidth, double scale) {

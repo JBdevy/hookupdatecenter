@@ -1,8 +1,28 @@
-# CatLive WindowsNative foundation
+# CatLive Windows interface migration and native foundations
 
 This directory contains the replacement foundations for the Windows application without JUCE: shared project/transport code, native document actions, audio-file decoding, SF2 synthesis, Rust device I/O and reusable browser UI controls.
 
-It is **not yet a complete replacement application**. Building this directory produces libraries, tests and command-line examples. It does not install a new CatLive window, migrate the complete interface, or connect a finished playback/recording engine to the devices. The existing application under `../Windows/` is a separate implementation and still contains JUCE until the replacement is integrated and validated.
+The interface migration now has a real, optional Windows window: `../Windows/Source/NativeFrontendHost.cpp` owns an HWND and WebView2, `ui/app.html` is the local interface, and `../Windows/Source/FrontendBridge.cpp` connects its commands to the shipping `Session` and `AudioEngine`. The new host does not create a hidden `Workspace`, a second project model or a second audio engine. Audio processing, streaming, device access and authorization continue through the existing application.
+
+This is **a partial interface migration**, not a complete replacement. Starting CatLive normally still opens the existing interface with its full feature set. `CatLive.exe --native-ui` opens the new interface for review. It remains single-instance: save and close the existing CatLive window before opening the review interface, so both copies do not compete for the audio device. No release should substitute it for the default interface before feature parity and user review.
+
+Building this `WindowsNative/` directory alone still produces the independent foundation libraries, tests and command-line examples described below. The actual optional window is built by `../Windows/CMakeLists.txt`, which continues to link the existing JUCE-based application/backend. The new HWND/WebView2 host itself has no JUCE dependency. Removing the backend's JUCE dependency is a separate future task; the interface migration does not change audio processing.
+
+## Current optional interface
+
+The new window currently covers project open/save, the real project's tracks, regions and setlist, local waveform presentation, Play/Pause/Stop and seeking, track/master volume, pan, mute and solo, playlist selection, selection state, undo/redo, peak reset and track creation. It keeps the account/access checks, audio-device warnings and confirmation before leaving an unsaved project or ongoing playback. Project commands use the production Session on its control thread; audio and media decoding never run in the browser.
+
+Still to migrate and validate: secondary FX/settings/Advanced windows, recording controls and editing, advanced item/envelope/region operations, project tabs, Remote/Project Sync controls, teleprompter/video windows and the remaining menus/shortcuts. Existing backend capabilities do not imply that their controls are already exposed in this interface. The default interface remains available for those workflows.
+
+The host maps `https://catlive.local/app.html` to the adjacent `native-ui/` folder. It checks message origins and sizes and blocks external navigation, frames, downloads, permissions and network requests. It has no HTTP service and loads no remote UI. Commands are dispatched outside WebView2 COM callbacks so native file dialogs and confirmed close do not reenter the browser. Window position, dimensions and maximized state are restored with DPI/work-area bounds checks.
+
+`CATLIVE_NATIVE_FRONTEND=ON` (the current Windows build default) includes the optional host; `OFF` builds the existing interface alone. The SDK is pinned and hash-verified by `../Windows/cmake/WebView2.cmake`; `CATLIVE_WEBVIEW2_SDK` can select an already extracted SDK. The installed Microsoft Edge WebView2 Runtime is required at runtime. No runtime is installed or upgraded silently. The build copies the interface assets, Inter fonts/OFL license and WebView2 notices beside the executable.
+
+Validation:
+
+- `NativeFrontendHostTests.exe` uses a real HWND and WebView2 to verify local asset loading, bidirectional JSON, rejected external requests and confirmation-controlled close. It must run on the user's interactive Windows desktop, not in an SSH/service session. `CATLIVE_FRONTEND_INTERACTIVE_TESTS=ON` explicitly enables it in CTest; headless CI does not run this window test.
+- `Tests/browser-workspace.mjs` exercises the real interface DOM in an isolated browser, while `Tests/browser-controls.mjs` exercises shared controls. The browser harness supplies test session data; the HWND integration test and application review cover the real host connection separately.
+- The existing Windows integration suite remains responsible for the production audio engine, native FX and existing interface. A successful UI test is not evidence of audio feature parity or live hardware performance.
 
 ## Implemented boundaries
 
@@ -14,7 +34,7 @@ It is **not yet a complete replacement application**. Building this directory pr
 | Audio files | WAV/AIFF/FLAC/MP3 reading and accurate random access using dr_libs | Worker streaming, buffering, playback graph and waveform delivery |
 | SF2 | TinySoundFont renderer shared with the Mac implementation | Connect project MIDI scheduling, voices and the final mixer |
 | Device I/O | CPAL output/input configuration, callback lifecycle, bounded input buffering and midir ports | Implement the production `RealtimeEngine` adapter, clock/latency mapping, monitoring, recording and DSP |
-| Browser controls | Frosted context menus, area-sensitive selection, movement lock, REC settings and creation step | Attach to the real window, project views, session actions and preferences |
+| Browser controls | Shared context menus/selection/lock/REC controls plus the optional real HWND interface described above | Finish the remaining application controls and parity checks; the standalone foundation is not the shipping audio backend |
 
 `src-tauri/` is the anticipated host directory name. Its current Cargo manifest builds a Rust library and examples; it has **no Tauri dependency or application window**. DOM fixtures in `Tests/` exercise components and are not the product interface.
 

@@ -153,6 +153,7 @@ class TrackCapture {
             std::lock_guard<std::mutex> lock(entry.processing->mutex);
             entry.processing->pending = std::move(next);
             entry.processing->dynamics.clear();
+            entry.processing->parameters.clear();
         }
     }
     // Parameter previews are consumed by the disk worker; capture's device callback
@@ -161,6 +162,12 @@ class TrackCapture {
         for (auto &entry : entries) if (entry.target.track == track && entry.target.postFX && !entry.target.midi) {
             std::lock_guard<std::mutex> lock(entry.processing->mutex);
             entry.processing->dynamics[key] = snapshot;
+        }
+    }
+    void previewNativeParameters(const ID &track, const String &key, const NativeFX::ParameterPreview &snapshot) {
+        for (auto &entry : entries) if (entry.target.track == track && entry.target.postFX && !entry.target.midi) {
+            std::lock_guard<std::mutex> lock(entry.processing->mutex);
+            entry.processing->parameters[key] = snapshot;
         }
     }
     void setGain(const ID &track, float gain) noexcept {
@@ -294,6 +301,7 @@ class TrackCapture {
         std::mutex mutex;
         std::unique_ptr<NativeFX> pending;
         std::map<String, NativeFX::DynamicsPreview> dynamics;
+        std::map<String, NativeFX::ParameterPreview> parameters;
         std::atomic<bool> failed{false};
     };
     // Only the disk worker invokes this processor. The callback enqueues the
@@ -324,12 +332,14 @@ class TrackCapture {
             try {
                 std::unique_ptr<NativeFX> next;
                 std::map<String, NativeFX::DynamicsPreview> previews;
-                { std::lock_guard<std::mutex> lock(state->mutex); next.swap(state->pending); previews.swap(state->dynamics); }
+                std::map<String, NativeFX::ParameterPreview> parameters;
+                { std::lock_guard<std::mutex> lock(state->mutex); next.swap(state->pending); previews.swap(state->dynamics); parameters.swap(state->parameters); }
                 if (next) {
                     while (!gains.empty() && !state->failed.load()) { block.clear(); emit(std::min<int64>(4096, (int64)gains.size() + skip)); }
                     next->adoptDynamicsState(effects); effects.swap(*next); latency = effects.latencyFrames(); skip = latency;
                 }
-                for (const auto &[key, parameters] : previews) effects.previewDynamics(key, parameters);
+                for (const auto &[key, values] : previews) effects.previewDynamics(key, values);
+                for (const auto &[key, values] : parameters) effects.previewParameters(key, values);
                 for (int at = 0; at < count; at += 4096) {
                     const int length = std::min(4096, count - at);
                     for (int ch = 0; ch < 2; ++ch)

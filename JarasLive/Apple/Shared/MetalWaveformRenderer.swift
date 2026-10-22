@@ -50,8 +50,9 @@ struct MetalTimelineItem: Equatable {
     let borderColor: SIMD4<Float>
     var cornerRadius: Float = 3
     var borderWidth: Float = 0.6
+    var borderBackdropWidth: Float = 0
     var headerHeight: Float = 0
-    var headerColor = SIMD4<Float>(48.0 / 255, 48.0 / 255, 48.0 / 255, 1)
+    var headerColor = SIMD4<Float>(72.0 / 255, 72.0 / 255, 72.0 / 255, 1)
     var firstSeamX: CGFloat? = nil
     var repeatSpacing: CGFloat? = nil
     var visibleX: ClosedRange<CGFloat>? = nil
@@ -821,7 +822,7 @@ final class MetalWaveformEngine {
                 let spacing = Float(item.repeatSpacing ?? 0)
                 batch.append(ItemUniforms(rect: SIMD4(Float(r.minX), Float(r.minY), Float(r.maxX), Float(r.maxY)),
                     top: item.topColor, bottom: item.bottomColor, border: item.borderColor, header: item.headerColor,
-                    style: SIMD4(max(0, item.cornerRadius), max(0, item.borderWidth), max(0, item.headerHeight), 0),
+                    style: SIMD4(max(0, item.cornerRadius), max(0, item.borderWidth), max(0, item.headerHeight), max(0, item.borderBackdropWidth)),
                     notch: SIMD4(Float(item.firstSeamX ?? 0), spacing.isFinite && spacing > 0 ? spacing : 0, 4, min(5, Float(r.height) / 3)),
                     visibleX: SIMD4(Float(item.visibleX?.lowerBound ?? -.greatestFiniteMagnitude), Float(item.visibleX?.upperBound ?? .greatestFiniteMagnitude), 0, 0)))
                 if batch.count == 32 { flush() }
@@ -954,7 +955,7 @@ final class MetalWaveformEngine {
         constant TimelineItemUniforms *items [[buffer(0)]], constant float4 &screen [[buffer(1)]]) {
         const float2 corners[] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(0, 1), float2(1, 0), float2(1, 1) };
         TimelineItemUniforms u = items[instanceID];
-        float padding = u.style.y * 0.5 + 1.0 / screen.z;
+        float padding = max(u.style.y, u.style.w) * 0.5 + 1.0 / screen.z;
         float2 lower = max(u.rect.xy - padding, float2(0));
         float2 upper = min(u.rect.zw + padding, screen.xy);
         lower.x = max(lower.x, u.visibleX.x); upper.x = min(upper.x, u.visibleX.y);
@@ -994,6 +995,10 @@ final class MetalWaveformEngine {
             alpha = u.header.a * fillCoverage;
             rgb = u.header.rgb * alpha;
         }
+        // A dark backing keeps the selection legible on bright item colours.
+        float backdrop = u.style.w > 0 ? saturate(0.5 + (u.style.w * 0.5 - abs(distance)) * screen.z) : 0;
+        rgb *= 1 - backdrop;
+        alpha = backdrop + alpha * (1 - backdrop);
         float strokeCoverage = u.style.y > 0 ? saturate(0.5 + (u.style.y * 0.5 - abs(distance)) * screen.z) : 0;
         float strokeAlpha = u.border.a * strokeCoverage;
         return float4(u.border.rgb * strokeAlpha + rgb * (1 - strokeAlpha), strokeAlpha + alpha * (1 - strokeAlpha));

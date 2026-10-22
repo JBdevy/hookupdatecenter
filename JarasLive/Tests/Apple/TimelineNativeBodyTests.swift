@@ -235,7 +235,7 @@
     body.configure(configuration(song, selected: [first.id]))
     body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 300)
     let edited = body.fillsForTest!
-    precondition(abs(edited.items[0].rect.minX - 301) < 0.001 && edited.items[0].borderWidth == 1.5)
+    precondition(abs(edited.items[0].rect.minX - 301) < 0.001 && edited.items[0].borderWidth == 3 && edited.items[0].borderBackdropWidth == 5)
     precondition(edited.coordinateSpace?.contentRevision != cold.coordinateSpace?.contentRevision)
     body.configure(configuration(song, selected: [first.id], height: 24))
     body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 300)
@@ -480,8 +480,12 @@
     let coarseBeforeReadiness = body.waveformsForTest!
     let fillsBeforeReadiness = body.fillSubmissionsForTest
     cache.resumeNativeBodyTestDecoding(); paused = false
-    awaitValue({ body.waveformsForTest!.strokes.contains { !$0.block.isPeakEnvelope && $0.block.key != "timeline-centerline-unit" } },
-               "cold visible PCM must replace its compact source curve without another viewport event")
+    // At this zoom the decoded PCM is intentionally rasterized as a signed
+    // envelope too. Primitive type does not distinguish the 256-frame source
+    // overview from its finer PCM detail; the source-frame resolution does.
+    awaitValue({ body.waveformsForTest!.strokes.contains {
+        $0.block.step < TimelineAudioWaveform.peakFramesPerInterval && $0.block.key != "timeline-centerline-unit"
+    } }, "cold visible PCM must replace its compact source curve without another viewport event")
     precondition(body.fillSubmissionsForTest == fillsBeforeReadiness &&
                  body.waveformsForTest!.coordinateSpace == coarseBeforeReadiness.coordinateSpace,
                  "PCM readiness preserves exact projected item alignment and fill surface")

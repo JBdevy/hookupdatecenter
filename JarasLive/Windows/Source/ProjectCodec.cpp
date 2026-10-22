@@ -966,8 +966,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 if (c.fadeOutCurve) put(rc, "fadeOutCurve", *c.fadeOutCurve); else rc.getDynamicObject()->removeProperty("fadeOutCurve");
                 if (c.fadeInSCurve) put(rc, "fadeInSCurve", *c.fadeInSCurve); else rc.getDynamicObject()->removeProperty("fadeInSCurve");
                 if (c.fadeInCurve) put(rc, "fadeInCurve", *c.fadeInCurve); else rc.getDynamicObject()->removeProperty("fadeInCurve");
-                if (c.regionOwnerID)
-                    put(rc, "regionOwnerID", text(*c.regionOwnerID));
+                emit(rc, "regionOwnerID", c.regionOwnerID);
                 if (c.text)
                     put(rc, "text", text(*c.text));
                 Array<var> peaks;

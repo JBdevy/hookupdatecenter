@@ -290,9 +290,7 @@ struct TimecodePlaybackSpan {
     private var analysisEffects: [String:Set<String>] = [:]
     var instrumentFile: ((String) -> (URL,Bool)?)?
     private struct InstrumentVoiceKey: Hashable { let track: UUID; let effect: String }
-    #if os(macOS)
     private var samplers: [InstrumentVoiceKey:JarasSoundFont] = [:]
-    #endif
     private var instrumentRequests: [InstrumentVoiceKey:UUID] = [:]
     private var instrumentNames: [InstrumentVoiceKey:String] = [:]
     private var instrumentGeneration = UUID()
@@ -953,9 +951,7 @@ struct TimecodePlaybackSpan {
         discardNativeMeterPeaks()
         instrumentGeneration = UUID(); instrumentRequests.removeAll(); instrumentNames.removeAll()
 
-#if os(macOS)
 for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeAll()
-#endif
 
         detachClickTrack()
         clickSample = nil; clickSoundPath = nil
@@ -1932,9 +1928,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
         if let track {
 
-#if os(macOS)
 for (key, sampler) in samplers where key.track == track && !settings.isEnabled(key.effect) { sampler.silence() }
-#endif
 
         }
         if let track { tracks[track]?.fx = settings; trackBuses[track]?.effects.apply(settings) }
@@ -2165,11 +2159,9 @@ for (key, sampler) in samplers where key.track == track && !settings.isEnabled(k
             let status = UInt8(0xb0 | channel)
             for controller: UInt8 in [120, 64] {
 
-#if os(macOS)
 for (key, sampler) in samplers where key.track == id {
                     sampler.sendStatus(status, data1: controller, data2: 0)
                 }
-#endif
 
                 #if os(macOS)
                 trackBuses[id]?.effects.sendExternalMIDI(status: status, number: controller, value: 0)
@@ -2273,7 +2265,6 @@ for (key, sampler) in samplers where key.track == id {
             applyTrackRoutes(track, bus: bus)
         }
 
-#if os(macOS)
 for (key,sampler) in samplers {
             guard let track = tracks[key.track], let fx = track.fx else { continue }
             let voice = fx.settings(for: key.effect)
@@ -2289,7 +2280,6 @@ for (key,sampler) in samplers {
             sampler.setPerformanceMonophonic(controllers.monophonic ?? (category == .lead), drums: category == .drum, velocityCurve: Int32(velocity.curve.index))
             sampler.setFilterCutoff(cutoff.frequency, velocityMinimum: velocity.cutoffMinimum, attack: cutoff.attack, hold: cutoff.hold, decay: cutoff.decay, sustain: cutoff.sustain, release: cutoff.release, depth: cutoff.depth)
         }
-#endif
 
         for voice in voices.values {
             let muted = voice.clip.muted == true
@@ -2300,7 +2290,6 @@ for (key,sampler) in samplers {
         }
     }
     private func syncInstruments() {
-#if os(macOS)
         var wanted: [InstrumentVoiceKey: String] = [:]
         for (track, row) in tracks {
             guard let fx = row.fx else { continue }
@@ -2346,19 +2335,14 @@ for (key,sampler) in samplers {
             }
         }
 
-#endif
 }
     func isInstrumentReady(_ track: UUID) -> Bool {
-#if os(macOS)
         guard let fx = tracks[track]?.fx, !fx.instrumentKeys.isEmpty else { return false }
         return fx.instrumentKeys.allSatisfy {
             let key = InstrumentVoiceKey(track: track, effect: $0)
             return samplers[key] != nil && instrumentRequests[key] == nil
         }
 
-#else
-return false
-#endif
 }
     private var midiPlanRevision: UInt64?
     private var midiPlanSong: UUID?
@@ -2486,9 +2470,7 @@ return false
                     .flatMap { song.midiPlaybackNotes(in: $0.clip) }.map(\.sequenceValues)
                 midiPlans[source.track] = notes
 
-#if os(macOS)
 for (key, sampler) in samplers where key.track == source.track { sampler.setSequenceNotes(notes) }
-#endif
 
                 #if os(macOS)
                 trackBuses[source.track]?.effects.setMIDISequence(notes)
@@ -2607,7 +2589,6 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
 #endif
 }
     private func prepareMIDISequences(song: Song) {
-#if os(macOS)
         var plans: [UUID: [[String: Double]]] = [:]
         midiTakePlans.removeAll(keepingCapacity: true)
         midiTakeSources.removeAll(keepingCapacity: true)
@@ -2627,9 +2608,7 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
             plans[track.id] = values
             if midiPlans[track.id] != values {
 
-#if os(macOS)
 for (key, sampler) in samplers where key.track == track.id { sampler.setSequenceNotes(values) }
-#endif
 
             }
             #if os(macOS)
@@ -2638,7 +2617,6 @@ for (key, sampler) in samplers where key.track == track.id { sampler.setSequence
         }
         midiPlans = plans
 
-#endif
 }
     private func updateMIDISequenceClocks(_ transport: TransportState) {
         for head in 0..<2 {
@@ -2649,9 +2627,7 @@ for (key, sampler) in samplers where key.track == track.id { sampler.setSequence
             let start = head == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0
             let end = head == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0
 
-#if os(macOS)
 for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: position, clock: clock, running: running, loopStart: start, loopEnd: end) }
-#endif
 
             #if os(macOS)
             for bus in trackBuses.values { bus.effects.setMIDISequenceClock(head: head, position: position, clock: clock, running: running, loopStart: start, loopEnd: end) }
@@ -2671,9 +2647,7 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: pos
         scheduleMIDITakeCleanup()
         for head in 0..<2 {
 
-#if os(macOS)
 for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0) }
-#endif
 
             #if os(macOS)
             for bus in trackBuses.values { bus.effects.setMIDISequenceClock(head: head, position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0) }
@@ -2689,14 +2663,11 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
         for bus in trackBuses.values { bus.effects.silenceExternal() }
         #endif
 
-#if os(macOS)
 for sampler in samplers.values { sampler.silence() }
-#endif
 
     }
     var midiSlotsProvider: () -> [Int32] = { AudioDeviceSettings.shared.midiSlots }
     func receiveMIDI(device: Int32,status: UInt8,number: UInt8,value: UInt8) {
-#if os(macOS)
         #if os(iOS)
         guard !usesSelectedHardware || (deviceSessionActive && outputAllowed) else { return }
         #endif
@@ -2713,20 +2684,16 @@ for sampler in samplers.values { sampler.silence() }
         }
         #endif
 
-#if os(macOS)
 for (key,sampler) in samplers {
             let id = key.track
             guard tracks[id]?.acceptsMIDI(status: status) == true, tracks[id]?.fx?.isEnabled(key.effect) == true, let slot = tracks[id]?.midiInput, (1...3).contains(slot), slots.indices.contains(slot-1), slots[slot-1] == device else { continue }
             guard armedInstrumentTracks.contains(id) || status & 0xf0 != 0x90 || value == 0 else { continue }
             sampler.sendStatus(status, data1: number, data2: value)
         }
-#endif
 
 
-#endif
 }
     func playKeyboardNote(_ note: UInt8, velocity: UInt8 = 100) {
-#if os(macOS)
         #if os(iOS)
         guard !usesSelectedHardware || (deviceSessionActive && outputAllowed) else { return }
         #endif
@@ -2744,14 +2711,11 @@ for (key,sampler) in samplers {
             trackBuses[id]?.effects.sendExternalMIDI(status: status, number: note, value: velocity)
             #endif
 
-#if os(macOS)
 for (key, sampler) in samplers where key.track == id && tracks[id]?.fx?.isEnabled(key.effect) == true { sampler.sendStatus(status, data1: note, data2: velocity) }
-#endif
 
             InstrumentKeyboardState.shared.receive(track: id, source: Int32.min, status: status, number: note, value: velocity)
         }
 
-#endif
 }
     func releaseKeyboardNote(_ note: UInt8) {
         for (id, channel) in virtualNoteTargets.removeValue(forKey: note) ?? [:] {
@@ -2761,9 +2725,7 @@ for (key, sampler) in samplers where key.track == id && tracks[id]?.fx?.isEnable
             trackBuses[id]?.effects.sendExternalMIDI(status: status, number: note, value: 0)
             #endif
 
-#if os(macOS)
 for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status, data1: note, data2: 0) }
-#endif
 
             InstrumentKeyboardState.shared.receive(track: id, source: Int32.min, status: status, number: note, value: 0)
         }
@@ -4153,12 +4115,10 @@ struct VerticalTrackMeter: View {
 }
 #endif
 
-#if os(macOS)
 private final class PreparedSoundFont: @unchecked Sendable {
     let unit: JarasSoundFont
     init(_ unit: JarasSoundFont) { self.unit = unit }
 }
-#endif
 
 
 struct TrackPeakReadout: View {

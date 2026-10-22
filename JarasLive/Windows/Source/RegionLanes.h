@@ -64,6 +64,44 @@ inline ID timecodeItemID(ID region) {
 }
 } // namespace regionEditDetail
 
+// Prepared once per gesture, matching the Mac's zoom-aware marker repulsion.
+struct RegionMarkerRepulsion {
+    double originalStart = 0, minimumStart = 0;
+    std::vector<std::pair<double,double>> intervals;
+    RegionMarkerRepulsion(const jaras::Song &song, const jaras::Part &region, double minimumGap) : originalStart(region.startTime) {
+        const double gap=std::isfinite(minimumGap)?std::max(.01,minimumGap):.01;
+        std::vector<double> offsets, stationary;
+        if(song.markers) for(const auto &marker:*song.markers) {
+            const auto owner=song.regionOwnershipInitialized?marker.regionOwnerID:
+                marker.sourceRegionID?marker.sourceRegionID:jaras::regionOwnerAt(song,marker.position);
+            if(marker.unifiedRegionID==region.id || jaras::regionOwns(song,region.id,owner)) offsets.push_back(marker.position-region.startTime);
+            else stationary.push_back(marker.position);
+        }
+        for(double offset:offsets)minimumStart=std::max(minimumStart,-offset);
+        std::vector<std::pair<double,double>> ranges;
+        for(double offset:offsets)for(double point:stationary) {
+            const double center=point-offset;
+            if(center+gap>minimumStart)ranges.emplace_back(center-gap,center+gap);
+        }
+        std::sort(ranges.begin(),ranges.end());
+        for(const auto &range:ranges) {
+            if(!intervals.empty() && range.first<intervals.back().second)intervals.back().second=std::max(intervals.back().second,range.second);
+            else intervals.push_back(range);
+        }
+    }
+    double resolve(double proposed) const {
+        if(!std::isfinite(proposed))return originalStart;
+        const double start=std::max(minimumStart,proposed);
+        const auto it=std::lower_bound(intervals.begin(),intervals.end(),start+1e-9,
+            [](const auto &range,double value){return range.second<=value;});
+        if(it==intervals.end() || start<=it->first+1e-9 || start>=it->second-1e-9)return start;
+        if(it->first<minimumStart)return it->second;
+        const double left=start-it->first,right=it->second-start;
+        if(std::abs(left-right)<=1e-9)return proposed>=originalStart?it->second:it->first;
+        return left<right?it->first:it->second;
+    }
+};
+
 // Pure visual preview of a move/resize. The caller resolves snapping and marker
 // repulsion before passing start. Moves preserve duration (end is only used for
 // resize); a rejected preview leaves the committed song untouched.
@@ -115,6 +153,7 @@ inline std::optional<jaras::Song> previewRegionEdit(const jaras::Song &song, con
             } else if (owns(song.regionOwnershipInitialized ? clip.regionOwnerID
                                                             : jaras::regionOwnerAt(song, clip.startTime))) {
                 clip.startTime = std::max(0.0, clip.startTime + delta);
+                result.duration = std::max(result.duration, clip.startTime + clip.duration);
             }
         }
     }

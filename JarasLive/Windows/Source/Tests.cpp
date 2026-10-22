@@ -30,6 +30,12 @@
 #include "DesktopLayout.h"
 #include "EffectsPanel.h"
 #include "CatDynamicsTests.h"
+#include "NativeFXPreviewTests.h"
+#if CATLIVE_NATIVE_FRONTEND
+#include "FrontendBridgeTests.h"
+#include "NativeFrontendWaveformsTests.h"
+#endif
+#include "EQAnalysisTests.h"
 #include "FXChain.h"
 #include "ItemRender.h"
 #include "SetlistShareText.h"
@@ -69,6 +75,11 @@
 #include "AudioGainRenderTests.h"
 #include "ClipAudioReadTests.h"
 #include "LongTimelineAudioTests.h"
+#include "TimelineMarqueeTests.h"
+#include "TimelineVisualParityTests.h"
+#include "ItemLocalGeometryTests.h"
+#include "HozMixerFocusTests.h"
+#include "CompactTextBaselineTests.h"
 #include "InstrumentRenderTests.h"
 namespace catlive {
 namespace {
@@ -252,6 +263,10 @@ int runTests(const File &directory) {
     audioGainRenderTests::registerTests(directory, test);
     clipAudioReadTests::registerTests(directory, test);
     longTimelineAudioTests::registerTests(directory, test);
+    timelineMarqueeTests::registerTests(test);
+    timelineVisualParityTests::registerTests(directory, test);
+    itemLocalGeometryTests::registerTests(directory, test);
+    hozMixerFocusTests::registerTests(directory, test);
     instrumentRenderTests::registerTests(test);
     gridMediaClipboardTests::registerTests(test);
     floatingControlTests::registerTests(directory,test);
@@ -1272,6 +1287,13 @@ int runTests(const File &directory) {
         canvas->mouseUp(event(end,anchor,0,true));
         expect(selectedCount()==2 && session.transport().editPosition==edit,"Selection persists without changing edit cursor");
         expect(Component::getNumCurrentlyModalComponents()==modals,"Drag release does not open item menu");
+        // A high-rate mouse can release before the next display tick. The final
+        // pointer position must be applied even when intermediate events coalesce.
+        canvas->mouseDown(event(anchor,anchor,ModifierKeys::rightButtonModifier,false));
+        canvas->mouseDrag(event({5,76},anchor,ModifierKeys::rightButtonModifier,true));
+        for(int n=0;n<100;++n)canvas->mouseDrag(event(end,anchor,ModifierKeys::rightButtonModifier,true));
+        canvas->mouseUp(event(end,anchor,0,true));
+        expect(selectedCount()==2,"Final rectangle was lost before the coalesced selection frame");
         // An empty rectangle retains the previous selection only with Shift/Ctrl.
         for(int additive:std::initializer_list<int>{ModifierKeys::shiftModifier,ModifierKeys::ctrlModifier,0}) {
             anchor={0,(float)canvas->getHeight()-8};end={5,(float)canvas->getHeight()-1};
@@ -1280,6 +1302,38 @@ int runTests(const File &directory) {
             canvas->mouseUp(event(end,anchor,additive,true));
             expect(selectedCount()==(additive?2:0),"Additive modifiers preserve; plain drag replaces");
         }
+    });
+    test("Region edges show a compact cursor and green grip inside the fill like Mac", [&] {
+        auto project=projectFixture();auto &song=project.songs.front();song.parts.resize(1);song.markers.reset();
+        project.savedCursor=jaras::SavedProjectCursor{song.id,0};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        const auto original=session.song()->tracks.front().clips.front();
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("region-edge-input",".json"));workspace.setSize(1366,768);
+        auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");expect(canvas!=nullptr,"Canvas exists");
+        auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,canvas,canvas,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
+        const auto geometry=get(workspace.diagnostics(),"timeline");const double zoom=num(geometry,"zoom"),scroll=num(geometry,"horizontal");
+        const int free=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
+        for(int edge:{1,-1}) {
+            const auto region=session.song()->parts.front();
+            const float x=(float)((edge>0?region.endTime:region.startTime)*zoom-scroll)+(edge>0?-2.f:2.f);
+            Point<float> anchor{x,8},end{x+(float)(edge*2*zoom),8};
+            canvas->mouseMove(event(anchor,anchor,0,false));
+            expect(canvas->getMouseCursor()!=MouseCursor(MouseCursor::NormalCursor) &&
+                   canvas->getMouseCursor()!=MouseCursor(MouseCursor::LeftRightResizeCursor),"Region edge did not use its compact resize cursor");
+            const auto hover=canvas->createComponentSnapshot(canvas->getLocalBounds());
+            const int gripX=roundToInt((edge>0?region.endTime:region.startTime)*zoom-scroll+(edge>0?-10:10));
+            const auto grip=hover.getPixelAt(gripX,8);
+            expect(grip.getGreen()>240 && grip.getRed()<110 && grip.getBlue()>120,"Green edge grip is missing");
+            canvas->mouseDown(event(anchor,anchor,free,false));canvas->mouseDrag(event(end,anchor,free,true));
+            expect(session.song()->parts.front().startTime==region.startTime && session.song()->parts.front().endTime==region.endTime,"Preview committed early");
+            canvas->mouseUp(event(end,anchor,ModifierKeys::shiftModifier,true));
+            const auto resized=session.song()->parts.front();
+            expect(std::abs(resized.startTime-(region.startTime+(edge<0?-2:0)))<.001 && std::abs(resized.endTime-(region.endTime+(edge>0?2:0)))<.001,"Inside-edge drag did not resize the region");
+            const auto clip=session.song()->tracks.front().clips.front();
+            expect(clip.startTime==original.startTime && clip.duration==original.duration && clip.sourceOffset==original.sourceOffset,"Region resize moved or trimmed its audio");
+        }
+        Point<float> ruler{200,(float)num(geometry,"headerHeight")-8};canvas->mouseMove(event(ruler,ruler,0,false));
+        expect(canvas->getMouseCursor()==MouseCursor(MouseCursor::PointingHandCursor),"Number ruler did not show hand cursor");
     });
     test("Dragging paints the actual item at the pointer and commits only on release", [&] {
         auto project=projectFixture();auto &song=project.songs.front();song.parts.clear();song.markers.reset();project.savedCursor=jaras::SavedProjectCursor{song.id,0};
@@ -1331,8 +1385,13 @@ int runTests(const File &directory) {
         const int left=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
         canvas->mouseDown(event(anchor,anchor,left,false));canvas->mouseDrag(event(end,anchor,left,true));canvas->mouseUp(event(end,anchor,ModifierKeys::shiftModifier,true));
         expect(session.selectedTimeRange()->second>range->second && session.transport().loop.end==session.selectedTimeRange()->second,"Dragging edge updates active loop immediately");
-        session.command(jaras::CommandKind::escape);expect(!session.transport().loop.enabled && session.selectedTimeRange().has_value(),"First Escape cancels loop, retaining range");
-        session.command(jaras::CommandKind::escape);expect(!session.selectedTimeRange(),"Next Escape clears range");
+        session.command(jaras::CommandKind::escape);expect(!session.transport().loop.enabled && !session.selectedTimeRange(),"Escape cancels loop and removes its selection exactly as on Mac");
+        session.selectTimeRange(3,7);session.command(jaras::CommandKind::toggleLoop);
+        session.selectTimeRange(4,8);
+        expect(session.transport().loop.start==4 && session.transport().loop.end==8 && session.selectedTimeRange()==std::make_pair(4.,8.),"Editing the range updates the active loop and its visual bounds together");
+        session.command(jaras::CommandKind::toggleLoop);
+        expect(!session.transport().loop.enabled && !session.selectedTimeRange(),"Disabling Repeat leaves no stale selected area");
+        session.selectTimeRange(3,7);session.command(jaras::CommandKind::escape);expect(!session.selectedTimeRange(),"Escape still clears an independent manual range");
         session.selectTimeRange(2,5);session.command(jaras::CommandKind::editSeek,{},2);session.command(jaras::CommandKind::toggleLoop);session.command(jaras::CommandKind::play);
         session.core.advance(3.25);expect(session.transport().position>=2 && session.transport().position<5,"Playback wraps inside selected interval");
     });
@@ -1748,6 +1807,7 @@ int runTests(const File &directory) {
         stream.truncate();
         PNGImageFormat().writeImageToStream(output, stream);
     });
+    compactTextBaselineTests::registerTests(test, skipped);
     test("Embedded font faces and persisted setlist appearance", [&] {
         auto file = directory.getNonexistentChildFile("appearance", ".json");
         Appearance settings(file);
@@ -2923,6 +2983,12 @@ int runTests(const File &directory) {
         expect(list(get(get(saved,"stemMix"),"sources")).size()==5,"Bypass discarded the source mix");
     });
     dynamicsTests::run(test, expect, directory);
+    nativePreviewTests::run(test, expect, directory);
+#if CATLIVE_NATIVE_FRONTEND
+    frontendBridgeTests::run(test,expect,directory);
+    frontendWaveformTests::run(test,expect,directory);
+#endif
+    eqAnalysisTests::run(test, expect, directory);
     test("Native limiter respects its output ceiling and links stereo peaks without automatic makeup", [&] {
         for(double rate:{44100.,48000.}) {
             auto settings=fxschema::defaults();put(settings,"inserted",Array<var>{"Limiter"});put(settings,"limiterEnabled",true);

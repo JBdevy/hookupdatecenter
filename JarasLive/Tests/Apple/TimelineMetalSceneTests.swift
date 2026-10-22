@@ -143,6 +143,34 @@ func audioStrokes(_ frame: MetalWaveformFrame) -> [MetalWaveformStroke] {
 _ = ready(0, 4, scale)
 let stereo = scene(clip)
 let stereoAudio = audioStrokes(stereo)
+MainActor.assumeIsolated {
+    var track = Track(id: UUID(), name: "Mixed overlap components", role: .other)
+    var pair = clip; pair.id = UUID(); pair.startTime = 30
+    var pairB = pair; pairB.id = UUID(); pairB.startTime += 0.5
+    var triple = pair; triple.id = UUID(); triple.startTime = 50
+    var tripleB = triple; tripleB.id = UUID(); tripleB.startTime += 0.2
+    var tripleC = triple; tripleC.id = UUID(); tripleC.startTime += 0.4
+    track.clips = [clip, pair, pairB, triple, tripleB, tripleC]
+    let rows = TrackRowLayout(tracks: [track], baseHeight: 90)
+    let localOwner = TimelineWaveformVertexOwner()
+    for (item, localCount) in [(clip, 1), (pair, 2), (tripleC, 3)] {
+        let h = rows.itemLaneHeight(item.id, track: 0)
+        precondition(abs(h - rows.audioHeights[0] / CGFloat(localCount)) < 1e-9)
+        let bounds = CGRect(x: item.startTime * scale + 1, y: 50 + rows.itemLaneOffset(item.id, track: 0) + 3,
+                            width: 2 * scale, height: h - 6)
+        let window = CGRect(x: item.startTime * scale - 20, y: 0, width: 800, height: 400)
+        let frame = TimelineMetalWaveformFrameBuilder.make(items: [TimelineWaveformItem(clip: item,
+            fragments: [item], url: url, rect: bounds, gray: 0.7)], viewport: window, scale: scale,
+            cache: cache, owner: localOwner)
+        let strokes = audioStrokes(frame)
+        precondition(!strokes.isEmpty, "local-height audio items must retain visible waveforms")
+        for stroke in strokes {
+            precondition(stroke.clip.minY >= bounds.minY && stroke.clip.maxY <= bounds.maxY,
+                         "Metal waveform clipping follows the same local item height as drawing and selection")
+        }
+    }
+    print("METAL_LOCAL_OVERLAP_HEIGHTS_SINGLE_PAIR_TRIPLE_CLIPPING_OK")
+}
 precondition(!stereoAudio.isEmpty && Set(stereoAudio.map(\.channel)) == Set([0, 1]))
 for stroke in stereoAudio {
     precondition(viewport.size.width >= stroke.clip.maxX && stroke.clip.minX >= 0)
@@ -258,8 +286,13 @@ shortLoop.loopStart = 0.123
 shortLoop.loopLength = 1 / rate
 shortLoop.sourceOffset = shortLoop.loopStart!
 let tinyLoop = scene(shortLoop)
-precondition(tinyLoop.strokes.count == 2 && tinyLoop.strokes.allSatisfy { $0.block.isPeakEnvelope && $0.scale.y * 2 > 30 },
-             "a loop contained inside a peak interval must retain both channels' extrema instead of a flat line")
+// The fixture peaks at ±0.5. Preserve that amplitude against the same 0 dB
+// channel boundary used by ordinary items, rather than magnifying tiny loops.
+let tinyLoopChannelHeight = (rect.height - GridSelectionItem.bodyInset - 2) / 2
+let expectedTinyLoopSpan = (tinyLoopChannelHeight - 1) * 0.5
+precondition(tinyLoop.strokes.count == 2 && tinyLoop.strokes.allSatisfy {
+    $0.block.isPeakEnvelope && abs(CGFloat($0.scale.y * 2) - expectedTinyLoopSpan) < 0.01
+}, "a sub-bucket loop must preserve both channels' real extrema and calibrated 0 dB scale")
 shortLoop.channelMode = 3
 let cancellingLoop = scene(shortLoop)
 precondition(cancellingLoop.strokes.count == 1 && cancellingLoop.strokes[0].scale.y * 2 == 0.5,

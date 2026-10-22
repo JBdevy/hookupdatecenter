@@ -347,11 +347,17 @@ private final class CaptureWriter: @unchecked Sendable {
         guard !updatingMonitoring else { return }
         updatingMonitoring = true; defer { updatingMonitoring = false }
         let tracks = show?.current?.tracks ?? []
-        (projectAudio ?? StemAudioPlayback.shared).armedMIDIRecordingTracks = Set(tracks.filter { armed.contains($0.id) && $0.recordingMode == .midi }.map(\.id))
+        let playback = (projectAudio ?? StemAudioPlayback.shared)
+        playback.armedMIDIRecordingTracks = Set(tracks.filter { armed.contains($0.id) && $0.recordingMode == .midi }.map(\.id))
+        // FX can be inserted or removed while REC remains armed. Refresh the
+        // live MIDI targets with the current chain, not just when REC changes.
+        playback.setArmedInstrumentTracks(Set(tracks.filter { track in
+            armed.contains(track.id) && (track.fx?.instrumentKeys.isEmpty == false ||
+                (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false))
+        }.map(\.id)))
         let desired = inputChannels > 0 && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? tracks.filter {
             armed.contains($0.id) && $0.recordingMode != .midi && $0.kind == .standard
         }.map { MonitorConfig(track: $0.id, patch: $0.inputPatch ?? defaultInputPatch, channels: $0.recordingChannels ?? 2) } : []
-        let playback = (projectAudio ?? StemAudioPlayback.shared)
         guard desired != monitorConfig || desired.contains(where: { !playback.hasInputMonitor($0.track) }) else { return }
         for config in monitorConfig { playback.setInputMonitor(config.track, source: nil) }
         monitorConfig = []; monitorRings = []
@@ -535,7 +541,10 @@ private final class CaptureWriter: @unchecked Sendable {
         guard !busy else { return }
         let wanted = armState.armed
         if let show {
-            microphoneTracks = wanted.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter { $0.recordingMode != .midi }.map(\.id)))
+            microphoneTracks = wanted.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter {
+                $0.recordingMode != .midi && $0.fx?.instrumentKeys.isEmpty != false &&
+                    !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
+            }.map(\.id)))
         }
         let authorization = AVCaptureDevice.authorizationStatus(for: .audio)
         let effective = authorization == .authorized || inputChannels == 0 ? wanted : wanted.subtracting(microphoneTracks)
@@ -663,8 +672,8 @@ private final class CaptureWriter: @unchecked Sendable {
         guard !busy, show.canControl(), let directory, project == show.snapshot.project.id else { return }
         let tracks = show.current?.tracks.filter { $0.kind == .standard && armed.contains($0.id) } ?? []
         #if os(iOS)
-        guard !tracks.isEmpty, tracks.allSatisfy({ $0.recordingMode != .midi }) else {
-            error = JarasLocalization.string("Arm an audio track before recording."); return
+        guard !tracks.isEmpty else {
+            error = JarasLocalization.string("Arm at least one track before recording."); return
         }
         #endif
         let audioTracks = tracks.filter { $0.recordingMode != .midi }
@@ -869,32 +878,49 @@ struct TrackRecordButton: View {
     let track: Track
     @ObservedObject private var recorder = TrackRecording.shared
     @State private var editingMode = false
+    private func toggleArm() {
+        let targets = show.mixerControlTargets(track.id).filter { $0.kind == .standard }
+        let requiresInput = targets.contains { $0.recordingMode != .midi && $0.fx?.instrumentKeys.isEmpty != false && !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false) }
+        recorder.setMode(recorder.armState.mode(for: track.id).next, tracks: Set(targets.map(\.id)), requiresAudioInput: requiresInput)
+    }
     var body: some View {
-        Button {
-            let targets = show.mixerControlTargets(track.id).filter { $0.kind == .standard }
-            let requiresInput = targets.contains { $0.recordingMode != .midi && $0.fx?.instrumentKeys.isEmpty != false && !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false) }
-            recorder.setMode(recorder.armState.mode(for: track.id).next, tracks: Set(targets.map(\.id)), requiresAudioInput: requiresInput)
-        } label: {
+        Button(action: toggleArm) {
             Group {
                 if recorder.armState.mode(for: track.id) == .automatic {
                     Text(verbatim: "A").font(.jarasSystem(size: 11, weight: .bold))
                 } else { Image(systemName: "record.circle") }
-            }
-                .frame(width: 22, height: 21)
+            }.frame(width: 22, height: 21)
         }.buttonStyle(RecordingButtonStyle(active: recorder.armed.contains(track.id)))
         #if os(macOS)
         .background(TrackControlSelectionExclusion())
-        #endif
         .immediateRightClick { editingMode = true }
+        #else
+        .overlay { IpadTapHoldTouchSurface(tap: toggleArm, hold: { editingMode = true }) }
+        #endif
         .popover(isPresented: $editingMode) {
+            TrackRecordingSettings(show: show, trackID: track.id)
+        }
+        .accessibilityLabel("Arm track for recording")
+        .accessibilityValue(Text(recorder.armState.mode(for: track.id) == .automatic ? "Automatic record arm" : recorder.armed.contains(track.id) ? "Armed" : "Off"))
+        .accessibilityAction(named: Text("Recording mode")) { editingMode = true }
+        .jarasHelp("Record arm: Off → Armed → Automatic (selected track)")
+    }
+}
+
+/// Both track REC and the native transport configure these same persisted
+/// track properties. Observing ShowController keeps every picker current.
+struct TrackRecordingSettings: View {
+    @ObservedObject var show: ShowController
+    let trackID: UUID
+    @ObservedObject private var recorder = TrackRecording.shared
+    var body: some View {
+        if let track = show.current?.tracks.first(where: { $0.id == trackID }) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Recording mode").font(.jarasHeadline)
                 Picker("Recording mode", selection: Binding(get: { track.recordingChannels ?? 2 }, set: { show.setRecordingChannels(track.id, channel: $0) })) {
                     Text("Mono").tag(1)
                     Text("Stereo").tag(2)
-                    #if os(macOS)
                     Text("MIDI").tag(0)
-                    #endif
                 }.pickerStyle(.segmented).labelsHidden().disabled(recorder.recording || recorder.busy)
                 if track.recordingMode != .midi {
                     Picker("Format", selection: Binding(get: { track.recordingFormat ?? "" }, set: {
@@ -919,11 +945,8 @@ struct TrackRecordButton: View {
                     }.pickerStyle(.segmented).labelsHidden()
                 }
             }.padding(16)
-        }
-        .accessibilityLabel("Arm track for recording")
-        .accessibilityValue(Text(recorder.armState.mode(for: track.id) == .automatic ? "Automatic record arm" : recorder.armed.contains(track.id) ? "Armed" : "Off"))
-        .jarasHelp("Record arm: Off → Armed → Automatic (selected track)")
 
+        }
     }
 }
 /// Armed and recording controls remain solid red throughout recording.

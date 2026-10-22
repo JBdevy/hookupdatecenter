@@ -1527,6 +1527,7 @@
 "Could not access the selected file." = "Não foi possível acessar o arquivo selecionado.";
 
 "Arm an audio track before recording." = "Arme uma pista de áudio antes de gravar.";
+"Arm at least one track before recording." = "Arme pelo menos uma pista antes de gravar.";
 "The region and its contents will be deleted." = "A região e seu conteúdo serão excluídos.";
 
 "Open Remote on another device and choose this iPad." = "Abra o Remote em outro dispositivo e escolha este iPad.";

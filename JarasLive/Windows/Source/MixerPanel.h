@@ -6,6 +6,7 @@
 #include "TrackDrop.h"
 #include "SpecialTrackControls.h"
 #include "RecordingOptionsPanel.h"
+#include "HozMixerFocusGesture.h"
 namespace catlive {
 class MixerPanel final : public Component, public DragAndDropContainer, private Timer, private ScrollBar::Listener {
   public:
@@ -57,6 +58,15 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         if(masterRight==right)return;
         masterRight=right;resized();repaint();
     }
+    std::function<void(bool)> slotsOnlyChanged;
+    bool isSlotsOnly() const { return slotsOnly; }
+    void setSlotsOnly(bool enabled) {
+        if(slotsOnly==enabled)return;
+        slotsOnly=enabled;
+        master->resized();master->repaint();
+        for(auto *strip:strips){strip->resized();strip->repaint();}
+        repaint();
+    }
     void refresh() {
         std::vector<ID> wanted;
         if (const auto *song = session.song())
@@ -83,6 +93,15 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             if (strip->getBounds().intersects(visible)) strip->refresh();
     }
     void mouseWheelMove(const MouseEvent &event, const MouseWheelDetails &wheel) override {
+        if(event.mods.isShiftDown()) {
+            if(const auto next=focusGesture.update(HozMixerFocusGesture::wheelDelta(wheel.deltaX,wheel.deltaY,wheel.isSmooth),
+                                                   event.eventTime.toMilliseconds()/1000.,wheel.isInertial);
+                next && *next!=slotsOnly) {
+                setSlotsOnly(*next);if(slotsOnlyChanged)slotsOnlyChanged(*next);
+            }
+            return;
+        }
+        focusGesture.reset();
         if (master->getLocalBounds().contains(event.getEventRelativeTo(master.get()).getPosition())) {
             master->scrollEffects(event.getEventRelativeTo(master.get()),wheel);return;
         }
@@ -113,6 +132,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
 
   private:
     friend struct MasterMixerTests;
+    friend struct HozMixerFocusTests;
     class Strip final : public Component, public DragAndDropTarget {
       public:
         Strip(MixerPanel &owner, ID target) : mixer(owner), id(std::move(target)) {
@@ -213,10 +233,10 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             if (const auto *t = track()) {
                 const auto volume = id.empty() ? t->volume : mixer.session.trackDisplayVolume(id,t->volume);
                 const auto selected = !id.empty() && mixer.selectedTrack(id);
-                const auto levels = mixer.session.audio.meterLevels(id);
+                const auto levels = mixer.slotsOnly ? std::array<float,2>{} : mixer.session.audio.meterLevels(id);
                 if (lastRevision == mixer.session.revision && lastSelection == selected &&
                     lastVolume == volume && lastLocked == mixer.session.trackFaderLocked(id)) {
-                    if (lastLevels != levels) {
+                    if (!mixer.slotsOnly && lastLevels != levels) {
                         const auto bounds = fader.getBounds();
                         repaint(69 + controlsOffset(), bounds.getY(), 12, bounds.getHeight());
                     }
@@ -262,7 +282,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                         g.setColour(fxchain::enabled(settings,chain[slot].toString())
                             ? Colour(0xff00ff00) : Colour(0xffff0000));
                         g.setFont(theme::semiboldFont(10));
-                        g.drawFittedText(effectTitle(settings,chain[slot].toString()),bounds.reduced(4,0),Justification::centredLeft,1);
+                        g.drawFittedText(effectTitle(settings,chain[slot].toString()),bounds.reduced(4,0),Justification::centredLeft,1,1.f);
                     }
                     if (effectDropSlot==slot || hoveredSlot==slot) {
                         g.setColour(effectDropSlot==slot ? theme::green.withAlpha(.3f) : Colours::white.withAlpha(.09f));
@@ -277,6 +297,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                     g.setColour(theme::green);g.fillRoundedRectangle(getWidth()-3.f,y,2,thumb,1);
                 }
             }
+            if(!mixer.slotsOnly) {
             const int controls = geometry.controlsY;
             const auto meterBounds=fader.getBounds();
             const int meterTop=meterBounds.getY()+4,meterBottom=meterBounds.getBottom()-4;
@@ -296,11 +317,18 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             g.setFont(theme::semiboldFont(9));
             if(!jaras::isTeleprompterRole(t->role)&&t->role.id!="chords")g.drawText((shownVolume >= 1 ? "+" : "") + db + " dB", 28+controlsOffset(), controls + (jaras::fixedTrackName(t->role).empty()?36:25), 52, 12,
                        Justification::centred);
-            g.setFont(theme::semiboldFont(10));
-            g.drawFittedText(text(t->name), geometry.name, Justification::centred, 1);
+            }
+            g.setColour(Colours::white);g.setFont(theme::semiboldFont(10));
+            g.drawFittedText(text(t->name), geometry.name, Justification::centred, 1, 1.f);
         }
         void resized() override {
             const auto *t=track();const bool standard=t&&jaras::fixedTrackName(t->role).empty(),textTrack=t&&(jaras::isTeleprompterRole(t->role)||t->role.id=="chords");
+            if(mixer.slotsOnly) {
+                for(auto *control:std::initializer_list<Component*>{&fx,&mute,&solo,&phase,&record,&mono,&pan,&fader,peak.get(),special.get()})
+                    control->setVisible(false);
+                firstSlot=jlimit(0,maximumFirstSlot(),firstSlot);
+                return;
+            }
             fx.setVisible(standard);record.setVisible(standard&&!id.empty());pan.setVisible(standard);phase.setVisible(standard&&!id.empty());mono.setVisible(id.empty());fader.setVisible(!textTrack);mute.setVisible(standard||(t&&(t->role.id=="timecode"||t->role.id=="generatedClick")));solo.setVisible(mute.isVisible());
             const auto geometry=layout();
             firstSlot=jlimit(0,maximumFirstSlot(),firstSlot);
@@ -315,7 +343,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             solo.setBounds(4,y+(standard?2*step:25+step),22,buttonHeight);
             phase.setBounds(4,y+3*step,22,buttonHeight);mono.setBounds(4,y+3*step,22,buttonHeight);
             record.setBounds(3,y+4*step,25,buttonHeight);
-            peak->setBounds(1,y+(standard?5*step:25+2*step),30,12);
+            peak->setBounds(1,y+(standard?5*step:25+2*step),43,12);
             pan.setBounds(42+controlsOffset(),y+11,24,24);
             const int faderOffset=standard?49:38;
             fader.setBounds(31+controlsOffset(),y+faderOffset,31,std::max(1,available-faderOffset));
@@ -428,13 +456,20 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             cachedFXRevision = mixer.session.revision;
             return cachedSettings;
         }
-        int controlsOffset() const { return std::max(0,(getWidth()-83)/2); }
+        // Reserve the peak's full two-decimal text width before the fader.
+        int controlsOffset() const { return 17 + std::max(0,(getWidth()-stripWidth)/2); }
         bool dragging=false;
         int pressedSlot=-1, effectDropSlot=-1, firstSlot=0, hoveredSlot=-1;
         String pressedEffect;
         friend struct MasterMixerTests;
+        friend struct HozMixerFocusTests;
         struct StripLayout { juce::Rectangle<int> slots,name;int controlsY=0,controlsHeight=0; };
         StripLayout layout() const {
+            if(mixer.slotsOnly) {
+                const int nameTop=std::max(3,getHeight()-26);
+                return {{3,13,std::max(0,getWidth()-6),std::max(0,nameTop-17)},
+                        {3,nameTop,std::max(0,getWidth()-6),std::min(22,std::max(0,getHeight()-nameTop))},nameTop,0};
+            }
             // Match FooterMixerStrip: the docked panel hides FX at 255 pt and below.
             // The 22 pt allowance accounts for the Mac host's inset/chrome beyond
             // this strip's bounds; growth above the threshold belongs to FX slots.
@@ -519,7 +554,8 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
     std::function<void(ID,Point<int>)> openContextMenu;
     std::function<void(ID,String)> specialAction;
     std::function<bool(ID)> isTrackVisible;
-    bool masterRight=false;
+    bool masterRight=false,slotsOnly=false;
+    HozMixerFocusGesture focusGesture;
     double wheelRemainder=0;
     std::optional<trackDrop::Destination> dropPreview;ID blocked;
     struct MixerScrollLook final : LookAndFeel_V4 {
@@ -529,8 +565,14 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             g.setColour(Colour(0xff54ff93));g.fillRoundedRectangle((float)start,y+h/2.f-3,(float)size,6,3);
         }
     } scrollLook;
-    ScrollBar horizontal{false};
-    static constexpr int stripWidth=83,stripStride=stripWidth+3;
+    struct MixerHorizontalScroll final : ScrollBar {
+        MixerHorizontalScroll():ScrollBar(false) {}
+        void mouseWheelMove(const MouseEvent &event,const MouseWheelDetails &wheel) override {
+            if(event.mods.isShiftDown()) Component::mouseWheelMove(event,wheel);
+            else ScrollBar::mouseWheelMove(event,wheel);
+        }
+    } horizontal;
+    static constexpr int stripWidth=100,stripStride=stripWidth+3;
     std::unique_ptr<Strip> master;
     struct MixerViewport final : Viewport {
         std::function<void()> moved;

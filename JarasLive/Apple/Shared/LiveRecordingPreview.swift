@@ -53,6 +53,7 @@ struct RecordingGridOverlay: View {
     let heights: [CGFloat]
     let rulerHeight: CGFloat
     let scale: CGFloat
+    var alignsToViewport = false
     @ObservedObject private var preview = LiveRecordingPreview.shared
     var body: some View {
         // An idle recorder has no pixels. Keep its subscription, but do not
@@ -112,7 +113,8 @@ struct RecordingGridOverlay: View {
                     ink.stroke(center,with: .color(waveColor.opacity(0.5)),lineWidth: 0.5)
                 }
             }
-        }.frame(width: visibleRect.width,height: visibleRect.height).offset(x: visibleRect.minX,y: visibleRect.minY).allowsHitTesting(false)
+        }.frame(width: visibleRect.width,height: visibleRect.height)
+            .offset(x: alignsToViewport ? 0 : visibleRect.minX, y: alignsToViewport ? 0 : visibleRect.minY).allowsHitTesting(false)
         }
     }
 }

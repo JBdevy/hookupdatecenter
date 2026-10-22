@@ -66,11 +66,13 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         release(); press();
         require(!session.transport().loop.enabled && session.transport().queuedRegionId &&
                 session.project().regionSetlist->autoAdvance, "Second press changed queue or Auto while cancelling loop");
+        require(!session.selectedTimeRange(), "Cancelling Repeat retained its selected area unlike Mac");
         release(); press();
         require(!session.transport().queuedRegionId && !session.project().regionSetlist->autoAdvance &&
-                session.selectedTimeRange(), "Third press did not exclusively cancel queue and Auto");
+                !session.selectedTimeRange(), "Third press did not exclusively cancel queue and Auto");
         require(session.transport().playing && session.transport().position == playback,
                 "Cancellation moved or stopped playback");
+        session.selectTimeRange(2,6);
         press(); require(session.selectedTimeRange().has_value(), "Held Escape also removed the time selection");
         release(); press(); require(!session.selectedTimeRange(), "Next press failed to clear the remaining time selection");
         release();

@@ -128,13 +128,15 @@ enum AppStartupPresentation {
         if !preview {
             let audio = projectAudio
             let recorder = projectRecorder
-            #if os(macOS)
             projectInstrumentObservation = documents.$currentURL.removeDuplicates().sink { [weak show] url in
+                #if os(macOS)
                 if DesktopProjectTabs.shared.isForeground(show) {
                     InstrumentLibrary.shared.setProjectDirectory(url?.deletingLastPathComponent())
                 }
+                #else
+                InstrumentLibrary.shared.setProjectDirectory(url?.deletingLastPathComponent())
+                #endif
             }
-            #endif
             #if os(macOS)
             if !tabContext {
             AudioLicenseAccess.shared.setAllowed(false)
@@ -152,7 +154,6 @@ enum AppStartupPresentation {
             else { audio.setLicenseAllowed(auth.allowed) }
             #endif
             if !tabContext { TrackRecording.shared.bind(show) }
-            #if os(macOS)
             armedInstrumentObservation = projectRecorder.$armed.sink { [weak show] _ in
                 // Published state is sent before the REC button redraws. Queue
                 // graph changes after the click, and only wake live instruments.
@@ -160,7 +161,10 @@ enum AppStartupPresentation {
                     #if os(iOS)
                     guard self?.localPlaybackEnabled == true, !AudioDeviceSettings.shared.localSessionInterrupted else { return }
                     #endif
-                    guard let show, DesktopProjectTabs.shared.isForeground(show) else { return }
+                    guard let show else { return }
+                    #if os(macOS)
+                    guard DesktopProjectTabs.shared.isForeground(show) else { return }
+                    #endif
                     let instruments = Set(show.snapshot.project.songs.flatMap(\.tracks).filter { track in
                         track.fx?.instrumentKeys.isEmpty == false || (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
                     }.map(\.id))
@@ -173,7 +177,6 @@ enum AppStartupPresentation {
                       let file = InstrumentLibrary.shared.resolvedFile(id, projectDirectory: audio?.mediaDirectory) else { return nil }
                 return (file, instrument.percussion)
             }
-            #endif
             show.selectedLoopArea = { [weak show] in
                 guard let area = TimelineAreaSelection.shared.range, area.song == show?.snapshot.transport.songId else { return nil }
                 return area.start...area.end

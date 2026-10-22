@@ -152,6 +152,7 @@ import Combine
     @State private var exportingProject = false
     @State private var regionLoops: FXTarget?
     @State private var itemMenu: FXTarget?
+    @State private var itemMenuTargets: Set<UUID> = []
     @State private var editingTextItem: UUID?
     @State private var trackEdit: TrackDetailsEditRequest?
     @State private var fx: FXTarget?
@@ -194,7 +195,7 @@ import Combine
                         trackEdit = .init(project: show.snapshot.project.id, tracks: [], name: "Master",
                             color: show.snapshot.project.masterColor ?? 0x414141, nameEditable: false)
                     },
-                    openItemMenu: { itemMenu = .init(clip: $0) }, openItemFX: { fx = .init(clip: $0) }, addTrack: { addingTrack = true }, addTrackAudio: { documents.chooseNativeTrackAudio($0) },
+                    openItemMenu: { itemMenuTargets = [$0]; itemMenu = .init(clip: $0) }, openSelectedItemMenu: { item, targets in itemMenuTargets = targets; itemMenu = .init(clip: item) }, openItemFX: { fx = .init(clip: $0) }, addTrack: { addingTrack = true }, addTrackAudio: { documents.chooseNativeTrackAudio($0) },
                     addTrackText: { editingTextItem = show.addTextItem(track: $0) }, addTrackMedia: { documents.chooseNativeTrackMedia($0) },
                     createPlaylist: { show.createRegionPlaylist(name: $0, selected: $1) },
                     addBlock: { show.addSetlistBlock(namePrefix: JarasLocalization.string("Bloco")) },
@@ -222,6 +223,7 @@ import Combine
         .alert("Recording", isPresented: Binding(get: { !recorder.error.isEmpty }, set: { if !$0 { recorder.error = "" } })) {
             Button("OK") { recorder.error = "" }
         } message: { Text(LocalizedStringKey(recorder.error)) }
+        .environment(\.jarasNativePalette, true)
     }
     @ViewBuilder private var workspaceDialogs: some View {
         if remoteSettingsOpen {
@@ -302,7 +304,7 @@ import Combine
             }
         } else if let clip = itemMenu?.clip {
             IpadCompactModal(preferredSize: CGSize(width: 720, height: 600)) {
-                IpadItemActions(show: show, documents: documents, item: clip, close: { itemMenu = nil })
+                IpadItemActions(show: show, documents: documents, item: clip, targets: itemMenuTargets, close: { itemMenu = nil })
             }
         } else if let target = fx {
             IpadCompactModal(preferredSize: CGSize(width: 980, height: 640)) {
@@ -326,68 +328,8 @@ import Combine
     }
 }
 
-/// Native iPad item actions share the desktop editing and effects paths.
-@MainActor private struct IpadItemActions: View {
-    @ObservedObject var show: ShowController
-    let documents: ProjectDocuments
-    let item: UUID
-    let close: () -> Void
-    @State private var normalize = false
-    @State private var editingText = false
-    @State private var fx = false
-    private var track: Track? { show.current?.tracks.first { $0.clips.contains { $0.id == item } } }
-    private var clip: AudioClip? { track?.clips.first { $0.id == item } }
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text(clip?.name ?? "—").font(.jarasHeadline).lineLimit(2)
-                    Spacer(); Button("Close") { close() }
-                }.padding(.bottom, 6)
-                if let clip {
-                    if clip.midi == nil && !clip.isImage && !((track?.kind.isText ?? false) && !clip.isProjectionMedia) {
-                        HStack {
-                            Text("Tuner"); Spacer()
-                            Button { show.setItemPitch(item, semitones: max(-12, (clip.pitchSemitones ?? 0) - 1)) } label: { Image(systemName: "minus").frame(width: 36, height: 36) }
-                            Text(String(format: "%+.2g st", clip.pitchSemitones ?? 0)).monospacedDigit().frame(width: 60)
-                            Button { show.setItemPitch(item, semitones: min(12, (clip.pitchSemitones ?? 0) + 1)) } label: { Image(systemName: "plus").frame(width: 36, height: 36) }
-                        }.padding(8).background(Color.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 7))
-                    }
-                    if track?.kind.isText == true && !clip.isProjectionMedia {
-                        action("Edit") { editingText = true }
-                    }
-                    action("FX") { fx = true }
-                    action(clip.muted == true ? "Unmute items" : "Mute items") { show.send(.clipMute, target: item) }
-                    action("Criar região do item") { show.regionsFromSelection([item]); close() }
-                    if clip.midi == nil && !clip.isImage && (clip.audioFile ?? track?.audioFile) != nil {
-                        action("Normalize…") { normalize = true }
-                    }
-                    Button("Delete", role: .destructive) { show.deleteItems([item]); close() }
-                        .frame(maxWidth: .infinity, minHeight: 44).buttonStyle(.bordered)
-                }
-            }.padding(22)
-        }.background(RemoteSurface.background)
-            .overlay {
-                if editingText { IpadCompactModal {
-                    TextItemEditor(text: clip?.text ?? "", apply: { show.updateTextItem(item, text: $0) }, close: { editingText = false })
-                } } else if normalize { IpadCompactModal {
-                    ItemNormalizationEditor(show: show, documents: documents, items: [item], close: { normalize = false })
-                } } else if fx { IpadCompactModal(preferredSize: CGSize(width: 980, height: 640)) {
-                    IpadStandaloneFXManager(show: show, track: nil, clip: item, targets: [], close: { fx = false })
-                } }
-            }
-
-    }
-    private func action(_ title: String, perform: @escaping () -> Void) -> some View {
-        Button(action: perform) {
-            Text(LocalizedStringKey(title)).frame(maxWidth: .infinity, minHeight: 40).contentShape(Rectangle())
-        }.buttonStyle(StageButtonStyle(color: JarasTheme.panel))
-    }
-
-}
-
 /// Track, master and item effects share the same Add / bypass / Remove manager.
-@MainActor private struct IpadStandaloneFXManager: View {
+@MainActor struct IpadStandaloneFXManager: View {
     @ObservedObject var show: ShowController
     let track: UUID?
     let clip: UUID?
@@ -396,7 +338,7 @@ import Combine
     @State private var selected: String?
     @State private var adding = false
     private var settings: NativeFXSettings { clip.map(show.clipFXSettings) ?? show.fxSettings(track) }
-    private var effects: [String] { (clip == nil ? settings.effectKeys : settings.clipEffectKeys).filter { settings.kind(of: $0) != "Instruments" } }
+    private var effects: [String] { clip == nil ? settings.effectKeys : settings.clipEffectKeys }
     private var targetName: String {
         if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—" }
         return track.flatMap { FXModelLookup.track($0, in: show.snapshot.project)?.name } ?? "Master"
@@ -917,15 +859,31 @@ struct IpadItemResizePreview {
 /// A control excludes resizing from the grid pan/pinch and item-menu recognizers.
 struct IpadItemResizeHandle: UIViewRepresentable {
     let left: Bool
+    let interactionID: UUID
     let changed: (Double, Bool, Bool) -> Void
+    @Environment(\.isEnabled) private var enabled
     func makeUIView(context: Context) -> IpadItemResizeControl { IpadItemResizeControl() }
     func updateUIView(_ view: IpadItemResizeControl, context: Context) {
+        // Cancel with the previous callback before changing project/item context.
+        view.interactionID = interactionID
         view.changed = changed
+        view.isEnabled = enabled
         view.accessibilityLabel = JarasLocalization.string(left ? "Item start" : "Item end")
     }
+    static func dismantleUIView(_ view: IpadItemResizeControl, coordinator: ()) { view.cancelResize() }
 }
 final class IpadItemResizeControl: UIControl, UIGestureRecognizerDelegate {
     var changed: ((Double, Bool, Bool) -> Void)?
+    var interactionID: UUID? {
+        didSet { if oldValue != interactionID { cancelResize() } }
+    }
+    override var isEnabled: Bool {
+        didSet {
+            if !isEnabled { cancelResize() }
+            drag.isEnabled = isEnabled
+        }
+    }
+    private var resizing = false
     private let grip = CALayer()
     private lazy var drag = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
     override init(frame: CGRect) {
@@ -938,12 +896,14 @@ final class IpadItemResizeControl: UIControl, UIGestureRecognizerDelegate {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard IpadHardwareKeyboardFocus.permitsInput(in: self, enabled: isEnabled) else { return false }
         guard gestureRecognizer === drag else { return true }
         let velocity = drag.velocity(in: window ?? self)
         return abs(velocity.x) > abs(velocity.y)
     }
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        if window == nil { cancelResize(); return }
         var parent = superview
         while let view = parent {
             if let scroll = view as? UIScrollView { scroll.panGestureRecognizer.require(toFail: drag); break }
@@ -958,11 +918,30 @@ final class IpadItemResizeControl: UIControl, UIGestureRecognizerDelegate {
     }
     @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
-        case .began, .changed: changed?(Double(gesture.translation(in: window).x), false, false)
-        case .ended: changed?(Double(gesture.translation(in: window).x), true, false)
-        case .cancelled, .failed: changed?(0, true, true)
+        case .began:
+            guard IpadHardwareKeyboardFocus.permitsInput(in: self, enabled: isEnabled) else { return }
+            resizing = true
+            changed?(Double(gesture.translation(in: window).x), false, false)
+        case .changed:
+            guard resizing else { return }
+            guard IpadHardwareKeyboardFocus.permitsInput(in: self, enabled: isEnabled) else { cancelResize(); return }
+            changed?(Double(gesture.translation(in: window).x), false, false)
+        case .ended:
+            guard resizing else { return }
+            guard IpadHardwareKeyboardFocus.permitsInput(in: self, enabled: isEnabled) else { cancelResize(); return }
+            resizing = false
+            changed?(Double(gesture.translation(in: window).x), true, false)
+        case .cancelled, .failed: cancelResize()
         default: break
         }
+    }
+    func cancelResize() {
+        guard resizing else { return }
+        resizing = false
+        changed?(0, true, true)
+        // Reset recognition too; the old mouse-up must not commit in a new tab.
+        drag.isEnabled = false
+        drag.isEnabled = isEnabled
     }
 }
 
@@ -1155,14 +1134,23 @@ struct IpadDialogButtonStyle: ButtonStyle {
     var controlWidth: CGFloat? = nil
     @ObservedObject private var recorder = TrackRecording.shared
     @ObservedObject private var metronome = MetronomeSettings.shared
+    @State private var recordingSettings = false
     var body: some View {
         HStack(spacing: 4) {
             if only == nil || only == .record {
             Button { recorder.toggle(show: show) } label: {
                 Label("REC", systemImage: recorder.recording ? "stop.circle.fill" : "record.circle")
-            }.buttonStyle(TransportButtonStyle(color: .red, active: recorder.recording, fontSize: 10, width: controlWidth ?? 47, height: 28))
-                .modifier(JarasBlink(active: recorder.recording, interval: 0.4, lowOpacity: 0.05))
+            }.buttonStyle(TransportButtonStyle(color: recorder.recording ? JarasTheme.transportRed : JarasTheme.liveOffRed,
+                    active: true, activeForeground: .white, fontSize: 10, width: controlWidth ?? 47, height: 28))
+                .overlay {
+                    IpadTapHoldTouchSurface(tap: { recorder.toggle(show: show) }, hold: { recordingSettings = true })
+                }
                 .disabled(recorder.busy).accessibilityLabel("Record")
+                .accessibilityValue(recorder.recording ? "Recording" : "Off")
+                .accessibilityAction(named: Text("Recording mode")) { recordingSettings = true }
+                .popover(isPresented: $recordingSettings) {
+                    IpadTransportRecordingSettings(show: show)
+                }
             }
             if only == nil || only == .metronome {
             Button { metronome.enabled.toggle() } label: { Image(systemName: "metronome") }
@@ -1171,6 +1159,33 @@ struct IpadDialogButtonStyle: ButtonStyle {
                 .contextMenu { Button("Settings") { configureMetronome?() } }
             }
         }
+    }
+}
+
+/// The transport has no independent recording stage: choose an armed or
+/// selected track and edit the same settings offered by that track's REC.
+@MainActor private struct IpadTransportRecordingSettings: View {
+    @ObservedObject var show: ShowController
+    @ObservedObject private var recorder = TrackRecording.shared
+    @State private var selected: UUID?
+    private var tracks: [Track] {
+        let ids = recorder.armed.union(show.mixerTrackSelection)
+        return (show.current?.tracks ?? []).filter { $0.kind == .standard && ids.contains($0.id) }
+    }
+    private var selectedID: UUID? {
+        tracks.first(where: { $0.id == selected })?.id ?? tracks.first?.id
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let id = selectedID {
+                Picker("Track", selection: Binding(get: { id }, set: { selected = $0 })) {
+                    ForEach(tracks) { track in Text(verbatim: track.name).tag(track.id) }
+                }.padding(.horizontal, 16).padding(.top, 16)
+                TrackRecordingSettings(show: show, trackID: id)
+            } else {
+                Text("Arm at least one track before recording.").padding(20)
+            }
+        }.frame(width: 360).preferredColorScheme(.dark)
     }
 }
 

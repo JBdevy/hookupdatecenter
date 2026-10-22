@@ -3,11 +3,7 @@ import SwiftUI
 struct DAWActionsList: View {
     @ObservedObject var show: ShowController
     @ObservedObject private var mappings = ControlMappings.shared
-    #if os(iOS)
-    @State private var inputKind = "midi"
-    #else
     @State private var inputKind = "keyboard"
-    #endif
     @State private var category = DAWActionCategory.transport
     private var categories: [DAWActionCategory] { DAWActionCategory.allCases }
     private var categoryActions: [DAWAction] {

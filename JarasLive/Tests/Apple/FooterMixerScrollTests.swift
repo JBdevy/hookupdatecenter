@@ -303,11 +303,17 @@ private final class FooterWheelFixture: NSEvent {
     var point = NSPoint.zero
     var dx: CGFloat = 0, dy: CGFloat = 0
     var flags: NSEvent.ModifierFlags = []
+    var time: TimeInterval = 1
+    var precise = true
+    var eventPhase: NSEvent.Phase = [], inertialPhase: NSEvent.Phase = []
+    override var timestamp: TimeInterval { time }
+    override var phase: NSEvent.Phase { eventPhase }
+    override var momentumPhase: NSEvent.Phase { inertialPhase }
     override var window: NSWindow? { fixtureWindow }
     override var locationInWindow: NSPoint { point }
     override var scrollingDeltaX: CGFloat { dx }
     override var scrollingDeltaY: CGFloat { dy }
-    override var hasPreciseScrollingDeltas: Bool { true }
+    override var hasPreciseScrollingDeltas: Bool { precise }
     override var modifierFlags: NSEvent.ModifierFlags { flags }
 }
 window.orderFront(nil)
@@ -347,12 +353,101 @@ for right in [false, true] {
     wheel.flags = .shift
     let shiftedBefore = scroll.contentView.bounds.minX
     precondition(view.routeWheel(wheel))
-    precondition(scroll.contentView.bounds.minX == shiftedBefore + 24 && slotScroll.contentView.bounds.origin == slotOffset,
-                 "Shift routes the vertical wheel to channel scrolling even over FX")
+    precondition(scroll.contentView.bounds.minX == shiftedBefore && slotScroll.contentView.bounds.origin == slotOffset,
+                 "A short Shift-wheel is consumed without moving channels, FX slots or changing mode")
     wheel.flags = []
 }
-window.orderOut(nil)
 print("MIXER_WHEEL_FX_VERTICAL_ONLY_INSIDE_VISIBLE_VIEWPORT_HORIZONTAL_AND_EMPTY_SPACE_ROUTE_TO_TRACKS_OK")
+
+// Native routing is shared by docked and detached mixers, including master.
+// Deliberate Shift input belongs to the panel before any child slider sees it.
+var requestedModes: [Bool] = []
+view.setSlotsOnly = { requestedModes.append($0) }
+wheel.point = master.convert(NSPoint(x: 30, y: 150), to: nil)
+wheel.flags = .shift; wheel.precise = false; wheel.dx = 0; wheel.dy = 1
+let initialHorizontal = scroll.contentView.bounds.minX
+let initialSlotPosition = slotScroll.contentView.bounds.origin
+for n in 0..<2 {
+    wheel.time = 10 + Double(n) * 0.05
+    precondition(view.routeWheel(wheel) && requestedModes.isEmpty,
+                 "Two physical notches must not trigger the deliberate three-notch gesture")
+}
+wheel.time = 10.2; precondition(view.routeWheel(wheel))
+precondition(requestedModes == [true], "Shift-wheel up switches to FX/instrument slots only")
+for n in 1...20 { wheel.time = 10.2 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
+precondition(requestedModes == [true], "Holding the same gesture never repeats the action")
+precondition(scroll.contentView.bounds.minX == initialHorizontal && slotScroll.contentView.bounds.origin == initialSlotPosition,
+             "All Shift events are swallowed before child scrolling or mixer controls")
+wheel.dy = -1
+for n in 0..<3 { wheel.time = 12 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
+precondition(requestedModes == [true, false], "Shift-wheel down restores normal layout")
+wheel.precise = true; wheel.dy = 10_000; wheel.time = 13
+precondition(view.routeWheel(wheel) && requestedModes.count == 2,
+             "One accelerated spike is limited to sixty points and cannot change the layout")
+wheel.inertialPhase = .changed
+for n in 1...10 { wheel.time = 13 + Double(n) * 0.01; precondition(view.routeWheel(wheel)) }
+precondition(requestedModes.count == 2, "Momentum never contributes to the mode gesture")
+wheel.inertialPhase = []; wheel.time = 14; wheel.dy = 60
+precondition(view.routeWheel(wheel))
+precondition(requestedModes.count == 2, "The idle gap discarded the old partial spike")
+wheel.time = 14.1; precondition(view.routeWheel(wheel))
+precondition(requestedModes == [true, false, true], "Precise deltas reach the same threshold")
+// Native Shift wheels can be axis-remapped by AppKit. Keep the physical intent.
+wheel.dy = 0; wheel.dx = -1; wheel.precise = false
+for n in 0..<3 { wheel.time = 15 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
+precondition(requestedModes == [true, false, true, false])
+wheel.dx = 0; wheel.dy = 1; wheel.time = 16
+precondition(view.routeWheel(wheel))
+wheel.point = NSPoint(x: -30, y: -30); wheel.time = 16.1
+precondition(!view.routeWheel(wheel), "The gesture only belongs to the hovered mixer")
+wheel.point = master.convert(NSPoint(x: 30, y: 150), to: nil)
+for n in 0..<2 { wheel.time = 16.2 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
+precondition(requestedModes.count == 4, "Leaving the panel resets a partial gesture")
+wheel.time = 16.4; precondition(view.routeWheel(wheel))
+precondition(requestedModes.count == 5)
+view.isHidden = true; wheel.time = 17
+precondition(!view.routeWheel(wheel), "A hidden/detached closed panel does not capture wheel input")
+view.isHidden = false; wheel.flags = [.shift, .command]
+precondition(!view.routeWheel(wheel), "Other command gestures are not intercepted")
+wheel.flags = []
+window.orderOut(nil)
+print("MIXER_SHIFT_WHEEL_THRESHOLD_DIRECTIONS_MOMENTUM_HOVER_AND_CHILD_CONSUMPTION_OK")
+
+// Real Quartz/AppKit conversion verifies the physical line-wheel normalization,
+// independently of the event fixture used to target the native view.
+for lines: Int32 in [1, -1, 3] {
+    let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                     wheel1: lines, wheel2: 0, wheel3: 0)!
+    let event = NSEvent(cgEvent: cg)!
+    precondition(!event.hasPreciseScrollingDeltas && event.scrollingDeltaY == CGFloat(lines))
+}
+print("MIXER_PHYSICAL_LINE_WHEEL_QUARTZ_APPKIT_NORMALIZATION_OK")
+
+private var modeGesture = FooterMixerModeGesture()
+func modeStep(_ delta: CGFloat, _ time: TimeInterval, precise: Bool = false) -> Bool? {
+    modeGesture.consume(delta: delta, precise: precise, timestamp: time, momentum: false)
+}
+precondition(modeStep(1, 1) == nil && modeStep(1, 1.1) == nil && modeStep(-1, 1.2) == nil)
+precondition(modeStep(-1, 1.3) == nil)
+precondition(modeStep(-1, 1.4) == false, "A reversal starts a fresh threshold")
+modeGesture.reset()
+for time in [1.5, 1.6, 1.7, 1.8, 1.9] { precondition(modeStep(1, time) == nil) }
+for time in [2.1, 2.2] { precondition(modeStep(1, time) == nil) }
+precondition(modeStep(1, 2.3) == true, "Cooldown survives a released Shift or reversed gesture")
+modeGesture.reset()
+precondition(modeStep(4, 4) == nil && modeStep(4, 4.7) == nil)
+precondition(modeStep(4, 4.8) == true, "A gap over 0.6 seconds discards incomplete progress")
+print("MIXER_MODE_GESTURE_REVERSAL_IDLE_GAP_RESET_AND_COOLDOWN_OK")
+for height: CGFloat in [80, 160, 242, 255, 350, 600] {
+    let normal = FooterMixerStripLayout(height: height, slotsOnly: false)
+    let compact = FooterMixerStripLayout(height: height, slotsOnly: true)
+    precondition(normal.controlsHeight == min(187, max(100, height - 34)))
+    precondition(normal.slotsHeight == max(0, height - 34 - normal.controlsHeight),
+                 "Normal fader/pan/meter geometry is unchanged")
+    precondition(compact.controlsHeight == 0 && compact.slotsHeight == max(0, height - 34),
+                 "Slots-only mode reserves only the fixed lower name and the existing outer padding")
+}
+print("MIXER_SLOTS_ONLY_FULL_AVAILABLE_HEIGHT_NORMAL_GEOMETRY_UNCHANGED_OK")
 
 slotScroll.removeFromSuperview()
 private final class FooterWindowLifecycleProbe: NSView {

@@ -24,7 +24,7 @@ def between(start, end):
     first = source.index(start)
     return source[first:source.index(end, first)]
 parts = [between('@MainActor private struct NativeTimelineAudioBodyConfiguration', '/// Structural data changes'),
-         between('private final class TimelineRenderMetadata {', '/// During a gain gesture'),
+         between('private final class TimelineRenderMetadata {', '/// During a gain or fade gesture'),
          declaration('struct TimelineRenderKey:'),
          declaration('@MainActor private final class TimelineSelectionLayoutCache'),
          declaration('@MainActor private final class TrackLayoutCache'),
@@ -93,8 +93,7 @@ extension TimelineAudioWaveform {
 out.joinpath('TimelineAudioWaveform.swift').write_text(cache)
 selection = Path('Apple/Shared/GridSelectionInput.swift').read_text()
 start = selection.index('struct GridSelectionItem {')
-typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]
-metrics = '\nimport AppKit\nimport CoreText\n'+typography+'\n'+selection[selection.index('enum GridSelectionHeaderText {'):selection.index('private enum GridSelectionHeaderControls {')]
+metrics = '\nimport AppKit\nimport CoreText\n'+selection[selection.index('enum GridSelectionHeaderText {'):selection.index('private enum GridSelectionHeaderControls {')]
 out.joinpath('GridSelectionGeometry.swift').write_text('import SwiftUI\n' + selection[start:selection.index('#if os(macOS)\nimport AppKit', start)]+metrics)
 PY
 swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
@@ -103,7 +102,7 @@ swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
   Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift \
   Application/Project/ClipRepetition.swift Application/Project/AudioFileRead.swift \
-  Apple/Shared/Theme.swift "$test_dir/TimelineAudioWaveform.swift" \
+  Apple/Shared/Theme.swift Apple/Shared/ItemWaveformPreview.swift "$test_dir/TimelineAudioWaveform.swift" \
   "$test_dir/MetalWaveformRenderer.swift" Apple/Shared/TimelineMetalWaveforms.swift \
   "$test_dir/GridSelectionGeometry.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

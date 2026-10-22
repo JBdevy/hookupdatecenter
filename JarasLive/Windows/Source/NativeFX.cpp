@@ -28,6 +28,9 @@ struct NativeFX::Effect {
     catlive::dsp::TriggerParameters triggerParameters;
     catlive::dsp::GateParameters gateParameters;
     String sampleIdentity;
+    ParameterPreview parameters;
+    unsigned eqActive = 0;
+    std::shared_ptr<analysis::Capture> eqAnalysis;
     double sampleRate = 48000;
     String kind;
     String key, externalConfiguration, pluginID;
@@ -70,10 +73,98 @@ void NativeFX::previewDynamics(const String &key, const DynamicsPreview &snapsho
         }
     }
 }
+
+NativeFX::ParameterPreview NativeFX::parameterPreview(const String &kind, const var &value, double sampleRate) {
+    ParameterPreview result; result.sampleRate=sampleRate; auto &v = result.values;
+    using C = juce::dsp::IIR::Coefficients<float>;
+    auto coefficients = [](const C::Ptr &source, auto &target) { std::copy_n(source->getRawCoefficients(), 5, target.begin()); };
+    if (kind == "EQ") {
+        result.kind = ParameterPreview::equalizer;
+        for (const auto &band : list(get(value, "bands"))) {
+            if (!flag(band, "enabled", true)) continue;
+            const float frequency = (float)jlimit(20., std::min(20000., sampleRate * .45), num(band, "frequency", 1000));
+            const float q = (float)jlimit(.1, 18., num(band, "q", .707));
+            const float gain = Decibels::decibelsToGain((float)jlimit(-24., 24., num(band, "gain")));
+            const auto type = str(band, "type", "bell");
+            const bool cut = type == "lowCut" || type == "highCut";
+            const int order = cut ? jlimit(1, 32, (int)num(band, "slope", 12) / 6) : 2;
+            for (int stage = 0; stage < std::max(1, order / 2) && result.eqCount < result.eq.size(); ++stage) {
+                C::Ptr c;
+                if (cut && order == 1) {
+                    const double k = std::tan(MathConstants<double>::pi * frequency / sampleRate);
+                    const float b0 = (float)((type == "lowCut" ? 1 : k) / (1 + k));
+                    c = new C(b0, type == "lowCut" ? -b0 : b0, 0, 1, (float)((k - 1) / (k + 1)), 0);
+                } else if (cut) {
+                    const float stageQ = (float)(1 / (2 * std::sin(MathConstants<double>::pi * (2 * stage + 1) / (2 * order))));
+                    c = type == "lowCut" ? C::makeHighPass(sampleRate, frequency, stageQ) : C::makeLowPass(sampleRate, frequency, stageQ);
+                } else c = type == "lowShelf" ? C::makeLowShelf(sampleRate, frequency, q, gain)
+                         : type == "highShelf" ? C::makeHighShelf(sampleRate, frequency, q, gain)
+                         : C::makePeakFilter(sampleRate, frequency, q, gain);
+                coefficients(c, result.eq[result.eqCount++]);
+            }
+        }
+    } else if (kind == "Compressor") {
+        result.kind = ParameterPreview::compressor;
+        v[0]=(float)jlimit(-60.,0.,num(value,"threshold",-20)); v[1]=(float)jlimit(1.,20.,num(value,"ratio",4));
+        v[2]=(float)jlimit(.1,200.,num(value,"attack",.005)*1000); v[3]=(float)jlimit(10.,3000.,num(value,"release",.1)*1000);
+        v[4]=Decibels::decibelsToGain((float)jlimit(-12.,24.,num(value,"makeup")));
+    } else if (kind == "Delay") {
+        result.kind = ParameterPreview::delay;
+        v[0]=(float)std::round(jlimit(.01,2.,num(value,"delayTime",.25))*sampleRate);
+        v[1]=(float)jlimit(0.,.9,num(value,"feedback",25)/100); v[2]=(float)jlimit(0.,1.,num(value,"delayMix",20)/100);
+    } else if (kind == "Reverb") {
+        result.kind = ParameterPreview::reverb;
+        v[0]=(float)jlimit(.05,.98,num(value,"reverbDecay",2)/25+.2+num(value,"reverbRoom",1)*.15);
+        v[1]=(float)jlimit(0.,1.,num(value,"reverbMix",20)/100);
+        coefficients(C::makeHighPass(sampleRate,(float)jlimit(20.,2000.,num(value,"reverbLowCut",80))),result.highPass);
+        coefficients(C::makeLowPass(sampleRate,(float)jlimit(2000.,std::min(20000.,sampleRate*.45),num(value,"reverbHighCut",12000))),result.lowPass);
+    } else if (kind == "Limiter") {
+        result.kind = ParameterPreview::limiter; const auto p=get(value,"limiter");
+        v[0]=Decibels::decibelsToGain((float)jlimit(-24.,0.,num(p,"ceiling",-.1)));
+        v[1]=(float)std::exp(-1/(sampleRate*jlimit(.01,3.,num(p,"release",.1))));
+        v[2]=Decibels::decibelsToGain((float)jlimit(-24.,24.,num(p,"inputGain")));
+    } else if (kind == "Pitch") { result.kind=ParameterPreview::pitch;v[0]=(float)jlimit(-12.,12.,num(value,"pitchSemitones")); }
+    return result;
+}
+void NativeFX::previewParameters(const String &key, const ParameterPreview &parameters) noexcept {
+    for (auto &effect : effects) if (effect->key == key && effect->parameters.kind == parameters.kind && effect->sampleRate == parameters.sampleRate) {
+        auto &e=*effect; const auto &v=parameters.values;
+        switch(parameters.kind) {
+        case ParameterPreview::equalizer:
+            for (int ch=0;ch<2;++ch) for (unsigned i=0;i<parameters.eqCount && i<e.eq[ch].size();++i) {
+                if (i>=e.eqActive) e.eq[ch][i]->reset();
+                std::copy(parameters.eq[i].begin(),parameters.eq[i].end(),e.eq[ch][i]->coefficients->getRawCoefficients());
+            }
+            e.eqActive=parameters.eqCount;break;
+        case ParameterPreview::compressor:
+            e.compressor.setThreshold(v[0]);e.compressor.setRatio(v[1]);e.compressor.setAttack(v[2]);e.compressor.setRelease(v[3]);e.makeup=v[4];break;
+        case ParameterPreview::delay:e.delaySamples=(int)v[0];e.feedback=v[1];e.mix=v[2];break;
+        case ParameterPreview::reverb: {
+            Reverb::Parameters p;p.roomSize=v[0];p.damping=.5f;p.wetLevel=1;p.dryLevel=0;p.width=1;
+            e.reverb.setParameters(p);e.mix=v[1];
+            for(int ch=0;ch<2;++ch) {
+                std::copy(parameters.highPass.begin(),parameters.highPass.end(),e.highpass[ch].coefficients->getRawCoefficients());
+                std::copy(parameters.lowPass.begin(),parameters.lowPass.end(),e.lowpass[ch].coefficients->getRawCoefficients());
+            }
+            break;
+        }
+        case ParameterPreview::limiter:e.limiterCeiling=v[0];e.limiterRelease=v[1];e.makeup=v[2];break;
+        case ParameterPreview::pitch:if(e.pitch)e.pitch->setTransposeSemitones(v[0]);break;
+        case ParameterPreview::none:break;
+        }
+        e.parameters=parameters;
+    }
+}
+
 void NativeFX::adoptDynamicsState(NativeFX &previous) noexcept {
     for (auto &next : effects) for (auto &old : previous.effects) {
         if (next->key != old->key || next->kind != old->kind || next->sampleRate != old->sampleRate) continue;
-        if (next->kind == "CatLive Trigger" && next->sampleIdentity == old->sampleIdentity && old->trigger.hasSample()) {
+        if (next->parameters.kind != ParameterPreview::none && next->parameters.kind == old->parameters.kind) {
+            const auto parameters=next->parameters;
+            // Keep the admitted filter/delay/reverb histories and analyzer. The
+            // unused prepared object is retired by the caller outside its lock.
+            std::swap(next, old); previewParameters(next->key, parameters);
+        } else if (next->kind == "CatLive Trigger" && next->sampleIdentity == old->sampleIdentity && old->trigger.hasSample()) {
             std::swap(next->trigger, old->trigger); next->trigger.setParameters(next->triggerParameters);
         } else if (next->kind == "Cat Gate") {
             std::swap(next->gate, old->gate); next->gate.setParameters(next->gateParameters);
@@ -147,8 +238,6 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                                                    : String();
         if (enabledKey.isNotEmpty() && !flag(value, Identifier(enabledKey)))
             return;
-        if (kind == "Pitch" && num(value, "pitchSemitones") == 0)
-            return;
         if (kind == "Instruments" && flag(value, "instrumentBypassed"))
             return;
         if(kind=="Instruments")return; // The MIDI voice bank belongs to the audio bus.
@@ -158,7 +247,9 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
             return;
         }
         auto e = std::make_unique<Effect>();
-        e->kind = kind;
+        e->kind = kind; e->key = key; e->sampleRate = sampleRate;
+        e->parameters = parameterPreview(kind, value, sampleRate);
+        if (kind == "EQ" && !offline) e->eqAnalysis = std::make_shared<analysis::Capture>(sampleRate);
         juce::dsp::ProcessSpec spec{sampleRate, 4096, 2};
         if (kind == "Pitch") {
             e->pitch = std::make_unique<signalsmith::stretch::SignalsmithStretch<float>>(0);
@@ -218,6 +309,13 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                         e->eq[ch].push_back(std::move(filter));
                     }
             }
+        if (kind == "EQ") {
+            e->eqActive = (unsigned)e->eq[0].size();
+            for (auto &channel : e->eq) while (channel.size() < ParameterPreview::maximumEQStages) {
+                auto filter=std::make_unique<juce::dsp::IIR::Filter<float>>(new juce::dsp::IIR::Coefficients<float>(1,0,0,1,0,0));
+                filter->reset(); channel.push_back(std::move(filter));
+            }
+        }
         if (kind == "Compressor") {
             e->compressor.prepare(spec);
             e->compressor.setThreshold((float)jlimit(-60.0, 0.0, num(value, "threshold", -20)));
@@ -236,7 +334,7 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
         if (kind == "Delay") {
             e->delaySamples =
                 (int)std::round(jlimit(.01, 2.0, num(value, "delayTime", .25)) * sampleRate);
-            e->delay.setSize(2, e->delaySamples + 1);
+            e->delay.setSize(2, (int)std::ceil(sampleRate * 2) + 1);
             e->delay.clear();
             e->feedback = (float)jlimit(0.0, .9, num(value, "feedback", 25) / 100);
             e->mix = (float)jlimit(0.0, 1.0, num(value, "delayMix", 20) / 100);
@@ -332,6 +430,10 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
         append(kind, key, value);
     }
 }
+std::shared_ptr<analysis::Capture> NativeFX::eqAnalysis(const String &key) const {
+    for (const auto &effect : effects) if (effect->key == key) return effect->eqAnalysis;
+    return {};
+}
 std::shared_ptr<native::vst3::Processor> NativeFX::external(const String &key) const {
     for(const auto &effect:effects)if(effect->key==key)return effect->plugin;
     return {};
@@ -399,19 +501,22 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
             }
             e->plugin->process(buffer.getWritePointer(0),buffer.getWritePointer(1),samples,transport,e->midi.data(),count);
         }
-        if (e->kind == "Pitch") {
+        if (e->kind == "Pitch" && e->parameters.values[0] != 0) {
             for (int ch = 0; ch < 2; ++ch)
                 e->pitchInput.copyFrom(ch, 0, buffer, ch, 0, samples);
             e->pitch->process(e->pitchInput.getArrayOfReadPointers(), samples,
                               buffer.getArrayOfWritePointers(), samples);
         }
-        if (e->kind == "EQ")
+        if (e->kind == "EQ") {
+            const bool capturing = e->eqAnalysis && e->eqAnalysis->begin(buffer.getReadPointer(0), buffer.getReadPointer(1), samples);
             for (int ch = 0; ch < 2; ++ch) {
                 auto *data = buffer.getWritePointer(ch);
-                for (auto &filter : e->eq[ch])
+                for (unsigned index=0; index<e->eqActive; ++index)
                     for (int n = 0; n < samples; ++n)
-                        data[n] = filter->processSample(data[n]);
+                        data[n] = e->eq[ch][index]->processSample(data[n]);
             }
+            if (capturing) e->eqAnalysis->finish(buffer.getReadPointer(0), buffer.getReadPointer(1));
+        }
         if (e->kind == "Compressor" || e->kind == "Limiter") {
             juce::dsp::AudioBlock<float> block(buffer);
             auto sub = block.getSubBlock(0, (size_t)samples);
@@ -450,11 +555,11 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
             for (int n = 0; n < samples; ++n) {
                 for (int ch = 0; ch < 2; ++ch) {
                     auto input = buffer.getSample(ch, n),
-                         delayed = e->delay.getSample(ch, e->delayPosition);
+                         delayed = e->delay.getSample(ch, (e->delayPosition + e->delay.getNumSamples() - e->delaySamples) % e->delay.getNumSamples());
                     e->delay.setSample(ch, e->delayPosition, input + delayed * e->feedback);
                     buffer.setSample(ch, n, input * (1 - e->mix) + delayed * e->mix);
                 }
-                e->delayPosition = (e->delayPosition + 1) % e->delaySamples;
+                e->delayPosition = (e->delayPosition + 1) % e->delay.getNumSamples();
             }
     }
 }

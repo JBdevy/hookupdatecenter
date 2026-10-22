@@ -3,6 +3,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 - "${1:-}" <<'PY'
 import json, os, pathlib, plistlib, shutil, subprocess, sys, tempfile, time
+# iOS 16 treats pointer clicks as direct touches unless the production bundle
+# explicitly opts in. Newer simulators default to YES and can hide this omission.
+production_info = plistlib.loads(pathlib.Path('Apple/Info-iPad.plist').read_bytes())
+if production_info.get('UIApplicationSupportsIndirectInputEvents') is not True:
+    raise SystemExit('iPad Info.plist must enable UIApplicationSupportsIndirectInputEvents for iPadOS 16 mouse/trackpad support.')
 def command(*args):
     return subprocess.check_output(args, text=True).strip()
 devices = [device for group in json.loads(command('xcrun','simctl','list','devices','available','-j'))['devices'].values() for device in group]
@@ -20,6 +25,7 @@ try:
         'CFBundleIdentifier': bundle, 'CFBundleName':'PointerProbe', 'CFBundleExecutable':'PointerProbe',
         'CFBundleVersion':'1', 'CFBundleShortVersionString':'1.0', 'CFBundlePackageType':'APPL',
         'LSRequiresIPhoneOS':True, 'MinimumOSVersion':'16.0', 'UIDeviceFamily':[2],
+        'UIApplicationSupportsIndirectInputEvents':production_info['UIApplicationSupportsIndirectInputEvents'],
         'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False}, 'UILaunchScreen':{}}))
     sources = ['Application/Controls/ControlInput.swift', 'Application/Controls/HardwareKeyboardInput.swift',
                'Apple/Shared/IpadHardwareKeyboard.swift', 'Apple/Shared/IpadTimelinePointer.swift',
