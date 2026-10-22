@@ -3034,7 +3034,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     static_cast<QuietButton &>(*controls["save"]).context = [this](Point<int>) {
         if (!projectReady || session.busy || session.audio.isRecording()) return;
         auto safe = SafePointer<Workspace>(this);
-        auto panel=std::make_unique<ProjectSavePanel>(text(session.project().name), [safe](String name) {
+        auto panel=std::make_unique<ProjectSavePanel>(session.document == File() ? text(session.project().name) : session.document.getFileNameWithoutExtension(), [safe](String name) {
             if(!safe) return;
             const auto previous=safe->session.document;
             safe->session.renameProject(name);

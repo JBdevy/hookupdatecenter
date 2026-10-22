@@ -183,7 +183,7 @@ struct TransportView: View {
                     #endif
                     Spacer(minLength: 0)
                     ProjectSaveButton(pending: show.needsSave, saving: show.saving, message: show.message,
-                                      projectName: show.snapshot.project.name, rename: documents.map { documents in { name in try await documents.renameProject(name) } },
+                                      projectName: documents?.currentURL?.deletingPathExtension().lastPathComponent ?? show.snapshot.project.name, rename: documents.map { documents in { name in try await documents.renameProject(name) } },
                                       exportToIPad: documents == nil ? nil : { showingPortableExport = true }) { Task { await show.save() } }
                     Spacer(minLength: 0)
                     PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist", tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
