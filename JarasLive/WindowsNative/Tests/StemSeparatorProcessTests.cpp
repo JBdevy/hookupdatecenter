@@ -2,14 +2,15 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
 #include <windows.h>
 using namespace catlive::native::stem;
 void require(bool ok,const char *message){if(!ok)throw std::runtime_error(message);}
-int realtime(const Paths &paths,unsigned rate) {
-    constexpr unsigned block=256;const unsigned frames=rate*30;
+int realtime(const Paths &paths,unsigned rate,unsigned seconds) {
+    constexpr unsigned block=256;const unsigned frames=rate*seconds;
     Processor processor(paths,rate,false);Mix mix;mix.enabled=true;mix.gains.fill(.5f);processor.configure(mix);
     const auto startup=std::chrono::steady_clock::now();
     while(!processor.status().ready) {
@@ -17,7 +18,7 @@ int realtime(const Paths &paths,unsigned rate) {
         require(std::chrono::steady_clock::now()-startup<std::chrono::seconds(180),"Realtime model warmup timed out");
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    processor.activate();require(processor.availableLatency()==rate*3/2,"Production latency contract differs");
+    processor.activate();require(processor.availableLatency()==(66150ull*rate+44100-1)/44100,"Windows production latency must be exactly 1.5 seconds");
     HANDLE timer=CreateWaitableTimerExW(nullptr,nullptr,0x2,TIMER_ALL_ACCESS);
     if(!timer)timer=CreateWaitableTimerW(nullptr,FALSE,nullptr);
     require(timer!=nullptr,"Cannot create realtime cadence timer");
@@ -39,7 +40,12 @@ int realtime(const Paths &paths,unsigned rate) {
             require(std::isfinite(left[n])&&std::isfinite(right[n]),"Production output became nonfinite");
             if(clock+n>processor.latency()+8192)for(unsigned ch=0;ch<2;ch++)maxError=std::max(maxError,std::abs(double(ch?right[n]:left[n])-.5*signal(int64_t(clock+n)-processor.latency(),ch)));
         }
-        const auto status=processor.status();if(status.state=="fault")throw std::runtime_error(status.error);
+        const auto status=processor.status();
+        if(status.state=="fault") {
+            std::cerr<<"Realtime failure: rate="<<rate<<" frame="<<clock<<" underruns="<<status.underruns
+                     <<" overruns="<<status.overruns<<" maxCallbackLatenessSeconds="<<maxLate<<'\n';
+            throw std::runtime_error(status.error);
+        }
     }
     const auto status=processor.status();
     require(maxError<.00002&&status.underruns==0&&status.overruns==0,"Realtime production PCM/queue validation failed");
@@ -47,11 +53,17 @@ int realtime(const Paths &paths,unsigned rate) {
     return 0;
 }
 int main(int argc,char **argv) {
-    if(argc!=4&&argc!=5){std::cerr<<"usage: CatStemProcessTests python.exe StemIdentityWorker.py model.th [--realtime]\n";return 2;}
+    if(argc<4||argc>6){std::cerr<<"usage: CatStemProcessTests python.exe StemIdentityWorker.py model.th [--realtime [seconds]]\n";return 2;}
     try {
         const Paths fixture{std::filesystem::u8path(argv[1]),std::filesystem::u8path(argv[2]),std::filesystem::u8path(argv[3])};
-        if(argc==5){require(std::string(argv[4])=="--realtime","Unknown mode");for(unsigned rate:{44100,48000})realtime(fixture,rate);return 0;}
-        for(unsigned rate:{44100,48000,96000}) {
+        if(argc>=5){
+            require(std::string(argv[4])=="--realtime","Unknown mode");
+            unsigned seconds=30;
+            if(argc==6){size_t parsed=0;const auto value=std::stoul(argv[5],&parsed);require(parsed==std::strlen(argv[5])&&value>=1&&value<=600,"Realtime duration must be 1..600 seconds");seconds=unsigned(value);}
+            for(unsigned rate:{44100,48000})realtime(fixture,rate,seconds);
+            return 0;
+        }
+        for(unsigned rate:{44100,48000,96000,192000}) {
             Processor p(fixture,rate,true);Mix mix;mix.enabled=true;p.configure(mix);p.waitReady();
             std::array<float,256> left{},right{};const auto delay=p.latency();unsigned clock=0;
             for(;clock<delay+8192;clock+=256) {

@@ -110,7 +110,17 @@ deadline and sustained throughput check before accepting realtime processing.
 The Windows application connects this worker to track/item FX, with five saved
 source gains, mute, solo, bypass, undo and export. Model loading and IPC run off
 the audio callback. The audio callback uses bounded queues; it never waits for
-inference. The verified runtime and FP32 graph are included in ZIP/installer.
+inference. Pipe polling uses per-thread high-resolution timers so Windows does
+not stretch a 1-ms wait into a scheduler tick. Host-rate conversion uses SIMD
+across channels with exact scalar-reference PCM tests. The verified runtime
+and FP32 graph are included in ZIP/installer.
+
+The neural graph still predicts all six sources from the full one-second
+context. Streaming reconstruction computes only the four named inverse FFTs;
+Other is the same timestamp-aligned mixture residual used on Mac. Cached Hann
+overlap normalization and packed FFT buffers preserve the five output streams
+bit for bit for the same neural predictions, including crossfades. GPU spectral
+work uses one CPU thread.
 
 OpenVINO uses an available Intel GPU or CPU, falling back to the pinned Torch
 backend if needed. Warmup checks sustained throughput before admitting realtime
@@ -118,17 +128,30 @@ processing. A device that misses the deadline retains original audio and exposes
 an error in the editor; it must not slow down playback. One realtime inference
 worker is admitted at a time. Offline export has its own worker lease.
 
-The fixed model delay is 66150 frames at 44100 Hz (1.5 seconds), rescaled to the
-host rate. Parallel tracks, sends, direct hardware routes, the audible cursor,
-and exports compensate for this delay. A newly loaded worker is admitted at a
-stopped transport boundary so enabling it cannot jump a running show. This is
-not zero-latency microphone monitoring.
+The fixed Windows delay is 66150 frames at 44100 Hz (1.5 seconds), rescaled to the
+host rate. Mac retains its existing 24576-frame delay. Parallel tracks, sends, direct hardware routes, the audible cursor,
+and exports compensate for this delay. Like Mac, the worker uses 8192-frame hops
+and can activate while transport is running; the prepared compensation plan and
+worker admission change together at a callback boundary. Initial latency priming
+is still needed when the graph delay changes. This is not zero-latency microphone
+monitoring or a guarantee of a seamless live insertion.
 
 Validation commands:
-  CatStemProcessTests.exe python.exe stream_windows.py model.th --realtime
-uses the actual production model for 30 seconds each at 44100 and 48000 Hz,
+  CatStemProcessTests.exe python.exe stream_windows.py model.th --realtime [seconds]
+uses the actual production model for 30 seconds each at 44100 and 48000 Hz
+(or the supplied 1..600 seconds per rate),
 checking finite PCM, reconstruction, deadlines and underrun/overrun counters.
   Windows/scripts/test-catstem-runtime.ps1
 uses a separate identity worker to verify exact samples through groups, sends,
 hardware routing, both heads, loops, part jumps, seeking, bypass and export.
 The identity tests never replace or modify the production worker or model.
+
+Reference implementations used when evaluating this backend:
+  https://github.com/facebookresearch/demucs
+  https://github.com/intel/openvino-plugins-ai-audacity
+  https://github.com/Neutone/neutone_sdk
+The Audacity implementation is a reference for split neural/spectral execution,
+not bundled code. The GPU driver's low-throttle setting is discussed upstream:
+  https://github.com/openvinotoolkit/openvino/discussions/25118
+TensorRT projects target NVIDIA hardware and their throughput figures are not
+measurements of this Intel GPU backend or of the CatLive streaming contract.

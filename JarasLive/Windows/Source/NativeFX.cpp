@@ -259,6 +259,16 @@ void NativeFX::captureExternalState(var &settings) const {
     }
 }
 unsigned NativeFX::latencyFrames() const {unsigned value=0;for(const auto &e:effects)if(e->stem)value+=e->stem->availableLatency();return value;}
+unsigned NativeFX::readyLatencyFrames(bool releaseRemoved) const {
+    unsigned value=0;
+    for(const auto &e:effects)if(e->stem&&!(releaseRemoved&&e->retiredStem))
+        value+=e->stem->pending()?e->stem->latency():e->stem->availableLatency();
+    return value;
+}
+void NativeFX::collectReadyStemActivations(std::vector<std::shared_ptr<native::stem::Processor>> &pending) const {
+    for(const auto &e:effects)if(e->stem&&!e->retiredStem&&e->stem->pending()&&
+        std::find(pending.begin(),pending.end(),e->stem)==pending.end())pending.push_back(e->stem);
+}
 void NativeFX::activateStemLatency(bool force){for(auto &e:effects)if(e->stem)e->stem->activate(force);}
 bool NativeFX::pendingStemChange()const {for(auto &e:effects)if(e->stem&&(e->retiredStem||e->stem->pending()))return true;return false;}
 void NativeFX::holdRemovedStems(const NativeFX &previous){

@@ -357,9 +357,13 @@ void AudioEngine::configureMetronome(const var &settings) {
     }
 }
 std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID *replacement,const NativeFX *prepared,
-                                                                    std::optional<bool> midiTakeActive)const {
+                                                                    std::optional<bool> midiTakeActive,bool admitReady,
+                                                                    bool releaseRemoved)const {
     auto result=std::make_unique<LatencyPlan>();result->buses.resize(buses.size());
-    auto latency=[&](const ID &id,const NativeFX &fx){return replacement&&*replacement==id?prepared->latencyFrames():fx.latencyFrames();};
+    auto latency=[&](const ID &id,const NativeFX &fx){
+        const auto &chain=replacement&&*replacement==id?*prepared:fx;
+        return admitReady?chain.readyLatencyFrames(releaseRemoved):chain.latencyFrames();
+    };
     auto voiceLatency=[&](const Voice &voice) {
         const bool owns=replacement&&*replacement==voice.clipID&&midiTakeActive
                             ? *midiTakeActive : voice.ownsMIDI();
@@ -433,29 +437,56 @@ std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID 
     }
     return result;
 }
-uint64 AudioEngine::stemFingerprint()const {
-    uint64 value=masterFX.latencyFrames()+1;
-    for(const auto &bus:buses)for(const auto &fx:bus->fx)value=(value^fx.latencyFrames())*1099511628211ull;
-    for(const auto &voice:voices)for(const auto &fx:voice->fx)value=(value^fx.latencyFrames())*1099511628211ull;
+uint64 AudioEngine::stemFingerprint(bool admitReady,bool releaseRemoved)const {
+    auto latency=[&](const NativeFX &fx){return admitReady?fx.readyLatencyFrames(releaseRemoved):fx.latencyFrames();};
+    uint64 value=latency(masterFX)+1;
+    for(const auto &bus:buses)for(const auto &fx:bus->fx)value=(value^latency(fx))*1099511628211ull;
+    for(const auto &voice:voices)for(const auto &fx:voice->fx)value=(value^latency(fx))*1099511628211ull;
     return value;
 }
-void AudioEngine::activateStemLatency(){
-    masterFX.releaseRemovedStems();masterFX.activateStemLatency();
-    for(auto &bus:buses){for(auto &fx:bus->fx)fx.releaseRemovedStems();bus->fx[0].activateStemLatency();bus->fx[1].activateStemLatency(bus->fx[0].latencyFrames()>0);}
-    for(auto &voice:voices){for(auto &fx:voice->fx)fx.releaseRemovedStems();voice->fx[0].activateStemLatency();voice->fx[1].activateStemLatency(voice->fx[0].latencyFrames()>0);}
+void AudioEngine::activateStemLatency(bool releaseRemoved){
+    if(releaseRemoved)masterFX.releaseRemovedStems();masterFX.activateStemLatency();
+    for(auto &bus:buses){if(releaseRemoved)for(auto &fx:bus->fx)fx.releaseRemovedStems();bus->fx[0].activateStemLatency();bus->fx[1].activateStemLatency(bus->fx[0].latencyFrames()>0);}
+    for(auto &voice:voices){if(releaseRemoved)for(auto &fx:voice->fx)fx.releaseRemovedStems();voice->fx[0].activateStemLatency();voice->fx[1].activateStemLatency(voice->fx[0].latencyFrames()>0);}
     stemLatencyFingerprint=stemFingerprint();
 }
 void AudioEngine::refreshStemLatency(){
-    // Changing lookahead in a running show would jump every compensated route.
-    // Warm in parallel, then admit the prepared graph at the stopped boundary.
-    if(offlineMode||playing.load()||subPlaying.load()||presentationTailing.load())return;
+    if(offlineMode)return;
+    const bool running=playing.load()||subPlaying.load()||presentationTailing.load();
+    // Removed effects keep their dry delay until Stop so live removal never
+    // discards already queued audio. New ready effects can join during Play.
+    const bool releaseRemoved=!running;
     bool pending=masterFX.pendingStemChange();
     for(auto &bus:buses)for(auto &fx:bus->fx)pending|=fx.pendingStemChange();
     for(auto &voice:voices)for(auto &fx:voice->fx)pending|=fx.pendingStemChange();
     if(!pending&&stemFingerprint()==stemLatencyFingerprint)return;
-    {const ScopedLock lock(devices.getAudioCallbackLock());activateStemLatency();}
-    auto prepared=makeLatencyPlan();
-    const ScopedLock lock(devices.getAudioCallbackLock());if(prepared){latencyPlan.swap(prepared);publishLatency();}
+    const auto expected=stemFingerprint(true,releaseRemoved);
+    if(running&&expected==stemFingerprint())return;
+    // Hold the exact pending processors in the plan, including their lifetime.
+    // Worker readiness is independent of the device lock and can disappear on
+    // failure. The commit must not reread readiness or admit a newly ready FX
+    // that was absent when its compensation buffers were allocated.
+    std::vector<std::shared_ptr<native::stem::Processor>> admissions;
+    masterFX.collectReadyStemActivations(admissions);
+    for(const auto &bus:buses)for(const auto &fx:bus->fx)fx.collectReadyStemActivations(admissions);
+    for(const auto &voice:voices)for(const auto &fx:voice->fx)fx.collectReadyStemActivations(admissions);
+    // Plan allocation never touches the admitted DSP or callback history.
+    auto prepared=makeLatencyPlan(nullptr,nullptr,{},true,releaseRemoved);
+    {
+        const ScopedLock lock(devices.getAudioCallbackLock());
+        // Model readiness/transport may have changed while buffers allocated.
+        // Retry on the next control tick; never publish a mismatched plan.
+        if(expected!=stemFingerprint(true,releaseRemoved)||
+           running!=(playing.load()||subPlaying.load()||presentationTailing.load()))return;
+        if(releaseRemoved) {
+            masterFX.releaseRemovedStems();
+            for(auto &bus:buses)for(auto &fx:bus->fx)fx.releaseRemovedStems();
+            for(auto &voice:voices)for(auto &fx:voice->fx)fx.releaseRemovedStems();
+        }
+        for(const auto &processor:admissions)processor->activate(true);
+        stemLatencyFingerprint=stemFingerprint();
+        if(prepared)installLatencyPlan(prepared,running);
+    }
 }
 native::stem::Status AudioEngine::stemStatus(const ID &id,const String &key)const {if(auto *fx=effects(id))return fx->stemStatus(key);return {};}
 void AudioEngine::previewStemMix(const ID &id,const String &key,const native::stem::Mix &mix){for(int h=0;h<(id.empty()?1:2);h++)if(auto *fx=effects(id,h))fx->previewStemMix(key,mix);}
@@ -515,7 +546,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
             voice->fx[0].swap(prepared[0]);
             voice->fx[1].swap(prepared[1]);
             std::swap(voice->fxSettings, saved);
-            if(preparedLatency){latencyPlan.swap(preparedLatency);publishLatency();}
+            if(preparedLatency)installLatencyPlan(preparedLatency,running);
             stemLatencyFingerprint=stemFingerprint();
             return;
         }
@@ -548,7 +579,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
     // Construction and destruction stay off the callback. The lock only swaps owned state.
     {
         const ScopedLock lock(devices.getAudioCallbackLock());
-        if(preparedLatency){latencyPlan.swap(preparedLatency);publishLatency();}
+        if(preparedLatency)installLatencyPlan(preparedLatency,running);
         if (id.empty()) {
             masterFX.swap(prepared[0]);
             std::swap(masterFXSettings, saved);
@@ -1180,6 +1211,46 @@ void AudioEngine::setMixer(const jaras::Project &project, const jaras::Song &son
                 break;
             }
 }
+void AudioEngine::installLatencyPlan(std::unique_ptr<LatencyPlan> &next,bool preservePlayback)noexcept {
+    if(!next)return;
+    const double audible[2]{presentationDelay.load()?presentedPosition[0].load():current.position,
+                            presentationDelay.load()?presentedPosition[1].load():current.subPosition};
+    const bool sameTotal=latencyPlan&&latencyPlan->total==next->total;
+    if(preservePlayback&&latencyPlan) {
+        // The graph topology is unchanged here. Preserve every delay whose
+        // length stayed the same; swapping vectors is bounded, allocation-free.
+        auto retain=[](native::StereoDelay &old,native::StereoDelay &prepared){
+            if(old.latency()==prepared.latency())std::swap(old,prepared);
+        };
+        for(size_t i=0;i<std::min(latencyPlan->buses.size(),next->buses.size());++i) {
+            auto &old=latencyPlan->buses[i],&prepared=next->buses[i];
+            for(int h=0;h<2;++h) {
+                retain(old.direct[h],prepared.direct[h]);retain(old.inputDelay[h],prepared.inputDelay[h]);
+                retain(old.master[h],prepared.master[h]);retain(old.hardware[h],prepared.hardware[h]);
+                retain(old.frozen[h],prepared.frozen[h]);
+                for(auto &route:prepared.routes)for(auto &previous:old.routes)
+                    if(route.target==previous.target)retain(previous.delay[h],route.delay[h]);
+            }
+        }
+        for(auto maps:{std::pair{&latencyPlan->clips,&next->clips},std::pair{&latencyPlan->clipBypass,&next->clipBypass}})
+            for(auto &entry:*maps.second)if(auto old=maps.first->find(entry.first);old!=maps.first->end())
+                for(int h=0;h<2;++h)retain(old->second[size_t(h)],entry.second[size_t(h)]);
+        retain(latencyPlan->masterLive,next->masterLive);retain(latencyPlan->masterHardware,next->masterHardware);
+        retain(latencyPlan->metronome,next->metronome);
+        if(sameTotal)for(int h=0;h<2;++h)std::swap(latencyPlan->timeline[h],next->timeline[h]);
+    }
+    latencyPlan.swap(next);
+    if(!preservePlayback){publishLatency();return;}
+    presentationDelay=latencyPlan->total;
+    if(!sameTotal)for(int h=0;h<2;++h) {
+        // A first live insertion must prime its new lookahead. Hold the audible
+        // cursor at that boundary while the source heads keep advancing; never
+        // manufacture Stop/Play or flush the separator's generation/history.
+        latencyPlan->timeline[h].reset(audible[h]);
+        presentedPosition[h]=audible[h];
+        presentedPlaying[h]=(h==0?current.playing:current.subPlaying)||tailFrames[h]>0;
+    }
+}
 void AudioEngine::publishLatency()noexcept {
     const auto next=latencyPlan?latencyPlan->total:0;
     if(presentationDelay.exchange(next)!=next) {
@@ -1239,7 +1310,8 @@ void AudioEngine::applyUpdates() {
             }
             // The shared separator follows the sum of both heads. Starting or
             // stopping SubPlay must not flush the main head's wet history.
-            if((changed[0]&&!current.subPlaying&&!u.state.subPlaying)||(changed[1]&&!current.playing&&!u.state.playing)) {
+            if((changed[0]&&changed[1])||
+               (changed[0]&&!current.subPlaying&&!u.state.subPlaying)||(changed[1]&&!current.playing&&!u.state.playing)) {
                 masterFX.resetStems();for(auto &bus:buses)bus->fx[0].resetStems();for(auto &voice:voices)voice->fx[0].resetStems();
                 if(latencyPlan){latencyPlan->masterLive.reset();latencyPlan->masterHardware.reset();}
             }

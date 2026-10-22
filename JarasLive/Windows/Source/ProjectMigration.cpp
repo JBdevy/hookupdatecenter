@@ -28,7 +28,7 @@ jaras::Project emptyProject(const String &name) {
     project.setlists.push_back({uuid(), "Setlist", {song.id}});
     return project;
 }
-void finish(MigratedProject &result) {
+void finish(MigratedProject &result, bool createDefaultRegion) {
     auto &song = result.project.songs.front();
     for (auto &track : song.tracks) {
         std::stable_sort(track.clips.begin(), track.clips.end(),
@@ -40,7 +40,7 @@ void finish(MigratedProject &result) {
         song.duration = std::max(song.duration, part.endTime);
     for (auto &marker : *song.markers)
         song.duration = std::max(song.duration, marker.position);
-    if (song.parts.empty()) {
+    if (createDefaultRegion && song.parts.empty()) {
         jaras::Part part;
         part.id = uuid();
         part.name = song.name;
@@ -830,15 +830,9 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
 }
         if(initial&&!std::any_of(song.markers->begin(),song.markers->end(),[](const auto &m){return m.tempoBPM&&m.position==0;}))song.markers->push_back(*initial);
     }
-    // Supply the fallback region before applying VS Hook's song-level settings.
-    if (song.parts.empty()) {
-        double end = 1;
-        for (const auto &t : song.tracks) for (const auto &c : t.clips) end = std::max(end, c.startTime+c.duration);
-        for (const auto &m : *song.markers) end = std::max(end, m.position);
-        jaras::Part p; p.id=uuid();p.name=song.name;p.endTime=end;song.parts.push_back(p);
-    }
+    // Preserve a region-free REAPER timeline.
     hook.apply(project, result.warnings);
-    migration::finish(result);
+    migration::finish(result, false);
     return result;
 }
 } // namespace catlive

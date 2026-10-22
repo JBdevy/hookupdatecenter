@@ -126,6 +126,101 @@ void registerTests(const File &directory, Test &test, StringArray &skipped) {
         fixtureReady = true;
     });
     if (!fixtureReady) return;
+    for(int location=0;location<4;++location) {
+        const StringArray names{"track","item","group","Master"};
+        test("CatStem live "+names[location]+" insertion admits without Stop and preserves both heads",[&,location]{
+            auto wet=track("Live wet"),dry=track("Live dry");
+            jaras::Track group;group.id=uuid();group.name="Live group";group.role.id="group";
+            if(location==2)wet.parentTrackID=group.id;
+            const auto p=project(location==2?std::vector<jaras::Track>{group,wet,dry}:std::vector<jaras::Track>{wet,dry});
+            const ID target=location==0?wet.id:location==1?wet.clips[0].id:location==2?group.id:ID{};
+            const auto media=writeSource(directory);
+            AudioEngine engine(rate);engine.prepareSong(p.songs[0],media,{},&p);
+            engine.setOffline(true);engine.setMixer(p,p.songs[0]); // deterministic readers; DSP remains realtime
+            constexpr int loopFrames=8192,firstFrames=512,subOffset=4096;
+            AudioEngine::State state;state.playing=true;state.subPlaying=true;state.subPosition=subOffset/double(rate);
+            state.loop=true;state.loopEnd=loopFrames/double(rate);engine.transport(state);
+            AudioBuffer<float> first(2,firstFrames);engine.render(first.getArrayOfWritePointers(),2,firstFrames);
+            checkPCM(first,[=](int n,int ch){return 2.f*(sample(n,ch)+sample(n+subOffset,ch));},"Before live insertion");
+            const auto before=engine.presentationState();
+            engine.setEffects(target,settings());
+            const auto deadline=Time::getMillisecondCounterHiRes()+30000;
+            for(;;) {
+                const auto status=engine.stemStatus(target,native::stem::effectName);
+                require(status.state!="fault","Live CatStem preparation failed: "+text(status.error));
+                if(status.ready)break;
+                require(Time::getMillisecondCounterHiRes()<deadline,"Live CatStem worker did not prepare");
+                Thread::sleep(10);
+            }
+            engine.refreshStemLatency();
+            require(engine.presentationLatencyFrames()==delay,"Ready CatStem still requires Stop to admit compensation");
+            auto admitted=engine.presentationState();
+            require(admitted.playing&&admitted.subPlaying&&engine.state().playing&&engine.state().subPlaying,
+                    "Live admission manufactured a transport Stop");
+            require(std::abs(admitted.position-before.position)<1.5/rate&&
+                    std::abs(admitted.subPosition-before.subPosition)<1.5/rate,
+                    "Live admission jumped either audible cursor");
+            auto pacedRender=[&](AudioBuffer<float> &output,const std::function<void(int)> &check={}) {
+                for(int offset=0;offset<output.getNumSamples();) {
+                    const int count=std::min(257,output.getNumSamples()-offset);
+                    float *pointers[]{output.getWritePointer(0,offset),output.getWritePointer(1,offset)};
+                    engine.render(pointers,2,count);engine.checkStemErrors();offset+=count;
+                    if(check)check(offset);
+                    // This is the realtime worker path, so let the isolated IPC
+                    // worker run instead of overrunning it with offline bursts.
+                    Thread::sleep(int(std::ceil(count*1000./rate))+1);
+                }
+            };
+            AudioBuffer<float> output(2,delay+frames);
+            pacedRender(output,[&](int count){
+                const auto audible=engine.presentationState();const int consumed=std::max(0,count-delay);
+                const double main=consumed==0?firstFrames/double(rate):((firstFrames+consumed-1)%loopFrames+1)/double(rate);
+                require(audible.playing&&audible.subPlaying&&std::abs(audible.position-main)<1.5/rate&&
+                        std::abs(audible.subPosition-(firstFrames+subOffset+consumed)/double(rate))<1.5/rate,
+                        "Live admission lost the loop or Subplay presentation history");
+            });
+            checkPCM(output,[=](int n,int ch){
+                if(n<delay)return 0.f;
+                const int source=n-delay+firstFrames;
+                return (location==3?1.f:1.5f)*(sample(source%loopFrames,ch)+sample(source+subOffset,ch));
+            },"Live insertion compensated PCM");
+            if(location==0) {
+                // Each block starts at the same loop phase. The impulse is
+                // 1536 frames later, beyond the documented 3 ms gain smoothing.
+                auto verifyControl=[&](const var &fx,float gain,const String &label){
+                    const auto previous=engine.presentationState();
+                    engine.setEffects(target,fx);engine.refreshStemLatency();
+                    const auto next=engine.presentationState();
+                    require(engine.presentationLatencyFrames()==delay&&next.playing&&next.subPlaying&&
+                            std::abs(next.position-previous.position)<1.5/rate,
+                            label+" reset active delay history");
+                    const int sourceStart=int(std::llround(previous.position*rate));
+                    const int subStart=int(std::llround(previous.subPosition*rate));
+                    AudioBuffer<float> changed(2,loopFrames);pacedRender(changed);
+                    checkPCM(changed,[&](int n,int ch){return gain*(sample((sourceStart+n)%loopFrames,ch)+sample(subStart+n,ch));},label);
+                };
+                auto quieter=settings();auto quietSources=list(get(get(quieter,"stemMix"),"sources"));put(quietSources[4],"gain",.5);
+                verifyControl(quieter,1.25f,"Live CatStem gain");
+                auto bypassed=settings();put(bypassed,"stemSeparatorEnabled",false);
+                verifyControl(bypassed,2.f,"Live CatStem bypass");
+                verifyControl(settings(),1.5f,"Live CatStem reenable");
+                verifyControl(fxschema::defaults(),2.f,"Live CatStem removal retains dry compensation");
+                state.playing=false;state.subPlaying=false;state.position=.125;state.subPosition=.25;
+                engine.transport(state);engine.render(first.getArrayOfWritePointers(),2,257);engine.refreshStemLatency();
+                require(engine.presentationLatencyFrames()==0&&!engine.presentationState().playing,
+                        "Stopped graph retained a removed CatStem delay");
+                require(first.getMagnitude(0,257)<.00002f,"Stop leaked the retired CatStem epoch");
+            } else {
+                state.position=4096./rate;state.subPosition=7680./rate;engine.transport(state);
+                AudioBuffer<float> sought(2,delay+12288);pacedRender(sought);
+                checkPCM(sought,[=](int n,int ch){
+                    if(n<delay)return 0.f;
+                    const int source=n-delay;
+                    return (location==3?1.f:1.5f)*(sample((4096+source)%loopFrames,ch)+sample(7680+source,ch));
+                },"Seek clears pre-insertion CatStem history");
+            }
+        });
+    }
     test("CatStem track and dry track stay sample aligned", [&] {
         auto wet = track("Wet"), dry = track("Dry"); wet.fxJSON = utf8(JSON::toString(settings()));
         render(project({wet, dry}), writeSource(directory), 2, frames,
@@ -221,6 +316,7 @@ void registerTests(const File &directory, Test &test, StringArray &skipped) {
         engine.extendOfflineDuration((frames+delay+2048)/double(rate));
         AudioEngine::State state;state.playing=true;engine.transport(state);
         AudioBuffer<float> output(2,frames+delay+1024);bool changed=false,restored=false;
+        int controlStartFrame=0;
         auto controlState=[&](bool on){
             auto &wetTrack=p.songs[0].tracks[0],&dryTrack=p.songs[0].tracks[1];
             if(control==0)dryTrack.volume=on?.25:1;
@@ -234,17 +330,21 @@ void registerTests(const File &directory, Test &test, StringArray &skipped) {
             engine.setMixer(p,p.songs[0]);
         };
         for(int offset=0;offset<output.getNumSamples();) {
-            if(!changed&&offset>=4096){changed=true;controlState(true);}
+            if(!changed&&offset>=4096){changed=true;controlStartFrame=offset;controlState(true);}
             if(!restored&&offset>=delay+4096){restored=true;controlState(false);}
             const int count=std::min(257,output.getNumSamples()-offset);
             float *pointers[]{output.getWritePointer(0,offset),output.getWritePointer(1,offset)};
             engine.render(pointers,2,count);engine.checkStemErrors();offset+=count;
         }
-        checkPCM(output,[control](int frame,int ch){
+        checkPCM(output,[control,controlStartFrame](int frame,int ch){
             const int source=frame-delay;float gain=1.5f;
             if(source==2048){
                 if(control==0)gain=.75f;else if(control==1)gain=1.125f;
-                else if(control==2||control==4||control==7)gain=.5f;
+                else if(control==2||control==4)gain=.5f;
+                // A one-second fade is still in progress when the shorter
+                // CatStem latency delivers this impulse. Validate its audible
+                // position on the ramp, not an assumed already-muted output.
+                else if(control==7)gain=.5f+std::clamp(1.f-float(frame-controlStartFrame)/float(rate-1),0.f,1.f);
                 else if(control==3)gain=1;else if(control==5)gain=-.5f;
                 else if(control==6)gain=ch==0?.5f:1.5f;
             }

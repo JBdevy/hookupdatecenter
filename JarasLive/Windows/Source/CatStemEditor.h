@@ -42,7 +42,7 @@ class CatStemEditor final : public Component, private Timer {
     std::array<String,5> names{{"Vocal","Drum","Bass","Guitar","Other"}};
     std::array<Colour,5> colours{{Colour(0xffb68af4),Colour(0xff69ed91),Colour(0xff8e70ca),Colour(0xff45ba91),Colour(0xffaaa0c7)}};
     bool failed=false;
-    juce::Rectangle<int> strips()const{return getLocalBounds().reduced(20).withTrimmedTop(58).withTrimmedBottom(58);}
+    juce::Rectangle<int> strips()const{return getLocalBounds().reduced(20).withTrimmedTop(58).withTrimmedBottom(108);}
     void change(int index,const Identifier &field,var value,bool commit) {
         auto settings=read();
         if(!get(settings,"stemMix").isObject())put(settings,"stemMix",stemMix::defaults());
@@ -69,8 +69,7 @@ class CatStemEditor final : public Component, private Timer {
         else {
             const auto state=report();failed=state.state=="fault";
             if(failed)status=localization::translate(text(state.error));
-            else if(state.state=="pending")status=localization::translate(String::fromUTF8("CatStem pronto. Pare o transporte para ativar a compensação."));
-            else if(state.state=="running"||state.state=="priming")status=localization::translate(String::fromUTF8("Tempo real · 5 stems"));
+            else if(state.state=="running")status=localization::translate(String::fromUTF8("Tempo real · 5 stems"));
             else status=localization::translate(String::fromUTF8("Preparando CatStem…"));
         }
         repaint();
@@ -117,7 +116,10 @@ public:
             g.drawText(number,card.withTop(card.getBottom()-30),Justification::centred);
         }
         g.setColour(failed?theme::liveOffRed:theme::secondary);g.setFont(theme::font(11));
-        g.drawFittedText(status,20,getHeight()-65,getWidth()-40,50,Justification::centredLeft,3);
+        g.drawFittedText(status,20,getHeight()-115,getWidth()-40,50,Justification::centredLeft,3);
+        g.setColour(theme::secondary);
+        g.drawFittedText(localization::translate(String::fromUTF8("Windows: latência de 1,5 s, compensada entre as pistas. Essa latência adicional não se aplica ao Mac.")),
+                         20,getHeight()-62,getWidth()-40,52,Justification::centredLeft,3);
     }
     void resized()override{
         enabled.setBounds(getWidth()-120,14,100,26);const auto area=strips();const int width=area.getWidth()/5;

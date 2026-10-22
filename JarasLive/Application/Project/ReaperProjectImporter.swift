@@ -845,7 +845,7 @@ public enum ReaperProjectImporter {
         let contentEnd = max(song.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0,
                              song.parts.map(\.endTime).max() ?? 0, song.markers?.map(\.position).max() ?? 0)
         song.duration = max(1, contentEnd)
-        if song.parts.isEmpty { song.parts = [Part(id: UUID(), name: song.name, startTime: 0, endTime: max(1, contentEnd))] }
+        // A region-free REAPER timeline stays region-free in CatLive.
         project.songs = [song]
         var hookWarnings = Set<String>()
         hook.apply(to: &project, warnings: &hookWarnings)

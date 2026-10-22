@@ -1,3 +1,11 @@
+2026-10-22 — CatLive 1.08: CatStem Windows and REAPER import
+- Windows CatStem uses 1.5 seconds of compensated latency; the Mac processing path is unchanged and does not receive this additional delay.
+- Physical Windows PC (Intel Core i5-1235U, Intel GPU): production FP32 worker ran 120 seconds at 44.1 kHz and 120 seconds at 48 kHz with zero underruns/overruns. Maximum reconstruction errors: 4.74e-7 and 5.15e-7 respectively. This is a measured test on this PC, not a guarantee for every device.
+- Core: 40 bit-exact scalar-reference comparisons; identity IPC and latency tests at 44.1, 48, 96 and 192 kHz. Windows integration: 303 passed; optional real SF2 bank test skipped.
+- REAPER projects without regions remain region-free on both platforms. macOS request-counter resets no longer open normalization, tempo-marker, split or add-track dialogs.
+- Swift REAPER suites: 37 tests, one optional fixture skipped, no failures. Customer item-only fixture: 2 tracks, 30 items, zero regions/markers. macOS grid hosting regression tests passed.
+- Entries below are historical validation records.
+
 2026-10-18 — Scan progress and macOS projection order
 - VST3 discovery exposes real completed/total progress and the current bundle name in Settings and the external browser. Progress updates do not rebuild the plugin list.
 - Windows: 156 integration tests pass, including duplicate scan prevention, duplicate paths, invalid plugin continuation, current names, monotonic progress and empty scans.

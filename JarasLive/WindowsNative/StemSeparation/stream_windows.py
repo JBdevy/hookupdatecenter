@@ -29,12 +29,11 @@ def load_protocol():
 
 
 protocol = load_protocol()
-# The checkpoint, 1-second context, right context and overlap law are shared with
-# Mac. Windows uses a larger inference hop to sustain Intel GPU FP32 throughput.
-# This changes declared processing latency, never playback rate or model weights.
-protocol.HOP = 22050
-protocol.LATENCY = 3 * protocol.HOP
-protocol.MAX_PAYLOAD = protocol.HOP * protocol.CHANNELS * protocol.STEMS * 4
+# Preserve the Mac model, hop and context. Windows explicitly buffers 1.5 s;
+# the shared Mac module on disk is unchanged.
+if (protocol.HOP, protocol.CONTEXT, protocol.RIGHT, protocol.LATENCY) != (8192, 44100, 3072, 24576):
+    raise RuntimeError('Unexpected shared CatStem streaming contract')
+protocol.LATENCY = 66150
 protocol.COMPUTE_BUDGET = (protocol.LATENCY - protocol.HOP - protocol.RIGHT) / protocol.RATE
 
 

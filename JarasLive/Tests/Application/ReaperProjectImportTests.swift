@@ -536,6 +536,33 @@ final class ReaperProjectImportTests: XCTestCase {
         XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
         XCTAssertEqual(try Data(contentsOf: source), original)
     }
+    func testItemsWithoutRegionsOrMarkersDoNotCreateThem() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          TEMPO 120 4 4
+          <TRACK
+            NAME Piano
+            <ITEM
+              POSITION 3
+              LENGTH 10
+              NAME Piano.wav
+              <SOURCE WAVE
+                FILE missing.wav
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(source)
+        let song = try XCTUnwrap(result.project.songs.first)
+        XCTAssertTrue(song.parts.isEmpty)
+        XCTAssertTrue(song.markers?.isEmpty ?? true)
+        XCTAssertEqual(song.duration, 13)
+        XCTAssertEqual(song.tracks.flatMap(\.clips).count, 1)
+        try result.project.validate()
+    }
     func testRealProjectsWhenProvided() throws {
         guard let files = ProcessInfo.processInfo.environment["JARAS_REAPER_FIXTURES"] else { return }
         for path in files.components(separatedBy: "\n") where !path.isEmpty {
@@ -545,7 +572,6 @@ final class ReaperProjectImportTests: XCTestCase {
             try result.project.validate()
             let song = result.project.songs[0]
             XCTAssertFalse(song.tracks.isEmpty)
-            XCTAssertFalse(song.parts.isEmpty)
             XCTAssertEqual(try Data(contentsOf: source), original)
             print("RPP fixture: \(source.lastPathComponent): \(song.tracks.count) tracks, \(song.tracks.flatMap(\.clips).count) items, \(song.parts.count) regions, \(song.markers?.count ?? 0) markers, \(result.media.count) files")
         }

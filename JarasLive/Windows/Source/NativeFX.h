@@ -20,6 +20,9 @@ public:
     bool hasExternal() const;
     void applyAutomation(const AutomationProgram &, double time);
     unsigned latencyFrames() const;
+    // Control-thread preview: allocate compensation before admitting ready DSP.
+    unsigned readyLatencyFrames(bool releaseRemoved) const;
+    void collectReadyStemActivations(std::vector<std::shared_ptr<native::stem::Processor>> &) const;
     void activateStemLatency(bool force=false);
     bool pendingStemChange()const;
     void holdRemovedStems(const NativeFX &);

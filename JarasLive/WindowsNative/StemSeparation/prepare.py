@@ -16,6 +16,7 @@ PYTHON_SHA = '405744f427e40139bf11dd81c342e6dcb253e82a6a6e1ac3b984f31bcf6aae64'
 MODEL_NAME = '5c90dfd2-34c22ccb.th'
 MODEL_SHA = '34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd'
 IR_FILES = ('htdemucs6-openvino.xml', 'htdemucs6-openvino.bin', 'htdemucs6-openvino.json')
+IR_FORMAT_VERSION = 2
 WORKERS = ('stream.py', 'stream_windows.py', 'openvino_backend.py')
 
 
@@ -35,9 +36,9 @@ def runtime_identity(lock):
     return {'pythonSHA256': PYTHON_SHA, 'modelSHA256': MODEL_SHA,
             'requirementsSHA256': digest(lock), 'backend': 'openvino-htdemucs6-split-fp32',
             'fallbackBackend': 'torch-htdemucs6', 'architecture': 'windows-x64',
-            'protocol': 'CST1', 'runtimeVersion': 2, 'sampleRate': 44100,
+            'protocol': 'CST1', 'runtimeVersion': 4, 'sampleRate': 44100,
             'contextFrames': 44100, 'rightContextFrames': 3072,
-            'hopFrames': 22050, 'latencyFrames': 66150,
+            'hopFrames': 8192, 'latencyFrames': 66150,
             'outputNames': ['Vocal', 'Drum', 'Bass', 'Guitar', 'Other']}
 
 
@@ -91,7 +92,13 @@ def refresh_runtime(target, root, lock):
     shutil.copy2(root / 'Apple/Resources/StemSeparation/stream.py', target / 'stream.py')
     for name in WORKERS[1:]:
         shutil.copy2(scripts / name, target / name)
-    if not all((target / name).is_file() for name in IR_FILES):
+    ir_current = all((target / name).is_file() for name in IR_FILES)
+    if ir_current:
+        try:
+            ir_current = json.loads((target / IR_FILES[2]).read_text(encoding='utf-8')).get('formatVersion') == IR_FORMAT_VERSION
+        except (OSError, ValueError):
+            ir_current = False
+    if not ir_current:
         # CPU conversion includes independent FP32 comparisons against the exact
         # eager checkpoint. Deployment never needs a model download or converter.
         subprocess.run([str(target / 'python/python.exe'), '-I', '-B',
@@ -116,7 +123,7 @@ def refresh_runtime(target, root, lock):
         'https://github.com/facebookresearch/demucs\n'
         'Weights: 5c90dfd2-34c22ccb.th; SHA256 ' + MODEL_SHA + '\n'
         'Same six-source checkpoint as the Mac; outputs Vocal, Drum, Bass, Guitar, Other (other+piano).\n'
-        'Windows uses 22050-frame hops and 66150-frame latency at 44100 Hz.\n'
+        'Windows uses 8192-frame hops and 66150-frame latency (1.5 seconds) at 44100 Hz. Mac latency is unchanged.\n'
         'OpenVINO 2025.4.0, Intel, Apache License 2.0; https://github.com/openvinotoolkit/openvino\n'
         'OpenVINO telemetry is opted out in the CatLive backend.\n'
         'PyTorch 2.2.2 CPU, BSD; https://github.com/pytorch/pytorch\n'

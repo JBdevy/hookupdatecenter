@@ -1,6 +1,14 @@
 import SwiftUI
 import AppKit
 
+// This isolated host has no app font bundle; retain the production font API.
+extension NSFont {
+    static func jarasSystemFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+        NSFont(name: weight.rawValue >= NSFont.Weight.semibold.rawValue ? "Inter-SemiBold" : "Inter-Regular", size: size)
+            ?? NSFont.systemFont(ofSize: size, weight: weight)
+    }
+}
+
 /// Test-only binding adapter to exercise the native scroll host at changing document scales.
 private struct ZoomFixtureBinding<Content: View>: View {
     @ObservedObject var state: TimelineZoomState
@@ -177,6 +185,8 @@ struct NormalizationFixtureTrack { enum Kind { case standard, video }; let kind:
 struct NormalizationFixtureSong { let tracks: [NormalizationFixtureTrack] }
 final class NormalizationFixtureShow: ObservableObject {
     @Published var normalizeItemsRequest: UInt64 = 0
+    @Published var tempoMarkerRequest: UInt64 = 0
+    var tempoEditors = 0
     let audio = UUID(), video = UUID(), silent = UUID()
     var current: NormalizationFixtureSong? { NormalizationFixtureSong(tracks: [
         NormalizationFixtureTrack(kind: .standard, clips: [NormalizationFixtureClip(id: audio), NormalizationFixtureClip(id: silent, audioFile: nil)]),
@@ -192,11 +202,13 @@ struct NormalizationFixtureContent: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.show === rhs.show }
     @State private var showingNormalize = false
     @State private var normalizingItems = Set<UUID>()
+    private func beginTempoMarker() { show.tempoEditors += 1 }
     var gridInteractionBlocked = false
     var selectedClips: Set<UUID> { [show.audio, show.video, show.silent] }
     var body: some View {
         Text(showingNormalize ? "Normalize" : "Grid").frame(width: 200, height: 100)
             NORMALIZATION_NOTIFICATION
+            TEMPO_NOTIFICATION
             .onChange(of: showingNormalize) { if $0 { show.displayed.append(normalizingItems) } }
     }
 }
@@ -207,6 +219,18 @@ let normalizationRoot = NSHostingView(rootView: NormalizationFixtureRoot(show: n
 normalizationWindow.contentView = normalizationRoot
 normalizationRoot.layoutSubtreeIfNeeded()
 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+// Opening a project publishes a zero reset, even when already zero.
+normalizationShow.normalizeItemsRequest = 0
+normalizationShow.tempoMarkerRequest = 0
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(normalizationShow.displayed.isEmpty, "Project reset must not open the normalization editor")
+precondition(normalizationShow.tempoEditors == 0, "Project reset must not open the tempo editor")
+normalizationShow.tempoMarkerRequest = 1
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(normalizationShow.tempoEditors == 1, "Explicit tempo request must still work")
+normalizationShow.tempoMarkerRequest = 0
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(normalizationShow.tempoEditors == 1, "Resetting an earlier tempo request must not reopen its editor")
 normalizationShow.normalizeItemsRequest += 1
 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 precondition(normalizationShow.displayed == [[normalizationShow.audio]], "N reaches the equatable grid and opens normalize only for selected audio items")

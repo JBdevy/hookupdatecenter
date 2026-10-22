@@ -18,7 +18,7 @@ MigratedProject readLogicProject(const File &);
 File saveMigratedProject(const MigratedProject &, const File &selection);
 namespace migration {
 jaras::Project emptyProject(const String &);
-void finish(MigratedProject &);
+void finish(MigratedProject &, bool createDefaultRegion = true);
 void require(bool, const String &);
 } // namespace migration
 } // namespace catlive

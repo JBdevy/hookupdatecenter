@@ -24,6 +24,23 @@ struct Handle {
     void close(){if(value&&value!=INVALID_HANDLE_VALUE)CloseHandle(value);value=nullptr;}
     operator HANDLE()const{return value;}
 };
+// Only the pipe I/O threads call this. Windows Sleep(1) can round up to
+// a 15.6-ms scheduler tick, repeatedly spending the model's delivery margin.
+// Reuse a one-shot high-resolution timer without changing system timer policy
+// or spinning. Neither the audio callback nor the model waits on this timer.
+void pausePipeWorker() noexcept {
+    struct Timer {
+        Handle handle;
+        Timer(){handle.value=CreateWaitableTimerExW(nullptr,nullptr,0x2,TIMER_MODIFY_STATE|SYNCHRONIZE);}
+    };
+    thread_local Timer timer;
+    if(timer.handle.value) {
+        LARGE_INTEGER due;due.QuadPart=-10000; // relative 1 ms, in 100-ns units
+        if(SetWaitableTimer(timer.handle,&due,0,nullptr,nullptr,FALSE)&&
+           WaitForSingleObject(timer.handle,INFINITE)==WAIT_OBJECT_0)return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
 std::wstring quote(const std::filesystem::path &path) {
     // Windows paths cannot contain quotes. The selected paths are app resources.
     return L"\""+path.wstring()+L"\"";
@@ -64,7 +81,7 @@ struct Processor::Impl {
             DWORD available=0,count=0;
             if(!writing) {
                 if(!PeekNamedPipe(pipe,nullptr,0,nullptr,&available,nullptr))return false;
-                if(!available){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+                if(!available){pausePipeWorker();continue;}
             }
             const auto amount=DWORD(std::min<size_t>(size-done,writing?4096:available));
             const bool ok=writing?WriteFile(pipe,bytes+done,amount,&count,nullptr):ReadFile(pipe,bytes+done,amount,&count,nullptr);
@@ -78,7 +95,7 @@ struct Processor::Impl {
         std::unique_ptr<Resampler> resampler;
         std::array<float,hop*2> pcm{};unsigned filled=0,currentRate=0;uint64_t generation=0,sequence=0;
         while(!interrupted()){
-            if(!state->warmReady.load()){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+            if(!state->warmReady.load()){pausePipeWorker();continue;}
             const auto requested=state->requestedEpoch.load();
             if(requested!=generation){
                 generation=requested;sequence=0;filled=0;resampler.reset();currentRate=0;
@@ -86,9 +103,9 @@ struct Processor::Impl {
                 Header command;command.type=flush;command.generation=generation;
                 if(!send(command)){if(!interrupted())fail(backendFailure,"Falha ao reiniciar o fluxo CatStem.");break;}
             }
-            if(flushedEpoch.load()!=generation){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+            if(flushedEpoch.load()!=generation){pausePipeWorker();continue;}
             auto packet=state->input.consumerSlot();
-            if(!packet){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+            if(!packet){pausePipeWorker();continue;}
             if(packet->generation!=generation){state->input.consume();continue;}
             if(!resampler){currentRate=packet->rate;resampler=std::make_unique<Resampler>(2,currentRate,modelRate);}
             if(currentRate!=packet->rate){fail(protocolFailure,"A taxa de áudio mudou sem reiniciar o fluxo CatStem.");break;}
@@ -96,7 +113,7 @@ struct Processor::Impl {
                 if(state->requestedEpoch.load()!=generation||interrupted())return false;
                 pcm[filled*2]=frame[0];pcm[filled*2+1]=frame[1];
                 if(++filled<hop)return true;
-                while(sequence-completed.load()>=2&&!interrupted()&&state->requestedEpoch.load()==generation)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                while(sequence-completed.load()>=2&&!interrupted()&&state->requestedEpoch.load()==generation)pausePipeWorker();
                 if(interrupted()||state->requestedEpoch.load()!=generation)return false;
                 Header command;command.type=audio;command.generation=generation;command.sequence=sequence;command.firstFrame=int64_t(sequence*hop);command.frames=hop;command.payloadBytes=sizeof(pcm);
                 sent.store(sequence+1);
@@ -120,7 +137,7 @@ struct Processor::Impl {
                     std::copy_n(pending.samples.data(),pendingCount*10,target->samples.data());state->output.publish();pendingCount=0;return true;
                 }
                 if(std::chrono::steady_clock::now()-start>std::chrono::seconds(30)){fail(protocolFailure,"A fila de saída do CatStem não foi consumida.");return false;}
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                pausePipeWorker();
             }
             return false;
         };

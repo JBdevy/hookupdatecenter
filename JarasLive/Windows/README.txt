@@ -75,7 +75,8 @@ Insert CatStem on one track or audio item and use the five source faders, Mute,
 Solo and bypass. The mix is saved in the project and remains active when its
 editor closes. The installer includes the model and inference runtime.
 Preparing the model does not block the audio callback. If inserted during Play,
-stop once after preparation to activate its latency compensation. Real-time
-availability depends on the measured processing speed of the computer. The
-engine compensates the model's 1.5-second processing delay across audio routes;
-this effect is not intended for zero-latency microphone monitoring.
+it activates automatically after preparation, with initial latency priming as on
+Mac. Real-time availability depends on the measured processing speed of the
+computer. Windows uses 8192-frame hops and compensates a 66150-frame delay at 44100 Hz
+(1.5 seconds) across audio routes. Mac keeps its existing, shorter latency. This effect is not
+intended for zero-latency microphone monitoring.

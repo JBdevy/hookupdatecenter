@@ -23,9 +23,10 @@ import openvino as ov
 SOURCE_SHA = '34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd'
 SOURCES = ['drums', 'bass', 'other', 'vocals', 'guitar', 'piano']
 CONTEXT = RATE = 44100
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 MODEL_FILE = 'htdemucs6-openvino.xml'
 MANIFEST_FILE = 'htdemucs6-openvino.json'
+GRAPH_OPTIMIZATIONS = ['fp32-polyphase-deconvolution', 'fp32-expanded-dilation']
 
 def digest(path):
     with Path(path).open('rb') as source:
@@ -81,6 +82,101 @@ class NetworkCore(torch.nn.Module):
         return x,xt
 
 
+def optimize_network_graph(model):
+    """Select efficient FP32 kernels without changing a checkpoint coefficient.
+
+    Transposed convolutions become the equivalent ordinary convolution on each
+    stride phase, followed by interleaving. Dilated kernels become contiguous
+    kernels with exact zeros between their existing coefficients. Both avoid
+    reference GPU kernels while retaining the full context and every source.
+    Conversion validates each source against the original eager network below.
+    """
+    from openvino import opset13 as ops
+    changes = {'polyphaseConvolutions': 0, 'expandedDilations': 0}
+    for node in list(model.get_ordered_ops()):
+        if node.get_type_name() != 'ConvolutionBackpropData':
+            continue
+        attrs = node.get_attributes()
+        strides = list(map(int, attrs['strides']))
+        if (any(int(v) != 1 for v in attrs['dilations'])
+                or any(int(v) for key in ('pads_begin', 'pads_end', 'output_padding') for v in attrs.get(key, []))
+                or attrs.get('auto_pad', 'explicit').lower() not in ('explicit', 'valid')):
+            continue
+        weight_node = node.input_value(1).get_node()
+        if weight_node.get_type_name() != 'Constant':
+            continue
+        weights = np.array(weight_node.get_data(), copy=True)
+        rank = len(strides)
+        axes = [i for i, stride in enumerate(strides) if stride > 1]
+        if weights.dtype != np.float32 or weights.ndim != rank + 2 or len(axes) != 1:
+            continue
+        axis = axes[0]
+        stride = strides[axis]
+        kernel = list(weights.shape[2:])
+        if kernel[axis] % stride or any(kernel[j] != 1 for j in range(rank) if j != axis):
+            continue
+        taps = kernel[axis] // stride
+        if taps < 1:
+            continue
+        input_shape = list(node.input_value(0).get_shape())
+        output_shape = list(node.get_output_shape(0))
+        cin, cout = weights.shape[:2]
+        expected = input_shape.copy()
+        expected[1] = cout
+        expected[2 + axis] = (input_shape[2 + axis] - 1) * stride + kernel[axis]
+        if expected != output_shape:
+            continue
+        new_kernel = kernel.copy()
+        new_kernel[axis] = taps
+        coefficients = np.zeros((cout * stride, cin, *new_kernel), dtype=np.float32)
+        for phase in range(stride):
+            for tap in range(taps):
+                source = [slice(None), slice(None)] + [0] * rank
+                source[2 + axis] = (taps - 1 - tap) * stride + phase
+                target = [slice(phase, None, stride), slice(None)] + [0] * rank
+                target[2 + axis] = tap
+                coefficients[tuple(target)] = weights[tuple(source)].T
+        padding = [0] * rank
+        padding[axis] = taps - 1
+        conv = ops.convolution(node.input_value(0), ops.constant(coefficients),
+                               [1] * rank, padding, padding, [1] * rank)
+        conv.set_friendly_name(node.get_friendly_name() + '/polyphase_conv')
+        shape = list(conv.get_output_shape(0))
+        phases = ops.reshape(conv, ops.constant(np.array([shape[0], cout, stride, *shape[2:]], np.int64)), False)
+        order = [0, 1]
+        for dimension in range(rank):
+            order.append(3 + dimension)
+            if dimension == axis:
+                order.append(2)
+        interleaved = ops.transpose(phases, ops.constant(np.array(order, np.int64)))
+        replacement = ops.reshape(interleaved, ops.constant(np.array(output_shape, np.int64)), False)
+        replacement.set_friendly_name(node.get_friendly_name() + '/polyphase_output')
+        node.output(0).replace(replacement.output(0))
+        changes['polyphaseConvolutions'] += 1
+    for node in list(model.get_ordered_ops()):
+        if node.get_type_name() != 'Convolution':
+            continue
+        attrs = node.get_attributes()
+        weight_node = node.input_value(1).get_node()
+        if len(attrs['dilations']) != 1 or attrs['dilations'][0] <= 1 or weight_node.get_type_name() != 'Constant':
+            continue
+        weights = weight_node.get_data()
+        if weights.dtype != np.float32:
+            continue
+        dilation = attrs['dilations'][0]
+        coefficients = np.zeros((*weights.shape[:-1], (weights.shape[-1] - 1) * dilation + 1), dtype=np.float32)
+        coefficients[..., ::dilation] = weights
+        attrs['dilations'] = [1]
+        replacement = ops.convolution(node.input_value(0), ops.constant(coefficients), **attrs)
+        replacement.set_friendly_name(node.get_friendly_name() + '/expanded_dilation')
+        node.output(0).replace(replacement.output(0))
+        changes['expandedDilations'] += 1
+    model.validate_nodes_and_infer_types()
+    if not all(changes.values()):
+        raise RuntimeError('The pinned CatStem graph did not contain the expected FP32 optimization patterns')
+    return changes
+
+
 class SpectralTransform:
     """Demucs' exact normalized STFT/ISTFT, without loading network weights."""
     def __init__(self, nfft, hop_length):
@@ -88,6 +184,8 @@ class SpectralTransform:
             raise ValueError('Unexpected HTDemucs6 spectral configuration')
         self.nfft, self.hop_length = nfft, hop_length
         self.window = torch.hann_window(nfft)
+        self.named_buffers = {}
+        self.overlap_envelopes = {}
 
     def encode(self, pcm):
         batch, channels, length = pcm.shape
@@ -114,9 +212,84 @@ class SpectralTransform:
         pcm = pcm.view(batch,sources,channels//2,padded_length)[...,pad:pad+length]
         return pcm + temporal
 
+    def decode_window(self, frequency, temporal, length, start, end):
+        """Reconstruct only the requested PCM interval, with exact STFT overlap.
 
-def configure_torch():
-    torch.set_num_threads(max(1,min(8,os.cpu_count() or 1)))
+        The neural network still sees and predicts the complete one-second
+        context. ISTFT frames outside this interval cannot contribute samples
+        to it, so omitting those transforms changes neither the model nor its
+        Hann overlap normalization. Two surrounding frames cover the 4096-point
+        window on either side of each requested 1024-frame hop.
+        """
+        if not 0 <= start < end <= length:
+            raise ValueError('Invalid CatStem spectral output interval')
+        batch, sources, channels, frequencies, frames = frequency.shape
+        pad = self.hop_length // 2 * 3
+        first = max(0, (pad + start) // self.hop_length - 1)
+        last = min(frames + 4, int(math.ceil((pad + end) / self.hop_length)) + 2)
+        selected = frequency[..., max(0, first - 2):min(frames, last - 2)]
+        selected_frames = selected.shape[-1]
+        spectrum = torch.view_as_complex(selected.reshape(batch, sources, -1, 2, frequencies, selected_frames)
+                                        .permute(0, 1, 2, 4, 5, 3).contiguous())
+        spectrum = torch.nn.functional.pad(spectrum,
+            (max(0, 2 - first), max(0, last - frames - 2), 0, 1))
+        pcm = torch.istft(spectrum.reshape(-1, spectrum.shape[-2], spectrum.shape[-1]),
+            self.nfft, self.hop_length, window=self.window, win_length=self.nfft,
+            normalized=True, center=True)
+        offset = pad + start - first * self.hop_length
+        pcm = pcm.view(batch, sources, channels // 2, -1)[..., offset:offset + end - start]
+        return pcm + temporal[..., start:end]
+
+    def decode_named_window(self, frequency, temporal, length, start, end):
+        """Decode the four retained sources using the same FP32 ISTFT operations.
+
+        The shared protocol always replaces Other with the mixture residual,
+        including after crossfades. Its two neural source waveforms therefore
+        need no inverse FFT. The full six-source neural graph and conversion
+        validation remain unchanged. Packed FFT input and the invariant Hann
+        overlap envelope avoid allocating/recomputing those intermediates.
+        """
+        if not 0 <= start < end <= length:
+            raise ValueError('Invalid CatStem spectral output interval')
+        batch, sources, channels, frequencies, frames = frequency.shape
+        named = (3, 0, 1, 4)  # Vocals, Drums, Bass, Guitar, in wire order.
+        pad = self.hop_length // 2 * 3
+        first = max(0, (pad + start) // self.hop_length - 1)
+        last = min(frames + 4, int(math.ceil((pad + end) / self.hop_length)) + 2)
+        selected = frequency[..., max(0, first - 2):min(frames, last - 2)]
+        selected_frames = selected.shape[-1]
+        pieces = selected.reshape(batch, sources, -1, 2, frequencies, selected_frames)
+        before, after = max(0, 2 - first), max(0, last - frames - 2)
+        key = (batch, channels // 2, selected_frames, before, after)
+        if key not in self.named_buffers:
+            self.named_buffers[key] = torch.zeros(batch, len(named), channels // 2,
+                before + selected_frames + after, frequencies + 1, 2, dtype=frequency.dtype)
+        storage = self.named_buffers[key]
+        # Padding and Nyquist stay zero; all non-padding coefficients are
+        # overwritten each call. The worker processes requests serially.
+        for destination, source in enumerate(named):
+            storage[:, destination, :, before:before + selected_frames, :-1, :].copy_(
+                pieces[:, source].permute(0, 1, 4, 3, 2))
+        spectrum = torch.view_as_complex(storage).reshape(-1, storage.shape[-3], storage.shape[-2])
+        nframes = spectrum.shape[-2]
+        total = self.nfft + self.hop_length * (nframes - 1)
+        if nframes not in self.overlap_envelopes:
+            powers = self.window.pow(2).expand(1, nframes, self.nfft)
+            self.overlap_envelopes[nframes] = torch.ops.aten.unfold_backward(
+                powers, [1, total], 1, self.nfft, self.hop_length)
+        # These are the pinned PyTorch ISTFT operations in the same order;
+        # division is retained instead of approximating a cached reciprocal.
+        signal = torch.fft.irfft(spectrum, n=self.nfft, dim=-1, norm='ortho')
+        weighted = signal * self.window.view(1, 1, self.nfft)
+        signal = torch.ops.aten.unfold_backward(weighted, [spectrum.shape[0], total],
+                                               1, self.nfft, self.hop_length)
+        offset = self.nfft // 2 + pad + start - first * self.hop_length
+        signal = signal[..., offset:offset + end - start] / self.overlap_envelopes[nframes][..., offset:offset + end - start]
+        return signal.reshape(batch, len(named), channels // 2, end - start) + temporal[:, list(named), :, start:end]
+
+
+def configure_torch(threads=None):
+    torch.set_num_threads(threads if threads is not None else max(1,min(8,os.cpu_count() or 1)))
     if torch.get_num_interop_threads() != 1:
         torch.set_num_interop_threads(1)
 
@@ -127,7 +300,8 @@ def verified_manifest(directory):
     if (manifest.get('formatVersion') != FORMAT_VERSION or manifest.get('sourceCheckpointSHA') != SOURCE_SHA
             or manifest.get('contextFrames') != CONTEXT or manifest.get('sampleRate') != RATE
             or manifest.get('sources') != SOURCES or manifest.get('precision') != 'f32'
-            or manifest.get('nfft') != 4096 or manifest.get('hopLength') != 1024):
+            or manifest.get('nfft') != 4096 or manifest.get('hopLength') != 1024
+            or manifest.get('graphOptimizations') != GRAPH_OPTIMIZATIONS):
         raise ValueError('The CatStem OpenVINO model has an incompatible identity or configuration')
     for name in (MODEL_FILE,Path(MODEL_FILE).with_suffix('.bin').name):
         if digest(directory/name) != manifest.get('files',{}).get(name):
@@ -172,6 +346,7 @@ def convert_model(model_path, output_directory):
         # validation against independent eager fixtures follows conversion.
         traced = torch.jit.trace(network,(example,magnitude),check_trace=False,strict=False)
     converted = ov.convert_model(traced,input=[list(example.shape),list(magnitude.shape)])
+    optimization_counts = optimize_network_graph(converted)
     core = ov.Core()
     compiled = core.compile_model(converted,'CPU',{'PERFORMANCE_HINT':'LATENCY',
         'INFERENCE_PRECISION_HINT':'f32','INFERENCE_NUM_THREADS':max(1,min(8,os.cpu_count() or 1))})
@@ -191,7 +366,25 @@ def convert_model(model_path, output_directory):
         relative = float(np.sqrt(np.mean(error**2))/max(1e-12,np.sqrt(np.mean(reference**2))))
         if not np.isfinite(predicted).all() or maximum > 2e-5 or relative > .001:
             raise RuntimeError('CatStem OpenVINO conversion failed FP32 output validation')
-        checks.append({'maximumAbsoluteError':maximum,'relativeRMSError':relative})
+        per_source = []
+        for source in range(len(SOURCES)):
+            delta = error[:, source].astype(np.float64)
+            expected = reference[:, source].astype(np.float64)
+            source_maximum = float(np.abs(delta).max())
+            source_relative = float(np.sqrt(np.mean(delta**2)) / max(1e-12, np.sqrt(np.mean(expected**2))))
+            if source_maximum > 2e-5 or source_relative > .001:
+                raise RuntimeError('CatStem FP32 conversion changed source ' + SOURCES[source])
+            per_source.append({'source': SOURCES[source], 'maximumAbsoluteError': source_maximum,
+                               'relativeRMSError': source_relative})
+        # Validate the actual streaming reconstruction separately from mixture
+        # consistency: Other's residual must never hide a wrong named estimate.
+        start, end = CONTEXT - 3072 - 8192, CONTEXT - 3072 + 1024
+        window = spectral.decode_window(frequency, temporal, CONTEXT, start, end).numpy()
+        window_error = float(np.abs(window - predicted[..., start:end]).max())
+        if window_error > 1e-7:
+            raise RuntimeError('CatStem windowed ISTFT differs from full-context reconstruction')
+        checks.append({'maximumAbsoluteError':maximum,'relativeRMSError':relative,
+                       'perSource':per_source,'windowedISTFTMaximumError':window_error})
     directory.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='catstem-ir-',dir=directory) as temporary:
         temporary = Path(temporary)
@@ -199,6 +392,7 @@ def convert_model(model_path, output_directory):
         files={name:digest(temporary/name) for name in (MODEL_FILE,Path(MODEL_FILE).with_suffix('.bin').name)}
         manifest={'formatVersion':FORMAT_VERSION,'sourceCheckpointSHA':SOURCE_SHA,
                   'sampleRate':RATE,'contextFrames':CONTEXT,'sources':SOURCES,'precision':'f32',
+                  'graphOptimizations':GRAPH_OPTIMIZATIONS,'optimizationCounts':optimization_counts,
                   'nfft':original.nfft,'hopLength':original.hop_length,'openvino':ov.__version__,
                   'torch':torch.__version__,'files':files,'validation':checks,'splitGraphMaximumError':split_error}
         for name in files: (temporary/name).replace(directory/name)
@@ -217,18 +411,25 @@ class OpenVINOBackend:
         if digest(model_path) != SOURCE_SHA:
             raise ValueError('CatStem source checkpoint SHA256 mismatch')
         manifest = verified_manifest(model_path.parent)
-        configure_torch()
         self.protocol, self.np, self.torch = protocol, np, torch
-        self.spectral = SpectralTransform(manifest['nfft'],manifest['hopLength'])
         core = ov.Core()
         self.device = ('GPU' if 'GPU' in core.available_devices else 'CPU') if device == 'auto' else device.upper()
         if self.device not in ('CPU','GPU'):
             raise ValueError('OpenVINO CatStem requires CPU or Intel GPU')
+        # GPU inference leaves only small spectral transforms on the CPU.
+        # A single FFT thread avoids thread-pool contention on hybrid laptops.
+        configure_torch(1 if self.device == 'GPU' else None)
+        self.spectral = SpectralTransform(manifest['nfft'],manifest['hopLength'])
         local = Path(os.environ.get('LOCALAPPDATA',str(Path.home()/'AppData/Local')))
         cache = local/'Hook Developer/CatLive/Cache/CatStem'/manifest['files'][MODEL_FILE]
         cache.mkdir(parents=True,exist_ok=True)
         options={'PERFORMANCE_HINT':'LATENCY','INFERENCE_PRECISION_HINT':'f32','CACHE_DIR':str(cache)}
         if self.device == 'CPU': options['INFERENCE_NUM_THREADS']=max(1,min(8,os.cpu_count() or 1))
+        else:
+            # Avoid busy-waiting in the GPU driver between submissions. On
+            # integrated GPUs that CPU load competes for the same power budget
+            # and can make sustained inference miss the shared Mac hop deadline.
+            options['GPU_QUEUE_THROTTLE']='LOW'
         self.compiled=core.compile_model(str(model_path.parent/MODEL_FILE),self.device,options)
         self.request=self.compiled.create_infer_request()
         self.crossfade=crossfade_frames
@@ -244,15 +445,20 @@ class OpenVINOBackend:
 
     def estimate(self):
         with torch.inference_mode():
-            pcm=torch.from_numpy(self.context[None].copy())
+            pcm=torch.from_numpy(self.context[None])
             magnitude=self.spectral.encode(pcm)
-            values=self.request.infer({0:pcm.numpy(),1:magnitude.numpy()})
-            frequency=torch.from_numpy(values[self.compiled.output(0)].copy())
-            temporal=torch.from_numpy(values[self.compiled.output(1)].copy())
+            # One synchronous request owns these arrays until decode finishes;
+            # sharing them avoids copying the full six-source spectrogram twice.
+            values=self.request.infer({0:pcm.numpy(),1:magnitude.numpy()}, share_inputs=True, share_outputs=True)
+            frequency=torch.from_numpy(values[self.compiled.output(0)])
+            temporal=torch.from_numpy(values[self.compiled.output(1)])
             start=self.protocol.CONTEXT-self.protocol.RIGHT-self.protocol.HOP
             end=self.protocol.CONTEXT-self.protocol.RIGHT+self.crossfade
-            predicted=self.spectral.decode(frequency,temporal,self.protocol.CONTEXT)[0,:,:,start:end]
-            output=torch.stack([predicted[3],predicted[0],predicted[1],predicted[4],predicted[2]+predicted[5]]).numpy().copy(order='C')
+            predicted=self.spectral.decode_named_window(frequency,temporal,self.protocol.CONTEXT,start,end)[0]
+            output=np.zeros((self.protocol.STEMS,self.protocol.CHANNELS,end-start),dtype=np.float32)
+            output[:4]=predicted.numpy()
+            # StreamingBackend.process fills Other from the aligned mixture
+            # after crossfading. Its provisional value is never emitted.
         if output.shape != (self.protocol.STEMS,self.protocol.CHANNELS,self.protocol.HOP+self.crossfade) or not np.isfinite(output).all():
             raise ValueError('Nonfinite or malformed CatStem output')
         return output

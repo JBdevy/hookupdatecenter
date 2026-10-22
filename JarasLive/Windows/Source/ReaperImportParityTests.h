@@ -47,6 +47,12 @@ inline var restored(const var &plugin, const std::set<int> &indices) {
     return result;
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("REAPER region-free items stay region-free", [&] {
+        const auto result = read(directory, "<TRACK\nNAME Piano\n<ITEM\nPOSITION 3\nLENGTH 10\nNAME Piano.wav\n<SOURCE WAVE\nFILE missing.wav\n>\n>\n>");
+        const auto &song = result.project.songs.front();
+        require(song.parts.empty() && (!song.markers || song.markers->empty()), "Importer invented regions or markers");
+        require(song.duration == 13 && song.tracks.front().clips.size() == 1, "Region-free item timing changed");
+    });
     test("REAPER special overlaps recover compatible items and independent projection layers", [&] {
         const auto item = [](double start, double duration, const String &content = {}) {
             return "<ITEM\nPOSITION " + String(start, 9) + "\nLENGTH " + String(duration, 9) + "\n" +

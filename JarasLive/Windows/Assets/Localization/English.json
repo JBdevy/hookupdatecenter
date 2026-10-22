@@ -1,4 +1,5 @@
 {
+  "Windows: latência de 1,5 s, compensada entre as pistas. Essa latência adicional não se aplica ao Mac.": "Windows: 1.5 s latency, compensated across tracks. This additional latency does not apply to Mac.",
   "Entrar": "Sign in",
   "Criar conta": "Create account",
   "Recuperar senha": "Reset password",
@@ -1325,7 +1326,6 @@
   "A project with this name already exists.": "A project with this name already exists.",
   "Could not rename the project file.": "Could not rename the project file.",
   "Finish the current operation before renaming the project.": "Finish the current operation before renaming the project.",
-  "CatStem pronto. Pare o transporte para ativar a compensação.": "CatStem is ready. Stop transport to activate latency compensation.",
   "Tempo real · 5 stems": "Real time · 5 stems",
   "Preparando CatStem…": "Preparing CatStem…"
 }

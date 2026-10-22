@@ -11,12 +11,16 @@
 #include <cstdint>
 #include <thread>
 #include <vector>
+#if defined(_M_X64) || defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 namespace catlive::native::stem::detail {
-// Windows batches half-second hops with the same 1-second HTDemucs6 context.
-// Three hops cover right context, GPU scheduling jitter and host render bursts.
+// Match the Mac worker's hop and one-second HTDemucs6 context exactly.
+// Windows buffers 1.5 seconds for GPU scheduling jitter and host render bursts.
 // Keep this advertised delay fixed so track compensation remains stable.
-constexpr unsigned modelRate=44100,hop=22050,rightContext=3072,modelDelay=66150,maxBlock=8192;
-constexpr unsigned channels=2,stems=5,ringSlots=16;
+constexpr unsigned modelRate=44100,hop=8192,rightContext=3072,modelDelay=66150,maxBlock=8192;
+constexpr unsigned channels=2,stems=5,ringSlots=16,outputRingSlots=64;
+static_assert(outputRingSlots*maxBlock > (modelDelay*192000ull+modelRate-1)/modelRate+2*maxBlock);
 static_assert(std::atomic<uint64_t>::is_always_lock_free && std::atomic<float>::is_always_lock_free);
 enum Fault:int {none=0,inputOverrun=1,outputUnderrun=2,protocolFailure=3,backendFailure=4,offlineTimeout=5};
 enum Type:uint16_t {ready=1,audio=2,output=3,flush=4,flushed=5,error=6,close=7,closed=8};
@@ -58,6 +62,42 @@ class Resampler {
     uint64_t inputCount=0,outputCount=0;
     std::vector<float> samples,coefficients;
     std::array<float,10> frame{};
+    void interpolate(int64_t center,const float *weights){
+        // Keep each channel's 64 additions in their original order. Fixed
+        // channel widths let the compiler retain accumulators in registers;
+        // SIMD is across channels, never across taps or through an FMA.
+        if(channelCount==2){
+            float left=0.f,right=0.f;
+            for(unsigned tap=0;tap<taps;tap++){
+                const int64_t index=center-31+tap;if(index<0)continue;
+                const float *row=samples.data()+(uint64_t(index)%history)*2;
+                left+=row[0]*weights[tap];right+=row[1]*weights[tap];
+            }
+            frame[0]=left;frame[1]=right;return;
+        }
+#if defined(_M_X64) || defined(__SSE2__)
+        if(channelCount==10){
+            __m128 first=_mm_setzero_ps(),second=_mm_setzero_ps();
+            float ninth=0.f,tenth=0.f;
+            for(unsigned tap=0;tap<taps;tap++){
+                const int64_t index=center-31+tap;if(index<0)continue;
+                const float *row=samples.data()+(uint64_t(index)%history)*10;
+                const __m128 weight=_mm_set1_ps(weights[tap]);
+                first=_mm_add_ps(first,_mm_mul_ps(_mm_loadu_ps(row),weight));
+                second=_mm_add_ps(second,_mm_mul_ps(_mm_loadu_ps(row+4),weight));
+                ninth+=row[8]*weights[tap];tenth+=row[9]*weights[tap];
+            }
+            _mm_storeu_ps(frame.data(),first);_mm_storeu_ps(frame.data()+4,second);
+            frame[8]=ninth;frame[9]=tenth;return;
+        }
+#endif
+        std::fill_n(frame.data(),channelCount,0.f);
+        for(unsigned tap=0;tap<taps;tap++){
+            const int64_t index=center-31+tap;if(index<0)continue;
+            const float weight=weights[tap];
+            for(unsigned ch=0;ch<channelCount;ch++)frame[ch]+=samples[(uint64_t(index)%history)*channelCount+ch]*weight;
+        }
+    }
 public:
     Resampler(unsigned count,unsigned inRate,unsigned outRate):channelCount(count),inputRate(inRate),outputRate(outRate),samples(history*count,0),coefficients(phases*taps){
         const double cutoff=std::min(1.0,double(outRate)/inRate)*0.94;
@@ -81,12 +121,7 @@ public:
                 const int64_t center=int64_t(std::floor(position));
                 if(center+32>=int64_t(inputCount))break;
                 const unsigned phase=std::min(phases-1,unsigned((position-center)*phases));
-                std::fill_n(frame.data(),channelCount,0.f);
-                for(unsigned tap=0;tap<taps;tap++){
-                    const int64_t index=center-31+tap;if(index<0)continue;
-                    const float weight=coefficients[phase*taps+tap];
-                    for(unsigned ch=0;ch<channelCount;ch++)frame[ch]+=samples[(uint64_t(index)%history)*channelCount+ch]*weight;
-                }
+                interpolate(center,coefficients.data()+phase*taps);
                 if(!emit(frame.data(),int64_t(outputCount++)))return false;
             }
         }
@@ -96,7 +131,8 @@ public:
 
 struct State {
     Ring<Packet<2>> input;
-    Ring<Packet<10>> output;
+    // Hold the 1.5-second preroll even at the maximum 192 kHz host rate.
+    Ring<Packet<10>,outputRingSlots> output;
     std::atomic<bool> admitted{false},warmReady{false},enabled{true},offline{false};
     std::atomic<unsigned> rate{48000},latencyFrames{72000},muteMask{0},soloMask{0};
     std::array<std::atomic<float>,5> gains{{1,1,1,1,1}};
@@ -168,7 +204,7 @@ struct State {
             float l=0,r=0;bool available=false;
             if(frame>=delay){
                 const auto wanted=int64_t(frame-delay);
-                for(unsigned attempts=0;attempts<=ringSlots;attempts++){
+                for(unsigned attempts=0;attempts<=outputRingSlots;attempts++){
                     auto readyPacket=output.consumerSlot();
                     if(!readyPacket){if(active&&waitAllowed(deadline)){attempts--;continue;}break;}
                     if(readyPacket->generation<epoch||(readyPacket->generation==epoch&&readyPacket->firstFrame+readyPacket->frames<=wanted)){output.consume();outputOffset=0;continue;}

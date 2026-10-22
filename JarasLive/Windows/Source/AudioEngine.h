@@ -315,7 +315,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     };
     std::unique_ptr<LatencyPlan> latencyPlan;
     std::unique_ptr<LatencyPlan> makeLatencyPlan(const ID *replacement=nullptr,const NativeFX *prepared=nullptr,
-                                                std::optional<bool> midiTakeActive={})const;
+                                                std::optional<bool> midiTakeActive={},bool admitReady=false,
+                                                bool releaseRemoved=false)const;
     bool offlineMode=false;
     uint64 stemLatencyFingerprint=0;
     std::atomic<bool> presentationTailing{false};
@@ -327,8 +328,9 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     uint64_t renderClock=0;
     void resetLatencyHead(int head,double at)noexcept;
     void publishLatency()noexcept;
-    uint64 stemFingerprint()const;
-    void activateStemLatency();
+    void installLatencyPlan(std::unique_ptr<LatencyPlan> &,bool preservePlayback)noexcept;
+    uint64 stemFingerprint(bool admitReady=false,bool releaseRemoved=false)const;
+    void activateStemLatency(bool releaseRemoved=true);
     std::vector<std::unique_ptr<Bus>> buses;
     std::vector<int> busOrder;
     TransportFadeout transportFadeout;

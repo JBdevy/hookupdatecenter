@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory)][string]$Executable,
     [Parameter(Mandatory)][string]$ProcessTestExecutable,
     [Parameter(Mandatory)][string]$RuntimeDirectory,
@@ -120,10 +120,10 @@ try {
     $worker=Join-Path $testRuntime 'stream_windows.py'
     $model=Join-Path $testRuntime '5c90dfd2-34c22ccb.th'
 
-    Write-Host 'CatStem: validando IPC persistente em 44100, 48000 e 96000 Hz...'
+    Write-Host 'CatStem: validando IPC persistente em 44100, 48000, 96000 e 192000 Hz...'
     Invoke-CatStemTest $ProcessTestExecutable @($python,$worker,$model) 'ipc' 600
     $ipc=Get-Content -LiteralPath (Join-Path $ResultsDirectory 'ipc.stdout.log') -Raw
-    foreach($rate in @(44100,48000,96000)) {
+    foreach($rate in @(44100,48000,96000,192000)) {
         if(-not $ipc.Contains("passed at $rate Hz")){throw "O teste IPC não confirmou $rate Hz."}
     }
 

@@ -81,6 +81,8 @@ Copy-Item -LiteralPath $stemRuntime -Destination $stemPackage -Recurse -Force
 & $pythonCommand.Source $stemPreparation --output $stemPackage --verify
 if($LASTEXITCODE){throw 'O runtime CatStem do pacote falhou na verificação.'}
 if(-not $SkipTests) {
+    & (Join-Path $stemRuntime 'python/python.exe') -I -B (Join-Path $sourceDirectory '../WindowsNative/StemSeparation/test_backend.py')
+    if($LASTEXITCODE){throw 'Falha na equivalência numérica do CatStemSeparation.'}
     $stemProcessTest=Join-Path $BuildDirectory "$Configuration/CatStemProcessTests.exe"
     if(-not (Test-Path -LiteralPath $stemProcessTest -PathType Leaf)) {
         $stemProcessTest=Join-Path $BuildDirectory 'CatStemProcessTests.exe'

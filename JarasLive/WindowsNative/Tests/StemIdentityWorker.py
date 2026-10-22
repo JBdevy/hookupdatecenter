@@ -9,7 +9,10 @@ parser=argparse.ArgumentParser();parser.add_argument('--model',required=True);pa
 # Fixture is next to the shared protocol when deployed by the test harness.
 path=Path(__file__).with_name('stream.py')
 spec=importlib.util.spec_from_file_location('identity_protocol',path);p=importlib.util.module_from_spec(spec);sys.modules[spec.name]=p;spec.loader.exec_module(p)
-p.HOP=22050;p.LATENCY=3*p.HOP;p.MAX_PAYLOAD=p.HOP*p.CHANNELS*p.STEMS*4
+# Mirror the explicit Windows buffer without modifying the shared Mac module.
+assert (p.HOP,p.LATENCY)==(8192,24576)
+p.LATENCY=66150
+p.COMPUTE_BUDGET=(p.LATENCY-p.HOP-p.RIGHT)/p.RATE
 out=sys.stdout.buffer
 ready=dict(protocolVersion=1,sampleRate=p.RATE,channels=2,stems=5,hopFrames=p.HOP,contextFrames=p.CONTEXT,rightContextFrames=p.RIGHT,latencyFrames=p.LATENCY,maxStreams=1,offlineRendering=args.offline,outputNames=p.OUTPUT_NAMES,sourceCheckpointSHA=p.SOURCE_SHA)
 out.write(p.json_packet(p.READY,ready).encode());out.flush()

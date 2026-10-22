@@ -738,11 +738,11 @@ private struct TimelineGridContent: View, Equatable {
             Button("Cancel", role: .cancel) { bpmRegions = [] }
             Button("Detect BPM") { detectBPM() }
         }
-        .onReceive(show.$tempoMarkerRequest.dropFirst()) { _ in beginTempoMarker() }
+        .onReceive(show.$tempoMarkerRequest.dropFirst()) { request in if request > 0 { beginTempoMarker() } }
         .sheet(item: $editingTempoMarker) { marker in TempoMarkerEditor(marker: marker, save: { show.setMarker($0) }).environment(\.locale, locale) }
-        .onReceive(show.$normalizeItemsRequest.dropFirst()) { _ in beginNormalize(selectedClips) }
-        .onChange(of: show.splitItemsRequest) { _ in confirmSplit(selectedClips) }
-        .onChange(of: show.addTrackRequest) { _ in addingTrack = true }
+        .onReceive(show.$normalizeItemsRequest.dropFirst()) { request in if request > 0 { beginNormalize(selectedClips) } }
+        .onChange(of: show.splitItemsRequest) { request in if request > 0 { confirmSplit(selectedClips) } }
+        .onChange(of: show.addTrackRequest) { request in if request > 0 { addingTrack = true } }
         .onChange(of: show.timelineMovementLocked) { locked in
             guard locked else { return }
             clearClipDrag(); resizingItem = nil
