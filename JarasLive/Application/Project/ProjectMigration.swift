@@ -16,16 +16,7 @@ public enum ProjectMigration {
     /// Every import gets a new directory, including repeated imports of the
     /// same source. Existing REAPER/Logic documents and CatLive sessions stay intact.
     public static func isolatedDestination(for selection: URL) -> URL {
-        let document = selection.pathExtension.lowercased() == "jl" ? selection : selection.appendingPathExtension("jl")
-        let parent = document.deletingLastPathComponent()
-        let name = document.deletingPathExtension().lastPathComponent
-        var folder = parent.appendingPathComponent(name, isDirectory: true)
-        var index = 1
-        while FileManager.default.fileExists(atPath: folder.path) {
-            folder = parent.appendingPathComponent(name + String(format: "-%03d", index), isDirectory: true)
-            index += 1
-        }
-        return folder.appendingPathComponent(document.lastPathComponent)
+        ProjectDirectoryPolicy.newProjectDestination(for: selection, reuseEmptySelectedFolder: false)
     }
     /// Creates a separate CatLive document. An absent source is intentional, not a
     /// copy failure: its clip and path are saved and recovered by the normal UI.

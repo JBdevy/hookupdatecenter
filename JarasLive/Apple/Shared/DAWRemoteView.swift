@@ -363,6 +363,7 @@ struct DAWRemoteClientView: View {
         var project: UUID
         var song: UUID?
         var revision: UInt64
+        var setlistRevision: UInt64
         var playlist: UUID?
         var regionColor: UInt32
         var unifiedColor: UInt32
@@ -417,10 +418,11 @@ struct DAWRemoteClientView: View {
             let unifiedTextColor = UInt32(AppearanceColor.shared("jaras.setlist.unifiedTextColor", default: 0xffeb3b).value)
             @MainActor func region(_ part: Part) -> DAWRemoteState.Region {
                 .init(id: part.id, name: part.displayName, start: part.startTime, end: part.endTime, color: part.color ?? 0x705264,
-                      nameColor: part.parentRegionID != nil ? unifiedTextColor : regionTextColor, parentRegion: part.parentRegionID)
+                      nameColor: part.parentRegionID != nil ? unifiedTextColor : regionTextColor, parentRegion: part.parentRegionID,
+                      sourceRegionId: show.isPlaylistDuplicate(part.id) ? show.playlistRegionSourceID(part.id) : nil)
             }
             let presentationKey = PresentationKey(project: snapshot.project.id, song: song?.id,
-                revision: show.projectRevision, playlist: selectedPlaylist?.id,
+                revision: show.projectRevision, setlistRevision: show.setlistRevision, playlist: selectedPlaylist?.id,
                 regionColor: regionTextColor, unifiedColor: unifiedTextColor)
             let presentationChanged = cachedPresentationKey != presentationKey
             if presentationChanged {
@@ -441,7 +443,7 @@ struct DAWRemoteClientView: View {
                 cachedPlayedSet = playedLiveIDs
                 cachedPlayedIDs = (song?.parts ?? []).filter { playedLiveIDs.contains($0.id) }.map(\.id)
             }
-            let selected = transport.playing ? show.pitchRegion : song?.parts.first { $0.id == (show.focusedRegion ?? transport.regionId) }
+            let selected = transport.playing ? show.pitchRegion : song?.parts.first { $0.id == (show.focusedRegion.map(show.playlistRegionSourceID) ?? transport.regionId) }
             let hasMultiLoop = selected.map { part in
                 part.totalLoop == true || !(part.multiLoops ?? []).isEmpty || (song?.parts.contains { candidate in
                     (candidate.id == part.parentRegionID || candidate.parentRegionID == part.id) &&
@@ -454,10 +456,10 @@ struct DAWRemoteClientView: View {
                 ? song?.parts.first { transport.subPlay.position >= $0.startTime && transport.subPlay.position < $0.endTime }
                 : song?.parts.first { $0.id == transport.queuedRegionId }
             let sectionRegion = transport.playing ? song?.sectionPlaybackRegion(for: transport)
-                : song?.parts.first(where: { $0.id == show.focusedRegion }) ?? song?.sectionRegion(at: transport.editPosition ?? transport.position)
+                : song?.parts.first(where: { $0.id == show.focusedRegion.map(show.playlistRegionSourceID) }) ?? song?.sectionRegion(at: transport.editPosition ?? transport.position)
             let secondarySectionRegion = transport.subPlay.playing ? song?.sectionRegion(at: transport.subPlay.position)
                 : song?.parts.first(where: { $0.id == transport.queuedRegionId })
-            let displays = TransportSongDisplays(song: song, transport: transport, focusedRegion: show.focusedRegion)
+            let displays = TransportSongDisplays(song: song, transport: transport, focusedRegion: show.focusedRegion.map(show.playlistRegionSourceID))
             let nextSection = transport.queuedSectionMarkerId == nil ? nil : song?.nextSectionTrigger(for: transport)
             return DAWRemoteState(project: snapshot.project.id, projectName: snapshot.project.name,
                 song: song?.id, songName: song?.name ?? "—",
@@ -473,6 +475,7 @@ struct DAWRemoteClientView: View {
                           canMeter: !track.kind.isText && track.kind != .timecode, parentTrack: track.parentTrackID)
                 }, regions: cachedRegions, timelineRegions: cachedTimelineRegions,
                 currentRegion: transport.regionId, queuedRegion: transport.queuedRegionId, focusedRegion: show.focusedRegion,
+                currentPlaylistEntryId: transport.playlistEntryId, queuedPlaylistEntryId: transport.queuedPlaylistEntryId,
                 position: transport.position, duration: cachedDuration,
                 bpm: show.tempoControlBPM,
                 playing: transport.playing, paused: transport.paused ?? false,
@@ -499,7 +502,7 @@ struct DAWRemoteClientView: View {
                 upcomingKind: internalNext != nil ? "Next song" : transport.subPlay.playing ? "Sub Play" : "Queued song",
                 playlists: show.regionSetlist.playlists.filter { $0.songId == song?.id }.map { .init(id: $0.id, name: $0.name) },
                 selectedPlaylist: selectedPlaylist?.id,
-                gridRegion: transport.playing ? song?.playingSetlistRegion(transport.regionId, position: transport.position, expanded: [])?.id : (show.focusedRegion ?? transport.regionId),
+                gridRegion: transport.playing ? song?.playingSetlistRegion(transport.regionId, position: transport.position, expanded: [])?.id : (show.focusedRegion.map(show.playlistRegionSourceID) ?? transport.regionId),
                 markers: cachedMarkers,
                 projects: projectBrowser(documents),
                 projectTabs: projectTabsProvider(),
@@ -569,14 +572,17 @@ struct DAWRemoteClientView: View {
             }
             switch command.action {
             case .editRegion:
-                guard let id = command.target, let name = command.text, show.current?.parts.contains(where: { $0.id == id }) == true else { return }
-                show.editRegion(id, name: name, color: UInt32(command.value))
+                guard let id = command.target, let name = command.text, show.playlistRegion(id) != nil else { return }
+                show.editRegion(show.playlistRegionSourceID(id), name: name, color: UInt32(command.value))
             case .deleteRegion:
-                guard let id = command.target, show.current?.parts.contains(where: { $0.id == id && $0.parentRegionID == nil }) == true else { return }
+                guard let id = command.target, let part = show.playlistRegion(id), part.parentRegionID == nil else { return }
                 if let playlist = command.playlist {
                     guard show.regionSetlist.playlists.contains(where: { $0.id == playlist && $0.songId == show.current?.id && $0.regionIds.contains(id) }) else { return }
                 }
                 show.deleteRegion(id, playlist: command.playlist)
+            case .duplicateRegion:
+                guard let id = command.target, command.playlist == show.selectedRegionPlaylist?.id, command.playlist != nil else { return }
+                _ = show.duplicatePlaylistRegion(id)
             case .renamePlaylist:
                 if let id = command.target, let name = command.text { show.renameRegionPlaylist(id, name: name) }
             case .duplicatePlaylist:
@@ -601,7 +607,7 @@ struct DAWRemoteClientView: View {
                 }
                 show.selectRegionPlaylist(command.target)
             case .selectRegion:
-                guard let target = command.target, show.current?.parts.contains(where: { $0.id == target }) == true else { return }
+                guard let target = command.target, show.playlistRegion(target) != nil else { return }
                 show.focusRegion(target)
             case .selectSong:
                 guard let target = command.target, show.snapshot.project.songs.contains(where: { $0.id == target }) else { return }
@@ -617,7 +623,7 @@ struct DAWRemoteClientView: View {
                 if session?.isLocalWorkspace == true { show.send(.editSeek, value: command.value); return }
                 guard !show.isPlaying, let song = show.current,
                       let target = command.target, target == (show.focusedRegion ?? show.snapshot.transport.regionId),
-                      let region = song.parts.first(where: { $0.id == target }) else { return }
+                      let region = song.parts.first(where: { $0.id == show.playlistRegionSourceID(target) }) else { return }
                 show.send(.seek, value: min(region.endTime, max(region.startTime, command.value)))
             default:
                 guard let action = ShowCommand(rawValue: command.action.rawValue) else { return }
@@ -724,8 +730,7 @@ struct DAWRemoteClientView: View {
         if result.preview, let song {
             let setlist = snapshot.project.regionSetlist ?? RegionSetlist()
             let playlist = setlist.playlists.first { $0.id == setlist.selectedId && $0.songId == song.id }
-            let lookup = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
-            let regions = playlist.map { $0.regionIds.compactMap { lookup[$0] } } ?? song.parts.filter { $0.parentRegionID == nil }.sorted { $0.startTime < $1.startTime }
+            let regions = playlist.map { list in list.regionIds.compactMap { list.region(forEntry: $0, in: song) } } ?? song.parts.filter { $0.parentRegionID == nil }.sorted { $0.startTime < $1.startTime }
             let headers = Dictionary(grouping: (setlist.blocks ?? []).filter { $0.songId == song.id && $0.playlistId == playlist?.id }, by: \.beforeRegionId)
             var blocks = [DAWRemoteTeleprompter.Block(id: song.id, name: "", color: 0xffea00, rows: [])]
             for part in regions {
@@ -734,7 +739,7 @@ struct DAWRemoteClientView: View {
                 }
                 let last = blocks.count - 1
                 blocks[last].rows.append(.init(id: part.id, name: settings.display(part.displayName),
-                    color: part.id == region?.id ? settings.highlightColor : part.id == queued?.id ? settings.queueNameColor : part.color ?? blocks[last].color,
+                    color: part.id == (transport.playlistEntryId ?? region?.id) ? settings.highlightColor : part.id == (transport.queuedPlaylistEntryId ?? queued?.id) ? settings.queueNameColor : part.color ?? blocks[last].color,
                     duration: max(0, part.endTime - part.startTime)))
             }
             blocks += (headers[nil] ?? []).map { .init(id: $0.id, name: settings.display($0.name), color: $0.color, rows: []) }
@@ -923,6 +928,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var editingEntry: EntryEditor?
     @State private var removal: DAWRemoteCommand?
     @State private var confirmingRemoval = false
+    @State private var duplicateQueueWarning = false
     private enum PrompterPanel: Int, Identifiable {
         case first = 1, second = 2
         var id: Int { rawValue }
@@ -1057,8 +1063,12 @@ private struct RemoteSidebarRail<Content: View>: View {
             if !expandedRegions.insert(id).inserted { expandedRegions.remove(id) }
         }
     }
-    private func action(_ action: DAWRemoteCommand.Action, target: UUID? = nil, value: Double = 0) {
-        send(.init(project: state.project, song: state.song, action: action, target: target, value: value))
+    private func action(_ action: DAWRemoteCommand.Action, target: UUID? = nil, value: Double = 0, playlist: UUID? = nil) {
+        if action == .selectRegion, let target, !DAWRemoteSetlistPresentation.canQueueDuplicate(target, in: state) {
+            duplicateQueueWarning = true
+            return
+        }
+        send(.init(project: state.project, song: state.song, action: action, target: target, value: value, playlist: playlist))
     }
     private func updatePanelSubscription() {
         guard state.timer != nil else { return }
@@ -1096,6 +1106,9 @@ private struct RemoteSidebarRail<Content: View>: View {
                 }.frame(width: 420)
             } }
         }
+        .alert("CatLive", isPresented: $duplicateQueueWarning) {
+            Button("OK", role: .cancel) { }
+        } message: { Text("A duplicated region can only be queued while another song is playing.") }
         .alert("Delete", isPresented: $confirmingRemoval) {
             Button("Cancel", role: .cancel) { removal = nil }
             Button("Delete", role: .destructive) { if let removal { send(removal) }; removal = nil }
@@ -1487,10 +1500,10 @@ private struct RemoteSidebarRail<Content: View>: View {
                     case .block(let block): RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0).equatable()
                     case .region(let row):
                     let region = row.region
-                    setlistLabel(region.name, number: row.number, played: played.contains(region.id), selected: observerRegion(region.id, contains: state.focusedRegion),
-                        active: state.playing && observerRegion(region.id, contains: state.currentRegion), queued: observerRegion(region.id, contains: state.queuedRegion),
+                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: observerRegion(region.id, contains: state.focusedRegion),
+                        active: state.playing && observerRegion(region.id, contains: state.setlistCurrentEntryId), queued: observerRegion(region.id, contains: state.setlistQueuedEntryId),
                         color: remoteColor(region.color), nameColor: remoteColor(region.nameColor ?? 0xffffff),
-                        duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.currentRegion ? state.position : region.start)))),
+                        duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.setlistCurrentEntryId ? state.position : region.start)))),
                         progress: min(1, max(0, (state.position - region.start) / max(0.001, region.end - region.start))),
                         queueProgress: min(1, max(0, ((state.playbackEnd ?? state.position) - state.position) / max(0.001, (state.playbackEnd ?? state.position) - (state.queueStartedAt ?? state.position)))))
                         .modifier(RemoteRegionDrawerGesture(enabled: row.hasDrawer, toggle: { toggleDrawer(region.id) }))
@@ -2186,17 +2199,20 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 case .region(let row):
                                 let region = row.region
                                 Button { action(.selectRegion, target: region.id) } label: {
-                                    setlistLabel(region.name, number: row.number, played: played.contains(region.id), selected: region.id == state.focusedRegion,
-                                        active: state.playing && region.id == state.currentRegion, queued: state.playing && region.id == state.queuedRegion,
+                                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: region.id == state.focusedRegion,
+                                        active: state.playing && region.id == state.setlistCurrentEntryId, queued: state.playing && region.id == (state.setlistQueuedEntryId),
                                         color: remoteColor(region.color), nameColor: remoteColor(region.nameColor ?? (row.child ? 0xffeb3b : 0xffffff)),
-                                        duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.currentRegion ? state.position : region.start)))),
+                                        duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.setlistCurrentEntryId ? state.position : region.start)))),
                                         progress: min(1, max(0, (state.position - region.start) / max(0.001, region.end - region.start))),
                                         queueProgress: min(1, max(0, ((state.playbackEnd ?? state.position) - state.position) / max(0.001, (state.playbackEnd ?? state.position) - (state.queueStartedAt ?? state.position)))))
                                 }.buttonStyle(RemoteFullAreaButtonStyle())
                                     .contextMenu {
+                                        if let playlist = state.selectedPlaylist, region.parentRegion == nil {
+                                            Button("Duplicate region") { action(.duplicateRegion, target: region.id, playlist: playlist) }
+                                        }
                                         if row.hasDrawer { Button(drawerExpanded ? "Close drawer" : "Open drawer") { toggleDrawer(region.id) } }
-                                        if !row.hasDrawer, let openRegionLoops { Button("Multiloops") { openRegionLoops(region.id) } }
-                                        if let detectRegionBPM { Button("Detect BPM…") { detectRegionBPM(region.id) } }
+                                        if !state.timelineRegions.contains(where: { $0.parentRegion == (region.sourceRegionId ?? region.id) }), let openRegionLoops { Button("Multiloops") { openRegionLoops(region.sourceRegionId ?? region.id) } }
+                                        if let detectRegionBPM { Button("Detect BPM…") { detectRegionBPM(region.sourceRegionId ?? region.id) } }
                                         Button("Edit song") { editingEntry = .init(id: region.id, playlist: false, name: region.name, color: region.color) }
                                         if region.parentRegion == nil {
                                             Button(state.selectedPlaylist == nil ? "Delete region" : "Remove from playlist", role: .destructive) {

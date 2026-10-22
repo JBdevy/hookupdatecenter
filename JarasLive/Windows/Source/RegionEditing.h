@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "PlaylistOccurrences.h"
 namespace catlive::regionEditing {
 inline void require(bool ok, const std::string &message) { if (!ok) throw std::runtime_error(message); }
 inline bool hasChildren(const jaras::Song &song, const ID &id) {
@@ -75,6 +76,9 @@ inline ID unify(jaras::Project &project, const ID &songID, const ID &id, String 
                 else if (!inserted) { next.push_back(group.id); inserted = true; }
             }
             playlist.regionIds = std::move(next);
+            if(playlist.duplicates)for(auto &entry:*playlist.duplicates)
+                if(rootIDs.count(entry.regionId) || memberIDs.count(entry.regionId)) entry.regionId=group.id;
+            playlistOccurrences::prune(playlist);
         }
         if (state.blocks) for (auto &block : *state.blocks)
             if (block.beforeRegionId && (rootIDs.count(*block.beforeRegionId) || memberIDs.count(*block.beforeRegionId))) block.beforeRegionId = group.id;
@@ -101,9 +105,21 @@ inline void disunify(jaras::Project &project, const ID &songID, const ID &id) {
         auto &state = *project.regionSetlist;
         for (auto &playlist : state.playlists) {
             std::vector<ID> next;
-            for (const auto &entry : playlist.regionIds)
-                if (entry != id) next.push_back(entry); else for (const auto &part : members) next.push_back(part.id);
+            std::vector<jaras::RegionPlaylistDuplicate> extra;
+            for (const auto &entry : playlist.regionIds) {
+                if(playlist.resolvedRegionId(entry)!=id) {next.push_back(entry);continue;}
+                if(!playlist.isDuplicate(entry)) {for(const auto &part:members)next.push_back(part.id);continue;}
+                bool first=true;
+                for(const auto &part:members) {
+                    const auto key=first?entry:uuid();next.push_back(key);
+                    if(first) {for(auto &copy:*playlist.duplicates)if(copy.id==entry)copy.regionId=part.id;}
+                    else extra.push_back({key,part.id});
+                    first=false;
+                }
+            }
+            if(!extra.empty())playlist.duplicates->insert(playlist.duplicates->end(),extra.begin(),extra.end());
             playlist.regionIds = std::move(next);
+            playlistOccurrences::prune(playlist);
         }
         if (state.blocks) for (auto &block : *state.blocks) if (block.beforeRegionId == id) block.beforeRegionId = members.front().id;
     }
@@ -138,12 +154,13 @@ inline void erase(jaras::Project &project, const ID &songID, const std::set<ID> 
                 if(project.regionSetlist){auto &state=*project.regionSetlist;
                     for(auto &playlist:state.playlists){
                         for(auto it=playlist.regionIds.begin();it!=playlist.regionIds.end();){
-                            if(!removed.count(*it)){++it;continue;}
-                            auto following=std::find_if(it+1,playlist.regionIds.end(),[&](const auto &id){return !removed.count(id);});
+                            if(!removed.count(playlist.resolvedRegionId(*it))){++it;continue;}
+                            auto following=std::find_if(it+1,playlist.regionIds.end(),[&](const auto &id){return !removed.count(playlist.resolvedRegionId(id));});
                             std::optional<ID> next=following==playlist.regionIds.end()?std::optional<ID>{}:std::optional<ID>{*following};
                             if(state.blocks)for(auto &block:*state.blocks)if(block.playlistId==playlist.id&&block.beforeRegionId==*it)block.beforeRegionId=next;
                             it=playlist.regionIds.erase(it);
                         }
+                        playlistOccurrences::prune(playlist);
                     }
                     if(state.blocks)for(auto &block:*state.blocks)if(block.beforeRegionId&&removed.count(*block.beforeRegionId))block.beforeRegionId.reset();
                     if(state.playedLiveRegionIDs)state.playedLiveRegionIDs->erase(std::remove_if(state.playedLiveRegionIDs->begin(),state.playedLiveRegionIDs->end(),[&](const auto &id){return removed.count(id);}),state.playedLiveRegionIDs->end());

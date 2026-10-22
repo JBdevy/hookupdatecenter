@@ -199,9 +199,17 @@ void validateRegionSetlist(const Project& p, const RegionSetlist& state) {
             require(list.name.find_first_not_of(" \t\r\n") != std::string::npos, "Playlist needs a name and regions");
             auto song = std::find_if(p.songs.begin(), p.songs.end(), [&](const auto& s) { return s.id == list.songId; });
             require(song != p.songs.end(), "Unknown playlist grid");
+            if (list.duplicates) for (const auto& duplicate : *list.duplicates) {
+                unique(duplicate.id);
+                require(list.containsEntry(duplicate.id) &&
+                    std::any_of(song->parts.begin(), song->parts.end(), [&](const auto& r) { return r.id == duplicate.regionId && !r.parentRegionID; }),
+                    "Invalid duplicate playlist region");
+            }
             std::set<ID> seen;
-            for (const auto& id : list.regionIds)
-                require(seen.insert(id).second && std::any_of(song->parts.begin(), song->parts.end(), [&](const auto& r) { return r.id == id; }), "Invalid playlist region");
+            for (const auto& id : list.regionIds) {
+                const auto physical = list.resolvedRegionId(id);
+                require(seen.insert(id).second && std::any_of(song->parts.begin(), song->parts.end(), [&](const auto& r) { return r.id == physical; }), "Invalid playlist region");
+            }
         }
         if (state.blocks) for (const auto& block : *state.blocks) {
             unique(block.id);

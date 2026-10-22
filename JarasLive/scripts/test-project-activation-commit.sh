@@ -10,7 +10,9 @@ source = Path(sys.argv[2]).read_text()
 activate_start = source.index('        canCancelOpening = false', source.index('    private func activate('))
 activate = source[activate_start:source.index('        let missing = ', activate_start)]
 finish_start = source.index('                if currentURL != url { try await rememberProjectMedia() }', source.index('    private func finish(scan:'))
-finish = source[finish_start:source.index('                StemAudioPlayback.shared.open', finish_start)]
+finish = source[finish_start:source.index('                    projectAudio.open', finish_start)] + '                }\n'
+# Stop before playback-device work; retain the full creation commit branch.
+
 helpers = source[source.index('    private func closeProjectEditors()'):source.index('    private func activate(')]
 pending = source[source.index('    struct PendingAudioDrop:'):source.index('    @Published var pendingAudioDrop:')]
 main_view = Path('Apple/Shared/MainView.swift').read_text()

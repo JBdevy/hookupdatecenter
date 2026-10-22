@@ -11,14 +11,13 @@ public enum SetlistShareText {
         if let playlistID {
             guard let playlist = setlist.playlists.first(where: { $0.id == playlistID && $0.songId == song.id }) else { return "" }
             title = playlist.name
-            let lookup = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
-            regions = playlist.regionIds.compactMap { lookup[$0] }
+            regions = playlist.regionIds.compactMap { playlist.region(forEntry: $0, in: song) }.filter { $0.parentRegionID == nil }
         } else {
             title = allRegionsTitle
             regions = roots.sorted { $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime < $1.startTime }
         }
 
-        // Match the footer: each root contributes its full span once, with no drawer duplication.
+        // Match the footer: each occurrence contributes its full span, with no drawer double count.
         let total = regions.reduce(0.0) { sum, region in
             let seconds = region.endTime - region.startTime
             return sum + (seconds.isFinite ? max(0, seconds) : 0)
@@ -39,6 +38,7 @@ public enum SetlistShareText {
         for (index, region) in regions.enumerated() {
             appendBlocks(before: region.id)
             lines.append(String(format: "%02d", index + 1) + ". " + region.displayName)
+            // Copies are flat setlist rows; the original alone exposes its drawer.
             let drawer = (children[region.id] ?? []).sorted {
                 $0.startTime == $1.startTime ? $0.endTime < $1.endTime : $0.startTime < $1.startTime
             }

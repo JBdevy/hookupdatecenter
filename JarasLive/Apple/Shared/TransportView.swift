@@ -217,7 +217,7 @@ private struct TransportDisplaysLive: View {
     }
     var body: some View {
         let transport = show.snapshot.transport
-        let displays = TransportSongDisplays(song: show.current, transport: transport, focusedRegion: show.focusedRegion)
+        let displays = TransportSongDisplays(song: show.current, transport: transport, focusedRegion: show.focusedRegion.map(show.playlistRegionSourceID))
         return HStack(spacing: 0) {
             GeometryReader { geometry in
                 HStack(spacing: 0) {
@@ -274,7 +274,7 @@ struct FooterPlaylistDisplay: View {
     }
     var body: some View {
         let transport = show.snapshot.transport
-        let displays = TransportSongDisplays(song: show.current, transport: transport, focusedRegion: show.focusedRegion)
+        let displays = TransportSongDisplays(song: show.current, transport: transport, focusedRegion: show.focusedRegion.map(show.playlistRegionSourceID))
         let total = duration
         if scalesToAvailableHeight {
             // Capture model strings before this local geometry scope. Resizing
@@ -306,7 +306,7 @@ struct FooterInformationDisplay: View {
     private var hasMultiLoop: Bool {
         guard let song = show.current else { return false }
         let transport = show.snapshot.transport
-        let region = transport.playing ? show.pitchRegion : song.parts.first { $0.id == (show.focusedRegion ?? transport.regionId) }
+        let region = transport.playing ? show.pitchRegion : song.parts.first { $0.id == (show.focusedRegion.map(show.playlistRegionSourceID) ?? transport.regionId) }
         guard let region else { return false }
         if region.totalLoop == true || !(region.multiLoops ?? []).isEmpty { return true }
         if let parent = region.parentRegionID {

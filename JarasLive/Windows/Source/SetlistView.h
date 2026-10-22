@@ -138,14 +138,7 @@ class Workspace::Setlist final : public Component,
             [self=SafePointer<Setlist>(this),targets,playlist] {
                 if (!self) return;
                 auto state = self->currentState();
-                for (auto &list : state.playlists) if (list.id == playlist) {
-                    if (state.blocks) for (auto &block : *state.blocks) if (block.playlistId == playlist && block.beforeRegionId && targets.count(*block.beforeRegionId)) {
-                        auto next = std::find(list.regionIds.begin(), list.regionIds.end(), *block.beforeRegionId);
-                        while (next != list.regionIds.end() && targets.count(*next)) ++next;
-                        block.beforeRegionId = next == list.regionIds.end() ? std::optional<ID>{} : std::optional<ID>{*next};
-                    }
-                    list.regionIds.erase(std::remove_if(list.regionIds.begin(), list.regionIds.end(), [&](const auto &id) { return targets.count(id) != 0; }), list.regionIds.end());
-                }
+                playlistOccurrences::remove(state, playlist, targets);
                 self->apply(state);
             });
         return true;
@@ -237,7 +230,7 @@ class Workspace::Setlist final : public Component,
         totalDuration = 0;
         auto *song = w.session.song();
         if (song) {
-            std::vector<const jaras::Part *> roots;
+            std::vector<std::pair<ID, const jaras::Part *>> roots;
             std::map<ID, int> ids;
             for (size_t index=0;index<song->parts.size();++index)
                 ids[song->parts[index].id]=(int)index+1;
@@ -250,14 +243,14 @@ class Workspace::Setlist final : public Component,
             if (playlist) {
                 for (const auto &id : playlist->regionIds)
                     for (const auto &part : song->parts)
-                        if (part.id == id)
-                            roots.push_back(&part);
+                        if (part.id == playlist->resolvedRegionId(id))
+                            roots.push_back({id, &part});
             } else {
                 for (const auto &part : song->parts)
                     if (!part.parentRegionID)
-                        roots.push_back(&part);
+                        roots.push_back({part.id, &part});
                 std::stable_sort(roots.begin(), roots.end(),
-                                 [](auto *a, auto *b) { return a->startTime < b->startTime; });
+                                 [](const auto &a, const auto &b) { return a.second->startTime < b.second->startTime; });
             }
             auto addBlocks = [&](const std::optional<ID> &before) {
                 if (!state.blocks)
@@ -277,12 +270,12 @@ class Workspace::Setlist final : public Component,
                     }
             };
             regionCount=(int)roots.size();
-            for (auto *part : roots)
-                totalDuration += part->endTime - part->startTime;
+            for (const auto &root : roots)
+                totalDuration += root.second->endTime - root.second->startTime;
             const auto parents=timelineRegionLabels::parents(*song);
-            auto addPart = [&](const jaras::Part &part, int number) {
+            auto addPart = [&](const jaras::Part &part, int number, const ID &occurrence = ID{}) {
                 Entry entry;
-                entry.id=part.id;entry.name=timelineRegionLabels::displayName(part);
+                entry.id=occurrence.empty()?part.id:occurrence;entry.sourceId=part.id;entry.duplicate=entry.id!=part.id;entry.name=timelineRegionLabels::displayName(part);
                 entry.start=part.startTime;entry.end=part.endTime;
                 entry.child=part.parentRegionID.has_value();entry.number=number;
                 entry.regionNumber=ids[part.id];
@@ -296,9 +289,10 @@ class Workspace::Setlist final : public Component,
                     addPart(*part,++index);
             } else {
                 int index=0;
-                for (auto *part:roots) {
-                    addBlocks(part->id);addPart(*part,++index);
-                    if (parents.count(part->id) && expanded.count(part->id)) {
+                for (const auto &root:roots) {
+                    const auto *part=root.second;
+                    addBlocks(root.first);addPart(*part,++index,root.first);
+                    if (root.first==part->id && parents.count(part->id) && expanded.count(root.first)) {
                         int childNumber=0;
                         for (const auto &child:sorted)
                             if (child.parentRegionID==part->id) addPart(child,++childNumber);
@@ -457,7 +451,8 @@ class Workspace::Setlist final : public Component,
         void resized() override { button.setBounds(getWidth() - 14, 0, 14, 34); }
     };
     struct Entry {
-        ID id;
+        ID id, sourceId;
+        bool duplicate = false;
         String name;
         double start = 0, end = 0;
         int number = 0, regionNumber = 0;
@@ -593,7 +588,7 @@ class Workspace::Setlist final : public Component,
     Component *refreshComponentForRow(int row, bool, Component *existing) override {
         auto *drawer = static_cast<RowDrawer *>(existing);
         if (!drawer) drawer = new RowDrawer();
-        const bool available = row >= 0 && row < getNumRows() && entries[(size_t)row].hasChildren;
+        const bool available = row >= 0 && row < getNumRows() && entries[(size_t)row].hasChildren && !entries[(size_t)row].duplicate;
         drawer->button.setVisible(available);
         drawer->button.onClick = {};
         if (available) {
@@ -637,11 +632,11 @@ class Workspace::Setlist final : public Component,
             return;
         }
         const auto t = w.session.presentationTransport();
-        const bool active = t.playing && t.regionId == entry.id,
-                   queued = t.playing && t.queuedRegionId == entry.id;
+        const bool active = t.playing && (entry.child ? t.regionId==entry.sourceId : t.playlistEntryId.value_or(t.regionId.value_or(ID{})) == entry.id),
+                   queued = t.playing && (entry.child ? t.queuedRegionId==entry.sourceId : t.queuedPlaylistEntryId.value_or(t.queuedRegionId.value_or(ID{})) == entry.id);
         const auto state = currentState();
         const bool played = state.playedLiveRegionIDs &&
-            std::find(state.playedLiveRegionIDs->begin(), state.playedLiveRegionIDs->end(), entry.id) != state.playedLiveRegionIDs->end();
+            std::find(state.playedLiveRegionIDs->begin(), state.playedLiveRegionIDs->end(), entry.sourceId) != state.playedLiveRegionIDs->end();
         const bool prepareOnly = state.prepareWithoutPlayback.value_or(false);
         const int left = !searching && entry.child ? 18 : 0;
         auto bounds = juce::Rectangle<float>((float)left, 0, (float)width - left - (entry.block ? 0 : 14), 34);
@@ -702,6 +697,7 @@ class Workspace::Setlist final : public Component,
         if (row < 0 || row >= getNumRows())
             return;
         auto entry = entries[(size_t)row];
+        if(entry.duplicate && event.getNumberOfClicks()>1)return;
         selectedEntry = entry.id;
         if (event.mods.isPopupMenu()) {
             ++w.contextCount;
@@ -712,17 +708,18 @@ class Workspace::Setlist final : public Component,
             return;
         if (searching) {chooseSearchResult(entry.id);return;}
         w.perform([&] {
-            w.session.command(w.session.transport().playing ? jaras::CommandKind::queueRegion
-                                                            : jaras::CommandKind::selectRegion,
+            w.session.command(entry.duplicate || w.session.transport().playing ? jaras::CommandKind::queueRegion
+                                                                               : jaras::CommandKind::selectRegion,
                               entry.id);
         });
     }
     void listBoxItemDoubleClicked(int row, const MouseEvent &) override {
         if (ignoreSearchDoubleClick) return;
         if (searching && row>=0 && row<getNumRows()) {chooseSearchResult(entries[(size_t)row].id);return;}
-        if (row >= 0 && row < getNumRows() && !entries[(size_t)row].block)
+        if (row >= 0 && row < getNumRows() && !entries[(size_t)row].block && !entries[(size_t)row].duplicate)
             w.perform([&] {
-                w.session.command(jaras::CommandKind::selectRegion, entries[(size_t)row].id);
+                const auto &entry = entries[(size_t)row];
+                w.session.command(jaras::CommandKind::selectRegion, entry.id);
             });
     }
     void createPlaylist(bool editing = false, std::optional<ID> target = {}) {
@@ -793,8 +790,8 @@ class Workspace::Setlist final : public Component,
                         for(auto &p:state.playlists)if(p.id==selected)p.name=utf8(name);self->apply(state);
                     });break;}}
                 if(action==4){auto state=self->currentState();for(const auto &p:state.playlists)if(p.id==selected){
-                    auto copy=p;copy.id=uuid();copy.name += " (cópia)";
-                    if(state.blocks){auto blocks=*state.blocks;for(auto block:blocks)if(block.playlistId==selected){block.id=uuid();block.playlistId=copy.id;state.blocks->push_back(block);}}
+                    auto copy=p;copy.id=uuid();const auto remapped=playlistOccurrences::reidentifyCopies(copy,[]{return uuid();});copy.name += " (cópia)";
+                    if(state.blocks){auto blocks=*state.blocks;for(auto block:blocks)if(block.playlistId==selected){block.id=uuid();block.playlistId=copy.id;if(block.beforeRegionId)if(auto at=remapped.find(*block.beforeRegionId);at!=remapped.end())block.beforeRegionId=at->second;state.blocks->push_back(block);}}
                     state.selectedId=copy.id;state.playlists.push_back(copy);self->apply(state);break;}}
                 if(action==5)self->w.confirm("Excluir playlist",String::fromUTF8("Excluir esta playlist? As músicas continuam no projeto."),[self,selected,project]{
                     if(!self || self->w.session.project().id!=project)return;auto state=self->currentState();
@@ -1029,7 +1026,7 @@ class Workspace::Setlist final : public Component,
     };
     void configInit(Entry entry) {
         const auto* song=w.session.song();if(!song)return;
-        const auto at=std::find_if(song->parts.begin(),song->parts.end(),[&](const auto& p){return p.id==entry.id;});
+        const auto at=std::find_if(song->parts.begin(),song->parts.end(),[&](const auto& p){return p.id==entry.sourceId;});
         if(at==song->parts.end())return;
         auto self=SafePointer<Setlist>(this);
         auto close=[self]{if(self)for(auto* child:self->w.getChildren())if(auto* sheet=dynamic_cast<ModalSheet*>(child);sheet&&sheet->getName()=="Config Init"){sheet->exitModalState(0);break;}};
@@ -1037,7 +1034,7 @@ class Workspace::Setlist final : public Component,
             if(!self || selection<1 || selection>10)return;
             try {
                 self->w.session.edit([&](jaras::Project& project){
-                    for(auto& song:project.songs)for(auto& part:song.parts)if(part.id==entry.id){
+                    for(auto& song:project.songs)for(auto& part:song.parts)if(part.id==entry.sourceId){
                         if(selection%2==0)part.subplayInitBars=(selection+1)/2;
                         else {part.subplayInitBars.reset();part.subplayInitSeconds=(selection+1)/2;}
                     }
@@ -1060,37 +1057,42 @@ class Workspace::Setlist final : public Component,
         menu.addItem(6,"Config Init");
         if (!entry.child) menu.addItem(5, selectedPlaylist() ? "Remover da playlist" : String::fromUTF8("Excluir região"));
         const auto playlist = selectedPlaylist() ? selectedPlaylist()->id : ID{};
+        if (!playlist.empty() && targets.size()==1 && !entry.child && !searching)
+            menu.addItem(7, localization::translate("Duplicate region"));
+        std::set<ID> sources;
+        for (const auto &id : targets) sources.insert(selectedPlaylist() ? selectedPlaylist()->resolvedRegionId(id) : id);
         menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({Desktop::getMousePosition().x,Desktop::getMousePosition().y,1,1}),
-            [self=SafePointer<Setlist>(this),entry,targets,playlist](int action) {
+            [self=SafePointer<Setlist>(this),entry,targets,sources,playlist](int action) {
                 if(!self)return;
-                if(action==1)self->w.editMultiLoops(entry.id);
-                if(action==2)self->w.detectRegions(targets);
-                if(action==3)self->w.exportRegions(targets);
-                if(action==4)self->editEntry(entry,targets);
+                if(action==1)self->w.editMultiLoops(entry.sourceId);
+                if(action==2)self->w.detectRegions(sources);
+                if(action==3)self->w.exportRegions(sources);
+                if(action==4)self->editEntry(entry,sources);
                 if(action==6)self->configInit(entry);
+                if(action==7 && targets.size()==1 && !entry.child) {
+                    self->w.perform([&] {
+                        const auto copy=self->w.session.duplicatePlaylistRegion(playlist,entry.id);
+                        if(!copy.empty()){self->selection={copy};self->selectedEntry=copy;self->refresh();}
+                    });
+                }
                 if(action==5){
                     if(playlist.empty()) self->w.deleteRegions({entry.id},true);
                     else self->w.confirm("Remover da playlist", String::fromUTF8("Remover esta música da playlist?"), [self,entry,playlist] {
                         if(!self)return;auto state=self->currentState();
-                        for(auto &list:state.playlists)if(list.id==playlist){
-                            const auto at=std::find(list.regionIds.begin(),list.regionIds.end(),entry.id);if(at==list.regionIds.end())break;
-                            const std::optional<ID> next=at+1==list.regionIds.end()?std::optional<ID>{}:std::optional<ID>{*(at+1)};
-                            if(state.blocks)for(auto &block:*state.blocks)if(block.playlistId==playlist&&block.beforeRegionId==entry.id)block.beforeRegionId=next;
-                            list.regionIds.erase(at);
-                        }
+                        playlistOccurrences::remove(state,playlist,{entry.id});
                         self->apply(state);
                     });
                 }
             });
     }
     void editEntry(Entry entry, std::set<ID> targets = {}) {
-        if (targets.empty()) targets.insert(entry.id);
+        if (targets.empty()) targets.insert(entry.block ? entry.id : entry.sourceId);
         const auto self = SafePointer<Setlist>(this);
         bool uppercase = true;
         String name = entry.name;
         if (auto *song = w.session.song())
             for (const auto &p : song->parts)
-                if (p.id == entry.id) {
+                if (p.id == entry.sourceId) {
                     uppercase = p.uppercaseName.value_or(true);
                     name = text(p.name);
                 }
@@ -1139,5 +1141,5 @@ class Workspace::Setlist final : public Component,
                                                         uppercase, save, close),
                          300, 404);
     }
-    void removeRegion(Entry entry) { w.deleteRegions({entry.id}, true); }
+    void removeRegion(Entry entry) { w.deleteRegions({entry.sourceId}, true); }
 };

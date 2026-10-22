@@ -1,3 +1,4 @@
+#include "PlaylistOccurrences.h"
 #include "Localization.h"
 #include "Session.h"
 #include "MediaSource.h"
@@ -652,7 +653,13 @@ void Session::syncClock() {
     const auto old = before.songId;
     const auto oldJump = before.sectionJumpSerial;
     const auto oldPromotion = before.subPlayPromotion;
+    const auto markedCount=[](const auto &project) -> size_t {
+        return project.regionSetlist && project.regionSetlist->playedLiveRegionIDs
+            ? project.regionSetlist->playedLiveRegionIDs->size() : 0;
+    };
+    const auto liveMarksBefore=markedCount(project());
     core.advance(elapsed);
+    if(markedCount(project())!=liveMarksBefore) { dirty=true; ++revision; }
     presentationQueues.advance(elapsed, audio.presentationLatencyFrames() / audio.sampleRate(),
                                before, transport());
     if (old != transport().songId && song())
@@ -827,6 +834,8 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
         focusSetlistRegion(target, true);
     else if (kind == jaras::CommandKind::editSeek || (kind == jaras::CommandKind::queueSection && !transport().playing))
         focusTimelineRegion(transport().editPosition);
+    else if (kind == jaras::CommandKind::play && !wasPlaying && transport().playlistEntryId)
+        focusSetlistRegion(transport().playlistEntryId, true);
     else if (kind == jaras::CommandKind::seek || (kind == jaras::CommandKind::play && !wasPlaying))
         focusTimelineRegion(transport().position, true);
     const bool mixer = kind == jaras::CommandKind::volume || kind == jaras::CommandKind::pan ||
@@ -849,6 +858,7 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
     if (fadeoutRequested && !completingFadeout && !transport().playing) cancelTransportFadeout();
     const bool stoppedAtQueuedSelection = (kind == jaras::CommandKind::stop || kind == jaras::CommandKind::stopAll) &&
         !transport().playing && (beforeCommand.regionId != transport().regionId || beforeCommand.editPosition != transport().editPosition);
+    if(stoppedAtQueuedSelection) focusSetlistRegion(transport().playlistEntryId ? transport().playlistEntryId : transport().regionId,true);
     if ((kind == jaras::CommandKind::selectRegion || stoppedAtQueuedSelection) && old == transport().songId && selectionChanged)
         selectionChanged();
     else
@@ -875,22 +885,27 @@ void Session::focusSetlistRegion(std::optional<ID> next, bool force) {
     const auto *current = song();
     if (!current) return;
     if (next) {
+        auto state = project().regionSetlist.value_or(jaras::RegionSetlist{});
+        const jaras::RegionPlaylist *selected = nullptr;
+        for (const auto &playlist : state.playlists)
+            if (state.selectedId == playlist.id && playlist.songId == current->id) selected = &playlist;
+        const auto source = selected ? selected->resolvedRegionId(*next) : *next;
         const auto part = std::find_if(current->parts.begin(), current->parts.end(),
-                                       [&](const auto &part) { return part.id == *next; });
+                                       [&](const auto &part) { return part.id == source; });
         if (part == current->parts.end()) return;
         const auto listedID = part->parentRegionID.value_or(part->id);
-        auto state = project().regionSetlist.value_or(jaras::RegionSetlist{});
-        for (const auto &playlist : state.playlists)
-            if (state.selectedId == playlist.id && playlist.songId == current->id &&
-                std::find(playlist.regionIds.begin(), playlist.regionIds.end(), listedID) == playlist.regionIds.end()) {
+        if (selected && !selected->containsEntry(*next)) {
+            const auto occurrence = std::find_if(selected->regionIds.begin(), selected->regionIds.end(),
+                [&](const auto &id) { return selected->resolvedRegionId(id) == listedID; });
+            if (occurrence == selected->regionIds.end()) {
                 state.selectedId.reset();
                 auto before = snapshot();
                 core.configureRegionSetlist(std::move(state));
                 undoHistory.push_back(std::move(before));
                 if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
                 redoHistory.clear(); dirty = true; force = true;
-                break;
-            }
+            } else if (selected->isDuplicate(*occurrence) && !part->parentRegionID) next = *occurrence;
+        }
     }
     if (focusedRegion != next || force) { focusedRegion = next; ++setlistFocusRevision; }
 }
@@ -1206,6 +1221,20 @@ void Session::detectRegionBPM(std::set<ID> ids) {
             notify();
         });
     });
+}
+ID Session::duplicatePlaylistRegion(const ID &playlistID, const ID &entryID) {
+    if (busy || jaras::projectSync::readOnly() || !song()) return {};
+    auto state=project().regionSetlist.value_or(jaras::RegionSetlist{});
+    if(state.selectedId!=playlistID)return {};
+    for(auto &playlist:state.playlists)if(playlist.id==playlistID && playlist.songId==song()->id && playlist.containsEntry(entryID)) {
+        const auto source=playlist.resolvedRegionId(entryID);
+        const auto part=std::find_if(song()->parts.begin(),song()->parts.end(),[&](const auto &part){return part.id==source && !part.parentRegionID;});
+        if(part==song()->parts.end())return {};
+        const auto copy=uuid();
+        if(!playlistOccurrences::duplicate(playlist,entryID,copy))return {};
+        configureSetlist(std::move(state));return copy;
+    }
+    return {};
 }
 void Session::configureSetlist(jaras::RegionSetlist state) {
     if (jaras::projectSync::readOnly()) return;
@@ -1942,7 +1971,12 @@ void Session::applyProjectSync(const jaras::projectSync::Frame &frame, double el
     bool mixerChanged=false;
     const bool changed=core.applyProjectSync(frame, elapsed, first, &mixerChanged);
     if(mixerChanged) {dirty=true;if(song())audio.setMixer(project(),*song());}
-    if(focused && (!song() || !std::any_of(song()->parts.begin(),song()->parts.end(),[&](const auto &part){return part.id==*focused;}))) focused.reset();
+    if(focused) {
+        auto source=*focused;
+        if(project().regionSetlist) for(const auto &playlist:project().regionSetlist->playlists)
+            if(playlist.id==project().regionSetlist->selectedId) source=playlist.resolvedRegionId(source);
+        if(!song() || !std::any_of(song()->parts.begin(),song()->parts.end(),[&](const auto &part){return part.id==source;})) focused.reset();
+    }
     const bool focusChanged=focusedRegion!=focused;
     if(focusChanged) {focusedRegion=focused;++setlistFocusRevision;}
     if(changed) {

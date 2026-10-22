@@ -57,6 +57,7 @@ class Session final : private Timer {
     void selectTimeRange(double from, double to);
     void clearTimeRange();
     void configureSetlist(jaras::RegionSetlist);
+    ID duplicatePlaylistRegion(const ID &playlist, const ID &entry);
     double tempoBPM() const;
     void setTempo(double bpm);
     void configureTiming(double bpm, int beats, int unit, jaras::ProjectTimeSettings);

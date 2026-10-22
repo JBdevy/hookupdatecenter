@@ -325,9 +325,16 @@ RegionSetlist regionSetlist(const json& value) {
         "automaticSubplay", "automaticSubplaySeconds", "liveEnabled", "playedLiveRegionIDs", "autoUntilBlockEnd"});
     RegionSetlist result;
     for (const auto& raw : array(field(value, "playlists"), 2048)) {
-        object(raw, {"id", "name", "songId", "regionIds"});
+        object(raw, {"id", "name", "songId", "regionIds", "duplicates"});
         result.playlists.push_back({identifier(field(raw, "id")), text(field(raw, "name")),
             identifier(field(raw, "songId")), identifiers(field(raw, "regionIds"))});
+        if (raw.contains("duplicates") && !raw.at("duplicates").is_null()) {
+            auto &duplicates = result.playlists.back().duplicates.emplace();
+            for (const auto &entry : array(raw.at("duplicates"), 8192)) {
+                object(entry, {"id", "regionId"});
+                duplicates.push_back({identifier(field(entry, "id")), identifier(field(entry, "regionId"))});
+            }
+        }
     }
     optional(value, "selectedId", result.selectedId, identifier);
     setting(value, "autoAdvance", result.autoAdvance, boolean);

@@ -1137,6 +1137,9 @@ int main() {
     e.execute({CommandKind::volume,"track",0.3}); expect(e.project().songs[0].tracks[0].volume==0.3,"mixer volume");
     e.execute({CommandKind::mute,"track"}); expect(e.project().songs[0].tracks[0].mute,"mute");
     TrackTaxonomy taxonomy; expect(taxonomy.classify("MÉTRÔNOMO.wav").id=="click","accents and case"); expect(taxonomy.classify("Sanfona L.wav").id=="accordion","role independent of channel suffix"); expect(taxonomy.classify("clickbait.wav").id=="other","word boundaries"); taxonomy.addAlias("violao",{"acousticGuitar"}); expect(taxonomy.classify("Violão.wav").id=="acousticGuitar","extensible taxonomy");
+    for (const auto* name : {"Drum.wav", "DRUMM.mp3", "drums.wav", "Drumms.wav", "Drumm L.wav"})
+        expect(taxonomy.classify(name).id=="drums","drum aliases identify the drums role");
+    expect(taxonomy.classify("Drummond.wav").id=="other","drum alias preserves word boundaries");
     p.songs[0].tracks[0].audioFile=AudioFile{"../private.wav",{}}; bool rejected=false; try { validate(p); } catch(...) { rejected=true; } expect(rejected,"portable paths");
     Engine editCursor; editCursor.loadProject(editable);
     editCursor.execute({CommandKind::editSeek,"",2}); editCursor.execute({CommandKind::play}); editCursor.advance(1);

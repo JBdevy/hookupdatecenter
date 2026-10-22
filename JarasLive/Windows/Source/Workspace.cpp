@@ -4753,14 +4753,28 @@ bool Workspace::keyPressed(const KeyPress &key) {
             });
         else if (selectionAreas.activeScope() == "tracks" && (!selectedTrack.empty() || !selectedTracks.empty())) {
             const auto ids = selectedTracks.empty() ? std::set<ID>{selectedTrack} : selectedTracks;
+            const auto project = session.project().id;
+            const auto song = session.song() ? session.song()->id : ID{};
             confirm(ids.size() == 1 ? "Excluir pista?" : "Excluir " + String((int)ids.size()) + " pistas?",
                     String::fromUTF8("Esta ação pode ser desfeita."),
-                    [safe = Component::SafePointer<Workspace>(this), ids] {
-                        if (safe)
+                    [safe = Component::SafePointer<Workspace>(this), ids, project, song] {
+                        if (safe && safe->session.project().id == project && safe->session.song() && safe->session.song()->id == song)
                             safe->perform([&] {
                                 safe->session.removeTracks(ids);
-                                safe->selectedTrack.clear();
-                                safe->selectedTracks.clear();
+                                // A busy/read-only session can decline an edit. Keep
+                                // surviving tracks selected so Delete can be retried;
+                                // closing the confirmation is not a successful edit.
+                                const auto exists = [&](const ID &id) {
+                                    const auto *current = safe->session.song();
+                                    return current && trackTree::index(*current, id) < current->tracks.size();
+                                };
+                                for (auto at = safe->selectedTracks.begin(); at != safe->selectedTracks.end();)
+                                    if (!exists(*at)) at = safe->selectedTracks.erase(at);
+                                    else ++at;
+                                if (!exists(safe->selectedTrack))
+                                    safe->selectedTrack = safe->selectedTracks.empty() ? ID{} : *safe->selectedTracks.begin();
+                                safe->updateState();
+                                safe->repaint();
                             });
                     });
         }

@@ -502,6 +502,11 @@ jaras::Project ProjectCodec::decode(const json &input) {
             pl.songId = s(raw, "songId");
             for (auto v : list(get(raw, "regionIds")))
                 pl.regionIds.push_back(jsonString(v));
+            if (get(raw, "duplicates").is_array()) {
+                pl.duplicates.emplace();
+                for (auto duplicate : list(get(raw, "duplicates")))
+                    pl.duplicates->push_back({s(duplicate, "id"), s(duplicate, "regionId")});
+            }
             state.playlists.push_back(std::move(pl));
         }
         if (get(rs, "blocks").is_array()) {
@@ -808,6 +813,16 @@ json ProjectCodec::encode(const jaras::Project &p, json input) {
             put(value, "name", playlist.name);
             put(value, "songId", playlist.songId);
             put(value, "regionIds", idsJSON(playlist.regionIds));
+            if (playlist.duplicates) {
+                json duplicates = json::array();
+                for (const auto &entry : *playlist.duplicates) {
+                    auto duplicate = json::object();
+                    put(duplicate, "id", entry.id);
+                    put(duplicate, "regionId", entry.regionId);
+                    duplicates.push_back(duplicate);
+                }
+                put(value, "duplicates", duplicates);
+            } else value.erase("duplicates");
             playlists.push_back(value);
         }
         put(rs, "playlists", playlists);
@@ -1060,6 +1075,7 @@ json ProjectCodec::canonicalIDs(const json &input) {
         canonicalIDArray(setlist, "playedLiveRegionIDs");
         elements(setlist, "playlists", [](json &playlist) {
             canonicalIDFields(playlist, {"id", "songId"}); canonicalIDArray(playlist, "regionIds");
+            elements(playlist, "duplicates", [](json &entry) { canonicalIDFields(entry, {"id", "regionId"}); });
         });
         elements(setlist, "blocks", [](json &block) {
             canonicalIDFields(block, {"id", "songId", "playlistId", "beforeRegionId"});

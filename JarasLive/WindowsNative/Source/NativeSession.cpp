@@ -60,7 +60,8 @@ struct MemoryEstimate {
     }
     void dynamic(const jaras::Song& v) noexcept { fields(v.id, v.name, v.tracks, v.parts, v.markers); }
     void dynamic(const jaras::Setlist& v) noexcept { fields(v.id, v.name, v.songIds); }
-    void dynamic(const jaras::RegionPlaylist& v) noexcept { fields(v.id, v.name, v.songId, v.regionIds); }
+    void dynamic(const jaras::RegionPlaylistDuplicate& v) noexcept { fields(v.id, v.regionId); }
+    void dynamic(const jaras::RegionPlaylist& v) noexcept { fields(v.id, v.name, v.songId, v.regionIds, v.duplicates); }
     void dynamic(const jaras::SetlistBlock& v) noexcept {
         fields(v.id, v.songId, v.playlistId, v.name, v.beforeRegionId);
     }
@@ -305,6 +306,7 @@ json NativeSession::state() const {
             {"position", t.position}, {"editPosition", t.editPosition},
             {"songId", optional(t.songId)}, {"regionId", optional(t.regionId)},
             {"queuedRegionId", optional(t.queuedRegionId)},
+        {"playlistEntryId", optional(t.playlistEntryId)}, {"queuedPlaylistEntryId", optional(t.queuedPlaylistEntryId)},
             {"subPlaying", t.subPlay.playing}, {"subPosition", t.subPlay.position},
             {"ignoreNextRegionId", optional(t.ignoreNextRegionId)},
             {"ignoreNextAfter", optional(t.ignoreNextAfter)}, {"ignoreNextEnd", optional(t.ignoreNextEnd)},

@@ -193,6 +193,9 @@ export function buildSetlistSongMenu(context = {}) {
     item(context, 'song.detectBPM', 'Detect BPM…', 'detectBPM', {regionIds: detectIds}),
     item(context, 'song.export', 'Export Audio', 'exportAudio', {regionIds}, {disabled: regionIds.length === 0}),
     item(context, 'song.edit', 'Edit song', 'editSong', {regionId: region.id, entryIds, regionIds}),
+    region.parentRegionID == null && validId(context.playlistId) && entryIds.length === 1
+      && item(context, 'song.duplicate', 'Duplicate region', 'duplicateRegion',
+        {entryId: region.id, playlistId: context.playlistId}),
     region.parentRegionID == null && item(context, 'song.remove',
       context.playlistId == null ? 'Delete region' : 'Remove from playlist', 'removeEntries',
       {entryIds: [region.id], playlistId: context.playlistId ?? null, keyboard: false},

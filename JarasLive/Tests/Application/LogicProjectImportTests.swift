@@ -16,7 +16,7 @@ final class LogicProjectImportTests: XCTestCase {
         let result = ProjectMigration.Result(project: .empty(name: "Imported"), media: [], warnings: [])
         try ProjectMigration.save(result, to: first)
         let second = ProjectMigration.isolatedDestination(for: selected)
-        XCTAssertEqual(second, root.appendingPathComponent("Imported-001/Imported.jl"))
+        XCTAssertEqual(second, root.appendingPathComponent("Imported (2)/Imported.jl"))
         try ProjectMigration.save(result, to: second)
         XCTAssertTrue(fm.fileExists(atPath: existing.path))
         XCTAssertEqual(try ProjectDocumentCodec.decode(Data(contentsOf: first)), result.project)

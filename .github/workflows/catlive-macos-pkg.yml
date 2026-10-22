@@ -133,6 +133,7 @@ jobs:
         working-directory: JarasLive
         run: |
           swift test --jobs 2
+          bash scripts/test-playlist-occurrences.sh
           bash scripts/test-bridge.sh
           bash scripts/test-control-mappings.sh
           bash scripts/test-plugin-catalog.sh

@@ -265,8 +265,7 @@ public enum PortableProjectPackage {
         if localDocument != manifest.document {
             try fm.moveItem(at: staging.appendingPathComponent(manifest.document), to: staging.appendingPathComponent(localDocument))
         }
-        let destination = root.appendingPathComponent(name + "-" + UUID().uuidString, isDirectory: true)
-        try fm.moveItem(at: staging, to: destination)
+        let destination = try ProjectDirectoryPolicy.moveImportedProject(from: staging, named: name, into: root)
         progress(1)
         return ImportResult(documentURL: destination.appendingPathComponent(localDocument), project: project,
                             removedPlugins: manifest.removedPlugins,

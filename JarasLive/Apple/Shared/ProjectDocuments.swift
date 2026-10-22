@@ -224,10 +224,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
             afterNativeStorage = { [weak self] in self?.confirmNativeProjectName(presentPrompt: presentPrompt) }
             nativePicker = .storage; return
         }
-        let directory = storage.appendingPathComponent(name, isDirectory: true)
-        guard !FileManager.default.fileExists(atPath: directory.path) else {
-            error = "A project already exists at this location. Choose another name."; nativeNamePrompt = presentPrompt; return
-        }
+        let directory = ProjectDirectoryPolicy.availableFolder(named: name, in: storage)
         nativePendingCreation = nil
         finish(scan: pending.scan, detectBPM: pending.detectBPM, destination: directory.appendingPathComponent(name).appendingPathExtension("jl"), recordingChannels: pending.recordingChannels)
     }
@@ -1033,7 +1030,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
             let panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
             panel.nameFieldStringValue = "Untitled.jl"; panel.canCreateDirectories = true
             guard panel.runModal() == .OK, let selected = panel.url else { return }
-            url = selected.pathExtension.lowercased() == "jl" ? selected : selected.appendingPathExtension("jl")
+            url = ProjectDirectoryPolicy.newProjectDestination(for: selected)
             #else
             guard let destination else { return }
             url = destination
@@ -1073,7 +1070,8 @@ enum PortableProjectImportPrompt: String, Identifiable {
                         channels: recordingChannels, trackPrefix: JarasLocalization.string("Track"))
                 } else { base = Project.empty(name: url.deletingPathExtension().lastPathComponent) }
                 let result = try await Task.detached(priority: .userInitiated) {
-                    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    if append { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true) }
+                    else { try ProjectDirectoryPolicy.prepareNewProjectDirectory(for: url) }
                     var project = try scan.map { try StemProjectImporter.build(scan: $0, remove: remove, base: base, destination: url, progress: { [weak self] current, total, name in
                         Task { @MainActor [weak self] in self?.status = "Importing \(current)/\(total): \(name)" }
                     }) } ?? base

@@ -22,7 +22,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         tap={};tap.tap(0);require(tap.tap(.15)==300,"Fast taps must clamp");
         tap={};tap.tap(0);require(tap.tap(2)==60,"Slow taps must clamp");
     });
-    test("Delete removes the complete track selection with one confirmation and one Undo", [&] {
+    test("Delete preserves track selection after cancel or a declined edit and retries with one Undo", [&] {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
         auto p=fixture();auto &tracks=p.songs[0].tracks;
         tracks[1].parentTrackID=tracks[0].id;tracks[1].patch=jaras::OutputPatch{-2,2};
@@ -35,10 +35,23 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         auto select=[&](const ID &id,int flags){auto *row=uiFeatureTests::find(w,"trackRow:"+text(id));require(row,"Track row missing");Point<float> at{15,10};row->mouseDown(MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(flags|ModifierKeys::leftButtonModifier),1,0,0,0,0,row,row,Time::getCurrentTime(),at,Time::getCurrentTime(),1,false));};
         select(id0,0);select(id1,ModifierKeys::ctrlModifier);
         require(list(get(w.diagnostics(),"selectedTracks")).size()==2,"Fixture did not select two tracks");
-        w.keyPressed(KeyPress(KeyPress::deleteKey));pump();
-        auto *modal=Component::getCurrentlyModalComponent();require(modal,"Delete skipped confirmation");
-        require(session.song()->tracks.size()==3,"Tracks removed before confirmation");
-        modal->exitModalState(1);pump();
+        auto request=[&] {
+            require(w.keyPressed(KeyPress(KeyPress::deleteKey)),"Delete was not handled after the previous confirmation");pump();
+            auto *modal=Component::getCurrentlyModalComponent();require(modal,"Delete skipped confirmation");
+            require(session.song()->tracks.size()==3,"Tracks removed before confirmation");
+            return modal;
+        };
+        auto click=[&](Component *modal,const String &label) {
+            Button *button=nullptr;
+            for(auto *child:modal->getChildren())if(auto *candidate=dynamic_cast<Button *>(child);candidate && candidate->getButtonText()==label)button=candidate;
+            require(button,"Confirmation action button missing");button->triggerClick();pump();
+            require(!Component::getCurrentlyModalComponent(),"Confirmation did not close after clicking its button");
+        };
+        click(request(),"Cancelar");
+        require(list(get(w.diagnostics(),"selectedTracks")).size()==2 && session.song()->tracks.size()==3,"Cancel removed tracks or their selection");
+        auto *pending=request();session.busy=true;click(pending,"Continuar");session.busy=false;
+        require(list(get(w.diagnostics(),"selectedTracks")).size()==2 && session.song()->tracks.size()==3,"Declined edit lost the selection needed to retry Delete");
+        click(request(),"Continuar");
         require(session.song()->tracks.size()==1 && session.song()->tracks[0].id==remaining,"Delete left a selected track or removed the unselected track");
         session.undo();require(JSON::toString(session.snapshot())==before,"One Undo did not restore group, items and FX exactly");
         session.redo();require(session.song()->tracks.size()==1,"One Redo did not remove the selection");

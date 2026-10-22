@@ -50,24 +50,25 @@ struct StageContent {
                 put(out,"mediaTime",std::max(0.,media->sourceOffset+(mediaPosition-media->startTime)*media->playbackRate));
                 put(out,"mediaRate",transport.playing?media->playbackRate:0);
             }
-            std::vector<const jaras::Part*> regions;
+            std::vector<std::pair<ID,const jaras::Part*>> regions;
             const auto &setlist=session.project().regionSetlist;
             const jaras::RegionPlaylist *playlist=nullptr;
             if(setlist)for(const auto &entry:setlist->playlists)if(entry.id==setlist->selectedId && entry.songId==song->id)playlist=&entry;
-            if(playlist) {for(const auto &id:playlist->regionIds)for(const auto &part:song->parts)if(part.id==id)regions.push_back(&part);}
-            if(!playlist){for(const auto &part:song->parts)if(!part.parentRegionID)regions.push_back(&part);
-                std::stable_sort(regions.begin(),regions.end(),[](auto a,auto b){return a->startTime<b->startTime;});}
+            if(playlist) {for(const auto &id:playlist->regionIds)for(const auto &part:song->parts)if(part.id==playlist->resolvedRegionId(id))regions.push_back({id,&part});}
+            if(!playlist){for(const auto &part:song->parts)if(!part.parentRegionID)regions.push_back({part.id,&part});
+                std::stable_sort(regions.begin(),regions.end(),[](auto a,auto b){return a.second->startTime<b.second->startTime;});}
             auto block=[](ID id,String label,unsigned colour){auto v=object();put(v,"id",text(id));put(v,"name",label);put(v,"color",(int64)colour);put(v,"duration",0.);put(v,"songs",Array<var>{});put(v,"rows",Array<var>{});return v;};
             Array<var> all;all.add(block(song->id,"",0xffea00));
             auto appendBlocks=[&](std::optional<ID> before){if(setlist&&setlist->blocks)for(const auto &b:*setlist->blocks)
                 if(b.songId==song->id&&b.playlistId==(playlist?std::optional<ID>(playlist->id):std::nullopt)&&b.beforeRegionId==before)all.add(block(b.id,text(b.name),b.color));};
-            for(const auto *part:regions){
-                appendBlocks(part->id);auto &b=all.getReference(all.size()-1);auto rows=list(get(b,"songs"));auto row=object();
+            for(const auto &entry:regions){
+                const auto *part=entry.second;
+                appendBlocks(entry.first);auto &b=all.getReference(all.size()-1);auto rows=list(get(b,"songs"));auto row=object();
                 const auto duration=part->endTime-part->startTime;
-                put(row,"id",text(part->id));
+                put(row,"id",text(entry.first));
                 put(row,"name",part->uppercaseName.value_or(true)?unicodeCase(text(part->name)):text(part->name));
                 put(row,"duration",duration);
-                put(row,"color",current==part?get(settings,"highlightColor",0x00ff55):transport.queuedRegionId==part->id?get(settings,"queueNameColor",0xffea00):var((int64)part->color.value_or((unsigned)(int64)get(b,"color"))));
+                put(row,"color",((transport.playlistEntryId && playlist)?transport.playlistEntryId==entry.first:current==part)?get(settings,"highlightColor",0x00ff55):(transport.queuedPlaylistEntryId.value_or(transport.queuedRegionId.value_or(ID{}))==entry.first)?get(settings,"queueNameColor",0xffea00):var((int64)part->color.value_or((unsigned)(int64)get(b,"color"))));
                 rows.add(row);put(b,"songs",rows);put(b,"rows",rows);put(b,"duration",num(b,"duration")+duration);
             }
             appendBlocks({});Array<var> nonempty;

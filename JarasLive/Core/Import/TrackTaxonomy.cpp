@@ -11,7 +11,7 @@ static std::string normalize(std::string s) {
 TrackTaxonomy::TrackTaxonomy() {
     const std::vector<std::pair<std::string,std::vector<std::string>>> roles = {
         {"click",{"click","clk","metronome","metronomo"}}, {"guide",{"guide","guia"}},
-        {"drums",{"drums","bateria"}}, {"bass",{"bass","baixo"}}, {"guitar",{"guitar","guitarra"}},
+        {"drums",{"drum","drums","drumm","drumms","bateria"}}, {"bass",{"bass","baixo"}}, {"guitar",{"guitar","guitarra"}},
         {"keys",{"keys","piano","teclado"}}, {"accordion",{"sanfona","accordion","acordeon","acc"}},
         {"backingVocal",{"backing vocal","backing","bgv"}}, {"fx",{"fx","effects","efeitos"}}
     };

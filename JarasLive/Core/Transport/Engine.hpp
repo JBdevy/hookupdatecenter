@@ -1,6 +1,7 @@
 #pragma once
 #include "../Project/Models.hpp"
 #include "../ProjectSync/ProjectSync.hpp"
+#include <utility>
 namespace jaras {
 enum class CommandKind { toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipPhase, clipPan, clipChannelMode, clipNormalization, clipPitch, clipFadeInCurve, clipFadeInSCurve, clipFadeOutCurve, clipFadeOutSCurve };
 struct Command { CommandKind kind = CommandKind::stop; ID target; double value = 0; };
@@ -64,6 +65,10 @@ public:
     const Part* sectionPlaybackRegion() const;
     std::optional<double> nextSectionTrigger() const;
 private:
+    void advanceWithoutLiveTracking(double elapsed);
+    void recordLivePlayback(const TransportState& before, double elapsed);
+    void normalizeLiveMarks();
+    std::vector<std::pair<ID, double>> liveElapsedByRegion_;
     void advanceContinuous(double elapsed, const TimelineMarker* sectionDestination = nullptr);
     const Part* sectionRegion(double position) const;
     std::optional<TimelineMarker> sectionDestination(const ID& id) const;
@@ -84,6 +89,10 @@ private:
     const Part* playbackBounds(const Part* part) const;
     void syncRegion();
     void promoteSubPlay(std::optional<ID> preferredRegion = {});
+    const RegionPlaylist* selectedRegionPlaylist() const;
+    std::optional<ID> entryForRegion(const std::optional<ID>& regionID, const std::optional<ID>& preferred = {}) const;
+    void syncPlaylistEntries();
+    // Returns an occurrence ID; queue transport still stores physical regions.
     std::optional<ID> automaticRegionQueueTarget() const;
     void refreshAutomaticRegionQueue();
     void autoQueueRegion();

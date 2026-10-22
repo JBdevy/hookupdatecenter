@@ -2,6 +2,40 @@ import XCTest
 @testable import JarasApplication
 
 final class NativeProjectFolderTests: XCTestCase {
+    func testProjectCreationUsesNamedFolderAndDoesNotReuseExistingProjectOrMedia() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let selection = root.appendingPathComponent("Show São João.jl")
+        let first = ProjectDirectoryPolicy.newProjectDestination(for: selection)
+        XCTAssertEqual(first, root.appendingPathComponent("Show São João/Show São João.jl"))
+        try ProjectDirectoryPolicy.prepareNewProjectDirectory(for: first)
+        // A user-created empty directory selected explicitly can be used directly.
+        XCTAssertEqual(ProjectDirectoryPolicy.newProjectDestination(for: first), first)
+        try Data("saved project".utf8).write(to: first)
+        let second = ProjectDirectoryPolicy.newProjectDestination(for: selection)
+        XCTAssertEqual(second, root.appendingPathComponent("Show São João (2)/Show São João.jl"))
+        XCTAssertEqual(ProjectDirectoryPolicy.newProjectDestination(for: first), second)
+        XCTAssertThrowsError(try ProjectDirectoryPolicy.prepareNewProjectDirectory(for: first))
+        XCTAssertEqual(try String(contentsOf: first), "saved project")
+        try ProjectDirectoryPolicy.prepareNewProjectDirectory(for: second)
+        let media = second.deletingLastPathComponent().appendingPathComponent("audio.wav")
+        try Data([1, 2, 3]).write(to: media)
+        XCTAssertThrowsError(try ProjectDirectoryPolicy.prepareNewProjectDirectory(for: second))
+        XCTAssertEqual(ProjectDirectoryPolicy.availableFolder(named: "Show São João", in: root).lastPathComponent, "Show São João (3)")
+        XCTAssertEqual(try Data(contentsOf: media), Data([1, 2, 3]))
+    }
+    func testProjectFolderCollisionIncludesFilesAndDanglingSymlinks() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        try Data([9]).write(to: root.appendingPathComponent("Show"))
+        try fm.createSymbolicLink(at: root.appendingPathComponent("Show (2)"), withDestinationURL: root.appendingPathComponent("missing"))
+        XCTAssertEqual(ProjectDirectoryPolicy.availableFolder(named: "Show", in: root).lastPathComponent, "Show (3)")
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Show")), Data([9]))
+    }
     func testExtractedPortableProjectSurvivesAppContainerDeletion() async throws {
         let fm = FileManager.default
         let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)

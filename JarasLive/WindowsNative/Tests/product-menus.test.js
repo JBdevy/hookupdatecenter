@@ -330,3 +330,17 @@ test('context selection deduplicates a selected batch and never mutates its inpu
   assert.deepEqual(menus.contextSelection(null, selected), []);
   assert.deepEqual(selected, ['a', 'b', 'a']);
 });
+
+
+test('region duplicate menu requires one row in a named playlist and passes occurrence identity', () => {
+  const r = recorder('duplicateRegion');
+  const context = {region: {id: 'copy', sourceRegionId: 'original'}, regions: [{id: 'original'}],
+    selectedIds: ['copy'], visibleRegionIds: ['copy'], playlistId: 'playlist', actions: r.actions};
+  const result = menus.buildSetlistSongMenu(context);
+  assert.deepEqual(labels(result), ['Duplicate region']);
+  action(result, 'song.duplicate');
+  assert.deepEqual(r.calls.at(-1).payload, {entryId: 'copy', playlistId: 'playlist'});
+  assert.deepEqual(menus.buildSetlistSongMenu({...context, playlistId: null}), []);
+  assert.deepEqual(menus.buildSetlistSongMenu({...context, selectedIds: ['copy','original']}), []);
+  assert.deepEqual(menus.buildSetlistSongMenu({...context, region: {id:'copy',parentRegionID:'parent'}}), []);
+});

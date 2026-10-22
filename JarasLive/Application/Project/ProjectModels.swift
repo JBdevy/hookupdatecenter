@@ -330,11 +330,34 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     }
 }
 public struct Setlist: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var songIds: [UUID] }
+public struct RegionPlaylistDuplicate: Codable, Identifiable, Equatable, Sendable {
+    public var id: UUID
+    public var regionId: UUID
+    public init(id: UUID, regionId: UUID) { self.id = id; self.regionId = regionId }
+}
 public struct RegionPlaylist: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID
     public var name: String
     public var songId: UUID
+    /// Ordered row IDs. Original rows use the physical region ID; copies use an alias.
     public var regionIds: [UUID]
+    public var duplicates: [RegionPlaylistDuplicate]? = nil
+    public func regionSourceID(forEntry id: UUID) -> UUID {
+        duplicates?.first { $0.id == id }?.regionId ?? id
+    }
+    public func isDuplicate(_ id: UUID) -> Bool { duplicates?.contains { $0.id == id } == true }
+    public func region(forEntry id: UUID, in song: Song) -> Part? {
+        guard regionIds.contains(id), var region = song.parts.first(where: { $0.id == regionSourceID(forEntry: id) }) else { return nil }
+        region.id = id
+        return region
+    }
+    @discardableResult public mutating func duplicateRegion(_ entry: UUID) -> UUID? {
+        guard let index = regionIds.firstIndex(of: entry) else { return nil }
+        let duplicate = RegionPlaylistDuplicate(id: UUID(), regionId: regionSourceID(forEntry: entry))
+        duplicates = (duplicates ?? []) + [duplicate]
+        regionIds.insert(duplicate.id, at: index + 1)
+        return duplicate.id
+    }
 }
 public struct SetlistBlock: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID
@@ -394,16 +417,23 @@ public extension RegionSetlist {
         var number = last + 1
         while names.contains(prefix + String(number)) { number += 1 }
         var copy = source; copy.id = UUID(); copy.name = prefix + String(number)
+        let aliases = Dictionary(uniqueKeysWithValues: (source.duplicates ?? []).map { ($0.id, UUID()) })
+        copy.regionIds = source.regionIds.map { aliases[$0] ?? $0 }
+        copy.duplicates = source.duplicates?.map { RegionPlaylistDuplicate(id: aliases[$0.id]!, regionId: $0.regionId) }
         playlists.append(copy)
         let copiedBlocks = (blocks ?? []).filter { $0.playlistId == source.id }.map { block -> SetlistBlock in
-            var copyBlock = block; copyBlock.id = UUID(); copyBlock.playlistId = copy.id; return copyBlock
+            var copyBlock = block; copyBlock.id = UUID(); copyBlock.playlistId = copy.id
+            copyBlock.beforeRegionId = block.beforeRegionId.map { aliases[$0] ?? $0 }
+            return copyBlock
         }
         if !copiedBlocks.isEmpty { blocks = (blocks ?? []) + copiedBlocks }
         return copy.id
     }
     @discardableResult mutating func deletePlaylist(_ id: UUID) -> Bool {
         guard playlists.contains(where: { $0.id == id }) else { return false }
+        let removed = Set(playlists.first(where: { $0.id == id })?.duplicates?.map(\.id) ?? [])
         playlists.removeAll { $0.id == id }
+        playedLiveRegionIDs?.removeAll { removed.contains($0) }
         blocks?.removeAll { $0.playlistId == id }
         if selectedId == id { selectedId = nil }
         return true
@@ -656,8 +686,15 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 guard !playlist.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       let song = songs.first(where: { $0.id == playlist.songId }),
                       Set(playlist.regionIds).count == playlist.regionIds.count,
-                      playlist.regionIds.allSatisfy({ id in song.parts.contains { $0.id == id } })
+                      playlist.regionIds.allSatisfy({ id in song.parts.contains { $0.id == playlist.regionSourceID(forEntry: id) } })
                 else { throw ProjectError.invalid("Invalid region playlist") }
+                for duplicate in playlist.duplicates ?? [] {
+                    try register(duplicate.id)
+                    guard playlist.regionIds.contains(duplicate.id),
+                          song.parts.contains(where: { $0.id == duplicate.regionId && $0.parentRegionID == nil }) else {
+                        throw ProjectError.invalid("Invalid region playlist duplicate")
+                    }
+                }
             }
             guard state.selectedId == nil || state.playlists.contains(where: { $0.id == state.selectedId }) else { throw ProjectError.invalid("Invalid selected playlist") }
             for block in state.blocks ?? [] {
@@ -731,6 +768,8 @@ public struct TransportState: Codable, Equatable, Sendable {
     public var paused: Bool?
     public var editPosition: Double?
     public var regionId: UUID?; public var queuedRegionId: UUID?; public var queueStartedAt: Double?
+    public var playlistEntryId: UUID? = nil
+    public var queuedPlaylistEntryId: UUID? = nil
     public var queue: QueueState; public var loop: LoopState; public var subPlay: SubPlayState
 }
 /// Same membership rule as Core/Transport/PlaybackScope.hpp. Playback entry is

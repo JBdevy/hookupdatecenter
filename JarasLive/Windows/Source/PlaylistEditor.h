@@ -1,5 +1,6 @@
 #pragma once
 #include "Session.h"
+#include "PlaylistOccurrences.h"
 #include "Localization.h"
 namespace catlive {
 class PlaylistEditor final : public Component, private ListBoxModel {
@@ -10,7 +11,7 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         playlist = existing ? *existing : jaras::RegionPlaylist{uuid(), {}, song.id, {}};
         editing = existing != nullptr;
         for (const auto &p : song.parts)
-            if (!p.parentRegionID && (!adding || std::find(playlist.regionIds.begin(),playlist.regionIds.end(),p.id)==playlist.regionIds.end()))
+            if (!p.parentRegionID && (!adding || std::none_of(playlist.regionIds.begin(),playlist.regionIds.end(),[&](const auto &entry){return playlist.resolvedRegionId(entry)==p.id;})))
                 regions.push_back(p);
         std::stable_sort(regions.begin(), regions.end(),
                          [](const auto &a, const auto &b) { return a.startTime < b.startTime; });
@@ -52,13 +53,13 @@ class PlaylistEditor final : public Component, private ListBoxModel {
                 if (list.isRowSelected(i))
                     chosen.insert(regions[(size_t)i].id);
             if(!adding) result.regionIds.erase(std::remove_if(result.regionIds.begin(), result.regionIds.end(),
-                                                  [&](const ID &id) { return !chosen.count(id); }),
+                                                  [&](const ID &id) { return !chosen.count(result.resolvedRegionId(id)); }),
                                    result.regionIds.end());
             for (const auto &region : regions)
                 if (chosen.count(region.id) &&
-                    std::find(result.regionIds.begin(), result.regionIds.end(), region.id) ==
-                        result.regionIds.end())
+                    std::none_of(result.regionIds.begin(), result.regionIds.end(), [&](const auto &entry){return result.resolvedRegionId(entry)==region.id;}))
                     result.regionIds.push_back(region.id);
+            playlistOccurrences::prune(result);
             commit(std::move(result));
         };
         name.onTextChange = [this] { update(); };
@@ -66,8 +67,8 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         list.updateContent();
         SparseSet<int> selection;
         for (int i = 0; i < (int)regions.size(); ++i)
-            if (std::find(playlist.regionIds.begin(), playlist.regionIds.end(),
-                          regions[(size_t)i].id) != playlist.regionIds.end())
+            if (std::any_of(playlist.regionIds.begin(), playlist.regionIds.end(),
+                          [&](const auto &entry){return playlist.resolvedRegionId(entry)==regions[(size_t)i].id;}))
                 selection.addRange({i, i + 1});
         list.setSelectedRows(selection);
         update();

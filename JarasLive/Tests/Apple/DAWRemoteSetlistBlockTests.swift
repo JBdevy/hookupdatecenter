@@ -109,3 +109,38 @@ blockClient.requestAccess(.notices)
 waitFor("notices-only role removes block metadata") { blockClient.accessMode == .notices && blockClient.remoteState?.setlistBlocks == nil }
 blockClient.stop(); blockHost.stop()
 print("REMOTE_SETLIST_BLOCKS_OBSERVER_WIRE_ORDER_DRAWERS_NUMBERS_SEARCH_CACHE_RENAME_PLAYLIST_AND_READ_ONLY_OK")
+
+// A playlist copy has a row identity while the audio/grid still use the original region.
+var repeatedFixture = drawerFixture
+let duplicateRowID = UUID(), repeatedPlaylistID = UUID()
+var copiedRow = repeatedFixture.regions[0]
+copiedRow.id = duplicateRowID; copiedRow.sourceRegionId = repeatedFixture.regions[0].id
+repeatedFixture.regions.insert(copiedRow, at: 1)
+repeatedFixture.selectedPlaylist = repeatedPlaylistID
+repeatedFixture.currentPlaylistEntryId = duplicateRowID
+repeatedFixture.currentRegion = copiedRow.sourceRegionId
+repeatedFixture.queuedPlaylistEntryId = duplicateRowID
+repeatedFixture.queuedRegion = copiedRow.sourceRegionId
+let repeatedRows = DAWRemoteSetlistPresentation.rows(in: repeatedFixture, expanded: [duplicateRowID], query: "")
+require(repeatedRows.map(\.id) == [regionID, duplicateRowID, plainRegion], "Playlist copy retains a unique row and does not repeat drawer children")
+require(repeatedFixture.timelineRegions == drawerFixture.timelineRegions, "Setlist copy does not create timeline regions")
+require(repeatedFixture.setlistCurrentEntryId == duplicateRowID && repeatedFixture.setlistQueuedEntryId == duplicateRowID, "Playback highlights the copy only")
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(repeatedFixture)) {
+    require(decoded.regions == repeatedFixture.regions && decoded.currentPlaylistEntryId == duplicateRowID && decoded.queuedPlaylistEntryId == duplicateRowID, "Duplicate metadata survives Remote serialization")
+} else { fatalError("duplicate state packet") }
+let duplicateCommand = DAWRemoteCommand(project: project, song: song, action: .duplicateRegion, target: regionID, playlist: repeatedPlaylistID)
+require(duplicateCommand.valid && DAWRemoteAccessRules.allows(duplicateCommand, mode: .director), "Director can duplicate a named playlist entry")
+require(!DAWRemoteAccessRules.allows(duplicateCommand, mode: .observer), "Observer cannot create copies")
+var allRegionsDuplicate = duplicateCommand; allRegionsDuplicate.playlist = nil
+require(!allRegionsDuplicate.valid, "All regions cannot request a duplicate")
+print("REMOTE_PLAYLIST_DUPLICATE_IDENTITY_AND_PERMISSIONS_OK")
+
+repeatedFixture.playing = false
+require(!DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy warns while stopped")
+repeatedFixture.playing = true
+require(!DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy warns when its physical source is playing")
+repeatedFixture.currentRegion = plainRegion
+require(DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy may queue while another song plays")
+repeatedFixture.subPlaying = true
+require(!DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy warns when its source is already in Subplay")
+require(DAWRemoteSetlistPresentation.canQueueDuplicate(plainRegion, in: repeatedFixture), "Normal rows retain their existing selection rules")

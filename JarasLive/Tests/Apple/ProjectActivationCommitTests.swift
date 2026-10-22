@@ -5,6 +5,7 @@ import Foundation
 enum ProjectError: Error { case rejected, noDocument }
 struct Project: Codable, Equatable { var id: UUID; var name: String }
 struct Snapshot { var project: Project }
+enum FixtureCommand { case stopAll }
 final class NSItemProvider {}
 enum AudioDropLayout { case sameTrack }
 @MainActor enum EditorCloseRecorder {
@@ -30,6 +31,8 @@ enum AudioDropLayout { case sameTrack }
     var projectSessionID = UUID()
     init(_ project: Project) { snapshot = Snapshot(project: project) }
     func saveForClosing() async throws { hasUnsavedChanges = false }
+    func send(_ command: FixtureCommand) {}
+    func applyImportedProject(_ project: Project) throws { try replaceProject(project) }
     func replaceProject(_ project: Project) throws {
         replacementWasLocked = !canExecute()
         if failReplacement { throw ProjectError.rejected }
@@ -41,6 +44,7 @@ enum AudioDropLayout { case sameTrack }
     private(set) var url: URL?
     private var projectID: UUID?
     func select(url: URL, id: UUID) async { self.url = url; projectID = id; await Task.yield() }
+    func select(url: URL, savedProject: Project) async { await select(url: url, id: savedProject.id) }
     func save(_ project: Project) throws {
         guard let url, project.id == projectID else { throw ProjectError.noDocument }
         try JSONEncoder().encode(project).write(to: url, options: .atomic)
@@ -83,6 +87,7 @@ enum AudioDropLayout { case sameTrack }
         // The creation worker starts after editors close and presets save.
         closeProjectEditors()
         let result: (Project, [String]) = (project, [])
+        let append = false
         // INSERT_CREATION_COMMIT
     }
 }

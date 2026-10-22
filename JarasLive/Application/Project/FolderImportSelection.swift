@@ -82,7 +82,7 @@ enum NativeProjectFolderStorage {
         // A .ziplive import uses the user's exact destination. Discover these
         // ordinary projects again when access is granted after reinstalling.
         documents += try projectFiles(root)
-        for folder in try directories(root) where UUID(uuidString: String(folder.lastPathComponent.suffix(36))) != nil {
+        for folder in try directories(root) {
             documents += try projectFiles(folder)
         }
         documents = Array(Set(documents)).sorted { $0.path < $1.path }

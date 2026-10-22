@@ -1,9 +1,14 @@
 import Foundation
 
+enum ProjectError: Error { case invalid(String) }
+
+// PRODUCTION_DIRECTORY_POLICY
+
 struct StemScan { var folders = [1] }
 final class FixtureShow {
     var isPlaying = false
     var canExecute: () -> Bool = { true }
+    func canControl() -> Bool { canExecute() }
 }
 final class TrackRecording {
     static let shared = TrackRecording()
@@ -13,7 +18,7 @@ final class FixtureDocuments {
     var scan: StemScan? = StemScan()
     var busy = false, adding = false, error = ""
     let show = FixtureShow()
-    var nativePendingCreation: (scan: StemScan?, detectBPM: Bool)?
+    var nativePendingCreation: (scan: StemScan?, detectBPM: Bool, recordingChannels: Int?)?
     var nativeProjectName = "Concert"
     var nativeNamePrompt = false
     var nativeStorageDirectory: URL?
@@ -21,7 +26,7 @@ final class FixtureDocuments {
     enum Picker { case storage }
     var nativePicker: Picker?
     var calls: [(detectBPM: Bool, destination: URL?)] = []
-    func finish(scan: StemScan?, detectBPM: Bool, destination: URL?) {
+    func finish(scan: StemScan?, detectBPM: Bool, destination: URL?, recordingChannels: Int? = nil) {
         calls.append((detectBPM, destination))
     }
     // PRODUCTION_CONFIRMATION_METHODS
@@ -48,7 +53,8 @@ precondition(invalid.calls.isEmpty && !invalid.error.isEmpty && !invalid.nativeN
 let collision = FixtureDocuments(); collision.nativeStorageDirectory = root
 try FileManager.default.createDirectory(at: root.appendingPathComponent("Concert"), withIntermediateDirectories: true)
 collision.confirmNativeStemImport(detectBPM: false)
-precondition(collision.calls.isEmpty && !collision.error.isEmpty)
+precondition(collision.calls.count == 1 && collision.error.isEmpty)
+precondition(collision.calls[0].destination == root.appendingPathComponent("Concert (2)/Concert.jl"))
 
 let chooseStorage = FixtureDocuments(); chooseStorage.nativeProjectName = "New"
 chooseStorage.confirmNativeStemImport(detectBPM: true)
@@ -56,10 +62,10 @@ precondition(chooseStorage.nativePicker != nil && chooseStorage.calls.isEmpty)
 chooseStorage.nativeStorageDirectory = root; chooseStorage.afterNativeStorage?()
 precondition(chooseStorage.calls.count == 1 && chooseStorage.calls[0].detectBPM)
 
-let blocked = FixtureDocuments(); blocked.show.isPlaying = true
+let blocked = FixtureDocuments(); TrackRecording.shared.recording = true
 blocked.confirmNativeStemImport(detectBPM: false)
 precondition(blocked.calls.isEmpty && !blocked.error.isEmpty)
-blocked.show.isPlaying = false; blocked.show.canExecute = { false }; blocked.error = ""
+TrackRecording.shared.recording = false; blocked.show.canExecute = { false }; blocked.error = ""
 blocked.confirmNativeStemImport(detectBPM: false)
 precondition(blocked.calls.isEmpty && !blocked.error.isEmpty)
 let empty = FixtureDocuments(); empty.scan = StemScan(folders: [])

@@ -59,7 +59,7 @@ struct Command {
             c.message = t.toString();
         }
         if (!c.playlist.empty())
-            require(a == "deleteRegion");
+            require(a == "deleteRegion" || a == "duplicateRegion");
         for (auto entry : {std::pair<const char *, std::optional<bool> *>{"enabled", &c.enabled},
                            {"noticeReceiptRequested", &c.receipt}}) {
             auto field = get(v, Identifier(entry.first));
@@ -78,6 +78,8 @@ struct Command {
         bool valid = false;
         if (a == "editRegion")
             valid = target && c.message.trim().isNotEmpty() && range(0, 16777215) && integral;
+        else if (a == "duplicateRegion")
+            valid = target && zero && !c.playlist.empty();
         else if (a == "renamePlaylist")
             valid = target && zero && c.message.trim().isNotEmpty();
         else if (a == "deleteRegion" || a == "duplicatePlaylist" || a == "deletePlaylist" ||

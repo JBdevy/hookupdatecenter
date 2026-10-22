@@ -844,3 +844,54 @@ extension ProjectCursorTests {
         XCTAssertEqual(executor.loadCount, loads)
     }
 }
+
+extension ProjectCursorTests {
+    @MainActor func testPlaylistDuplicateGuardsActionsAndQueuesOccurrenceWithoutChangingGrid() throws {
+        let executor = CursorExecutor()
+        var project = Project.empty(name: "Duplicate guard")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 60)
+        let second = Part(id: UUID(), name: "Second", startTime: 60, endTime: 120)
+        project.songs[0].parts = [first, second]
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertNil(show.duplicatePlaylistRegion(first.id), "All Regions cannot duplicate")
+        XCTAssertTrue(show.createRegionPlaylist(name: "Concert", selected: [first.id, second.id]))
+        let alias = try XCTUnwrap(show.duplicatePlaylistRegion(first.id))
+        XCTAssertEqual(show.current, project.songs[0])
+        XCTAssertEqual(show.listedRegions.map(\.id), [first.id, alias, second.id])
+        XCTAssertEqual(show.playlistRegionSourceID(alias), first.id)
+        XCTAssertEqual(show.listedRegions[1].name, first.name)
+        show.focusRegion(alias)
+        XCTAssertEqual(show.modalNotice, ShowController.duplicateRegionQueueNotice)
+        XCTAssertTrue(executor.regionCommands.isEmpty)
+        show.send(.queueRegion, target: alias)
+        XCTAssertTrue(executor.regionCommands.isEmpty, "direct/Remote commands must not bypass the guard")
+        show.focusRegion(first.id); show.send(.play)
+        let before = executor.regionCommands.count
+        show.send(.selectRegion, target: alias)
+        XCTAssertEqual(executor.regionCommands.count, before, "same physical song cannot queue its copy")
+        show.send(.stop); show.focusRegion(second.id); show.send(.play)
+        show.modalNotice = nil
+        show.focusRegion(alias)
+        XCTAssertNil(show.modalNotice)
+        XCTAssertEqual(executor.commands.last?.0, .queueRegion)
+        XCTAssertEqual(executor.commands.last?.1, alias)
+        XCTAssertEqual(show.focusedRegion, alias)
+        show.send(.stop)
+    }
+
+    @MainActor func testDuplicateReorderAndDeletePreservePhysicalSongAndOriginalRow() throws {
+        let executor = CursorExecutor()
+        var project = Project.empty(name: "Duplicate ordering")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 60)
+        let second = Part(id: UUID(), name: "Second", startTime: 60, endTime: 120)
+        project.songs[0].parts = [first, second]
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertTrue(show.createRegionPlaylist(name: "Concert", selected: [first.id, second.id]))
+        let alias = try XCTUnwrap(show.duplicatePlaylistRegion(first.id))
+        show.moveSetlistEntries([alias], relativeTo: second.id, after: true)
+        XCTAssertEqual(show.listedRegions.map(\.id), [first.id, second.id, alias])
+        XCTAssertTrue(show.deleteSetlistEntries([alias]))
+        XCTAssertEqual(show.listedRegions.map(\.id), [first.id, second.id])
+        XCTAssertEqual(show.current, project.songs[0])
+    }
+}

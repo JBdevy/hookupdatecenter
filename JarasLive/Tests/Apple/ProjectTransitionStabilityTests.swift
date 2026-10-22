@@ -16,7 +16,10 @@ struct Project: Equatable {
 }
 struct Snapshot { var project = Project() }
 struct StemScan {}
-enum ProjectDirectoryPolicy { static func validate(_ url: URL) throws {} }
+enum ProjectDirectoryPolicy {
+    static func validate(_ url: URL) throws {}
+    static func newProjectDestination(for selection: URL) -> URL { selection }
+}
 final class TrackRecording {
     static let shared = TrackRecording()
     var recording = false, busy = false
@@ -33,6 +36,7 @@ final class NSSavePanel {
     var isPlaying = false, hasUnsavedChanges = true
     var failSave = false, changedWhileSaving = false
     var canExecute: () -> Bool = { true }
+    func canControl() -> Bool { canExecute() }
     var saveWasLocked = false
     var cursor = 42.5
     var saved: Project?

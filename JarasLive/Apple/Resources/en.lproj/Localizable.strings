@@ -1774,3 +1774,7 @@
 "WAV / MP3 · Mono / Stereo · 60 s max" = "WAV / MP3 · Mono / Stereo · 60 s max";
 
 "The project folder is unavailable." = "The project folder is unavailable.";
+
+"Duplicate region" = "Duplicate region";
+
+"A duplicated region can only be queued while another song is playing." = "A duplicated region can only be queued while another song is playing.";

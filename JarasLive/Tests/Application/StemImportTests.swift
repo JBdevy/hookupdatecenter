@@ -82,7 +82,7 @@ final class StemImportTests: XCTestCase {
     func testCleanupSuggestionsProtectHookCenterInstrumentVocabularyAndGroups() throws {
         let js = try StemProjectImporter.context()
         let names = js.evaluateScript("CREATE_PROJECT_TRACK_RULES.map(rule => rule.name).concat(CREATE_PROJECT_TRACK_GROUPS.map(group => group.name))")!.toArray() as! [String]
-        for name in names + ["GTR", "Pno", "Metronome", "Accordion", "Drums", "Electric Piano", "Hi-Hat"] {
+        for name in names + ["GTR", "Pno", "Metronome", "Accordion", "Drum", "Drumm", "Drums", "Drumms", "Electric Piano", "Hi-Hat"] {
             let suggestions = try StemProjectImporter.call("suggestImportRemovals", args: [[name, name], ["limit": 12]], context: js, as: [ImportSuggestion].self)
             XCTAssertTrue(suggestions.isEmpty, "Instrument or group name must not be proposed for removal: \(name)")
         }
@@ -395,6 +395,14 @@ final class StemImportTests: XCTestCase {
         XCTAssertEqual(second.songs[0].tracks.count, tracks.count)
         XCTAssertEqual(second.songs[0].tracks.first { $0.name == "Percussivo" }?.id, group.id)
         XCTAssertEqual(second.songs[0].tracks.first { $0.name == "Bateria" }?.clips.count, 2)
+        var appended = second
+        for (index, alias) in ["Drum", "DRUMM", "Drumms"].enumerated() {
+            let incoming = try fixture(root, folder: "Song\(index)", file: alias + ".wav")
+            appended = try StemProjectImporter.build(scan: StemProjectImporter.scan([incoming]), remove: "", base: appended, destination: destination)
+            XCTAssertEqual(appended.songs[0].tracks.map(\.id), tracks.map(\.id))
+            XCTAssertEqual(appended.songs[0].tracks.map(\.parentTrackID), tracks.map(\.parentTrackID))
+            XCTAssertEqual(appended.songs[0].tracks.first { $0.name == "Bateria" }?.clips.count, 3 + index)
+        }
     }
     func testEveryHookCenterAuditGroupIncludingOthersIsCreatedAndReused() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

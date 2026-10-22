@@ -3,6 +3,8 @@
 #include "Session.h"
 #include "StageState.h"
 #include "StageContent.h"
+#include "PlaylistOccurrences.h"
+#include "RegionEditing.h"
 namespace catlive::remote {
 class Presentation final {
   public:
@@ -88,8 +90,12 @@ class Presentation final {
             if (selected) {
                 for (const auto &id : selected->regionIds)
                     for (const auto &region : allRegions)
-                        if (str(region, "id") == wireID(id))
-                            regions.add(region);
+                        if (str(region, "id") == wireID(selected->resolvedRegionId(id))) {
+                            auto row=region.clone();
+                            put(row,"id",wireID(id));
+                            if(selected->isDuplicate(id)) put(row,"sourceRegionId",wireID(selected->resolvedRegionId(id)));
+                            regions.add(row);
+                        }
             } else
                 for (const auto &region : allRegions)
                     if (get(region, "parentRegion").isVoid())
@@ -113,10 +119,12 @@ class Presentation final {
         put(result, "markers", markers);
         if (t.regionId) {
             put(result, "currentRegion", wireID(*t.regionId));
-            put(result, "focusedRegion", wireID(*t.regionId));
+            put(result, "focusedRegion", wireID(session.focusedRegion.value_or(t.playlistEntryId.value_or(*t.regionId))));
         }
         if (t.queuedRegionId)
             put(result, "queuedRegion", wireID(*t.queuedRegionId));
+        if (t.playlistEntryId) put(result,"currentPlaylistEntryId",wireID(*t.playlistEntryId));
+        if (t.queuedPlaylistEntryId) put(result,"queuedPlaylistEntryId",wireID(*t.queuedPlaylistEntryId));
         put(result, "position", t.position);
         put(result, "editPosition", t.editPosition);
         put(result, "subPlayPosition", t.subPlay.position);
@@ -241,9 +249,15 @@ class Presentation final {
         const auto track =
             std::find_if(song->tracks.begin(), song->tracks.end(),
                          [&](const auto &v) { return wireID(v.id) == wireID(c.target); });
+        const jaras::RegionPlaylist *selected=nullptr;
+        if(session.project().regionSetlist)for(const auto &entry:session.project().regionSetlist->playlists)
+            if(entry.id==session.project().regionSetlist->selectedId && entry.songId==song->id) selected=&entry;
+        ID occurrence=c.target;
+        if(selected)for(const auto &entry:selected->regionIds)if(wireID(entry)==wireID(c.target))occurrence=entry;
+        const auto source=selected?selected->resolvedRegionId(occurrence):occurrence;
         const auto region =
             std::find_if(song->parts.begin(), song->parts.end(),
-                         [&](const auto &v) { return wireID(v.id) == wireID(c.target); });
+                         [&](const auto &v) { return wireID(v.id) == wireID(source); });
         if (StringArray{"volume", "pan", "mute", "solo", "resetMeterPeak"}.contains(a) &&
             !c.target.empty() && track == song->tracks.end())
             return false;
@@ -251,7 +265,7 @@ class Presentation final {
         if (track != song->tracks.end())
             target = track->id;
         if (region != song->parts.end())
-            target = region->id;
+            target = a=="selectRegion" && selected && selected->containsEntry(occurrence) ? occurrence : region->id;
         if (a == "clipGain" || a == "clipMute") {
             bool found = false;
             for (const auto &t : song->tracks)
@@ -267,6 +281,18 @@ class Presentation final {
         if (a == "selectRegion" || a == "pitch" || a == "editRegion")
             if (region == song->parts.end())
                 return false;
+        if (a=="duplicateRegion" || (a=="deleteRegion" && !c.playlist.empty())) {
+            if(!selected || wireID(selected->id)!=wireID(c.playlist) || !selected->containsEntry(occurrence) || region==song->parts.end() || region->parentRegionID) return false;
+            auto state=*session.project().regionSetlist;
+            if(a=="duplicateRegion") return !session.duplicatePlaylistRegion(selected->id,occurrence).empty();
+            else playlistOccurrences::remove(state,selected->id,{occurrence});
+            session.configureSetlist(std::move(state));return true;
+        }
+        if (a=="deleteRegion") {
+            if(region==song->parts.end() || (selected && selected->isDuplicate(occurrence))) return false;
+            const auto sourceID=region->id,songID=song->id;
+            session.edit([&](auto &project){regionEditing::erase(project,songID,{sourceID},true);});return true;
+        }
         if (a == "save") {
             if (save)
                 save();
@@ -298,8 +324,10 @@ class Presentation final {
                 });
             if (a == "toggleRegionAuto")
                 state.autoAdvance = !state.autoAdvance;
-            else if (a == "toggleSetlistLive")
+            else if (a == "toggleSetlistLive") {
                 state.liveEnabled = !state.liveEnabled.value_or(false);
+                if(!state.liveEnabled.value_or(false)) state.playedLiveRegionIDs=std::vector<ID>{};
+            }
             else {
                 if (!c.target.empty() && playlist == state.playlists.end())
                     return false;
@@ -310,6 +338,7 @@ class Presentation final {
                 else if (a == "duplicatePlaylist") {
                     auto copy = *playlist;
                     copy.id = uuid();
+                    const auto remapped=playlistOccurrences::reidentifyCopies(copy,[]{return uuid();});
                     copy.name += " (cópia)";
                     if (state.blocks) {
                         auto blocks = *state.blocks;
@@ -317,6 +346,7 @@ class Presentation final {
                             if (block.playlistId == playlist->id) {
                                 block.id = uuid();
                                 block.playlistId = copy.id;
+                                if(block.beforeRegionId)if(auto at=remapped.find(*block.beforeRegionId);at!=remapped.end())block.beforeRegionId=at->second;
                                 state.blocks->push_back(block);
                             }
                     }
@@ -372,7 +402,7 @@ class Presentation final {
             return false;
         // Region taps use the same selection path as the desktop: while playing
         // they arm the next song and must not seek the currently running audio.
-        const auto kind = a == "selectRegion" && session.transport().playing
+        const auto kind = a == "selectRegion" && (session.transport().playing || (selected && selected->isDuplicate(occurrence)))
                               ? jaras::CommandKind::queueRegion : found->second;
         session.command(kind, target, c.value);
         return true;

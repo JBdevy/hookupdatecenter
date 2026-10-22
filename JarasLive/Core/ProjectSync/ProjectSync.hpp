@@ -44,7 +44,7 @@ struct Reader {
     template<class T> void operator()(std::optional<T> &v) { bool exists; (*this)(exists); if(exists) { v.emplace(); (*this)(*v); } else v.reset(); }
     template<class T> void operator()(std::vector<T> &v) { std::uint64_t n; (*this)(n); if(n>2048) throw std::invalid_argument("Project Sync list too large"); v.resize(size_t(n)); for(auto &x:v) (*this)(x); }
 };
-template<class A> void archive(A &a, Frame &f) {
+template<class A> void archive(A &a, Frame &f, std::uint64_t version = 3) {
     a(f.project); a(f.revision);
     a(f.resumeSub);a(f.manualSubCursor);a(f.autoRegionQueue);a(f.automaticSubplayActive);
     a(f.playStart);a(f.subPlayStart);a(f.automaticSubplayQueue);
@@ -76,16 +76,17 @@ template<class A> void archive(A &a, Frame &f) {
     if(count>2048) throw std::invalid_argument("Project Sync mixer too large");
     m.tracks.resize(size_t(count));
     for(auto &track:m.tracks) { a(track.id); a(track.volume); a(track.pan); a(track.mute); a(track.solo); }
+    if (version >= 3) { a(t.playlistEntryId); a(t.queuedPlaylistEntryId); }
 }
 inline std::vector<unsigned char> encode(Frame value) {
-    Writer w; std::uint64_t version=2; w(version); archive(w,value);
+    Writer w; std::uint64_t version=3; w(version); archive(w,value);
     if(w.bytes.size()>131072) throw std::invalid_argument("Project Sync frame too large"); return w.bytes;
 }
 inline Frame decode(const void *data,size_t size) {
     if(size>131072) throw std::invalid_argument("Project Sync frame too large");
     Reader r{(const unsigned char*)data,size}; std::uint64_t version; r(version);
-    if(version!=2) throw std::invalid_argument("Unsupported Project Sync version");
-    Frame f; archive(r,f); if(r.offset!=size) throw std::invalid_argument("Trailing Project Sync data"); return f;
+    if(version!=2 && version!=3) throw std::invalid_argument("Unsupported Project Sync version");
+    Frame f; archive(r,f,version); if(r.offset!=size) throw std::invalid_argument("Trailing Project Sync data"); return f;
 }
 inline bool sameID(const ID &a,const ID &b) {
     auto normalized=[](const ID &v) { ID r; for(unsigned char c:v) if(c!='-') r.push_back(char(std::toupper(c))); return r; };

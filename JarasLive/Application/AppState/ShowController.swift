@@ -232,14 +232,15 @@ public struct ShowTimelinePresentationState: Equatable {
         restoredCursorPosition = nil
         navigationFocusPosition = nil
         regionNavigationTask?.cancel(); regionNavigationTask = nil
-        guard let region = current?.parts.first(where: { $0.id == id }) else { return }
+        guard let region = playlistRegion(id), canQueuePlaylistEntry(id) else { return }
+        let sourceID = playlistRegionSourceID(id)
         if snapshot.transport.playing, let song = current {
             let ignored = song.parts.first { $0.id == snapshot.transport.ignoreNextRegionId }
             let playingID = ignored?.id ?? snapshot.transport.regionId
             let position = ignored?.startTime ?? snapshot.transport.position
             let root = song.playingSetlistRegion(playingID, position: position, expanded: [])
             let displayed = root.flatMap { song.playingSetlistRegion(playingID, position: position, expanded: [$0.id]) }
-            if id == root?.id || id == displayed?.id {
+            if !isPlaylistDuplicate(id), sourceID == root?.id || sourceID == displayed?.id {
                 // Selecting the song already playing changes only the highlight.
                 focusedRegion = id; setlistFocusRequest = UUID()
                 return
@@ -252,7 +253,7 @@ public struct ShowTimelinePresentationState: Equatable {
             return
         }
         let queueing = snapshot.transport.playing
-        send(queueing ? .queueRegion : .selectRegion, target: region.id)
+        send(queueing ? .queueRegion : .selectRegion, target: id)
         focusedRegion = id
         // Queue selection reveals only the setlist row. The grid keeps following
         // the current transport (or Sub Play) until the queued song takes over.
@@ -269,7 +270,7 @@ public struct ShowTimelinePresentationState: Equatable {
     @discardableResult public func selectRegionSearchResult(_ id: UUID) -> Bool {
         guard canControl(), !finishing, current?.parts.contains(where: { $0.id == id }) == true else { return false }
         let listID = current?.parts.first(where: { $0.id == id })?.parentRegionID ?? id
-        if let playlist = selectedRegionPlaylist, !playlist.regionIds.contains(listID) {
+        if let playlist = selectedRegionPlaylist, !playlist.regionIds.contains(where: { playlist.regionSourceID(forEntry: $0) == listID }) {
             var state = regionSetlist
             state.selectedId = nil
             guard configureRegionSetlist(state) else { return false }
@@ -280,10 +281,44 @@ public struct ShowTimelinePresentationState: Equatable {
     public var regionSetlist: RegionSetlist { snapshot.project.regionSetlist ?? RegionSetlist() }
     public var allRegions: [Part] { (current?.parts ?? []).filter { $0.parentRegionID == nil }.sorted { $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime < $1.startTime } }
     public var selectedRegionPlaylist: RegionPlaylist? { regionSetlist.playlists.first { $0.id == regionSetlist.selectedId && $0.songId == current?.id } }
+    /// Setlist selection is occurrence-based; timeline/audio mutations use the source.
+    public func playlistRegionSourceID(_ entry: UUID) -> UUID {
+        regionSetlist.playlists.first(where: { $0.songId == current?.id && $0.isDuplicate(entry) })?.regionSourceID(forEntry: entry) ?? entry
+    }
+    public func isPlaylistDuplicate(_ entry: UUID) -> Bool { playlistRegionSourceID(entry) != entry }
+    public func playlistRegion(_ entry: UUID) -> Part? {
+        guard var region = current?.parts.first(where: { $0.id == playlistRegionSourceID(entry) }) else { return nil }
+        region.id = entry
+        return region
+    }
+    public static let duplicateRegionQueueNotice = "A duplicated region can only be queued while another song is playing."
+    /// Applies to buttons, actions and Remote commands, not only row gestures.
+    private func canQueuePlaylistEntry(_ entry: UUID) -> Bool {
+        guard isPlaylistDuplicate(entry) else { return true }
+        let source = playlistRegionSourceID(entry)
+        let transport = snapshot.transport
+        let active = current?.parts.first { $0.id == transport.regionId }
+        let activeRoot = active?.parentRegionID ?? active?.id
+        let subActive = transport.subPlay.playing ? current?.parts.first { $0.id == transport.queuedRegionId } : nil
+        let subRoot = subActive?.parentRegionID ?? subActive?.id
+        guard transport.playing, let activeRoot, source != activeRoot, source != subRoot else {
+            message = Self.duplicateRegionQueueNotice; modalNotice = message
+            return false
+        }
+        return true
+    }
     public var listedRegions: [Part] {
-        guard let list = selectedRegionPlaylist else { return allRegions.filter { $0.parentRegionID == nil } }
-        let lookup = Dictionary(uniqueKeysWithValues: (current?.parts ?? []).map { ($0.id, $0) })
-        return list.regionIds.compactMap { lookup[$0] }.filter { $0.parentRegionID == nil }
+        guard let list = selectedRegionPlaylist, let song = current else { return allRegions }
+        return list.regionIds.compactMap { list.region(forEntry: $0, in: song) }.filter { $0.parentRegionID == nil }
+    }
+    @discardableResult public func duplicatePlaylistRegion(_ entry: UUID) -> UUID? {
+        guard let playlist = selectedRegionPlaylist, let song = current,
+              playlist.region(forEntry: entry, in: song)?.parentRegionID == nil,
+              playlist.regionIds.contains(entry) else { return nil }
+        var state = regionSetlist
+        guard let index = state.playlists.firstIndex(where: { $0.id == playlist.id }),
+              let duplicate = state.playlists[index].duplicateRegion(entry), configureRegionSetlist(state) else { return nil }
+        return duplicate
     }
     public var listedBlocks: [SetlistBlock] {
         (regionSetlist.blocks ?? []).filter { $0.songId == current?.id && $0.playlistId == selectedRegionPlaylist?.id }
@@ -441,7 +476,7 @@ public struct ShowTimelinePresentationState: Equatable {
               snapshot.transport.regionId == queued else { return }
         regionNavigationTask?.cancel(); regionNavigationTask = nil
         navigationFocusPosition = nil
-        focusedRegion = queued; regionFocusRequest = UUID()
+        focusedRegion = snapshot.transport.playlistEntryId ?? previous.queuedPlaylistEntryId ?? queued; regionFocusRequest = UUID()
     }
     private func focusTimelineRegion(at position: Double, preferredRegion: UUID? = nil, forceReveal: Bool = false) {
         guard let song = current else { return }
@@ -456,15 +491,20 @@ public struct ShowTimelinePresentationState: Equatable {
         let root = active.parentRegionID ?? active.id
         let region = song.playingSetlistRegion(active.id, position: position, expanded: [root]) ?? active
         var changedPlaylist = false
-        if let playlist = selectedRegionPlaylist, !playlist.regionIds.contains(root) {
+        if let playlist = selectedRegionPlaylist, !playlist.regionIds.contains(where: { playlist.regionSourceID(forEntry: $0) == root }) {
             var state = regionSetlist; state.selectedId = nil
             guard configureRegionSetlist(state) else { return }
             changedPlaylist = true
         }
         // Cursor gestures only reveal a row; they never seek playback or queue it.
         regionNavigationTask?.cancel(); regionNavigationTask = nil
-        guard forceReveal || changedPlaylist || focusedRegion != region.id else { return }
-        focusedRegion = region.id; setlistFocusRequest = UUID()
+        let activeEntry = snapshot.transport.playlistEntryId
+        let occurrence = activeEntry.flatMap { entry in
+            selectedRegionPlaylist?.regionIds.contains(entry) == true && playlistRegionSourceID(entry) == root ? entry : nil
+        }
+        let selection = occurrence ?? region.id
+        guard forceReveal || changedPlaylist || focusedRegion != selection else { return }
+        focusedRegion = selection; setlistFocusRequest = UUID()
     }
     public func setAutomaticSubplay(_ enabled: Bool, seconds: Double? = nil, bars: Int? = nil, next: Bool? = nil) {
         var state = regionSetlist; state.automaticSubplay = enabled
@@ -867,7 +907,7 @@ public struct ShowTimelinePresentationState: Equatable {
             canUndo = next.canUndo; canRedo = next.canRedo
             projectRevision &+= 1; hasUnsavedChanges = true
             audioProjectRevision &+= 1
-            if let focusedRegion, current?.parts.contains(where: { $0.id == focusedRegion }) != true { self.focusedRegion = nil }
+            if let focusedRegion, playlistRegion(focusedRegion) == nil { self.focusedRegion = nil }
             onProjectEdited(); audioUpdate(snapshot, audioProjectRevision)
         } catch { message = error.localizedDescription }
     }
@@ -1248,7 +1288,7 @@ public struct ShowTimelinePresentationState: Equatable {
             return configureRegionSetlist(state)
         }
         editProject { $0 = edited }
-        if snapshot.project != before, let focusedRegion, current?.parts.contains(where: { $0.id == focusedRegion }) != true { self.focusedRegion = nil }
+        if snapshot.project != before, let focusedRegion, playlistRegion(focusedRegion) == nil { self.focusedRegion = nil }
         return snapshot.project != before
     }
 
@@ -1328,7 +1368,7 @@ public struct ShowTimelinePresentationState: Equatable {
         updatingPlaybackSnapshot = true
         snapshot = next
         updatingPlaybackSnapshot = false
-        let selection = focused.flatMap { id in current?.parts.contains(where: { $0.id == id }) == true ? id : nil }
+        let selection = focused.flatMap { id in playlistRegion(id) != nil ? id : nil }
         if focusedRegion != selection { focusedRegion = selection; selectedSetlistBlock = nil; setlistFocusRequest = UUID() }
         lastTime = playbackClock()
         audioUpdate(snapshot, audioProjectRevision)
@@ -1360,7 +1400,7 @@ public struct ShowTimelinePresentationState: Equatable {
     private var tempoControlRegion: Part? {
         guard let song = current else { return nil }
         if snapshot.transport.playing { return song.sectionRegion(at: snapshot.transport.position) }
-        return song.parts.first { $0.id == (focusedRegion ?? snapshot.transport.regionId) }
+        return song.parts.first { $0.id == (focusedRegion.map(playlistRegionSourceID) ?? snapshot.transport.regionId) }
     }
     private var tempoControlPosition: Double {
         let position = snapshot.transport.playing ? snapshot.transport.position : snapshot.transport.editPosition ?? snapshot.transport.position
@@ -1506,6 +1546,11 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     public func send(_ command: ShowCommand, target: UUID? = nil, value: Double = 0) {
         guard !ProjectSyncControl.following else { return }
+        var command = command
+        if [.selectRegion, .queueRegion].contains(command), let target {
+            guard canQueuePlaylistEntry(target) else { return }
+            if isPlaylistDuplicate(target) { command = .queueRegion }
+        }
         if command == .subPlay, transportFadeout.active {
             transportFadeout.warn("Cancel Fadeout before starting Sub Play."); return
         }
@@ -1537,7 +1582,8 @@ public struct ShowTimelinePresentationState: Equatable {
                       let region = entries.dropFirst(index + 1).compactMap({ entry -> Part? in
                           if case .region(let part, _) = entry { return part }; return nil
                       }).first else { return }
-                try executor.execute(.selectRegion, target: region.id, value: 0)
+                guard canQueuePlaylistEntry(region.id) else { return }
+                try executor.execute(isPlaylistDuplicate(region.id) ? .queueRegion : .selectRegion, target: region.id, value: 0)
                 selectedSetlistBlock = nil
             } else if [.editSeek, .seek, .select, .selectRegion, .queueRegion, .queueSection, .next, .previous].contains(command) {
                 selectedSetlistBlock = nil
@@ -2767,7 +2813,7 @@ public struct ShowTimelinePresentationState: Equatable {
             if let id = snapshot.transport.ignoreNextRegionId, let current = song.parts.first(where: { $0.id == id }) { return current }
             return song.pitchRegion(at: snapshot.transport.position, fallback: snapshot.transport.regionId)
         }
-        guard let selected = song.parts.first(where: { $0.id == focusedRegion }) ?? song.parts.first(where: { $0.id == snapshot.transport.regionId }) else { return nil }
+        guard let selected = song.parts.first(where: { $0.id == focusedRegion.map(playlistRegionSourceID) }) ?? song.parts.first(where: { $0.id == snapshot.transport.regionId }) else { return nil }
         return song.parts.filter { $0.parentRegionID == selected.id }.min { $0.startTime < $1.startTime } ?? selected
     }
     public func setRegionInit(_ id: UUID, selection: Int) {

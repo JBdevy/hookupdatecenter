@@ -1343,5 +1343,8 @@
   "Choose a mono or stereo sample up to 60 seconds.": "Escolha um sample mono ou estéreo de até 60 segundos.",
   "Could not create the sample folder.": "Não foi possível criar a pasta do sample.",
   "Could not copy the sample to the project.": "Não foi possível copiar o sample para o projeto.",
-  "High Pass and Low Pass filter only the detector.": "High Pass e Low Pass filtram apenas a detecção."
+  "High Pass and Low Pass filter only the detector.": "High Pass e Low Pass filtram apenas a detecção.",
+  "Duplicate region": "Duplicar região",
+  "A duplicate can only be queued while another song is playing.": "Uma cópia só pode entrar na fila enquanto outra música estiver tocando.",
+  "Cannot queue a duplicate of the song that is playing.": "Não é possível enfileirar uma cópia da música que está tocando."
 }

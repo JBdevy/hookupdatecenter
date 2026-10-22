@@ -106,7 +106,7 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Kalimba', pattern: /\b(kalimba|kalimbas)\b/ },
   { name: 'Steel Pan', pattern: /\b(steel pan|steelpan|steel drum)\b/ },
   { name: 'Handpan', pattern: /\b(handpan|handpans|hang drum)\b/ },
-  { name: 'Bateria', pattern: /\b(baterias?|bateras?|drums?|drum ?kits?|drum ?sets?|drumsets?|kit de bateria|(?:606|707|808|909) ?kits?|linndrum|drum machine)\b/ },
+  { name: 'Bateria', pattern: /\b(baterias?|bateras?|drums?|drumms?|drum ?kits?|drum ?sets?|drumsets?|kit de bateria|(?:606|707|808|909) ?kits?|linndrum|drum machine)\b/ },
   { name: 'Rhodes', pattern: /\b(rhodes|rhode)\b/ },
   { name: 'Wurlitzer', pattern: /\b(wurlitzer|wurli|wurly)\b/ },
   { name: 'Electric Piano', pattern: /\b(electric piano|e piano|ep)\b/ },

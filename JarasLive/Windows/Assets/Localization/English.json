@@ -1343,5 +1343,8 @@
   "Choose a mono or stereo sample up to 60 seconds.": "Choose a mono or stereo sample up to 60 seconds.",
   "Could not create the sample folder.": "Could not create the sample folder.",
   "Could not copy the sample to the project.": "Could not copy the sample to the project.",
-  "High Pass and Low Pass filter only the detector.": "High Pass and Low Pass filter only the detector."
+  "High Pass and Low Pass filter only the detector.": "High Pass and Low Pass filter only the detector.",
+  "Duplicate region": "Duplicate region",
+  "A duplicate can only be queued while another song is playing.": "A duplicate can only be queued while another song is playing.",
+  "Cannot queue a duplicate of the song that is playing.": "Cannot queue a duplicate of the song that is playing."
 }

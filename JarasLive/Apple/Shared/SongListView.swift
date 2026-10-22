@@ -166,7 +166,7 @@ struct SongListView: View {
     @State private var addingToPlaylist: UUID?
     private var playlistCandidates: [Part] {
         guard let id = addingToPlaylist, let playlist = show.regionSetlist.playlists.first(where: { $0.id == id }) else { return show.allRegions }
-        let existing = Set(playlist.regionIds)
+        let existing = Set(playlist.regionIds.map { playlist.regionSourceID(forEntry: $0) })
         return show.allRegions.filter { !existing.contains($0.id) }
     }
     @State private var showingAutoOptions = false
@@ -182,7 +182,7 @@ struct SongListView: View {
     @State private var selectionAnchor: UUID?
     @FocusState private var searchFocused: Bool
     private func visibleFocusID(_ id: UUID) -> UUID {
-        setlistVisibleRegionID(id, parent: show.current?.parts.first(where: { $0.id == id })?.parentRegionID,
+        setlistVisibleRegionID(id, parent: show.playlistRegion(id)?.parentRegionID,
                                expanded: expandedRegions)
     }
     private func requestRemoval(_ ids: Set<UUID>, keyboard: Bool) {
@@ -206,7 +206,7 @@ struct SongListView: View {
         // Keep the complete drag payload until a plain click is released.
         if !extending && !toggling && NSApp.currentEvent?.type == .leftMouseDown,
            show.selectedRegionPlaylist != nil,
-           let part = show.current?.parts.first(where: { $0.id == id }), part.parentRegionID == nil,
+           let part = show.playlistRegion(id), part.parentRegionID == nil,
            selectedEntries.count > 1 && selectedEntries.contains(id) { return }
         #endif
         if extending, let anchor = entrySelectionAnchor.map(visibleFocusID),
@@ -247,6 +247,7 @@ struct SongListView: View {
         let playingBounds = playing?.parentRegionID.flatMap { parent in song?.parts.first(where: { $0.id == parent }) } ?? playing
         let ignoredRegion = transport.ignoreNextRegionId.flatMap { id in song?.parts.first { $0.id == id } }
         let displayedPlaying = transport.playing ? song?.playingSetlistRegion(ignoredRegion?.id ?? transport.regionId, position: ignoredRegion?.startTime ?? transport.position, expanded: expandedRegions) : nil
+        let displayedPlayingID = transport.playing ? (transport.playlistEntryId.flatMap { show.isPlaylistDuplicate($0) ? $0 : nil } ?? displayedPlaying?.id) : nil
         let playbackEnd = transport.ignoreNextEnd ?? playingBounds?.endTime ?? transport.position
         VStack(spacing: 0) {
             GeometryReader { geometry in
@@ -356,18 +357,18 @@ struct SongListView: View {
                                     .modifier(PlaylistRegionDrag(show: show, playlist: playlist?.id, entry: block.id, block: true, selection: $selectedEntries, name: block.name, released: { selectEntry(block.id, visible: visible) }))
                                     .id(block.id)
                             case .region(let region, let number):
-                            let active = displayedPlaying?.id == region.id
-                            let queued = transport.playing && transport.queuedRegionId == region.id
+                            let active = displayedPlayingID == region.id
+                            let queued = transport.playing && (transport.queuedPlaylistEntryId ?? transport.queuedRegionId) == region.id
                             let regionEnd = active && ignoredRegion != nil ? playbackEnd : region.endTime
                             let duration = max(0.001, regionEnd - region.startTime)
                             let remaining = active ? max(0, regionEnd - transport.position) : duration
                             let progress = active ? min(1, max(0, (transport.position - region.startTime) / duration)) : 0
                             let queueRemaining = queued ? max(0, playbackEnd - transport.position) : 0
                             let queueLength = max(0.001, playbackEnd - (transport.queueStartedAt ?? transport.position))
-                            RegionSetlistRow(region: region, fontStyle: fontStyle, nameColor: UInt32(region.parentRegionID != nil ? unifiedTextColor.value : playlist == nil ? allRegionsTextColor.value : playlistTextColor.value), number: idMode == "region" ? (regionIDs[region.id] ?? number) : number, selected: visibleSelection.contains(region.id),
+                            RegionSetlistRow(region: region, fontStyle: fontStyle, nameColor: UInt32(region.parentRegionID != nil ? unifiedTextColor.value : playlist == nil ? allRegionsTextColor.value : playlistTextColor.value), number: idMode == "region" ? (regionIDs[show.playlistRegionSourceID(region.id)] ?? number) : number, selected: visibleSelection.contains(region.id),
                                              active: active, queued: queued, prepareOnly: setlist.preparesWithoutPlayback, remaining: Int(ceil(remaining)),
                                              progress: progress, queueProgress: queued ? min(1, queueRemaining / queueLength) : 0,
-                                             playedLive: show.playedLiveRegionIDs.contains(region.id),
+                                             playedLive: show.playedLiveRegionIDs.contains(show.playlistRegionSourceID(region.id)),
                                              playback: SetlistPlaybackBinding(show: show, region: region, end: regionEnd, playbackEnd: playbackEnd),
                                              expanded: content.unifiedRegionIDs.contains(region.id) ? expandedRegions.contains(region.id) : nil,
                                              toggleDrawer: {
@@ -377,19 +378,28 @@ struct SongListView: View {
                             }.equatable().padding(.leading, region.parentRegionID == nil ? 0 : 18)
                                 .contextMenu {
                                     let targets = selectedEntries.contains(region.id) ? selectedEntries : [region.id]
-                                    if targets.count == 1 && !content.unifiedRegionIDs.contains(region.id) { Button("Multiloops") { multiLoopRegion = region } }
+                                    let sourceID = show.playlistRegionSourceID(region.id)
+                                    let source = song?.parts.first { $0.id == sourceID } ?? region
+                                    if playlist != nil && targets.count == 1 && region.parentRegionID == nil {
+                                        Button("Duplicate region") {
+                                            if let duplicate = show.duplicatePlaylistRegion(region.id) {
+                                                selectedEntries = [duplicate]; entrySelectionAnchor = duplicate
+                                            }
+                                        }
+                                    }
+                                    if targets.count == 1 && !content.unifiedRegionIDs.contains(sourceID) { Button("Multiloops") { multiLoopRegion = source } }
                                     Button("Detect BPM…") { show.detectBPMRegions = visible.compactMap { entry in
-                                        if case .region(let part, _) = entry, targets.contains(part.id) { return part.id }; return nil
+                                        if case .region(let part, _) = entry, targets.contains(part.id) { return show.playlistRegionSourceID(part.id) }; return nil
                                     } }
                                     Button("Export Audio") {
                                         guard let current = show.current else { return }
-                                        let selection = AudioExportPlan.contextRegions(clicked: region.id, selected: selectedEntries, in: current)
+                                        let selection = AudioExportPlan.contextRegions(clicked: sourceID, selected: Set(selectedEntries.map(show.playlistRegionSourceID)), in: current)
                                         guard !selection.isEmpty else { return }
                                         regionExport = RegionAudioExportRequest(project: show.snapshot.project, song: current,
                                             regions: selection, mediaDirectory: mediaDirectory)
                                     }
-                                    Button("Config Init") { configInitSelection = region.subplayInitSelection; configInitRegion = region }
-                                    Button("Edit song") { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: region.id, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: targets) }
+                                    Button("Config Init") { configInitSelection = region.subplayInitSelection; configInitRegion = source }
+                                    Button("Edit song") { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: sourceID, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: Set(targets.map(show.playlistRegionSourceID))) }
                                     if region.parentRegionID == nil {
                                     Button(playlist == nil ? "Delete region" : "Remove from playlist", role: .destructive) {
                                         requestRemoval([region.id], keyboard: false)
@@ -418,7 +428,7 @@ struct SongListView: View {
                     else { selectedEntries = []; entrySelectionAnchor = nil }
                 }
                     .onChange(of: selectedEntries) { ids in
-                        AudioExportSelection.shared.setRegions(ids, song: show.current?.id)
+                        AudioExportSelection.shared.setRegions(Set(ids.map(show.playlistRegionSourceID)), song: show.current?.id)
                     }
                     .onChange(of: show.selectedRegionPlaylist?.id) { _ in selectedEntries = []; entrySelectionAnchor = nil }
                     .onChange(of: show.snapshot.project.id) { _ in selectedEntries = []; entrySelectionAnchor = nil; creatingPlaylist = false; addingToPlaylist = nil }

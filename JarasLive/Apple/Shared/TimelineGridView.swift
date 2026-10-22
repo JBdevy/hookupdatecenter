@@ -175,9 +175,7 @@ private struct TimelineGridContent: View, Equatable {
     @State private var itemsToSplit = Set<UUID>()
     @State private var splitPosition = 0.0
     @State private var confirmingSplit = false
-    @State private var tracksToDelete = Set<UUID>()
-    @State private var trackDeletionContext: (project: UUID, song: UUID)?
-    @State private var confirmingTrackDelete = false
+    @State private var trackDeletion: (project: UUID, song: UUID, tracks: Set<UUID>)?
     @State private var selectedClip: UUID?
     @State private var selectedClips = Set<UUID>()
     @State private var movingClip: UUID?
@@ -729,13 +727,14 @@ private struct TimelineGridContent: View, Equatable {
             Button("Cancel", role: .cancel) { itemsToSplit = [] }
             Button("Split") { show.splitItems(itemsToSplit, at: splitPosition); itemsToSplit = [] }
         }
-        .alert(Text(verbatim: confirmingTrackDelete ? JarasLocalization.string("Delete selected tracks and their items?") : ""), isPresented: $confirmingTrackDelete) {
-            Button("Cancel", role: .cancel) { tracksToDelete = []; trackDeletionContext = nil }
+        .alert("Delete selected tracks and their items?", isPresented: Binding(
+            get: { trackDeletion != nil }, set: { if !$0 { trackDeletion = nil } }), presenting: trackDeletion) { request in
+            Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
-                if let context = trackDeletionContext, context.project == show.snapshot.project.id, context.song == show.current?.id {
-                    deleteTracks(tracksToDelete)
-                }
-                tracksToDelete = []; trackDeletionContext = nil
+                // Keep the captured targets available even when dismissing the
+                // alert has already cleared its presentation binding.
+                guard request.project == show.snapshot.project.id, request.song == show.current?.id else { return }
+                deleteTracks(request.tracks)
             }
         }
         .alert(Text(verbatim: confirmingRegionDelete ? JarasLocalization.string("Delete this region?") : ""), isPresented: $confirmingRegionDelete) {
@@ -858,7 +857,7 @@ private struct TimelineGridContent: View, Equatable {
                 }
                 return nil
             }, editPosition: editPosition, focusRequest: show.regionFocusRequest,
-            focusTime: show.snapshot.transport.subPlay.playing ? nil : (show.navigationFocusPosition ?? show.restoredCursorPosition ?? song.parts.first(where: { $0.id == show.focusedRegion })?.startTime),
+            focusTime: show.snapshot.transport.subPlay.playing ? nil : (show.navigationFocusPosition ?? show.restoredCursorPosition ?? song.parts.first(where: { $0.id == show.focusedRegion.map(show.playlistRegionSourceID) })?.startTime),
             interactionBlocked: gridInteractionBlocked, extend: { timelineExtent = extent + 240 },
             horizontalOffsetChanged: { if horizontalScroll.offset != $0 { horizontalScroll.offset = $0 } },
             verticalOffsetChanged: { offset in
@@ -1417,9 +1416,7 @@ private struct TimelineGridContent: View, Equatable {
         let valid = ids.intersection(song.tracks.map(\.id))
         guard !valid.isEmpty else { return }
         if show.snapshot.project.tracksContainItems(valid) {
-            tracksToDelete = valid
-            trackDeletionContext = (show.snapshot.project.id, song.id)
-            confirmingTrackDelete = true
+            trackDeletion = (show.snapshot.project.id, song.id, valid)
         } else { deleteTracks(valid) }
     }
     private func deleteTracks(_ ids: Set<UUID>) {

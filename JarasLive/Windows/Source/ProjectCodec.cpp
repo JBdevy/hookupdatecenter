@@ -386,6 +386,7 @@ var ProjectCodec::canonicalIDs(const var &input) {
         canonicalIDArray(setlist, "playedLiveRegionIDs");
         identityElements(setlist, "playlists", [](var &playlist) {
             canonicalIDFields(playlist, {"id", "songId"}); canonicalIDArray(playlist, "regionIds");
+            identityElements(playlist, "duplicates", [](var &entry) { canonicalIDFields(entry, {"id", "regionId"}); });
         });
         identityElements(setlist, "blocks", [](var &block) {
             canonicalIDFields(block, {"id", "songId", "playlistId", "beforeRegionId"});
@@ -737,6 +738,11 @@ jaras::Project ProjectCodec::decode(const var &input) {
             pl.songId = s(raw, "songId");
             for (auto v : list(get(raw, "regionIds")))
                 pl.regionIds.push_back(utf8(v.toString()));
+            if (get(raw, "duplicates").isArray()) {
+                pl.duplicates.emplace();
+                for (auto duplicate : list(get(raw, "duplicates")))
+                    pl.duplicates->push_back({s(duplicate, "id"), s(duplicate, "regionId")});
+            }
             state.playlists.push_back(std::move(pl));
         }
         if (get(rs, "blocks").isArray()) {
@@ -1069,6 +1075,16 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
             put(value, "name", text(playlist.name));
             put(value, "songId", text(playlist.songId));
             put(value, "regionIds", idsJSON(playlist.regionIds));
+            if (playlist.duplicates) {
+                Array<var> duplicates;
+                for (const auto &entry : *playlist.duplicates) {
+                    auto duplicate = object();
+                    put(duplicate, "id", text(entry.id));
+                    put(duplicate, "regionId", text(entry.regionId));
+                    duplicates.add(duplicate);
+                }
+                put(value, "duplicates", duplicates);
+            } else remove(value, "duplicates");
             playlists.add(value);
         }
         put(rs, "playlists", playlists);

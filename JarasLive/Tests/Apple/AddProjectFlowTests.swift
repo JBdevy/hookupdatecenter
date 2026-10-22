@@ -34,6 +34,7 @@ final class FixtureShow {
     var isPlaying = false
     var authorized = true
     func canExecute() -> Bool { authorized }
+    func canControl() -> Bool { authorized }
 }
 final class TrackRecording {
     static let shared = TrackRecording()
@@ -125,11 +126,10 @@ final class TrackRecording {
     let guarded = openDocument()
     let count = NSOpenPanel.creations
     guarded.busy = true; guarded.chooseStems(adding: true); guarded.busy = false
-    guarded.show.isPlaying = true; guarded.chooseStems(adding: true); guarded.show.isPlaying = false
     TrackRecording.shared.recording = true; guarded.chooseStems(adding: true); TrackRecording.shared.recording = false
     TrackRecording.shared.busy = true; guarded.chooseStems(adding: true); TrackRecording.shared.busy = false
     precondition(NSOpenPanel.creations == count && NSSavePanel.creations == 0,
-                 "busy, playback and recording guards never display panels")
+                 "busy and recording guards never display panels")
     print("ADD_PROJECT_REAL_FLOW_OK no-project alert; folders-only; B,A back restoration; cancel; UUID+URL destination guards; zero save panels")
 }
 MainActor.assumeIsolated { runAddProjectFlowTests() }

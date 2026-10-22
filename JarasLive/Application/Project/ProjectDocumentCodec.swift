@@ -3,6 +3,61 @@ import CryptoKit
 
 /// Each CatLive document owns its media and backup directory exclusively.
 public enum ProjectDirectoryPolicy {
+    /// New projects keep their human-readable name. A collision creates a
+    /// separate sibling; even an existing empty folder is reserved to its owner.
+    public static func availableFolder(named name: String, in parent: URL) -> URL {
+        let fm = FileManager.default
+        var index = 1
+        while true {
+            let suffix = index == 1 ? "" : " (\(index))"
+            let candidate = parent.appendingPathComponent(name + suffix, isDirectory: true)
+            // fileExists alone misses dangling links, which must not be reused.
+            if !fm.fileExists(atPath: candidate.path),
+               (try? fm.destinationOfSymbolicLink(atPath: candidate.path)) == nil { return candidate }
+            index += 1
+        }
+    }
+    public static func newProjectDestination(for selection: URL, reuseEmptySelectedFolder: Bool = true) -> URL {
+        let document = selection.pathExtension.lowercased() == "jl" ? selection : selection.appendingPathExtension("jl")
+        let parent = document.deletingLastPathComponent()
+        let name = document.deletingPathExtension().lastPathComponent
+        // A user can create the named directory in the save panel itself.
+        // Never reuse it if it already holds a project, media, or other files.
+        if reuseEmptySelectedFolder, parent.lastPathComponent == name {
+            let values = try? parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if values?.isDirectory == true, values?.isSymbolicLink != true,
+               (try? FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty) == true { return document }
+            return availableFolder(named: name, in: parent.deletingLastPathComponent()).appendingPathComponent(document.lastPathComponent)
+        }
+        return availableFolder(named: name, in: parent).appendingPathComponent(document.lastPathComponent)
+    }
+    /// Recheck immediately before copying audio; a folder that became occupied
+    /// after the save panel must not share Stems with the new project.
+    public static func prepareNewProjectDirectory(for document: URL) throws {
+        let fm = FileManager.default
+        let folder = document.deletingLastPathComponent()
+        if fm.fileExists(atPath: folder.path) {
+            let values = try folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true,
+                  try fm.contentsOfDirectory(atPath: folder.path).isEmpty else {
+                throw ProjectError.invalid("A project already exists at this location. Choose another name.")
+            }
+        } else {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: false)
+        }
+    }
+    /// Extraction remains atomic and never overwrites a concurrent import.
+    public static func moveImportedProject(from staging: URL, named name: String, into parent: URL) throws -> URL {
+        let fm = FileManager.default
+        while true {
+            let destination = availableFolder(named: name, in: parent)
+            do { try fm.moveItem(at: staging, to: destination); return destination }
+            catch {
+                let failure = error as NSError
+                guard failure.domain == NSCocoaErrorDomain, failure.code == NSFileWriteFileExistsError else { throw error }
+            }
+        }
+    }
     public static func validate(_ document: URL) throws {
         guard document.pathExtension.lowercased() == "jl" else { return }
         let fm = FileManager.default

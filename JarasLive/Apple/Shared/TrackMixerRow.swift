@@ -2954,7 +2954,6 @@ private struct FooterMixerStrip: View, Equatable {
     @State private var patchPresented = false
     @State private var fxPresented = false
     @State private var colorPresented = false
-    @State private var confirmingDelete = false
     @State private var deletion: (project: UUID, song: UUID, tracks: Set<UUID>)?
     private var selected: Bool { track?.kind == .standard && id.map { selection.contains($0) } == true }
     private var targets: [UUID?] {
@@ -3012,7 +3011,7 @@ private struct FooterMixerStrip: View, Equatable {
         let valid = ids.intersection(song.tracks.map(\.id))
         guard !valid.isEmpty else { return }
         if show.snapshot.project.tracksContainItems(valid) {
-            deletion = (project, song.id, valid); confirmingDelete = true
+            deletion = (project, song.id, valid)
         } else { deleteTracks(valid) }
     }
     private func deleteTracks(_ ids: Set<UUID>) {
@@ -3200,13 +3199,12 @@ private struct FooterMixerStrip: View, Equatable {
                     }
                 }
             }
-            .alert(Text(verbatim: confirmingDelete ? JarasLocalization.string("Delete selected tracks and their items?") : ""), isPresented: $confirmingDelete) {
-                Button("Cancel", role: .cancel) { deletion = nil }
+            .alert("Delete selected tracks and their items?", isPresented: Binding(
+                get: { deletion != nil }, set: { if !$0 { deletion = nil } }), presenting: deletion) { request in
+                Button("Cancel", role: .cancel) { }
                 Button("Delete", role: .destructive) {
-                    if let deletion, deletion.project == show.snapshot.project.id, deletion.song == show.current?.id {
-                        deleteTracks(deletion.tracks)
-                    }
-                    deletion = nil
+                    guard request.project == show.snapshot.project.id, request.song == show.current?.id else { return }
+                    deleteTracks(request.tracks)
                 }
             }
             .sheet(isPresented: $patchPresented) {

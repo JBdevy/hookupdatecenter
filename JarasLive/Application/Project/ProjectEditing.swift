@@ -282,6 +282,11 @@ public extension Project {
         if var state = regionSetlist {
             for index in state.playlists.indices where state.playlists[index].songId == songs[songIndex].id {
                 var inserted = false
+                state.playlists[index].duplicates = state.playlists[index].duplicates?.map { alias in
+                    var alias = alias
+                    if rootIDs.contains(alias.regionId) || memberIDs.contains(alias.regionId) { alias.regionId = group.id }
+                    return alias
+                }
                 state.playlists[index].regionIds = state.playlists[index].regionIds.compactMap { region in
                     guard rootIDs.contains(region) || memberIDs.contains(region) else { return region }
                     if inserted { return nil }; inserted = true; return group.id
@@ -325,7 +330,18 @@ public extension Project {
         }
         if var state = candidate.regionSetlist {
             for index in state.playlists.indices {
-                state.playlists[index].regionIds = state.playlists[index].regionIds.flatMap { $0 == id ? members.map(\.id) : [$0] }
+                let prior = state.playlists[index]
+                var duplicates = (prior.duplicates ?? []).filter { $0.regionId != id }
+                state.playlists[index].regionIds = prior.regionIds.flatMap { entry -> [UUID] in
+                    if entry == id { return members.map(\.id) }
+                    guard prior.isDuplicate(entry), prior.regionSourceID(forEntry: entry) == id else { return [entry] }
+                    return members.enumerated().map { offset, member in
+                        let alias = RegionPlaylistDuplicate(id: offset == 0 ? entry : UUID(), regionId: member.id)
+                        duplicates.append(alias)
+                        return alias.id
+                    }
+                }
+                state.playlists[index].duplicates = duplicates.isEmpty ? nil : duplicates
             }
             if var blocks = state.blocks {
                 for index in blocks.indices where blocks[index].beforeRegionId == id { blocks[index].beforeRegionId = members.first?.id }
@@ -508,7 +524,7 @@ public extension Project {
         for song in songs.indices { songs[song].markers?.removeAll { $0.unifiedRegionID == id } }
         for song in songs.indices { songs[song].parts.removeAll { $0.id == id } }
         if var state = regionSetlist {
-            for index in state.playlists.indices { Self.removeRegion(id, from: &state, playlist: state.playlists[index].id) }
+            for index in state.playlists.indices { Self.removeRegion(id, from: &state, playlist: state.playlists[index].id, includingDuplicates: true) }
             if var blocks = state.blocks {
                 for index in blocks.indices where blocks[index].beforeRegionId == id { blocks[index].beforeRegionId = nil }
                 state.blocks = blocks
@@ -532,12 +548,11 @@ public extension Project {
     /// blocks in the current list can be removed, in one undoable edit.
     mutating func deleteSetlistEntries(_ ids: Set<UUID>, song songID: UUID, playlist: UUID?) {
         guard let song = songs.first(where: { $0.id == songID }) else { return }
-        let listed: Set<UUID>
+        let regions: [UUID]
         if let playlist {
             guard let list = regionSetlist?.playlists.first(where: { $0.id == playlist && $0.songId == songID }) else { return }
-            listed = Set(list.regionIds)
-        } else { listed = Set(song.parts.map(\.id)) }
-        let regions = song.parts.filter { $0.parentRegionID == nil && ids.contains($0.id) && listed.contains($0.id) }.map(\.id)
+            regions = list.regionIds.filter { ids.contains($0) && list.region(forEntry: $0, in: song)?.parentRegionID == nil }
+        } else { regions = song.parts.filter { $0.parentRegionID == nil && ids.contains($0.id) }.map(\.id) }
         regionSetlist?.blocks?.removeAll { ids.contains($0.id) && $0.songId == songID && $0.playlistId == playlist }
         for id in regions {
             if let playlist { removeRegion(id, from: playlist) }
@@ -579,7 +594,7 @@ public extension Project {
             // Keep surviving playlist order and move block anchors to the next
             // surviving song, exactly as when removing a playlist entry.
             for region in source.parts where removed.contains(region.id) {
-                for playlist in state.playlists { Self.removeRegion(region.id, from: &state, playlist: playlist.id) }
+                for playlist in state.playlists { Self.removeRegion(region.id, from: &state, playlist: playlist.id, includingDuplicates: true) }
             }
             if var blocks = state.blocks {
                 for block in blocks.indices where blocks[block].songId == songID && blocks[block].playlistId == nil && blocks[block].beforeRegionId.map(removed.contains) == true {
@@ -590,14 +605,19 @@ public extension Project {
             regionSetlist = state
         }
     }
-    private static func removeRegion(_ id: UUID, from state: inout RegionSetlist, playlist: UUID) {
-        guard let index = state.playlists.firstIndex(where: { $0.id == playlist }),
-              let position = state.playlists[index].regionIds.firstIndex(of: id) else { return }
-        let following = state.playlists[index].regionIds.dropFirst(position + 1).first
-        state.playlists[index].regionIds.removeAll { $0 == id }
+    private static func removeRegion(_ id: UUID, from state: inout RegionSetlist, playlist: UUID, includingDuplicates: Bool = false) {
+        guard let index = state.playlists.firstIndex(where: { $0.id == playlist }) else { return }
+        let list = state.playlists[index]
+        let removed = Set(list.regionIds.filter { $0 == id || (includingDuplicates && list.regionSourceID(forEntry: $0) == id) })
+        guard !removed.isEmpty else { return }
+        state.playlists[index].regionIds.removeAll { removed.contains($0) }
+        state.playlists[index].duplicates?.removeAll { removed.contains($0.id) }
+        if state.playlists[index].duplicates?.isEmpty == true { state.playlists[index].duplicates = nil }
         if var blocks = state.blocks {
-            for index in blocks.indices where blocks[index].playlistId == playlist && blocks[index].beforeRegionId == id {
-                blocks[index].beforeRegionId = following
+            for index in blocks.indices where blocks[index].playlistId == playlist {
+                guard let anchor = blocks[index].beforeRegionId, removed.contains(anchor),
+                      let position = list.regionIds.firstIndex(of: anchor) else { continue }
+                blocks[index].beforeRegionId = list.regionIds.dropFirst(position + 1).first { !removed.contains($0) }
             }
             state.blocks = blocks
         }

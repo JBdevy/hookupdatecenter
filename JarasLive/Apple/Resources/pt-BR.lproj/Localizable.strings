@@ -1808,3 +1808,7 @@
 "WAV / MP3 · Mono / Stereo · 60 s max" = "WAV / MP3 · Mono / Estéreo · Até 60 s";
 
 "The project folder is unavailable." = "A pasta do projeto não está disponível.";
+
+"Duplicate region" = "Duplicar região";
+
+"A duplicated region can only be queued while another song is playing." = "Uma região duplicada só pode entrar na fila enquanto outra música estiver tocando.";

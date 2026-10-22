@@ -216,7 +216,7 @@ struct SmoothSeekPanel: View {
         let transport = show.snapshot.transport
         let current = show.current.flatMap { song in
             transport.playing ? song.sectionPlaybackRegion(for: transport) :
-                song.parts.first(where: { $0.id == show.focusedRegion }) ?? song.sectionRegion(at: transport.editPosition ?? transport.position)
+                song.parts.first(where: { $0.id == show.focusedRegion.map(show.playlistRegionSourceID) }) ?? song.sectionRegion(at: transport.editPosition ?? transport.position)
         }
         let queued = show.current.flatMap { song in
             transport.subPlay.playing ? song.sectionRegion(at: transport.subPlay.position) :

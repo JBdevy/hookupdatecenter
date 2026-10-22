@@ -455,6 +455,55 @@ int runTests(const File &directory) {
                 "Seconds mode unexpectedly became musical bars");
         }
     });
+    test("Playlist copies retain row identity through save, selection, Remote and deletion without changing the grid", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        auto p=projectFixture();const auto first=p.songs[0].parts[0].id,second=p.songs[0].parts[1].id;
+        jaras::RegionPlaylist playlist{uuid(),"Show",p.songs[0].id,{first,second}};
+        p.regionSetlist.emplace();p.regionSetlist->playlists={playlist};p.regionSetlist->selectedId=playlist.id;
+        session.restoreSnapshot(ProjectCodec::encode(p));session.audio.setOffline(true);
+        const auto grid=JSON::toString(get(ProjectCodec::encode(session.project()),"songs"));
+        const auto copy=session.duplicatePlaylistRegion(playlist.id,first);
+        expect(!copy.empty(),"Copy was not created");
+        expect(session.project().regionSetlist->playlists[0].regionIds==std::vector<ID>{first,copy,second},"Copy was not adjacent");
+        expect(JSON::toString(get(ProjectCodec::encode(session.project()),"songs"))==grid,"Copy changed grid media or regions");
+        const auto reopened=ProjectCodec::decode(ProjectCodec::encode(session.project()));
+        expect(reopened.regionSetlist->playlists[0].resolvedRegionId(copy)==first,"Windows codec lost occurrence source");
+        bool rejected=false;try{session.command(jaras::CommandKind::selectRegion,copy);}catch(const std::exception&){rejected=true;}
+        expect(rejected && !session.transport().playing,"Stopped copy was selected for direct playback");
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("playlist-occurrences",".json"));workspace.setSize(1366,768);
+        const auto rows=[&]{return setlistSearchTests::strings(get(get(workspace.diagnostics(),"setlist"),"rowIDs"));};
+        expect(rows()==std::vector<String>{text(first),text(copy),text(second)},"Copied row disappeared from Windows list");
+        session.command(jaras::CommandKind::selectRegion,second);session.command(jaras::CommandKind::play);
+        session.command(jaras::CommandKind::queueRegion,copy);
+        expect(session.transport().queuedRegionId==first && session.transport().queuedPlaylistEntryId==copy,"Queue conflated source and row");
+        expect(setlistSearchTests::strings(get(get(workspace.diagnostics(),"setlist"),"visibleSelectedEntries"))==std::vector<String>{text(copy)},"Selecting copy selected its original too");
+        Appearance remotePreferences(directory.getNonexistentChildFile("playlist-remote",".json"));StageState remoteStage(remotePreferences);
+        remote::Presentation presentation(session,remoteStage);
+        const auto remoteState=presentation.snapshot(0);
+        const auto remoteRows=list(get(remoteState,"regions"));
+        expect(remoteRows.size()==3 && str(remoteRows[1],"id")==remote::wireID(copy) && str(remoteRows[1],"sourceRegionId")==remote::wireID(first),"Remote lost occurrence identity");
+        expect(str(remoteState,"queuedPlaylistEntryId")==remote::wireID(copy),"Remote queue highlighted wrong occurrence");
+        session.command(jaras::CommandKind::stopAll);
+        auto state=*session.project().regionSetlist;
+        playlistOccurrences::remove(state,playlist.id,{copy});session.configureSetlist(state);
+        expect(rows()==std::vector<String>{text(first),text(second)} && session.song()->parts.size()==2,"Removing copy removed original or grid");
+    });
+    test("Windows Live marks ten seconds of audio, persists marks and clears through desktop and Remote gates", [&] {
+        auto p=projectFixture();auto &song=p.songs[0];song.parts[0].startTime=0;song.parts[0].endTime=25;
+        song.parts[1].startTime=25;song.parts[1].endTime=40;
+        p.regionSetlist.emplace();p.regionSetlist->liveEnabled=true;
+        jaras::Engine engine;engine.loadProject(p);engine.execute({jaras::CommandKind::selectRegion,song.parts[0].id});engine.execute({jaras::CommandKind::play});
+        engine.advance(9);expect(!engine.project().regionSetlist->playedLiveRegionIDs || engine.project().regionSetlist->playedLiveRegionIDs->empty(),"Live marked before ten seconds");
+        engine.advance(1);
+        const auto restored=ProjectCodec::decode(ProjectCodec::encode(engine.project()));
+        expect(restored.regionSetlist->playedLiveRegionIDs==std::optional<std::vector<ID>>{{song.parts[0].id}},"Windows Live history not persisted");
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(restored));session.audio.setOffline(true);
+        Appearance preferences(directory.getNonexistentChildFile("live-occurrences",".json"));
+        StageState stage(preferences);remote::Presentation remote(session,stage);
+        remote::Command command;command.id=uuid();command.project=p.id;command.song=song.id;command.action="toggleSetlistLive";
+        expect(remote.apply(command),"Remote Live toggle failed");
+        expect(!session.project().regionSetlist->liveEnabled.value_or(false) && session.project().regionSetlist->playedLiveRegionIDs->empty(),"Remote Live off retained played marks");
+    });
     test("Edit cursor selects setlist songs without changing playback or queue", [&] {
         Session session; auto p=projectFixture(); auto &song=p.songs[0];
         const auto first=song.parts[0].id, second=song.parts[1].id;
@@ -4466,13 +4515,24 @@ int runTests(const File &directory) {
         expect(root.getChildFile(String::fromUTF8("Stems/Primeiro/Órgão.wav")).replaceWithText("first media"),"Fixture media");
         expect(root.getChildFile(String::fromUTF8("Stems/Segundo/Órgão.wav")).replaceWithText("second media"),"Fixture media");
         auto raw=ProjectCodec::encode(project);const auto original=JSON::toString(raw);
-        auto imports=root.getChildFile("Imported");imports.createDirectory();
+        auto imports=root.getNonexistentChildFile("Imported",{},false);imports.createDirectory();
+        const auto primaryFolder=imports.getChildFile(text(project.name));
+        const auto retainedFile=primaryFolder.getChildFile("keep-existing-content.txt");
         for(bool zip64:{false,true}){
             const auto archive=root.getChildFile(zip64?"Windows64.ziplive":"Windows.ziplive");double progress=0;
             portablePackage::exportPackage(raw,root,archive,[&](double p){expect(p>=progress&&p<=1,"Monotonic export progress");progress=p;},zip64);
             expect(progress==1&&JSON::toString(raw)==original,"Export changed source or failed to complete");
             const auto local=portablePackage::importPackage(archive,imports);auto imported=ProjectCodec::decode(ProjectCodec::read(local));
             expect(imported.id==project.id&&imported.name==project.name&&local.getFileName()==text(project.name)+".jl","Project identity or local name changed");
+            expect(local.getParentDirectory().getFileName()==text(project.name)+(zip64?"(2)":""),
+                   "Portable folder must use the project name and a readable collision suffix, without a UUID");
+            expect(imported.songs[0].id==project.songs[0].id&&imported.songs[0].tracks[0].id==track.id&&
+                       imported.songs[0].tracks[0].clips[0].id==track.clips[0].id,
+                   "A folder collision changed persistent song, track or item identities");
+            if(!zip64)expect(retainedFile.replaceWithText("preserve existing folder"),"Folder collision fixture failed");
+            else expect(retainedFile.loadFileAsString()=="preserve existing folder"&&
+                            primaryFolder.getChildFile(text(project.name)+".jl").existsAsFile(),
+                        "Import into a colliding folder overwrote existing project content");
             const auto &clips=imported.songs[0].tracks[0].clips;
             expect(clips[0].audioFile->path!=clips[1].audioFile->path,"Duplicate basenames collided");
             expect(ProjectCodec::resolveMedia(local.getParentDirectory(),clips[0].audioFile->path).loadFileAsString()=="first media"&&ProjectCodec::resolveMedia(local.getParentDirectory(),clips[1].audioFile->path).loadFileAsString()=="second media","Media lost or corrupted");

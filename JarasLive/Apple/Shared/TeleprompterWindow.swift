@@ -379,7 +379,7 @@ private struct LocalizedTeleprompterConfig: View {
         var next = TPProjectionData()
         next.song = region?.name ?? ""
         next.queued = queue?.name ?? snapshot.project.songs.first(where: { $0.id == transport.queue.songId })?.name ?? ""
-        next.currentRegion = region?.id; next.queuedRegion = queue?.id
+        next.currentRegion = transport.playlistEntryId ?? region?.id; next.queuedRegion = transport.queuedPlaylistEntryId ?? queue?.id
         var lyricClip: AudioClip?, chordClip: AudioClip?
         let lyricKind: TrackKind = index == 1 ? .teleprompt : .teleprompt2
         for track in song.tracks where !track.mute && (track.kind == lyricKind || track.kind == .chords) {
@@ -408,8 +408,7 @@ private struct LocalizedTeleprompterConfig: View {
     private func preview(song: Song, project: Project) -> [TPPreviewBlock] {
         let state = project.regionSetlist ?? RegionSetlist()
         let playlist = state.playlists.first { $0.id == state.selectedId && $0.songId == song.id }
-        let lookup = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id,$0) })
-        let regions = playlist.map { $0.regionIds.compactMap { lookup[$0] } } ?? song.parts.filter { $0.parentRegionID == nil }.sorted { $0.startTime < $1.startTime }
+        let regions = playlist.map { list in list.regionIds.compactMap { list.region(forEntry: $0, in: song) } } ?? song.parts.filter { $0.parentRegionID == nil }.sorted { $0.startTime < $1.startTime }
         let blocks = Dictionary(grouping: (state.blocks ?? []).filter { $0.songId == song.id && $0.playlistId == playlist?.id },by: \.beforeRegionId)
         var result = [TPPreviewBlock(id: song.id.uuidString,name: "",color: 0xffea00)]
         for region in regions {

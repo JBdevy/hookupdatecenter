@@ -25,6 +25,7 @@ enum DAWRemoteSnapshotComparison {
             candidate.paused != current.paused || candidate.subPlaying != current.subPlaying ||
             candidate.loop != current.loop || candidate.currentRegion != current.currentRegion ||
             candidate.queuedRegion != current.queuedRegion || candidate.focusedRegion != current.focusedRegion ||
+            candidate.currentPlaylistEntryId != current.currentPlaylistEntryId || candidate.queuedPlaylistEntryId != current.queuedPlaylistEntryId ||
             candidate.sectionPlayback != current.sectionPlayback || candidate.footerLoopBeatPhase != current.footerLoopBeatPhase {
             return true
         }

@@ -218,7 +218,13 @@ static NSDictionary* regionSetlistJSON(const RegionSetlist& state) {
     NSMutableArray* lists=[NSMutableArray new];
     for(const auto& list:state.playlists) {
         NSMutableArray* ids=[NSMutableArray new]; for(const auto& id:list.regionIds) [ids addObject:text(id)];
-        [lists addObject:@{@"id":text(list.id),@"name":text(list.name),@"songId":text(list.songId),@"regionIds":ids}];
+        NSMutableDictionary* value=[@{@"id":text(list.id),@"name":text(list.name),@"songId":text(list.songId),@"regionIds":ids} mutableCopy];
+        if(list.duplicates) {
+            NSMutableArray* duplicates=[NSMutableArray new];
+            for(const auto& duplicate:*list.duplicates) [duplicates addObject:@{@"id":text(duplicate.id),@"regionId":text(duplicate.regionId)}];
+            value[@"duplicates"]=duplicates;
+        }
+        [lists addObject:value];
     }
     NSMutableDictionary* result=[@{@"playlists":lists,@"autoAdvance":@(state.autoAdvance)} mutableCopy];
     if(state.autoUntilBlockEnd) result[@"autoUntilBlockEnd"]=@YES;
@@ -276,6 +282,13 @@ static RegionSetlist readRegionSetlist(NSDictionary* d) {
     for(id raw in array(d[@"playlists"])) {
         NSDictionary* p=object(raw); RegionPlaylist list; list.id=str(p[@"id"]); list.name=str(p[@"name"]); list.songId=str(p[@"songId"]);
         for(id region in array(p[@"regionIds"])) list.regionIds.push_back(str(region));
+        if(p[@"duplicates"] && p[@"duplicates"] != NSNull.null) {
+            list.duplicates=std::vector<RegionPlaylistDuplicate>{};
+            for(id rawDuplicate in array(p[@"duplicates"])) {
+                NSDictionary* duplicate=object(rawDuplicate);
+                list.duplicates->push_back({str(duplicate[@"id"]),str(duplicate[@"regionId"])});
+            }
+        }
         state.playlists.push_back(std::move(list));
     }
     return state;
@@ -509,7 +522,7 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
 }
 - (NSData*)playbackSnapshotWithError:(NSError**)error {
     const auto& t=_engine->transport();
-    NSDictionary* transport=@{@"playbackStartRegionId":optionalID(t.playbackStartRegionId),@"subPlaybackStartRegionId":optionalID(t.subPlaybackStartRegionId),@"multiLoopsBypassed":@(t.multiLoopsBypassed),@"queuedSectionMarkerId":optionalID(t.queuedSectionMarkerId),@"sectionQueueStartedAt":@(t.sectionQueueStartedAt),@"sectionJumpSerial":@(t.sectionJumpSerial),@"multiLoop":multiLoopPlaybackJSON(t.multiLoop),@"ignoreNextAfter":t.ignoreNextAfter ? (id)@(*t.ignoreNextAfter) : NSNull.null,@"ignoreNextEnd":t.ignoreNextEnd ? (id)@(*t.ignoreNextEnd) : NSNull.null,@"ignoreNextRegionId":optionalID(t.ignoreNextRegionId),@"subPlayPromotion":@(t.subPlayPromotion),@"regionId":optionalID(t.regionId),@"queuedRegionId":optionalID(t.queuedRegionId),@"queueStartedAt":@(t.queueStartedAt),@"paused":@(t.paused),@"playing":@(t.playing),@"songId":optionalID(t.songId),@"position":@(t.position),@"editPosition":@(t.editPosition),@"queue":@{@"songId":optionalID(t.queue.songId)},@"loop":@{@"enabled":@(t.loop.enabled),@"start":t.loop.start ? (id)@(*t.loop.start) : NSNull.null,@"end":t.loop.end ? (id)@(*t.loop.end) : NSNull.null},@"subPlay":@{@"playing":@(t.subPlay.playing),@"position":@(t.subPlay.position)}};
+    NSDictionary* transport=@{@"playbackStartRegionId":optionalID(t.playbackStartRegionId),@"subPlaybackStartRegionId":optionalID(t.subPlaybackStartRegionId),@"multiLoopsBypassed":@(t.multiLoopsBypassed),@"queuedSectionMarkerId":optionalID(t.queuedSectionMarkerId),@"sectionQueueStartedAt":@(t.sectionQueueStartedAt),@"sectionJumpSerial":@(t.sectionJumpSerial),@"multiLoop":multiLoopPlaybackJSON(t.multiLoop),@"ignoreNextAfter":t.ignoreNextAfter ? (id)@(*t.ignoreNextAfter) : NSNull.null,@"ignoreNextEnd":t.ignoreNextEnd ? (id)@(*t.ignoreNextEnd) : NSNull.null,@"ignoreNextRegionId":optionalID(t.ignoreNextRegionId),@"subPlayPromotion":@(t.subPlayPromotion),@"regionId":optionalID(t.regionId),@"queuedRegionId":optionalID(t.queuedRegionId),@"playlistEntryId":optionalID(t.playlistEntryId),@"queuedPlaylistEntryId":optionalID(t.queuedPlaylistEntryId),@"queueStartedAt":@(t.queueStartedAt),@"paused":@(t.paused),@"playing":@(t.playing),@"songId":optionalID(t.songId),@"position":@(t.position),@"editPosition":@(t.editPosition),@"queue":@{@"songId":optionalID(t.queue.songId)},@"loop":@{@"enabled":@(t.loop.enabled),@"start":t.loop.start ? (id)@(*t.loop.start) : NSNull.null,@"end":t.loop.end ? (id)@(*t.loop.end) : NSNull.null},@"subPlay":@{@"playing":@(t.subPlay.playing),@"position":@(t.subPlay.position)}};
     return [NSJSONSerialization dataWithJSONObject:@{@"transport":transport,@"nextSongId":optionalID(_engine->nextSongId())} options:0 error:error];
 }
 - (BOOL)configureRegionSetlistData:(NSData*)data error:(NSError**)error {

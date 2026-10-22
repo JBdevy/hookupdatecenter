@@ -11,7 +11,11 @@ methods=source[source.index('    func chooseStems(adding: Bool)'):source.index('
 finish=source[source.index('    private func finish(scan:'):source.index('        do { try ProjectDirectoryPolicy.validate(url) }',source.index('    private func finish(scan:'))]
 # Stop exactly at destination resolution, before validation, media I/O or saving.
 finish+='        resolvedURL = url\n    }\n'
+policy=Path('Application/Project/ProjectDocumentCodec.swift').read_text()
+policy=policy[policy.index('public enum ProjectDirectoryPolicy {'):policy.index('/// Portable application document protection')]
 state='''
+enum ProjectError: Error { case invalid(String) }
+'''+policy+'''
 @MainActor final class ProjectDocuments {
     var ready = false, busy = false, adding = false, showingOpenProjectAlert = false
     var currentURL: URL?

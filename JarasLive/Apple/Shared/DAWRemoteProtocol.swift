@@ -130,7 +130,7 @@ struct DAWRemoteCommand: Codable {
         case remotePanel, noticeSend, noticeClear, noticePin, noticeDestination, noticeSaveTemplate
         case requestImage
         case timerStart, timerStop
-        case editRegion, deleteRegion, renamePlaylist, duplicatePlaylist, deletePlaylist
+        case editRegion, deleteRegion, duplicateRegion, renamePlaylist, duplicatePlaylist, deletePlaylist
     }
     var id = UUID()
     var project: UUID
@@ -148,12 +148,13 @@ struct DAWRemoteCommand: Codable {
         if let text {
             guard [.noticeSend, .noticeSaveTemplate, .editRegion, .renamePlaylist].contains(action), text.count <= 500, text.utf8.count <= 4000 else { return false }
         }
-        if playlist != nil && action != .deleteRegion { return false }
+        if playlist != nil && ![.deleteRegion, .duplicateRegion].contains(action) { return false }
         if enabled != nil && action != .noticeDestination { return false }
         if noticeReceiptRequested != nil && action != .noticeSend { return false }
         switch action {
         case .editRegion: return target != nil && text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false && (0...16777215).contains(value) && value.rounded() == value
         case .renamePlaylist: return target != nil && value == 0 && text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        case .duplicateRegion: return target != nil && playlist != nil && value == 0
         case .deleteRegion, .duplicatePlaylist, .deletePlaylist: return target != nil && value == 0
         case .toggleMultiLoopBypass, .toggleSetlistLive, .cancelSection: return target == nil && value == 0
         case .resetMeterPeak: return value == 0
@@ -258,6 +259,7 @@ struct DAWRemoteState: Codable, Equatable {
         var id: UUID; var name: String; var start: Double; var end: Double; var color: UInt32
         var nameColor: UInt32? = nil
         var parentRegion: UUID? = nil
+        var sourceRegionId: UUID? = nil
     }
     struct Song: Codable, Identifiable, Equatable { var id: UUID; var name: String }
     struct SetlistBlock: Codable, Identifiable, Equatable {
@@ -295,6 +297,8 @@ struct DAWRemoteState: Codable, Equatable {
     var currentRegion: UUID?
     var queuedRegion: UUID?
     var focusedRegion: UUID?
+    var currentPlaylistEntryId: UUID? = nil
+    var queuedPlaylistEntryId: UUID? = nil
     var position: Double
     var duration: Double
     var bpm: Double
@@ -361,6 +365,12 @@ struct DAWRemoteState: Codable, Equatable {
     /// Separators belonging to the current playlist (or All regions), in their
     /// saved order. These are presentation headers, never playback regions.
     var setlistBlocks: [SetlistBlock]? = nil
+    /// Original unified songs keep their active child; only aliases replace the displayed row ID.
+    var setlistCurrentEntryId: UUID? {
+        if let id = currentPlaylistEntryId, regions.contains(where: { $0.id == id && $0.sourceRegionId != nil }) { return id }
+        return currentRegion
+    }
+    var setlistQueuedEntryId: UUID? { queuedPlaylistEntryId ?? queuedRegion }
     static func validPeak(_ value: Double?) -> Bool { value.map { $0.isFinite && $0 >= -24 } ?? true }
     var valid: Bool {
         position.isFinite && duration.isFinite && bpm.isFinite && masterVolume.isFinite && Self.validPeak(masterPeakDB) &&
@@ -437,6 +447,16 @@ enum DAWRemoteSetlistPresentation {
         var child: Bool
         var hasDrawer: Bool = false
         var id: UUID { region.id }
+    }
+    static func canQueueDuplicate(_ entry: UUID, in state: DAWRemoteState) -> Bool {
+        guard let source = state.regions.first(where: { $0.id == entry })?.sourceRegionId else { return true }
+        func root(_ id: UUID?) -> UUID? {
+            guard let id else { return nil }
+            return state.timelineRegions.first(where: { $0.id == id })?.parentRegion ?? id
+        }
+        let current = root(state.currentRegion)
+        let secondary = state.subPlaying ? root(state.sectionPlayback?.secondaryRegion ?? state.queuedRegion) : nil
+        return state.playing && current != nil && source != current && source != secondary
     }
     static func children(of parent: UUID, in state: DAWRemoteState) -> [DAWRemoteState.Region] {
         state.timelineRegions.filter { $0.parentRegion == parent }.sorted {
