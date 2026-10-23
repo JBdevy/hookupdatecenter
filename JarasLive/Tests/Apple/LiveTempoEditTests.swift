@@ -19,7 +19,7 @@ final class Capture: @unchecked Sendable {
  for entry in Mirror(reflecting:voices).children {
   guard let voice=Mirror(reflecting:entry.value).children.first(where:{$0.label=="value"})?.value ?? Mirror(reflecting:entry.value).children.dropFirst().first?.value,
         let clip=field("clip",voice) as? AudioClip,let player=field("player",voice) as? AVAudioPlayerNode,
-        clip.startTime<=position,position<clip.startTime+clip.duration else{continue}
+        clip.startTime<=position, (position<clip.startTime+clip.duration || (field("continuousSource",voice) as? Bool == true && player.isPlaying)) else{continue}
   result.insert(ObjectIdentifier(player))
  }
  return result
@@ -28,6 +28,7 @@ final class Capture: @unchecked Sendable {
  let dir=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
  try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true);defer{try? FileManager.default.removeItem(at:dir)}
  let rate=Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
+ let sweep=ProcessInfo.processInfo.environment["JARAS_TEST_SWEEP_TEMPO"]=="1"
  let rapid=ProcessInfo.processInfo.environment["JARAS_TEST_RAPID_TEMPO"]=="1"
  let descending=ProcessInfo.processInfo.environment["JARAS_TEST_DESCENDING_TEMPO"]=="1"
  let boundary=ProcessInfo.processInfo.environment["JARAS_TEST_BOUNDARY_TEMPO"]=="1"
@@ -70,7 +71,7 @@ final class Capture: @unchecked Sendable {
  else if rapid { times = (0..<(descending ? 30 : 36)).map { 1 + Double($0) * 0.04 } }
  else { times = [1.0,1.35,1.7,4.5,4.85,5.2] }
 
- var maximumEditDuration=0.0, maximumUpdateDuration=0.0
+ var maximumEditDuration=0.0, maximumUpdateDuration=0.0, missingPlayers=0
  while ProcessInfo.processInfo.systemUptime-began<(sustained ? 24 : descending ? 24 : 8) {
   let now=ProcessInfo.processInfo.systemUptime;state.transport.position += now-last;last=now
   var didEdit=false
@@ -78,12 +79,16 @@ final class Capture: @unchecked Sendable {
   var previousClocks=[ObjectIdentifier:AVAudioFramePosition]()
   if edits<times.count && now-began>=times[edits] {
    previousPlayers=activePlayers(audio)
-   if !boundary { precondition(previousPlayers.count==24,"Exercise every sounding stem") }
+   if !boundary && previousPlayers.count != 24 { missingPlayers += 1; print("MISSING_PLAYERS", edits, previousPlayers.count, "UI_POSITION", state.transport.position, "CLOCK", String(describing: field("headAudioClock",audio))) }
    for case let player as AVAudioPlayerNode in engine.attachedNodes where previousPlayers.contains(ObjectIdentifier(player)) {
     if let node=player.lastRenderTime,let clock=player.playerTime(forNodeTime:node) {previousClocks[ObjectIdentifier(player)]=clock.sampleTime}
    }
    let before=state.project.songs[0];var after=before
    for i in after.markers!.indices {after.markers![i].tempoBPM! += sustained ? (edits % 80 < 40 ? -1 : 1) : descending ? -2 : rapid ? (edits.isMultiple(of:2) ? 1 : -1) : (edits < 3 ? 1 : -1)}
+   if sweep {
+    let offset = [0.0, 70, -40, 100, -20, 30][edits % 6]
+    for i in after.markers!.indices { after.markers![i].tempoBPM = [120.0,140,130,150][i] + offset }
+   }
    let map=TempoEditMap(before:before,after:after);map.apply(to:&after);map.apply(to:&state.transport)
    state.project.songs[0]=after;edits+=1;didEdit=true
   }
@@ -154,6 +159,7 @@ final class Capture: @unchecked Sendable {
  precondition(edits==times.count,"Every requested tempo edit must be processed without a long UI stall")
  precondition(maximumUpdateDuration<1,"Audio update must not stall the UI for a second")
  precondition(quiet==0,"Live BPM edits and tempo boundaries must not interrupt output")
+ precondition(missingPlayers==0,"Exercise every sounding stem throughout rapid edits")
  // Tempo clock protection must not swallow an actual user seek.
  let previousClock=(field("headAudioClock",audio) as! [Int:(position:Double,host:UInt64)])[0]!
  state.transport.position=0.5

@@ -64,11 +64,56 @@ class StreamingReader final : public AudioFormatReader {
         return access.current && probeAt(*access.current, position, count);
     }
     bool cached() const noexcept { return resident.load(); }
+    // Control thread only. Decode the destination independently: probing the
+    // active forward reader here would evict audio still being played before
+    // the seek is committed. Two slots keep a loop start pinned across seeks.
+    bool prepareTransition(int64 at, int count, bool loop = false) {
+        if (loop) keepLoopReserve.store(true);
+        at = std::max<int64>(0, at);
+        if (at >= lengthInSamples) return true;
+        const int slot = loop ? 1 : 0;
+        // Include the zero-padded tail: the last device block can cross EOF.
+        const auto wanted = int(std::max<int64>(count, int64(sampleRate)));
+        const ScopedLock guard(lock);
+        if (pinned[slot] && pinned[slot]->contains(at, wanted)) return true;
+        std::unique_ptr<AudioFormatReader> source(service.formats.createReaderFor(file));
+        if (!source) return false;
+        auto next = std::make_unique<Pinned>(at, int(numChannels), wanted);
+        if (!source->read(&next->pcm, 0, wanted, at, true, true)) return false;
+        if (pinned[slot]) retiredPinned.push_back(std::move(pinned[slot]));
+        pinned[slot] = std::move(next);
+        publishedPinned[slot].store(pinned[slot].get(), std::memory_order_seq_cst);
+        return true;
+    }
+    void clearLoopReserve() {
+        // The old loop may still render while the next destination is being
+        // prepared. Retire its reserve only after that source becomes idle.
+        keepLoopReserve.store(false);
+    }
     std::atomic<uint64> cacheMisses{0}, inactiveMisses{0};
     bool readSamples(int* const* destination, int channels, int offset, int64 at, int count) override {
+        if (at >= lengthInSamples) {
+            for (int c = 0; c < channels; ++c) if (destination[c])
+                FloatVectorOperations::clear(reinterpret_cast<float *>(destination[c]) + offset, count);
+            return true;
+        }
         request(at);
         const bool exporting = offline.load();
         ReadAccess access(*this);
+        if (!exporting) for (auto &slot : publishedPinned) {
+            const auto *cache = slot.load(std::memory_order_seq_cst);
+            if (!cache || !cache->contains(at, count)) continue;
+            // Hint the normal read-ahead worker without copying missing data
+            // over the reserved PCM. It catches up before the reserve ends.
+            if (access.current) access.current->readSamples(nullptr, 0, 0, at, count);
+            for (int c = 0; c < channels; ++c) if (destination[c]) {
+                auto *out = reinterpret_cast<float *>(destination[c]) + offset;
+                if (c < cache->pcm.getNumChannels())
+                    FloatVectorOperations::copy(out, cache->pcm.getReadPointer(c, int(at - cache->first)), count);
+                else FloatVectorOperations::clear(out, count);
+            }
+            return true;
+        }
         if (exporting) {
             // Export may wait for disk; it must never lose a block merely
             // because the cache worker holds the metadata lock.
@@ -98,6 +143,16 @@ class StreamingReader final : public AudioFormatReader {
     File file;
     Service& service;
     CriticalSection lock;
+    struct Pinned {
+        int64 first;
+        AudioBuffer<float> pcm;
+        Pinned(int64 start, int channels, int count) : first(start), pcm(channels, count) {}
+        bool contains(int64 at, int count) const { return at >= first && at - first + count <= pcm.getNumSamples(); }
+    };
+    std::unique_ptr<Pinned> pinned[2];
+    std::atomic<Pinned *> publishedPinned[2]{};
+    std::atomic<bool> keepLoopReserve{false};
+    std::vector<std::unique_ptr<Pinned>> retiredPinned;
     // Ownership is only touched under lock, outside the device callback.
     std::unique_ptr<BufferingAudioReader> reader;
     std::vector<std::unique_ptr<BufferingAudioReader>> retired;
@@ -143,9 +198,15 @@ class StreamingReader final : public AudioFormatReader {
     void serviceDemand() {
         const ScopedTryLock guard(lock);
         if (!guard.isLocked()) return;
-        if (activeReads.load(std::memory_order_seq_cst) == 0) retired.clear();
+        if (activeReads.load(std::memory_order_seq_cst) == 0) { retired.clear(); retiredPinned.clear(); }
         const auto at = requested.load();
         if (at < 0 || uint32(Time::getMillisecondCounter() - lastDemand.load()) > 2000) {
+            publishedPinned[0].store(nullptr, std::memory_order_seq_cst);
+            if (pinned[0]) retiredPinned.push_back(std::move(pinned[0]));
+            if (!keepLoopReserve.load()) {
+                publishedPinned[1].store(nullptr, std::memory_order_seq_cst);
+                if (pinned[1]) retiredPinned.push_back(std::move(pinned[1]));
+            }
             if (reader) {
                 published.store(nullptr, std::memory_order_seq_cst);
                 retired.push_back(std::move(reader));

@@ -773,6 +773,19 @@ struct TimecodePlaybackSpan {
         // resampling's pitch, using small corrections within the pitch range.
         let quantum = pow(Float(2), floor(log2(rate)) - 3)
         var coarseRate = (rate / quantum).rounded() * quantum
+        // A rapid drag can alternate around a quantisation boundary on every
+        // UI tick. Keep the existing exact coarse ratio within a small band
+        // and let Varispeed supply the remainder. This avoids repeatedly
+        // reconfiguring TimePitch's analysis hop without delaying BPM edits or
+        // changing their exact source-clock ratio.
+        let existing = stretch.rate
+        if realtime, transportWasRunning, existing > 0 {
+            let ratio = rate / existing
+            let compensatedPitch = pitch - 1200 * log2(ratio)
+            if ratio >= 0.91, ratio <= 1.10, abs(compensatedPitch) <= 2400 {
+                coarseRate = existing
+            }
+        }
         var remainder = rate / coarseRate
         var tuning = pitch - 1200 * log2(remainder)
         if tuning > 2400 { coarseRate -= quantum }
@@ -780,7 +793,7 @@ struct TimecodePlaybackSpan {
         coarseRate = min(32, max(1.0/32, coarseRate))
         remainder = rate / coarseRate
         tuning = pitch - 1200 * log2(remainder)
-        if stretch.rate != coarseRate { stretch.rate = coarseRate }
+        if existing != coarseRate { stretch.rate = coarseRate }
         if stretch.pitch != tuning { stretch.pitch = tuning }
         if clock.rate != remainder { clock.rate = remainder }
         if stretch.bypass { stretch.bypass = false }

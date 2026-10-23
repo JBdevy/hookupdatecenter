@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "ClipTempo.h"
 namespace catlive::tempoEditing {
 inline const jaras::TimelineMarker *active(const jaras::Song &song, double position) {
     const jaras::TimelineMarker *result = nullptr;
@@ -28,6 +29,20 @@ inline double position(const jaras::Song &song, const jaras::TransportState &sta
 inline double bpm(const jaras::Song &song, double at) {
     const auto *marker = active(song, at);
     return marker ? *marker->tempoBPM : song.bpm;
+}
+inline bool needsRender(const jaras::Song &song, const jaras::Part *part = nullptr) {
+    for (const auto &track : song.tracks) for (const auto &clip : track.clips) {
+        if (!clip.audioFile && !clip.midi && !track.audioFile) continue;
+        if (part) {
+            if (const auto *owner = jaras::TempoEditMap::tempoOwner(song, clip)) {
+                if (owner->id != part->id && owner->parentRegionID != part->id) continue;
+            } else if (clip.startTime >= part->endTime || clip.startTime + clip.duration <= part->startTime) continue;
+        }
+        const auto reference = clip.tempoBasePlaybackRate.value_or(clip.playbackRate);
+        for (const auto &span : ClipTempo(clip, &song).spans)
+            if (std::abs(span.rate - reference) > .0000005) return true;
+    }
+    return false;
 }
 inline jaras::TimelineMarker boundary(const jaras::Song &song, double at) {
     jaras::TimelineMarker marker;

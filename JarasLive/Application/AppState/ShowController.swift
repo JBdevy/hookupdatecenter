@@ -1408,6 +1408,16 @@ public struct ShowTimelinePresentationState: Equatable {
         return position
     }
     public var tempoControlBPM: Double { current?.tempoSection(at: tempoControlPosition).bpm ?? 120 }
+    private var tempoRenderIndicatorCache: (revision: UInt64, song: UUID, region: UUID?, pending: Bool)?
+    public var tempoControlNeedsRender: Bool {
+        guard let song = current else { return false }
+        let region = tempoControlRegion
+        if let cached = tempoRenderIndicatorCache, cached.revision == projectRevision,
+           cached.song == song.id, cached.region == region?.id { return cached.pending }
+        let pending = song.hasUnrenderedTempo(in: region)
+        tempoRenderIndicatorCache = (projectRevision, song.id, region?.id, pending)
+        return pending
+    }
     public func adjustTempo(_ delta: Double) {
         guard delta.isFinite else { return }
         resetTapTempo()

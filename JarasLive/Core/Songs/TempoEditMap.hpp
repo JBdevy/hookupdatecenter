@@ -57,6 +57,7 @@ class TempoEditMap {
         return *active->tempoBPM / active->tempoReferenceBPM.value_or(song.bpm);
     }
 public:
+    static const Part* tempoOwner(const Song& song, const AudioClip& clip) { return owner(song, clip); }
     // Playback and editor cursors use the same persisted ownership and tempo
     // reference as tempo edits, including tails inside a following song.
     static double playbackRate(const Song& song, const AudioClip& clip, double time) {

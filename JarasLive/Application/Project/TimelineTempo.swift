@@ -146,6 +146,25 @@ public struct TapTempo {
 }
 
 public extension Song {
+    /// A tempo is still provisional while any owned source needs live tempo
+    /// processing. Re-render resets that source's rate/reference, so partial
+    /// renders cannot clear the indicator for the remaining items.
+    func hasUnrenderedTempo(in region: Part? = nil) -> Bool {
+        let sections = tempoSections(until: duration)
+        return tracks.contains { track in
+            track.clips.contains { clip in
+                guard clip.audioFile != nil || clip.midi != nil || track.audioFile != nil else { return false }
+                if let region {
+                    let owner = tempoOwner(for: clip)
+                    if let owner {
+                        guard owner.id == region.id || owner.parentRegionID == region.id else { return false }
+                    } else if clip.startTime >= region.endTime || clip.startTime + clip.duration <= region.startTime { return false }
+                }
+                let reference = clip.tempoBasePlaybackRate ?? clip.audioRate
+                return tempoAudioSegments(clip, sections: sections).contains { abs($0.audioRate - reference) > 0.0000005 }
+            }
+        }
+    }
     mutating func followTempo(_ value: Double) {
         guard projectTime.timebase == .relative else { bpm = value; return }
         guard value != bpm else { return }

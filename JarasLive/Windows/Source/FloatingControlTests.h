@@ -1,6 +1,7 @@
 #pragma once
 #include "FloatingShortcuts.h"
 #include "UIFeatureTests.h"
+#include "PlaylistEditor.h"
 namespace catlive::floatingControlTests {
 inline void require(bool okay, const char *message) { if (!okay) throw std::runtime_error(message); }
 inline void pump() {
@@ -14,6 +15,18 @@ inline jaras::Project fixture() {
     p.songs={s};p.savedCursor=jaras::SavedProjectCursor{s.id,0};return p;
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Marker shortcut modal focuses the name before the first typed character", [&] {
+        Component host; host.setWantsKeyboardFocus(true); host.setSize(900,650);
+        host.addToDesktop(ComponentPeer::windowIsTemporary);host.setVisible(true);host.grabKeyboardFocus();pump();
+        auto panel=std::make_unique<RegionEditor>("Marker",0xff0000,false,[](String,unsigned,bool){},[]{},false);
+        ModalSheet::open(host,"Marker",std::move(panel),380,330);pump();
+        auto *editor=dynamic_cast<TextEditor *>(uiFeatureTests::find(host,"nameColourName"));
+        require(editor && editor->hasKeyboardFocus(false),"Marker name did not receive modal focus");
+        require(host.getPeer()->handleKeyPress(KeyPress('x',ModifierKeys(),L'x')),"First marker character was not handled");
+        require(editor->getText()=="x","Typing did not replace the selected marker name");
+        ModalSheet::dismiss(*editor);pump();
+        require(!Component::getCurrentlyModalComponent(),"Marker modal did not dismiss");
+    });
     test("Tap tempo matches Mac rounding, accidental taps, idle reset and limits", [] {
         for(auto measured:{123.2,123.8}){TapTempo tap;require(!tap.tap(0),"First tap must not change tempo");require(tap.tap(60/measured)==std::round(measured),"Mac rounding differs");}
         TapTempo tap;tap.tap(0);require(tap.tap(.5)==120 && tap.tap(1)==120,"Average differs");

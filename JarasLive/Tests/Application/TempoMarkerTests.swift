@@ -1,6 +1,28 @@
 import XCTest
 @testable import JarasApplication
 final class TempoMarkerTests: XCTestCase {
+    func testTempoIndicatorWaitsForEveryOwnedItemToBeRendered() {
+        var song = resizeSong()
+        let part = song.parts[0]
+        var clip = AudioClip(id: UUID(), name: "Audio", startTime: part.startTime, duration: 1,
+                             audioFile: AudioFile(path: "source.wav"))
+        clip.tempoBasePlaybackRate = 1; clip.playbackRate = 1.25; clip.regionOwnerID = part.id
+        song.markers = []; song.tracks[0].clips = [clip, clip]
+        song.tracks[0].clips[1].id = UUID()
+        XCTAssertTrue(song.hasUnrenderedTempo(in: part))
+        song.tracks[0].clips[0].playbackRate = 1
+        song.tracks[0].clips[0].tempoBasePlaybackRate = nil
+        song.tracks[0].clips[0].renderedTempo = true
+        XCTAssertTrue(song.hasUnrenderedTempo(in: part), "Partial render must stay yellow")
+        song.tracks[0].clips[1].playbackRate = 1
+        song.tracks[0].clips[1].tempoBasePlaybackRate = nil
+        song.tracks[0].clips[1].renderedTempo = true
+        XCTAssertFalse(song.hasUnrenderedTempo(in: part))
+        song.tracks[0].clips[1].playbackRate = 1.1; song.tracks[0].clips[1].tempoBasePlaybackRate = 1
+        XCTAssertTrue(song.hasUnrenderedTempo(in: part), "A new tempo change must show again")
+        song.tracks[0].clips[1].playbackRate = 1
+        XCTAssertFalse(song.hasUnrenderedTempo(in: part), "Returning to the reference clears the indicator")
+    }
     func testEditCursorSnapsToItemBoundariesAndShiftBypassesThem() {
         var song = resizeSong(); song.parts = []; song.markers = []
         song.bpm = 120; song.beatsPerBar = 4; song.beatUnit = 4

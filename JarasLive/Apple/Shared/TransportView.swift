@@ -639,6 +639,7 @@ private struct TempoControl: View {
             } label: {
                 VStack(spacing: 0) {
                     Text(bpmText).font(.jarasSystem(size: 15, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(show.tempoControlNeedsRender ? JarasTheme.yellow : JarasTheme.text)
                     Text("BPM").font(.jarasSystem(size: 8))
                 }.frame(width: 58, height: 35).background(JarasTheme.display)
                     .clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())

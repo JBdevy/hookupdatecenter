@@ -18,6 +18,7 @@ final class ControlMappings {static let shared=ControlMappings();func shortcutHe
  var presentationObserver:ShowPresentationObserver {ShowPresentationObserver()}
  var current: Song? {snapshot.project.songs.first}
  var tempoControlBPM:Double {120}
+ var tempoControlNeedsRender:Bool {false}
  func tapTempo() {}; func resetTapTempo() {};func adjustTempo(_ d:Double){};func setMeterBeats(_ d:Int){};func setMeterUnit(_ d:Int){};func setTempo(_ d:Double){}
 }
 struct GeometrySubPlay {var playing=false}

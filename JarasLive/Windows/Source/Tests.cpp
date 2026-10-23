@@ -952,13 +952,17 @@ int runTests(const File &directory) {
         for(int i=0;i<pcm.getNumSamples();++i)for(int c=0;c<2;++c)pcm.setSample(c,i,.1f*std::sin(float(i)*.01f));
         expect(writer->writeFromAudioSampleBuffer(pcm,0,pcm.getNumSamples()),"Tempo fixture audio");writer.reset();
         Session session;session.inspection=true;session.mediaDirectory=media;
-        session.restoreSnapshot(ProjectCodec::encode(projectFixture()));
+        auto fixture=projectFixture();fixture.songs[0].timeSettings=jaras::ProjectTimeSettings{};
+        fixture.songs[0].timeSettings->timebase=jaras::ProjectTimebase::relative;
+        session.restoreSnapshot(ProjectCodec::encode(fixture));
         session.command(jaras::CommandKind::selectRegion,session.song()->parts[0].id);
         session.command(jaras::CommandKind::play);session.setTempo(135);
         expect(session.transport().playing && session.tempoBPM()==135,"BPM changes while playing");
+        expect(tempoEditing::needsRender(*session.song(), &session.song()->parts[0]),"Changed tempo is highlighted before rendering");
         expect(tempoEditing::bpm(*session.song(),30)==120,"Following song preserved");
         session.command(jaras::CommandKind::stopAll);session.undo();
         expect(tempoEditing::bpm(*session.song(),10)==120,"Undo restores tempo");
+        expect(!tempoEditing::needsRender(*session.song(), &session.song()->parts[0]),"Restored reference tempo clears highlighting");
     });
     test("Selected tracks share one neutral grid highlight and preserve grid colours", [&] {
         const Colour base(0xff161616), selected(0xff1d1d1d), primary(0xff535250);

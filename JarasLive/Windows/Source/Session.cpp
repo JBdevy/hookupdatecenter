@@ -1507,16 +1507,14 @@ void Session::setTempo(double value) {
         auto marker = *active; marker.tempoBPM = value;
         core.setMarkers({marker}, {}, true);
     } else core.setProjectTiming(value, oldSong.beatsPerBar, oldSong.beatUnit, oldSong.timeSettings);
-    bool retimed = false;
     const auto &updated = *song();
-    for (size_t i = 0; i < oldSong.tracks.size(); ++i)
-        for (size_t j = 0; j < oldSong.tracks[i].clips.size(); ++j) {
-            const auto &old = oldSong.tracks[i].clips[j];
-            const auto &now = updated.tracks[i].clips[j];
-            retimed |= old.startTime != now.startTime || old.duration != now.duration || old.playbackRate != now.playbackRate;
-        }
-    if (retimed) prepare();
-    else { audio.refreshTiming(updated); publishTransport(); }
+    // A structural edit in flight still owns a graph replacement. Otherwise
+    // retime the running voices without recreating readers, FX or FFT state.
+    if (graphCancellation) prepareLiveGraph();
+    else {
+        audio.refreshTempo(oldSong, updated);
+        publishTransport(true, true);
+    }
     undoHistory.push_back(before);
     if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
     redoHistory.clear(); dirty = true; message.clear(); notify();

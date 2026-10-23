@@ -194,6 +194,25 @@ inline void retirementDuringRead(const File& directory, bool slowOpen = false) {
 }
 template <typename Register>
 void registerTests(const File& directory, Register&& test) {
+    test("Seek and loop reserves preserve the old playback cache and exact destination PCM", [&] {
+        const auto file = directory.getChildFile("transition.sched"); file.replaceWithText("fixture");
+        Fixture fixture; AudioFormatManager formats; formats.registerFormat(new Format(fixture), true);
+        TimeSliceThread fill("Transition fill"); fill.startThread(Thread::Priority::high);
+        StreamingReader::Service service(formats, fill);
+        StreamingReader::Metadata meta; meta.format="Scheduling fixture"; meta.sampleRate=48000;
+        meta.frames=48000*16; meta.channels=2;
+        StreamingReader reader(file,meta,service);
+        reader.request(0); require(until([&]{return reader.ready(0,512);}),"Initial cache unavailable");
+        require(reader.prepareTransition(48000*8,4096),"Destination reserve unavailable");
+        verifyPCM(reader,0); // Preparing a seek must not evict the old playback.
+        require(reader.prepareTransition(0,4096,true),"Loop reserve unavailable");
+        fixture.holdRead=true;
+        // The fill thread may now be stalled; callback reads must use reserved
+        // samples immediately, including repeated wraps and independent seeks.
+        for(int n=0;n<8;++n){ verifyPCM(reader,48000*8+n*512); verifyPCM(reader,n*512); }
+        fixture.releaseRead.signal(); fixture.holdRead=false;
+        require(reader.cacheMisses.load()==0 && reader.inactiveMisses.load()==0,"Reserved transition underrun");
+    });
     test("Inactive streams stay off fill queue and slow decoder opening cannot block active cache fills",
          [&] { scheduling(directory); });
     test("Stream retirement preserves in-flight PCM and reclaims delegates outside the reader thread",

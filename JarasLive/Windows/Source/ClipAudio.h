@@ -8,9 +8,9 @@ namespace catlive {
 class ClipAudio {
   public:
     ClipAudio(const jaras::Song &song, const jaras::Track &track, const jaras::AudioClip &clip,
-              double rate) { configure(song, track, clip, rate); }
+              double rate, bool prepareDSP = true) { configure(song, track, clip, rate, prepareDSP); }
     void configure(const jaras::Song &song, const jaras::Track &track,
-                   const jaras::AudioClip &clip, double rate) {
+                   const jaras::AudioClip &clip, double rate, bool prepareDSP = true) {
         offset = clip.sourceOffset; speed = clip.playbackRate; duration = clip.duration;
         start = clip.startTime;
         timing.emplace(clip, &song);
@@ -36,7 +36,21 @@ class ClipAudio {
                                 clip.pitchSemitones.value_or(0) + region -
                                 12 * std::log2(timing->at(start + bounds[i])->rate)});
         }
-        prepare(rate);
+        sampleRate = rate;
+        if (prepareDSP) prepare(rate);
+    }
+    // Called at a callback boundary. The replacement contains only a prepared
+    // mapping; the running FFT history and decoder queue stay in this object.
+    bool hasPreparedPitch() const { return preparedPitchRate == sampleRate; }
+    void adoptTiming(ClipAudio &replacement) {
+        for (auto &head : heads) if (head.next >= 0) {
+            head.next = replacement.timing->timeAt(timing->sourceAt(start + head.next), false) - replacement.start;
+            head.ahead = replacement.timing->timeAt(timing->sourceAt(start + head.ahead), false) - replacement.start;
+        }
+        std::swap(start, replacement.start); std::swap(offset, replacement.offset);
+        std::swap(speed, replacement.speed); std::swap(duration, replacement.duration);
+        std::swap(loopStart, replacement.loopStart); std::swap(loopLength, replacement.loopLength);
+        timing.swap(replacement.timing); segments.swap(replacement.segments);
     }
     static bool needed(const jaras::Song &song, const jaras::Track &track,
                        const jaras::AudioClip &clip) {
@@ -122,16 +136,20 @@ class ClipAudio {
             const int frames =
                 segment ? boundedFrames((segment->end - now) * sampleRate, count - done)
                         : count - done;
-            if (std::abs(pitch) < 1e-8) {
+            if (std::abs(pitch) < 1e-8 && head.next < 0) {
                 ok = read(reader, scratch, output, done, now, frames) && ok;
                 head.next = -1;
             } else {
-                if (std::abs(head.next - now) > .25 / sampleRate || head.semitones != pitch) {
+                if (std::abs(head.next - now) > .25 / sampleRate) {
                     head.pitch.setTransposeSemitones((float)pitch);
                     const int prime = head.pitch.outputSeekLength(1.f);
                     ok = read(reader, scratch, head.input, 0, now, prime) && ok;
                     head.pitch.outputSeek(head.input.getArrayOfReadPointers(), prime);
                     head.ahead = now + prime / sampleRate;
+                    head.semitones = pitch;
+                }
+                else if (head.semitones != pitch) {
+                    head.pitch.setTransposeSemitones((float)pitch);
                     head.semitones = pitch;
                 }
                 ok = read(reader, scratch, head.input, 0, head.ahead, frames) && ok;
@@ -157,6 +175,7 @@ class ClipAudio {
     std::array<Head, 2> heads;
     std::vector<Segment> segments;
     std::optional<ClipTempo> timing;
+
     double start = 0, offset = 0, speed = 1, duration = 0, loopStart = 0, loopLength = 0,
            sampleRate = 48000, preparedPitchRate = 0;
     // Long items/loops can exceed INT_MAX samples. Clamp in floating point

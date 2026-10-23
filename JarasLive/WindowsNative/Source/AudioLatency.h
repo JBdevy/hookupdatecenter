@@ -33,6 +33,10 @@ class TimelineDelay {
 public:
     struct Frame { double position=0; bool moving=false; };
     explicit TimelineDelay(unsigned frames=0):ring(frames){}
+    template <typename Map> void remap(Map map) {
+        fallback.position=map(fallback.position);
+        for(auto &frame:ring)frame.position=map(frame.position);
+    }
     void reset(double position)noexcept{valid=0;fallback={position,false};}
     Frame previous(unsigned framesAgo)const noexcept {
         if(!framesAgo||framesAgo>valid||framesAgo>ring.size())return fallback;

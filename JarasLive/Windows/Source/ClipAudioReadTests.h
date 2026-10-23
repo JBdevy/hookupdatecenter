@@ -92,6 +92,71 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
                               "Direct PCM read crossed a source-loop boundary");
         }
     });
+    test("Rapid tempo remapping keeps the sounding source clock and produces every audio block", [&] {
+        const double rate=48000;
+        AudioBuffer<float> pcm(2,48000*12);
+        for(int n=0;n<pcm.getNumSamples();++n) for(int ch=0;ch<2;++ch)
+            pcm.setSample(ch,n,float(.2*std::sin(2*MathConstants<double>::pi*440*n/rate)));
+        Reader reader(pcm,rate);
+        jaras::Song song;song.id=uuid();song.duration=12;
+        jaras::Track track;track.id=uuid();track.role.id="other";
+        jaras::AudioClip clip;clip.id=uuid();clip.duration=10;clip.playbackRate=1.1;
+        track.clips={clip};song.tracks={track};
+        ClipAudio processor(song,track,clip,rate);
+        AudioBuffer<float> scratch(2,131080),output(2,480);
+        double local=0;
+        for(int block=0;block<220;++block) {
+            if(block>10 && block%4==0) {
+                const double source=processor.sourcePosition(local);
+                clip.playbackRate=(block%8==0?1.09:1.11);clip.duration=10/clip.playbackRate;
+                song.tracks[0].clips[0]=clip;
+                ClipAudio next(song,track,clip,rate,false);
+                processor.adoptTiming(next);local=source/clip.playbackRate;
+                require(std::abs(processor.sourcePosition(local)-source)<1e-8,"Tempo edit rewound source position");
+            }
+            require(processor.render(reader,scratch,output,0,local,480),"Tempo read failed");
+            require(output.getRMSLevel(0,0,480)>.015,"Tempo edit interrupted the sounding waveform");
+            local+=480/rate;
+        }
+    });
+    test("Full engine changes BPM without seeking backwards or rebuilding source and effect graphs", [&] {
+        const auto folder=directory.getNonexistentChildFile("live-bpm-continuity","");folder.createDirectory();
+        auto stream=folder.getChildFile("tone.wav").createOutputStream();WavAudioFormat format;
+        std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.get(),48000,2,24,{},0));
+        require(writer!=nullptr,"Tempo fixture writer");stream.release();
+        AudioBuffer<float> pcm(2,48000*10);
+        for(int n=0;n<pcm.getNumSamples();++n)for(int ch=0;ch<2;++ch)pcm.setSample(ch,n,float(.15*std::sin(n*.035)));
+        require(writer->writeFromAudioSampleBuffer(pcm,0,pcm.getNumSamples()),"Tempo fixture write");writer.reset();
+        jaras::Project project;project.id=uuid();jaras::Song song;song.id=uuid();song.bpm=120;song.duration=10;
+        song.timeSettings=jaras::ProjectTimeSettings{};song.timeSettings->timebase=jaras::ProjectTimebase::relative;
+        jaras::Track track;track.id=uuid();track.role.id="other";
+        jaras::AudioClip clip;clip.id=uuid();clip.duration=10;clip.audioFile=jaras::AudioFile{"tone.wav",{}};
+        track.clips={clip};song.tracks={track};project.songs={song};
+        for(double sampleRate:{44100.,48000.}) {
+            auto engine=std::make_unique<AudioEngine>(sampleRate,true);engine->prepareSong(song,folder,{},&project);
+            engine->setMixer(project,song);engine->setOffline(true);
+            AudioEngine::State state;state.playing=true;engine->transport(state);
+            auto current=song;AudioBuffer<float> output(2,480);
+            for(int block=0;block<240;++block) {
+                if(block>12 && block%4==0) {
+                    auto next=current;next.bpm=block%8==0?121:119;
+                    const auto scale=current.bpm/next.bpm;
+                    next.duration*=scale;next.tracks[0].clips[0].duration*=scale;
+                    next.tracks[0].clips[0].playbackRate/=scale;
+                    engine->takeElapsed();
+                    engine->render(output.getArrayOfWritePointers(),2,480);
+                    const auto before=engine->state().position;
+                    engine->refreshTempo(current,next);
+                    require(std::abs(engine->takeElapsed()-480/sampleRate*scale)<1.1/sampleRate,"Tempo edit reported elapsed frames from the old clock epoch");
+                    require(std::abs(engine->state().position-before*scale)<1e-8,"BPM retime used a stale transport position");
+                    current=next;
+                }
+                engine->render(output.getArrayOfWritePointers(),2,480);
+                require(output.getRMSLevel(0,0,480)>.01,"BPM change interrupted audio");
+            }
+            require(engine->getUnderruns()==0,"BPM change caused a read underrun");
+        }
+    });
     test("Direct loop reads retain item fades, gain, normalization, phase and pan in the full audio graph",[&] {
         const auto folder=directory.getNonexistentChildFile("clip-direct-fades","");folder.createDirectory();
         const auto file=folder.getChildFile("source.wav");auto pcm=samples(2,12000);

@@ -142,6 +142,7 @@ class RegionEditor final : public Component {
                  bool allowUppercase = true, bool allowName = true)
         : commit(std::move(save)), cancel(std::move(close)), showsUppercase(allowUppercase), showsName(allowName) {
         getProperties().set("selfContainedSheet", true);
+        setWantsKeyboardFocus(showsName);
         name.setComponentID("nameColourName");
         addAndMakeVisible(name); name.setVisible(showsName);
         name.setFont(theme::font(13));
@@ -195,6 +196,12 @@ class RegionEditor final : public Component {
         name.onReturnKey = [this] { saveButton.triggerClick(); };
     }
     void visibilityChanged() override { if (isShowing() && showsName) name.grabKeyboardFocus(); }
+    // ModalSheet becomes modal after adding its content, which takes focus
+    // away from the editor's visibilityChanged callback. Forward that final
+    // modal focus to the name so shortcut-created markers accept typing.
+    void focusGained(FocusChangeType) override {
+        if (showsName) { name.grabKeyboardFocus(); name.selectAll(); }
+    }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         g.setColour(Colours::white); g.setFont(theme::font(13,true));

@@ -319,6 +319,104 @@ void AudioEngine::refreshTiming(const jaras::Song &song) {
         if (found != clicks.end()) bus->click->sections.swap(found->second);
     }
 }
+void AudioEngine::refreshTempo(const jaras::Song &before, const jaras::Song &after) {
+    const jaras::TempoEditMap map(before, after);
+    auto clickTiming = ClickProgram::tempo(after);
+    std::map<ID, std::vector<ClickProgram::Section>> clickSections;
+    for (const auto &track : after.tracks) if (track.role.id == "generatedClick") {
+        ClickProgram program; program.prepare(after, &track);
+        clickSections.emplace(track.id, std::move(program.sections));
+    }
+    const auto remap = [&](double at) {
+        return before.bpm != after.bpm && after.timeSettings.value_or(jaras::ProjectTimeSettings{}).timebase == jaras::ProjectTimebase::relative
+            ? at * before.bpm / after.bpm : map.position(at);
+    };
+    struct Edit {
+        Voice *voice;
+        const jaras::AudioClip *clip;
+        std::optional<double> playbackStart;
+        std::unique_ptr<ClipAudio> processor;
+        std::unique_ptr<ClipTempo> midiTiming;
+        MIDIPlayback::Sequence midi;
+        std::vector<PlaybackNote> shared;
+    };
+    std::map<ID, Voice *> byID;
+    for (auto &voice : voices) byID.emplace(voice->clipID, voice.get());
+    std::vector<Edit> edits;
+    std::vector<std::pair<size_t, SharedMIDIUpdate>> midiBuses;
+    std::optional<jaras::TimecodeProgram> mtc;
+    bool mtcMuted = false;
+    for (const auto &track : after.tracks) {
+        if (track.role.id == "timecode") { mtc.emplace(after, track); mtcMuted = track.mute; }
+        bool hasMIDI = false;
+        for (const auto &clip : track.clips) {
+            const auto found = byID.find(clip.id);
+            if (found == byID.end()) continue;
+            auto *voice = found->second;
+            Edit edit{voice, &clip, jaras::playbackItemStart(after, clip), {}, {}, {}, {}};
+            if (voice->midiItem) {
+                hasMIDI = true;
+                edit.midiTiming = std::make_unique<ClipTempo>(clip, &after);
+                edit.midi = MIDIPlayback::sequence(takePlaybackNotes(track, clip, after, true));
+                edit.shared = takePlaybackNotes(track, clip, after, false);
+            } else if (voice->clipAudio || ClipAudio::needed(after, track, clip)) {
+                edit.processor = std::make_unique<ClipAudio>(after, track, clip, rate.load(), !voice->clipAudio || !voice->clipAudio->hasPreparedPitch());
+            }
+            edits.push_back(std::move(edit));
+        }
+        if (hasMIDI) for (size_t i = 0; i < buses.size(); ++i) if (buses[i]->id == track.id)
+            midiBuses.emplace_back(i, SharedMIDIUpdate(playbackNotes(track, &after, true, true)));
+    }
+    // Keep file decoders, FX, FFT history and latency buffers. Only mappings
+    // and clocks change, together at the same audio block boundary.
+    {
+        const ScopedLock lock(devices.getAudioCallbackLock());
+        applyUpdates();
+        const double oldCursor = current.playing ? current.position : current.subPosition;
+        const double unreported = double(elapsedSamples.load()) / rate.load();
+        if ((current.playing || current.subPlaying) && unreported > 0) {
+            // UI/core already remapped its last sampled cursor. Frames played
+            // while preparing this edit belong to the old tempo epoch; report
+            // their mapped duration or syncClock will mistake the difference
+            // for a seek and repeat an earlier block.
+            const double mapped = remap(oldCursor) - remap(oldCursor - unreported);
+            elapsedSamples = uint64(std::max(0., std::round(mapped * rate.load())));
+        }
+        for (auto &edit : edits) {
+            auto &voice = *edit.voice;
+            if (voice.clipAudio && edit.processor && voice.clipAudio->hasPreparedPitch()) voice.clipAudio->adoptTiming(*edit.processor);
+            else voice.clipAudio.swap(edit.processor);
+            voice.start = edit.clip->startTime; voice.duration = edit.clip->duration;
+            voice.offset = edit.clip->sourceOffset; voice.speed = edit.clip->playbackRate;
+            voice.playbackStart.swap(edit.playbackStart);
+            if (voice.midiItem) {
+                voice.midiTiming.swap(edit.midiTiming);
+                std::swap(voice.midiSequence, edit.midi); voice.sharedMIDINotes.swap(edit.shared);
+                for (auto &expected : voice.midiExpected) if (expected >= 0) expected = remap(expected);
+            }
+        }
+        for (auto &entry : midiBuses) replaceSharedMIDI(entry.first, entry.second);
+        current.position = remap(current.position); current.subPosition = remap(current.subPosition);
+        current.loopStart = remap(current.loopStart); current.loopEnd = remap(current.loopEnd);
+        current.end = std::isfinite(current.end) ? remap(current.end) : current.end;
+        position = current.position; subPosition = current.subPosition;
+        for (int h = 0; h < 2; ++h) {
+            if (std::isfinite(current.scope[h].minimum)) current.scope[h].minimum = remap(current.scope[h].minimum);
+            if (std::isfinite(current.scope[h].maximum)) current.scope[h].maximum = remap(current.scope[h].maximum);
+            presentedPosition[h] = remap(presentedPosition[h].load());
+            tailCursor[h] = remap(tailCursor[h]);
+            if (latencyPlan) latencyPlan->timeline[h].remap(remap);
+        }
+        duration = after.duration;
+        metronome.sections.swap(clickTiming);
+        for (auto &bus : buses) if (bus->click) {
+            const auto found = clickSections.find(bus->id);
+            if (found != clickSections.end()) bus->click->sections.swap(found->second);
+        }
+        if (mtc) std::swap(timecodeProgram, *mtc);
+    }
+    if (mtc) timecodeMIDI.updateProgram(timecodeProgram, after.duration, mtcMuted);
+}
 void AudioEngine::closeDevice() {
     timecodeMIDI.stop();
     if (attached)
@@ -1179,7 +1277,8 @@ void AudioEngine::transport(const State &state) {
             }
             reader->request(position);
             ++lastPrimedSources;
-            if (voice->start <= cursor) pending.push_back({reader, position, count});
+            if (voice->start <= cursor && !reader->prepareTransition(position, count))
+                pending.push_back({reader, position, count});
         }
     }
     const auto deadline = Time::getMillisecondCounter() + 2000;
@@ -1192,6 +1291,7 @@ void AudioEngine::transport(const State &state) {
     }
 
     lastPrimeWaitMilliseconds = Time::getMillisecondCounterHiRes() - primeStart;
+    primeLoop(state);
     Update u;
     u.kind = Update::transport;
     u.state = state;
@@ -1200,9 +1300,32 @@ void AudioEngine::transport(const State &state) {
         state.loopEnd, state.end, state.timecodePreferred, attached && !exportCapture);
 }
 void AudioEngine::updateTransportRouting(const State &state) {
+    primeLoop(state);
     Update update; update.kind = Update::routing; update.state = state;
     enqueue(update);
     timecodeMIDI.updateRouting(state.loop, state.loopStart, state.loopEnd, state.end, state.timecodePreferred);
+}
+void AudioEngine::primeLoop(const State &state) {
+    if (!state.loop || state.loopEnd <= state.loopStart || (!state.playing && !state.subPlaying)) {
+        for (auto &voice : voices) if (voice->source)
+            for (auto &reader : voice->source->readers) if (reader) reader->clearLoopReserve();
+        return;
+    }
+    for (auto &voice : voices) {
+        if (!voice->source) continue;
+        if (voice->start > state.loopStart || voice->start + voice->duration <= state.loopStart) {
+            for (auto &reader : voice->source->readers) if (reader) reader->clearLoopReserve();
+            continue;
+        }
+        const double local = state.loopStart - voice->start;
+        for (auto &reader : voice->source->readers) if (reader) {
+            const auto range = voice->clipAudio ? voice->clipAudio->readAheadRange(local, .75)
+                : std::pair<double,double>{voice->offset + local * voice->speed, voice->offset + (local + .75) * voice->speed};
+            const auto first = int64(std::floor(range.first * reader->sampleRate));
+            const auto frames = int64(std::ceil((range.second - range.first) * reader->sampleRate)) + 2;
+            if (frames > 0 && frames <= 131072) reader->prepareTransition(first, int(frames), true);
+        }
+    }
 }
 void AudioEngine::setItemControls(const jaras::AudioClip &clip) {
     for(size_t i=0;i<voices.size();++i) if(voices[i]->clipID==clip.id) {

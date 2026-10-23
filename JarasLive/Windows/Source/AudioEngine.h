@@ -63,6 +63,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::atomic<bool> metronomeEnabled{false};
     void closeDevice();
     void refreshTiming(const jaras::Song &song);
+    void refreshTempo(const jaras::Song &before, const jaras::Song &after);
     void refreshRegionPitch(const jaras::Song &, const ID &);
     struct PreparationControl {
         std::function<void()> checkpoint;
@@ -77,6 +78,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void adoptPreparedSong(AudioEngine &, bool preservePlayback = false);
     void transport(const State &);
     void updateTransportRouting(const State &);
+    void primeLoop(const State &);
     int timecodePreferred(const std::optional<ID>& region) const { return timecodeProgram.preferred(region); }
     void previewMIDIItem(const jaras::Song &,const jaras::AudioClip &);
     void refreshItemTiming(const jaras::Song &, const jaras::AudioClip &);
