@@ -28,6 +28,8 @@ struct IpadMixerMeter:View {let meter:Int;var body:some View{Color.green.allowsH
 enum DAWRemoteFaderScale {static func decibels(_ gain:Double)->Double{gain>0 ? 20*log10(gain) : -60};static func gain(_ db:Double)->Double{pow(10,db/20)}}
 enum JarasLocalization {static func string(_ key:String)->String{key}}
 
+@MainActor final class InstrumentKeyboardState { static let shared = InstrumentKeyboardState(); private let state = TrackMIDIActivity(); func activity(_ id: UUID) -> TrackMIDIActivity { state } }
+
 // PRODUCTION_ROW_CODE
 @main struct TouchFixtureApp:App {var body:some Scene{WindowGroup{TouchFixtureView()}}}
 struct TouchFixtureView:View {

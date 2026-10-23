@@ -3,7 +3,12 @@ final class TrackTouchTests:XCTestCase {
  func testCompactRowsKeepPatchAndFXUntilTheirControlsActuallyNeedTheSpace() {
   let app=XCUIApplication();app.launch()
   XCTAssertTrue(app.buttons["Compact 285"].waitForExistence(timeout:10))
+  let midi = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "MIDI activity")).firstMatch
+  XCTAssertTrue(midi.exists, "Standard track must show MIDI activity separately from audio")
+  let audio = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Audio meter")).firstMatch
+  if midi.exists && audio.exists { XCTAssertGreaterThanOrEqual(midi.frame.minX - audio.frame.maxX, 3.5) }
   app.buttons["Compact 285"].tap()
+  XCTAssertFalse(midi.exists, "Compact tracks hide MIDI activity while keeping the audio meter")
   XCTAssertTrue(app.buttons["Patch"].exists);XCTAssertTrue(app.buttons["FX"].exists)
   app.buttons["Patch"].tap();XCTAssertEqual(app.staticTexts["event"].label,"patch")
   app.buttons["Compact 235"].tap()

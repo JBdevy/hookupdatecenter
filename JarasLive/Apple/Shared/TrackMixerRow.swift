@@ -2375,7 +2375,7 @@ private final class TrackDragTitleView: NSView {
 }
 #endif
 
-private struct TrackMIDIIndicator: View {
+struct TrackMIDIIndicator: View {
     @ObservedObject var state: TrackMIDIActivity
     var body: some View {
         GeometryReader { geometry in

@@ -45,12 +45,14 @@ final class WaveformDisplayHost: UIView {
         guard await wait({ MetalWaveformRenderer.isSupported && self.bounds.width > 0 }) else { fail("Metal unavailable"); return }
         let block = TimelineAudioWaveform.VertexBlock(channels: [[SIMD2<Float>(0, 0), SIMD2<Float>(1, 1), SIMD2<Float>(2, 0)]],
             start: 0, end: 2, step: 1, rate: 1, key: "ipad-pan-display")
-        func frame(_ origin: Double) -> MetalWaveformFrame {
+        func frame(_ origin: Double, span: Double = 5.12) -> MetalWaveformFrame {
             let rect = CGRect(origin: .zero, size: self.bounds.size)
-            let stroke = MetalWaveformStroke(block: block, channel: 0, scale: SIMD2(100, 32),
-                translation: SIMD2(Float(200 - origin), 60), clip: rect, color: SIMD4(repeating: 1), itemRect: rect)
+            let scale = Float(rect.width / span)
+            let item = CGRect(x: CGFloat(2 * scale) - origin, y: 0, width: CGFloat(2 * scale), height: rect.height)
+            let stroke = MetalWaveformStroke(block: block, channel: 0, scale: SIMD2(scale, 32),
+                translation: SIMD2(Float(item.minX), 60), clip: rect, color: SIMD4(repeating: 1), itemRect: item)
             return MetalWaveformFrame(size: rect.size, strokes: [stroke],
-                coordinateSpace: .init(documentOrigin: CGPoint(x: origin, y: 0), pixelsPerSecond: 100, contentRevision: 1))
+                coordinateSpace: .init(documentOrigin: CGPoint(x: origin, y: 0), pixelsPerSecond: Double(scale), contentRevision: 1))
         }
         surface.submit(frame(0))
         guard await wait({ self.surface.displayedOriginForPanTest == 0 }) else { fail("initial waveform never presented"); return }
@@ -68,6 +70,17 @@ final class WaveformDisplayHost: UIView {
         for _ in 0..<100 { surface.submit(frame(120)) }
         try? await Task.sleep(nanoseconds: 200_000_000)
         guard surface.submittedFrameCount == idle else { fail("waveform continued rendering after pan stopped"); return }
-        WaveformDisplayResult.shared.value = "PASS: UIKit pan display synchronized; latest frame only; idle after stop"
+        // Exercise both zoom limits, including items narrower than one pixel.
+        // Each new viewport must reach the compositor without resizing the row
+        // or presenting one of the superseded intermediate transforms.
+        for span in [86_400.0, 0.25, 86_400.0, 60.0] {
+            let beforeZoom = surface.submittedFrameCount
+            for index in 1...120 { surface.submit(frame(0, span: span + Double(120 - index))) }
+            guard surface.submittedFrameCount == beforeZoom else { fail("zoom rendered outside UIKit display pass"); return }
+            let expected = Double(Float(bounds.width / span))
+            guard await wait({ self.surface.displayedScaleForZoomTest == expected }) else { fail("zoom limit never presented"); return }
+            guard surface.presentedContentFrame == bounds else { fail("zoom changed waveform row bounds"); return }
+        }
+        WaveformDisplayResult.shared.value = "PASS: UIKit pan and zoom limits synchronized; latest frame only; stable row bounds"
     }
 }

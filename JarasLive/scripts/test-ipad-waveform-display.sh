@@ -13,20 +13,15 @@ paths = ['Application/Project/AudioFileRead.swift', 'Apple/Shared/TimelineRender
          'Apple/Shared/TimelineAudioWaveform.swift', 'Apple/Shared/MetalWaveformRenderer.swift',
          'Tests/Apple/IpadWaveformDisplayFixture.swift']
 sources = [Path(path).read_text() for path in paths]
-# The Simulator SDK omits MTLDrawable's presented callback and presentedTime.
-# Replace only that lease-release notification in this isolated test binary;
-# submission, UIKit display, shader encoding and presentation remain production
-# code. Physical-device builds keep the real presentation callback unchanged.
+# Production now includes its own Simulator presentation callback fallback.
 renderer = sources[3]
 negative = os.environ.get('CATLIVE_WAVEFORM_DISPLAY_NEGATIVE') == '1'
 if negative:
     assert renderer.count('        setNeedsDisplay()') == 1
     renderer = renderer.replace('        setNeedsDisplay()', '        draw()')
-start = renderer.index('        drawable.addPresentedHandler { presented in')
-end = renderer.index('        lastPresentedSequence = sequence', start)
-sources[3] = renderer[:start] + '        DispatchQueue.main.async { lease.finish(2) }\n' + renderer[end:]
+sources[3] = renderer
 source = '\n'.join(sources)
-source += '\nextension MetalWaveformSurface { var displayedOriginForPanTest: CGFloat? { presented?.coordinateSpace?.documentOrigin.x } }\n'
+source += '\nextension MetalWaveformSurface { var displayedOriginForPanTest: CGFloat? { presented?.coordinateSpace?.documentOrigin.x }; var displayedScaleForZoomTest: Double? { presented?.coordinateSpace?.pixelsPerSecond } }\n'
 (folder / 'Fixture.swift').write_text(source)
 tests = Path('Tests/Apple/IpadWaveformDisplayUITests.swift').read_text()
 if negative:

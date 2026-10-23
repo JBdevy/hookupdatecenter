@@ -2907,12 +2907,14 @@ private struct RemoteNativeTimeline: View {
     private func pointerItems(width: CGFloat) -> [(id: UUID, track: UUID, rect: CGRect)] {
         var rows: [(UUID, UUID, CGRect)] = []
         var y: CGFloat = 0
+        let song = presentationSong
         for track in tracks {
-            let lane = DAWRemoteItemLayout.laneHeight(track, scale: scrolling.heightScale)
+            let geometry = IpadNativeItemGeometry(track: local ? song?.tracks.first(where: { $0.id == track.id }) : nil,
+                remoteTrack: track, scale: scrolling.heightScale)
             for clip in track.clips where clip.start < end && clip.start + clip.duration > start {
                 let left = max(start, clip.start), right = min(end, clip.start + clip.duration)
                 rows.append((clip.id, track.id, CGRect(x: (left - start) / span * width,
-                    y: y + CGFloat(clip.lane ?? 0) * lane, width: (right - left) / span * width, height: lane)))
+                    y: y + geometry.offset(clip.id, fallbackLane: clip.lane ?? 0), width: (right - left) / span * width, height: geometry.height(clip.id))))
             }
             y += DAWRemoteItemLayout.rowHeight(track, scale: scrolling.heightScale) + 1
         }
@@ -3299,6 +3301,31 @@ private struct RemoteNativeTimeline: View {
 
 }
 
+/// Use the desktop overlap components for item drawing and pointer hit testing.
+/// Unrelated overlaps elsewhere in the track do not shrink isolated items.
+private struct IpadNativeItemGeometry {
+    let rowHeight: Double
+    let fallbackLaneHeight: Double
+    let lanes: TrackLanes?
+    init(track: Track?, remoteTrack: DAWRemoteState.Track, scale: Double) {
+        rowHeight = DAWRemoteItemLayout.rowHeight(remoteTrack, scale: scale)
+        fallbackLaneHeight = DAWRemoteItemLayout.laneHeight(remoteTrack, scale: scale)
+        lanes = track.map { source in
+            var layout = TrackLanes(track: source)
+            if (remoteTrack.laneCount ?? 1) > layout.count {
+                layout.reserveRecordingLanes(count: remoteTrack.laneCount ?? 1)
+            }
+            return layout
+        }
+    }
+    func height(_ id: UUID) -> Double {
+        lanes.map { rowHeight / Double(max(1, $0.localCount(for: id))) } ?? fallbackLaneHeight
+    }
+    func offset(_ id: UUID, fallbackLane: Int = 0) -> Double {
+        Double(lanes?.localLane(for: id) ?? fallbackLane) * height(id)
+    }
+}
+
 /// Clip drawing is independent of the playhead. The needle can advance without
 /// rebuilding waveform paths or item touch targets in every visible row.
 private struct RemoteTimelineTrackRow: View, Equatable {
@@ -3394,6 +3421,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         }
     }
     var body: some View {
+        let itemGeometry = IpadNativeItemGeometry(track: local ? previewTrack : nil, remoteTrack: track, scale: heightScale)
         ZStack(alignment: .topLeading) {
             remoteColor(backgroundColor).opacity(local ? 0 : 1)
             if local && track.emphasized == true {
@@ -3415,7 +3443,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
             ForEach(previewClips.filter { hasRegion && $0.start < end && $0.start + $0.duration > start && (!local || RecordingLaneLayout.shared.items[$0.id] == nil) }) { clip in
                 let left = max(start, clip.start), right = min(end, clip.start + clip.duration)
                 let itemWidth = max(0, (right - left) / span * width)
-                RemoteNativeGridItem(clip: clip, width: itemWidth, height: DAWRemoteItemLayout.laneHeight(track, scale: heightScale), color: track.color, nameColor: track.nameColor ?? 0xffffff,
+                RemoteNativeGridItem(clip: clip, width: itemWidth, height: itemGeometry.height(clip.id), color: track.color, nameColor: track.nameColor ?? 0xffffff,
                     scrolling: scrolling,
                     sourceFraction: (left - clip.start) / max(0.001, clip.duration),
                     visibleFraction: (right - left) / max(0.001, clip.duration),
@@ -3433,8 +3461,8 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                             RoundedRectangle(cornerRadius: 3).strokeBorder(Color.white, lineWidth: 1.5).allowsHitTesting(false)
                         }
                     }
-                    .frame(width: itemWidth, height: DAWRemoteItemLayout.laneHeight(track, scale: heightScale))
-                    .offset(x: (left - start) / span * width, y: Double(clip.lane ?? 0) * DAWRemoteItemLayout.laneHeight(track, scale: heightScale))
+                    .frame(width: itemWidth, height: itemGeometry.height(clip.id))
+                    .offset(x: (left - start) / span * width, y: itemGeometry.offset(clip.id, fallbackLane: clip.lane ?? 0))
             }
             if local, let nativeTrack = previewTrack, let nativeSong, let nativeDirectory {
                 IpadNativeWaveformRow(track: nativeTrack, song: nativeSong, remoteTrack: track, directory: nativeDirectory,
@@ -3449,7 +3477,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     scale: scale, alignsToViewport: true).allowsHitTesting(false)
             }
             if local, resizeEnabled, !movementLocked, let selectedItem, let clip = previewClips.first(where: { $0.id == selectedItem }) {
-                let laneHeight = DAWRemoteItemLayout.laneHeight(track, scale: heightScale)
+                let laneHeight = itemGeometry.height(clip.id)
                 ForEach([true, false], id: \.self) { left in
                     let edge = left ? clip.start : clip.start + clip.duration
                     if (edge >= start && edge <= end) || resizing?.original.id == clip.id {
@@ -3457,7 +3485,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                             resize(clip.id, left: left, translation: delta, finished: finished, cancelled: cancelled)
                         }).id(clip.id).frame(width: 28, height: max(0, laneHeight - GridSelectionItem.headerHeight - 2))
                             .offset(x: min(width - 28, max(0, (edge - start) / span * width - 14)),
-                                    y: Double(clip.lane ?? 0) * laneHeight + GridSelectionItem.headerHeight + 1)
+                                    y: itemGeometry.offset(clip.id, fallbackLane: clip.lane ?? 0) + GridSelectionItem.headerHeight + 1)
                     }
                 }
             }
@@ -3491,7 +3519,7 @@ private struct IpadNativeWaveformRow: View {
     @State private var sources = IpadWaveformRowSources()
     var body: some View {
         let scale = width / max(0.001, span)
-        let laneHeight = DAWRemoteItemLayout.laneHeight(remoteTrack, scale: heightScale)
+        let itemGeometry = IpadNativeItemGeometry(track: track, remoteTrack: remoteTrack, scale: heightScale)
         let viewport = CGRect(x: start * scale, y: 0, width: width, height: DAWRemoteItemLayout.rowHeight(remoteTrack, scale: heightScale))
         let lanes = Dictionary(uniqueKeysWithValues: remoteTrack.clips.map { ($0.id, $0.lane ?? 0) })
         let rgb = TrackNameContrast.components(track.color ?? 0x705264, emphasized: false)
@@ -3501,8 +3529,8 @@ private struct IpadNativeWaveformRow: View {
             .filter { $0.clip.startTime < end && $0.clip.startTime + $0.clip.duration > start }
             .map { source in
                 TimelineWaveformItem(clip: source.clip, fragments: source.fragments, url: source.url,
-                    rect: CGRect(x: source.clip.startTime * scale, y: Double(lanes[source.clip.id] ?? 0) * laneHeight,
-                                 width: source.clip.duration * scale, height: laneHeight),
+                    rect: CGRect(x: source.clip.startTime * scale, y: itemGeometry.offset(source.clip.id, fallbackLane: lanes[source.clip.id] ?? 0),
+                                 width: source.clip.duration * scale, height: itemGeometry.height(source.clip.id)),
                     gray: remoteTrack.silenced == true || source.clip.muted == true ? 0.78 : gray, sourcePath: source.path)
             }
         MetalWaveformView(frame: TimelineMetalWaveformFrameBuilder.make(items: items, viewport: viewport,
@@ -4212,11 +4240,17 @@ private struct RemoteNativeMixerRow: View, Equatable {
             }
             }
             }
-        }.padding(.leading, local && hasVolume ? 19 : 6).padding(.trailing, editing ? 36 : 6).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }.padding(.leading, local && hasVolume ? (kind == .standard && !compact ? 26 : 19) : 6).padding(.trailing, editing ? 36 : 6).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .overlay(alignment: .leading) {
-                if local && hasVolume && track.canMeter != false {
-                    IpadMixerMeter(meter: StemAudioPlayback.shared.meter(for: track.id)).frame(width: 10)
-                        .padding(.vertical, 5).padding(.leading, 3)
+                ZStack(alignment: .leading) {
+                    if local && hasVolume && track.canMeter != false {
+                        IpadMixerMeter(meter: StemAudioPlayback.shared.meter(for: track.id)).frame(width: 10)
+                            .padding(.vertical, 5).padding(.leading, 3)
+                    }
+                    if local, kind == .standard, !compact {
+                        TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id))
+                            .frame(width: 3).padding(.vertical, 5).padding(.leading, 17)
+                    }
                 }
             }
             .background {
