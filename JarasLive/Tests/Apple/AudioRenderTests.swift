@@ -662,10 +662,13 @@ for position in [3.0, 6] {
     precondition(before.count == after.count && !before.isEmpty)
     let difference = zip(before, after).map { abs($0 - $1) }.max() ?? 1
     precondition(difference < 0.00001, "Free Grid preserves PCM after tempo markers: \(difference) at \(position)")
+    // Relative playback reserves TimePitch for live tempo edits even at unity.
+    // Compare marker behavior against the same graph, including its fixed latency.
+    let relativeBefore = try markerPCM(position: position, withMarkers: false, projectTimebase: .relative)
     let detected = try markerPCM(position: position, withMarkers: true, projectTimebase: .relative, detectedReference: true)
-    precondition(zip(before, detected).map { abs($0 - $1) }.max()! < 0.00001, "Detected tempo references preserve original PCM in Relative Grid")
+    precondition(zip(relativeBefore, detected).map { abs($0 - $1) }.max()! < 0.00001, "Detected tempo references preserve original PCM in Relative Grid")
     let forcedFree = try markerPCM(position: position, withMarkers: true, projectTimebase: .relative, markerTimebase: .free)
-    precondition(zip(before, forcedFree).map { abs($0 - $1) }.max()! < 0.00001, "Free marker overrides Relative Grid playback")
+    precondition(zip(relativeBefore, forcedFree).map { abs($0 - $1) }.max()! < 0.00001, "Free marker overrides Relative Grid playback")
     let inheritedRelative = try markerPCM(position: position, withMarkers: true, projectTimebase: .relative)
     let forcedRelative = try markerPCM(position: position, withMarkers: true, markerTimebase: .relative)
     precondition(inheritedRelative.count == forcedRelative.count && !inheritedRelative.isEmpty)

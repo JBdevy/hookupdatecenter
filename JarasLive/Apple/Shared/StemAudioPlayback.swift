@@ -1575,7 +1575,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         player.volume = 0
         let pitch = clipPitches[clip.id] ?? 0
-        let usesStretch = !realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(pitch) >= 0.000001
+        let usesStretch = allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(pitch) >= 0.000001
         configureStretch(stretch, clock: rateClock, rate: Float(clip.audioRate), pitch: pitch); stretch.overlap = 8
         engine.attach(player); engine.attach(gain); engine.attach(stretch); engine.attach(rateClock)
         let bus = trackBus(for: track).input(for: clip)
@@ -1605,7 +1605,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                 abs(voice.clip.audioRate - clip.audioRate) < 0.000001 &&
                 abs(voice.pitch - (clipPitches[clip.id] ?? 0)) < 0.000001 &&
                 voice.file.processingFormat.isEqual(file.processingFormat) &&
-                voice.usesStretch == (!realtime || allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(clipPitches[clip.id] ?? 0) >= 0.000001)
+                voice.usesStretch == (allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(clipPitches[clip.id] ?? 0) >= 0.000001)
         }
         let preferred = pool.firstIndex { $0.clip.id == clip.id && matches($0) }
         let reusable = pool.firstIndex { matches($0) && analysisEffects[$0.clip.id.uuidString]?.isEmpty != false }
@@ -3257,7 +3257,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                     cancelPendingTempoVoice(key, voice)
                     continue
                 }
-                let requiresStretch = !realtime || allowsTempoChanges || abs(current.1.audioRate - 1) >= 0.000001 || abs(voice.pitch) >= 0.000001
+                let requiresStretch = allowsTempoChanges || abs(current.1.audioRate - 1) >= 0.000001 || abs(voice.pitch) >= 0.000001
                 if voice.usesStretch != requiresStretch { remove(key); continue }
                 if current.1.audioRate != voice.clip.audioRate {
                     configureStretch(voice.stretch, clock: voice.rateClock, rate: Float(current.1.audioRate), pitch: voice.pitch)
@@ -3462,7 +3462,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             for key in Array(voices.keys) where key.head == head {
                 if var voice = voices[key] {
                     let cents = clipPitches[voice.clip.id] ?? 0
-                    if voice.usesStretch != (!realtime || allowsTempoChanges || abs(voice.clip.audioRate - 1) >= 0.000001 || abs(cents) >= 0.000001) { remove(key); continue }
+                    if voice.usesStretch != (allowsTempoChanges || abs(voice.clip.audioRate - 1) >= 0.000001 || abs(cents) >= 0.000001) { remove(key); continue }
                     if voice.pitch != cents {
                         configureStretch(voice.stretch, clock: voice.rateClock, rate: Float(voice.clip.audioRate), pitch: cents)
                         voice.pitch = cents; setVoice(voice, for: key)
