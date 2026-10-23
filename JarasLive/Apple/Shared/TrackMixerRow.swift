@@ -225,16 +225,17 @@ private struct TrackMixerContinuousContainer<Content: View>: View {
 private struct TrackMixerButtonsContainer<Content: View>: View {
     let standard: Bool
     let showsFader: Bool
+    var vinhetas = false
     @ViewBuilder let content: () -> Content
     @Environment(\.legacyMixerHeight) private var height
     var body: some View {
         if #available(macOS 13, *), !JarasDrawingCompatibility.forceLegacy {
-            let layout = standard ? AnyLayout(TrackMixerButtonsLayout(showsFader: showsFader)) : AnyLayout(HStackLayout(spacing: 3))
+            let layout = standard ? AnyLayout(TrackMixerButtonsLayout(showsFader: showsFader, vinhetas: vinhetas)) : AnyLayout(HStackLayout(spacing: 3))
             layout { content() }
         } else if standard {
             let expanded = height >= 64
             let controlHeight: CGFloat = expanded ? 24 : 21
-            let widths: [CGFloat] = [expanded ? 34 : 0, expanded ? 28 : 0, expanded && showsFader ? 22 : 0, 22, expanded ? 42 : 0, 22, 22]
+            let widths: [CGFloat] = [expanded ? 34 : 0, expanded && !vinhetas ? 28 : 0, expanded && showsFader ? 22 : 0, 22, expanded && !vinhetas ? 42 : 0, 22, 22]
             let visibleCount = widths.filter { $0 > 0 }.count
             let width = widths.reduce(0, +) + CGFloat(max(0, visibleCount - 1)) * 3
             let frames = widths.indices.map { index in
@@ -277,6 +278,7 @@ struct TrackMixerContinuousLayout: Layout {
 @available(macOS 13, *)
 struct TrackMixerButtonsLayout: Layout {
     let showsFader: Bool
+    var vinhetas = false
     // Standard-track controls have explicit widths: Patch, Env, FX, REC, pan, M, S.
     // Reuse those metrics without querying every control on each resize.
     private static let controlWidths: [CGFloat] = [34, 28, 22, 22, 42, 22, 22]
@@ -286,14 +288,14 @@ struct TrackMixerButtonsLayout: Layout {
     func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let expanded = (proposal.height ?? 24) >= 24
-        let visible = subviews.indices.filter { !(!expanded && ($0 < 3 || $0 == 4)) && !($0 == 2 && expanded && !showsFader) }
+        let visible = subviews.indices.filter { !(!expanded && ($0 < 3 || $0 == 4)) && !($0 == 2 && expanded && !showsFader) && !(vinhetas && ($0 == 1 || $0 == 4)) }
         return CGSize(width: visible.reduce(CGFloat(0)) { $0 + Self.controlWidths[$1] } + CGFloat(max(0, visible.count - 1)) * 3, height: expanded ? 24 : 21)
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let expanded = bounds.height >= 24
         var x = bounds.minX
         for i in subviews.indices {
-            let hidden = (!expanded && (i < 3 || i == 4)) || (i == 2 && expanded && !showsFader)
+            let hidden = (!expanded && (i < 3 || i == 4)) || (i == 2 && expanded && !showsFader) || (vinhetas && (i == 1 || i == 4))
             let width = Self.controlWidths[i]
             subviews[i].place(at: CGPoint(x: hidden ? bounds.maxX + 1024 : x, y: bounds.minY), anchor: .topLeading, proposal: ProposedViewSize(width: width, height: bounds.height))
             if !hidden { x += width + 3 }
@@ -691,7 +693,7 @@ struct TrackMixerRow: View, Equatable {
         trackSelection.contains(track.id) ? trackSelection : [track.id]
     }
     private var duplicateSelection: (() -> Void)? {
-        guard track.kind == .standard else { return nil }
+        guard track.role.rawValue != "vinhetas", track.kind == .standard else { return nil }
         let project = projectID, song = show.current?.id, ids = deletionTargets
         return {
             guard show.snapshot.project.id == project, show.current?.id == song else { return }
@@ -724,7 +726,7 @@ struct TrackMixerRow: View, Equatable {
         let editTargets = Set(targets.compactMap { $0 })
         let details = TrackDetailsEditRequest(project: project, tracks: editTargets,
             name: track.name, color: track.color ?? JarasTheme.roleHex(track.role),
-            nameEditable: editTargets.count == 1 && track.kind == .standard)
+            nameEditable: editTargets.count == 1 && track.kind == .standard && track.role.rawValue != "vinhetas")
         let title = (number < 10 ? "0" : "") + String(number) + "  " + track.name
         let titleColor = JarasTheme.trackNameHex(track, emphasized: selected && track.kind == .standard, silenced: silenced)
         HStack(spacing: 4) {
@@ -778,7 +780,7 @@ struct TrackMixerRow: View, Equatable {
             VerticalTrackMeter(meter: StemAudioPlayback.shared.meter(for: track.id), showScale: showsTrackMeterScale,
                                foreground: meterTextColor, peakOnly: trackShowsMeterReadouts(track.kind))
                 .frame(width: showsMeterScale ? 40 : 12).padding(.vertical, 4)
-            if track.kind == .standard {
+            if track.kind == .standard && track.role.rawValue != "vinhetas" {
                 TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id))
                     .frame(width: 4).padding(.vertical, 8)
             }
@@ -834,7 +836,7 @@ struct TrackMixerRow: View, Equatable {
                 }.frame(height: compactHeight ? 21 : 24)
                 HStack(spacing: 3) {
                     if showsFader && (track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click) {
-                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click)
+                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas")
                             .trackControlSelectionExclusion()
                     }
                 }.buttonStyle(TrackControlButtonStyle()).frame(height: track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click ? 20 : 4)
@@ -871,7 +873,7 @@ struct TrackMixerRow: View, Equatable {
             }
             .overlay { if dragState.blockedTarget == track.id { TrackDropBlockedBadge() } }
             #if os(macOS)
-            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, dragName: track.name, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, group: show.current?.tracks.contains(where: { trackSelection.contains($0.id) && $0.stereoLink != nil }) == true ? nil : groupSelection, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard ? {
+            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, dragName: track.name, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, group: show.current?.tracks.contains(where: { trackSelection.contains($0.id) && $0.stereoLink != nil }) == true ? nil : groupSelection, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard && track.role.rawValue != "vinhetas" ? {
                 let range = TimelineAreaSelection.shared.range
                 let valid = range?.song == show.current?.id
                 if let id = show.addMIDIItem(track: track.id, start: valid ? range?.start : nil, duration: valid ? range.map { $0.end - $0.start } : nil) { MIDIEditorWindows.shared.open(show: show, item: id) }
@@ -928,7 +930,7 @@ struct TrackMixerRow: View, Equatable {
     }
     private var continuousMIDIIndicator: some View {
         Group {
-            if track.kind == .standard { TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id)) }
+            if track.kind == .standard && track.role.rawValue != "vinhetas" { TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id)) }
             else { Color.clear }
         }.allowsHitTesting(false)
     }
@@ -951,7 +953,7 @@ struct TrackMixerRow: View, Equatable {
                     }
                 }
                 .jarasPlaced(at: 2)
-                TrackMixerButtonsContainer(standard: track.kind == .standard, showsFader: showsFader) {
+                TrackMixerButtonsContainer(standard: track.kind == .standard, showsFader: showsFader, vinhetas: track.role.rawValue == "vinhetas") {
                     if track.kind == .standard {
                         Button("Patch") { patchTarget = editorTarget(project: project) }
                             .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
@@ -999,7 +1001,7 @@ struct TrackMixerRow: View, Equatable {
                     .modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
                 Group {
                     if showsFader && lowerTitle {
-                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click)
+                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas")
                             .trackControlSelectionExclusion()
                     } else { Color.clear }
                 }.clipped().jarasPlaced(at: 4)
@@ -1175,7 +1177,7 @@ struct PatchEditor: View {
         return OutputPatch.choices(channels: audio.channels, includeMaster: track != nil && settings?.kind == .standard, includeGroup: allInGroup, includeNone: true)
     }
     var body: some View {
-        if targets.count > 1 { BatchPatchEditor(show: show, targets: targets.compactMap { $0 }) }
+        if targets.count > 1 && settings?.role.rawValue != "vinhetas" { BatchPatchEditor(show: show, targets: targets.compactMap { $0 }) }
         else { singlePatch }
     }
     private var singlePatch: some View {
@@ -1184,7 +1186,7 @@ struct PatchEditor: View {
                     Text(settings?.kind == .timecode ? "Timecode" : "Patch").font(.jarasHeadline)
                     if let settings, settings.kind == .timecode { TimecodeOptions(show: show, track: settings) }
                     Text(audio.deviceName).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
-                    if let track, let settings = show.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == track }), settings.kind == .standard {
+                    if let track, let settings = show.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == track }), settings.kind == .standard && settings.role.rawValue != "vinhetas" {
                         let input = settings.inputPatch ?? TrackRecording.shared.defaultInputPatch
                         let choices = OutputPatch.choices(channels: TrackRecording.shared.inputChannels, includeMaster: false).filter { choice in
                             guard let link = settings.stereoLink else { return true }
@@ -1238,7 +1240,7 @@ struct PatchEditor: View {
                                     .accessibilityLabel("Remove output")
                             }
                         }
-                        if settings?.kind == .standard {
+                        if settings?.kind == .standard && settings?.role.rawValue != "vinhetas" {
                             ForEach([true, false], id: \.self) { receive in
                                 Divider()
                                 HStack {
@@ -1284,7 +1286,8 @@ struct PatchEditor: View {
     }
     private func applyMIDI(_ slot: Int) { for id in targets.compactMap({ $0 }) { show.setMIDIInput(id, slot: slot) } }
     private func editOutputs(_ change: (inout [OutputPatch]) -> Void) {
-        for id in targets {
+        let outputTargets = settings?.role.rawValue == "vinhetas" ? [track] : targets
+        for id in outputTargets {
             var values = id.flatMap { id in show.current?.tracks.first { $0.id == id }?.outputPatches } ?? show.snapshot.project.masterOutputPatches
             change(&values); show.setOutputPatches(track: id, patches: values)
         }
@@ -3045,7 +3048,7 @@ private struct FooterMixerStrip: View, Equatable {
         guard let track else { colorPresented = true; return }
         let ids = Set(targets.compactMap { $0 })
         editTrackDetails(TrackDetailsEditRequest(project: show.snapshot.project.id, tracks: ids,
-            name: track.name, color: track.color ?? JarasTheme.roleHex(track.role), nameEditable: ids.count == 1 && track.kind == .standard))
+            name: track.name, color: track.color ?? JarasTheme.roleHex(track.role), nameEditable: ids.count == 1 && track.kind == .standard && track.role.rawValue != "vinhetas"))
     }
     private func link() {
         guard let song = show.current, let indices = song.linkableTracks(selection) else { return }
@@ -3058,7 +3061,7 @@ private struct FooterMixerStrip: View, Equatable {
         return ids.intersection((show.current?.tracks ?? []).map(\.id))
     }
     private var duplicateSelection: (() -> Void)? {
-        guard track?.kind == .standard else { return nil }
+        guard track?.role.rawValue != "vinhetas", track?.kind == .standard else { return nil }
         let project = show.snapshot.project.id, song = show.current?.id, ids = deletionTargets
         return {
             guard show.snapshot.project.id == project, show.current?.id == song else { return }
@@ -3108,7 +3111,7 @@ private struct FooterMixerStrip: View, Equatable {
                     .jarasHelp(masterState?.masterMono == true ? "Mono — switch to Stereo" : "Stereo — switch to Mono")
             }
             if let track, track.kind == .standard { TrackRecordButton(show: show, track: track) }
-            if let track, track.kind != .timecode && track.kind != .click {
+            if let track, track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas" {
                 PhaseInvertButton(show: show, track: track.id, inverted: track.phaseInverted == true)
             }
             if trackShowsMeterReadouts(track?.kind) {
@@ -3134,7 +3137,7 @@ private struct FooterMixerStrip: View, Equatable {
     private var panAndFader: some View {
         VStack(spacing: 1) {
             let pan = track?.pan ?? masterState?.masterPan ?? 0
-            if hasStandardControls {
+            if hasStandardControls && track?.role.rawValue != "vinhetas" {
                 VStack(spacing: 1) {
                     #if os(macOS)
                     FooterMixerPanReadout(identity: TrackControlIdentity(project: show.snapshot.project.id, track: id),
@@ -3166,7 +3169,7 @@ private struct FooterMixerStrip: View, Equatable {
                     VerticalTrackMeter(meter: id.map { StemAudioPlayback.shared.meter(for: $0) } ?? StemAudioPlayback.shared.masterMeter, showScale: false)
                         .frame(width: 8)
                 } else { Color.clear.frame(width: 8) }
-                if active, let track, track.kind == .standard {
+                if active, let track, track.kind == .standard && track.role.rawValue != "vinhetas" {
                     TrackMIDIIndicator(state: InstrumentKeyboardState.shared.activity(track.id)).frame(width: 3).padding(.vertical, 4)
                 }
             }
@@ -3650,6 +3653,7 @@ private struct BatchPatchEditor: View {
     @State private var midi = 0
     @State private var applied = false
     private var tracks: [Track] { show.snapshot.project.songs.flatMap(\.tracks).filter { targets.contains($0.id) } }
+    private var outputOnly: Bool { tracks.contains { $0.role.rawValue == "vinhetas" } }
     private var inputs: [OutputPatch] {
         OutputPatch.choices(channels: TrackRecording.shared.inputChannels, includeMaster: false)
             .filter { choice in tracks.allSatisfy { track in
@@ -3666,15 +3670,17 @@ private struct BatchPatchEditor: View {
             Text("Patch · Selected tracks").font(.jarasHeadline)
             Text(tracks.map(\.name).joined(separator: ", ")).font(.jarasCaption).lineLimit(3)
             Picker("Patch", selection: $category) {
-                Text("Input").tag(0)
-                #if os(macOS)
-                Text("MIDI input").tag(1)
-                #endif
+                if !outputOnly {
+                    Text("Input").tag(0)
+                    #if os(macOS)
+                    Text("MIDI input").tag(1)
+                    #endif
+                }
                 Text("Output").tag(2)
             }.pickerStyle(.segmented)
-            if category == 0 {
+            if category == 0 && !outputOnly {
                 Picker("Input", selection: $input) { ForEach(inputs, id: \.self) { Text($0.title).tag($0) } }
-            } else if category == 1 {
+            } else if category == 1 && !outputOnly {
                 Picker("MIDI input", selection: $midi) {
                     Text("None").tag(0)
                     ForEach(0..<3, id: \.self) { Text(audio.midiSlotTitle($0)).tag($0 + 1) }
@@ -3684,7 +3690,7 @@ private struct BatchPatchEditor: View {
             }
             Button("Apply to selected tracks") {
                 for track in tracks {
-                    switch category {
+                    switch outputOnly ? 2 : category {
                     case 0: show.setRecordingInput(track.id, input: input)
                     case 1: show.setMIDIInput(track.id, slot: midi)
                     default: show.setOutputPatches(track: track.id, patches: [output])
@@ -3695,6 +3701,7 @@ private struct BatchPatchEditor: View {
                 .disabled(tracks.isEmpty || (category == 0 && !inputs.contains(input)) || (category != 2 && (TrackRecording.shared.recording || tracks.contains { $0.kind != .standard })) || (category == 2 && !outputs.contains(output)))
             if applied { Label("Applied", systemImage: "checkmark.circle.fill").foregroundStyle(JarasTheme.green) }
         }.padding(18).frame(minWidth: 320, maxWidth: 480)
+            .onAppear { if outputOnly { category = 2 } }
             .onChange(of: category) { _ in applied = false }
             .onChange(of: input) { _ in applied = false }
             .onChange(of: output) { _ in applied = false }

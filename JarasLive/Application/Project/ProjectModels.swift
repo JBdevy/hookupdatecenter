@@ -42,6 +42,8 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var recordingChannels: Int?
     public var recordingMode: TrackRecordingMode { TrackRecordingMode(rawValue: recordingChannels ?? 2) ?? .stereo }
     public var recordingFormat: String?
+    public var recordingOutput: Bool? = nil
+    public var recordsOutput: Bool { role.rawValue == "vinhetas" || recordingOutput == true }
     public var recordingPostFader: Bool? = nil
     public var recordingPostFX: Bool? = nil
     public var timecode: TimecodeSettings?
@@ -556,6 +558,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
         try masterPatch?.validate(allowMaster: false, allowNone: true)
         try masterSecondaryPatch?.validate(allowMaster: false, allowNone: true)
         for patch in masterOutputPatches { try patch.validate(allowMaster: false, allowNone: true) }
+        guard songs.flatMap(\.tracks).filter({ $0.role.rawValue == "vinhetas" }).count <= 1 else { throw ProjectError.invalid("Only one VINHETAS-FX track is allowed") }
         var identifiers: Set<UUID> = [id]
         guard songs.flatMap(\.tracks).filter({ $0.kind == .timecode }).count <= 1 else { throw ProjectError.invalid("Only one Timecode track is allowed") }
         guard songs.flatMap(\.tracks).filter({ $0.kind == .click }).count <= 1 else { throw ProjectError.invalid("Only one Click track is allowed") }

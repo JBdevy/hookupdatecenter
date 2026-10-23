@@ -3,6 +3,35 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+@MainActor struct IpadItemMenuCommand: Identifiable {
+    var id: String { title }
+    let title: String
+    var destructive = false
+    let action: () -> Void
+}
+@MainActor enum IpadItemContextMenu {
+    static var commands: (UUID, Set<UUID>) -> [IpadItemMenuCommand] = { _, _ in [] }
+}
+@MainActor struct IpadItemMenuAnchor: UIViewRepresentable {
+    let id: UUID
+    func makeUIView(context: Context) -> IpadItemMenuAnchorView { IpadItemMenuAnchorView() }
+    func updateUIView(_ view: IpadItemMenuAnchorView, context: Context) { view.item = id; IpadItemMenuAnchorView.anchors[id] = WeakAnchor(view) }
+    static func dismantleUIView(_ view: IpadItemMenuAnchorView, coordinator: ()) {
+        if let id = view.item, IpadItemMenuAnchorView.anchors[id]?.view === view { IpadItemMenuAnchorView.anchors.removeValue(forKey: id) }
+    }
+    final class WeakAnchor { weak var view: IpadItemMenuAnchorView?; init(_ view: IpadItemMenuAnchorView) { self.view = view } }
+}
+@MainActor final class IpadItemMenuAnchorView: UIView {
+    static var anchors: [UUID: IpadItemMenuAnchor.WeakAnchor] = [:]
+    var item: UUID?
+    static func contains(_ touch: UITouch) -> Bool {
+        anchors.values.contains { anchor in
+            guard let view = anchor.view, view.window === touch.window, !view.isHidden else { return false }
+            return view.bounds.contains(touch.location(in: view))
+        }
+    }
+}
+
 /// Context actions use the same project mutations and offline rendering as macOS.
 @MainActor struct IpadItemActions: View {
     @ObservedObject var show: ShowController
@@ -10,10 +39,11 @@ import UniformTypeIdentifiers
     let item: UUID
     var targets: Set<UUID> = []
     let close: () -> Void
+    var initialAction: String? = nil
     private let projectID: UUID
     private let songID: UUID?
-    init(show: ShowController, documents: ProjectDocuments, item: UUID, targets: Set<UUID> = [], close: @escaping () -> Void) {
-        self.show = show; self.documents = documents; self.item = item; self.targets = targets; self.close = close
+    init(show: ShowController, documents: ProjectDocuments, item: UUID, targets: Set<UUID> = [], initialAction: String? = nil, close: @escaping () -> Void) {
+        self.show = show; self.documents = documents; self.item = item; self.targets = targets; self.initialAction = initialAction; self.close = close
         projectID = show.snapshot.project.id; songID = show.current?.id
     }
     @State private var normalize = false
@@ -49,7 +79,7 @@ import UniformTypeIdentifiers
         return URL(fileURLWithPath: file.path, relativeTo: directory).standardizedFileURL
     }
     private var childOpen: Bool { normalize || editingText || fx || exporting || processing.running }
-    var body: some View {
+    private var actionList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 IpadModalHeader(title: context?.1.name ?? "—", close: close)
@@ -99,11 +129,35 @@ import UniformTypeIdentifiers
                 }
             }.padding(20)
         }
-        .background(RemoteSurface.background)
+        .opacity(initialAction == nil ? 1 : 0)
+        .background { if initialAction == nil { RemoteSurface.background } }
         .disabled(childOpen).accessibilityHidden(childOpen)
         .overlay { childEditor }
         .sheet(isPresented: $locatingFile) {
             if let fileURL { IpadItemFileBrowser(directory: fileURL.deletingLastPathComponent(), finished: { locatingFile = false }) }
+        }
+    }
+    var body: some View {
+        actionList.onAppear {
+            switch initialAction {
+            case "normalize": normalize = true
+            case "fx": fx = true
+            case "text": editingText = true
+            case "file": locatingFile = true
+            case "render": processing.start(show: show, documents: documents, ids: audioIDs, operation: .render)
+            case "midiMono": processing.start(show: show, documents: documents, ids: midiIDs, operation: .midi(channels: 1))
+            case "midiStereo": processing.start(show: show, documents: documents, ids: midiIDs, operation: .midi(channels: 2))
+            case "tuner": break
+            case "glue": processing.start(show: show, documents: documents, ids: glueIDs, operation: .glue)
+            default: break
+            }
+        }
+        .onChange(of: locatingFile) { if !$0 && initialAction == "file" { close() } }
+        .onChange(of: normalize) { if !$0 && initialAction == "normalize" { close() } }
+        .onChange(of: fx) { if !$0 && initialAction == "fx" { close() } }
+        .onChange(of: editingText) { if !$0 && initialAction == "text" { close() } }
+        .onChange(of: processing.running) { running in
+            if !running, processing.error.isEmpty, ["render", "glue", "midiMono", "midiStereo"].contains(initialAction ?? "") { close() }
         }
         .onChange(of: processing.finished) { if $0 { close() } }
         .onChange(of: show.snapshot.project.id) { if $0 != projectID { processing.cancel(); close() } }
@@ -127,7 +181,13 @@ import UniformTypeIdentifiers
         }.padding(10).background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 7))
     }
     @ViewBuilder private var childEditor: some View {
-        if processing.running {
+        if initialAction == "tuner" {
+            IpadCompactModal { VStack { tuner; Button("Close", action: close) }.padding(18).frame(width: 320) }
+        } else if !processing.error.isEmpty {
+            IpadCompactModal {
+                VStack(spacing: 16) { Text(verbatim: processing.error); Button("Close", action: close) }.padding(18).frame(width: 320)
+            }
+        } else if processing.running {
             IpadCompactModal {
                 VStack(spacing: 16) {
                     Text(LocalizedStringKey(processing.title)).font(.jarasHeadline)

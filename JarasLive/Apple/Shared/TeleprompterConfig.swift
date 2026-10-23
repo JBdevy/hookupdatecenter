@@ -105,15 +105,17 @@ private enum TPSettingField: Identifiable {
 
 struct TeleprompterConfig: View {
     var showingNotices = false
+    var embedded = false
     @ObservedObject var preferences: TeleprompterPreferences
     let close: () -> Void
     var body: some View {
         VStack(spacing: 12) {
-            HStack {
+            if !embedded { HStack {
                 Text(LocalizedStringKey(showingNotices ? "Messages" : "Teleprompter settings")).font(.jarasHeadline)
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").frame(width: 36,height: 36).contentShape(Rectangle()) }
                     .buttonStyle(.plain).jarasHelp("Close")
+            }
             }
             if !showingNotices {
                 Picker("Preset", selection: Binding(get: { preferences.selected },set: { preferences.select($0) })) {
@@ -126,7 +128,7 @@ struct TeleprompterConfig: View {
                                 VStack(alignment: .leading,spacing: 10) {
                                     Text(LocalizedStringKey(group)).font(.jarasSystem(size: 12,weight: .bold)).foregroundStyle(JarasTheme.green)
                                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 8),count: geometry.size.width > 520 ? 2 : 1),spacing: 8) {
-                                        ForEach(TPSettingField.all.filter { $0.group == group }) { field in
+                                        ForEach(TPSettingField.all.filter { $0.group == group && visibleField($0) }) { field in
                                             fieldView(field).padding(9).frame(maxWidth: .infinity,minHeight: group == "Colors" || group == "Display" ? 48 : 70,alignment: .leading)
                                                 .background(JarasTheme.display).cornerRadius(6)
                                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.line))
@@ -138,17 +140,22 @@ struct TeleprompterConfig: View {
                     }
                 }
             }
-            #if os(macOS)
             if showingNotices {
                 ScrollView { TPNoticeSettingsView().frame(maxWidth: .infinity, alignment: .leading) }
             }
-            #endif
-            HStack {
+            if !embedded { HStack {
                 Button("Timer settings") { TeleprompterTimerController.shared.showConfiguration() }
                 Spacer(); Button("Close",action: close).keyboardShortcut(.cancelAction)
-            }
+            } }
         }.padding(16).frame(minWidth: 500,idealWidth: 760,maxWidth: .infinity,minHeight: 520,idealHeight: 700,maxHeight: .infinity)
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+    }
+    private func visibleField(_ field: TPSettingField) -> Bool {
+        #if os(iOS)
+        return !["clearMode", "mediaStretch", "mediaScale"].contains(field.id)
+        #else
+        return true
+        #endif
     }
     @ViewBuilder private func fieldView(_ field: TPSettingField) -> some View {
         switch field {

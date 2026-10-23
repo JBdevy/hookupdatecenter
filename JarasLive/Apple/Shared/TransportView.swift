@@ -6,6 +6,7 @@ enum SetlistPlacement: String { case left, right, detached }
 
 struct TransportView: View {
     @State private var showingPortableExport = false
+    @State private var showingReduction = false
     @State private var showingExport = false
     @State private var showingResolume = false
     @State private var showingAdvanced = false
@@ -67,6 +68,9 @@ struct TransportView: View {
             .sheet(isPresented: $showingResolume) { ResolumeSettingsView(show: show) }
             .sheet(isPresented: $showingPortableExport) {
                 if let documents { PortableProjectExportView(documents: documents) }
+            }
+            .sheet(isPresented: $showingReduction) {
+                if let documents { ProjectReductionView(documents: documents) }
             }
             #endif
     }
@@ -184,7 +188,8 @@ struct TransportView: View {
                     Spacer(minLength: 0)
                     ProjectSaveButton(pending: show.needsSave, saving: show.saving, message: show.message,
                                       projectName: documents?.currentURL?.deletingPathExtension().lastPathComponent ?? show.snapshot.project.name, rename: documents.map { documents in { name in try await documents.renameProject(name) } },
-                                      exportToIPad: documents == nil ? nil : { showingPortableExport = true }) { Task { await show.save() } }
+                                      exportToIPad: documents == nil ? nil : { showingPortableExport = true },
+                                      reduceProject: documents == nil ? nil : { showingReduction = true }) { Task { await show.save() } }
                     Spacer(minLength: 0)
                     PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist", tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
                         .frame(width: buttonWidth, height: TransportControlMetrics.height)
@@ -713,6 +718,7 @@ private struct ProjectSaveButton: View {
     var projectName = ""
     var rename: ((String) async throws -> Void)? = nil
     var exportToIPad: (() -> Void)? = nil
+    var reduceProject: (() -> Void)? = nil
     let action: () -> Void
     @State private var confirmingSave = false
     @State private var showingOptions = false
@@ -742,9 +748,17 @@ private struct ProjectSaveButton: View {
                     Button("Save") { saveName() }.disabled(rename == nil || renaming || draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if let exportToIPad {
                         Divider()
-                        Button("Exportar para CatLive iPadOS") { showingOptions = false; exportToIPad() }
+                        HStack {
+                            Button("Exportar para CatLive iPadOS") { showingOptions = false; exportToIPad() }
+                                .fixedSize(horizontal: true, vertical: false)
+                            if let reduceProject {
+                                Button { showingOptions = false; reduceProject() } label: {
+                                    Text("Reduzir projeto").frame(maxWidth: .infinity)
+                                }
+                            }
+                        }
                     }
-                }.padding(16).frame(width: 320)
+                }.padding(16).frame(width: 440)
             }
             #endif
             .keyboardShortcut("s", modifiers: .command)

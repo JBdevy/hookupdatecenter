@@ -347,6 +347,10 @@ struct MappingTransferRequest: Identifiable {
         let kind: UInt8 = status & 0xf0 == 0xb0 ? 0xb0 : 0x90
         let channel = status & 0x0f
         let input = ControlInput(kind: "midi", label: "\(source.name) · CH \(channel + 1) · \(kind == 0xb0 ? "CC" : "Note") \(number)", device: source.id, channel: channel, status: kind, number: number)
+        if editing == nil {
+            var rawInput = input; rawInput.status = status & 0xf0
+            if VinhetasController.shared.receive(input: rawInput, value: value) { return }
+        }
         // Continuous controls include zero and repeated nonzero values. They must
         // not pass through the press/release latch used for Mute and Solo.
         if learningContinuous {

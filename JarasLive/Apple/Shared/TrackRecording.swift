@@ -8,7 +8,7 @@ import AudioToolbox
 
 private struct CaptureTarget: Sendable {
     let track: UUID
-    let input: OutputPatch
+    var input: OutputPatch
     let format: String
     var name = "Recording"
     var id = UUID()
@@ -356,7 +356,7 @@ private final class CaptureWriter: @unchecked Sendable {
                 (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false))
         }.map(\.id)))
         let desired = inputChannels > 0 && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? tracks.filter {
-            armed.contains($0.id) && $0.recordingMode != .midi && $0.kind == .standard
+            armed.contains($0.id) && $0.role.rawValue != "vinhetas" && $0.recordingMode != .midi && $0.kind == .standard
         }.map { MonitorConfig(track: $0.id, patch: $0.inputPatch ?? defaultInputPatch, channels: $0.recordingChannels ?? 2) } : []
         guard desired != monitorConfig || desired.contains(where: { !playback.hasInputMonitor($0.track) }) else { return }
         for config in monitorConfig { playback.setInputMonitor(config.track, source: nil) }
@@ -413,6 +413,7 @@ private final class CaptureWriter: @unchecked Sendable {
     private var configuredInput: UInt32 = 0
     private var directory: URL?
     private var project: UUID?
+    private var outputWriters: [UUID: CaptureWriter] = [:]
     private var writer: CaptureWriter?
     private var activeTargets: [UUID: CaptureTarget] = [:]
     private var midiTakes: [UUID: MIDIRecordingTake] = [:]
@@ -542,7 +543,7 @@ private final class CaptureWriter: @unchecked Sendable {
         let wanted = armState.armed
         if let show {
             microphoneTracks = wanted.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter {
-                $0.recordingMode != .midi && $0.fx?.instrumentKeys.isEmpty != false &&
+                !$0.recordsOutput && $0.recordingMode != .midi && $0.fx?.instrumentKeys.isEmpty != false &&
                     !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
             }.map(\.id)))
         }
@@ -569,8 +570,8 @@ private final class CaptureWriter: @unchecked Sendable {
     private func target(for track: Track, position: Double) -> CaptureTarget {
         let lane = TrackLanes(track: track).recordingLane(start: position, duration: 0.01, clips: track.clips)
         var target = CaptureTarget(track: track.id, input: track.inputPatch ?? defaultInputPatch, format: MediaProcessingFormat.load("record").recordingKey(for: track), name: recordingNames.allocate(track: track.name, clips: track.clips), lane: lane, recordedChannels: track.recordingChannels ?? 2)
-        target.postFader = track.recordingPostFader != false
-        target.postFX = track.recordingPostFX != false
+        target.postFader = track.recordsOutput && track.recordingPostFader != false
+        target.postFX = track.recordsOutput && track.recordingPostFX != false
         target.gain = Float(track.volume)
         target.effects = track.fx
         #if os(macOS)
@@ -596,7 +597,17 @@ private final class CaptureWriter: @unchecked Sendable {
         let allTracks = show.current?.tracks.filter { $0.kind == .standard && armed.contains($0.id) } ?? []
         let position = show.snapshot.transport.position
         updateMIDITargets(allTracks.filter { $0.recordingMode == .midi }, position: position)
-        let tracks = allTracks.filter { $0.recordingMode != .midi }
+        for id in Array(outputWriters.keys) where !allTracks.contains(where: { $0.id == id && $0.recordsOutput }) {
+            (projectAudio ?? StemAudioPlayback.shared).detachOutputCapture(id)
+            let output = outputWriters.removeValue(forKey: id)!, recordedProject = project
+            output.finish(start: startPosition) { [weak self] items, message in Task { @MainActor in self?.accept(items, message: message, project: recordedProject) } }
+        }
+        let newOutputs = allTracks.filter { $0.recordsOutput && outputWriters[$0.id] == nil }
+        if !newOutputs.isEmpty && !busy {
+            busy = true
+            Task { do { for track in newOutputs { try await startOutputCapture(track) } } catch { self.error = error.localizedDescription }; busy = false }
+        }
+        let tracks = allTracks.filter { $0.recordingMode != .midi && !$0.recordsOutput }
         guard let writer else {
             guard !tracks.isEmpty, !busy else { return }
             busy = true
@@ -682,22 +693,76 @@ private final class CaptureWriter: @unchecked Sendable {
         Task {
             do {
                 if !audioTracks.isEmpty { try await startAudioCapture(tracks: audioTracks) }
-                guard self.project == show.snapshot.project.id, show.canControl() else { busy = false; return }
+                guard self.project == show.snapshot.project.id, show.canControl() else { abortCapturePreparation(); busy = false; return }
                 startPosition = show.snapshot.transport.playing ? show.snapshot.transport.position : show.snapshot.transport.editPosition ?? show.snapshot.transport.position
                 midiStartTime = ProcessInfo.processInfo.systemUptime
                 recordingSong = show.snapshot.transport.songId
                 lastPosition = startPosition; lastTime = midiStartTime
                 updateMIDITargets(tracks.filter { $0.recordingMode == .midi }, position: startPosition)
+                for output in outputWriters.values { output.setInitialPosition(startPosition); output.start() }
                 recording = true; busy = false; reconcileArming()
                 if !show.snapshot.transport.playing { show.send(.play) }
             } catch {
+                abortCapturePreparation()
                 busy = false; activeTargets = [:]; midiTakes = [:]
                 LiveRecordingPreview.shared.takes = [:]; RecordingLaneLayout.shared.clear()
                 self.error = error.localizedDescription
             }
         }
     }
+    private func abortCapturePreparation() {
+        let audio = projectAudio ?? StemAudioPlayback.shared
+        for (id, output) in outputWriters {
+            audio.detachOutputCapture(id)
+            output.ring.endCapture(); output.finish(start: startPosition) { _, _ in }
+        }
+        outputWriters.removeAll()
+        if let writer { writer.ring.endCapture(); writer.finish(start: startPosition) { _, _ in } }
+        writer = nil
+        previewSession = UUID()
+    }
     private func startAudioCapture(tracks: [Track]) async throws {
+        let inputs = tracks.filter { !$0.recordsOutput }
+        if !inputs.isEmpty { try await startInputAudioCapture(tracks: inputs) }
+        for track in tracks where track.recordsOutput && outputWriters[track.id] == nil { try await startOutputCapture(track) }
+    }
+    private func startOutputCapture(_ track: Track) async throws {
+        guard let show, let directory else { return }
+        let audio = projectAudio ?? StemAudioPlayback.shared
+        let position = show.snapshot.transport.playing ? show.snapshot.transport.position : show.snapshot.transport.editPosition ?? show.snapshot.transport.position
+        var target = target(for: track, position: position)
+        target.input = OutputPatch(firstChannel: 1, channelCount: 2)
+        // The tap already contains track FX and, when requested, track controls.
+        target.postFX = false; target.effects = nil
+        target.postFader = track.recordingPostFX == false && track.recordingPostFader != false
+        let format = audio.outputCaptureFormat
+        let ring = JarasCaptureRing(channels: 2, capacity: UInt(format.sampleRate * 8))
+        let captureTarget = target
+        let requestedProject = project, wasRecording = recording
+        let output = try await Task.detached(priority: .userInitiated) { try CaptureWriter(targets: [captureTarget], directory: directory, format: format, ring: ring) }.value
+        guard project == requestedProject, show.snapshot.project.id == requestedProject, !wasRecording || recording else {
+            output.finish(start: position) { _, _ in }
+            throw ProjectError.invalid("The destination project is no longer available.")
+        }
+        output.setInitialPosition(position)
+        let session = previewSession
+        output.takePreview = { [weak self] durations, waveforms in
+            Task { @MainActor in
+                guard let self, self.previewSession == session else { return }
+                for (id, duration) in durations {
+                    RecordingLaneLayout.shared.update(id, duration: duration)
+                    LiveRecordingPreview.shared.takes[id]?.duration = max(0.01, duration)
+                    if let waveform = waveforms[id] { LiveRecordingPreview.shared.takes[id]?.waveform = waveform }
+                }
+            }
+        }
+        // Initial takes start together after every writer and tap is ready.
+        ring.endCapture()
+        if recording { output.start() }
+        do { _ = try audio.attachOutputCapture(track.id, postFX: track.recordingPostFX != false, postFader: track.recordingPostFader != false, ring: ring); outputWriters[track.id] = output }
+        catch { output.finish(start: position) { _, _ in }; throw error }
+    }
+    private func startInputAudioCapture(tracks: [Track]) async throws {
         guard let show, let directory, !tracks.isEmpty else { return }
         let requestedProject = project, wasRecording = recording
         let permission = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -767,6 +832,7 @@ private final class CaptureWriter: @unchecked Sendable {
         }
     }
     private var recordingGains: [UUID: Float] = [:]
+    private var outputRecordingGains: [UUID: Float] = [:]
     func observe(_ snapshot: ShowSnapshot) {
         // Playback samples carry no arming changes. With no configured REC
         // tracks or capture resources, there is nothing to reconcile or stop.
@@ -793,6 +859,11 @@ private final class CaptureWriter: @unchecked Sendable {
         if let song = snapshot.project.songs.first(where: { $0.id == recordingSong }) {
             let gains = Dictionary(uniqueKeysWithValues: song.tracks.filter { activeTargets[$0.id] != nil }.map { ($0.id, Float($0.volume)) })
             if gains != recordingGains { recordingGains = gains; writer?.updateGains(gains) }
+            let outputGains = Dictionary(uniqueKeysWithValues: song.tracks.filter { outputWriters[$0.id] != nil }.map { ($0.id, Float($0.volume)) })
+            if outputGains != outputRecordingGains {
+                outputRecordingGains = outputGains
+                for output in outputWriters.values { output.updateGains(outputGains) }
+            }
         }
         for take in midiTakes.values {
             let duration = max(0.01, snapshot.transport.position - take.startTime)
@@ -817,19 +888,27 @@ private final class CaptureWriter: @unchecked Sendable {
         let end = lastPosition + max(0, ProcessInfo.processInfo.systemUptime - lastTime)
         recording = false; busy = true
         for track in Array(midiTakes.keys) { finishMIDITake(track, at: end) }
-        guard let writer else { finishCleanup(); return }
-        // Stop writing PCM, not the audio device shared with live playback.
-        writer.ring.endCapture(); self.writer = nil
+        var writers = Array(outputWriters.values)
+        for id in outputWriters.keys { (projectAudio ?? StemAudioPlayback.shared).detachOutputCapture(id) }
+        outputWriters.removeAll()
+        if let writer { writers.append(writer) }; self.writer = nil
+        guard !writers.isEmpty else { finishCleanup(); return }
         let recordedProject = project
-        writer.finish(start: startPosition) { [weak self] items, message in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.accept(items, message: message, project: recordedProject)
-                self.finishCleanup()
-                if let message { self.error = message }
+        pendingWriterFinishes = writers.count
+        for writer in writers {
+            writer.ring.endCapture()
+            writer.finish(start: startPosition) { [weak self] items, message in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.accept(items, message: message, project: recordedProject)
+                    self.pendingWriterFinishes -= 1
+                    if self.pendingWriterFinishes == 0 { self.finishCleanup() }
+                    if let message { self.error = message }
+                }
             }
         }
     }
+    private var pendingWriterFinishes = 0
     private func finishCleanup() {
         activeTargets = [:]; pendingTakes = []
         previewSession = UUID(); LiveRecordingPreview.shared.takes = [:]; RecordingLaneLayout.shared.clear()
@@ -920,9 +999,12 @@ struct TrackRecordingSettings: View {
                 Picker("Recording mode", selection: Binding(get: { track.recordingChannels ?? 2 }, set: { show.setRecordingChannels(track.id, channel: $0) })) {
                     Text("Mono").tag(1)
                     Text("Stereo").tag(2)
-                    Text("MIDI").tag(0)
+                    if track.role.rawValue != "vinhetas" { Text("MIDI").tag(0) }
                 }.pickerStyle(.segmented).labelsHidden().disabled(recorder.recording || recorder.busy)
                 if track.recordingMode != .midi {
+                    Picker("Recording signal", selection: Binding(get: { track.recordsOutput }, set: { show.setRecordingStage(track.id, output: $0) })) {
+                        Text("Input").tag(false); Text("Output").tag(true)
+                    }.pickerStyle(.segmented).disabled(track.role.rawValue == "vinhetas" || recorder.recording || recorder.busy)
                     Picker("Format", selection: Binding(get: { track.recordingFormat ?? "" }, set: {
                         show.setRecordingFormat(track.id, format: $0.isEmpty ? nil : $0)
                     })) {
@@ -931,18 +1013,20 @@ struct TrackRecordingSettings: View {
                         Text(verbatim: "WAV · 32-bit float").tag("wav32")
                         Text(verbatim: "MP3 · \(MediaProcessingFormat.load("record").bitrate) kbps").tag("mp3")
                     }.disabled(recorder.recording || recorder.busy)
-                    Picker("Recording level", selection: Binding(get: { track.recordingPostFader != false }, set: { show.setRecordingStage(track.id, postFader: $0) })) {
+                    Picker("Recording level", selection: Binding(get: { track.recordsOutput && track.recordingPostFader != false }, set: { show.setRecordingStage(track.id, postFader: $0) })) {
                         Text("Pre-fader").tag(false)
                         Text("Post-fader").tag(true)
-                    }.pickerStyle(.segmented).disabled(recorder.recording || recorder.busy)
-                    Picker("Recording effects", selection: Binding(get: { track.recordingPostFX != false }, set: { show.setRecordingStage(track.id, postFX: $0) })) {
+                    }.pickerStyle(.segmented).disabled(!track.recordsOutput || recorder.recording || recorder.busy)
+                    Picker("Recording effects", selection: Binding(get: { track.recordsOutput && track.recordingPostFX != false }, set: { show.setRecordingStage(track.id, postFX: $0) })) {
                         Text("Pre-FX").tag(false)
                         Text("Post-FX").tag(true)
-                    }.pickerStyle(.segmented).disabled(recorder.recording || recorder.busy)
+                    }.pickerStyle(.segmented).disabled(!track.recordsOutput || recorder.recording || recorder.busy)
+                    if track.role.rawValue != "vinhetas" {
                     Picker("Input monitoring", selection: Binding(get: { track.inputMonitoring != false }, set: { show.setInputMonitoring(track.id, enabled: $0) })) {
                         Text(verbatim: "Monitor On").tag(true)
                         Text(verbatim: "Monitor Off").tag(false)
                     }.pickerStyle(.segmented).labelsHidden()
+                    }
                 }
             }.padding(16)
 

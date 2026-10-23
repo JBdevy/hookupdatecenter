@@ -150,6 +150,21 @@ final class PortableProjectPackageTests: XCTestCase {
         for key in data.keys.sorted() { try writer.add(path: key, data: data[key]!) }; try writer.finish()
         return output
     }
+    func testIPadExportOmitsMissingVideoAndTimecodeButKeepsMixedTrackAudio() throws {
+        let bytes = Data("audio fixture".utf8)
+        try write("Stems/audio.wav", bytes)
+        var original = project(["Stems/audio.wav", "Videos/missing.mp4"])
+        var timecode = Track(id: UUID(), name: "Timecode", role: TrackRole(rawValue: "timecode"))
+        timecode.clips = [AudioClip(id: UUID(), name: "TC", startTime: 0, duration: 2, timecode: TimecodeSettings())]
+        original.songs[0].tracks.append(timecode)
+        let result = try read(export(original))
+        XCTAssertEqual(result.project.songs[0].tracks.count, 2)
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips.count, 1)
+        XCTAssertTrue(result.project.songs[0].tracks[1].clips.isEmpty)
+        XCTAssertEqual(result.project.mediaPaths, ["Stems/audio.wav"])
+        XCTAssertEqual(try Data(contentsOf: result.documentURL.deletingLastPathComponent().appendingPathComponent("Stems/audio.wav")), bytes)
+        XCTAssertEqual(original.songs[0].tracks[0].clips.count, 2)
+    }
     func testRoundTripPreservesMediaNativeEffectsAndAutomationButStripsAllExternalFX() throws {
         let bytes = Data((0..<600_000).map { UInt8($0 % 251) })
         try write("Stems/audio.wav", bytes); try write("Videos/picture.png", Data("image".utf8))

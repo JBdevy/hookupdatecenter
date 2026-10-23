@@ -122,6 +122,8 @@ import AVFoundation
                     }
                     sumSquares += blockEnergy; sampleCount += count
                 }
+                // A stalled control thread must not restart an offline player.
+                if stage == 0 && block == 6 { Thread.sleep(forTimeInterval: 0.22) }
                 rendered += count; try tick()
                 // scheduleSegment streams through AVAudioPlayerNode's file I/O
                 // worker. Offline rendering has no device clock to pace that

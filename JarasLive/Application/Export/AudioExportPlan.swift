@@ -6,12 +6,13 @@ public enum AudioExportFormat: String, CaseIterable, Sendable { case wav = "WAV"
 public struct AudioExportEncoding: Sendable {
     public var format: AudioExportFormat = .wav
     public var bitDepth = 24
+    public var floatingPoint = false
     /// 0 preserves each exported item's source channel count; 1/2 force mono/stereo.
     public var channels = 2
     public var bitrate = 320
     public var sampleRate = 48000.0
-    public init(format: AudioExportFormat = .wav, bitDepth: Int = 24, channels: Int = 2, bitrate: Int = 320, sampleRate: Double = 48000) {
-        self.format = format; self.bitDepth = bitDepth; self.channels = channels; self.bitrate = bitrate; self.sampleRate = sampleRate
+    public init(format: AudioExportFormat = .wav, bitDepth: Int = 24, channels: Int = 2, bitrate: Int = 320, sampleRate: Double = 48000, floatingPoint: Bool = false) {
+        self.floatingPoint = floatingPoint; self.format = format; self.bitDepth = bitDepth; self.channels = channels; self.bitrate = bitrate; self.sampleRate = sampleRate
     }
 }
 public enum AudioExportSource: String, CaseIterable, Sendable { case master = "Master", tracks = "Tracks", masterAndTracks = "Master + Tracks", stems = "Stems" }

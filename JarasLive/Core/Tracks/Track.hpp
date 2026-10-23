@@ -26,7 +26,7 @@ struct Track {
     std::optional<bool> inputMonitoring;
     std::optional<int> recordingChannels;
     std::optional<std::string> recordingFormat;
-    std::optional<bool> recordingPostFader, recordingPostFX;
+    std::optional<bool> recordingPostFader, recordingPostFX, recordingOutput;
     std::optional<std::string> fxJSON, automationJSON;
     std::optional<int> midiInput;
     std::optional<int> midiChannel;

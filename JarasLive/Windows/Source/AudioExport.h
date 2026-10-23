@@ -6,6 +6,7 @@ struct ExportEncoding {
     String format = "WAV";
     int bits = 24, channels = 2, bitrate = 320;
     double rate = 48000;
+    bool floatingPoint = false;
 };
 struct ExportJob {
     String name;
@@ -212,11 +213,19 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
                                                               : nullptr;
             if (!format)
                 throw std::runtime_error("Formato de saída desconhecido.");
-            writer.reset(format->createWriterFor(
-                stream.get(), encoding.rate, (unsigned)encoding.channels, encoding.bits, {}, 0));
+            if (encoding.floatingPoint && encoding.bits == 32) {
+                std::unique_ptr<OutputStream> output(std::move(stream));
+                const auto options = AudioFormatWriterOptions{}.withSampleRate(encoding.rate)
+                    .withNumChannels(encoding.channels).withBitsPerSample(32)
+                    .withSampleFormat(AudioFormatWriterOptions::SampleFormat::floatingPoint);
+                writer = format->createWriterFor(output, options);
+            } else {
+                writer.reset(format->createWriterFor(
+                    stream.get(), encoding.rate, (unsigned)encoding.channels, encoding.bits, {}, 0));
+                if (writer) stream.release();
+            }
             if (!writer)
                 throw std::runtime_error("Não foi possível iniciar a codificação.");
-            stream.release();
         }
         AudioEngine::State state;
         state.playing = true;

@@ -461,6 +461,39 @@ struct TimecodePlaybackSpan {
         let effects = NativeEffectsChain()
     }
     private var trackBuses: [UUID: TrackBus] = [:]
+    private var recordingTaps: [UUID: AVAudioNode] = [:]
+    func attachOutputCapture(_ track: UUID, postFX: Bool, postFader: Bool, ring: JarasCaptureRing) throws -> AVAudioFormat {
+        try prepareDevice()
+        detachOutputCapture(track)
+        let bus = trackBus(for: track)
+        let node: AVAudioNode = postFX ? (postFader ? bus.controls : bus.processedMix) : bus.mix
+        let format = node.outputFormat(forBus: 0)
+        node.installTap(onBus: 0, bufferSize: 512, format: format) { buffer, _ in ring.push(buffer) }
+        recordingTaps[track] = node
+        if !engine.isRunning { try engine.start() }
+        return format
+    }
+    func detachOutputCapture(_ track: UUID) { recordingTaps.removeValue(forKey: track)?.removeTap(onBus: 0) }
+    var outputCaptureFormat: AVAudioFormat { AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)! }
+    private var padPlayers: [UUID: AVAudioPlayerNode] = [:]
+    func playPad(_ id: UUID, buffer: AVAudioPCMBuffer, gain: Float, track: UUID?, finished: @escaping @MainActor () -> Void) throws {
+        try prepareDevice()
+        let player = AVAudioPlayerNode(); engine.attach(player)
+        let destination = track.map { trackBus(for: $0).mix } ?? masterBus
+        engine.connect(player, to: destination, fromBus: 0, toBus: destination.nextAvailableInputBus, format: buffer.format)
+        player.volume = gain; padPlayers[id] = player
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor in self?.stopPad(id); finished() }
+        }
+        do { if !engine.isRunning { try engine.start() }; player.play(); startMeterClock() }
+        catch { stopPad(id); throw error }
+    }
+    func stopPad(_ id: UUID) {
+        guard let player = padPlayers.removeValue(forKey: id) else { return }
+        player.stop(); engine.detach(player); startMeterClock()
+    }
+    func setPadGain(_ id: UUID, gain: Float) { padPlayers[id]?.volume = gain }
+
     private var transportFadeEndpointReached = false
     private var transportFadeSchedule: (tracks: Set<UUID>, duration: Double, host: UInt64, sample: Double)?
     /// The existing sample-clock envelope lives after the track insert chain.
@@ -966,6 +999,8 @@ struct TimecodePlaybackSpan {
     }
     func setMissingAudioPaths(_ paths: Set<String>) { missingAudioPaths = paths }
     private func configureGraph(directory: URL?, resetProject: Bool = false, prepareMaster: Bool = true) {
+        for id in Array(recordingTaps.keys) { detachOutputCapture(id) }
+        for id in Array(padPlayers.keys) { stopPad(id) }
         stop()
         discardIdleVoices()
         if let generator = timecodeGenerator { engine.detach(generator.node) }
@@ -1342,7 +1377,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         #if os(iOS)
         guard !usesSelectedHardware || AudioDeviceSettings.shared.localSessionEnabled else { return }
         #endif
-        let active = transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty
+        let active = transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padPlayers.isEmpty
         if !active { resetIdleMeterLevels() }
         guard meterTimer == nil || meterTimerActive != active else { return }
         meterTimer?.invalidate()
@@ -1504,6 +1539,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         if deviceSessionActive { startMeterClock() }
     }
     func prepareForClosing() {
+        for id in Array(recordingTaps.keys) { detachOutputCapture(id) }
+        for id in Array(padPlayers.keys) { stopPad(id) }
         #if os(iOS)
         // A timed-out HAL stop is still owned by its worker. Do not acquire
         // that same engine lock from a project-close/UI callback.
@@ -3005,7 +3042,9 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         // An edit can republish the last transport sample after plugin loading
         // or history work. Compare positions at their sample epochs; receipt
         // time would turn that unchanged position into a false backward seek.
-        let now = sampledAt
+        // Offline rendering advances on the render clock. File I/O, plugin
+        // preparation and shared CI scheduling must never resemble a seek.
+        let now = realtime ? sampledAt : Double(engine.manualRenderingSampleTime) / engine.manualRenderingFormat.sampleRate
         let elapsed = now - lastUpdate; lastUpdate = now
         let transport = snapshot.transport
         let running = transport.playing || transport.subPlay.playing
@@ -3713,7 +3752,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         }
         // Instruments can generate audio while the transport is stopped.
         // Keep polling the existing stereo taps whenever the device is running.
-        if !realtime && !transport.playing && !transport.subPlay.playing {
+        if !realtime && !transport.playing && !transport.subPlay.playing && padPlayers.isEmpty {
             if engine.isRunning { engine.pause() }
             for meter in meters.values { meter.reset() }
             drainNativeMeterPeaks()
@@ -3770,7 +3809,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         #if os(iOS)
         guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
         #endif
-        guard engine.isRunning, transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty else {
+        guard engine.isRunning, transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padPlayers.isEmpty else {
             resetIdleMeterLevels()
             return
         }

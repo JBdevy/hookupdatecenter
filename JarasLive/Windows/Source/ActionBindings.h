@@ -136,6 +136,7 @@ class ActionBindings final : public ChangeBroadcaster,
         cancelPendingUpdate();
     }
     std::function<void(const String &, float, int)> invoke;
+    std::function<bool(int,int,int,int)> rawMIDI;
     String learning, learningKind, error;
     bool hasCustomInput(const ActionDefinition &definition, const String &kind) const {
         if ((kind == "keyboard" && (definition.fixedKeyboard() || definition.continuous)) ||
@@ -326,7 +327,7 @@ class ActionBindings final : public ChangeBroadcaster,
     std::array<Input, 256> pending;
     void handleIncomingMidiMessage(MidiInput *, const MidiMessage &message) override {
         if (!inputEnabled.load(std::memory_order_relaxed)) return;
-        if (!message.isNoteOn() && !message.isController())
+        if (!message.isNoteOnOrOff() && !message.isController())
             return;
         const ScopedLock lock(producers);
         int start, count, other, unused;
@@ -347,6 +348,8 @@ class ActionBindings final : public ChangeBroadcaster,
             const auto input = pending[(size_t)start];
             queue.finishedRead(1);
             if (!inputEnabled.load(std::memory_order_relaxed)) continue;
+            if (learning.isEmpty() && rawMIDI && rawMIDI(input.status,input.number,input.value,input.channel)) continue;
+            if (input.status == 0x80 || (input.status == 0x90 && input.value == 0)) continue;
             if (learningKind == "midi" && learning.isNotEmpty()) {
                 auto def = std::find_if(actionDefinitions().begin(), actionDefinitions().end(),
                                         [&](const auto &d) { return learning == d.id; });

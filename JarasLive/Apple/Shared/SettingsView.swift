@@ -12,14 +12,14 @@ struct SettingsView: View {
     @ObservedObject private var audio = AudioDeviceSettings.shared
     @ObservedObject private var recorder = TrackRecording.shared
     private var audioConfigurationLocked: Bool { recorder.recording || recorder.busy || show.isPlaying }
-    enum Section: String, CaseIterable { case general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
-        var icon: String { switch self { case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
+    enum Section: String, CaseIterable { case tp1 = "Config TP 1", tp2 = "Config TP 2", notices = "Config Recados", general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
+        var icon: String { switch self { case .tp1, .tp2: return "text.alignleft"; case .notices: return "message"; case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
     }
     private var availableSections: [Section] {
         #if os(iOS)
-        [.general, .audio, .midi, .actions]
+        [.general, .audio, .midi, .actions, .tp1, .tp2, .notices]
         #else
-        Section.allCases
+        Section.allCases.filter { ![.tp1, .tp2, .notices].contains($0) }
         #endif
     }
     @ObservedObject private var mappings = ControlMappings.shared
@@ -56,6 +56,11 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     Text(LocalizedStringKey(section.rawValue)).font(.jarasTitle2.bold())
                     switch section {
+                    case .tp1, .tp2:
+                        TeleprompterConfig(embedded: true, preferences: section == .tp1 ? .shared : .second, close: {})
+                            .frame(height: max(400, viewport.size.height - 90))
+                    case .notices:
+                        TPNoticeSettingsView()
                     case .general:
                         Text("Language").font(.jarasHeadline)
                         Picker("Language", selection: $language) { Text("English").tag("en"); Text("Português").tag("pt-BR") }.pickerStyle(.segmented).labelsHidden()

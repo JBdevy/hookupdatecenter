@@ -22,7 +22,8 @@ class TrackCapture {
         ID track;
         File file;
         int input = 1, channels = 2;
-        bool bus = false, midi = false;
+        bool bus = false, midi = false, output = false;
+        bool outputPostFX = true, outputPostFader = true;
         int bits = 0;
         bool floatingPoint = false;
         int bitrate = 320;
@@ -109,9 +110,10 @@ class TrackCapture {
                     ++dropped;
             }
     }
-    void bus(const ID &id, const AudioBuffer<float> &buffer, int count) {
+    void bus(const ID &id, const AudioBuffer<float> &buffer, int count, bool output = false, bool postFX = true, bool postFader = true) {
         for (auto &entry : entries)
-            if (entry.target.bus && !entry.target.midi && entry.target.track == id) {
+            if (entry.target.bus && !entry.target.midi && entry.target.track == id && entry.target.output == output &&
+                (!output || (entry.target.outputPostFX == postFX && entry.target.outputPostFader == postFader))) {
                 const float *pointers[3]{buffer.getReadPointer(0), buffer.getReadPointer(1), nullptr};
                 if (entry.target.channels == 1) {
                     for (int i = 0; i < count; ++i)

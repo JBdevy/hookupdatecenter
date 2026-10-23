@@ -73,6 +73,19 @@ inline var portableCopy(const var &raw, StringArray &removed, std::set<String> &
     put(result, "songs", songs);
     return result;
 }
+inline var iPadCopy(const var &raw) {
+    auto result=raw.clone();auto songs=list(get(result,"songs"));
+    auto video=[](const var &file){return File(str(file,"path")).hasFileExtension("mp4;mov;m4v;avi;mkv;webm;mpg;mpeg;wmv;mts;m2ts");};
+    for(auto &song:songs){auto tracks=list(get(song,"tracks"));for(auto &track:tracks){
+        Array<var> clips;const auto fallback=get(track,"audioFile");
+        for(auto clip:list(get(track,"clips"))){const auto file=get(clip,"audioFile");
+            if(video(file.isObject()?file:fallback)||get(clip,"timecode").isObject()||
+               (str(track,"role")=="timecode"&&!file.isObject()&&!fallback.isObject()&&!get(clip,"midi").isObject()))continue;
+            clips.add(clip);
+        }
+        put(track,"clips",clips);if(video(fallback))track.getDynamicObject()->removeProperty("audioFile");
+    }put(song,"tracks",tracks);}put(result,"songs",songs);return result;
+}
 inline var recordJSON(const packageZIP::Record &record) {
     auto v = object();
     put(v, "path", record.path);
@@ -101,7 +114,7 @@ inline void exportPackage(const var &saved, const File &directory, const File &a
     const auto original = ProjectCodec::decode(saved);
     StringArray removed;
     std::set<String> capabilities;
-    auto raw = portableCopy(saved, removed, capabilities);
+    auto raw = portableCopy(iPadCopy(saved), removed, capabilities);
     auto project = ProjectCodec::decode(raw);
     std::map<String, File> sources;
     std::map<String, packageZIP::Record> records;
@@ -140,7 +153,7 @@ inline void exportPackage(const var &saved, const File &directory, const File &a
         records[path] = record;
         return path;
     };
-    auto media = mediaCleanup::references(original);
+    auto media = mediaCleanup::references(project);
     auto ids = instrumentAssets::identities(project);
     require(media.size() + ids.size() + 2 <= 100000, "Too many files in this project.");
     size_t indexed = 0;

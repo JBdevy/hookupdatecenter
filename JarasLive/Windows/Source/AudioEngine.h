@@ -1,4 +1,5 @@
 #pragma once
+#include "VinhetasAudio.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 #include "Common.h"
 #include "MeterDisplay.h"
@@ -19,6 +20,8 @@ class ClipAudio;
 // Prepared readers, buffers and routing live outside the device callback.
 class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallback, private Timer {
   public:
+    VinhetasAudio vinhetas;
+
     struct State {
         double position = 0, subPosition = 0;
         bool playing = false, subPlaying = false, loop = false;
@@ -326,7 +329,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         AutomationProgram automation;
         var settings;
         std::unique_ptr<ClickProgram> click;
-        bool timecode = false;
+        bool timecode = false, vinhetasBus = false;
         std::vector<PlaybackNote> midiNotes;
         std::vector<MIDIPlayback::Event> externalEvents;
         MidiBuffer externalMIDI[2];
@@ -386,6 +389,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     AudioBuffer<float> masterBuffer{2, 4096};
     AudioBuffer<float> readScratch[2]{{2, 131080}, {2, 131080}};
     AudioBuffer<float> liveRecordBuffer{2, 4096};
+    AudioBuffer<float> outputRecordBuffers[4]{{2,4096},{2,4096},{2,4096},{2,4096}};
+    AudioBuffer<float> outputRecordScratch{2,4096};
     std::array<std::array<double, 4096>, 2> timelinePositions{};
     std::array<std::array<bool,4096>,2> timelineRunning{};
     jaras::TimecodeProgram timecodeProgram;

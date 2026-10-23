@@ -25,6 +25,7 @@ import Combine
         guard !running, let show, let documents else { return }
         running = true
         ControlMappings.shared.bind(show, session: mappingSession)
+        VinhetasController.shared.bind(show: show)
         DAWRemoteHostBridge.documents = documents
         DAWRemoteHostBridge.bind(show, session: session)
         session.startLocalWorkspace()
@@ -39,6 +40,9 @@ import Combine
                           documents.objectWillChange.eraseToAnyPublisher(),
                           TeleprompterTimerController.shared.objectWillChange.eraseToAnyPublisher(),
                           TPNoticeController.shared.objectWillChange.eraseToAnyPublisher(),
+                          TeleprompterWindow.shared.objectWillChange.eraseToAnyPublisher(),
+                          TeleprompterPreferences.shared.objectWillChange.eraseToAnyPublisher(),
+                          TeleprompterPreferences.second.objectWillChange.eraseToAnyPublisher(),
                           LiveRecordingPreview.shared.objectWillChange.eraseToAnyPublisher()] {
             publisher.sink { [weak self] _ in self?.scheduleRefresh() }.store(in: &subscriptions)
         }
@@ -89,6 +93,7 @@ import Combine
             }
         }
         timer.synchronize(state?.timer)
+        for index in 1...2 { refreshTeleprompterRemote(index) }
     }
     private func refreshTeleprompterRemote(_ index: Int) {
         guard running, let show else { return }
@@ -107,6 +112,7 @@ import Combine
     func stop() {
         guard running else { return }
         running = false; subscriptions.removeAll()
+        VinhetasController.shared.unbind()
         if ControlMappings.shared.endNativeSession(mappingSession) {
             show?.togglePartsPanel = {}; show?.toggleSetlistPanel = {}; show?.toggleTracksPanel = {}; show?.toggleTeleprompterWindow = {}
         }
@@ -152,6 +158,7 @@ import Combine
     @State private var exportingProject = false
     @State private var regionLoops: FXTarget?
     @State private var itemMenu: FXTarget?
+    @State private var itemMenuAction: String?
     @State private var itemMenuTargets: Set<UUID> = []
     @State private var editingTextItem: UUID?
     @State private var trackEdit: TrackDetailsEditRequest?
@@ -189,13 +196,13 @@ import Combine
                         guard let first = tracks.first else { return }
                         trackEdit = .init(project: show.snapshot.project.id, tracks: Set(tracks.map(\.id)),
                             name: first.name, color: first.color ?? JarasTheme.roleHex(first.role),
-                            nameEditable: tracks.count == 1 && first.kind == .standard)
+                            nameEditable: tracks.count == 1 && first.kind == .standard && first.role.rawValue != "vinhetas")
                     },
                     openMasterDetails: {
                         trackEdit = .init(project: show.snapshot.project.id, tracks: [], name: "Master",
                             color: show.snapshot.project.masterColor ?? 0x414141, nameEditable: false)
                     },
-                    openItemMenu: { itemMenuTargets = [$0]; itemMenu = .init(clip: $0) }, openSelectedItemMenu: { item, targets in itemMenuTargets = targets; itemMenu = .init(clip: item) }, openItemFX: { fx = .init(clip: $0) }, addTrack: { addingTrack = true }, addTrackAudio: { documents.chooseNativeTrackAudio($0) },
+                    openItemMenu: { presentItemMenu($0, targets: [$0]) }, openSelectedItemMenu: { presentItemMenu($0, targets: $1) }, openItemFX: { fx = .init(clip: $0) }, addTrack: { addingTrack = true }, addTrackAudio: { documents.chooseNativeTrackAudio($0) },
                     addTrackText: { editingTextItem = show.addTextItem(track: $0) }, addTrackMedia: { documents.chooseNativeTrackMedia($0) },
                     createPlaylist: { show.createRegionPlaylist(name: $0, selected: $1) },
                     addBlock: { show.addSetlistBlock(namePrefix: JarasLocalization.string("Bloco")) },
@@ -205,8 +212,8 @@ import Combine
             } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
         .background(RemoteSurface.background).preferredColorScheme(.dark)
-        .onAppear { local.start(); inspectOutputRoutes() }
-        .onDisappear { local.stop() }
+        .onAppear { local.start(); inspectOutputRoutes(); IpadItemContextMenu.commands = itemMenuCommands; IpadTimelinePointerContextMenu.contains = IpadItemMenuAnchorView.contains }
+        .onDisappear { local.stop(); IpadItemContextMenu.commands = { _, _ in [] }; IpadTimelinePointerContextMenu.contains = { _ in false } }
         .onChange(of: local.projectRevision) { _ in inspectOutputRoutes() }
         .onChange(of: local.state?.project) { _ in inspectOutputRoutes() }
         .onChange(of: audio.channels) { _ in inspectOutputRoutes() }
@@ -225,6 +232,41 @@ import Combine
         } message: { Text(LocalizedStringKey(recorder.error)) }
         .environment(\.jarasNativePalette, true)
     }
+    private func presentItemMenu(_ id: UUID, targets: Set<UUID>) {
+        itemMenuTargets = targets; itemMenuAction = nil; itemMenu = .init(clip: id)
+    }
+    private func itemMenuCommands(_ id: UUID, targets: Set<UUID>) -> [IpadItemMenuCommand] {
+        guard let track = show.current?.tracks.first(where: { $0.clips.contains(where: { $0.id == id }) }),
+              let clip = track.clips.first(where: { $0.id == id }) else { return [] }
+        let ids = targets.contains(id) ? targets : [id]
+        let open: (String) -> Void = { action in itemMenuTargets = ids; itemMenuAction = action; itemMenu = .init(clip: id) }
+        func command(_ title: String, _ action: @escaping () -> Void) -> IpadItemMenuCommand {
+            IpadItemMenuCommand(title: JarasLocalization.string(title), action: action)
+        }
+        var actions: [IpadItemMenuCommand] = []
+        if track.kind.isText { actions.append(command("Edit", { open("text") })) }
+        actions.append(command("FX", { open("fx") }))
+        actions.append(command(clip.muted == true ? "Unmute items" : "Mute items", { show.setItemsMix(ids, muted: clip.muted != true) }))
+        actions.append(command("Phase invert", { for item in ids { show.toggleItemPhase(item) } }))
+        actions.append(command("Criar região do item", { show.regionsFromSelection(ids) }))
+        if clip.midi == nil && (clip.audioFile ?? track.audioFile) != nil {
+            actions.append(command("Open file location", { open("file") }))
+            actions.append(command("Normalize…", { open("normalize") }))
+            actions.append(command("Re-render", { open("render") }))
+            actions.append(command("Tuner", { open("tuner") }))
+            for (mode, title) in [(4, "Swap - LR"), (1, "Convert Mono - L"), (2, "Convert Mono - R"), (3, "Convert Mono L-R"), (0, "Convert Stereo")] {
+                actions.append(command(title, { _ = show.convertItems(ids, mode: mode) }))
+            }
+        }
+        if clip.midi != nil {
+            actions.append(command("Convert Mono", { open("midiMono") }))
+            actions.append(command("Convert Stereo", { open("midiStereo") }))
+        }
+        actions.append(command("Unify items", { open("glue") }))
+        actions.append(IpadItemMenuCommand(title: JarasLocalization.string("Delete"), destructive: true, action: { show.deleteItems(ids) }))
+        return actions
+    }
+
     @ViewBuilder private var workspaceDialogs: some View {
         if remoteSettingsOpen {
             IpadCompactModal(preferredSize: CGSize(width: 440, height: 600)) {
@@ -266,7 +308,7 @@ import Combine
                 }
             }
         } else if let id = regionActions {
-            IpadCompactModal(preferredSize: CGSize(width: 540, height: 520)) {
+            IpadCompactModal {
                 IpadRegionActions(show: show, id: id, close: { regionActions = nil })
             }
         } else if let id = detectingRegion {
@@ -303,8 +345,12 @@ import Combine
                 MultiLoopsEditor(show: show, regionID: region, close: { regionLoops = nil })
             }
         } else if let clip = itemMenu?.clip {
-            IpadCompactModal(preferredSize: CGSize(width: 720, height: 600)) {
-                IpadItemActions(show: show, documents: documents, item: clip, targets: itemMenuTargets, close: { itemMenu = nil })
+            if itemMenuAction == nil {
+                IpadCompactModal(preferredSize: CGSize(width: 720, height: 600)) {
+                    IpadItemActions(show: show, documents: documents, item: clip, targets: itemMenuTargets, close: { itemMenu = nil })
+                }
+            } else {
+                IpadItemActions(show: show, documents: documents, item: clip, targets: itemMenuTargets, initialAction: itemMenuAction, close: { itemMenu = nil })
             }
         } else if let target = fx {
             IpadCompactModal(preferredSize: CGSize(width: 980, height: 640)) {
@@ -1083,24 +1129,21 @@ final class IpadRegionHeaderTouchView: UIView {
         super.init(frame: frame)
         let single = UITapGestureRecognizer(target: self, action: #selector(tapped))
         let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped)); double.numberOfTapsRequired = 2
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
-        hold.minimumPressDuration = 0.35; hold.allowableMovement = 12
-        single.require(toFail: double); single.require(toFail: hold); double.require(toFail: hold)
-        addGestureRecognizer(single); addGestureRecognizer(double); addGestureRecognizer(hold)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
+        single.require(toFail: double); single.require(toFail: pan); double.require(toFail: pan)
+        addGestureRecognizer(single); addGestureRecognizer(double); addGestureRecognizer(pan)
         isAccessibilityElement = true; accessibilityLabel = JarasLocalization.string("Editar região")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func accessibilityActivate() -> Bool { doubleTap?(); return true }
     @objc private func tapped() { singleTap?() }
     @objc private func doubleTapped() { doubleTap?() }
-    @objc private func held(_ gesture: UILongPressGestureRecognizer) {
+    @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
-        case .began: origin = gesture.location(in: window).x; moved?(0)
-        case .changed:
-            if let origin { moved?(Double(gesture.location(in: window).x - origin)) }
-        case .ended: origin = nil; ended?(false)
-        case .cancelled, .failed:
-            if origin != nil { origin = nil; ended?(true) }
+        case .began: singleTap?(); moved?(0)
+        case .changed: moved?(Double(gesture.translation(in: window).x))
+        case .ended: moved?(Double(gesture.translation(in: window).x)); ended?(false)
+        case .cancelled, .failed: ended?(true)
         default: break
         }
     }
@@ -1110,21 +1153,30 @@ final class IpadRegionHeaderTouchView: UIView {
 struct IpadCompactModal<Content: View>: View {
     var preferredSize: CGSize? = nil
     @ViewBuilder var content: () -> Content
+    @State private var keyboardFrame = CGRect.zero
     var body: some View {
         GeometryReader { geometry in
+            let keyboardTop = keyboardFrame.isEmpty ? geometry.frame(in: .global).maxY : keyboardFrame.minY
+            let availableHeight = max(1, min(geometry.size.height, keyboardTop - geometry.frame(in: .global).minY))
             ZStack {
-                Color.black.opacity(0.58).ignoresSafeArea().contentShape(Rectangle()).onTapGesture { }
+                Color.black.opacity(0.58).ignoresSafeArea().contentShape(Rectangle()).onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
                 if let preferredSize {
                     card.frame(width: min(preferredSize.width, max(1, geometry.size.width - 32)),
-                               height: min(preferredSize.height, max(1, geometry.size.height - 32)))
+                               height: min(preferredSize.height, max(1, availableHeight - 32)))
                 } else {
                     ScrollView {
                         card.padding(16).frame(maxWidth: .infinity)
                     }.fixedSize(horizontal: false, vertical: true)
-                        .frame(maxHeight: max(1, geometry.size.height - 16))
+                        .frame(maxHeight: max(1, availableHeight - 16))
                 }
-            }.frame(width: geometry.size.width, height: geometry.size.height)
-        }.accessibilityAddTraits(.isModal)
+            }.frame(width: geometry.size.width, height: availableHeight)
+                .frame(maxHeight: .infinity, alignment: .top)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            keyboardFrame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .zero
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardFrame = .zero }
+        .accessibilityAddTraits(.isModal)
     }
     private var card: some View {
         content()
@@ -1233,43 +1285,63 @@ struct IpadDialogButtonStyle: ButtonStyle {
     @ObservedObject var show: ShowController
     let id: UUID
     let close: () -> Void
-    @State private var editing = true
-    @State private var unifying = false
-    @State private var deleting = false
-    @State private var name = ""
-    private var region: Part? { show.current?.parts.first { $0.id == id } }
-    private var canUnify: Bool {
-        guard let region, let song = show.current else { return false }
-        return song.parts.contains { $0.id != id && $0.parentRegionID == nil && $0.startTime < region.endTime && $0.endTime > region.startTime }
-    }
+    @State private var uppercase = true
     var body: some View {
-        VStack(spacing: 14) {
-            IpadModalHeader(title: "Editar região", subtitle: region?.name, close: close)
-            Menu("Actions") {
-                Button("Edit song") { unifying = false; editing = true }
-                if canUnify { Button("Unify regions") { name = ""; editing = false; unifying = true } }
-                Button("Delete region", role: .destructive) { deleting = true }
+        if let region = show.current?.parts.first(where: { $0.id == id }) {
+            NameColorEditor(title: "Edit song", initialName: region.name, initialColor: region.color ?? 0x705264,
+                save: { name, color in
+                    show.editRegion(id, name: name, color: color, uppercaseName: uppercase)
+                }, close: close, uppercaseName: $uppercase)
+                .onAppear { uppercase = region.usesUppercase }
+        }
+    }
+}
+
+@MainActor struct IpadRegionInitEditor: View {
+    @ObservedObject var show: ShowController
+    let id: UUID
+    let close: () -> Void
+    @State private var selection = 1
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(verbatim: "Config Init").font(.jarasHeadline)
+            Text(verbatim: show.current?.parts.first(where: { $0.id == id })?.name ?? "")
+            Picker("Initial playback", selection: $selection) { IpadLeadOptions() }.pickerStyle(.menu)
+            HStack {
+                Button("Cancel", action: close); Spacer()
+                Button("Save") { show.setRegionInit(id, selection: selection); close() }
             }
-            if let region {
-                if editing {
-                    NameColorEditor(title: "Editar região", initialName: region.name, initialColor: region.color ?? 0x705264, save: { name, color in
-                        show.editRegion(id, name: name, color: color, uppercaseName: region.usesUppercase); close()
-                    }, close: close)
-                } else if unifying {
-                    TextField("Name", text: $name).textFieldStyle(.roundedBorder)
-                    Button("Unify") { if show.unifyRegions(containing: id, name: name) { close() } }
-                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                } else {
-                    Button("Edit song") { editing = true }
-                    if canUnify { Button("Unify regions") { name = ""; unifying = true } }
-                    Button("Delete region", role: .destructive) { deleting = true }
-                }
+        }.padding(18).frame(width: 300)
+            .onAppear { selection = show.current?.parts.first(where: { $0.id == id })?.subplayInitSelection ?? 1 }
+    }
+}
+struct IpadLeadOptions: View {
+    var body: some View {
+        ForEach(1...5, id: \.self) { count in
+            Text("\(count)s").tag(count * 2 - 1)
+            Text(verbatim: "\(count) " + JarasLocalization.string(count == 1 ? "bar" : "bars")).tag(count * 2)
+        }
+    }
+}
+@MainActor struct IpadAutoQueueEditor: View {
+    @ObservedObject var show: ShowController
+    let close: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("AUTO").font(.jarasHeadline)
+            Toggle("Run queue until the end of the block", isOn: Binding(get: { show.regionSetlist.autoUntilBlockEnd == true }, set: { show.setAutoUntilBlockEnd($0) }))
+            Toggle("Without playback", isOn: Binding(get: { show.regionSetlist.preparesWithoutPlayback }, set: { show.setPrepareWithoutPlayback($0) }))
+            if !show.regionSetlist.preparesWithoutPlayback {
+                Toggle("Automatic Subplay", isOn: Binding(get: { show.regionSetlist.automaticSubplay == true }, set: { show.setAutomaticSubplay($0) }))
+                Picker("Start before the end", selection: Binding(get: { show.regionSetlist.subplayLeadSelection }, set: { value in
+                    let enabled = show.regionSetlist.automaticSubplay == true
+                    if value == 11 { show.setAutomaticSubplay(enabled, next: true) }
+                    else { show.setAutomaticSubplay(enabled, seconds: value % 2 == 1 ? Double((value + 1) / 2) : nil, bars: value % 2 == 0 ? value / 2 : nil) }
+                })) { IpadLeadOptions(); Text(verbatim: "Next").tag(11) }
+                    .pickerStyle(.menu).disabled(show.regionSetlist.automaticSubplay != true)
             }
-        }.buttonStyle(.bordered).padding(18)
-            .confirmationDialog("Delete region", isPresented: $deleting, titleVisibility: .visible) {
-                Button("Delete region", role: .destructive) { show.deleteRegion(id, playlist: nil); close() }
-                Button("Cancel", role: .cancel) {}
-            } message: { Text("The region and its contents will be deleted.") }
+            HStack { Spacer(); Button("Close", action: close) }
+        }.padding(18).frame(width: 320)
     }
 }
 

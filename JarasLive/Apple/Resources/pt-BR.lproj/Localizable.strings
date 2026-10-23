@@ -1819,3 +1819,5 @@
 "Cannot queue a duplicate of the song that is playing." = "Não é possível enfileirar uma cópia da música que está tocando.";
 
 "Block text color" = "Cor do texto dos blocos";
+
+"Recording signal" = "Gravar sinal";

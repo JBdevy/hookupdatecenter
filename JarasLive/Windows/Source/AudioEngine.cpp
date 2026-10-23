@@ -823,6 +823,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             bus->id = track.id;
             bus->held.record(heldPeaks[track.id]);
             bus->timecode = track.role.id == "timecode";
+            bus->vinhetasBus = track.role.id == "vinhetas";
             if (bus->timecode) {
                 timecodeProgram = jaras::TimecodeProgram(song, track);
                 timecodeMIDI.prepare(timecodeProgram, song.duration, track.mute);
@@ -832,7 +833,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             bus->mute = track.mute;
             bus->solo = track.solo;
             bus->phase = track.phaseInverted.value_or(false);
-            bus->inputFirst = track.inputPatch ? track.inputPatch->firstChannel : 0;
+            bus->inputFirst = !bus->vinhetasBus && track.inputPatch ? track.inputPatch->firstChannel : 0;
             bus->inputChannels = track.inputPatch ? track.inputPatch->channelCount : 2;
             bus->inputMonitoring = track.inputMonitoring.value_or(true);
             bus->outputs = track.outputPatches();
@@ -840,7 +841,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             bus->midiNotes = playbackNotes(track, &song, false, true);
             bus->externalEvents = MIDIPlayback::sequence(bus->midiNotes).events;
             for(auto &messages:bus->externalMIDI)messages.ensureSize(131072);
-            bus->midiSlot = track.midiInput.value_or(0);
+            bus->midiSlot = bus->vinhetasBus ? 0 : track.midiInput.value_or(0);
             bus->midiChannel = track.midiChannel.value_or(0);
             bus->midiMessages.ensureSize(32768);
             try {
@@ -1519,7 +1520,7 @@ void AudioEngine::setMixer(const jaras::Project &project, const jaras::Song &son
                 u.mute = t.mute;
                 u.solo = t.solo;
                 u.inputMonitoring=t.inputMonitoring.value_or(true);
-                u.midiSlot=t.midiInput.value_or(0);u.midiChannel=t.midiChannel.value_or(0);
+                u.midiSlot=t.role.id=="vinhetas"?0:t.midiInput.value_or(0);u.midiChannel=t.midiChannel.value_or(0);
                 enqueue(u);
                 break;
             }
@@ -2107,7 +2108,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         if (bus.midiSlot >= 1 && bus.midiSlot <= 3)
             appendLiveTrackMIDI(bus.midiMessages, slotMessages[bus.midiSlot - 1], samples, bus.armed.load() && liveInputEnabled.load(), bus.midiChannel);
         bus.keyboardRoute.append(bus.midiMessages, keyboardMidi, samples,
-            bus.armed.load() && liveInputEnabled.load(), keyboardChannel.load(), bus.midiChannel);
+            !bus.vinhetasBus && bus.armed.load() && liveInputEnabled.load(), keyboardChannel.load(), bus.midiChannel);
         if (captureActive)
             trackCapture->midi(bus.id, bus.midiMessages, samples, 0);
         if(allowInstrument)for(const auto event:bus.midiMessages)
@@ -2115,6 +2116,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         if(!allowInstrument&&instrumentWasAllowed)
             for(int channel=1;channel<=16;++channel)bus.externalMIDI[0].addEvent(MidiMessage::allNotesOff(channel),0);
         liveRecordBuffer.clear(0, samples);
+        if (bus.vinhetasBus) vinhetas.render(liveRecordBuffer, samples, sr);
         if (bus.midi && !bus.midi->empty()) {
             if (allowInstrument)
                 bus.midi->live(liveRecordBuffer, bus.midiMessages, samples);
@@ -2175,6 +2177,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             }
             if(perHeadAutomation){applyGain(buffer,head,true);applyGain(bus.frozen[head],head,true,true);}
         }
+        if(captureActive)for(auto &capture:outputRecordBuffers)capture.clear(0,samples);
         if(combined) {
             const int other=1-combinedHead;for(int ch=0;ch<2;ch++){
                 bus.head(combinedHead).addFrom(ch,0,bus.head(other),ch,0,samples);
@@ -2187,11 +2190,21 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             if(combined&&head!=combinedHead)continue;
             auto &buffer=bus.head(head);const auto clock=blockClock;
             const bool moving=combined?active:renderingHead[head];
+            if(captureActive) {
+                for(int ch=0;ch<2;ch++) {
+                    outputRecordScratch.copyFrom(ch,0,buffer,ch,0,samples);
+                    outputRecordScratch.addFrom(ch,0,bus.frozen[head],ch,0,samples);
+                    outputRecordBuffers[0].addFrom(ch,0,outputRecordScratch,ch,0,samples);
+                }
+                applyGain(outputRecordScratch,head);
+                for(int ch=0;ch<2;ch++)outputRecordBuffers[1].addFrom(ch,0,outputRecordScratch,ch,0,samples);
+            }
             fxInput=std::max(fxInput,buffer.getMagnitude(0,samples));
             bus.fx[combined?0:head].applyAutomation(bus.automation,automationTime(head,0,compensation?compensation->input:0));
             bus.fx[combined?0:head].process(buffer,samples,timelinePositions[size_t(head)][0],moving,&bus.externalMIDI[head],blockClock/sr);
             for(int ch=0;ch<2;ch++)buffer.addFrom(ch,0,bus.frozen[head],ch,0,samples);
             fxOutput=std::max(fxOutput,buffer.getMagnitude(0,samples));
+            if(captureActive)for(int ch=0;ch<2;ch++)outputRecordBuffers[2].addFrom(ch,0,buffer,ch,0,samples);
             if(!perHeadAutomation)applyGain(buffer,head);
             else for(int ch=0;ch<2;ch++) {
                 // Trim/read gain decomposes without division, so even a fader
@@ -2203,6 +2216,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 FloatVectorOperations::multiply(buffer.getWritePointer(ch),gain,samples);
                 if(fadeSelected)FloatVectorOperations::multiply(buffer.getWritePointer(ch),trackFadeoutGains.data(),samples);
             }
+            if(captureActive)for(int ch=0;ch<2;ch++)outputRecordBuffers[3].addFrom(ch,0,buffer,ch,0,samples);
             const bool silent = !buses[(size_t)index]->renderRouteAudible;
             peak = std::max(peak, silent ? 0.f : buffer.getMagnitude(0, samples));
             if (!silent) for (int ch = 0; ch < 2; ++ch)
@@ -2236,6 +2250,8 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 }
             }
         }
+        if(captureActive)for(int stage=0;stage<4;++stage)
+            trackCapture->bus(bus.id,outputRecordBuffers[stage],samples,true,stage>=2,stage%2==1);
         // An armed track indicates its selected input even with transport and
         // audible monitoring off. This does not route that signal to the master.
         if (bus.armed.load() && liveInputEnabled.load() && bus.inputFirst > 0 && input)
@@ -2261,6 +2277,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     if (routedHardware)
         liveMidi.clear();
     liveRecordBuffer.clear(0,samples);
+    if (std::none_of(buses.begin(), buses.end(), [](const auto &bus) { return bus->vinhetasBus; })) vinhetas.render(liveRecordBuffer, samples, sr);
     if (allowInstrument) {
         if (masterMIDI && !masterMIDI->empty())
             masterMIDI->live(liveRecordBuffer, liveMidi, samples);
@@ -2440,6 +2457,7 @@ void AudioEngine::setMIDISlot(int slot, const String &identifier) {
     midiDevices[slot] = identifier;
 }
 void AudioEngine::handleIncomingMidiMessage(MidiInput *source, const MidiMessage &message) {
+    if(vinhetas.handlesMIDI(message))return;
     midiInput.addMessageToQueue(message);
     if (source) {
         const ScopedLock lock(midiRoutingLock);

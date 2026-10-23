@@ -264,6 +264,14 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         gridCapture.detach()
         expect(grid.panGestureRecognizer.allowedScrollTypesMask == [.continuous, .discrete], "Detaching grid pointer failed to restore native wheel policy")
         gridCapture.removeFromSuperview(); grid.removeFromSuperview(); mixer.removeFromSuperview()
+        let rulerTouch = IpadRulerTouchView(frame: CGRect(x: 0, y: 0, width: 400, height: 24))
+        expect(rulerTouch.gestureRecognizers?.count == 3, "Ruler has separate direct-touch pan, tap and held selection")
+        let rulerHold = rulerTouch.gestureRecognizers?.compactMap { $0 as? UILongPressGestureRecognizer }.first
+        expect(rulerHold?.minimumPressDuration == 1.5, "Ruler touch selection starts only after 1.5 seconds")
+        for recognizer in rulerTouch.gestureRecognizers ?? [] {
+            expect(recognizer.allowedTouchTypes == [NSNumber(value: UITouch.TouchType.direct.rawValue)],
+                "Direct-touch ruler gestures must not consume right-button mouse selection")
+        }
         write(failures.isEmpty ? "IPAD_TIMELINE_POINTER_UIKIT_OK assertions=\(assertions)" : "FAIL: " + failures.joined(separator: "; "))
     }
     func write(_ output: String) {

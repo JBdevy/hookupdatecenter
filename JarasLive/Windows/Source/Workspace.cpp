@@ -1,3 +1,4 @@
+#include "ProjectReductionPanel.h"
 #include "MeterDisplay.h"
 #include "SpecialTrackControls.h"
 #include "MarkerRegionConversion.h"
@@ -1209,7 +1210,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             const auto levels = w.session.audio.meterLevels(id);
             for (int ch = 0; ch < 2; ++ch)
                 meterDisplay::bar(g, {(float)indent + 2 + ch * 6.f, meterInset, 5, std::max(0.f,(float)body - 2*meterInset)}, levels[(size_t)ch]);
-            if (body >= 64) {
+            if (body >= 64 && t->role.id!="vinhetas") {
                 // Keep the audio bars and peak in place, with the Mac's four
                 // points of clear space before MIDI and one before peak x21.
                 g.setColour(Colours::black.withAlpha(.38f));
@@ -1269,9 +1270,9 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         mute.setVisible(audioButtons);solo.setVisible(audioButtons);
         if(solo.isVisible())place(solo,22);if(mute.isVisible())place(mute,22);
         if(special){special->setVisible(!standard);special->setBounds(std::max(22,x-(t&&t->role.id=="timecode"?116:108)),y,t&&t->role.id=="timecode"?116:108,textTrack?48:h);}
-        pan.setVisible(expanded&&standard);
-        if (expanded&&standard) place(pan, 42);
-        if(standard){place(record,22);if(expanded){place(fx,22);place(env,28);place(output,34);}}
+        pan.setVisible(expanded&&standard&&t->role.id!="vinhetas");
+        if (pan.isVisible()) place(pan, 42);
+        if(standard){env.setVisible(expanded&&t->role.id!="vinhetas");place(record,22);if(expanded){place(fx,22);if(env.isVisible())place(env,28);place(output,34);}}
         // Preserve the folder anchor even in deeply nested, narrow sidebars.
         // Keep the controls separate, matching the Mac layout's minimum origin.
         if(expanded && isFolder() && output.getX()<groupIndent()+51) {
@@ -1281,7 +1282,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         }
         folder.setBounds(groupIndent() + 20, y + (h - 20) / 2, 28, 20);
         folder.setVisible(expanded && isFolder());
-        phase.setVisible(expanded&&standard); volume.setVisible(expanded&&!textTrack);
+        phase.setVisible(expanded&&standard&&t->role.id!="vinhetas"); volume.setVisible(expanded&&!textTrack);
         phase.setBounds(getWidth() - 26, 27, 22, 20);
         phase.getProperties().set("plain", true);
         const int volumeLeft = (meterReadout ? 68 : 22) + groupIndent();
@@ -3165,6 +3166,26 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     keyboard = std::make_unique<FooterKeyboard>(session.audio.keyboardState, appearance);
     dockContent.addAndMakeVisible(*keyboard);
     keyboard->setVisible(false);
+    vinhetasPanel = std::make_unique<VinhetasPanel>(session.audio.vinhetas, appearance);
+    dockContent.addChildComponent(*vinhetasPanel);
+    actions.rawMIDI = [this](int status,int number,int value,int channel) { return projectReady&&!loginPanel&&!browserVisible&&vinhetasPanel->midi(status,number,value,channel); };
+    vinhetasPanel->createTrack = [this] { perform([&] {
+        if (!session.song()) return;
+        session.edit([&](jaras::Project &project) {
+            for (auto &song : project.songs) if (song.id == session.song()->id) {
+                if (std::any_of(song.tracks.begin(), song.tracks.end(), [](const auto &track) { return track.role.id == "vinhetas"; })) return;
+                jaras::Track track; track.id=uuid(); track.name="VINHETAS-FX"; track.role.id="vinhetas"; track.color=0x828282;
+                auto at=std::find_if(song.tracks.begin(),song.tracks.end(),[](const auto &t){return t.role.id=="generatedClick";});
+                song.tracks.insert(at,track);
+            }
+        });
+    }); };
+    vinhetasPanel->edit = [this](String name,unsigned colour,std::function<void(String,unsigned)> save) {
+        auto safe=SafePointer<Workspace>(this);
+        auto close=[safe]{if(safe)ModalSheet::dismiss(*safe);};
+        ModalSheet::open(*this,"Editar",std::make_unique<RegionEditor>(name,colour,false,[save,close](String n,unsigned c,bool){save(n,c);close();},close,false),300,370);
+    };
+
     tracksViewport.setViewedComponent(&tracksContent, false);
     tracksViewport.setScrollBarsShown(false, false, true, false);
     tracksViewport.setScrollBarThickness(8);
@@ -3305,6 +3326,9 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         }, [safe] {
             if(safe) safe->showPanel("Exportar para CatLive iPadOS", std::make_unique<PortableExportPanel>(safe->session,
                 [safe](std::function<void()> saved) { if(safe) safe->chooseSave(false,std::move(saved)); }),540,376);
+        }, [safe] {
+            if(safe) safe->showPanel("Reduzir projeto",std::make_unique<ProjectReductionPanel>(safe->session,
+                [safe](std::function<void()> saved){if(safe)safe->chooseSave(false,std::move(saved));}),760,560);
         });
         CallOutBox::launchAsynchronously(std::move(panel),controls["save"]->getScreenBounds(),nullptr);
     };
@@ -3366,6 +3390,15 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     static_cast<QuietButton *>(controls["railMixer"])->context = [this](Point<int> point) { mixerMenu(point); };
     button("railParts", "Parts", [this] { toggleLeftParts(); }).setTooltip("Parts");
     static_cast<QuietButton *>(controls["railParts"])->context = [this](Point<int> point) { leftPartsMenu(point); };
+    button("railVinhetas", "▦", [this] {
+        if(vinhetasDetached) { auto at=floatingWindows.find("Vinhetas");if(at!=floatingWindows.end())at->second->setVisible(!at->second->isVisible()); }
+        else { vinhetasVisible=!vinhetasVisible;resized(); }
+    });
+    static_cast<QuietButton &>(*controls["railVinhetas"]).context=[this](Point<int>){
+        PopupMenu menu;menu.addItem(1,vinhetasDetached?"Indexar":"Desindexar");
+        auto safe=Component::SafePointer<Workspace>(this);
+        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(controls["railVinhetas"]),[safe](int result){if(safe&&result==1)safe->toggleVinhetasDock();});
+    };
     button("railKeyboard", String::fromUTF8("♮"), [this] {
         keyboardVisible = !keyboardVisible;
         resized();
@@ -3419,10 +3452,10 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         openSettings();
     }).setTooltip(String::fromUTF8("Configurações"));
     button("railHelp", "?", [this] { showShortcuts(); }).setTooltip("Atalhos");
-    for (auto id : {"menu", "mixer", "railMixer", "railKeyboard", "railParts", "settings",
+    for (auto id : {"menu", "mixer", "railMixer", "railKeyboard", "railParts", "railVinhetas", "settings",
                     "loop", "pause"})
         controls[id]->getProperties().set("icon", id);
-    for (auto id : {"menu", "mixer", "railMixer", "railKeyboard", "railParts", "settings",
+    for (auto id : {"menu", "mixer", "railMixer", "railKeyboard", "railParts", "railVinhetas", "settings",
                     "railTeleprompt", "railTeleprompt2"})
         controls[id]->getProperties().set("plain", true);
     for (auto id : {"play", "subplay", "record", "video", "tp1", "tp2", "masterMute", "masterSolo",
@@ -3665,11 +3698,12 @@ void Workspace::saveWorkspaceLayout() {
     put(state,"mixerDetached",mixerDetached); put(state,"mixerOpen",footerMixerVisible);
     put(state,"partsDetached",partsLeftDetached); put(state,"partsOpen",partsLeftVisible);
     put(state,"partsRightOpen",partsRightVisible);
+    put(state,"vinhetasDetached",vinhetasDetached);put(state,"vinhetasOpen",vinhetasVisible);
     put(state,"setlistPlacement",(int)setlistPlacement); put(state,"setlistDockSide",(int)setlistDockSide);
     put(state,"trackWidth",mixerWidth); put(state,"setlistWidth",setlistWidth);
     put(state,"partsLeftWidth",partsLeftWidth); put(state,"partsRightWidth",partsRightWidth);
     put(state,"mixerHeight",mixerHeightSetting); put(state,"footerHeight",footerHeightSetting);
-    for (const auto &name : {String("Mixer"), String("Parts")}) {
+    for (const auto &name : {String("Mixer"), String("Parts"), String("Vinhetas")}) {
         const auto at = floatingWindows.find(name);
         const bool visible = at != floatingWindows.end() && at->second->isVisible();
         put(state,name+"Visible",visible);
@@ -3702,6 +3736,10 @@ void Workspace::restoreWorkspaceLayout() {
     const auto placement=(SetlistPlacement)jlimit(0,2,(int)num(state,"setlistPlacement",0));
     setlistDockSide=(SetlistPlacement)jlimit(0,1,(int)num(state,"setlistDockSide",0));
     if (projectReady && !browserVisible) {
+        const bool wantedVinhetasDetached=flag(state,"vinhetasDetached");
+        if(vinhetasDetached!=wantedVinhetasDetached)toggleVinhetasDock();
+        vinhetasVisible=flag(state,"vinhetasOpen");
+        if(auto at=floatingWindows.find("Vinhetas");at!=floatingWindows.end())at->second->setVisible(wantedVinhetasDetached&&flag(state,"VinhetasVisible",true));
         const bool showSetlist=setlistVisible, showParts=partsLeftVisible;
         setSetlistPlacement(placement);
         setlistDockSide=(SetlistPlacement)jlimit(0,1,(int)num(state,"setlistDockSide",0));
@@ -3715,7 +3753,7 @@ void Workspace::restoreWorkspaceLayout() {
             if (!partsLeftDetached) addChildComponent(*partsLeft);
             if (auto at=floatingWindows.find("Parts");at!=floatingWindows.end()) at->second->setVisible(false);
         }
-        for (const auto &name : {String("Mixer"), String("Parts")})
+        for (const auto &name : {String("Mixer"), String("Parts"), String("Vinhetas")})
             if (auto at=floatingWindows.find(name);at!=floatingWindows.end() && str(state,Identifier(name+"Frame")).isNotEmpty())
                 at->second->restoreWindowStateFromString(str(state,Identifier(name+"Frame")));
         resized(); repaint();
@@ -4159,7 +4197,7 @@ void Workspace::resized() {
     const bool compactTransport = getWidth() < 1270, narrowTransport = getWidth() < 900;
     const int rail = 32, title = 32, transport = narrowTransport ? 166 : compactTransport ? 126 : 86;
     const int footerHeight = jlimit(27, 161, footerHeightSetting);
-    const int dockHeight = (keyboardVisible ? 108 : 0) + mixerHeight;
+    const int dockHeight = (keyboardVisible ? 108 : 0) + mixerHeight + (vinhetasVisible && !vinhetasDetached ? 240 : 0);
     // Keep the timeline usable; scroll the lower panels at their original sizes
     // when the monitor cannot display all of them together.
     const int visibleDockHeight = std::min(dockHeight, std::max(0, getHeight() - title - transport - footerHeight - 128));
@@ -4309,8 +4347,9 @@ void Workspace::resized() {
     controls["railTeleprompt2"]->setBounds(2, 156, 28, 28);
     controls["railNotice"]->setBounds(2, 194, 28, 28);
     controls["railClock"]->setBounds(2, 232, 28, 28);
-    controls["railMixer"]->setBounds(2, getHeight() - 120, 28, 28);
-    controls["railKeyboard"]->setBounds(2, getHeight() - 80, 28, 28);
+    controls["railMixer"]->setBounds(2, getHeight() - 160, 28, 28);
+    controls["railKeyboard"]->setBounds(2, getHeight() - 120, 28, 28);
+    controls["railVinhetas"]->setBounds(2, getHeight() - 80, 28, 28);
     controls["railParts"]->setBounds(2, getHeight() - 40, 28, 28);
     zoom.setVisible(false);
     for (auto id : {"zoomOut", "zoomIn", "zoomFit"}) controls[id]->setVisible(false);
@@ -4350,6 +4389,8 @@ void Workspace::resized() {
     footer.setBounds(rail + 10, footerBounds.getY(), getWidth() - rail - 20, 27);
     footer.setVisible(false);
     keyboard->setVisible(keyboardVisible);
+    if(!vinhetasDetached) {vinhetasPanel->setVisible(vinhetasVisible);vinhetasPanel->setBounds(0,mixerHeight+(keyboardVisible?108:0),getWidth()-rail,240);}
+
     footerMixer->setVisible(footerMixerVisible);
     dockViewport.setVisible(dockHeight > 0);
     dockViewport.setBounds(rail, getHeight() - bottom, getWidth() - rail, visibleDockHeight);
@@ -4360,6 +4401,9 @@ void Workspace::resized() {
         footerMixer->refresh();
     refreshMixerIndicator();
     controls["railKeyboard"]->setColour(TextButton::textColourOffId, keyboardVisible ? theme::green : Colours::white);
+    const auto padWindow=floatingWindows.find("Vinhetas");
+    const bool padsOpen=vinhetasDetached?padWindow!=floatingWindows.end()&&padWindow->second->isVisible():vinhetasVisible;
+    controls["railVinhetas"]->setColour(TextButton::textColourOffId,padsOpen?theme::green:Colours::white);
     controls["setlist"]->setColour(TextButton::buttonColourId, setlistVisible ? theme::green : theme::panel);
     controls["setlist"]->setColour(TextButton::textColourOffId, setlistVisible ? Colours::black : Colours::white);
     controls["mixer"]->setColour(TextButton::textColourOffId, mixerVisible ? theme::green : Colour(0xffc44545));
@@ -5978,7 +6022,7 @@ void Workspace::editTrack(ID id) {
                     for (auto &s : p.songs)
                         for (auto &t : s.tracks)
                             if (t.id == id) {
-                                if (jaras::fixedTrackName(t.role).empty())
+                                if (jaras::fixedTrackName(t.role).empty()&&t.role.id!="vinhetas")
                                     t.name = utf8(name);
                                 t.color = colour;
                             }
@@ -5990,7 +6034,7 @@ void Workspace::editTrack(ID id) {
     ModalSheet::open(*this, "Editar pista",
                      std::make_unique<RegionEditor>(text(track.name),
                                                     theme::track(track).getARGB() & 0xffffff, false,
-                                                    save, close, false),
+                                                    save, close, false, track.role.id!="vinhetas"),
                      300, 370);
 }
 void Workspace::specialTrackAction(ID id,const String &action) {
@@ -6030,13 +6074,13 @@ void Workspace::showTrackMenu(ID id, Point<int> point) {
     PopupMenu menu;
     if (standard || track.role.id=="timecode" || track.role.id=="video" || track.role.id=="generatedClick") menu.addItem(1,"Patch");
     if (track.role.id=="generatedClick") menu.addItem(2,"Sound Designer");
-    if (standard) { menu.addItem(3,"FX"); menu.addItem(4,"Criar item MIDI"); if(groupable)menu.addItem(5,String::fromUTF8("Criar grupo")); }
+    if (standard) { menu.addItem(3,"FX"); if(track.role.id!="vinhetas")menu.addItem(4,"Criar item MIDI"); if(groupable)menu.addItem(5,String::fromUTF8("Criar grupo")); }
     if (trackTree::end(*song,at)>at+1) menu.addItem(6,"Desagrupar");
     if (track.parentTrackID) menu.addItem(7,"Retirar do grupo");
     if (standard && trackEditing::linkable(*song,targets)) menu.addItem(8,"Vincular pistas");
     if (track.stereoLinkPartner) menu.addItem(9,String::fromUTF8("Desvincular pistas"));
     menu.addItem(10,String::fromUTF8("Editar pista"));
-    if (standard) menu.addItem(12, targets.size() > 1 ? "Duplicar pistas" : "Duplicar pista");
+    if (standard && track.role.id!="vinhetas") menu.addItem(12, targets.size() > 1 ? "Duplicar pistas" : "Duplicar pista");
     menu.addSeparator(); menu.addItem(11,targets.size()>1 ? "Excluir pistas" : "Excluir pista");
     const auto project = session.project().id, songID = song->id;
     menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x,point.y,1,1}),
@@ -7170,3 +7214,14 @@ void Workspace::openVideo() {
 
 #include "WorkspaceActions.h"
 #include "WorkspaceMediaImportRegression.h"
+
+namespace catlive {
+void Workspace::toggleVinhetasDock() {
+    if(vinhetasDetached){floatingWindows.erase("Vinhetas");dockContent.addAndMakeVisible(*vinhetasPanel);vinhetasDetached=false;vinhetasVisible=true;}
+    else {
+        class Holder final : public Component { public: VinhetasPanel &panel; explicit Holder(VinhetasPanel &p):panel(p){addAndMakeVisible(panel);} void resized() override {panel.setBounds(getLocalBounds());} };
+        vinhetasDetached=true;vinhetasVisible=false;openFloating("Vinhetas",std::make_unique<Holder>(*vinhetasPanel),1100,260);
+    }
+    resized();
+}
+}

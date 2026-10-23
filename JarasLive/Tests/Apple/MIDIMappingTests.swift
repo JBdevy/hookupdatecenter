@@ -59,6 +59,14 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
     func releaseMIDINotes() {}
     func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8) { forwarded += 1 }
 }
+@MainActor final class VinhetasController {
+    static let shared = VinhetasController()
+    var claimedNumber: UInt8?
+    var received: [(ControlInput, UInt8)] = []
+    func receive(input: ControlInput, value: UInt8) -> Bool {
+        received.append((input, value)); return claimedNumber != nil && input.number == claimedNumber
+    }
+}
 @MainActor final class KeyboardMIDIMonitor {
     static let shared = KeyboardMIDIMonitor()
     func receive(source: Int32, status: UInt8, number: UInt8, value: UInt8) {}
@@ -373,6 +381,17 @@ enum ProjectError: Error { case invalid(String) }
         }
         precondition(show.actionsReceived.count == beforePlay + 1 && show.actionsReceived.last == .play)
         print("REAL_COREMIDI_UMP_PORT_LEARNING_AND_MAPPED_PLAY_ON_MAIN_ACTOR_OK")
+        mappings.sources[100] = (123, "Test MIDI")
+        let instrumentBefore = StemAudioPlayback.shared.forwarded
+        VinhetasController.shared.claimedNumber = 61
+        mappings.receive(endpoint: 100, status: 0x95, number: 61, value: 100)
+        mappings.receive(endpoint: 100, status: 0x85, number: 61, value: 0)
+        let padMessages = VinhetasController.shared.received.suffix(2)
+        precondition(padMessages.map { $0.0.status } == [0x90, 0x80] && padMessages.allSatisfy { $0.0.channel == 5 })
+        precondition(StemAudioPlayback.shared.forwarded == instrumentBefore, "Pad notes must not also play an armed instrument")
+        VinhetasController.shared.claimedNumber = nil
+        print("VINHETAS_MIDI_NOTE_OFF_CHANNEL_AND_EXCLUSIVE_ROUTING_OK")
+
 
     }
 }

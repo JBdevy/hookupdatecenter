@@ -63,6 +63,10 @@ struct MainView: View {
     @StateObject private var toolWindows = WorkspaceToolWindows()
     #endif
     @State private var keyboardOpen = false
+    #if os(macOS)
+    @AppStorage("jaras.vinhetas.visible") private var vinhetasOpen = false
+    @StateObject private var vinhetasWindow = VinhetasWindow()
+    #endif
     @AppStorage("jaras.layout.parts.open") private var partsLeftOpen = false
     @AppStorage("jaras.layout.partsRight.open") private var partsRightOpen = false
     @AppStorage("jaras.layout.setlist.placement") private var setlistPlacement: SetlistPlacement = .right
@@ -156,6 +160,11 @@ struct MainView: View {
     private func restoreGlobalPanels() {
         guard !remotePresentation, DesktopProjectTabs.shared.isForeground(show) else { return }
         let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "jaras.layout.vinhetas.detached") {
+            let visible = defaults.object(forKey: "jaras.layout.vinhetas.visible") as? Bool ?? true
+            vinhetasOpen = false; vinhetasWindow.open(show: show)
+            if !visible { vinhetasWindow.hide() }
+        }
         if defaults.bool(forKey: "jaras.layout.mixer.detached") {
             let visible = defaults.object(forKey: "jaras.layout.mixer.visible") as? Bool ?? true
             showDetachedMixer()
@@ -273,6 +282,12 @@ struct MainView: View {
                     maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0)),
                     resizeCoordinator: footerResizeCoordinator)
                 if keyboardOpen { FooterPianoKeyboard().frame(height: 108) }
+                #if os(macOS)
+                if vinhetasOpen && !vinhetasWindow.detached {
+                    VinhetasPanel(createTrack: { _ = show.createVinhetasTrack() }).frame(height: 240)
+                        .onAppear { VinhetasController.shared.bind(show: show) }
+                }
+                #endif
                 }
                 #if os(macOS)
                 FooterNativeHeightHost(storedHeight: CGFloat(storedFooterHeight), minimum: 27, maximum: 161.046875,
@@ -408,9 +423,10 @@ struct MainView: View {
             .onChange(of: show.snapshot.project.id) { _ in
                 trackEdit = nil
                 #if os(macOS)
-                detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true)
+                detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true); vinhetasWindow.hide(preserveState: true)
                 toolWindows.closeAll()
                 restoreGlobalPanels()
+                VinhetasController.shared.bind(show: show)
                 #endif
             }
             .overlay {
@@ -463,9 +479,9 @@ struct MainView: View {
             #if os(macOS)
             .onChange(of: documents.projectTabIndex) { _ in
                 if !DesktopProjectTabs.shared.isForeground(show) {
-                    detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true)
+                    detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true); vinhetasWindow.hide(preserveState: true)
                     toolWindows.closeAll()
-                } else { restoreGlobalPanels() }
+                } else { restoreGlobalPanels(); VinhetasController.shared.bind(show: show) }
             }
             #endif
             .onChange(of: textItemTarget != nil || trackEdit != nil || mappings.editing != nil) { blocked in
@@ -479,7 +495,7 @@ struct MainView: View {
                 #endif
                 guard !remotePresentation else { return }
                 #if os(macOS)
-                detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true)
+                detachedMixer.close(preserveState: true); detachedSetlist.close(preserveState: true); detachedParts.close(preserveState: true); vinhetasWindow.hide(preserveState: true)
                 guard DesktopProjectTabs.shared.isForeground(show) else { return }
                 #endif
                 // SwiftUI presents the replacement .id before removing the old
@@ -599,6 +615,23 @@ struct MainView: View {
             .jarasHelp("Keyboard")
             .immediateRightClick { keyboardSettings = true }
             .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
+            Button {
+                VinhetasController.shared.bind(show: show)
+                if vinhetasWindow.detached { vinhetasWindow.toggle(show: show) }
+                else { vinhetasOpen.toggle() }
+            } label: {
+                Image(systemName: "square.grid.4x3.fill")
+                    .font(.jarasSystem(size: 16, weight: .semibold))
+                    .frame(width: 30, height: 32)
+                    .contentShape(Rectangle())
+            }.foregroundStyle((vinhetasOpen || vinhetasWindow.visible) ? JarasTheme.green : JarasTheme.text)
+                .accessibilityLabel("Vinhetas").contextMenu {
+                    Button(vinhetasWindow.detached ? "Indexar" : "Desindexar") {
+                        if vinhetasWindow.detached { vinhetasWindow.dock(); vinhetasOpen = true }
+                        else { vinhetasOpen = false; vinhetasWindow.open(show: show) }
+                    }
+                }
+
             Button {
                 if detachedParts.isDetached {
                     if detachedParts.isVisible { detachedParts.hide() }

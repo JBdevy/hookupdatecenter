@@ -1113,12 +1113,13 @@ void Session::toggleRecording() {
         if (recordingArmed(track.id) && jaras::fixedTrackName(track.role).empty()) {
             TrackCapture::Target target;
             target.track = track.id;
-            target.midi = track.recordingChannels == 0;
+            target.output = track.role.id == "vinhetas" || track.recordingOutput.value_or(false);
+            target.midi = track.recordingChannels == 0 && track.role.id != "vinhetas";
             target.channels = track.recordingChannels.value_or(2);
             if (target.midi)
                 target.channels = 2;
-            target.bus = track.fxJSON &&
-                         !instrumentAssets::settings(JSON::parse(text(*track.fxJSON))).empty();
+            target.bus = target.output || (track.fxJSON &&
+                         !instrumentAssets::settings(JSON::parse(text(*track.fxJSON))).empty());
             target.input = track.inputPatch ? track.inputPatch->firstChannel : 1;
             if (!target.midi && !target.bus && !track.inputPatch)
                 throw std::runtime_error(
@@ -1133,8 +1134,11 @@ void Session::toggleRecording() {
             target.bits = encoding.bits;
             target.floatingPoint = encoding.floatingPoint;
             target.bitrate = encoding.bitrate;
-            target.postFader = track.recordingPostFader.value_or(true);
-            target.postFX = track.recordingPostFX.value_or(true);
+            target.outputPostFader = track.recordingPostFader.value_or(true);
+            target.outputPostFX = track.recordingPostFX.value_or(true);
+            // Output taps already contain the chosen stages. Inputs are always dry.
+            target.postFader = false;
+            target.postFX = false;
             target.gain = (float)track.volume;
             target.mediaDirectory = mediaDirectory;
             target.effects = track.fxJSON ? JSON::parse(text(*track.fxJSON)) : var{};

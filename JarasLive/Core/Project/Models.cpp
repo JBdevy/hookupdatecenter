@@ -118,7 +118,7 @@ void orderSpecialTracks(Project& project) {
         for (auto& marker : *song.markers) if (!marker.tempoBPM && endpoints.count(marker.id)) { marker.section = true; marker.loopSection = true; }
     }
     const auto rank = [](const Track& track) {
-        return track.role.id == "timecode" ? 0 : track.role.id == "teleprompt" ? 1 : track.role.id == "teleprompt2" ? 2 : track.role.id == "chords" ? 3 : track.role.id == "generatedClick" ? 4 : track.role.id == "video" ? 5 : 6;
+        return track.role.id == "timecode" ? 0 : track.role.id == "teleprompt" ? 1 : track.role.id == "teleprompt2" ? 2 : track.role.id == "chords" ? 3 : track.role.id == "vinhetas" ? 4 : track.role.id == "generatedClick" ? 5 : track.role.id == "video" ? 6 : 7;
     };
     for (auto& song : project.songs) {
         const auto earlier = [&](const Track& a, const Track& b) { return rank(a) < rank(b); };
@@ -268,7 +268,7 @@ void validate(const Project& p) {
     if (p.masterSecondaryPatch) validatePatch(*p.masterSecondaryPatch, false, false, true);
     if (p.masterOutputs) for (const auto& patch : *p.masterOutputs) validatePatch(patch, false, false, true);
     std::set<ID> ids{p.id}, songIds;
-    int timecodeTracks = 0, clickTracks = 0;
+    int timecodeTracks = 0, clickTracks = 0, vinhetasTracks = 0;
     auto unique = [&](const ID& id) { require(!id.empty() && ids.insert(id).second, "Duplicate or empty UUID"); };
     for (const auto& s : p.songs) {
         validateRouting(s);
@@ -305,6 +305,7 @@ void validate(const Project& p) {
                 }
             }
             require(!textTrack || (!t.mute && !t.fxJSON && !t.audioFile && !t.midiInput && !t.midiChannel && !t.recordingFormat && !t.recordingChannels), "Text tracks cannot contain audio controls");
+            if (t.role.id == "vinhetas") require(++vinhetasTracks <= 1, "Only one VINHETAS-FX track is allowed");
             if (t.role.id == "timecode") require(++timecodeTracks <= 1, "Only one Timecode track is allowed");
             if (t.role.id == "generatedClick") {
                 require(++clickTracks <= 1, "Only one Click track is allowed");

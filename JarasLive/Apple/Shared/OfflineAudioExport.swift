@@ -104,7 +104,11 @@ final class OfflineAudioExport {
             self.encoding = encoding
             self.job = job; destination = directory.appendingPathComponent(job.fileName)
             temporary = directory.appendingPathComponent(".jaras-render-" + UUID().uuidString + "." + encoding.format.fileExtension)
-            frames = Int64((job.duration * format.sampleRate).rounded())
+            let sampleCount = (job.duration * format.sampleRate).rounded()
+            guard sampleCount.isFinite, sampleCount > 0, sampleCount < Double(Int64.max) else {
+                throw ProjectError.invalid("O intervalo de áudio é menor que uma amostra ou possui duração inválida.")
+            }
+            frames = Int64(sampleCount)
             self.format = format
         }
         func write(_ source: AVAudioPCMBuffer, channels: Int, startingAt offset: Int = 0) throws {
@@ -115,7 +119,7 @@ final class OfflineAudioExport {
                     mp3 = try JarasMP3StreamEncoder(url: temporary,sampleRate: Int(format.sampleRate),channels: encoding.channels,bitRate: encoding.bitrate)
                 } else if encoding.format == .wav && Double(frames)*Double(encoding.channels*encoding.bitDepth/8) > Double(UInt32.max)-4096 {
                     var description = AudioStreamBasicDescription(mSampleRate: format.sampleRate,mFormatID: kAudioFormatLinearPCM,
-                        mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,mBytesPerPacket: UInt32(encoding.channels*encoding.bitDepth/8),
+                        mFormatFlags: (encoding.floatingPoint && encoding.bitDepth == 32 ? kAudioFormatFlagIsFloat : kAudioFormatFlagIsSignedInteger) | kAudioFormatFlagIsPacked,mBytesPerPacket: UInt32(encoding.channels*encoding.bitDepth/8),
                         mFramesPerPacket: 1,mBytesPerFrame: UInt32(encoding.channels*encoding.bitDepth/8),mChannelsPerFrame: UInt32(encoding.channels),mBitsPerChannel: UInt32(encoding.bitDepth),mReserved: 0)
                     var status = ExtAudioFileCreateWithURL(temporary as CFURL,kAudioFileRF64Type,&description,nil,AudioFileFlags.eraseFile.rawValue,&largeWave)
                     guard status == noErr, let largeWave else { throw NSError(domain: NSOSStatusErrorDomain,code: Int(status)) }
@@ -124,7 +128,7 @@ final class OfflineAudioExport {
                     guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain,code: Int(status)) }
                 } else {
                     file = try AVAudioFile(forWriting: temporary,settings: [AVFormatIDKey:kAudioFormatLinearPCM,AVSampleRateKey:format.sampleRate,
-                        AVNumberOfChannelsKey:encoding.channels,AVLinearPCMBitDepthKey:encoding.bitDepth,AVLinearPCMIsFloatKey:false,AVLinearPCMIsBigEndianKey:encoding.format == .aiff],commonFormat: .pcmFormatFloat32,interleaved: false)
+                        AVNumberOfChannelsKey:encoding.channels,AVLinearPCMBitDepthKey:encoding.bitDepth,AVLinearPCMIsFloatKey:encoding.floatingPoint && encoding.bitDepth == 32,AVLinearPCMIsBigEndianKey:encoding.format == .aiff],commonFormat: .pcmFormatFloat32,interleaved: false)
                 }
                 buffer = AVAudioPCMBuffer(pcmFormat: format,frameCapacity: 4096)!
             }
@@ -182,6 +186,7 @@ final class OfflineAudioExport {
                     sampleRate: Double, encoding: AudioExportEncoding = AudioExportEncoding(), secondaryEncoding: AudioExportEncoding? = nil, cancellation: AudioExportCancellation,
                     midiInstruments: [String: OfflineMIDIInstrument]? = nil,
                     includeHardwareOutputs: Bool = false,
+                    printTrackPolarity: Bool = false,
                     midiInstrumentsByTrack: [UUID: [String: OfflineMIDIInstrument]] = [:],
                     progress: (AudioExportProgress) -> Void) throws {
         try AudioLicenseAccess.shared.requireAccess()
@@ -235,7 +240,7 @@ final class OfflineAudioExport {
                 if cancellation.cancelled { throw CancellationError() }
                 let current = batch.map { writers[$0] }
                 try render(project: project,song: song,writers: current,mediaDirectory: mediaDirectory,format: stereo,
-                           cancellation: cancellation,midiInstruments: midiInstruments,includeHardwareOutputs: includeHardwareOutputs,
+                           cancellation: cancellation,midiInstruments: midiInstruments,includeHardwareOutputs: includeHardwareOutputs,printTrackPolarity: printTrackPolarity,
                            midiInstrumentsByTrack: midiInstrumentsByTrack,completed: completed,total: writers.count,progress: progress)
                 for writer in current { try writer.finish() }
                 completed += batch.count
@@ -253,7 +258,7 @@ final class OfflineAudioExport {
         }
     }
     private static func render(project: Project, song: Song, writers: [Writer], mediaDirectory: URL, format: AVAudioFormat,
-                               cancellation: AudioExportCancellation,midiInstruments: [String: OfflineMIDIInstrument]?,includeHardwareOutputs: Bool,
+                               cancellation: AudioExportCancellation,midiInstruments: [String: OfflineMIDIInstrument]?,includeHardwareOutputs: Bool,printTrackPolarity: Bool,
                                midiInstrumentsByTrack: [UUID: [String: OfflineMIDIInstrument]],completed: Int,total: Int,
                                progress: (AudioExportProgress) -> Void) throws {
         let engine = AVAudioEngine()
@@ -588,7 +593,7 @@ final class OfflineAudioExport {
                 guard let track = song.tracks.first(where: { $0.id == writer.job.track }), let clip = track.clips.first(where: { $0.id == writer.job.clip }) else { throw AudioExportFailure.incomplete }
                 if let bus = buses[clip.id] { capture(bus.output,index: index) }
                 else {
-                    let bus = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: track.mute,phaseInverted: includeHardwareOutputs && track.phaseInverted == true, automation: track.automation, origin: writer.job.start, forceMuted: !(soloAudible?.contains(track.id) ?? true))
+                    let bus = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: track.mute,phaseInverted: (includeHardwareOutputs || printTrackPolarity) && track.phaseInverted == true, automation: track.automation, origin: writer.job.start, forceMuted: !(soloAudible?.contains(track.id) ?? true))
                     buses[clip.id] = bus; capture(bus.output,index: index)
                     if clip.midi != nil { try addMIDI([clip],track: track,bus: bus,start: writer.job.start) }
                     else { for fragment in song.tempoAudioSegments(clip, sections: tempoSections) {
@@ -600,7 +605,7 @@ final class OfflineAudioExport {
             let root = hasMaster ? try makeBus(fx: project.masterFX,volume: project.masterVolume ?? 1,pan: project.masterPan ?? 0,muted: project.masterMute ?? false, mono: project.masterMono ?? false, automation: project.masterAutomation) : nil
             let tracks = song.tracks.filter { ($0.kind == .standard || $0.kind == .click || $0.clips.contains(where: \.isProjectionMedia)) && needed.contains($0.id) }
             for track in tracks {
-                buses[track.id] = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: track.mute,phaseInverted: includeHardwareOutputs && track.phaseInverted == true, automation: track.automation, forceMuted: !(soloAudible?.contains(track.id) ?? true))
+                buses[track.id] = try makeBus(fx: track.fx,volume: track.volume,pan: track.pan,muted: track.mute,phaseInverted: (includeHardwareOutputs || printTrackPolarity) && track.phaseInverted == true, automation: track.automation, forceMuted: !(soloAudible?.contains(track.id) ?? true))
             }
             for track in tracks {
                 // Drawer songs share their parent's generated click item;

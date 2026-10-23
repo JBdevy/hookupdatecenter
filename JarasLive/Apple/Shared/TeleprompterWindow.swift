@@ -571,6 +571,10 @@ private struct TeleprompterProjectionView: View {
 #else
 @MainActor final class TeleprompterWindow: ObservableObject {
     static let shared = TeleprompterWindow()
+    @Published var previewActive = false
+    @Published var previewPage = 0
+    func togglePreview() { previewActive.toggle() }
+    func selectPreviewPage(_ page: Int) { previewPage = min(5, max(0, page)) }
     func invalidatePreview() {}
     func update(_ snapshot: ShowSnapshot,revision: UInt64 = 0) { TeleprompterTimerController.shared.observePlayback(snapshot) }
 }
@@ -743,31 +747,6 @@ private struct TPNoticeEditor: View {
             .onDisappear { sendFeedback.reset() }
     }
 }
-struct TPNoticeSettingsView: View {
-    @ObservedObject private var model = TPNoticeController.shared
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Toggle("Show on TP-1", isOn: $model.appearance.window1)
-            Toggle("Show on TP-2", isOn: $model.appearance.window2)
-            Picker("Font", selection: $model.appearance.font) {
-                ForEach(Array(Set(["Arial","Segoe UI","Verdana","Tahoma","Georgia","Trebuchet MS","Menlo","Impact",model.appearance.font])).sorted(), id: \.self) { Text($0).tag($0) }
-            }
-            Text("Text scale: \(Int(model.appearance.scale))%")
-            Slider(value: $model.appearance.scale, in: 50...100)
-            color("Text color", path: \.text); color("Background color", path: \.background); color("Flash color", path: \.flash)
-            Toggle("Show emoji", isOn: $model.appearance.emojiEnabled)
-            TextField("Emoji", text: $model.appearance.emoji).onChange(of: model.appearance.emoji) { value in
-                if value.count > 8 { model.appearance.emoji = String(value.prefix(8)) }
-            }
-            Toggle("Hide content while showing a message", isOn: $model.appearance.cleanDisplay)
-        }.padding(16)
-    }
-    private func color(_ label: String, path: WritableKeyPath<TPNoticeAppearance, UInt32>) -> some View {
-        ColorPicker(LocalizedStringKey(label), selection: Binding(get: { Color(hex: model.appearance[keyPath: path]) }, set: { value in
-            if let rgb = NSColor(value).usingColorSpace(.deviceRGB) { model.appearance[keyPath: path] = UInt32((rgb.redComponent * 255).rounded()) << 16 | UInt32((rgb.greenComponent * 255).rounded()) << 8 | UInt32((rgb.blueComponent * 255).rounded()) }
-        }), supportsOpacity: false)
-    }
-}
 private struct TPNoticeOverlay: View {
     @ObservedObject var model: TPNoticeController = .shared
     let index: Int
@@ -795,3 +774,34 @@ private struct TPNoticeOverlay: View {
     }
 }
 #endif
+
+struct TPNoticeSettingsView: View {
+    @ObservedObject private var model = TPNoticeController.shared
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Show on TP-1", isOn: $model.appearance.window1)
+            Toggle("Show on TP-2", isOn: $model.appearance.window2)
+            Picker("Font", selection: $model.appearance.font) {
+                ForEach(Array(Set(["Arial","Segoe UI","Verdana","Tahoma","Georgia","Trebuchet MS","Menlo","Impact",model.appearance.font])).sorted(), id: \.self) { Text($0).tag($0) }
+            }
+            Text("Text scale: \(Int(model.appearance.scale))%")
+            Slider(value: $model.appearance.scale, in: 50...100)
+            color("Text color", path: \.text); color("Background color", path: \.background); color("Flash color", path: \.flash)
+            Toggle("Show emoji", isOn: $model.appearance.emojiEnabled)
+            TextField("Emoji", text: $model.appearance.emoji).onChange(of: model.appearance.emoji) { value in
+                if value.count > 8 { model.appearance.emoji = String(value.prefix(8)) }
+            }
+            Toggle("Hide content while showing a message", isOn: $model.appearance.cleanDisplay)
+        }.padding(16)
+    }
+    private func color(_ label: String, path: WritableKeyPath<TPNoticeAppearance, UInt32>) -> some View {
+        ColorPicker(LocalizedStringKey(label), selection: Binding(get: { Color(hex: model.appearance[keyPath: path]) }, set: { value in
+            #if os(macOS)
+            if let rgb = NSColor(value).usingColorSpace(.deviceRGB) { model.appearance[keyPath: path] = UInt32((rgb.redComponent * 255).rounded()) << 16 | UInt32((rgb.greenComponent * 255).rounded()) << 8 | UInt32((rgb.blueComponent * 255).rounded()) }
+            #else
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            if UIColor(value).getRed(&r, green: &g, blue: &b, alpha: &a) { model.appearance[keyPath: path] = UInt32((r * 255).rounded()) << 16 | UInt32((g * 255).rounded()) << 8 | UInt32((b * 255).rounded()) }
+            #endif
+        }), supportsOpacity: false)
+    }
+}

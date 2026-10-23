@@ -20,11 +20,12 @@ class RecordingOptionsPanel final : public Component, private Timer {
         : session(owner), source(std::move(track)), targets(std::move(selected)),
           project(owner.project().id), error(std::move(failure)),
           modes({"Mono", "Stereo", "MIDI"}), monitor({"Monitor On", "Monitor Off"}),
-          fader({"Pre-fader", "Post-fader"}), effects({"Pre-FX", "Post-FX"}) {
+          fader({"Pre-fader", "Post-fader"}), effects({"Pre-FX", "Post-FX"}), signal({"Entrada", "Saida"}) {
         setComponentID("trackRecordingOptions");
         addAndMakeVisible(modes);
         modes.setComponentID("recordingMode");
         modes.changed = [this](int choice) {
+            if(this->track() && this->track()->role.id=="vinhetas" && choice==2)return;
             const int channels = choice == 2 ? 0 : choice + 1;
             change([channels](jaras::Track &track) {
                 track.recordingChannels = channels;
@@ -52,11 +53,13 @@ class RecordingOptionsPanel final : public Component, private Timer {
         monitor.changed = [this](int choice) {
             change([choice](jaras::Track &track) { track.inputMonitoring = choice == 0; }, true);
         };
+        addAndMakeVisible(signal);
+        signal.changed=[this](int choice){change([choice](jaras::Track &track){if(track.role.id!="vinhetas")track.recordingOutput=choice==1;});};
         addAndMakeVisible(fader); addAndMakeVisible(effects);
         fader.setComponentID("recordingFaderStage"); effects.setComponentID("recordingFXStage");
         fader.changed = [this](int choice) { change([choice](jaras::Track &track) { track.recordingPostFader = choice == 1; }); };
         effects.changed = [this](int choice) { change([choice](jaras::Track &track) { track.recordingPostFX = choice == 1; }); };
-        setSize(318, 258);
+        setSize(318, 300);
         refresh();
         startTimerHz(5);
     }
@@ -74,9 +77,10 @@ class RecordingOptionsPanel final : public Component, private Timer {
     void resized() override {
         modes.setBounds(16, 48, getWidth() - 32, 28);
         format.setBounds(84, 88, getWidth() - 100, 28);
-        fader.setBounds(16, 130, getWidth() - 32, 28);
-        effects.setBounds(16, 172, getWidth() - 32, 28);
-        monitor.setBounds(16, 214, getWidth() - 32, 28);
+        fader.setBounds(16, 172, getWidth() - 32, 28);
+        effects.setBounds(16, 214, getWidth() - 32, 28);
+        monitor.setBounds(16, 256, getWidth() - 32, 28);
+        signal.setBounds(16, 130, getWidth() - 32, 28);
     }
 
   private:
@@ -94,10 +98,11 @@ class RecordingOptionsPanel final : public Component, private Timer {
             for (int index = 0; index < buttons.size(); ++index)
                 buttons[index]->setToggleState(index == selected, dontSendNotification);
         }
+        void allowLast(bool allow) { buttons.getLast()->setVisible(allow); visibleCount=buttons.size()-(allow?0:1); resized(); }
         void resized() override {
             for (int index = 0; index < buttons.size(); ++index) {
-                const int left = index * getWidth() / buttons.size();
-                const int right = (index + 1) * getWidth() / buttons.size();
+                const int left = index * getWidth() / (visibleCount?visibleCount:buttons.size());
+                const int right = (index + 1) * getWidth() / (visibleCount?visibleCount:buttons.size());
                 buttons[index]->setBounds(left + 2, 2, right - left - 4, getHeight() - 4);
             }
         }
@@ -120,13 +125,14 @@ class RecordingOptionsPanel final : public Component, private Timer {
             }
         };
         OwnedArray<Segment> buttons;
+        int visibleCount=0;
     };
     Session &session;
     ID source;
     std::set<ID> targets;
     ID project;
     std::function<void(String)> error;
-    Segmented modes, monitor, fader, effects;
+    Segmented modes, monitor, fader, effects, signal;
     ComboBox format;
     bool midi = false;
 
@@ -144,22 +150,26 @@ class RecordingOptionsPanel final : public Component, private Timer {
             if (auto *box = findParentComponentOfClass<CallOutBox>()) box->dismiss();
             return;
         }
-        const int channels = current->recordingChannels.value_or(2);
+        const bool vinhetas=current->role.id=="vinhetas";
+        const bool output=vinhetas||current->recordingOutput.value_or(false);
+        modes.allowLast(!vinhetas);
+        signal.select(output?1:0);signal.setEnabled(!vinhetas&&!session.busy&&!session.audio.isRecording());
+        const int channels = vinhetas?std::max(1,current->recordingChannels.value_or(2)):current->recordingChannels.value_or(2);
         modes.select(channels == 0 ? 2 : channels - 1);
         modes.setEnabled(!session.busy && !session.audio.isRecording());
         format.setEnabled(!session.busy && !session.audio.isRecording());
         monitor.setEnabled(!session.busy);
-        fader.setEnabled(!session.busy && !session.audio.isRecording());
-        effects.setEnabled(!session.busy && !session.audio.isRecording());
+        fader.setEnabled(output && !session.busy && !session.audio.isRecording());
+        effects.setEnabled(output && !session.busy && !session.audio.isRecording());
         format.setSelectedId(!current->recordingFormat ? 1 : current->recordingFormat == "wav" ? 2 : current->recordingFormat == "wav32" ? 3 : 4, dontSendNotification);
         monitor.select(current->inputMonitoring.value_or(true) ? 0 : 1);
-        fader.select(current->recordingPostFader.value_or(true) ? 1 : 0);
-        effects.select(current->recordingPostFX.value_or(true) ? 1 : 0);
+        fader.select(output && current->recordingPostFader.value_or(true) ? 1 : 0);
+        effects.select(output && current->recordingPostFX.value_or(true) ? 1 : 0);
         midi = channels == 0;
         format.setVisible(!midi);
-        monitor.setVisible(!midi);
+        monitor.setVisible(!midi&&!vinhetas);signal.setVisible(!midi);
         fader.setVisible(!midi); effects.setVisible(!midi);
-        setSize(318, midi ? 92 : 258);
+        setSize(318, midi ? 92 : vinhetas ? 256 : 300);
         repaint();
     }
     void timerCallback() override { refresh(); }
@@ -173,7 +183,7 @@ class RecordingOptionsPanel final : public Component, private Timer {
                     changed = changed || after.recordingChannels != track.recordingChannels ||
                               after.recordingFormat != track.recordingFormat || after.inputMonitoring != track.inputMonitoring ||
                               after.midiInput != track.midiInput || after.recordingPostFader != track.recordingPostFader ||
-                              after.recordingPostFX != track.recordingPostFX;
+                              after.recordingPostFX != track.recordingPostFX || after.recordingOutput != track.recordingOutput;
                 }
         if (!changed) return;
         try {

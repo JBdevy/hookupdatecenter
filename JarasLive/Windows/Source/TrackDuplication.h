@@ -25,7 +25,7 @@ inline void remapArray(var &owner, const Identifier &key, const IDs &ids) {
     put(owner, key, values);
 }
 inline bool standard(const var &track) {
-    static const std::set<ID> special{"generatedClick", "timecode", "video", "teleprompt", "teleprompt2", "chords"};
+    static const std::set<ID> special{"generatedClick", "timecode", "video", "teleprompt", "teleprompt2", "chords", "vinhetas"};
     return !special.count(utf8(str(track, "role")));
 }
 inline ID identityKey(const ID &value) {

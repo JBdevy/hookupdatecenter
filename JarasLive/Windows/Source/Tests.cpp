@@ -50,6 +50,8 @@
 #include "TrackEditing.h"
 #include "TrackDuplicationTests.h"
 #include "RecordingCaptureTests.h"
+#include "VinhetasTests.h"
+#include "ProjectReductionTests.h"
 #include "TransportFadeoutTests.h"
 #include "ActionBindingsTests.h"
 #include "UIFeatureTests.h"
@@ -135,7 +137,9 @@ int runTests(const File &directory) {
     directory.createDirectory();
     StringArray passed, skipped;
     String failed;
+    const auto filter=SystemStats::getEnvironmentVariable("CATLIVE_TEST_FILTER",{});
     auto test = [&](const String &name, const std::function<void()> &work) {
+        if(filter.isNotEmpty()&&!name.containsIgnoreCase(filter)){skipped.add(name);return;}
         directory.getChildFile("progress.log").appendText("RUN " + name + "\n");
         try {
             work();
@@ -275,6 +279,8 @@ int runTests(const File &directory) {
     trackDuplicationTests::run(test);
     trackDuplicationTests::runSession<Session>(test);
     recordingCaptureTests::registerTests(directory, test);
+    vinhetasTests::run(directory,test);
+    projectReductionTests::run(directory,test,projectFixture);
     test("Armed input meters work before REC with monitoring off and no master leakage", [&] {
         jaras::Song song; song.id = uuid(); song.duration = 60; song.bpm = 120;
         jaras::Track track; track.id = uuid(); track.role.id = "other"; track.name = "Input 3/4";

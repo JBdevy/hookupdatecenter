@@ -2,6 +2,9 @@
 import SwiftUI
 import UIKit
 
+@MainActor enum IpadTimelinePointerContextMenu {
+    static var contains: (UITouch) -> Bool = { _ in false }
+}
 struct IpadTimelinePointerEvent {
     enum Phase { case began, moved, ended, cancelled }
     let phase: Phase
@@ -188,11 +191,71 @@ final class IpadGridPointerRecognizer: UIGestureRecognizer {
     }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard touches.count == 1, let touch = touches.first, touch.type == .indirectPointer else { state = .failed; return }
+        // Let the same native contextMenu used by tracks and Setlist receive
+        // right clicks on items. Empty-grid right drag still selects items.
+        if event.buttonMask.contains(.secondary), IpadTimelinePointerContextMenu.contains(touch) { state = .failed; return }
         origin = touch.location(in: view); secondary = event.buttonMask.contains(.secondary); update(event)
         state = .began
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) { update(event); state = .changed }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { update(event); state = .ended }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { state = .cancelled }
+}
+// Direct touch is separate from the mouse recognizer: a zero-distance
+// SwiftUI drag otherwise competes with secondary-button ruler selection.
+struct IpadRulerTouchInput: UIViewRepresentable {
+    var enabled: Bool
+    var drag: (CGFloat, CGFloat, Bool, Bool) -> Void
+    var selection: (CGFloat, CGFloat, Bool, Bool) -> Void
+    var tap: (CGFloat) -> Void
+    func makeUIView(context: Context) -> IpadRulerTouchView { IpadRulerTouchView() }
+    func updateUIView(_ view: IpadRulerTouchView, context: Context) {
+        view.isUserInteractionEnabled = enabled; view.drag = drag; view.selection = selection; view.tap = tap
+    }
+}
+final class IpadRulerTouchView: UIView {
+    var drag: ((CGFloat, CGFloat, Bool, Bool) -> Void)?
+    var selection: ((CGFloat, CGFloat, Bool, Bool) -> Void)?
+    private var selectionOrigin: CGFloat?
+    var tap: ((CGFloat) -> Void)?
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+        pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        pan.maximumNumberOfTouches = 1
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        hold.minimumPressDuration = 1.5; hold.allowableMovement = 8
+        hold.allowedTouchTypes = pan.allowedTouchTypes
+        pan.require(toFail: hold)
+        tap.allowedTouchTypes = pan.allowedTouchTypes; tap.require(toFail: pan); tap.require(toFail: hold)
+        addGestureRecognizer(pan); addGestureRecognizer(tap); addGestureRecognizer(hold)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func panned(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began, .changed: drag?(gesture.translation(in: self).x, gesture.location(in: self).x, false, false)
+        case .ended: drag?(gesture.translation(in: self).x, gesture.location(in: self).x, true, false)
+        case .cancelled, .failed: drag?(0, 0, true, true)
+        default: break
+        }
+    }
+    @objc private func held(_ gesture: UILongPressGestureRecognizer) {
+        let x = gesture.location(in: self).x
+        switch gesture.state {
+        case .began:
+            selectionOrigin = x
+            UISelectionFeedbackGenerator().selectionChanged()
+            selection?(x, x, false, false)
+        case .changed:
+            if let origin = selectionOrigin { selection?(origin, x, false, false) }
+        case .ended:
+            if let origin = selectionOrigin { selection?(origin, x, true, false) }; selectionOrigin = nil
+        case .cancelled, .failed:
+            if let origin = selectionOrigin { selection?(origin, x, true, true) }; selectionOrigin = nil
+        default: break
+        }
+    }
+    @objc private func tapped(_ gesture: UITapGestureRecognizer) { tap?(gesture.location(in: self).x) }
 }
 #endif

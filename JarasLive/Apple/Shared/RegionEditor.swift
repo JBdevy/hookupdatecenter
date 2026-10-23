@@ -78,6 +78,16 @@ struct NameColorEditor: View {
                     .disabled(showsName && name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(18).frame(width: 300)
+            #if os(iOS)
+            .background(Color.clear.contentShape(Rectangle()).onTapGesture { nameFocused = false })
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Button("Close") { nameFocused = false }
+                    Spacer()
+                    Button("Salvar") { confirm() }.disabled(showsName && name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            #endif
             .onAppear {
                 originalColor = initialColor
                 colorConfirmed = false

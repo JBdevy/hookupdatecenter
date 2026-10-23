@@ -1947,7 +1947,7 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     public func setMIDIInput(_ track: UUID, slot: Int) {
         guard canControl(), !finishing else { return }
-        guard let location = trackLocation(track), snapshot.project.songs[location.song].tracks[location.track].midiInput != (slot == 0 ? nil : slot) else { return }
+        guard let location = trackLocation(track), snapshot.project.songs[location.song].tracks[location.track].role.rawValue != "vinhetas", snapshot.project.songs[location.song].tracks[location.track].midiInput != (slot == 0 ? nil : slot) else { return }
         do {
             try executor.setMIDIInput(track, slot: slot)
             snapshot.project.songs[location.song].tracks[location.track].midiInput = slot == 0 ? nil : slot
@@ -2294,12 +2294,13 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         catch { message = error.localizedDescription }
     }
-    public func setRecordingStage(_ track: UUID, postFader: Bool? = nil, postFX: Bool? = nil) {
+    public func setRecordingStage(_ track: UUID, postFader: Bool? = nil, postFX: Bool? = nil, output: Bool? = nil) {
         guard canControl(), !finishing else { return }
         let ids = Set(mixerControlTargets(track).filter { $0.kind == .standard }.map(\.id))
         var project = snapshot.project
         for song in project.songs.indices {
             for index in project.songs[song].tracks.indices where ids.contains(project.songs[song].tracks[index].id) {
+                if let output { project.songs[song].tracks[index].recordingOutput = output }
                 if let postFader { project.songs[song].tracks[index].recordingPostFader = postFader }
                 if let postFX { project.songs[song].tracks[index].recordingPostFX = postFX }
             }
@@ -2329,7 +2330,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public func setRecordingInput(_ track: UUID, input: OutputPatch) {
         guard canControl(), !finishing, let location = trackLocation(track) else { return }
         let previous = snapshot.project.songs[location.song].tracks[location.track]
-        guard previous.kind == .standard, previous.inputPatch != input else { return }
+        guard previous.kind == .standard, previous.role.rawValue != "vinhetas", previous.inputPatch != input else { return }
         do {
             try input.validate(allowMaster: false)
             var project = snapshot.project
@@ -2494,7 +2495,7 @@ public struct ShowTimelinePresentationState: Equatable {
         guard canControl(), !finishing else { return }
         guard let location = trackLocation(id) else { return }
         let previous = snapshot.project.songs[location.song].tracks[location.track]
-        let finalName = previous.fixedName ?? name
+        let finalName = previous.role.rawValue == "vinhetas" ? "VINHETAS-FX" : previous.fixedName ?? name
         guard previous.name != finalName || previous.color != color else { return }
         do {
             try executor.editTrack(id, name: finalName, color: color)
@@ -2711,6 +2712,18 @@ public struct ShowTimelinePresentationState: Equatable {
     public static func sequentialInputPatches(count: Int, channels: Int) -> [OutputPatch] {
         guard count > 0, channels > 0 else { return [] }
         return (0..<count).map { OutputPatch(firstChannel: $0 % channels + 1, channelCount: 1) }
+    }
+    @discardableResult public func createVinhetasTrack() -> UUID? {
+        guard canControl(), !finishing, let songID = current?.id,
+              let index = snapshot.project.songs.firstIndex(where: { $0.id == songID }) else { return nil }
+        if let existing = current?.tracks.first(where: { $0.role.rawValue == "vinhetas" }) { return existing.id }
+        var project = snapshot.project
+        let track = Track(id: UUID(), name: "VINHETAS-FX", role: TrackRole(rawValue: "vinhetas"), color: Track.defaultStandardColor)
+        project.songs[index].tracks.append(track); project.orderSpecialTracks()
+        do {
+            try project.validate(); try executor.applyProjectEdit(project)
+            snapshot = try executor.snapshot(); markChanged(); onProjectEdited(); return track.id
+        } catch { message = error.localizedDescription; return nil }
     }
     @discardableResult public func addTracks(name: String, role: TrackRole, count: Int, inputPatches: [OutputPatch] = [], after selected: UUID? = nil) -> [UUID] {
         guard canControl(), !finishing, let songIndex = snapshot.project.songs.firstIndex(where: { $0.id == current?.id }) else { return [] }

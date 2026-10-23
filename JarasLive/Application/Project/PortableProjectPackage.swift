@@ -107,6 +107,25 @@ public enum PortableProjectPackage {
         }}
         return project
     }
+    /// iPad packages omit unsupported items, never their containing tracks.
+    public static func iPadCopy(_ original: Project) -> Project {
+        var project = original
+        func video(_ file: AudioFile?) -> Bool {
+            guard let file else { return false }
+            return ["mp4", "mov", "m4v", "avi", "mkv", "webm", "mpg", "mpeg", "wmv", "mts", "m2ts"].contains(URL(fileURLWithPath: file.path).pathExtension.lowercased())
+        }
+        for s in project.songs.indices { for t in project.songs[s].tracks.indices {
+            var track = project.songs[s].tracks[t]
+            let fallback = track.audioFile, kind = track.kind
+            track.clips.removeAll { clip in
+                video(clip.audioFile ?? fallback) || clip.timecode != nil ||
+                    (kind == .timecode && clip.audioFile == nil && fallback == nil && clip.midi == nil)
+            }
+            if video(track.audioFile) { track.audioFile = nil }
+            project.songs[s].tracks[t] = track
+        }}
+        return project
+    }
     public static func export(project: Project, directory: URL, to archive: URL,
                               instruments: [String: URL] = [:], limits: Limits = Limits(),
                               progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> ExportResult {
@@ -129,12 +148,12 @@ public enum PortableProjectPackage {
                                     progress: @Sendable (Double) -> Void) throws -> ExportResult {
         try Task.checkCancellation(); try original.validate()
         guard archive.isFileURL, archive.pathExtension.lowercased() == "ziplive" else { throw invalid("Choose a .ziplive destination.") }
-        var project = portableCopy(original)
+        var project = portableCopy(iPadCopy(original))
         let root = directory.resolvingSymlinksInPath().standardizedFileURL
         let fm = FileManager.default
         var sources: [String: URL] = [:], records: [String: FileRecord] = [:], mapping: [String: String] = [:]
         var names = Set<String>(), total: UInt64 = 0
-        let media = original.mediaPaths.sorted(), usedInstruments = instrumentIDs(in: project).sorted()
+        let media = project.mediaPaths.sorted(), usedInstruments = instrumentIDs(in: project).sorted()
         guard media.count + usedInstruments.count + 2 <= limits.maximumFiles else { throw invalid("Too many files in this project.") }
         func add(_ source: URL, proposed: String) throws -> String {
             try validateRegularFile(source)

@@ -16,6 +16,7 @@
 #include "ResourceUsage.h"
 #include "DragDivider.h"
 #include "FooterKeyboard.h"
+#include "VinhetasPanel.h"
 #include "ItemLayout.h"
 #include "GridItemClipboard.h"
 #include "EditorSelectionAreas.h"
@@ -189,6 +190,9 @@ class Workspace final : public Component,
     bool browserVisible = false, projectReady = false;
     juce::Rectangle<int> editorWindowBounds;
     std::unique_ptr<FooterKeyboard> keyboard;
+    std::unique_ptr<VinhetasPanel> vinhetasPanel;
+    bool vinhetasVisible = false, vinhetasDetached = false;
+    void toggleVinhetasDock();
     Viewport tracksViewport, dockViewport;
     Component tracksContent, dockContent;
     OwnedArray<TrackRow> rows;

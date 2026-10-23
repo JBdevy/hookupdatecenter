@@ -80,6 +80,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         line(5, 9, 10, 14);
         if (name == "redo")
             p.applyTransform(AffineTransform::scale(-1, 1).translated(24, 0));
+    } else if (name == "railVinhetas") {
+        for(int row=0;row<3;row++)for(int col=0;col<4;col++)p.addRoundedRectangle(2.f+col*5.5f,4.f+row*5.5f,4,4,1);
+        fill=true;
     } else if (name == "keyboard") {
         p.addRoundedRectangle(1, 5, 22, 14, 2);
         for (int row = 0; row < 2; ++row)

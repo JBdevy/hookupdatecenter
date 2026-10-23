@@ -358,9 +358,12 @@ public extension Project {
         let order: [TrackKind] = [.timecode, .teleprompt, .teleprompt2, .chords, .click, .video, .standard]
         for song in songs.indices {
             let tracks = songs[song].tracks
-            let ranks = tracks.map { order.firstIndex(of: $0.kind)! }
+            func rank(_ track: Track) -> Int { track.role.rawValue == "vinhetas" ? 7 : order.firstIndex(of: track.kind)! * 2 }
+            let ranks = tracks.map(rank)
             guard zip(ranks, ranks.dropFirst()).contains(where: { $0.0 > $0.1 }) else { continue }
-            songs[song].tracks = order.flatMap { kind in tracks.filter { $0.kind == kind } }
+            songs[song].tracks = tracks.enumerated().sorted { lhs, rhs in
+                rank(lhs.element) == rank(rhs.element) ? lhs.offset < rhs.offset : rank(lhs.element) < rank(rhs.element)
+            }.map(\.element)
         }
     }
     /// Removing an item never removes its source file. History keeps this value
@@ -636,7 +639,7 @@ public extension Project {
 public extension Song {
     /// Master and special singleton lanes have no duplication action.
     func trackDuplicationTargets(_ ids: Set<UUID>) -> Set<UUID> {
-        let eligible = Set(tracks.filter { $0.kind == .standard }.map(\.id))
+        let eligible = Set(tracks.filter { $0.kind == .standard && $0.role.rawValue != "vinhetas" }.map(\.id))
         let hierarchy = TrackHierarchy(tracks)
         var result = ids.intersection(eligible), previous: Set<UUID> = []
         while result != previous {

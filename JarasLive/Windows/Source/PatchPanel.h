@@ -6,6 +6,7 @@ class PatchPanel final : public Component {
   public:
     PatchPanel(Session &s, ID target, std::function<void(String)> report, std::set<ID> selection = {})
         : session(s), id(std::move(target)), error(std::move(report)), targets(std::move(selection)) {
+        if (const auto *t = track(); t && t->role.id == "vinhetas") targets = {id};
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
         viewport.setScrollBarsShown(true, false);
@@ -196,10 +197,12 @@ class PatchPanel final : public Component {
     }
     void buildBatch() {
         const auto *song=session.song(); if(!song)return;
-        StringArray trackNames; bool allStandard=true,allGrouped=true;
-        for(const auto &t:song->tracks)if(targets.count(t.id)){trackNames.add(text(t.name));allStandard &= jaras::fixedTrackName(t.role).empty();allGrouped &= t.parentTrackID.has_value();}
+        StringArray trackNames; bool allStandard=true,allGrouped=true,outputOnly=false;
+        for(const auto &t:song->tracks)if(targets.count(t.id)){trackNames.add(text(t.name));allStandard &= jaras::fixedTrackName(t.role).empty();allGrouped &= t.parentTrackID.has_value();outputOnly |= t.role.id=="vinhetas";}
         label("Patch · Selected tracks",0,8,300,true);label(trackNames.joinIntoString(", "),0,38,300);
+        if(outputOnly)batchCategory=2;
         for(int category=0;category<3;++category){
+            if(outputOnly&&category!=2)continue;
             auto *b=new QuietButton(category==0?"Entrada":category==1?"Entrada MIDI":String::fromUTF8("Saída"));fields.add(b);content.addAndMakeVisible(b);
             b->setBounds(category*100,74,98,26);b->setToggleState(batchCategory==category,dontSendNotification);
             b->onClick=[safe=SafePointer<PatchPanel>(this),category]{if(!safe)return;safe->batchCategory=category;safe->batchChoice=1;MessageManager::callAsync([safe]{if(safe)safe->build();});};
@@ -218,6 +221,7 @@ class PatchPanel final : public Component {
         button("Apply to selected tracks",0,164,300,[this,patches]{
             if(batchCategory!=2 && session.audio.isRecording())return;
             try{session.edit([&](jaras::Project &p){for(auto &song:p.songs)for(auto &t:song.tracks)if(targets.count(t.id)){
+                if(batchCategory!=2&&t.role.id=="vinhetas")continue;
                 if(batchCategory==1){if(batchChoice==1)t.midiInput.reset();else t.midiInput=batchChoice-1;}
                 else {const auto patch=patches[(size_t)jlimit(0,(int)patches.size()-1,batchChoice-1)];
                     if(batchCategory==0)t.inputPatch=patch;
@@ -238,6 +242,7 @@ class PatchPanel final : public Component {
         if (t->role.id == "timecode") { buildTimecode(*t); return; }
         auto *device = session.audio.devices.getCurrentAudioDevice();
         label(device ? device->getName() : String::fromUTF8("Áudio não iniciado"), 0, 8, 300);
+        if(t->role.id!="vinhetas") {
         StringArray inputs{"Nenhum"};
         std::vector<jaras::OutputPatch> inputPatches{{-1, 1}};
         const auto inputNames = device ? device->getInputChannelNames() : StringArray();
@@ -277,9 +282,11 @@ class PatchPanel final : public Component {
             channels.add(String(i));
         choice(208, 108, 92, channels, t->midiChannel.value_or(0) + 1,
                [this](int n) { edit([&](auto &t) { if(n>1)t.midiChannel=n-1;else t.midiChannel.reset(); }); });
+        }
+        const int outputTop=t->role.id=="vinhetas"?44:148;
         auto outputs = t->outputPatches();
-        label(String::fromUTF8("Saída"), 0, 148, 200, true);
-        button("+", 264, 148, 36, [this] {
+        label(String::fromUTF8("Saída"), 0, outputTop, 200, true);
+        button("+", 264, outputTop, 36, [this] {
             edit([](auto &t) {
                 auto outputs = t.outputPatches();
                 outputs.push_back({0, 2});
@@ -303,7 +310,7 @@ class PatchPanel final : public Component {
             destinations.add("Out " + String(i) + " / " + String(i + 1));
             patches.push_back({i, 2});
         }
-        int y = 182;
+        int y = outputTop+34;
         for (size_t row = 0; row < outputs.size(); ++row) {
             const auto patch = outputs[row];
             int selected = 0;
@@ -340,7 +347,7 @@ class PatchPanel final : public Component {
             });
             y += 34;
         }
-        if (jaras::fixedTrackName(t->role).empty())
+        if (jaras::fixedTrackName(t->role).empty() && t->role.id!="vinhetas")
             for (bool receive : {true, false}) {
                 y += 12;
                 label(receive ? "Recebimento" : "Envio", 0, y, 244, true);
