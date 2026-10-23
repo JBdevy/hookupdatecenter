@@ -1813,3 +1813,9 @@
 "Duplicate region" = "Duplicar região";
 
 "A duplicated region can only be queued while another song is playing." = "Uma região duplicada só pode entrar na fila enquanto outra música estiver tocando.";
+
+"The selected items changed during re-render. Render again to apply the new timing." = "Os itens selecionados mudaram durante o re-render. Faça o re-render novamente para aplicar o novo tempo.";
+
+"Cannot queue a duplicate of the song that is playing." = "Não é possível enfileirar uma cópia da música que está tocando.";
+
+"Block text color" = "Cor do texto dos blocos";

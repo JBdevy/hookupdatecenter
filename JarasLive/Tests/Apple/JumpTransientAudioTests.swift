@@ -36,7 +36,18 @@ final class JumpCapture: @unchecked Sendable {
     }
 }
 @MainActor func field(_ name: String, _ value: Any) -> Any? { Mirror(reflecting: value).children.first { $0.label == name }?.value }
+@MainActor func preparedVoiceCount(_ audio: StemAudioPlayback) -> Int {
+    guard let voices = field("voices", audio) else { return 0 }
+    return Mirror(reflecting: voices).children.filter { entry in
+        guard let key = Mirror(reflecting: entry.value).children.first?.value else { return false }
+        return field("head", key) as? Int == 2
+    }.count
+}
 @MainActor func run() async throws {
+    precondition(StemAudioPlayback.jumpPreparationBatchSize(pending: 48, seconds: 2, interval: 1.0/30) < 4,
+                 "Normal preparation must not batch every stem on the UI thread")
+    precondition(StemAudioPlayback.jumpPreparationBatchSize(pending: 8, seconds: 0.1, interval: 1.0/30) == 8,
+                 "An imminent boundary must not defer incoming stems beyond their deadline")
     let settings = MetronomeSettings.shared
     let old = (settings.enabled, settings.preset, settings.gainA, settings.gainB)
     defer { settings.enabled = old.0; settings.preset = old.1; settings.gainA = old.2; settings.gainB = old.3 }
@@ -104,15 +115,19 @@ final class JumpCapture: @unchecked Sendable {
         if !isLoop { try core.execute(command: (mode == "queue" || idleQueue) ? "queueRegion" : "queueSection", target: next.id.uuidString, value: 0) }
         try audio.update(snapshot(), revision: 1)
         var last = ProcessInfo.processInfo.systemUptime, host: UInt64 = 0
+        var mostPrepared = preparedVoiceCount(audio)
+        if trackCount > 1 { precondition(mostPrepared < trackCount, "Cold jump prepared all players in one UI update") }
         let timeout = last + (idleQueue ? 11.5 : 2.5)
         while ProcessInfo.processInfo.systemUptime < timeout {
             try await Task.sleep(nanoseconds: lateTick ? 140_000_000 : 33_333_333)
             let now = ProcessInfo.processInfo.systemUptime; core.advance(now - last); last = now
             try audio.update(snapshot(), revision: 1)
+            mostPrepared = max(mostPrepared, preparedVoiceCount(audio))
             if let optional = field("preparedJump", audio), let jump = Mirror(reflecting: optional).children.first?.value,
                let value = field("host", jump) as? UInt64, host == 0 { host = value }
         }
         precondition(host != 0)
+        precondition(mostPrepared == trackCount, "Incremental preparation missed an incoming stem before the jump")
         print("TRANSIENT_MEASURE mode=\(mode) lateTick=\(lateTick) tracks=\(trackCount) pitch=\(pitched) nativeClick=\(String(describing: nativeCapture.onset(after: host))) rate=\(rate) stemOnset=\(String(describing: stemCapture.onset(after: host))) clickOnset=\(String(describing: clickCapture.onset(after: host))) stemPeak=\(stemCapture.peak(from: host, through: 0.03)) clickPeak=\(clickCapture.peak(from: host, through: 0.03))")
         precondition(stemCapture.peak(from: host, through: 0.03) > 0.1, "Incoming first transient must render at the scheduled boundary")
         precondition(clickCapture.peak(from: host, through: 0.03) > 0.05, "First metronome beat must render at the scheduled boundary")

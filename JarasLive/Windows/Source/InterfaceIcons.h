@@ -17,6 +17,13 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         g.strokePath(p, PathStrokeType(1.8f, PathStrokeType::curved, PathStrokeType::rounded));
         return true;
     }
+    if (name == "record.circle") {
+        // Match the compact macOS SF Symbol: outer ring and solid centre.
+        const auto ring = bounds.withSizeKeepingCentre(11.f, 11.f);
+        g.drawEllipse(ring, 1.15f);
+        g.fillEllipse(bounds.withSizeKeepingCentre(5.f, 5.f));
+        return true;
+    }
     if (name == "mono") {
         const auto cx = bounds.getCentreX(), cy = bounds.getCentreY();
         g.drawEllipse(cx - 9, cy - 5.5f, 11, 11, 1.3f);
@@ -80,12 +87,20 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
                 p.addRectangle(4.f + column * 3, 8.f + row * 3, 1, 1);
         line(6, 16, 18, 16);
     } else if (name == "railKeyboard" || name == "piano") {
-        p.addRoundedRectangle(2, 4, 20, 16, 2);
-        for (int x : {7, 12, 17})
-            line((float)x, 4, (float)x, 20);
-        p.addRectangle(5, 4, 4, 9);
-        p.addRectangle(10, 4, 4, 9);
-        p.addRectangle(15, 4, 4, 9);
+        // Filled piano keys with transparent black-key slots, matching
+        // the compact pianokeys symbol used by the Mac sidebar.
+        p.setUsingNonZeroWinding(false);
+        p.addRoundedRectangle(1, 1, 22, 22, 2.6f);
+        for (float x : {6.5f, 12.f, 17.5f}) {
+            p.startNewSubPath(x - 1.55f, 1); p.lineTo(x + 1.55f, 1);
+            p.lineTo(x + 1.55f, 12.9f);
+            p.quadraticTo(x + 1.55f, 14.1f, x + .45f, 14.1f);
+            p.lineTo(x + .45f, 23); p.lineTo(x - .45f, 23);
+            p.lineTo(x - .45f, 14.1f);
+            p.quadraticTo(x - 1.55f, 14.1f, x - 1.55f, 12.9f);
+            p.closeSubPath();
+        }
+        fill = true;
     } else if (name == "railParts") {
         line(3,6,21,6);
         line(3,12,16,12);

@@ -8,23 +8,23 @@ struct DAWRemoteState {
   func hasSameMixerControls(as other:Self)->Bool{self==other}
  }
 }
-enum DAWRemoteCommand { enum Action:String { case pan,volume,mute,solo,resetMeterPeak,tempo,pitch } }
+enum DAWRemoteCommand { enum Action:String { case pan,volume,mute,solo,resetMeterPeak,tempo,pitch,phase } }
 enum TrackKind { case standard,click,chords;var isText:Bool{self == .chords};var isTeleprompter:Bool{false} }
 struct Track {let id:UUID;var kind:TrackKind = .standard}
 struct Song {var tracks:[Track]}
-@MainActor final class ShowController {var current:Song?;init(_ tracks:[Track]){current=Song(tracks:tracks)};func insertClickItems(track:UUID){TouchProbe.shared.log("insert")};var canDrop:Bool{true};func canDropTrack(_ source:UUID,on target:UUID,after:Bool)->Bool{source != target};func dropTrack(_ source:UUID,on target:UUID,before:UUID?){TouchProbe.shared.log("reorder")}}
+@MainActor final class ShowController {var current:Song?;init(_ tracks:[Track]){current=Song(tracks:tracks)};func send(_ action:DAWRemoteCommand.Action,target:UUID){TouchProbe.shared.log(action.rawValue)};func insertClickItems(track:UUID){TouchProbe.shared.log("insert")};var canDrop:Bool{true};func canDropTrack(_ source:UUID,on target:UUID,after:Bool)->Bool{source != target};func dropTrack(_ source:UUID,on target:UUID,before:UUID?){TouchProbe.shared.log("reorder")}}
 @MainActor final class TouchProbe:ObservableObject {
  static let shared=TouchProbe();@Published var event="none";@Published var selection=0;@Published var editing=false
  @Published var muted=false;@Published var solo=false
  func log(_ value:String){event=value}
 }
 struct TrackRecordButton:View {let show:ShowController;let track:Track;var body:some View{Button("REC"){TouchProbe.shared.log("rec")}.buttonStyle(.bordered)}}
-enum JarasTheme {static let text=Color.white,green=Color.green,yellow=Color.yellow,mixer=Color(white:0.2)}
+enum JarasTheme {static let text=Color.white,green=Color.green,yellow=Color.yellow,mixer=Color(white:0.2),background=Color(white:0.086),panel=Color(white:0.114),display=Color(white:0.063)}
 func remoteColor(_ color:UInt32)->Color{.white}
 enum TrackNameContrast{static func components(_ color:UInt32,emphasized:Bool)->(red:Double,green:Double,blue:Double){(0.2,0.5,0.3)}}
 struct GroupTrackConnector:Shape {let last:Bool;func path(in r:CGRect)->Path{Path{p in p.move(to:.zero);p.addLine(to:CGPoint(x:0,y:r.height));p.addLine(to:CGPoint(x:r.width,y:r.height))}}}
 @MainActor final class StemAudioPlayback {static let shared=StemAudioPlayback();func meter(for id:UUID)->Int{0}}
-struct IpadMixerMeter:View {let meter:Int;var body:some View{Color.green.allowsHitTesting(false)}}
+struct IpadMixerMeter:View {let meter:Int;var body:some View{Color.green.allowsHitTesting(false).accessibilityElement().accessibilityLabel("Audio meter").accessibilityIdentifier("audio-meter")}}
 enum DAWRemoteFaderScale {static func decibels(_ gain:Double)->Double{gain>0 ? 20*log10(gain) : -60};static func gain(_ db:Double)->Double{pow(10,db/20)}}
 enum JarasLocalization {static func string(_ key:String)->String{key}}
 
@@ -43,8 +43,8 @@ struct TouchFixtureView:View {
  VStack {
   RemoteStepFixture()
   HStack {
-   Button("Compact 270"){rowWidth=270;compactRows=true}
-   Button("Compact 220"){rowWidth=220;compactRows=true}
+   Button("Compact 285"){rowWidth=285;compactRows=true}
+   Button("Compact 235"){rowWidth=235;compactRows=true}
    Button("Compact 190"){rowWidth=190;compactRows=true}
   }
   Button(probe.editing ? "Done" : "Edit"){probe.editing.toggle()}.accessibilityIdentifier("edit")
@@ -62,7 +62,7 @@ struct TouchFixtureView:View {
     ForEach(0..<12){n in Text("Track \(n)").frame(width:450,height:90).background(Color.gray)}
    }
   }.frame(width:470,height:550)
- }.preferredColorScheme(.dark)
+ }.preferredColorScheme(.dark).environment(\.jarasNativePalette,true)
  }
 }
 

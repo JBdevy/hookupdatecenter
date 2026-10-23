@@ -1779,3 +1779,9 @@
 "Duplicate region" = "Duplicate region";
 
 "A duplicated region can only be queued while another song is playing." = "A duplicated region can only be queued while another song is playing.";
+
+"The selected items changed during re-render. Render again to apply the new timing." = "The selected items changed during re-render. Render again to apply the new timing.";
+
+"Cannot queue a duplicate of the song that is playing." = "Cannot queue a duplicate of the song that is playing.";
+
+"Block text color" = "Block text color";

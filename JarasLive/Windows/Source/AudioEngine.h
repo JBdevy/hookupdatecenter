@@ -17,7 +17,7 @@
 namespace catlive {
 class ClipAudio;
 // Prepared readers, buffers and routing live outside the device callback.
-class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallback {
+class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallback, private Timer {
   public:
     struct State {
         double position = 0, subPosition = 0;
@@ -73,10 +73,19 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void prepareSong(const jaras::Song &, const File &directory, const var &masterSettings = {},
                      const jaras::Project *project = nullptr, const PreparationControl *control = nullptr);
     bool preparesOffline() const { return offlineMode; }
+    bool hasLiveDevice() const { return attached; }
     // Message thread only: swaps a fully prepared, unattached engine's graph.
     // The argument receives the retired graph and must be disposed off the UI.
     void adoptPreparedSong(AudioEngine &, bool preservePlayback = false);
     void transport(const State &);
+    // Interactive transport prepares disk reads off the message thread. Offline
+    // rendering retains the synchronous entry point above.
+    void transportAsync(const State &);
+    void prewarmTransportDestination(const std::optional<State> &);
+    bool preparingTransport() const;
+    bool transportClockPending() const {
+        return preparingTransport() || appliedTransportSerial.load() != transportSerial;
+    }
     void updateTransportRouting(const State &);
     void primeLoop(const State &);
     int timecodePreferred(const std::optional<ID>& region) const { return timecodeProgram.preferred(region); }
@@ -187,6 +196,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         put(result, "cacheMisses", (int64)caches); put(result, "inactiveMisses", (int64)inactive);
         put(result, "primedSources", lastPrimedSources);
         put(result, "primeWaitMilliseconds", lastPrimeWaitMilliseconds);
+        put(result, "preparingTransport", preparingTransport());
+        put(result, "transportCommitPending", appliedTransportSerial.load()!=transportSerial);
+        put(result, "transportCommits", (int64)transportSerial);
+        put(result, "transportRepositions", (int64)transportRepositions);
         put(result, "voiceCount", (int)voices.size()); put(result, "busCount", (int)buses.size());
         int processors = 0;
         Array<var> trackEffects, itemEffects;
@@ -225,6 +238,31 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::shared_ptr<ReaderContext> context;
         std::unique_ptr<StreamingReader> readers[2];
     };
+    struct TransportRead {
+        std::shared_ptr<Source> source;
+        int head; int64 position; int count; bool loop;
+        StreamingReader &reader() const { return *source->readers[head]; }
+    };
+    struct TransportPreparation {
+        State state;
+        std::vector<TransportRead> reads;
+        std::atomic<bool> cancelled{false}, done{false};
+        bool sendTransport=false, routingOnly=false, destinationOnly=false;
+        double milliseconds=0;
+    };
+    std::unique_ptr<ThreadPool> transportWorker;
+    std::shared_ptr<TransportPreparation> transportPreparation;
+    std::shared_ptr<TransportPreparation> queuedPreparation;
+    bool asynchronousTransport=false;
+    uint64 transportRepositions=0; // Message-thread diagnostics for full head updates.
+    uint64 transportSerial=0; // Message-thread writer; carried to the callback.
+    std::atomic<uint64> appliedTransportSerial{0};
+    std::vector<TransportRead> transportReads(const State &);
+    void cancelTransportPreparation(bool all=true);
+    void scheduleTransportPreparation(const State &, bool routingOnly);
+    void runTransportPreparation(const std::shared_ptr<TransportPreparation> &);
+    void commitPreparedTransport(const State &, bool routingOnly=false);
+    void timerCallback() override;
     // Unused prepared readers retire with the outgoing graph on its worker.
     std::vector<std::shared_ptr<Source>> retiredSources;
     struct Voice {
@@ -370,6 +408,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::array<std::atomic<float>, 2> masterLevels{};
     std::atomic<float> masterFXInput{0}, masterFXOutput{0};
     struct Update {
+        bool resetElapsed=false;
+        uint64 transportSerial=0;
         enum Kind { transport, mixer, item, routing } kind = transport;
         bool inputMonitoring=true;
         int midiSlot=0,midiChannel=0;

@@ -106,6 +106,27 @@ int main() {
             near(clip(engine,"late").startTime,5,"a leading item uses signed local time before its owner's mapped onset");
             near(clip(engine,"late").duration,3,"a leading item does not inherit the preceding song's tempo");
         }
+        {
+            auto project=fixture();
+            project.songs[0].tracks[0].clips[0].waveform.assign(200000,0.4);
+            project.songs[0].tracks[0].clips[0].waveformChannels={std::vector<double>(200000,0.6)};
+            Engine engine;engine.loadProject(std::move(project));
+            const auto* peaks=clip(engine,"early").waveform.data();
+            const auto* channel=clip(engine,"early").waveformChannels[0].data();
+            auto marker=engine.currentSong()->markers->at(0);marker.tempoBPM=130;
+            engine.setMarkers({marker},{},true);
+            expect(clip(engine,"early").waveform.data()==peaks && clip(engine,"early").waveformChannels[0].data()==channel,
+                   "tempo edits must retain the existing peak arrays without copying them");
+            const auto start=clip(engine,"early").startTime, duration=clip(engine,"early").duration;
+            marker.tempoBPM=-1;bool rejected=false;
+            try {engine.setMarkers({marker},{},true);} catch(...) {rejected=true;}
+            expect(rejected,"invalid tempo must still be rejected");
+            expect(clip(engine,"early").waveform.data()==peaks && clip(engine,"early").waveform[1]==0.4 &&
+                   clip(engine,"early").waveformChannels[0].data()==channel && clip(engine,"early").waveformChannels[0][1]==0.6,
+                   "failed tempo edits must restore peak arrays and channel data");
+            near(clip(engine,"early").startTime,start,"failed tempo edit must preserve onset");
+            near(clip(engine,"early").duration,duration,"failed tempo edit must preserve duration");
+        }
         std::cout<<"TEMPO_OWNERSHIP_TAILS_SINGLE_BATCH_LOOSE_FOREIGN_AND_LEGACY_OK\n";
     } catch(const std::exception& error) { std::cerr<<error.what()<<'\n';return 1; }
 }

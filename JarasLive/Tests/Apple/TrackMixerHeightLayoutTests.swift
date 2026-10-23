@@ -42,7 +42,7 @@ for lowerTitle in [false,true] {
         precondition(frames.allSatisfy { $0.width >= 0 && $0.height >= 0 })
         precondition(frames[0].width >= 10 && frames[0].height > 0 && frames[0].maxY <= height,
             "Audio meters remain inside the track at every height, including its minimum")
-        precondition(frames[0].maxX < frames[2].minX, "The small meter cannot cover the name")
+        precondition(min(10, frames[0].width) < frames[2].minX && frames[1].maxX < frames[2].minX, "The small meter cannot cover the name")
         if height < 64 { precondition(frames[1].width == 0, "Only MIDI activity disappears in a collapsed row") }
         precondition(frames[2].minY >= 0 && frames[2].maxY <= height, "Track name must fit at every intermediate/stacked-lane height")
         if lowerTitle {
@@ -63,8 +63,8 @@ for width: CGFloat in [SidebarWidthLimits.trackMixer - 16, SidebarWidthLimits.tr
             precondition(folder.width == 28 && folder.height == 20 && folder.maxY <= height && folder.minX >= 0)
             precondition(!folder.intersects(frames[3]), "folder action must not cover Patch or another top-row control")
             precondition(!folder.intersects(frames[4]), "folder action must not cover volume controls")
-            precondition(folder.maxX + 3 == frames[3].minX && folder.midY == frames[3].midY,
-                "folder action must sit immediately to the left of Patch, vertically centered")
+            precondition(folder.minX == 20 && folder.maxX + 3 <= frames[3].minX && folder.midY == frames[3].midY,
+                "folder action must remain anchored left when the sidebar width changes")
             precondition(!folder.intersects(frames[2]), "folder action must not cover the group name")
             precondition(!folder.intersects(frames[1]), "the folder cannot cover the MIDI meter")
             precondition(frames[2].maxX <= width && frames[2].width > 0)
@@ -98,8 +98,8 @@ window.contentView = folderHost
 folderHost.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.02)); folderHost.layoutSubtreeIfNeeded()
 let folderSlots = Dictionary(uniqueKeysWithValues: probes(folderHost).map { ($0.slot, $0.convert($0.bounds, to: folderHost)) })
 precondition(!folderSlots[5]!.intersects(folderSlots[3]!) && !folderSlots[5]!.intersects(folderSlots[4]!))
-precondition(abs(folderSlots[5]!.maxX + 3 - folderSlots[3]!.minX) < 1,
-    "the actual AppKit folder frame must stay immediately left of Patch")
+precondition(abs(folderSlots[5]!.minX - 20) < 1 && folderSlots[5]!.maxX + 3 <= folderSlots[3]!.minX + 0.01,
+    "the actual AppKit folder frame stays anchored without covering Patch")
 precondition(!folderSlots[5]!.intersects(folderSlots[2]!))
 print("MIXER_GROUP_FOLDER_PATCH_TITLE_AND_VOLUME_HIT_AREAS_SEPARATED_OK")
 
@@ -132,3 +132,12 @@ for height in [24.0, 36, 40, 48, 52, 55, 56, 58, 60, 63, 64, 78.4, 89.6] {
 }
 print("MIXER_HEIGHT_STABLE_NATIVE_CONTROLS_AND_DIRECT_LAYOUT_OK")
 window.close()
+
+for width: CGFloat in [265,281,400,700] {
+    for height: CGFloat in [24,40,63.9,64,80,240] {
+        let frames = TrackMixerHeightGeometry.frames(width: width,height: height,meterWidth: 52,
+            standard: true,lowerTitle: true,controlsWidth: 210,folder: true)
+        precondition(frames[2].minX == 22, "Track number must keep its left anchor across sizes")
+        if height >= 64 { precondition(frames[5].minX == 20, "Folder must keep its left anchor") }
+    }
+}

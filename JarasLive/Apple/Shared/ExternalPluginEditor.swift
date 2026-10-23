@@ -339,8 +339,9 @@ import Combine
             Row(effect: effect, name: settings.externalPlugins?.first(where: { $0.effectKey == effect })?.name
                 ?? (settings.kind(of: effect) == "Instruments" ? InstrumentLibrary.displayName(settings.settings(for: effect).instrumentID) : JarasLocalization.string(settings.kind(of: effect))), enabled: settings.isEnabled(effect))
         }
+        let removedEffect = rows.contains { old in !next.contains(where: { $0.effect == old.effect }) }
         if next != rows { rows = next; refreshing = true; list.reloadData(); refreshing = false }
-        let selected = preferred.flatMap { value in rows.first(where: { $0.effect == value })?.effect }
+        let selected = (removedEffect ? rows.last?.effect : nil) ?? preferred.flatMap { value in rows.first(where: { $0.effect == value })?.effect }
             ?? selection.flatMap { value in rows.first(where: { $0.effect == value })?.effect } ?? rows.first?.effect
         removeButton.isEnabled = selected != nil
         presetBar.refresh(effect: selected, settings: settings)

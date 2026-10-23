@@ -2,15 +2,18 @@ import XCTest
 final class TrackTouchTests:XCTestCase {
  func testCompactRowsKeepPatchAndFXUntilTheirControlsActuallyNeedTheSpace() {
   let app=XCUIApplication();app.launch()
-  XCTAssertTrue(app.buttons["Compact 270"].waitForExistence(timeout:10))
-  app.buttons["Compact 270"].tap()
+  XCTAssertTrue(app.buttons["Compact 285"].waitForExistence(timeout:10))
+  app.buttons["Compact 285"].tap()
   XCTAssertTrue(app.buttons["Patch"].exists);XCTAssertTrue(app.buttons["FX"].exists)
   app.buttons["Patch"].tap();XCTAssertEqual(app.staticTexts["event"].label,"patch")
-  app.buttons["Compact 220"].tap()
+  app.buttons["Compact 235"].tap()
   XCTAssertFalse(app.buttons["Patch"].exists);XCTAssertTrue(app.buttons["FX"].exists)
   app.buttons["FX"].tap();XCTAssertEqual(app.staticTexts["event"].label,"fx")
   app.buttons["Compact 190"].tap()
   XCTAssertFalse(app.buttons["Patch"].exists);XCTAssertFalse(app.buttons["FX"].exists)
+  let meter = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Audio meter")).firstMatch
+  XCTAssertTrue(meter.exists,"Compact tracks must retain their audio meter: \(app.debugDescription)")
+  if meter.exists { XCTAssertGreaterThan(meter.frame.height, 0); XCTAssertLessThanOrEqual(meter.frame.height, 60) }
   XCTAssertTrue(app.buttons["REC"].exists);XCTAssertTrue(app.buttons["M"].firstMatch.exists);XCTAssertTrue(app.buttons["S"].firstMatch.exists)
  }
  func testLongPressOffersPatchAndAddStems() {

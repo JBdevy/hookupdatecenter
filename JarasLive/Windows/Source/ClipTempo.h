@@ -27,6 +27,25 @@ class ClipTempo {
             source += (edges[i] - edges[i-1]) * rate;
         }
     }
+    String itemTitle(const jaras::AudioClip &clip) const {
+        double low=std::numeric_limits<double>::infinity(), high=0;
+        bool changed=false;
+        const double reference=clip.tempoBasePlaybackRate.value_or(clip.playbackRate);
+        for(const auto &span:spans)if(std::isfinite(span.rate) && span.rate>0) {
+            low=std::min(low,span.rate);high=std::max(high,span.rate);
+            changed=changed || std::abs(span.rate-reference)>.0000005;
+        }
+        if(!changed || !std::isfinite(low))return text(clip.name);
+        const auto format=[](double rate) {
+            auto value=String(rate,2);
+            while(value.endsWithChar('0'))value=value.dropLastCharacters(1);
+            if(value.endsWithChar('.'))value=value.dropLastCharacters(1);
+            return value;
+        };
+        const auto first=format(low),last=format(high);
+        if(first=="1" && last=="1")return text(clip.name);
+        return "["+(first==last?first:first+String::fromUTF8("–")+last)+"] "+text(clip.name);
+    }
     const Span *at(double time) const {
         if (spans.empty()) return nullptr;
         auto it = std::upper_bound(spans.begin(), spans.end(), time,

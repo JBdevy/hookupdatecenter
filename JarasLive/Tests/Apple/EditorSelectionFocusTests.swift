@@ -25,6 +25,15 @@ import AppKit
         click(100); precondition(router.selectAll(key)); precondition(grid == 1 && tracks == 1)
         click(900); precondition(router.selectAll(key)); precondition(grid == 1 && tracks == 1 && setlist == 1)
         click(400); precondition(router.selectAll(key)); precondition(grid == 2 && setlist == 1)
+        var steps = 0
+        gridArea.moveCursor = { steps += $0; return true }
+        let right = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 2,
+            windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: true, keyCode: 124)!
+        precondition(router.moveCursor(right) && steps == 1)
+        click(100); precondition(!router.moveCursor(right) && steps == 1)
+        click(400)
+        NativeTimelineInputGate.shared.blocked = true; precondition(!router.moveCursor(right))
+        NativeTimelineInputGate.shared.blocked = false
         NativeTimelineInputGate.shared.blocked = true; precondition(!router.selectAll(key))
         NativeTimelineInputGate.shared.blocked = false
         let text = NSTextView(frame: NSRect(x: 10, y: 10, width: 100, height: 50)); root.addSubview(text)

@@ -227,7 +227,7 @@ extension NativePurchaseStore {
                 .font(.jarasSystem(size: 11)).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(maxWidth: .infinity)
-            .background(RemoteSurface.panel, in: RoundedRectangle(cornerRadius: 22))
+            .background { RemoteSurface.panel.clipShape(RoundedRectangle(cornerRadius: 22)) }
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(green.opacity(0.3)))
     }
 }

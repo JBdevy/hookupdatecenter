@@ -6,7 +6,7 @@ inline ID source(const var &v,const jaras::Project &p,const jaras::Song &s){retu
 struct Destination {
     ID source, target, before, indicator;
     std::optional<ID> parent;
-    bool after=false, joins=false, adoption=false;
+    bool after=false, joins=false, adoption=false, groupReorder=false, noOp=false;
     std::vector<ID> adopt;
 };
 inline std::optional<Destination> resolve(const jaras::Song &song,const ID &source,const ID &target,bool after,bool outside) {
@@ -28,7 +28,7 @@ inline std::optional<Destination> resolve(const jaras::Song &song,const ID &sour
         while(insertion<n&&song.tracks[insertion].id==source)++insertion;
         d.before=insertion<n?song.tracks[insertion].id:ID{};d.joins=!outside&&d.parent.has_value();
     } else if(song.tracks[b].parentTrackID&&!trackTree::descendant(song,a,target)) {
-        if(after) {d.parent=song.tracks[b].parentTrackID;d.before=target;d.after=false;d.joins=true;}
+        if(after) {d.parent=song.tracks[b].parentTrackID;d.before=target;d.joins=true;d.groupReorder=true;}
         else {
             const ID parent=*song.tracks[b].parentTrackID;const auto group=trackTree::index(song,parent);
             if(group==n)return {};d.parent=song.tracks[group].parentTrackID;d.adoption=true;
@@ -37,19 +37,43 @@ inline std::optional<Destination> resolve(const jaras::Song &song,const ID &sour
                 d.adopt.push_back(song.tracks[i].id);
             }
             if(d.adopt.empty())return {};
-            auto boundary=trackTree::end(song,group);d.before=boundary<n?song.tracks[boundary].id:ID{};
-            d.indicator=source;d.after=true;
+            const auto removed=[&](size_t i) {
+                if(i>=a && i<last)return true;
+                return std::any_of(d.adopt.begin(),d.adopt.end(),[&](const auto &root){
+                    return song.tracks[i].id==root || trackTree::descendant(song,i,root);
+                });
+            };
+            size_t boundary=group+1;
+            for(size_t i=group+1;i<n;++i)
+                if(!removed(i) && trackTree::descendant(song,i,parent))boundary=i+1;
+            while(boundary<n && removed(boundary))++boundary;
+            d.before=boundary<n?song.tracks[boundary].id:ID{};
+            // Keep the insertion line above the hovered member, like the Mac.
         }
     } else {
         size_t insertion=b+(after?1:0);
-        if(insertion>=a&&insertion<last)insertion=last;
         d.before=insertion<n?song.tracks[insertion].id:ID{};
         d.parent=insertion<n?song.tracks[insertion].parentTrackID:std::optional<ID>{};
+        d.groupReorder=true;
+        d.noOp=insertion>=a && insertion<last;
+    }
+    if(d.groupReorder && !d.noOp && d.parent) {
+        const auto hit=trackTree::index(song,d.before);
+        const bool targetIsAncestor=hit<n && trackTree::descendant(song,a,d.before);
+        if(!targetIsAncestor) {
+            // The Mac engine appends the entire incoming tree after the
+            // destination folder's remaining members, not before the hit child.
+            size_t boundary=0;
+            for(size_t i=0;i<n;++i)if(!(i>=a&&i<last) &&
+                (song.tracks[i].id==*d.parent || trackTree::descendant(song,i,*d.parent)))boundary=i+1;
+            while(boundary<n && boundary>=a && boundary<last)++boundary;
+            d.before=boundary<n?song.tracks[boundary].id:ID{};
+        }
     }
     return d;
 }
-inline void setParent(jaras::Track &track,const std::optional<ID> &parent) {
-    if(track.parentTrackID==parent)return;
+inline void setParent(jaras::Track &track,const std::optional<ID> &parent,bool force=false) {
+    if(!force && track.parentTrackID==parent)return;
     track.parentTrackID=parent;
     if(!parent){trackTree::resetGroupOutput(track);return;}
     auto patches=track.outputPatches();if(patches.empty())patches.push_back({-2,2});else patches.front()={-2,2};
@@ -58,6 +82,7 @@ inline void setParent(jaras::Track &track,const std::optional<ID> &parent) {
     if(track.outputs)track.outputs=patches;
 }
 inline void apply(jaras::Song &song,const Destination &d) {
+    if(d.noOp)return;
     const auto first=trackTree::index(song,d.source);if(first==song.tracks.size())return;
     const auto last=trackTree::end(song,first);
     std::set<ID> movingIDs,adoptedIDs;
@@ -69,8 +94,16 @@ inline void apply(jaras::Song &song,const Destination &d) {
         else if(adoptedIDs.count(track.id))adopted.push_back(track);
         else remaining.push_back(track);
     }
-    setParent(moving.front(),d.parent);
-    for(auto &track:adopted)if(std::find(d.adopt.begin(),d.adopt.end(),track.id)!=d.adopt.end())setParent(track,d.source);
+    setParent(moving.front(),d.parent,d.groupReorder || d.adoption);
+    if(d.groupReorder && !d.parent) {
+        // Same output normalization as Engine::reorderTrack on the Mac.
+        auto &root=moving.front();
+        const auto &original=song.tracks[first];
+        if(original.outputs){root.outputs=original.outputs;for(auto &patch:*root.outputs)if(patch.firstChannel==-2)patch={0,2};}
+        if(original.patch && original.patch->firstChannel==-2)root.patch=jaras::OutputPatch{0,2};
+        if(original.secondaryPatch && original.secondaryPatch->firstChannel==-2)root.secondaryPatch.reset();
+    }
+    for(auto &track:adopted)if(std::find(d.adopt.begin(),d.adopt.end(),track.id)!=d.adopt.end())setParent(track,d.source,true);
     moving.insert(moving.begin()+1,adopted.begin(),adopted.end());
     auto at=std::find_if(remaining.begin(),remaining.end(),[&](const auto &t){return t.id==d.before;});
     remaining.insert(at,moving.begin(),moving.end());song.tracks=std::move(remaining);

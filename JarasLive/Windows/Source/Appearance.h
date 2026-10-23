@@ -13,14 +13,14 @@ class Appearance final : public ChangeBroadcaster {
     }
     float interfaceScale() const {
         const auto scale = (double)get(values, "jaras.interface.scale", 1.0);
-        return std::isfinite(scale) ? (float)(std::round(jlimit(.8, 1.2, scale) * 10) / 10) : 1.f;
+        return std::isfinite(scale) ? (float)(std::round(jlimit(.75, 1.25, scale) * 4) / 4) : 1.f;
     }
     bool continuousScroll() const { return (bool)get(values, "jaras.timeline.continuousScroll", false); }
     int fontStyle() const { return jlimit(0, 2, (int)get(values, "jaras.setlist.fontStyle", 0)); }
     bool regionIDs() const { return str(values, "jaras.setlist.idMode", "playlist") == "region"; }
     Font setlistFont() const { return theme::font(13, fontStyle() != 0, fontStyle() == 2); }
     Colour colour(const String &key, uint32 defaultRGB) const {
-        auto value = get(values, Identifier(key));
+        auto value = get(previews, Identifier(key), get(values, Identifier(key)));
         return Colour(0xff000000u | ((value.isInt() || value.isInt64())
                                       ? ((uint32)(int64)value & 0xffffffu) : defaultRGB));
     }
@@ -31,6 +31,8 @@ class Appearance final : public ChangeBroadcaster {
     }
     bool gridlines() const { return flag(values, "jaras.timeline.gridlines", true); }
     var value(const String &key, var fallback = {}) const { return get(values, Identifier(key), fallback); }
+    void preview(const String &key,var value) { put(previews,Identifier(key),value);sendChangeMessage(); }
+    void clearPreview(const String &key) { if(auto *p=previews.getDynamicObject())p->removeProperty(Identifier(key));sendChangeMessage(); }
     void reload() { auto loaded = JSON::parse(location); if (loaded.isObject()) values = std::move(loaded); }
     Result set(const String &key, var value) {
         reload();
@@ -47,5 +49,6 @@ class Appearance final : public ChangeBroadcaster {
   private:
     File location;
     var values;
+    var previews=object();
 };
 }

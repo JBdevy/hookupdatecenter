@@ -63,7 +63,7 @@ void run(Test test, Require require, const File &directory) {
         require(std::abs(data.getSample(0, 2) - .7f) < 1.e-6f, "Trigger bypass changed input");
         put(settings, "triggerEnabled", true); parameters = get(settings, "trigger"); put(parameters, "samplePath", "Stems/missing.wav");
         NativeFX missing; missing.prepare(settings, 48000, nullptr, false, true, {}, folder); missing.process(data, 100);
-        require(!missing.unsupported.isEmpty() && std::abs(data.getSample(0, 2) - .7f) < 1.e-6f, "Missing sample blocked or muted input");
+        require(!missing.unsupported.isEmpty() && data.getMagnitude(0, 100) == 0, "Missing sample leaked trigger detector input");
     });
     test("Cat Gate suppresses quiet input and links stereo on loud input", [&] {
         for (const double rate : {44100., 48000.}) {
@@ -118,7 +118,9 @@ void run(Test test, Require require, const File &directory) {
         for(const String kind:{"CatLive Trigger","Cat Gate"}) {
             var values=object();fxui::defaults(values);fxui::enable(kind,values,true);int commits=0;
             CatDynamicsEditor editor(kind,directory,[&]{return values;},[&]{++commits;},[&](String error){require(false,error);});editor.setSize(650,500);
-            auto *slider=dynamic_cast<Slider*>(editor.findChildWithID(kind=="Cat Gate"?"gate_threshold":"trigger_threshold"));
+            Slider *slider=nullptr;
+            for(auto *child:editor.getChildren()) if(auto *knob=dynamic_cast<fxui::Knob*>(child))
+                if(knob->slider.getComponentID()==(kind=="Cat Gate"?"gate_threshold":"trigger_threshold"))slider=&knob->slider;
             require(slider!=nullptr,"Missing dynamics threshold control");slider->setValue(-25,sendNotificationSync);
             require(commits==1&&num(get(values,kind=="Cat Gate"?"gate":"trigger"),"threshold")==-25,"Dynamics editor did not persist its own parameter");
             auto image=editor.createComponentSnapshot(editor.getLocalBounds());auto output=directory.getChildFile(kind=="Cat Gate"?"cat-gate.png":"catlive-trigger.png").createOutputStream();

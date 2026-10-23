@@ -38,6 +38,7 @@ enum JarasTheme {
     static let background = Color(hex: 0x161616)
     static let panelHex: UInt32 = 0x1d1d1d
     static let panel = Color(hex: panelHex)
+    static let trackButton = Color(hex: 0x414141)
     static let line = Color(hex: 0x444444)
     static let text = Color(hex: 0xffffff)
     static let secondary = Color(hex: 0xb9b9b9)

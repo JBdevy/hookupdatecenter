@@ -291,7 +291,7 @@ public struct ShowTimelinePresentationState: Equatable {
         region.id = entry
         return region
     }
-    public static let duplicateRegionQueueNotice = "A duplicated region can only be queued while another song is playing."
+    public static let duplicateRegionQueueNotice = "Cannot queue a duplicate of the song that is playing."
     /// Applies to buttons, actions and Remote commands, not only row gestures.
     private func canQueuePlaylistEntry(_ entry: UUID) -> Bool {
         guard isPlaylistDuplicate(entry) else { return true }
@@ -301,7 +301,7 @@ public struct ShowTimelinePresentationState: Equatable {
         let activeRoot = active?.parentRegionID ?? active?.id
         let subActive = transport.subPlay.playing ? current?.parts.first { $0.id == transport.queuedRegionId } : nil
         let subRoot = subActive?.parentRegionID ?? subActive?.id
-        guard transport.playing, let activeRoot, source != activeRoot, source != subRoot else {
+        if (transport.playing && source == activeRoot) || source == subRoot {
             message = Self.duplicateRegionQueueNotice; modalNotice = message
             return false
         }
@@ -1428,25 +1428,8 @@ public struct ShowTimelinePresentationState: Equatable {
     private func adjustRegionTempo(_ requestedDelta: Double, region: Part) {
         guard canControl(), !finishing, let index = snapshot.project.songs.firstIndex(where: { $0.id == current?.id }) else { return }
         let before = snapshot.project.songs[index]
-        var targets = (before.markers ?? []).filter { $0.isTempo && $0.position >= region.startTime && $0.position < region.endTime }
-        func boundary(_ position: Double) -> TimelineMarker {
-            let section = before.tempoSection(at: position)
-            let active = before.activeTempoMarker(at: position)
-            return TimelineMarker(id: UUID(), name: "TEMPO", position: position, color: 0x999999,
-                tempoBPM: section.bpm, tempoBeats: section.beats, tempoUnit: section.unit,
-                tempoTimebase: active?.tempoTimebase ?? .global, tempoReferenceBPM: active?.tempoReferenceBPM)
-        }
-        if !targets.contains(where: { abs($0.position - region.startTime) < 0.000001 }) { targets.append(boundary(region.startTime)) }
-        let bpms = targets.compactMap(\.tempoBPM)
-        let delta = min(300 - (bpms.max() ?? 120), max(60 - (bpms.min() ?? 120), requestedDelta))
-        guard abs(delta) > 0.0000001 else { return }
-        for i in targets.indices {
-            targets[i].tempoBPM! += delta
-            targets[i].tempoBeats = targets[i].tempoBeats ?? before.meterBeats
-            targets[i].tempoUnit = targets[i].tempoUnit ?? before.meterUnit
-        }
-        if !(before.markers ?? []).contains(where: { $0.isTempo && abs($0.position - region.endTime) < 0.000001 }) { targets.append(boundary(region.endTime)) }
-        targets = targets.map { before.markerWithRegionOwnership($0) }
+        var targets = before.regionTempoChange(requestedDelta, region: region)
+        guard !targets.isEmpty else { return }
         var updated = before
         if updated.markers == nil { updated.markers = [] }
         for marker in targets {

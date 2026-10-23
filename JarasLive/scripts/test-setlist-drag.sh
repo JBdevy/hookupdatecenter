@@ -9,7 +9,7 @@ import sys
 source = Path('Apple/Shared/SongListView.swift').read_text()
 start = source.index('private final class SetlistReorderState:')
 subject = source[start:source.index('private struct LockedRegionDrag:',start)]
-press = source[source.index('private struct SetlistPressStyle:'):source.index('private struct RegionSetlistRow:')]
+press = source[source.index('private enum SetlistSelectionPhase {'):source.index('private struct RegionSetlistRow:')]
 scroll = Path('Apple/Shared/GridScrollView.swift').read_text()
 edge = scroll[scroll.index('@MainActor final class NativeDragEdgeScroll'):].split('\n#endif', 1)[0]
 typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]

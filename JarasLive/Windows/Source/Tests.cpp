@@ -28,6 +28,9 @@
 #include "StageTimerSettings.h"
 #include "MixerPanel.h"
 #include "DesktopLayout.h"
+#include "ProjectOpenConfirmationPanel.h"
+#include "BPMInputPanel.h"
+#include "SettingsPanel.h"
 #include "EffectsPanel.h"
 #include "CatDynamicsTests.h"
 #include "NativeFXPreviewTests.h"
@@ -168,6 +171,44 @@ int runTests(const File &directory) {
         expect(window.getWidth()<=600 && window.getHeight()<=640,"Login inherited editor dimensions");
         const auto *display=Desktop::getInstance().getDisplays().getDisplayForRect(window.getBounds());
         expect(display && display->userArea.contains(window.getBounds()),"Login overlaps taskbar or screen edge");
+    });
+    test("Project transitions and interface scale preserve the shared native window",[]{
+        DocumentWindow window("Window placement", Colours::black, 0);
+        window.setResizable(true, false);
+        fitProjectBrowserWindow(window);
+        showEditorWindow(window);
+        const auto editor = window.getBounds();
+        window.setBounds(editor.withPosition(editor.getX() + 17, editor.getY() + 23));
+        const auto moved = window.getBounds();
+        showEditorWindow(window); // New tab has no remembered editor bounds.
+        expect(window.getBounds() == moved, "New tab reset the shared window");
+        showEditorWindow(window, editor); // Replacement project has stale remembered bounds.
+        expect(window.getBounds() == moved, "Opening another project reset the window");
+        const auto hwnd = static_cast<HWND>(window.getPeer()->getNativeHandle());
+        const auto originalScale = Desktop::getInstance().getGlobalScaleFactor();
+        struct RestoreScale {
+            DocumentWindow &window; float scale;
+            ~RestoreScale() { setInterfaceScalePreservingWindow(&window, scale); }
+        } restore{window, originalScale};
+        auto checkScale = [&] {
+            RECT before{}; expect(GetWindowRect(hwnd, &before), "Missing native frame");
+            for (const float scale : {.75f, 1.f, 1.25f, 1.f}) {
+                setInterfaceScalePreservingWindow(&window, scale);
+                RECT after{}; expect(GetWindowRect(hwnd, &after) && EqualRect(&before, &after),
+                                    "Scaling moved or resized the native window");
+            }
+        };
+        checkScale();
+        window.setFullScreen(true);
+        checkScale();
+        expect(window.isFullScreen(), "Scaling unmaximized the editor");
+        showEditorWindow(window);
+        expect(window.isFullScreen(), "New project unmaximized the editor");
+        window.setFullScreen(false);
+        fitProjectBrowserWindow(window);
+        checkScale();
+        showEditorWindow(window);
+        expect(window.getWidth() > 600, "Browser failed to expand for first project");
     });
     test("Sidebar rail scroll and width gestures stay on their initial axis",[]{
         DragDivider rail;rail.setBounds(0,0,6,400);
@@ -483,8 +524,13 @@ int runTests(const File &directory) {
         expect(JSON::toString(get(ProjectCodec::encode(session.project()),"songs"))==grid,"Copy changed grid media or regions");
         const auto reopened=ProjectCodec::decode(ProjectCodec::encode(session.project()));
         expect(reopened.regionSetlist->playlists[0].resolvedRegionId(copy)==first,"Windows codec lost occurrence source");
-        bool rejected=false;try{session.command(jaras::CommandKind::selectRegion,copy);}catch(const std::exception&){rejected=true;}
-        expect(rejected && !session.transport().playing,"Stopped copy was selected for direct playback");
+        session.command(jaras::CommandKind::selectRegion,copy);
+        expect(!session.transport().playing && session.transport().playlistEntryId==copy && session.transport().regionId==first,
+               "Stopped copy did not select its source and occurrence");
+        session.command(jaras::CommandKind::play);
+        bool rejected=false;try{session.command(jaras::CommandKind::queueRegion,copy);}catch(const std::exception&){rejected=true;}
+        expect(rejected,"Copy of the currently playing song was not rejected");
+        session.command(jaras::CommandKind::stopAll);
         Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("playlist-occurrences",".json"));workspace.setSize(1366,768);
         const auto rows=[&]{return setlistSearchTests::strings(get(get(workspace.diagnostics(),"setlist"),"rowIDs"));};
         expect(rows()==std::vector<String>{text(first),text(copy),text(second)},"Copied row disappeared from Windows list");
@@ -655,6 +701,13 @@ int runTests(const File &directory) {
         expect(policy.destination(180,10,10000,1700,800,"sub",1)==1400,"SubPlay handoff");
         expect(policy.destination(60,10,10000,1400,800,"main",1)==200,"Return to main");
         expect(!policy.destination({},10,10000,200,800,"main",1)&&!policy.previousPosition,"Stop resets following");
+        double origin=0;
+        for(int frame=1;frame<=60;++frame) {
+            const auto next=policy.destination(200+frame/60.,2,10000,origin,800,"main",0);
+            expect(next && *next>origin,"Distant zoom waited for a whole pixel before following");
+            expect(std::abs(*next-frame/30.)<1e-9,"Fractional scroll drifted from the audio position");
+            origin=*next;
+        }
         Appearance prefs(directory.getNonexistentChildFile("scroll-none",".json"));
         expect(!prefs.continuousScroll(),"Continuous scroll must default to none");
         prefs.set("jaras.timeline.continuousScroll",true);expect(prefs.continuousScroll(),"true did not enable continuous scroll");
@@ -964,6 +1017,33 @@ int runTests(const File &directory) {
         expect(tempoEditing::bpm(*session.song(),10)==120,"Undo restores tempo");
         expect(!tempoEditing::needsRender(*session.song(), &session.song()->parts[0]),"Restored reference tempo clears highlighting");
     });
+    test("Repeated tempo edits preserve overlapping next song without adding markers", [&] {
+        auto p=projectFixture();auto &song=p.songs[0];song.timeSettings=jaras::ProjectTimeSettings{};
+        song.parts={{"a","Outgoing",0,16},{"b","Next",10,30},{"group","Unified",0,30}};
+        song.parts[0].parentRegionID="group";song.parts[1].parentRegionID="group";
+        auto a=tempoEditing::boundary(song,0),b=tempoEditing::boundary(song,10);
+        a.tempoBPM=120;a.tempoReferenceBPM=120;a.regionOwnerID="a";
+        b.tempoBPM=144;b.tempoReferenceBPM=144;b.regionOwnerID="b";
+        song.markers=std::vector<jaras::TimelineMarker>{a,b};
+        for(int i=0;i<100;++i) {
+            auto before=song;
+            for(const auto &marker:tempoEditing::regionChange(song,song.parts[0],i%2?-1:1)) {
+                auto found=std::find_if(song.markers->begin(),song.markers->end(),[&](const auto &m){return m.id==marker.id;});
+                if(found==song.markers->end())song.markers->push_back(marker);else *found=marker;
+            }
+            jaras::TempoEditMap map(before,song);map.apply(song);
+            expect(song.markers->size()==2,"An overlapping tail created extra tempo markers");
+            expect(*song.markers->at(1).tempoBPM==144,"Outgoing BPM changed the next song");
+        }
+        expect(std::abs(song.parts[0].endTime-16)<.000001,"Repeated tempo edit did not restore the tail");
+    });
+    test("Tempo highlighting follows effective source rate, not its historical baseline", [&] {
+        auto p=projectFixture();auto &song=p.songs[0];song.markers.reset();
+        auto &clip=song.tracks[0].clips[0];clip.playbackRate=1;clip.tempoBasePlaybackRate=.8;
+        expect(!tempoEditing::needsRender(song),"Unity rate was highlighted because the saved baseline differs");
+        clip.playbackRate=1.25;clip.tempoBasePlaybackRate=1.25;
+        expect(tempoEditing::needsRender(song),"Changed rate was hidden because it matched the saved baseline");
+    });
     test("Selected tracks share one neutral grid highlight and preserve grid colours", [&] {
         const Colour base(0xff161616), selected(0xff1d1d1d), primary(0xff535250);
         const auto secondary=Colour(0xff333235).withAlpha(.85f);
@@ -1091,7 +1171,7 @@ int runTests(const File &directory) {
         expect(std::abs(session.transport().editPosition-next.startTime)<1e-7,"Stop did not move the edit cursor to the queued region");
         expect(reveals==1,"Stop did not request the same grid reveal as direct selection");
     });
-    test("Edit cursor clicks and ruler drags snap unless Shift is held", [&] {
+    test("Grid and ruler clicks snap, while ruler drags pan without moving the cursor", [&] {
         auto project=projectFixture();auto &song=project.songs.front();song.parts.clear();song.markers.reset();song.tracks.clear();song.bpm=120;song.beatsPerBar=4;song.beatUnit=4;
         project.savedCursor=jaras::SavedProjectCursor{song.id,0};
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
@@ -1103,12 +1183,15 @@ int runTests(const File &directory) {
             canvas->mouseDown(event(at,at,mods,false));canvas->mouseUp(event(at,at,free?ModifierKeys::shiftModifier:0,false));
             expect(std::abs(session.transport().editPosition-(free?2.3:2.5))<1e-6,"Ruler and empty grid both seek; Shift is free");
         }
-        Point<float> at{46,60},end{67,60};canvas->mouseDown(event(at,at,ModifierKeys::leftButtonModifier,false));
+        const double cursor=session.transport().editPosition;
+        const double offset=num(get(workspace.diagnostics(),"timeline"),"horizontal");
+        Point<float> at{300,60},end{100,60};canvas->mouseDown(event(at,at,ModifierKeys::leftButtonModifier,false));
         canvas->mouseDrag(event(end,at,ModifierKeys::leftButtonModifier,true));
-        expect(std::abs(session.transport().editPosition-3.5)<1e-6,"Ruler drag snaps");
-        canvas->mouseDrag(event(end,at,ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier,true));
-        expect(std::abs(session.transport().editPosition-3.35)<1e-6,"Shift switches to free positioning during drag");
-        canvas->mouseUp(event(end,at,0,true));
+        expect(session.transport().editPosition==cursor,"Ruler pan moved the editing cursor");
+        expect(num(get(workspace.diagnostics(),"timeline"),"horizontal")>offset,"Ruler drag did not scroll horizontally");
+        canvas->mouseDrag(event({80,60},at,ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier,true));
+        canvas->mouseUp(event({80,60},at,0,true));
+        expect(session.transport().editPosition==cursor,"Releasing ruler pan moved the editing cursor");
     });
     test("Stereo meter channels use identical colour coverage at fractional scale", [&] {
         for(float scale:{.6f,.9f,1.f,1.1f,1.2f}) {
@@ -1259,6 +1342,68 @@ int runTests(const File &directory) {
         trackDrop::apply(song,*out);expect(!song.tracks[3].parentTrackID&&song.tracks[3].patch->firstChannel==0,"Leaving group restores master output");
         expect(!trackDrop::resolve(song,"G","C",true,false),"Folder cannot enter its own child");
         song.tracks.front().role.id="generatedClick";expect(!trackDrop::resolve(song,song.tracks.front().id,"Z",true,false),"Special tracks cannot be reordered");
+    });
+    test("Folder drag matches Mac engine for nesting and keeps complete subtrees", [&] {
+        auto project=projectFixture();auto &song=project.songs.front();song.tracks.clear();
+        std::vector<ID> ids;for(int i=0;i<8;++i)ids.push_back(uuid());
+        const int parents[]{-1,0,0,2,0,-1,5,-1};
+        for(int i=0;i<8;++i){jaras::Track track;track.id=ids[i];track.name=std::to_string(i);track.role.id="other";
+            if(parents[i]>=0)track.parentTrackID=ids[parents[i]];
+            track.patch=jaras::OutputPatch{parents[i]>=0?-2:0,2};track.secondaryPatch=jaras::OutputPatch{6,2};
+            song.tracks.push_back(track);}
+        int checked=0;
+        for(int source:{0,2,5})for(int target=0;target<8;++target)for(bool after:{false,true}) {
+            auto destination=trackDrop::resolve(song,ids[source],ids[target],after,false);
+            if(!destination || destination->adoption)continue;
+            auto actual=project;trackDrop::apply(actual.songs.front(),*destination);
+            jaras::Engine engine;engine.loadProject(project);engine.execute({jaras::CommandKind::select,song.id});
+            const bool member=song.tracks[target].parentTrackID && !trackTree::descendant(song,source,ids[target]);
+            ID before=member?ids[target]:(after?(target+1<8?ids[target+1]:ID{}):ids[target]);
+            engine.reorderTrack(ids[source],before);
+            expect(JSON::toString(get(list(get(ProjectCodec::encode(actual),"songs"))[0],"tracks"))==JSON::toString(get(list(get(ProjectCodec::encode(engine.project()),"songs"))[0],"tracks")),
+                "Mac/Windows folder mismatch: "+String(source)+" -> "+String(target)+(after?" after":" before"));
+            ++checked;
+        }
+        expect(checked>12,"Folder nesting cases were not exercised");
+        auto adopted=song;auto destination=trackDrop::resolve(adopted,ids[5],ids[2],false,false);
+        expect(destination && destination->adoption && destination->indicator==ids[2] && !destination->after,"Dropping above a member must adopt following siblings and retain the hovered insertion line");
+        trackDrop::apply(adopted,*destination);
+        const int order[]{0,1,5,2,3,4,6,7};
+        for(int i=0;i<8;++i)expect(adopted.tracks[i].id==ids[order[i]],"Adopted group moved past unrelated following tracks");
+        expect(adopted.tracks[3].parentTrackID==ids[5] && adopted.tracks[4].parentTrackID==ids[2] &&
+               adopted.tracks[5].parentTrackID==ids[5] && adopted.tracks[6].parentTrackID==ids[5],"Adoption lost nested or existing children");
+        auto removed=song;trackEditing::removeFromGroup(removed,ids[2]);
+        const int removedOrder[]{0,1,4,2,3,5,6,7};
+        for(int i=0;i<8;++i)expect(removed.tracks[i].id==ids[removedOrder[i]],"Removing nested group split its subtree");
+        expect(!removed.tracks[3].parentTrackID && removed.tracks[4].parentTrackID==ids[2],"Nested group was dissolved instead of promoted");
+        trackEditing::ungroup(removed,ids[2]);expect(!removed.tracks[4].parentTrackID,"Root folder did not dissolve");
+        expect(removed.tracks[4].secondaryPatch->firstChannel==6,"Group action changed an auxiliary output");
+    });
+    test("Folder button confirms, preserves nested children and supports undo", [&] {
+        auto project=projectFixture();auto &song=project.songs.front();song.tracks.clear();
+        std::vector<ID> ids;for(int i=0;i<4;++i)ids.push_back(uuid());
+        for(int i=0;i<4;++i){jaras::Track t;t.id=ids[i];t.name="Folder "+std::to_string(i);t.role.id="other";
+            if(i>0)t.parentTrackID=ids[i==2?1:0];t.patch=jaras::OutputPatch{i>0?-2:0,2};song.tracks.push_back(t);}
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("folder-action",".json"));workspace.setSize(1366,768);
+        auto press=[&](int track,int result){
+            auto *row=uiFeatureTests::find(workspace,"trackRow:"+text(ids[track]));expect(row!=nullptr,"Folder row missing");
+            auto *button=dynamic_cast<Button*>(uiFeatureTests::find(*row,"trackGroupAction"));expect(button!=nullptr,"Folder action missing");
+            const auto before=JSON::toString(ProjectCodec::encode(session.project()));button->onClick();floatingControlTests::pump();
+            expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Folder changed before confirmation");
+            auto *modal=Component::getCurrentlyModalComponent();expect(modal!=nullptr,"Folder action must ask before changing hierarchy");
+            modal->exitModalState(result);for(int i=0;i<4;++i)floatingControlTests::pump();
+        };
+        const auto baseline=JSON::toString(ProjectCodec::encode(session.project()));
+        press(0,0);expect(JSON::toString(ProjectCodec::encode(session.project()))==baseline,"Cancel changed the group");
+        press(1,1);
+        expect(!session.song()->tracks[2].parentTrackID && session.song()->tracks[2].id==ids[1] &&
+               session.song()->tracks[3].parentTrackID==ids[1],"Nested folder click did not promote the complete group");
+        session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==baseline,"Undo lost group state");
+        press(0,1);
+        expect(!session.song()->tracks[1].parentTrackID && session.song()->tracks[2].parentTrackID==ids[1] &&
+               !session.song()->tracks[3].parentTrackID,"Root folder click must dissolve only its immediate membership");
+        session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==baseline,"Undo did not restore dissolved group");
     });
     test("Grid right drag selects intersecting items without seeking or opening menus", [&] {
         Session session; session.inspection=true;
@@ -1441,22 +1586,76 @@ int runTests(const File &directory) {
         session.undo();expect(JSON::toString(session.snapshot())==before,"Single undo restores markers and regions");
         session.redo();expect(JSON::toString(session.snapshot())==after,"Redo restores region identities");
     });
+    test("FX removal selects the last remaining effect and handles an empty chain", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);
+        auto settings=fxschema::defaults(true);put(settings,"inserted",Array<var>{"EQ","Compressor","Delay"});
+        session.configureEffects(ID{},settings);
+        EffectsPanel panel(session,{},[&](String error){expect(false,error);});panel.setSize(920,600);
+        auto *remove=dynamic_cast<TextButton*>(panel.findChildWithID("removeEffect"));ListBox *chain=nullptr;
+        for(auto *child:panel.getChildren())if(auto *list=dynamic_cast<ListBox*>(child))chain=list;
+        expect(remove&&chain,"FX manager controls missing");panel.selectEffect("EQ");remove->onClick();
+        expect(chain->getSelectedRow()==1,"Removing first FX did not select last remaining FX");
+        panel.selectEffect("Compressor");remove->onClick();expect(chain->getSelectedRow()==0,"One remaining FX was not selected");
+        remove->onClick();expect(chain->getSelectedRow()==-1,"Empty chain retained stale selection");
+    });
+    test("BPM sheet starts with current value and validates edits", [&] {
+        double committed=0;String error;
+        BPMInputPanel panel("153",[&](double value){committed=value;},[&](String value){error=value;});panel.setSize(390,188);
+        auto *input=dynamic_cast<TextEditor*>(panel.findChildWithID("bpmValue"));
+        expect(input&&input->getText()=="153","BPM value missing");
+        input->setText("1");input->onReturnKey();expect(error.isNotEmpty()&&committed==0,"Invalid tempo was accepted");
+        input->setText("153,5");input->onReturnKey();floatingControlTests::pump();
+        expect(committed==153.5,"Decimal BPM was not applied");
+        auto stream=directory.getChildFile("bpm-input-panel.png").createOutputStream();
+        expect(stream&&PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),*stream),"BPM screenshot failed");
+    });
+    test("Audio settings hide all controls while the transport runs", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Appearance appearance(directory.getNonexistentChildFile("audio-settings",".json"));
+        ActionBindings bindings(appearance,session.audio.devices);
+        auto count=[](Component &root){int count=0;std::function<void(Component&)> walk=[&](Component &c){
+            if(dynamic_cast<ComboBox*>(&c))++count;for(auto *child:c.getChildren())walk(*child);};walk(root);return count;};
+        session.command(jaras::CommandKind::play);
+        SettingsPanel playing(session,auth,lighting,appearance,bindings,1,[](String){},[]{});playing.setSize(780,580);
+        expect(count(playing)==0,"Audio controls remained visible during playback");
+        session.command(jaras::CommandKind::stop);
+        SettingsPanel stopped(session,auth,lighting,appearance,bindings,1,[](String){},[]{});stopped.setSize(780,580);
+        expect(count(stopped)>0,"Audio controls did not return when stopped");
+    });
+    test("Colour-only editor supports presets, preview, cancel and save", [&] {
+        unsigned saved=0,preview=0;bool finished=false;
+        {RegionEditor panel("",0x112233,false,[&](String,unsigned colour,bool){saved=colour;},[]{},false,false);
+         panel.previewColour=[&](unsigned colour){preview=colour;};panel.finishPreview=[&]{finished=true;};panel.setSize(336,340);
+         auto *swatch=dynamic_cast<Button*>(panel.findChildWithID("nameColourSwatch5"));expect(swatch,"Preset missing");swatch->onClick();
+         expect(preview==0xf44336,"Preset not previewed");}
+        expect(saved==0&&preview==0x112233&&finished,"Dismissal failed to restore original colour");
+        RegionEditor panel("",0x112233,false,[&](String,unsigned colour,bool){saved=colour;},[]{},false,false);
+        auto *save=dynamic_cast<Button*>(panel.findChildWithID("nameColourSave"));expect(save&&save->isEnabled(),"Colour-only save disabled");save->onClick();
+        expect(saved==0x112233,"Colour-only editor did not save");
+    });
+    test("Project replacement confirmation has rounded app-owned buttons", [&] {
+        ProjectOpenConfirmationPanel panel("Untitled",[]{});panel.setSize(460,232);
+        expect(panel.findChildWithID("cancelOpenProject")&&panel.findChildWithID("confirmOpenProject"),"Missing confirmation choices");
+        auto stream=directory.getChildFile("project-open-confirmation.png").createOutputStream();
+        expect(stream&&PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),*stream),"Could not capture confirmation");
+    });
     test("Interface scale defaults to 100 percent and persists separately from projects", [&] {
         auto file = directory.getNonexistentChildFile("interface-scale", ".json");
         Appearance preferences(file);
         expect(std::abs(preferences.interfaceScale() - 1.f) < 1e-6, "First-install default");
         expect(preferences.set("jaras.interface.scale", 1.1).wasOk(), "Scale saved");
-        expect(std::abs(Appearance(file).interfaceScale() - 1.1f) < 1e-6, "Scale restored");
-        for (int percent = 80; percent <= 120; percent += 10) {
+        expect(std::abs(Appearance(file).interfaceScale() - 1.f) < 1e-6, "Scale restored");
+        for (int percent = 75; percent <= 125; percent += 25) {
             expect(preferences.set("jaras.interface.scale", percent / 100.0).wasOk(), "Save scale option");
             expect(std::abs(Appearance(file).interfaceScale() - percent / 100.f) < 1e-6, "Restore scale option");
         }
         for (double legacy : {.6, .7}) {
             expect(preferences.set("jaras.interface.scale", legacy).wasOk(), "Legacy small scale saved");
-            expect(std::abs(Appearance(file).interfaceScale() - .8f) < 1e-6, "Legacy scale upgrades to 80 percent");
+            expect(std::abs(Appearance(file).interfaceScale() - .75f) < 1e-6, "Legacy scale upgrades to 75 percent");
         }
         expect(preferences.set("jaras.interface.scale", 1.5).wasOk(), "Legacy scale saved");
-        expect(std::abs(Appearance(file).interfaceScale() - 1.2f) < 1e-6, "Legacy scale is limited to 120 percent");
+        expect(std::abs(Appearance(file).interfaceScale() - 1.25f) < 1e-6, "Legacy scale is limited to 125 percent");
     });
     test("Waveforms analyse real stereo media asynchronously and map offsets, rates and loops", [&] {
         const auto file = directory.getNonexistentChildFile("waveform-source", ".wav");
@@ -1692,6 +1891,19 @@ int runTests(const File &directory) {
         regionEditing::erase(project,restore.id,{group},false);
         expect(restore.parts.size()==2&&restore.tracks[0].clips.size()==count,"Timeline wrapper deletion restores songs and retains audio items");
         jaras::validate(project);
+    });
+    test("Detected tempo markers use two bars and remove near-integer noise", [&] {
+        std::vector<clickTempo::Section> input;
+        for(int i=0;i<100;++i)input.push_back({i*.1,i<50?140.164:145.12});
+        const auto result=clickTempo::markerSections(input,4,4,10);
+        expect(result.size()==2 && result[0].bpm==140 && result[1].bpm==145 && result[1].position==5,"Stable tempo was not rounded or coalesced");
+        input.clear();for(int i=0;i<100;++i)input.push_back({i*.1,120.+i});
+        for(auto signature:std::vector<std::pair<int,int>>{{4,4},{3,4},{7,8}}){
+            const auto spans=clickTempo::markerSections(input,signature.first,signature.second,10);
+            for(size_t i=1;i<spans.size();++i)expect(spans[i].position-spans[i-1].position+1e-9>=2.*signature.first*4/signature.second*60/spans[i-1].bpm,"Markers were closer than two bars");
+        }
+        const auto shortChange=clickTempo::markerSections({{0,140},{.5,160},{1,140}},4,4,20);
+        expect(shortChange.size()==1 && shortChange[0].bpm==140,"Short fluctuation left a stale tempo");
     });
     test("Click BPM detection preserves Mac clock phase, meter, rests and tempo changes", [&] {
         for(double rate:{44100.,48000.})for(double bpm:{147.999,130.001,119.9995,155.998})for(int count:{8,64,600}){
@@ -4765,6 +4977,14 @@ int runTests(const File &directory) {
         song.markers = std::vector<jaras::TimelineMarker>{marker(0,120,"relative"),
             marker(2,240,"relative"),marker(4,60,"free")};
         const ClipTempo timing(clip,&song);
+        expect(timing.itemTitle(clip)==String::fromUTF8("[1–2] ")+text(clip.name),
+               "Item header must display the actual tempo-rate range used by playback");
+        auto rendered=clip;rendered.renderedTiming=true;rendered.playbackRate=1;rendered.tempoBasePlaybackRate=2;
+        expect(ClipTempo(rendered,&song).itemTitle(rendered)==text(clip.name),
+               "Rendered unity-rate item retained a speed label");
+        auto altered=clip;altered.playbackRate=1.25;altered.tempoBasePlaybackRate=1;
+        expect(ClipTempo(altered).itemTitle(altered)=="[1.25] "+text(clip.name),
+               "Item header omitted its changed source rate");
         expect(timing.spans.size()==3 && timing.sourceAt(2)==2.5 && timing.sourceAt(4)==6.5 &&
                timing.sourceAt(6)==8.5, "Tempo change discarded source samples");
         for(double time : {0.,1.,2.,3.,4.,5.,6.})
@@ -4908,12 +5128,175 @@ int runTests(const File &directory) {
         verify(1495.25, true, .2f);
         verify(1497.99, false, .1f);
         expect(audio.residentStreams() <= 4, "Cache grew with total project files");
-        const auto deadline = Time::getMillisecondCounter() + 5000;
-        while (audio.residentStreams() > 0 && (int32)(Time::getMillisecondCounter() - deadline) < 0) Thread::sleep(20);
+        const auto idleStart = Time::getMillisecondCounter();
+        // A pinned onset may play before the activation worker has published
+        // any forward reader. Zero resident streams is not yet an idle state.
+        while ((Time::getMillisecondCounter()-idleStart < 2100 || audio.residentStreams() > 0) &&
+               Time::getMillisecondCounter()-idleStart < 5000) Thread::sleep(20);
         expect(audio.residentStreams() == 0, "Unused readers were not retired");
         audio.setOffline(true);
         verify(1498.1, true, .2f);
         expect(audio.residentStreams() <= 2, "Export reopened unrelated timeline files");
+    });
+    test("Interactive transport keeps idle starts warm, cancels pending Play, and primes queued jumps and loops", [&] {
+        const auto media=directory.getChildFile("async-transport");media.createDirectory();
+        jaras::Song song;song.id=uuid();song.duration=32;song.bpm=120;
+        for(int index=0;index<2;++index) {
+            const int sampleRate=index?44100:48000;
+            const auto name=String(index)+".wav";
+            WavAudioFormat wav;auto stream=media.getChildFile(name).createOutputStream();
+            std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(),sampleRate,2,24,{},0));
+            expect(writer!=nullptr,"Cannot create async transport fixture");stream.release();
+            AudioBuffer<float> pcm(2,sampleRate*12);
+            for(int c=0;c<2;++c)for(int n=0;n<pcm.getNumSamples();++n)
+                pcm.setSample(c,n,float(.1+index*.1+double(n)/sampleRate*.001));
+            expect(writer->writeFromAudioSampleBuffer(pcm,0,pcm.getNumSamples()),"Cannot write async fixture");writer.reset();
+            jaras::Track track;track.id=uuid();track.role.id="other";
+            jaras::AudioClip clip;clip.id=uuid();clip.duration=12;clip.audioFile=jaras::AudioFile{utf8(name),{}};
+            track.clips.push_back(clip);clip.id=uuid();clip.startTime=20;clip.duration=10;clip.sourceOffset=2;
+            track.clips.push_back(clip);song.tracks.push_back(track);
+        }
+        AudioEngine audio;audio.prepareOffline(48000);audio.prepareSong(song,media);
+        AudioBuffer<float> output(2,256);
+        const auto render=[&] {audio.render(output.getArrayOfWritePointers(),2,256);};
+        const auto ready=[&] {
+            for(int i=0;i<200 && audio.preparingTransport();++i)floatingControlTests::pump();
+            expect(!audio.preparingTransport(),"Async transport did not finish preparation");
+        };
+        const auto check=[&](double value) {
+            const auto before=audio.getUnderruns();render();
+            expect(audio.getUnderruns()==before,"Prepared transition missed an audio block");
+            expect(std::abs(output.getSample(0,64)-value)<.001,"Tracks did not start together at the requested source position");
+        };
+        AudioEngine::State state;state.playing=true;state.position=5.25;
+        const auto begin=Time::getMillisecondCounterHiRes();audio.transportAsync(state);
+        expect(Time::getMillisecondCounterHiRes()-begin<250,"Play blocked the message thread for disk preparation");
+        ready();check(.3105);
+        // Queue/selection edits carry the UI's previous sample, but must never
+        // seek the running readers or hold the transport waiting for decoding.
+        for(int i=0;i<10;++i)render();
+        const auto beforeRouting=audio.state().position;
+        audio.updateTransportRouting(state);
+        expect(!audio.preparingTransport(),"Arming a queue re-prepared the running sources");
+        render();
+        expect(audio.state().position>beforeRouting,"Routing update rewound the active source clock");
+        state.playing=false;state.position=0;audio.transportAsync(state);render();
+        for(int i=0;i<180;++i)floatingControlTests::pump(); // Beyond the old two-second eviction.
+        state.playing=true;audio.transportAsync(state);
+        expect(!audio.preparingTransport(),"Selected start became cold while idle");check(.3);
+        auto destination=state;destination.position=20;
+        audio.prewarmTransportDestination(destination);
+        for(int i=0;i<20;++i)floatingControlTests::pump();
+        // The core observes boundaries between callbacks, not necessarily at
+        // their exact first sample. The prepared onset must cover this offset.
+        destination.position+=.037;
+        audio.transportAsync(destination);
+        expect(!audio.preparingTransport(),"Queued onset was decoded again for a small boundary overshoot");
+        expect(audio.transportClockPending(),"Seek clock became active before the callback applied it");
+        check(.304074);
+        expect(!audio.transportClockPending(),"Callback did not acknowledge the prepared seek");
+        for(int i=0;i<12;++i) {
+            const auto at=audio.state().position;
+            floatingControlTests::pump();render();
+            expect(std::abs(audio.state().position-(at+256./48000.))<1e-7,
+                   "Queued jump replayed its onset after preparation finished");
+        }
+        state.position=7;audio.transportAsync(state);
+        state.position=0;state.playing=false;audio.transportAsync(state);render();
+        for(int i=0;i<30;++i)floatingControlTests::pump();
+        render();expect(!audio.state().playing && output.getMagnitude(0,256)<.0001,"Cancelled Play restarted after Stop");
+        audio.prewarmTransportDestination({});
+        state.playing=true;state.position=.99;state.loop=true;state.loopStart=0;state.loopEnd=1;
+        audio.transportAsync(state);ready();
+        const auto before=audio.getUnderruns();
+        for(int i=0;i<6;++i)render();
+        expect(audio.getUnderruns()==before && audio.state().position<.1,"Loop transition lost its prepared start");
+    });
+    test("Cold MP3 Play in the middle starts every stem together and reuses exact seeking history", [&] {
+        const auto source=directory.getChildFile("click-123.mp3");
+        expect(source.existsAsFile(),"Missing compressed test fixture");
+        const auto media=directory.getChildFile("cold-middle-play");media.createDirectory();
+        jaras::Song song;song.id=uuid();song.duration=48;song.bpm=123;
+        for(int index=0;index<8;++index) {
+            const auto name=String(index)+".mp3";
+            expect(source.copyFileTo(media.getChildFile(name)),"Cannot copy compressed stem fixture");
+            jaras::Track track;track.id=uuid();track.role.id="other";
+            jaras::AudioClip clip;clip.id=uuid();clip.duration=48;clip.gain=.05;
+            clip.audioFile=jaras::AudioFile{utf8(name),{}};
+            track.clips={clip};song.tracks.push_back(track);
+        }
+        AudioFormatManager formats;registerAudioFormats(formats);
+        std::unique_ptr<AudioFormatReader> reference(formats.createReaderFor(source));
+        expect(reference!=nullptr,"Cannot decode reference MP3");
+        AudioEngine audio;audio.prepareOffline(44100);audio.prepareSong(song,media);
+        AudioBuffer<float> output(2,256),expected(2,256);Array<var> measurements;
+        for(double at:{33.25,4.375,40.125,33.25}) {
+            AudioEngine::State state;state.position=at;audio.transportAsync(state);
+            audio.render(output.getArrayOfWritePointers(),2,256);
+            state.playing=true;const auto started=Time::getMillisecondCounterHiRes();audio.transportAsync(state);
+            while(audio.preparingTransport() && Time::getMillisecondCounterHiRes()-started<5000)
+                floatingControlTests::pump();
+            expect(!audio.preparingTransport(),"Middle Play never finished preparation");
+            const auto elapsed=Time::getMillisecondCounterHiRes()-started;
+            auto measurement=object();put(measurement,"position",at);put(measurement,"milliseconds",elapsed);measurements.add(measurement);
+            expect(reference->read(&expected,0,256,(int64)std::llround(at*44100),true,true),"Reference MP3 read failed");
+            const auto misses=audio.getUnderruns();audio.render(output.getArrayOfWritePointers(),2,256);
+            expect(audio.getUnderruns()==misses,"Middle Play began before every stem was ready");
+            for(int channel=0;channel<2;++channel)for(int n=0;n<256;++n)
+                expect(std::abs(output.getSample(channel,n)-expected.getSample(channel,n)*.4f)<.00002f,
+                       "Middle Play changed source position or stem synchronization");
+            expect(std::abs(audio.state().position-at-256./44100.)<1e-7,"Middle Play did not advance on its first callback");
+        }
+        directory.getChildFile("cold-middle-play.json").replaceWithText(JSON::toString(var(measurements)));
+    });
+    test("Queueing a song and moving its idle secondary cursor never repositions the running head", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        auto project=projectFixture();auto &song=project.songs[0];song.tracks.clear();
+        const auto first=song.parts[0].id,second=song.parts[1].id;
+        session.restoreSnapshot(ProjectCodec::encode(project));
+        session.command(jaras::CommandKind::selectRegion,first);
+        session.command(jaras::CommandKind::play);
+        AudioBuffer<float> output(2,256);
+        session.audio.render(output.getArrayOfWritePointers(),2,256);
+        session.projectSyncFrame();
+        const auto updates=(int64)session.audio.streamDiagnostics()["transportRepositions"];
+        const auto position=session.audio.state().position;
+        session.command(jaras::CommandKind::queueRegion,second);
+        expect(session.transport().queuedRegionId==second,"Song did not enter the queue");
+        expect((int64)session.audio.streamDiagnostics()["transportRepositions"]==updates,
+               "Queue selection re-prepared/repositioned the main transport");
+        session.audio.render(output.getArrayOfWritePointers(),2,256);
+        expect(std::abs(session.audio.state().position-position-256./48000.)<1e-7,
+               "Queue selection repeated or skipped main-head samples");
+        session.projectSyncFrame();
+        session.command(jaras::CommandKind::subSeek,{},23.5);
+        expect((int64)session.audio.streamDiagnostics()["transportRepositions"]==updates,
+               "Moving an idle Sub Play cursor restarted the main transport");
+        expect(std::abs(session.presentationTransport().subPlay.position-23.5)<1e-9,
+               "Idle secondary cursor did not follow its selected position");
+    });
+    test("Session clock waits for the audio seek commit and follows callback loops without replay", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.core.execute({jaras::CommandKind::loopStart,{},0});
+        session.core.execute({jaras::CommandKind::loopEnd,{},.1});
+        session.core.execute({jaras::CommandKind::toggleLoop});
+        session.core.execute({jaras::CommandKind::seek,{},.095});
+        session.core.execute({jaras::CommandKind::play});
+        AudioEngine::State state;state.position=.095;state.playing=true;
+        state.loop=true;state.loopStart=0;state.loopEnd=.1;
+        session.audio.transportAsync(state);
+        expect(session.audio.transportClockPending(),"Prepared seek needs device acknowledgement");
+        session.projectSyncFrame();
+        expect(std::abs(session.transport().position-.095)<1e-9,"Core consumed old audio time before seek commit");
+        AudioBuffer<float> output(2,256);
+        for(int i=0;i<100;++i) {
+            session.audio.render(output.getArrayOfWritePointers(),2,256);
+            session.projectSyncFrame();
+            const double expected=std::fmod(.095+(i+1)*256./48000.,.1);
+            expect(std::abs(session.audio.state().position-expected)<1e-7,"Audio repeated a loop onset");
+            expect(std::abs(session.transport().position-expected)<1e-7,"Core drifted from the callback loop clock");
+            expect(!session.audio.transportClockPending(),"An already executed loop scheduled another seek");
+        }
     });
     auto report = object();
     Array<var> names;

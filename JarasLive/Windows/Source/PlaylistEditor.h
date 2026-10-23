@@ -137,10 +137,16 @@ class PlaylistEditor final : public Component, private ListBoxModel {
 };
 class RegionEditor final : public Component {
   public:
+    std::function<void(unsigned)> previewColour;
+    std::function<void()> finishPreview;
+    ~RegionEditor() override {
+        if(!confirmed && previewColour)previewColour(originalColour);
+        if(finishPreview)finishPreview();
+    }
     RegionEditor(String value, unsigned colour, bool uppercase,
                  std::function<void(String, unsigned, bool)> save, std::function<void()> close,
                  bool allowUppercase = true, bool allowName = true)
-        : commit(std::move(save)), cancel(std::move(close)), showsUppercase(allowUppercase), showsName(allowName) {
+        : commit(std::move(save)), cancel(std::move(close)), showsUppercase(allowUppercase), showsName(allowName), originalColour(colour) {
         getProperties().set("selfContainedSheet", true);
         setWantsKeyboardFocus(showsName);
         name.setComponentID("nameColourName");
@@ -185,13 +191,14 @@ class RegionEditor final : public Component {
         cancelButton.setColour(TextButton::buttonColourId, Colour(0xff505050));
         saveButton.setComponentID("nameColourSave"); cancelButton.setComponentID("nameColourCancel");
         upper.setComponentID("nameColourUppercase");
-        name.onTextChange = [this] { saveButton.setEnabled(name.getText().trim().isNotEmpty()); };
-        saveButton.setEnabled(value.trim().isNotEmpty());
+        name.onTextChange = [this] { saveButton.setEnabled(!showsName || name.getText().trim().isNotEmpty()); };
+        saveButton.setEnabled(!showsName || value.trim().isNotEmpty());
         cancelButton.onClick = cancel;
         saveButton.onClick = [this] {
             auto value = name.getText().trim();
-            if (value.isNotEmpty())
-                commit(value, colourValue(), upper.getToggleState());
+            if (!showsName || value.isNotEmpty()) {
+                confirmed=true;commit(value, colourValue(), upper.getToggleState());
+            }
         };
         name.onReturnKey = [this] { saveButton.triggerClick(); };
     }
@@ -227,6 +234,8 @@ class RegionEditor final : public Component {
     std::function<void()> cancel;
     bool showsUppercase;
     bool showsName;
+    unsigned originalColour;
+    bool confirmed=false;
     TextEditor name;
     ParameterSlider rgb[3];
     ToggleButton upper;
@@ -240,6 +249,7 @@ class RegionEditor final : public Component {
         for (int i = 0; i < 3; ++i)
             rgb[i].setValue((c >> (16 - i * 8)) & 255, dontSendNotification);
         for(auto *swatch:swatches) swatch->getProperties().set("selectedColour", (swatch->findColour(TextButton::buttonColourId).getARGB() & 0xffffff)==c);
+        if(previewColour)previewColour(c);
         repaint();
     }
 };

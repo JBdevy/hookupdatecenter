@@ -1,6 +1,55 @@
 import XCTest
 @testable import JarasApplication
 final class ClickTempoTests: XCTestCase {
+    func testRedetectionKeepsTheNextSongWhenAnOutgoingChildOverlapsIt() throws {
+        var song = Project.empty(name: "Overlapping songs").songs[0]
+        let group = UUID(), a = UUID(), b = UUID()
+        song.parts = [Part(id: a, name: "A", startTime: 0, endTime: 16),
+                      Part(id: b, name: "B", startTime: 10, endTime: 30),
+                      Part(id: group, name: "Unified", startTime: 0, endTime: 30)]
+        song.parts[0].parentRegionID = group; song.parts[1].parentRegionID = group
+        var track = Track(id: UUID(), name: "Click", role: .click)
+        track.clips = [AudioClip(id: UUID(), name: "A", startTime: 0, duration: 16, audioFile: AudioFile(path: "a.wav")),
+                       AudioClip(id: UUID(), name: "B", startTime: 10, duration: 20, audioFile: AudioFile(path: "b.wav"))]
+        song.tracks = [track]
+        let next = TimelineMarker(id: UUID(), name: "TEMPO", position: 10, color: 0, regionOwnerID: b, tempoBPM: 144, tempoReferenceBPM: 144)
+        song.markers = [next]
+        let region = song.parts[0]
+        let detected = try ClickTempoDetector.markers(song: song, region: region) { file in
+            XCTAssertEqual(file.path, "a.wav", "The next child's Click must not enter this detection")
+            return (0..<32).map { Double($0) * 0.5 }
+        }
+        XCTAssertEqual(detected.markers.map(\.tempoBPM), [120])
+        song.insertDetectedTempo(detected.markers, replacing: region)
+        XCTAssertTrue(song.markers!.contains(next))
+        XCTAssertEqual(song.tracks, [track], "Detection never modifies or retimes source audio")
+    }
+    func testGeneratedMarkersUseTwoBarsAndRoundDetectionNoise() throws {
+        let input = (0..<100).map { ClickTempoDetector.Section(position: Double($0) * 0.1, bpm: $0 < 50 ? 140.164 : 145.12) }
+        let result = ClickTempoDetector.markerSections(input, until: 10)
+        XCTAssertEqual(result.map(\.bpm), [140, 145])
+        XCTAssertEqual(result.map(\.position), [0, 5])
+        let ramp = (0..<100).map { ClickTempoDetector.Section(position: Double($0) * 0.1, bpm: 120 + Double($0)) }
+        for meter in [(4, 4), (3, 4), (7, 8)] {
+            let sections = ClickTempoDetector.markerSections(ramp, beatsPerBar: meter.0, beatUnit: meter.1, until: 10)
+            for (a,b) in zip(sections, sections.dropFirst()) {
+                XCTAssertGreaterThanOrEqual(b.position-a.position + 1e-9, 2 * Double(meter.0) * 4 / Double(meter.1) * 60 / a.bpm)
+            }
+        }
+        let short = ClickTempoDetector.markerSections([.init(position: 0, bpm: 140), .init(position: 0.5, bpm: 160), .init(position: 1, bpm: 140)], until: 20)
+        XCTAssertEqual(short, [.init(position: 0, bpm: 140)], "A short fluctuation must not persist after it ended")
+        let fractional = ClickTempoDetector.markerSections([.init(position: 0, bpm: 140.4)], until: 20)
+        XCTAssertEqual(fractional[0].bpm, 140.4)
+        var song = Project.empty(name: "Near integer").songs[0]
+        var track = Track(id: UUID(), name: "Click", role: .click)
+        track.clips = [AudioClip(id: UUID(), name: "Click", startTime: 0, duration: 30, audioFile: AudioFile(path: "click.wav"))]
+        song.tracks = [track]
+        let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 30)
+        let detected = try ClickTempoDetector.markers(song: song, region: region) { _ in (0..<65).map { Double($0) * 60 / 140.164 } }
+        XCTAssertEqual(detected.markers.count, 1)
+        XCTAssertEqual(detected.markers[0].tempoBPM, 140)
+        XCTAssertEqual(detected.markers[0].tempoReferenceBPM, 140, "Detection must never change the source playback speed")
+    }
     func testAttackJitterAndOffBeatTailDoNotSplitStableSections() {
         for pair in [[93.75, 107.3], [120.0, 140.0], [87.4, 156.2]] {
             let source = clicks(pair, beats: [36, 324])

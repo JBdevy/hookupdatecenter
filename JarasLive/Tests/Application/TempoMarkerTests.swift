@@ -1,6 +1,70 @@
 import XCTest
 @testable import JarasApplication
 final class TempoMarkerTests: XCTestCase {
+    func testCachedPlaybackProgramsMatchUncachedFragmentsForEveryOwnerAndPreview() {
+        var song = resizeSong()
+        let group = UUID()
+        song.parts.append(Part(id: group, name: "Unified", startTime: 0, endTime: song.duration))
+        song.parts[0].parentRegionID = group; song.parts[1].parentRegionID = group
+        for initialized in [false, true] {
+            song.regionOwnershipInitialized = initialized
+            var programs = AudioTempoPrograms(song: song)
+            let sections = song.tempoSections(until: song.duration)
+            for owner in [nil, song.parts[0].id, song.parts[1].id, group, UUID()] {
+                for start in [0.0, 1, 2, 8, 12, 18, 28] {
+                    for duration in [0.5, 3, 12, 40] {
+                        var clip = song.tracks[0].clips[0]
+                        clip.regionOwnerID = owner; clip.startTime = start; clip.duration = duration
+                        for rendered in [false, true] {
+                            clip.renderedTempo = rendered
+                            XCTAssertEqual(programs.fragments(for: clip), song.tempoAudioSegments(clip, sections: sections),
+                                "Caching must preserve source offsets, fades, gain, rate, tails and fragment identities")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    func testRepeatedRegionTempoEditsDoNotCreateMarkersInOverlappingNextSong() {
+        var song = resizeSong()
+        let group = UUID(), a = UUID(), b = UUID()
+        song.parts = [Part(id: a, name: "Outgoing", startTime: 0, endTime: 16),
+                      Part(id: b, name: "Next", startTime: 10, endTime: 30),
+                      Part(id: group, name: "Unified", startTime: 0, endTime: 30)]
+        song.parts[0].parentRegionID = group; song.parts[1].parentRegionID = group
+        song.markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0, color: 0,
+                           regionOwnerID: a, tempoBPM: 120, tempoTimebase: .relative, tempoReferenceBPM: 120),
+                        TimelineMarker(id: UUID(), name: "TEMPO", position: 10, color: 0,
+                           regionOwnerID: b, tempoBPM: 144, tempoTimebase: .relative, tempoReferenceBPM: 144)]
+        song.tracks[0].clips = [AudioClip(id: UUID(), name: "Tail", startTime: 0, duration: 16,
+                                        audioFile: AudioFile(path: "source.wav"), regionOwnerID: a)]
+        for step in 0..<100 {
+            let before = song
+            let region = song.parts.first { $0.id == a }!
+            XCTAssertEqual(song.tempoEditEnd(for: region), song.parts.first { $0.id == b }!.startTime)
+            for marker in song.regionTempoChange(step % 2 == 0 ? 1 : -1, region: region) {
+                if let i = song.markers!.firstIndex(where: { $0.id == marker.id }) { song.markers![i] = marker }
+                else { song.markers!.append(marker) }
+            }
+            TempoEditMap(before: before, after: song).apply(to: &song)
+            XCTAssertEqual(song.markers!.count, 2, "A tail crossing the next song must not create a new end marker at each edit")
+            XCTAssertEqual(song.markers!.first { $0.regionOwnerID == b }!.tempoBPM, 144)
+        }
+        XCTAssertEqual(song.parts[0].endTime, 16, accuracy: 0.000001)
+        XCTAssertEqual(song.tracks[0].clips[0].duration, 16, accuracy: 0.000001)
+    }
+    func testTempoIndicatorUsesEffectiveRateRatherThanHistoricalReference() {
+        var song = resizeSong(); song.markers = []
+        let part = song.parts[0]
+        var clip = AudioClip(id: UUID(), name: "Audio", startTime: part.startTime, duration: 1,
+                             audioFile: AudioFile(path: "source.wav"))
+        clip.regionOwnerID = part.id; clip.tempoBasePlaybackRate = 0.8; clip.playbackRate = 1
+        song.tracks[0].clips = [clip]
+        XCTAssertFalse(song.hasUnrenderedTempo(in: part), "Historical rate must not highlight unity-rate audio")
+        song.tracks[0].clips[0].tempoBasePlaybackRate = 1.25
+        song.tracks[0].clips[0].playbackRate = 1.25
+        XCTAssertTrue(song.hasUnrenderedTempo(in: part), "A changed rate is highlighted even when it matches its saved reference")
+    }
     func testTempoIndicatorWaitsForEveryOwnedItemToBeRendered() {
         var song = resizeSong()
         let part = song.parts[0]

@@ -782,6 +782,38 @@ public struct PlaybackScope: Equatable {
         return itemStart >= minimum - 1e-6 && itemStart < maximum - 1e-6
     }
 }
+/// Immutable lookup for one audio revision. Avoid scanning every region and
+/// every linked marker again for each playback fragment during a tempo edit.
+public struct PlaybackItemStartIndex {
+    private let initialized: Bool
+    private let parts: [UUID: Part]
+    private let starts: [UUID: Double]
+    private let incoming: [UUID: [Part]]
+    public init(song: Song) {
+        initialized = song.regionOwnershipInitialized == true
+        parts = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
+        var starts: [UUID: Double] = [:], incoming: [UUID: [Part]] = [:]
+        for part in song.parts {
+            let start = song.playbackRegionStart(part)
+            starts[part.id] = start
+            if let parent = part.parentRegionID, start < part.startTime - 1e-6 {
+                incoming[parent, default: []].append(part)
+            }
+        }
+        self.starts = starts; self.incoming = incoming
+    }
+    public func start(for clip: AudioClip) -> Double? {
+        guard initialized else { return clip.startTime }
+        guard let id = clip.regionOwnerID, let part = parts[id] else { return nil }
+        guard let parent = part.parentRegionID else { return clip.startTime }
+        let candidates = (incoming[parent] ?? []).filter {
+            $0.id != part.id && $0.startTime > part.startTime &&
+            clip.startTime >= starts[$0.id]! - 1e-6 && clip.startTime < $0.startTime - 1e-6
+        }
+        if let next = candidates.max(by: { starts[$0.id]! < starts[$1.id]! }) { return starts[next.id] }
+        return starts[part.id]
+    }
+}
 public extension Song {
     /// Linked flags are editable playback boundaries; stored child bounds
     /// retain the original song extent for non-destructive arrangement edits.

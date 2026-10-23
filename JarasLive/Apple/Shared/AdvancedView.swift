@@ -304,6 +304,7 @@ private struct AdvancedSetlistColors: View {
             SetlistTextColorRow(title: "All Regions song text", key: "jaras.setlist.allRegionsTextColor", defaultColor: 0xffffff)
             SetlistTextColorRow(title: "Playlist song text", key: "jaras.setlist.playlistTextColor", defaultColor: 0x00ff9a)
             SetlistTextColorRow(title: "Unified drawer song text", key: "jaras.setlist.unifiedTextColor", defaultColor: 0xffeb3b)
+            SetlistTextColorRow(title: "Block text color", key: "jaras.setlist.blockTextColor", defaultColor: 0x69ed91)
         }
     }
 }

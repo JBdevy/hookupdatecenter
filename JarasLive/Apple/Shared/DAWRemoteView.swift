@@ -1152,7 +1152,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         }
         .alert("CatLive", isPresented: $duplicateQueueWarning) {
             Button("OK", role: .cancel) { }
-        } message: { Text("A duplicated region can only be queued while another song is playing.") }
+        } message: { Text("Cannot queue a duplicate of the song that is playing.") }
         .alert("Delete", isPresented: $confirmingRemoval) {
             Button("Cancel", role: .cancel) { removal = nil }
             Button("Delete", role: .destructive) { if let removal { send(removal) }; removal = nil }
@@ -2198,7 +2198,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                         Button { action(state.playing || state.paused ? .stop : .play) } label: {
                             Label { Text(verbatim: state.playing || state.paused ? JarasLocalization.string("Stop") : "Play") }
                                 icon: { Image(systemName: state.playing || state.paused ? "stop.fill" : "play.fill") }
-                        }.buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: state.playing, fontSize: 10, width: controlWidth, height: 28))
+                        }.buttonStyle(TransportButtonStyle(color: JarasTheme.transportPlay, active: state.playing, fontSize: 10, width: controlWidth, height: 28))
                     case .pause:
                         Button { action(state.paused ? .play : .pause) } label: {
                             Label(state.paused ? "Play" : "Pause", systemImage: state.paused ? "play.fill" : "pause.fill")
@@ -2208,7 +2208,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                             .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: state.subPlaying, fontSize: 10, width: controlWidth, height: 28)).disabled(!state.playing)
                     case .repeatPlayback:
                         Button { action(.toggleLoop) } label: { Image(systemName: "repeat") }
-                            .buttonStyle(TransportButtonStyle(color: state.loop ? JarasTheme.yellow : .red, active: state.loop, fontSize: 12, width: controlWidth, height: 28))
+                            .buttonStyle(TransportButtonStyle(color: state.loop ? JarasTheme.yellow : JarasTheme.liveOffRed, active: state.loop, inactiveOpacity: 1, fontSize: 12, width: controlWidth, height: 28))
                             .accessibilityLabel("Repeat").modifier(JarasBlink(active: state.loop, interval: 0.55, lowOpacity: 0.45))
                     case .record, .metronome:
                         if let localShow { IpadAudioTransportButtons(show: localShow, configureMetronome: openMetronome, only: control, controlWidth: controlWidth) }
@@ -2683,6 +2683,7 @@ private struct RemoteNativeTimeline: View {
     var openSelectedItemMenu: ((UUID, Set<UUID>) -> Void)? = nil
     var openItemFX: ((UUID) -> Void)? = nil
     @State private var viewport = IpadTimelineViewport()
+    @State private var rulerDrag = IpadTimelineRulerDrag()
     @State private var gestureControl = IpadTimelineGestureControl()
     @State private var followsPlayback = true
     @State private var pointerStart: (project: UUID, song: Song, item: UUID?, time: Double, point: CGPoint, selection: TimelinePointerSelection)?
@@ -2766,11 +2767,7 @@ private struct RemoteNativeTimeline: View {
                                     let y = point.y - scroll.contentOffset.y
                                     return y < 24 || y > scroll.bounds.height - 24
                                 }, event: { handlePointer($0, width: width) }, wheel: { delta, modifiers in
-                                    if modifiers.contains(.command) || modifiers.contains(.control) {
-                                        scrolling.resizeTracks(exp(Double(delta.y) * 0.006)); scrolling.finishResizingTracks()
-                                    } else if modifiers.contains(.shift) || abs(delta.x) > abs(delta.y) {
-                                        pauseFollowing(); viewport.pan(pixels: Double(delta.x == 0 ? delta.y : delta.x), width: width)
-                                    } else { viewport.zoom(factor: exp(Double(delta.y) * 0.009), centeredOn: zoomCursor) }
+                                    handleWheel(delta, modifiers: modifiers, width: width)
                                 })
                         }
                     }
@@ -3039,6 +3036,13 @@ private struct RemoteNativeTimeline: View {
     private func gridX(_ time: Double, width: CGFloat) -> CGFloat {
         floor((time - start) / span * width * displayScale) / displayScale + 0.5 / displayScale
     }
+    private func handleWheel(_ delta: CGPoint, modifiers: HardwareKeyboardModifiers, width: CGFloat) {
+        if modifiers.contains(.command) || modifiers.contains(.control) {
+            scrolling.resizeTracks(exp(Double(delta.y) * 0.006)); scrolling.finishResizingTracks()
+        } else if modifiers.contains(.shift) || abs(delta.x) > abs(delta.y) {
+            pauseFollowing(); viewport.pan(pixels: Double(delta.x == 0 ? delta.y : delta.x), width: width)
+        } else { viewport.zoom(factor: exp(Double(delta.y) * 0.009), centeredOn: zoomCursor) }
+    }
     private func ruler(width: CGFloat, marks: [TimelineTimeRuler.Tick], song: Song?) -> some View {
         ZStack(alignment: .leading) {
             (local ? JarasTheme.panel : JarasTheme.display)
@@ -3060,14 +3064,31 @@ private struct RemoteNativeTimeline: View {
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { gesture in
                     guard local || (!state.playing && region != nil) else { return }
-                    if local { pauseFollowing() }
-                    preview(start + min(1, max(0, gesture.location.x / width)) * span)
+                    if local {
+                        guard editorEnabled else { rulerDrag.reset(); return }
+                        pauseFollowing()
+                        rulerDrag.update(translation: gesture.translation.width, width: width, viewport: &viewport)
+                    } else { preview(start + min(1, max(0, gesture.location.x / width)) * span) }
                 }
                 .onEnded { gesture in
                     guard local || (!state.playing && region != nil) else { return }
+                    if local {
+                        defer { rulerDrag.reset() }
+                        guard editorEnabled else { return }
+                        rulerDrag.update(translation: gesture.translation.width, width: width, viewport: &viewport)
+                        guard !rulerDrag.dragged else { return }
+                    }
                     seek(start + min(1, max(0, gesture.location.x / width)) * span)
                 })
-            .accessibilityLabel("Régua de tempo: arraste com o transporte parado")
+            .background {
+                if local {
+                    IpadTimelinePointerProbe(enabled: editorEnabled, capturesPointer: false,
+                        reset: scrolling.pointerReset, accepts: { _ in true }, wantsAutoScroll: { _ in false },
+                        event: { _ in }, wheel: { handleWheel($0, modifiers: $1, width: width) })
+                }
+            }
+            .onChange(of: scrolling.pointerReset) { _ in rulerDrag.reset() }
+            .accessibilityLabel(local ? "Time ruler: drag to scroll" : "Régua de tempo: arraste com o transporte parado")
     }
     private func tempoLane(width: CGFloat, song: Song?) -> some View {
         ZStack(alignment: .topLeading) {
@@ -3858,7 +3879,7 @@ private struct RemoteNativeTrackControlLayout {
     let pan: Bool
     init(width: CGFloat, compact: Bool, editing: Bool, hierarchyWidth: CGFloat,
          isGroup: Bool, hasVolume: Bool, hasRecord: Bool, hasPatch: Bool, hasFX: Bool) {
-        let available = width - hierarchyWidth - (editing ? 36 : 6) - (hasVolume && !compact ? 19 : 6)
+        let available = width - hierarchyWidth - (editing ? 36 : 6) - (hasVolume ? 19 : 6)
             - (compact || !hasVolume ? 70 : 0) - (isGroup ? 14 : 0)
         // M/S are always present. Each extra control contributes its real
         // touch width and one 3-point gap.
@@ -4016,6 +4037,7 @@ private struct RemoteRegionDrawerGesture: ViewModifier {
 /// A held scalar is reused from the host; this view has no sampling timer or moving meter.
 /// Transport position updates do not invalidate the fixed readout while its value stays equal.
 private struct RemotePeakReadout: View, Equatable {
+    @Environment(\.jarasNativePalette) private var nativePalette
     let decibels: Double?
     let name: String
     let project: UUID
@@ -4031,8 +4053,10 @@ private struct RemotePeakReadout: View, Equatable {
         Button(action: reset) {
             Text(verbatim: decibels.map { String(format: "%+.2f", $0) } ?? "")
                 .font(.jarasSystem(size: 8, weight: .bold, design: .monospaced))
-                .foregroundStyle(remoteColor(nameColor))
-                .frame(width: 34, height: 12)
+                .foregroundStyle(nativePalette && (decibels ?? -.infinity) >= 0 ? Color.red : remoteColor(nameColor))
+                .padding(.horizontal, 2)
+                .background(nativePalette && (decibels ?? -.infinity) >= 0 ? Color.black : Color.clear)
+                .frame(minWidth: 34, minHeight: 12)
                 .frame(height: 22).contentShape(Rectangle())
         }.buttonStyle(RemoteFullAreaButtonStyle()).disabled(decibels == nil)
             .accessibilityLabel(Text(verbatim: "Peak · " + name))
@@ -4188,9 +4212,9 @@ private struct RemoteNativeMixerRow: View, Equatable {
             }
             }
             }
-        }.padding(.leading, local && !compact && hasVolume ? 19 : 6).padding(.trailing, editing ? 36 : 6).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }.padding(.leading, local && hasVolume ? 19 : 6).padding(.trailing, editing ? 36 : 6).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .overlay(alignment: .leading) {
-                if local && !compact && hasVolume && track.canMeter != false {
+                if local && hasVolume && track.canMeter != false {
                     IpadMixerMeter(meter: StemAudioPlayback.shared.meter(for: track.id)).frame(width: 10)
                         .padding(.vertical, 5).padding(.leading, 3)
                 }
@@ -5152,13 +5176,13 @@ enum RemoteSurface {
     private static func neutral(_ top: Double, _ bottom: Double) -> LinearGradient {
         LinearGradient(colors: [Color(white: top * brightness), Color(white: bottom * brightness)], startPoint: .top, endPoint: .bottom)
     }
-    static let background = neutral(0.18, 0.115)
-    static let panel = neutral(0.235, 0.155)
-    static let display = neutral(0.115, 0.075)
+    static var background: some View { JarasNativePaletteSurface(color: JarasTheme.background, remote: neutral(0.18, 0.115)) }
+    static var panel: some View { JarasNativePaletteSurface(color: JarasTheme.panel, remote: neutral(0.235, 0.155)) }
+    static var display: some View { JarasNativePaletteSurface(color: JarasTheme.display, remote: neutral(0.115, 0.075)) }
     static let edge = LinearGradient(colors: [Color.white.opacity(0.16), Color.black.opacity(0.18)], startPoint: .top, endPoint: .bottom)
     static let shading = LinearGradient(colors: [Color.white.opacity(0.10), .clear, Color.black.opacity(0.12)], startPoint: .top, endPoint: .bottom)
     static func fill(_ color: Color) -> some View {
-        color.overlay(shading).allowsHitTesting(false)
+        JarasNativePaletteSurface(color: color, remote: color.overlay(shading)).allowsHitTesting(false)
     }
 }
 

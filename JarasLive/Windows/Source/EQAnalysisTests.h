@@ -41,6 +41,27 @@ void run(Test test, Require require, const File &directory) {
             require(!offline.eqAnalysis("EQ"),"Offline export allocated an unused RTA capture");
         }
     });
+    test("EQ lower controls edit the selected band live and enforce filter types", [&] {
+        fxui::EQGraph graph;graph.setSize(640,360);graph.settings=fxschema::defaults(true);
+        Array<var> bands;
+        for(double hz:{100.,1000.,10000.}){auto band=object();put(band,"frequency",hz);put(band,"gain",0.);put(band,"q",.707);put(band,"type","bell");bands.add(band);}
+        put(graph.settings,"bands",bands);int previews=0,commits=0;
+        graph.changed=[&]{++previews;};graph.commit=[&]{++commits;};graph.refreshControls();
+        auto *choice=dynamic_cast<ComboBox*>(graph.findChildWithID("eqBand"));
+        auto *type=dynamic_cast<ComboBox*>(graph.findChildWithID("eqType"));
+        auto *gain=dynamic_cast<Slider*>(graph.findChildWithID("eqGain"));
+        auto *frequency=dynamic_cast<Slider*>(graph.findChildWithID("eqFrequency"));
+        auto *slope=dynamic_cast<ComboBox*>(graph.findChildWithID("eqSlope"));
+        require(choice&&type&&gain&&frequency&&slope,"Missing EQ lower controls");
+        choice->setSelectedId(2,sendNotificationSync);require(type->getNumItems()==1,"Middle band offered edge-only filters");
+        gain->setValue(6,sendNotificationSync);require(num(list(get(graph.settings,"bands"))[1],"gain")==6&&previews>0&&commits>0,"Gain did not preview and persist the selected band");
+        frequency->setValue(1200,sendNotificationSync);require(num(list(get(graph.settings,"bands"))[1],"frequency")==1200,"Frequency edited wrong band");
+        choice->setSelectedId(1,sendNotificationSync);type->setSelectedId(2,sendNotificationSync);
+        require(str(list(get(graph.settings,"bands"))[0],"type")=="lowCut"&&!gain->isEnabled()&&slope->isVisible(),"Cut band must expose slope and disable gain");
+        slope->setSelectedId(48,sendNotificationSync);require(num(list(get(graph.settings,"bands"))[0],"slope")==48,"Slope did not persist");
+        auto stream=directory.getChildFile("eq-lower-controls.png").createOutputStream();
+        require(stream&&PNGImageFormat().writeImageToStream(graph.createComponentSnapshot(graph.getLocalBounds()),*stream),"Cannot capture lower EQ controls");
+    });
     test("EQ graph draws input and output spectra without covering response controls", [&] {
         fxui::EQGraph graph; graph.setSize(640,260); graph.settings=fxschema::defaults(true);
         auto capture=std::make_shared<analysis::Capture>(48000);

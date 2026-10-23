@@ -41,7 +41,12 @@ namespace catlive {
                 dragged=true;
                 if(auto *container=DragAndDropContainer::findParentDragContainerFor(this);container&&!container->isDragAndDropActive()) {
                     auto description=list.model->getDragSourceDescription(list.selected);
-                    if(!description.isVoid())container->startDragging(description,&list);
+                    if(!description.isVoid()) {
+                        const auto *display=Desktop::getInstance().getDisplays().getDisplayForRect(getScreenBounds());
+                        const double scale=Component::getApproximateScaleFactorForComponent(&list)*(display?display->scale:1.0);
+                        const Point<int> offset{-e.getMouseDownX(),-e.getMouseDownY()};
+                        container->startDragging(description,&list,list.createDragPreview(scale),false,&offset,&e.source);
+                    }
                 }
             }
         };
@@ -61,6 +66,42 @@ namespace catlive {
         Viewport *getViewport(){return &viewport;}
         const Viewport *getViewport() const{return &viewport;}
         SparseSet<int> getSelectedRows() const{return selected;}
+        ScaledImage createDragPreview(double scale=1.0) {
+            if(!model)return {};
+            std::vector<Row*> draggedRows;
+            int height=0,total=0;
+            for(int i=0;i<selected.size();++i) {
+                const int index=selected[i];
+                if(index<0 || index>=(int)rows.size())continue;
+                SparseSet<int> single;single.addRange({index,index+1});
+                // Blocks and unified child rows are not part of the drag payload.
+                if(model->getDragSourceDescription(single).isVoid())continue;
+                ++total;
+                if(draggedRows.size()<5) {
+                    draggedRows.push_back(rows[(size_t)index].get());
+                    height+=draggedRows.back()->getHeight();
+                }
+            }
+            if(draggedRows.empty())return {};
+            const int more=total-(int)draggedRows.size();
+            if(more>0)height+=24;
+            const int width=std::max(1,draggedRows.front()->getWidth());
+            scale=std::max(1.0,scale);
+            Image preview(Image::ARGB,(int)std::ceil(width*scale),(int)std::ceil(height*scale),true);
+            Graphics g(preview);g.addTransform(AffineTransform::scale((float)scale));
+            int y=0;
+            for(auto *row:draggedRows) {
+                auto snapshot=row->createComponentSnapshot(row->getLocalBounds(),true,(float)scale);
+                g.drawImage(snapshot,juce::Rectangle<float>(0,(float)y,(float)width,(float)row->getHeight()));
+                y+=row->getHeight();
+            }
+            if(more>0) {
+                g.setColour(theme::background);g.fillRoundedRectangle(0,(float)y,(float)width,24,4);
+                g.setColour(Colours::white);g.setFont(theme::semiboldFont(12));
+                g.drawText("+"+String(more),0,y,width,24,Justification::centred);
+            }
+            return ScaledImage(preview,scale);
+        }
         int rowTop(int index) const {int y=0;for(int i=0;i<index&&i<(int)rows.size();++i)y+=heightForRow?heightForRow(i):38;return y;}
         int insertionRow(int y) const {for(int i=0;i<(int)rows.size();++i)if(y<rowTop(i)+(heightForRow?heightForRow(i):38)/2)return i;return (int)rows.size();}
         void updateContent() {

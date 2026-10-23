@@ -14,20 +14,20 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
                 "Driver-remapped discrete Shift-wheel is ignored");
         require(HozMixerFocusGesture::wheelDelta(.2,0,true)==0 && HozMixerFocusGesture::wheelDelta(.2,.001,true)==0,
                 "A smooth horizontal swipe changes the vertical focus gesture");
-        for(int i=0;i<2;++i) require(!gesture.update(.1,i*.05),"Short wheel travel changed the Hoz-Mixer layout");
-        require(gesture.update(.1,.1)==std::optional<bool>(true),"Three upward notches did not focus FX slots");
+        for(int i=0;i<1;++i) require(!gesture.update(.1,i*.05),"Short wheel travel changed the Hoz-Mixer layout");
+        require(gesture.update(.1,.1)==std::optional<bool>(true),"Two upward notches did not focus FX slots");
         for(int i=1;i<20;++i)require(!gesture.update(.1,.1+i*.05),"One continuous gesture triggered multiple actions");
-        for(int i=0;i<2;++i)require(!gesture.update(-.1,1.5+i*.05),"Direction reversal retained earlier wheel travel");
+        for(int i=0;i<1;++i)require(!gesture.update(-.1,1.5+i*.05),"Direction reversal retained earlier wheel travel");
         require(gesture.update(-.1,1.6)==std::optional<bool>(false),"Downward gesture did not restore the normal layout");
         gesture.reset();
-        for(int i=0;i<2;++i)require(!gesture.update(.1,3+i*.05),"Partial post-reset gesture fired");
+        for(int i=0;i<1;++i)require(!gesture.update(.1,3+i*.05),"Partial post-reset gesture fired");
         require(!gesture.update(.1,4),"A gesture after the idle gap retained earlier wheel travel");
         gesture.reset();
         for(int i=0;i<40;++i)require(!gesture.update(i%2?.1:-.1,5+i*.03),"Alternating wheel jitter changed layout");
         gesture.reset();require(!gesture.update(100,7),"A single driver spike changed layout");
         gesture.reset();
         for(int i=0;i<20;++i)require(!gesture.update(.1,8+i*.03,true),"Momentum scrolling changed layout");
-        for(int i=0;i<2;++i)require(!gesture.update(.1,9+i*.05),"Momentum contributed to the next deliberate gesture");
+        for(int i=0;i<1;++i)require(!gesture.update(.1,9+i*.05),"Momentum contributed to the next deliberate gesture");
         require(gesture.update(.1,9.1)==std::optional<bool>(true),"Intentional input stopped working after ignored inertia");
     });
     test("Hoz-Mixer focus hides all controls except FX slots and names, persists globally and never changes audio",[&] {
@@ -80,9 +80,9 @@ inline void HozMixerFocusTests::run(const File &directory) {
         // Real child-to-parent wheel routing: this must not enter Slider's
         // value edit path or move the horizontal mixer scrollbar.
         const std::vector<Component*> targets{&fader,&pan,&panel.strips[0]->mute,&panel.horizontal,&panel.viewport};
-        for(int i=0;i<2;++i){wheel(*targets[(size_t)i],notch,10+i*.05);check(panel,false);}
-        wheel(*targets[2],notch,10.1);check(panel,true);
-        for(int i=3;i<5;++i){wheel(*targets[(size_t)i],notch,10+i*.05);check(panel,true);}
+        wheel(*targets[0],notch,10);check(panel,false);
+        wheel(*targets[1],notch,10.05);check(panel,true);
+        for(int i=2;i<5;++i){wheel(*targets[(size_t)i],notch,10+i*.05);check(panel,true);}
         require(panel.scrollX()==0 && fader.getValue()==gain && pan.getValue()==panValue,
                 "Shift-wheel over a child parameter changed audio or scrolled tracks");
         require((bool)Appearance(preferences).value("catlive.hozMixer.slotsOnly",false),"Hoz-Mixer focus was not saved globally");
@@ -93,13 +93,13 @@ inline void HozMixerFocusTests::run(const File &directory) {
         workspace.showDetachedMixer();
         auto *floating=dynamic_cast<MixerPanel*>(workspace.floatingWindows.at("Mixer")->getContentComponent());
         require(floating,"Detached Hoz-Mixer was not created");check(*floating,true);
-        for(int i=0;i<3;++i)wheel(floating->horizontal,-notch,12+i*.05,ModifierKeys::shiftModifier,true);
+        for(int i=0;i<2;++i)wheel(floating->horizontal,-notch,12+i*.05,ModifierKeys::shiftModifier,true);
         check(*floating,false);check(panel,false,false);
         require(!(bool)Appearance(preferences).value("catlive.hozMixer.slotsOnly",true),"Normal Hoz-Mixer layout did not persist");
         // An unmodified wheel retains the old horizontal scrolling behavior.
         wheel(floating->strips[0]->fader,-.1,13,0);
         require(floating->scrollX()==32,"Ordinary wheel scrolling changed with the new Shift gesture");
-        for(int i=0;i<3;++i)wheel(floating->viewport,notch,14+i*.05);
+        for(int i=0;i<2;++i)wheel(floating->viewport,notch,14+i*.05);
         check(panel,true,false);check(*floating,true);
         // Same state transition as the Dock mixer action: restoring allocation
         // must also restore valid geometry after the hidden panel had height 0.

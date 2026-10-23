@@ -2,7 +2,7 @@
 // renderers. The omitted controller responsibilities continue on every scroll.
 private let markerLaneHeight: CGFloat = 16
 private let tempoLaneHeight: CGFloat = 16
-private struct ProjectionFixtureRows {
+private struct ProjectionFixtureRows: Equatable {
     var offsets: [CGFloat] = [0, 44, 88]
     var totalHeight: CGFloat = 132
     var baseHeight: CGFloat = 44
@@ -14,6 +14,7 @@ private struct ProjectionFixtureContent {
     var rulerHeight: CGFloat = 71
     var viewportSize = CGSize(width: 320, height: 100)
     var rows = ProjectionFixtureRows()
+    var editPosition: Double = 0
     var regionLanes = 1
     var sections = [TimelineTempoSection(start: 0, end: 1_000_000, bpm: 120, beats: 4, unit: 4, timebase: .free)]
     var divisions = 4
@@ -43,6 +44,12 @@ private final class ProjectionFixtureController {
     var style = ProjectionFixtureStyle()
 PRODUCTION_PROJECTION_STATE
     func contentChanged() { revision &+= 1 }
+    func configure(_ value: ProjectionFixtureContent) {
+        let previous: ProjectionFixtureContent? = self.value
+PRODUCTION_DRAWING_INVALIDATION
+        if drawingChanged { revision &+= 1 }
+        self.value = value
+    }
     func project(_ viewport: CGRect) {
         let value = value, style = style
         let nativeBounds = viewport, left = viewport.minX
@@ -92,6 +99,13 @@ for scale: CGFloat in [1, 2] {
                      "ruler ticks, labels and rows match an uncached projection: \(label)")
     }
     matchesFresh("continuous scroll")
+    let beforeCursor = (controller.backdrop.fixtureUpdates, controller.ruler.fixtureUpdates, TimelineTimeRuler.fixtureTickBuilds)
+    for position in [20.0, 4, 35, 0] {
+        var value = controller.value; value.editPosition = position
+        controller.configure(value); controller.project(viewport)
+    }
+    precondition(controller.backdrop.fixtureUpdates == beforeCursor.0 && controller.ruler.fixtureUpdates == beforeCursor.1 && TimelineTimeRuler.fixtureTickBuilds == beforeCursor.2,
+                 "arming/cancelling a section must not rebuild static timeline tiles")
     viewport.origin.y = 600
     controller.project(viewport)
     precondition(controller.backdrop.fixtureUpdates == initialBackdrop + 1 && controller.ruler.fixtureUpdates == initialRuler,

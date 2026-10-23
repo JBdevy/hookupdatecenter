@@ -503,8 +503,50 @@ void Engine::setMarker(ID id, std::string name, double position, unsigned color,
         if(transport_.multiLoop) {transport_.multiLoop->start=map.position(transport_.multiLoop->start);transport_.multiLoop->end=map.position(transport_.multiLoop->end);}
     }
 }
+namespace {
+// Tempo edits change item timing, never their already-validated peak samples.
+// Park the large arrays while copying/validating metadata, and move them back
+// without reallocating. An exception restores the original project intact.
+class TempoWaveformStorage {
+    struct Entry {
+        AudioClip* original;
+        std::vector<double> overview;
+        std::vector<std::vector<double>> channels;
+    };
+    std::vector<Entry> entries;
+public:
+    explicit TempoWaveformStorage(Project& project) {
+        for(auto& song:project.songs) for(auto& track:song.tracks) for(auto& clip:track.clips)
+            if(!clip.waveform.empty() || !clip.waveformChannels.empty()) entries.push_back({&clip,{},{}});
+        // All potentially throwing allocations above finish before touching data.
+        for(auto& entry:entries) {
+            entry.overview.swap(entry.original->waveform);
+            entry.channels.swap(entry.original->waveformChannels);
+        }
+    }
+    ~TempoWaveformStorage() {
+        for(auto& entry:entries) {
+            entry.overview.swap(entry.original->waveform);
+            entry.channels.swap(entry.original->waveformChannels);
+        }
+    }
+    void transfer(Project& next) {
+        std::unordered_map<ID,AudioClip*> clips;
+        for(auto& song:next.songs) for(auto& track:song.tracks) for(auto& clip:track.clips) clips.emplace(clip.id,&clip);
+        for(const auto& entry:entries)
+            if(!clips.count(entry.original->id)) throw std::logic_error("Tempo edit removed an audio item");
+        for(auto& entry:entries) {
+            auto* target=clips.at(entry.original->id);
+            entry.overview.swap(target->waveform);
+            entry.channels.swap(target->waveformChannels);
+        }
+        entries.clear();
+    }
+};
+}
 void Engine::setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing, bool retime) {
     projectSync::requireWritable();
+    TempoWaveformStorage waveforms(project_);
     Project next = project_;
     auto song = std::find_if(next.songs.begin(), next.songs.end(), [&](const auto& value) { return value.id == transport_.songId; });
     if (song == next.songs.end()) throw std::invalid_argument("No current arrangement");
@@ -529,7 +571,7 @@ void Engine::setMarkers(const std::vector<TimelineMarker>& markers, const std::v
     song->timeSettings = originalTiming;
     std::optional<TempoEditMap> map;
     if (retime) { map.emplace(beforeTempoEdit, *song); map->apply(*song); }
-    orderSpecialTracks(next); synchronizeTimecode(next); validate(next); project_ = std::move(next);
+    orderSpecialTracks(next); synchronizeTimecode(next); validate(next); waveforms.transfer(next); project_ = std::move(next);
     if(map && map->changesTime()) {
         transport_.position=map->position(transport_.position); transport_.editPosition=map->position(transport_.editPosition);
         transport_.subPlay.position=map->position(transport_.subPlay.position); transport_.queueStartedAt=map->position(transport_.queueStartedAt);
@@ -1000,8 +1042,14 @@ void Engine::execute(const Command& c) {
         const auto source = list && list->containsEntry(c.target) ? list->resolvedRegionId(c.target) : c.target;
         const auto* part = region(source);
         if (!part) throw std::invalid_argument("Unknown region");
-        if (duplicate && (c.kind != CommandKind::queueRegion || !transport_.playing || !playbackBounds(region(transport_.regionId))))
-            throw std::invalid_argument("A duplicate can only be queued while another song is playing.");
+        if (duplicate) {
+            const auto* targetBounds = playbackBounds(part);
+            const auto* activeBounds = transport_.playing ? playbackBounds(region(transport_.regionId)) : nullptr;
+            const auto* secondaryBounds = transport_.subPlay.playing ? playbackBounds(region(transport_.queuedRegionId)) : nullptr;
+            if (targetBounds && ((activeBounds && targetBounds->id == activeBounds->id) ||
+                                 (secondaryBounds && targetBounds->id == secondaryBounds->id)))
+                throw std::invalid_argument("Cannot queue a duplicate of the song that is playing.");
+        }
         const auto entry = entryForRegion(part->id, list && list->containsEntry(c.target) ? std::optional<ID>(c.target) : std::nullopt);
         if (c.kind == CommandKind::queueRegion && transport_.playing) {
             const auto* active = region(transport_.regionId);

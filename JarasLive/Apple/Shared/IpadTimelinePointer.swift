@@ -16,6 +16,7 @@ struct IpadTimelinePointerEvent {
 /// existing scrolling, long press, pinch and resize controls.
 struct IpadTimelinePointerProbe: UIViewRepresentable {
     var enabled: Bool
+    var capturesPointer = true
     var reset: UUID
     var accepts: (CGPoint) -> Bool
     var wantsAutoScroll: (CGPoint) -> Bool
@@ -24,7 +25,7 @@ struct IpadTimelinePointerProbe: UIViewRepresentable {
     func makeUIView(context: Context) -> IpadTimelinePointerView { IpadTimelinePointerView() }
     func updateUIView(_ view: IpadTimelinePointerView, context: Context) {
         view.accepts = accepts; view.wantsAutoScroll = wantsAutoScroll; view.event = event; view.wheel = wheel
-        view.setEnabled(enabled, reset: reset)
+        view.setEnabled(enabled, reset: reset, capturesPointer: capturesPointer)
     }
     static func dismantleUIView(_ view: IpadTimelinePointerView, coordinator: ()) { view.detach() }
 }
@@ -35,6 +36,7 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
     var event: (IpadTimelinePointerEvent) -> Void = { _ in }
     var wheel: (CGPoint, HardwareKeyboardModifiers) -> Void = { _,_ in }
     private var active = false
+    private var capturesPointer = true
     private var resetID: UUID?
     private weak var owner: UIWindow?
     private weak var wheelScrollView: UIScrollView?
@@ -97,11 +99,11 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
         }
         return true
     }
-    func setEnabled(_ enabled: Bool, reset: UUID) {
-        if resetID != reset || active != enabled {
+    func setEnabled(_ enabled: Bool, reset: UUID, capturesPointer: Bool = true) {
+        if resetID != reset || active != enabled || self.capturesPointer != capturesPointer {
             pointer.isEnabled = false; scroll.isEnabled = false
-            resetID = reset; active = enabled
-            pointer.isEnabled = enabled; scroll.isEnabled = enabled
+            resetID = reset; active = enabled; self.capturesPointer = capturesPointer
+            pointer.isEnabled = enabled && capturesPointer; scroll.isEnabled = enabled
         }
         updateWheelRouting()
     }

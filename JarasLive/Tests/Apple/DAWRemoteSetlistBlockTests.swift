@@ -136,7 +136,7 @@ require(!allRegionsDuplicate.valid, "All regions cannot request a duplicate")
 print("REMOTE_PLAYLIST_DUPLICATE_IDENTITY_AND_PERMISSIONS_OK")
 
 repeatedFixture.playing = false
-require(!DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy warns while stopped")
+require(DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy is allowed while stopped")
 repeatedFixture.playing = true
 require(!DAWRemoteSetlistPresentation.canQueueDuplicate(duplicateRowID, in: repeatedFixture), "Copy warns when its physical source is playing")
 repeatedFixture.currentRegion = plainRegion

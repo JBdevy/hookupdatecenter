@@ -79,9 +79,9 @@ static void triggerTests(double rate) {
     auto parameters = basicTrigger();
     {
         Trigger trigger;
-        auto input = tone(.1, rate, 440, .25f), reference = input;
+        auto input = tone(.1, rate, 440, .25f);
         render(trigger, input, nullptr, rate);
-        require(input == reference, "unloaded trigger must pass input through");
+        require(rms(input) == 0, "unloaded active trigger leaked detector audio");
         trigger.setSample({.5f}, {}, rate);
         trigger.setParameters(parameters);
         auto quiet = constant(.2, rate, .01f);
@@ -181,9 +181,9 @@ static void triggerTests(double rate) {
         trigger.setParameters(parameters);
         auto input = constant(.2, rate, .5f);
         render(trigger, input, nullptr, rate);
-        near(input[static_cast<std::size_t>(.05 * rate)], .25 + .5 * std::pow(10.0, -6.0 / 20.0),
-             1e-7, "trigger output gain or dry/wet mix uses wrong scale");
-        near(input.back(), .25, 1e-7, "dry mix disappeared after sample completed");
+        near(input[static_cast<std::size_t>(.05 * rate)], std::pow(10.0, -6.0 / 20.0),
+             1e-7, "trigger output gain must be sample-only even with legacy Mix");
+        near(input.back(), 0, 1e-7, "detector audio leaked after sample completed");
         parameters = basicTrigger();
     }
     {

@@ -8,9 +8,10 @@ namespace catlive {
 class SettingsPanel final : public Component, private Timer {
   public:
     SettingsPanel(Session &s, Auth &a, Lighting &l, Appearance &p, ActionBindings &bindings,
-                  int initial, std::function<void(String)> fail, std::function<void()> signIn)
+                  int initial, std::function<void(String)> fail, std::function<void()> signIn,
+                  std::function<void()> audioWarning = {})
         : session(s), auth(a), lighting(l), preferences(p), actions(bindings),
-          error(std::move(fail)), login(std::move(signIn)) {
+          error(std::move(fail)), login(std::move(signIn)), warnAudio(std::move(audioWarning)) {
         const StringArray names{"Geral",       String::fromUTF8("Áudio"),
                                 "MIDI",        String::fromUTF8("Ações"),
                                 "Mapeamentos", "Plugins",
@@ -27,17 +28,21 @@ class SettingsPanel final : public Component, private Timer {
             tab->getProperties().set("fontSize", 13.f);
             tab->setColour(TextButton::buttonOnColourId, theme::green.withAlpha(.15f));
             tab->setColour(TextButton::textColourOnId, Colours::white);
-            tab->onClick = [this, i] { select(i); };
+            tab->onClick = [this, i] { selectPage(i); };
         }
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&page, false);
         viewport.setScrollBarsShown(true, true);
         select(initial);
+
         startTimerHz(4);
     }
     ~SettingsPanel() override { stopTimer(); }
     void selectPage(int index) {
-        if (isPositiveAndBelow(index, tabs.size()) && selected != index) select(index);
+        if (isPositiveAndBelow(index, tabs.size()) && selected != index) {
+            select(index);
+
+        }
     }
     void cancelLearning() { actions.cancel(); }
     bool keyPressed(const KeyPress &key) override { return actions.captureKey(key); }
@@ -79,6 +84,7 @@ class SettingsPanel final : public Component, private Timer {
     ActionBindings &actions;
     std::function<void(String)> error;
     std::function<void()> login;
+    std::function<void()> warnAudio;
     int selected = 0, contentHeight = 500;
     bool audioPageLocked = false;
     OwnedArray<TextButton> tabs;
@@ -119,7 +125,7 @@ class SettingsPanel final : public Component, private Timer {
         accountMessage->setText(auth.message, dontSendNotification);
         updateDevices();
     }
-    bool audioConfigurationLocked() const { return session.audio.isRecording(); }
+    bool audioConfigurationLocked() const { return locked(); }
     bool locked() const {
         return session.transport().playing || session.transport().subPlay.playing ||
                session.audio.isRecording();
@@ -345,10 +351,10 @@ class SettingsPanel final : public Component, private Timer {
             contentHeight = 510;
             label(String::fromUTF8("Escala da interface"), 152, 26, true);
             StringArray scales;
-            for (int percent = 80; percent <= 120; percent += 10) scales.add(String(percent) + "%");
-            choice("interfaceScale", scales, roundToInt(preferences.interfaceScale() * 10) - 7, 24, 188, 176,
+            for (int percent = 75; percent <= 125; percent += 25) scales.add(String(percent) + "%");
+            choice("interfaceScale", scales, roundToInt(preferences.interfaceScale() * 4) - 2, 24, 188, 176,
                    [this](int choice) {
-                       auto result = preferences.set("jaras.interface.scale", (choice + 7) / 10.0);
+                       auto result = preferences.set("jaras.interface.scale", (choice + 2) / 4.0);
                        if (result.failed()) error(result.getErrorMessage());
                    });
             label(localization::translate("Show Mode"), 240, 26, true);
@@ -435,6 +441,10 @@ class SettingsPanel final : public Component, private Timer {
     }
     void audioPage() {
         audioPageLocked = audioConfigurationLocked();
+        if (audioPageLocked) {
+            label("Stop the transport before changing the audio device.", 76, 70, false, theme::yellow);
+            return;
+        }
         auto &manager = session.audio.devices;
         const auto setup = manager.getAudioDeviceSetup();
         StringArray types;

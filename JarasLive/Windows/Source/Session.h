@@ -41,6 +41,7 @@ class Session final : private Timer {
     bool trackFaderLocked(const ID &id) const;
     std::function<bool()> canPlay;
     std::function<void(const jaras::TransportState &)> playbackUpdate;
+    static jaras::Project makeEmptyProject(String name);
     void newProject(String name = "Untitled");
     void createRecordingProject(String name, int channels, const File &target);
     void load(const File &);

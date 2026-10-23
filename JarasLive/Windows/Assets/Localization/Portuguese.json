@@ -1346,5 +1346,8 @@
   "High Pass and Low Pass filter only the detector.": "High Pass e Low Pass filtram apenas a detecção.",
   "Duplicate region": "Duplicar região",
   "A duplicate can only be queued while another song is playing.": "Uma cópia só pode entrar na fila enquanto outra música estiver tocando.",
-  "Cannot queue a duplicate of the song that is playing.": "Não é possível enfileirar uma cópia da música que está tocando."
+  "Cannot queue a duplicate of the song that is playing.": "Não é possível enfileirar uma cópia da música que está tocando.",
+  "Block text color": "Cor do texto dos blocos",
+  "Track group": "Grupo de pistas",
+  "The current project will be replaced by %@.": "O projeto atual será substituído por %@."
 }

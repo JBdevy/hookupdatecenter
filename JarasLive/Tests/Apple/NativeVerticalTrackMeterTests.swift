@@ -198,8 +198,8 @@ import Foundation
     let bottomPeakClick = NSEvent.mouseEvent(with: .leftMouseDown, location: meter.convert(bottomPeakPoint, to: nil), modifierFlags: [],
         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
         context: nil, eventNumber: 3, clickCount: 1, pressure: 1)!
-    precondition(bottomPeakFrame.minX == 21 && bottomPeakFrame.minY == meter.bounds.minY && bottomPeakFrame.width == 31,
-        "Peak stays to the right of MIDI at the bottom of the track")
+    precondition(bottomPeakFrame.minX == 21 && bottomPeakFrame.midY == meter.bounds.height - 33 && bottomPeakFrame.width == 31,
+        "Peak stays to the right of MIDI, centered on the volume fader")
     precondition(meterLayer("meter-background-0").frame.height == 80,
         "Audio bars keep the full height without a peak header")
     precondition(meterLayer("meter-peak").backgroundColor == nil)
@@ -241,7 +241,7 @@ import Foundation
     precondition((compactPeak.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == 8,
         "The recorded peak uses the larger desktop readout font")
     precondition(compactPeak.size().width <= 31 && compactPeak.size().height <= 12
-        && meterLayer("meter-peak").frame == CGRect(x: 21, y: 0, width: 31, height: 12),
+        && meterLayer("meter-peak").frame == CGRect(x: 21, y: meter.bounds.height - 39, width: 31, height: 12),
         "The full negative peak fits beside MIDI without clipping")
     meter.setFrameSize(NSSize(width: 40, height: 80)); meter.layoutSubtreeIfNeeded()
     meter.bind(level, showScale: false, peakOnly: true)

@@ -54,7 +54,7 @@ struct TriggerParameters {
     double threshold = -30; // dBFS, stereo-linked input detector
     double retrigger = 0.08; // seconds, minimum spacing between distinct attacks
     double gain = 0; // dB, sample output
-    double mix = 100; // percent wet
+    double mix = 100; // Legacy document/automation field; active Trigger is sample-only.
     double attack = 0, decay = 0.1, sustain = 1, release = 0.02; // seconds; sustain 0...1
 };
 
@@ -101,8 +101,12 @@ public:
     void process(float* left, float* right, int frames, double sampleRate) noexcept {
         if (!left || frames <= 0) return;
         if (right == left) right = nullptr;
-        // A newly inserted trigger with no sample is transparent.
-        if (!hasSample()) return;
+        // The input is a detector only. An empty/missing sample cannot leak it.
+        if (!hasSample()) {
+            std::fill_n(left, frames, 0.f);
+            if (right) std::fill_n(right, frames, 0.f);
+            return;
+        }
         using namespace dynamics_detail;
         const double outputRate = rate(sampleRate);
         const double dt = 1.0 / outputRate;
@@ -110,8 +114,6 @@ public:
         const double detectorRelease = std::exp(-dt / 0.020);
         const double threshold = amplitude(parameters_.threshold);
         const double sampleGain = amplitude(parameters_.gain);
-        const double wet = parameters_.mix / 100.0;
-        const double dry = 1.0 - wet;
         const double duration = static_cast<double>(sampleLeft_.size()) / sourceRate_;
         for (int frame = 0; frame < frames; ++frame) {
             const double inputL = finiteSample(left[frame]);
@@ -143,10 +145,10 @@ public:
                 if (voice.position >= static_cast<double>(sampleLeft_.size())) voice.active = false;
             }
             if (right) {
-                left[frame] = output(inputL * dry + sampleL * sampleGain * wet);
-                right[frame] = output(inputR * dry + sampleR * sampleGain * wet);
+                left[frame] = output(sampleL * sampleGain);
+                right[frame] = output(sampleR * sampleGain);
             } else {
-                left[frame] = output(inputL * dry + (sampleL + sampleR) * 0.5 * sampleGain * wet);
+                left[frame] = output((sampleL + sampleR) * 0.5 * sampleGain);
             }
         }
     }

@@ -510,6 +510,22 @@ struct IpadTimelineViewport: Equatable {
     }
 }
 
+/// Translation is measured from mouse-down, so each update uses the same
+/// viewport instead of accumulating the complete drag repeatedly.
+struct IpadTimelineRulerDrag {
+    private var origin: IpadTimelineViewport?
+    private(set) var dragged = false
+    mutating func update(translation: Double, width: Double, viewport: inout IpadTimelineViewport) {
+        guard translation.isFinite, width.isFinite, width > 0 else { return }
+        if origin == nil { origin = viewport }
+        if abs(translation) >= 3 { dragged = true }
+        guard dragged, var value = origin else { return }
+        value.pan(pixels: translation, width: width)
+        viewport = value
+    }
+    mutating func reset() { origin = nil; dragged = false }
+}
+
 /// Recognizers are bounded to this grid. A horizontal drag and pinch coexist
 /// with the existing vertical mixer/grid scroll synchronization; no touch layer
 /// covers item buttons or the rest of the workspace.

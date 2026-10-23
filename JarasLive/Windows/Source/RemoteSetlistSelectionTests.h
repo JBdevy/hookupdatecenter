@@ -52,6 +52,35 @@ inline void click(SetlistRows &rows,int row) {
         Time::getCurrentTime(),1,false));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Setlist drag preview contains only draggable selected rows at display resolution",[&] {
+        struct Model final : ListBoxModel {
+            int getNumRows() override {return 9;}
+            void paintListBoxItem(int row,Graphics &g,int,int,bool) override {
+                g.fillAll(row==0?Colours::red:row==2?Colours::blue:Colours::green);
+            }
+            var getDragSourceDescription(const SparseSet<int> &selection) override {
+                return selection.contains(1)?var{}:var("song");
+            }
+        } model;
+        SetlistRows rows;rows.setModel(&model);rows.setSize(300,100);rows.updateContent();
+        rows.selectRow(0,false,true);
+        auto single=rows.createDragPreview(2).getImage();
+        const auto *firstRow=rows.getViewport()->getViewedComponent()->getChildComponent(0);
+        require(single.getHeight()==76 && single.getWidth()==firstRow->getWidth()*2 && single.getPixelAt(20,20)==Colours::red,
+                ("Single-song preview: "+String(single.getWidth())+"x"+String(single.getHeight())+" row="+String(firstRow->getWidth())+" color="+single.getPixelAt(20,20).toString()).toRawUTF8());
+        rows.selectRow(1,false,false);rows.selectRow(2,false,false);
+        auto multiple=rows.createDragPreview(2).getImage();
+        require(multiple.getHeight()==152 && multiple.getPixelAt(20,20)==Colours::red && multiple.getPixelAt(20,100)==Colours::blue,
+                "Drag preview included an excluded row or gaps between selected songs");
+        rows.getViewport()->setViewPosition(0,200);
+        auto scrolled=rows.createDragPreview(2).getImage();
+        require(scrolled.getHeight()==152 && scrolled.getPixelAt(20,20)==Colours::red && scrolled.getPixelAt(20,100)==Colours::blue,
+                "Scrolling clipped selected rows in the drag preview");
+        rows.selectRangeOfRows(0,8);
+        require(rows.createDragPreview(2).getImage().getHeight()==(5*38+24)*2,
+                "Large selections must use a compact preview and remaining-count footer");
+        rows.setModel(nullptr);
+    });
     test("Setlist group drag retains selected songs until release and a plain click collapses on mouse-up",[&] {
         struct Model final : ListBoxModel {
             SetlistRows &rows;int clicks=0;
@@ -78,6 +107,44 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         require(rows.getSelectedRows().size()==1 && rows.getSelectedRows().contains(0) && model.clicks==1,
                 ("Plain click must select its song only on release: selected="+std::to_string(rows.getSelectedRows().size())+" clicks="+std::to_string(model.clicks)+" bounds="+row->getBounds().toString().toStdString()).c_str());
         rows.setModel(nullptr);
+    });
+    test("Actual Setlist preserves multiple songs through mouse-down, refresh, drag payload and release",[&] {
+        auto project=fixture();const auto &parts=project.songs[0].parts;
+        auto &state=*project.regionSetlist;
+        state.playlists[0].regionIds={parts[0].id,parts[1].id,parts[2].id,parts[3].id};
+        state.selectedId=state.playlists[0].id;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);
+        const auto settings=directory.getNonexistentChildFile("setlist-group-press",".json");
+        Workspace workspace(session,auth,lighting,false,settings);workspace.setSize(1366,768);
+        auto *rows=dynamic_cast<SetlistRows *>(uiFeatureTests::find(workspace,"setlistRows"));
+        require(rows,"Setlist rows missing");
+        rows->selectRow(0,false,true);rows->selectRow(2,false,false);
+        auto *row=rows->getViewport()->getViewedComponent()->getChildComponent(0);
+        const Point<float> start{20,15};
+        const auto event=[&](bool moved) {
+            return MouseEvent(Desktop::getInstance().getMainMouseSource(),start,
+                ModifierKeys(ModifierKeys::leftButtonModifier),1,0,0,0,0,row,row,Time::getCurrentTime(),start,
+                Time::getCurrentTime(),1,moved);
+        };
+        const auto revision=session.setlistFocusRevision;
+        row->mouseDown(event(false));
+        require(rows->getSelectedRows().size()==2 && session.setlistFocusRevision==revision,
+                "Actual Setlist activated one song on mouse-down before group drag");
+        // Normal project notifications must not discard the pending group drag.
+        session.configureSetlist(*session.project().regionSetlist);
+        const auto payload=rows->getModel()->getDragSourceDescription(rows->getSelectedRows());
+        require(strings(get(payload,"ids"))==std::vector<String>{text(parts[0].id),text(parts[2].id)},
+                "Refresh lost a selected song or changed the drag payload order");
+        row->mouseUp(event(true));
+        require(rows->getSelectedRows().size()==2 && session.setlistFocusRevision==revision,
+                "Drag release collapsed selection or activated a song");
+        row->mouseDown(event(false));
+        require(rows->getSelectedRows().size()==2,"Second press collapsed group selection");
+        row->mouseUp(event(false));
+        require(rows->getSelectedRows().size()==1 && rows->getSelectedRows().contains(0) && session.focusedRegion==parts[0].id,
+                "Plain release failed to select and focus only the clicked song");
     });
     test("Remote region commands select and reveal the same Setlist row as local clicks, including repeated selections and unified children",[&] {
         const auto project=fixture();const auto &parts=project.songs[0].parts;

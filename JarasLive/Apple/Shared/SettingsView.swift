@@ -11,7 +11,7 @@ struct SettingsView: View {
     #endif
     @ObservedObject private var audio = AudioDeviceSettings.shared
     @ObservedObject private var recorder = TrackRecording.shared
-    private var audioConfigurationLocked: Bool { recorder.recording || recorder.busy }
+    private var audioConfigurationLocked: Bool { recorder.recording || recorder.busy || show.isPlaying }
     enum Section: String, CaseIterable { case general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
         var icon: String { switch self { case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
     }
@@ -86,10 +86,10 @@ struct SettingsView: View {
                         #endif
                     case .audio:
                         if audioConfigurationLocked {
-                            Label("Finish recording before changing the audio device.", systemImage: "pause.circle.fill")
+                            Label("Stop the transport before changing the audio device.", systemImage: "pause.circle.fill")
                                 .font(.jarasCallout.weight(.medium)).foregroundStyle(JarasTheme.yellow)
                                 .fixedSize(horizontal: false, vertical: true)
-                        }
+                        } else {
                         Text("Audio device — Input").font(.jarasHeadline)
                         Picker("Audio device — Input", selection: Binding(get: { audio.inputUID }, set: { if !audioConfigurationLocked { audio.selectInput($0) } })) {
                             Text(verbatim: "None").tag("")
@@ -116,6 +116,7 @@ struct SettingsView: View {
                         Text("Smaller buffers reduce latency and use more CPU.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                         Button("Refresh devices") { audio.refresh(); audio.refreshSampleRate(); audio.refreshBuffer() }
                         if !audio.error.isEmpty { Text(LocalizedStringKey(audio.error)).foregroundStyle(.red).font(.jarasCaption) }
+                        }
                     case .midi:
                         Text("MIDI inputs").font(.jarasHeadline)
                         if audio.midiSources.isEmpty { Text("No MIDI inputs").foregroundStyle(JarasTheme.secondary) }

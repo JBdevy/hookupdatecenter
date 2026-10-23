@@ -33,6 +33,8 @@ AudioEngine::AudioEngine(double preparationRate, bool preparingOffline, std::sha
     metronome.b = ClickProgram::tone("Digital", false);
 }
 AudioEngine::~AudioEngine() {
+    cancelTransportPreparation();
+    if(transportWorker)transportWorker->removeAllJobs(true,-1);
     timecodeMIDI.stop();
     devices.removeMidiInputDeviceCallback({}, this);
     stopRecording();
@@ -418,6 +420,7 @@ void AudioEngine::refreshTempo(const jaras::Song &before, const jaras::Song &aft
     if (mtc) timecodeMIDI.updateProgram(timecodeProgram, after.duration, mtcMuted);
 }
 void AudioEngine::closeDevice() {
+    cancelTransportPreparation();
     timecodeMIDI.stop();
     if (attached)
         devices.removeAudioCallback(this);
@@ -731,6 +734,7 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
 void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                               const var &masterSettings, const jaras::Project *project,
                               const PreparationControl *control) {
+    cancelTransportPreparation();
     const auto checkpoint=[&] { if(control&&control->checkpoint)control->checkpoint(); };
     if(control&&attached)throw std::runtime_error("Background preparation requires an isolated audio engine.");
     const int workTotal=2+int(song.tracks.size())*2;
@@ -791,6 +795,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     subPlaying = false;
     elapsedSamples = 0;
     fifo.reset();
+    appliedTransportSerial=transportSerial;
     masterOutputs = project && project->masterOutputs
                         ? *project->masterOutputs
                         : std::vector<jaras::OutputPatch>{project && project->masterPatch
@@ -1073,6 +1078,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     put(preparationDiagnostics, "totalMilliseconds", Time::getMillisecondCounterHiRes() - preparationStart);
 }
 void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback) {
+    cancelTransportPreparation();
     const auto started=Time::getMillisecondCounterHiRes();
     if(&prepared==this||prepared.attached||prepared.recording.load())
         throw std::runtime_error("Invalid prepared audio graph.");
@@ -1209,6 +1215,7 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback
         missingFiles.swapWith(prepared.missingFiles);unsupported.swapWith(prepared.unsupported);
         std::swap(preparationDiagnostics,prepared.preparationDiagnostics);
         fifo.reset();
+        appliedTransportSerial=transportSerial;
         if(preservePlayback) {
             // The graph changes at this sample boundary; both source clocks,
             // elapsed sample accounting and unchanged DSP histories continue.
@@ -1245,7 +1252,158 @@ void AudioEngine::enqueue(const Update &update) {
     updates[(size_t)a] = update;
     fifo.finishedWrite(1);
 }
+void AudioEngine::cancelTransportPreparation(bool all) {
+    stopTimer();
+    if(transportPreparation) {
+        transportPreparation->cancelled=true;
+        for(const auto &read:transportPreparation->reads)if(read.loop)read.reader().clearLoopReserve();
+    }
+    transportPreparation.reset();
+    if(all && queuedPreparation){queuedPreparation->cancelled=true;queuedPreparation.reset();}
+}
+bool AudioEngine::preparingTransport() const {
+    return transportPreparation && transportPreparation->sendTransport && !transportPreparation->routingOnly;
+}
+std::vector<AudioEngine::TransportRead> AudioEngine::transportReads(const State &state) {
+    std::vector<TransportRead> reads;
+    for(int head=0;head<2;++head) {
+        if(head==0?!state.playing:!state.subPlaying)continue;
+        const double cursor=head==0?state.position:state.subPosition;
+        for(const auto &voice:voices) {
+            if(!voice->source || !state.scope[head].allows(voice->playbackStart))continue;
+            const auto add=[&](double at,bool loop) {
+                if(voice->start>at+(loop?0:2) || voice->start+voice->duration<=at)return;
+                auto &reader=*voice->source->readers[head];
+                const double local=std::max(0.,at-voice->start);
+                auto range=voice->clipAudio?voice->clipAudio->readAheadRange(local,loop?.75:.15)
+                    :std::pair<double,double>{voice->offset+local*voice->speed,voice->offset+(local+.15)*voice->speed};
+                const auto frames=(int64)std::ceil((range.second-range.first)*reader.sampleRate)+2;
+                const auto position=(int64)std::floor(range.first*reader.sampleRate);
+                const int count=(int)std::max<int64>(4096,std::min<int64>(131072,frames));
+                const auto duplicate=std::find_if(reads.begin(),reads.end(),[&](const auto &r){
+                    return r.source==voice->source && r.head==head && r.position==position && r.count==count && r.loop==loop;
+                });
+                if(duplicate==reads.end())reads.push_back({voice->source,head,position,count,loop});
+            };
+            add(cursor,false);
+            if(state.loop && state.loopEnd>state.loopStart)add(state.loopStart,true);
+        }
+    }
+    return reads;
+}
+void AudioEngine::commitPreparedTransport(const State &state,bool routingOnly) {
+    Update update;update.kind=routingOnly?Update::routing:Update::transport;update.state=state;
+    update.resetElapsed=!routingOnly;
+    if(!routingOnly){update.transportSerial=++transportSerial;++transportRepositions;}
+    enqueue(update);
+    if(routingOnly)timecodeMIDI.updateRouting(state.loop,state.loopStart,state.loopEnd,state.end,state.timecodePreferred);
+    else timecodeMIDI.transport(state.position,state.playing,state.loop,state.loopStart,state.loopEnd,
+        state.end,state.timecodePreferred,attached&&!exportCapture);
+    if(!state.playing&&!state.subPlaying) {
+        presentedPosition[0]=state.position;presentedPosition[1]=state.subPosition;
+        presentedPlaying[0]=false;presentedPlaying[1]=false;
+    }
+}
+void AudioEngine::transportAsync(const State &state) {
+    asynchronousTransport=true;
+    scheduleTransportPreparation(state,false);
+}
+void AudioEngine::scheduleTransportPreparation(const State &state,bool routingOnly) {
+    routingOnly=routingOnly&&!preparingTransport();
+    const bool playing=state.playing||state.subPlaying;
+    if(!playing)commitPreparedTransport(state,routingOnly);
+    auto warmState=state;
+    if(!playing)warmState.playing=true;
+    auto reads=transportReads(warmState);
+    // Arming a queue must not seek/decode the currently playing readers again.
+    // Routing updates need only a loop reserve; queued destinations are warmed
+    // separately without disturbing either running head.
+    if(routingOnly && playing)
+        reads.erase(std::remove_if(reads.begin(),reads.end(),[](const auto &read){return !read.loop;}),reads.end());
+    // Keep the selected start warm while stopped; the rest of the timeline
+    // still retires normally. Repeated Play can reuse an in-flight prefetch.
+    const auto sameReads=[&](const auto &previous) {
+        return previous.size()==reads.size() && std::equal(reads.begin(),reads.end(),previous.begin(),[](const auto &a,const auto &b){
+            return a.source==b.source && a.head==b.head && a.position==b.position && a.count==b.count && a.loop==b.loop;
+        });
+    };
+    if(transportPreparation && sameReads(transportPreparation->reads)) {
+        transportPreparation->state=state;transportPreparation->sendTransport=playing;
+        transportPreparation->routingOnly=routingOnly;
+        startTimer(20);timerCallback();return;
+    }
+    cancelTransportPreparation(false);
+    auto task=std::make_shared<TransportPreparation>();task->state=state;task->reads=std::move(reads);
+    task->sendTransport=playing;task->routingOnly=routingOnly;
+    transportPreparation=task;
+    bool ready=true;
+    for(const auto &read:task->reads) {
+        read.reader().keepTransitionWarm(read.loop);
+        if(!playing)read.reader().request(read.position);
+        ready=read.reader().transitionReady(read.position,read.count,read.loop)&&ready;
+    }
+    if(ready)task->done=true;
+    else runTransportPreparation(task);
+    startTimer(20);timerCallback();
+}
+void AudioEngine::runTransportPreparation(const std::shared_ptr<TransportPreparation> &task) {
+    if (task->reads.empty()) { task->done=true; return; }
+    // Independent stems may decode in parallel; the callback still receives
+    // one transport commit only after every required source is prepared.
+    if(!transportWorker)transportWorker=std::make_unique<ThreadPool>(jlimit(1,4,SystemStats::getNumCpus()/2));
+    const auto started=Time::getMillisecondCounterHiRes();
+    auto remaining=std::make_shared<std::atomic<size_t>>(task->reads.size());
+    for(size_t index=0;index<task->reads.size();++index)
+        transportWorker->addJob([task,index,remaining,started] {
+            try {
+                const auto &read=task->reads[index];
+                if(!task->cancelled && !read.reader().prepareTransition(read.position,read.count,read.loop) &&
+                   !task->destinationOnly) {
+                    read.reader().request(read.position);
+                    const auto deadline=Time::getMillisecondCounter()+2000;
+                    while(!task->cancelled && !read.reader().ready(read.position,read.count) &&
+                          (int32)(Time::getMillisecondCounter()-deadline)<0)Thread::sleep(2);
+                }
+            } catch(...) { /* Missing/unreadable media must not block transport. */ }
+            if(remaining->fetch_sub(1)==1) {
+                task->milliseconds=Time::getMillisecondCounterHiRes()-started;
+                task->done=true;
+            }
+        });
+}
+void AudioEngine::prewarmTransportDestination(const std::optional<State> &state) {
+    auto reads=state?transportReads(*state):std::vector<TransportRead>{};
+    if(queuedPreparation && reads.size()==queuedPreparation->reads.size() &&
+       std::equal(reads.begin(),reads.end(),queuedPreparation->reads.begin(),[](const auto &a,const auto &b){
+           return a.source==b.source && a.head==b.head && a.position==b.position && a.count==b.count && a.loop==b.loop;
+       }))return;
+    if(queuedPreparation)queuedPreparation->cancelled=true;
+    queuedPreparation.reset();
+    if(reads.empty())return;
+    auto task=std::make_shared<TransportPreparation>();task->state=*state;
+    task->reads=std::move(reads);task->destinationOnly=true;queuedPreparation=task;
+    for(const auto &read:task->reads)read.reader().keepTransitionWarm(read.loop);
+    runTransportPreparation(task);startTimer(20);
+}
+void AudioEngine::timerCallback() {
+    if(queuedPreparation)for(const auto &read:queuedPreparation->reads)read.reader().keepTransitionWarm(read.loop);
+    const auto task=transportPreparation;
+    if(!task || task->cancelled){if(!queuedPreparation)stopTimer();return;}
+    // No disk reads or locks on this path. Retain only the selected destination
+    // when stopped; a playing reader chooses its own forward read position.
+    if(!task->state.playing&&!task->state.subPlaying)
+        for(const auto &read:task->reads)read.reader().request(read.position);
+    if(task->sendTransport)for(const auto &read:task->reads)read.reader().keepTransitionWarm(read.loop);
+    if(!task->done)return;
+    lastPrimedSources=(int)task->reads.size();lastPrimeWaitMilliseconds=task->milliseconds;
+    if(task->sendTransport) {
+        commitPreparedTransport(task->state,task->routingOnly);
+        task->sendTransport=false;
+    }
+    if(!queuedPreparation && (task->state.playing||task->state.subPlaying))stopTimer();
+}
 void AudioEngine::transport(const State &state) {
+    ++transportRepositions;
     if(presentationDelay.load()&&!state.playing&&!state.subPlaying) {
         presentedPosition[0]=state.position;presentedPosition[1]=state.subPosition;
         presentedPlaying[0]=false;presentedPlaying[1]=false;
@@ -1300,6 +1458,7 @@ void AudioEngine::transport(const State &state) {
         state.loopEnd, state.end, state.timecodePreferred, attached && !exportCapture);
 }
 void AudioEngine::updateTransportRouting(const State &state) {
+    if(asynchronousTransport){scheduleTransportPreparation(state,true);return;}
     primeLoop(state);
     Update update; update.kind = Update::routing; update.state = state;
     enqueue(update);
@@ -1451,6 +1610,7 @@ void AudioEngine::applyUpdates() {
     fifo.prepareToRead(1024, a, n, b, m);
     auto apply = [this](const Update &u) {
         if (u.kind == Update::transport) {
+            if(u.resetElapsed)elapsedSamples=0;
             bool changed[2]{};
             for(int h=0;h<2;h++) {
                 const bool before=h==0?current.playing:current.subPlaying,after=h==0?u.state.playing:u.state.subPlaying;
@@ -1470,8 +1630,12 @@ void AudioEngine::applyUpdates() {
                 if(latencyPlan){latencyPlan->masterLive.reset();latencyPlan->masterHardware.reset();}
             }
             current = u.state;
+            if(u.transportSerial)appliedTransportSerial=u.transportSerial;
         }
         else if (u.kind == Update::routing) {
+            // Queue selection moves only an idle secondary cursor. Preserve
+            // the running head and decoder history until Sub Play actually starts.
+            if (!current.subPlaying && !u.state.subPlaying) current.subPosition=u.state.subPosition;
             current.scope[0]=u.state.scope[0]; current.scope[1]=u.state.scope[1];
             current.loop=u.state.loop; current.loopStart=u.state.loopStart; current.loopEnd=u.state.loopEnd;
             current.end=u.state.end; current.timecodePreferred=u.state.timecodePreferred;

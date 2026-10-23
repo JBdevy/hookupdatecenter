@@ -43,10 +43,13 @@ static void validation() {
 }
 static void manual() {
     Engine e; e.loadProject(fixture());
-    rejects([&]{e.execute({CommandKind::selectRegion,"a-copy"});},"stopped alias selection must fail");
-    rejects([&]{e.execute({CommandKind::queueRegion,"a-copy"});},"stopped alias queue must fail");
+    e.execute({CommandKind::selectRegion,"a-copy"});
+    expect(!e.transport().playing && e.transport().regionId=="a" && e.transport().playlistEntryId=="a-copy", "stopped copy selects its source without warning");
+    e.execute({CommandKind::queueRegion,"a-copy"});
+    expect(!e.transport().playing && e.transport().playlistEntryId=="a-copy", "stopped copy can prepare playback");
     e.execute({CommandKind::editSeek,{},25}); e.execute({CommandKind::play});
-    rejects([&]{e.execute({CommandKind::queueRegion,"a-copy"});},"playing a gap is not another song for duplicate queue");
+    e.execute({CommandKind::queueRegion,"a-copy"});
+    expect(e.transport().queuedRegionId=="a", "playing outside a region must allow the copy");
     e.execute({CommandKind::stop}); start(e,"a");
     rejects([&]{e.execute({CommandKind::queueRegion,"a-copy"});},"alias of playing physical song must fail");
     e.execute({CommandKind::queueRegion,"a"}); expect(!e.transport().queuedRegionId,"playing original cannot queue itself");

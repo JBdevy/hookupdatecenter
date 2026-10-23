@@ -175,7 +175,7 @@ struct FXEditor: View {
                 FXKnob("Threshold", value: $settings.triggerParameters.threshold, range: -80...0, unit: "dB", reset: -30, parameter: .triggerThreshold)
                 FXKnob("Retrigger", value: $settings.triggerParameters.retrigger, range: 0.005...2, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.08, parameter: .triggerRetrigger)
                 FXKnob("Gain", value: $settings.triggerParameters.gain, range: -24...24, unit: "dB", reset: 0, parameter: .triggerGain)
-                FXKnob("Mix", value: $settings.triggerParameters.mix, range: 0...100, unit: "%", reset: 100, parameter: .triggerMix)
+                Color.clear.frame(height: 1).accessibilityHidden(true)
                 FXKnob("Attack", value: $settings.triggerParameters.attack, range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .triggerAttack)
                 FXKnob("Decay", value: $settings.triggerParameters.decay, range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.1, parameter: .triggerDecay)
                 FXKnob("Sustain", value: $settings.triggerParameters.sustain, range: 0...1, unit: "%", multiplier: 100, reset: 1, parameter: .triggerSustain)
@@ -411,7 +411,7 @@ struct ClipFXChainEditor: View {
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear { if selected == nil { selected = effects.first } }
             .onChange(of: effects) { available in
-                if selected.map({ !available.contains($0) }) ?? true { selected = available.first }
+                if selected.map({ !available.contains($0) }) ?? true { selected = available.last }
             }
             .sheet(isPresented: $adding) {
                 FXInsertEditor(show: show, track: nil, targets: [nil], clip: clip, inserted: { selected = $0 }, isActive: { adding }, dismiss: { adding = false })

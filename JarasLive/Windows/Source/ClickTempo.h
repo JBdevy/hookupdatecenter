@@ -1,5 +1,6 @@
 #pragma once
 #include "WaveformCache.h"
+#include "../../Core/Songs/TempoEditMap.hpp"
 namespace catlive::clickTempo {
 inline void require(bool ok, const std::string &message) { if (!ok) throw std::runtime_error(message); }
 struct Transient { double position = 0, peak = 1; std::vector<double> shape; };
@@ -154,8 +155,27 @@ inline std::vector<Transient> transients(const File &file,const std::atomic<bool
     }
     return result;
 }
-inline std::vector<jaras::TimelineMarker> markers(const jaras::Song &song,const jaras::Part &region,
+inline std::vector<Section> markerSections(std::vector<Section> input,int beatsPerBar,int beatUnit,double end) {
+    const auto rounded=[](double bpm){return std::abs(bpm-std::round(bpm))<=.25?std::round(bpm):bpm;};
+    input.erase(std::remove_if(input.begin(),input.end(),[&](const auto& s){return !std::isfinite(s.position)||!std::isfinite(s.bpm)||s.bpm<60||s.bpm>300||s.position>=end;}),input.end());
+    std::sort(input.begin(),input.end(),[](const auto&a,const auto&b){return a.position<b.position;});
+    if(input.empty())return {};
+    std::vector<Section> result{{input.front().position,rounded(input.front().bpm)}};
+    for(size_t i=1;i<input.size();++i) {
+        const auto previous=result.back();
+        if(std::abs(rounded(input[i].bpm)-previous.bpm)<.01)continue;
+        const double bars=2.*std::max(1,beatsPerBar)*4/std::max(1,beatUnit)*60/previous.bpm;
+        const double position=std::max(input[i].position,previous.position+bars);
+        if(position>=end)break;
+        while(i+1<input.size() && input[i+1].position<=position)++i;
+        const double bpm=rounded(input[i].bpm);
+        if(std::abs(bpm-previous.bpm)>=.01)result.push_back({position,bpm});
+    }
+    return result;
+}
+inline std::vector<jaras::TimelineMarker> markers(const jaras::Song &song,const jaras::Part &sourceRegion,
         const std::function<std::vector<Transient>(const jaras::AudioFile&)> &source,const std::atomic<bool>*cancel=nullptr) {
+    auto region=sourceRegion;region.endTime=jaras::TempoEditMap::tempoEditEnd(song,region);
     std::vector<Transient> pulses;
     for(const auto &track:song.tracks)if(track.role.id=="click"||text(track.name).trim().equalsIgnoreCase("click"))
         for(const auto &clip:track.clips)if(clip.startTime<region.endTime&&clip.startTime+clip.duration>region.startTime){
@@ -169,7 +189,8 @@ inline std::vector<jaras::TimelineMarker> markers(const jaras::Song &song,const 
     std::sort(pulses.begin(),pulses.end(),[](const auto &a,const auto &b){return a.position<b.position;});std::vector<Transient> unique;
     for(const auto &p:pulses)if(unique.empty()||p.position-unique.back().position>.08)unique.push_back(p);
     std::vector<double> positions;for(const auto &p:unique)positions.push_back(p.position);
-    const auto spans=sections(positions,meter(unique,cancel).value_or(song.beatsPerBar),cancel);std::vector<jaras::TimelineMarker> result;
+    const auto signature=meter(unique,cancel);
+    const auto spans=markerSections(sections(positions,signature.value_or(song.beatsPerBar),cancel),signature.value_or(song.beatsPerBar),signature?4:song.beatUnit,region.endTime);std::vector<jaras::TimelineMarker> result;
     for(size_t i=0;i<spans.size();++i){const auto &span=spans[i];const double end=i+1<spans.size()?spans[i+1].position:region.endTime;
         std::vector<Transient> local;for(const auto &p:unique)if(p.position>=span.position&&p.position<end)local.push_back(p);
         const auto signature=meter(local,cancel);jaras::TimelineMarker m;m.id=uuid();m.name="TEMPO";m.position=span.position;m.color=0x999999;m.tempoBPM=span.bpm;m.tempoBeats=signature.value_or(song.beatsPerBar);m.tempoUnit=signature?4:song.beatUnit;m.tempoTimebase="global";m.tempoReferenceBPM=span.bpm;result.push_back(m);
@@ -208,7 +229,7 @@ inline std::string inputSignature(const jaras::Song &song, const std::set<ID> &r
 }
 inline void insert(jaras::Song &song,const jaras::Part &region,const std::vector<jaras::TimelineMarker> &detected) {
     if(!song.markers)song.markers.emplace();
-    song.markers->erase(std::remove_if(song.markers->begin(),song.markers->end(),[&](const auto &m){return m.tempoBPM&&m.position>=region.startTime&&m.position<region.endTime;}),song.markers->end());
+    song.markers->erase(std::remove_if(song.markers->begin(),song.markers->end(),[&](const auto &m){return m.tempoBPM&&m.position>=region.startTime&&m.position<jaras::TempoEditMap::tempoEditEnd(song,region);}),song.markers->end());
     for(auto m:detected){auto at=std::find_if(song.markers->begin(),song.markers->end(),[&](const auto &other){return other.tempoBPM&&std::abs(other.position-m.position)<.000001;});
         m.regionOwnerID=jaras::regionOwnerAt(song,m.position);
         if(at!=song.markers->end()){m.id=at->id;if(at->position==m.position)m.regionOwnerID=at->regionOwnerID;*at=m;}else song.markers->push_back(m);

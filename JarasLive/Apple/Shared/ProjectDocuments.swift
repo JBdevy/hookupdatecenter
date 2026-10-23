@@ -994,6 +994,31 @@ enum PortableProjectImportPrompt: String, Identifiable {
         }
     }
     func createEmpty() { finish(scan: nil, detectBPM: false) }
+    #if os(macOS)
+    func createEmptyInNewTab() -> Bool {
+        guard ready, show.canControl(), !busy, !TrackRecording.shared.recording,
+              !TrackRecording.shared.busy, let openInNewProjectTab else { return false }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
+        panel.nameFieldStringValue = "Untitled.jl"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let selected = panel.url else { return false }
+        let url = ProjectDirectoryPolicy.newProjectDestination(for: selected)
+        do {
+            guard !FileManager.default.fileExists(atPath: url.path) else {
+                throw ProjectError.invalid("A project already exists at this location. Choose another name.")
+            }
+            try ProjectDirectoryPolicy.validate(url)
+            var project = Project.empty(name: url.deletingPathExtension().lastPathComponent)
+            project.projectSyncID = UUID()
+            let data = try ProjectDocumentCodec.encode(project)
+            try ProjectDirectoryPolicy.prepareNewProjectDirectory(for: url)
+            try ProjectDocumentCodec.writeEncoded(data, to: url, exclusive: true)
+            openInNewProjectTab(url)
+            return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
+    #endif
     func createRecordingProject(channels: Int) {
         guard (1...128).contains(channels) else { error = "Choose between 1 and 128 channels."; return }
         finish(scan: nil, detectBPM: false, recordingChannels: channels)
@@ -1331,6 +1356,15 @@ struct ProjectBrowserView: View {
                             HStack {
                                 action("Add Stems", icon: "waveform") { documents.chooseStems(adding: false) }
                                 action("Empty", icon: "doc") { documents.createEmpty() }
+                                    #if os(macOS)
+                                    .contextMenu {
+                                        if documents.ready, documents.openInNewProjectTab != nil {
+                                            Button("Open in new tab") {
+                                                if documents.createEmptyInNewTab() { completed() }
+                                            }
+                                        }
+                                    }
+                                    #endif
                                 action("REC Multitrack", icon: "record.circle") { recordingSetup = true }
                             }
                             #if os(macOS)

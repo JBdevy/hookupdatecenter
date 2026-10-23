@@ -20,6 +20,12 @@ private struct NeedleFixtureHost: NSViewRepresentable {
     override func layout() { layouts += 1; super.layout() }
 }
 MainActor.assumeIsolated {
+    let previousFollow = UserDefaults.standard.object(forKey: "jaras.timeline.continuousScroll")
+    UserDefaults.standard.set(true, forKey: "jaras.timeline.continuousScroll")
+    defer {
+        if let previousFollow { UserDefaults.standard.set(previousFollow, forKey: "jaras.timeline.continuousScroll") }
+        else { UserDefaults.standard.removeObject(forKey: "jaras.timeline.continuousScroll") }
+    }
     setbuf(stdout, nil)
     let app = NSApplication.shared; app.setActivationPolicy(.accessory); app.finishLaunching()
     let window = NSWindow(contentRect: CGRect(x: 80, y: 80, width: 800, height: 240), styleMask: [.titled], backing: .buffered, defer: false)

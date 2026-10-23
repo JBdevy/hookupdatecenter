@@ -771,6 +771,30 @@ final class ProjectCursorTests: XCTestCase {
 
 
 extension ProjectCursorTests {
+    @MainActor func testCursorNavigationPersistsWithoutChangingInterfaceDefaults() async throws {
+        let project = UUID(), song = UUID()
+        let key = "jaras.projectCursor." + project.uuidString
+        let domain = "com.hookdeveloper.catlive.project-cursors"
+        let legacy: [String: Any] = ["song": song.uuidString, "position": 12.5]
+        UserDefaults.standard.set(legacy, forKey: key)
+        defer {
+            UserDefaults.standard.removeObject(forKey: key)
+            CFPreferencesSetAppValue(key as CFString, nil, domain as CFString)
+            CFPreferencesAppSynchronize(domain as CFString)
+        }
+        let memory = ProjectCursorMemory()
+        XCTAssertEqual(memory.cursor(for: project)?.position, 12.5, "Existing cursor positions must migrate")
+        for position in [22.0, 31.5, 46.25] { memory.remember(project: project, songID: song, position: position) }
+        XCTAssertEqual(ProjectCursorMemory().cursor(for: project)?.position, 46.25,
+                       "Switching workspaces must see the cursor before disk persistence completes")
+        XCTAssertEqual(UserDefaults.standard.dictionary(forKey: key)?["position"] as? Double, 12.5,
+                       "Moving the cursor must not invalidate standard interface preferences")
+        await ProjectCursorMemory.flushPendingWrites()
+        let stored = CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? [String: Any]
+        XCTAssertEqual(stored?["position"] as? Double, 46.25, "Latest cursor must survive relaunch")
+        XCTAssertEqual(stored?["song"] as? String, song.uuidString)
+    }
+
     @MainActor func testPlaybackAndZoomPresentationReadsNeverDirtyOrReloadProject() throws {
         var project = Project.empty(name: "Dirty-state boundary")
         let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 120)
@@ -861,14 +885,16 @@ extension ProjectCursorTests {
         XCTAssertEqual(show.playlistRegionSourceID(alias), first.id)
         XCTAssertEqual(show.listedRegions[1].name, first.name)
         show.focusRegion(alias)
-        XCTAssertEqual(show.modalNotice, ShowController.duplicateRegionQueueNotice)
-        XCTAssertTrue(executor.regionCommands.isEmpty)
+        XCTAssertNil(show.modalNotice, "A stopped transport must allow selecting a copy")
+        XCTAssertEqual(executor.commands.last?.1, alias)
         show.send(.queueRegion, target: alias)
-        XCTAssertTrue(executor.regionCommands.isEmpty, "direct/Remote commands must not bypass the guard")
+        XCTAssertNil(show.modalNotice, "Direct/Remote commands also allow a stopped copy")
+        XCTAssertEqual(executor.commands.last?.1, alias)
         show.focusRegion(first.id); show.send(.play)
         let before = executor.regionCommands.count
         show.send(.selectRegion, target: alias)
         XCTAssertEqual(executor.regionCommands.count, before, "same physical song cannot queue its copy")
+        XCTAssertEqual(show.modalNotice, ShowController.duplicateRegionQueueNotice)
         show.send(.stop); show.focusRegion(second.id); show.send(.play)
         show.modalNotice = nil
         show.focusRegion(alias)

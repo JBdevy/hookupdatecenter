@@ -64,10 +64,28 @@ class StreamingReader final : public AudioFormatReader {
         return access.current && probeAt(*access.current, position, count);
     }
     bool cached() const noexcept { return resident.load(); }
+    bool transitionReady(int64 at, int count, bool loop = false) {
+        at=std::max<int64>(0,at);
+        if(at>=lengthInSamples)return true;
+        ReadAccess access(*this);
+        for(int slot=loop?1:0;slot<2;++slot) {
+            const auto *cache=publishedPinned[slot].load(std::memory_order_seq_cst);
+            // The callback can reach a few samples past the queued destination.
+            // Requiring another full second from that point would reject the
+            // already decoded onset and unnecessarily seek every file again.
+            if(cache && cache->contains(at,count))return true;
+        }
+        return false;
+    }
+    void keepTransitionWarm(bool loop=false) {
+        if(loop)keepLoopReserve=true;
+        pinnedDemand[loop?1:0]=Time::getMillisecondCounter();
+    }
     // Control thread only. Decode the destination independently: probing the
     // active forward reader here would evict audio still being played before
     // the seek is committed. Two slots keep a loop start pinned across seeks.
     bool prepareTransition(int64 at, int count, bool loop = false) {
+        keepTransitionWarm(loop);
         if (loop) keepLoopReserve.store(true);
         at = std::max<int64>(0, at);
         if (at >= lengthInSamples) return true;
@@ -75,11 +93,14 @@ class StreamingReader final : public AudioFormatReader {
         // Include the zero-padded tail: the last device block can cross EOF.
         const auto wanted = int(std::max<int64>(count, int64(sampleRate)));
         const ScopedLock guard(lock);
-        if (pinned[slot] && pinned[slot]->contains(at, wanted)) return true;
-        std::unique_ptr<AudioFormatReader> source(service.formats.createReaderFor(file));
-        if (!source) return false;
+        if (pinned[slot] && pinned[slot]->contains(at, count)) return true;
+        // Retain the decoder's exact MP3 checkpoints while this source is
+        // active. Opening a new decoder for every cursor move throws away its
+        // seek history and decodes the whole prefix again on the first Play.
+        if (!transitionDecoder) transitionDecoder.reset(service.formats.createReaderFor(file));
+        if (!transitionDecoder) return false;
         auto next = std::make_unique<Pinned>(at, int(numChannels), wanted);
-        if (!source->read(&next->pcm, 0, wanted, at, true, true)) return false;
+        if (!transitionDecoder->read(&next->pcm, 0, wanted, at, true, true)) return false;
         if (pinned[slot]) retiredPinned.push_back(std::move(pinned[slot]));
         pinned[slot] = std::move(next);
         publishedPinned[slot].store(pinned[slot].get(), std::memory_order_seq_cst);
@@ -152,9 +173,11 @@ class StreamingReader final : public AudioFormatReader {
     std::unique_ptr<Pinned> pinned[2];
     std::atomic<Pinned *> publishedPinned[2]{};
     std::atomic<bool> keepLoopReserve{false};
+    std::atomic<uint32> pinnedDemand[2]{};
     std::vector<std::unique_ptr<Pinned>> retiredPinned;
     // Ownership is only touched under lock, outside the device callback.
     std::unique_ptr<BufferingAudioReader> reader;
+    std::unique_ptr<AudioFormatReader> transitionDecoder; // Worker-only, protected by lock.
     std::vector<std::unique_ptr<BufferingAudioReader>> retired;
     std::atomic<BufferingAudioReader*> published{nullptr};
     std::atomic<uint32> activeReads{0};
@@ -201,8 +224,11 @@ class StreamingReader final : public AudioFormatReader {
         if (activeReads.load(std::memory_order_seq_cst) == 0) { retired.clear(); retiredPinned.clear(); }
         const auto at = requested.load();
         if (at < 0 || uint32(Time::getMillisecondCounter() - lastDemand.load()) > 2000) {
-            publishedPinned[0].store(nullptr, std::memory_order_seq_cst);
-            if (pinned[0]) retiredPinned.push_back(std::move(pinned[0]));
+            if(uint32(Time::getMillisecondCounter()-pinnedDemand[0].load())>2000) {
+                if (!keepLoopReserve.load()) transitionDecoder.reset();
+                publishedPinned[0].store(nullptr, std::memory_order_seq_cst);
+                if (pinned[0]) retiredPinned.push_back(std::move(pinned[0]));
+            }
             if (!keepLoopReserve.load()) {
                 publishedPinned[1].store(nullptr, std::memory_order_seq_cst);
                 if (pinned[1]) retiredPinned.push_back(std::move(pinned[1]));

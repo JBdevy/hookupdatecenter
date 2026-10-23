@@ -2,6 +2,28 @@ import XCTest
 @testable import JarasApplication
 
 final class PlaybackScopeTests: XCTestCase {
+    func testCompiledItemStartIndexMatchesLiveOwnershipLookup() {
+        var song = Project.empty(name: "Playback index").songs[0]
+        let group = UUID(), a = UUID(), b = UUID()
+        song.parts = [Part(id: group, name: "Unified", startTime: 0, endTime: 30),
+                      Part(id: a, name: "A", startTime: 0, endTime: 16),
+                      Part(id: b, name: "B", startTime: 10, endTime: 30)]
+        song.parts[1].parentRegionID = group; song.parts[2].parentRegionID = group
+        for initialized in [false, true] {
+            song.regionOwnershipInitialized = initialized
+            for flag in [8.0, 10, 12] {
+                song.markers = [TimelineMarker(id: UUID(), name: "B", position: flag, color: 0,
+                                              unifiedRegionID: group, sourceRegionID: b)]
+                let index = PlaybackItemStartIndex(song: song)
+                for owner in [nil, a, b, group, UUID()] {
+                    for position in stride(from: 0.0, through: 35, by: 0.25) {
+                        let clip = AudioClip(id: UUID(), name: "Item", startTime: position, duration: 4, regionOwnerID: owner)
+                        XCTAssertEqual(index.start(for: clip), song.playbackItemStart(clip))
+                    }
+                }
+            }
+        }
+    }
     func testOverlappingUnifiedSongsAssignNewOnsetsToIncomingSong() {
         var song = Project.empty(name: "Escudo overlap").songs[0]
         let group = UUID(), a = UUID(), b = UUID()

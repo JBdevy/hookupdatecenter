@@ -38,9 +38,8 @@ inline bool needsRender(const jaras::Song &song, const jaras::Part *part = nullp
                 if (owner->id != part->id && owner->parentRegionID != part->id) continue;
             } else if (clip.startTime >= part->endTime || clip.startTime + clip.duration <= part->startTime) continue;
         }
-        const auto reference = clip.tempoBasePlaybackRate.value_or(clip.playbackRate);
         for (const auto &span : ClipTempo(clip, &song).spans)
-            if (std::abs(span.rate - reference) > .0000005) return true;
+            if (std::abs(span.rate - 1.0) > .0000005) return true;
     }
     return false;
 }
@@ -57,13 +56,14 @@ inline jaras::TimelineMarker boundary(const jaras::Song &song, double at) {
 }
 inline std::vector<jaras::TimelineMarker> regionChange(const jaras::Song &song, const jaras::Part &part, double delta) {
     std::vector<jaras::TimelineMarker> targets;
+    const double end = jaras::TempoEditMap::tempoEditEnd(song, part);
     bool hasStart = false, hasEnd = false;
     if (song.markers) for (const auto &marker : *song.markers) if (marker.tempoBPM) {
-        if (marker.position >= part.startTime && marker.position < part.endTime) {
+        if (marker.position >= part.startTime && marker.position < end) {
             targets.push_back(marker);
             hasStart |= std::abs(marker.position - part.startTime) < .000001;
         }
-        hasEnd |= std::abs(marker.position - part.endTime) < .000001;
+        hasEnd |= std::abs(marker.position - end) < .000001;
     }
     if (!hasStart) targets.push_back(boundary(song, part.startTime));
     double low = 300, high = 60;
@@ -75,7 +75,7 @@ inline std::vector<jaras::TimelineMarker> regionChange(const jaras::Song &song, 
         marker.tempoBeats = marker.tempoBeats.value_or(song.beatsPerBar);
         marker.tempoUnit = marker.tempoUnit.value_or(song.beatUnit);
     }
-    if (!hasEnd) targets.push_back(boundary(song, part.endTime));
+    if (!hasEnd) targets.push_back(boundary(song, end));
     bool atZero = false;
     if (song.markers) for (const auto &marker : *song.markers) atZero |= marker.tempoBPM && marker.position == 0;
     for (const auto &marker : targets) atZero |= marker.position == 0;

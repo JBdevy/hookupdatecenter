@@ -1346,5 +1346,8 @@
   "High Pass and Low Pass filter only the detector.": "High Pass and Low Pass filter only the detector.",
   "Duplicate region": "Duplicate region",
   "A duplicate can only be queued while another song is playing.": "A duplicate can only be queued while another song is playing.",
-  "Cannot queue a duplicate of the song that is playing.": "Cannot queue a duplicate of the song that is playing."
+  "Cannot queue a duplicate of the song that is playing.": "Cannot queue a duplicate of the song that is playing.",
+  "Block text color": "Block text color",
+  "Track group": "Track group",
+  "The current project will be replaced by %@.": "The current project will be replaced by %@."
 }

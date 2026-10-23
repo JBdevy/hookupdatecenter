@@ -5,7 +5,7 @@
 
 namespace catlive {
 // Normalize to 0.1/notch, then match the Mac gesture's 40-point notches and
-// 100-point deliberate travel threshold. JUCE Win32 reports 60/256 per notch.
+// 60-point travel threshold (two notches). JUCE Win32 reports 60/256 per notch.
 class HozMixerFocusGesture {
   public:
     static double wheelDelta(double x,double y,bool smooth) {
@@ -24,8 +24,8 @@ class HozMixerFocusGesture {
         direction=nextDirection;lastTime=seconds;
         if(latched || seconds-lastAction<.6)return {};
         // A driver spike must not turn one accidental wheel event into a full gesture.
-        accumulated+=std::min(60.,std::abs(delta)*400.);
-        if(accumulated<100.)return {};
+        accumulated+=std::min(40.,std::abs(delta)*400.);
+        if(accumulated<60.)return {};
         latched=true;lastAction=seconds;return direction>0;
     }
   private:

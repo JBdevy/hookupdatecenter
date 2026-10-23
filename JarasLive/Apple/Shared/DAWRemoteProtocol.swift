@@ -456,7 +456,7 @@ enum DAWRemoteSetlistPresentation {
         }
         let current = root(state.currentRegion)
         let secondary = state.subPlaying ? root(state.sectionPlayback?.secondaryRegion ?? state.queuedRegion) : nil
-        return state.playing && current != nil && source != current && source != secondary
+        return !(state.playing && source == current) && source != secondary
     }
     static func children(of parent: UUID, in state: DAWRemoteState) -> [DAWRemoteState.Region] {
         state.timelineRegions.filter { $0.parentRegion == parent }.sorted {

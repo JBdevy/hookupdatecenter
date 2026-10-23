@@ -97,7 +97,17 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         }
         session.command(jaras::CommandKind::toggleLoop);
         require(!session.selectedTimeRange(),"Disabling Repeat retained the manual range");
-        require(differences(baseline,capture(),baseline.getBounds())==0,
+        const auto disabled=capture(); save(directory,"timeline-repeat-disabled.png",disabled);
+        // Repainting a cached fractional grid edge can quantize its coverage
+        // by up to 3/255. A retained 12% overlay or yellow boundary is much
+        // larger; check every pixel without requiring bit-identical coverage.
+        int maximumDifference=0;
+        for(int y=0;y<baseline.getHeight();++y)for(int x=0;x<baseline.getWidth();++x){
+            const auto before=baseline.getPixelAt(x,y),after=disabled.getPixelAt(x,y);
+            maximumDifference=std::max({maximumDifference,std::abs(before.getRed()-after.getRed()),
+                std::abs(before.getGreen()-after.getGreen()),std::abs(before.getBlue()-after.getBlue())});
+        }
+        require(maximumDifference<=3,
                 "Disabling Repeat left a stale overlay in the cached canvas or cursor Heads");
     });
 

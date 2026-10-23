@@ -19,9 +19,9 @@ struct RowFixture: View {
   let part = Part(name: i == 0 ? "ABC DE DEUS" : i == 1 ? "ABERTURA GC 2026" : "UMA MÚSICA COM NOME BEM LONGO AQUI COM ACENTOS ÁÉÍÓÚ",color: 0x828282)
   Group {
   if native {
-   RegionSetlistRow(region: part, number: i+1,selected: i % 5 == 1,active: i % 5 == 2,queued:i % 5 >= 3,prepareOnly: i%5 == 4,remaining:120+i,progress:0.65,queueProgress:0.35,expanded:i%2==0,toggleDrawer:{},select:{})
+   RegionSetlistRow(region: part, number: i+1,selected: i % 5 == 1,active: i % 5 == 2,queued:i % 5 >= 3,prepareOnly: i%5 == 4,remaining:120+i,progress:0.65,queueProgress:0.35,expanded:i%2==0,toggleDrawer:{},select:{ _ in })
   } else {
-   OriginalRegionSetlistRow(region: part, number: i+1,selected: i % 5 == 1,active: i % 5 == 2,queued:i % 5 >= 3,prepareOnly: i%5 == 4,remaining:120+i,progress:0.65,queueProgress:0.35,expanded:i%2==0,toggleDrawer:{},select:{})
+   OriginalRegionSetlistRow(region: part, number: i+1,selected: i % 5 == 1,active: i % 5 == 2,queued:i % 5 >= 3,prepareOnly: i%5 == 4,remaining:120+i,progress:0.65,queueProgress:0.35,expanded:i%2==0,toggleDrawer:{},select:{ _ in })
   }
   }.foregroundStyle(.white)
  } }.padding(4).background(Color(hex:0x151b22))
@@ -58,7 +58,7 @@ func descendants<T: NSView>(_ type: T.Type,_ view: NSView) -> [T] { (view as? T)
 @MainActor func testActions() throws {
  _=NSApplication.shared
  let actions=Actions()
- let row=RegionSetlistRow(region:Part(name:"FULL LONG REGION NAME THAT MUST REMAIN ACCESSIBLE",color:0),number:107,selected:true,active:false,queued:false,prepareOnly:false,remaining:145,progress:0,queueProgress:0,expanded:false,toggleDrawer:{actions.drawers+=1},select:{actions.selects+=1}).foregroundStyle(.white)
+ let row=RegionSetlistRow(region:Part(name:"FULL LONG REGION NAME THAT MUST REMAIN ACCESSIBLE",color:0),number:107,selected:true,active:false,queued:false,prepareOnly:false,remaining:145,progress:0,queueProgress:0,expanded:false,toggleDrawer:{actions.drawers+=1},select:{ _ in actions.selects+=1}).foregroundStyle(.white)
  // Match the real Setlist insets: the drawer must remain inside its viewport.
  let host=NSHostingView(rootView:row.padding(.leading, 8).padding(.trailing, 2))
  let window=NSWindow(contentRect:CGRect(x:300,y:300,width:340,height:34),styleMask:[.titled],backing:.buffered,defer:false)

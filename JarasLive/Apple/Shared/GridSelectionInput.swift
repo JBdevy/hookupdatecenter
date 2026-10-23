@@ -1193,7 +1193,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                        controlPoint1: NSPoint(x: 7, y: left ? 3 : 13),
                        controlPoint2: NSPoint(x: 8, y: left ? 13 : 3))
             path.lineCapStyle = .round
-            NSColor.black.setStroke(); path.lineWidth = 3; path.stroke()
+            NSColor(srgbRed: 84/255, green: 1, blue: 147/255, alpha: 1).setStroke(); path.lineWidth = 3; path.stroke()
             NSColor.white.setStroke(); path.lineWidth = 1.5; path.stroke()
             return true
         }

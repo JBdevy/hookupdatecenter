@@ -11,6 +11,9 @@ python3 - "$projection_test_dir/main.swift" <<'PYTHON'
 from pathlib import Path
 import re, sys
 source = Path('Apple/Shared/TimelineGridView.swift').read_text()
+fonts = Path('Apple/Shared/Theme.swift').read_text()
+fonts = fonts[fonts.index('private enum CatLiveTypeface {'):fonts.index('\n#endif', fonts.index('private enum CatLiveTypeface {'))]
+Path(sys.argv[1]).with_name('Fonts.swift').write_text('import SwiftUI\nimport AppKit\nimport CoreText\n' + fonts)
 tempo = Path('Application/Project/TimelineTempo.swift').read_text()
 
 def declaration(needle):
@@ -48,9 +51,12 @@ project_start = controller.index('        let tile = TimelineCanvasCoverage.prep
 project_end = controller.index('        audioBody.project(', project_start)
 projection = controller[project_start:project_end]
 fixture = Path('Tests/Apple/TimelineBaseProjectionTests.swift').read_text()
-fixture = fixture.replace('PRODUCTION_PROJECTION_STATE', key).replace('PRODUCTION_TILE_PROJECTION', projection)
+drawing_start = controller.index('        let drawingChanged = previous.map {')
+drawing_end = controller.index('        if drawingChanged', drawing_start)
+drawing = controller[drawing_start:drawing_end]
+fixture = fixture.replace('PRODUCTION_PROJECTION_STATE', key).replace('PRODUCTION_TILE_PROJECTION', projection).replace('PRODUCTION_DRAWING_INVALIDATION', drawing)
 parts.append(fixture)
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PYTHON
-swiftc -swift-version 5 Apple/Shared/TimelineStaticText.swift "$projection_test_dir/main.swift" -o "$projection_test_dir/test"
+swiftc -swift-version 5 "$projection_test_dir/Fonts.swift" Apple/Shared/TimelineStaticText.swift "$projection_test_dir/main.swift" -o "$projection_test_dir/test"
 "$projection_test_dir/test"

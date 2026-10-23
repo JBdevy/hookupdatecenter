@@ -85,6 +85,19 @@ ProjectBrowser::ProjectBrowser() {
         if (createEmpty)
             createEmpty();
     };
+    empty.contextMenu = [this](const MouseEvent &event) {
+        if (!projectOpen || loading || !createEmptyInNewTab) return;
+        PopupMenu menu;
+        menu.addItem(1, localization::translate("Open in new tab"));
+        const auto position = event.getScreenPosition();
+        const Component::SafePointer<ProjectBrowser> safe(this);
+        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&empty)
+            .withTargetScreenArea({position.x, position.y, 1, 1}),
+            [safe](int result) {
+                if (result == 1 && safe && safe->projectOpen && !safe->loading && safe->createEmptyInNewTab)
+                    safe->createEmptyInNewTab();
+            });
+    };
     reaper.onClick = [this] {
         if (createReaper)
             createReaper();

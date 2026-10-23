@@ -150,8 +150,24 @@ final class TimelinePlaybackPresentationTests: XCTestCase {
         XCTAssertEqual(display.nextBPM, 125)
         XCTAssertNil(display.queuedBPM, "no inherited tempo from another song")
         state.playing = false
+        state.editPosition = 40
         let selected = TransportSongDisplays(song: song, transport: state, focusedRegion: queued.id)
         XCTAssertEqual(selected.current?.id, queued.id)
         XCTAssertNil(selected.currentBPM)
     }
+    func testStoppedDisplayFollowsCursorAndClearsOutsideRegions() {
+        var song = Project.demo().songs[0]
+        let first = Part(id: UUID(), name: "First", startTime: 10, endTime: 20)
+        let second = Part(id: UUID(), name: "Second", startTime: 30, endTime: 40)
+        song.parts = [first, second]
+        var state = transport(playing: false)
+        state.regionId = first.id
+        for position in [0.0, 20, 25, 40, 50] {
+            state.editPosition = position
+            XCTAssertNil(TransportSongDisplays(song: song, transport: state, focusedRegion: first.id).current)
+        }
+        state.editPosition = 35
+        XCTAssertEqual(TransportSongDisplays(song: song, transport: state, focusedRegion: first.id).current?.id, second.id)
+    }
+
 }

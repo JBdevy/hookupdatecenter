@@ -22,6 +22,7 @@ extension NSFont {
  }
 }
 final class NativeVerticalTrackMeterView: NSView {}
+@MainActor final class NativeDragEdgeScroll { func begin(from: NSView) {} ; func stop() {} }
 final class TrackReorderState: ObservableObject {
  var source: TrackDragSource?
  func begin(track: UUID) {}

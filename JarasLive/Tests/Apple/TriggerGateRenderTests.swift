@@ -73,7 +73,7 @@ final class InputState {
         else { settings.trigger!.samplePath = "missing.wav" }
         chain.apply(settings); precondition(chain.sampleErrors[triggerKey] != nil)
         for _ in 0..<4 { _ = try engine.renderOffline(512, to: output) }
-        precondition((0..<512).map { abs(output.floatChannelData![0][$0]) }.max()! > 0.099)
+        precondition((0..<512).map { abs(output.floatChannelData![0][$0]) }.max()! < 0.0001, "Missing trigger sample must not leak detector input")
         if repeated { settings.instances![0].settings.trigger!.samplePath = "hit.wav" }
         else { settings.trigger!.samplePath = "hit.wav" }
         chain.apply(settings); chain.resetTails(); input.frame = 0; input.impulses = true

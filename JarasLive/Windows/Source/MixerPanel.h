@@ -154,6 +154,8 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 button->setWantsKeyboardFocus(false);
                 button->setColour(TextButton::buttonColourId, Colours::white.withAlpha(.15f));
             }
+            for (auto *button : {&fx, &mute, &solo, &record})
+                button->setColour(TextButton::buttonColourId, Colour(0xff414141));
             mute.setColour(TextButton::buttonOnColourId, Colour(0xffff4444));
             solo.setColour(TextButton::buttonOnColourId, theme::yellow);
             if (id.empty()) {
@@ -252,7 +254,8 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 solo.setToggleState(t->solo, dontSendNotification);
                 phase.setToggleState(t->phaseInverted.value_or(false), dontSendNotification);
                 phase.setTooltip(t->phaseInverted.value_or(false) ? "Fase invertida - Restaurar fase" : "Inverter fase");
-                record.setButtonText(mixer.session.recordArm(id) == 2 ? "A" : String::fromUTF8("◎"));
+                record.setButtonText(mixer.session.recordArm(id) == 2 ? "A" : "");
+                record.getProperties().set("icon", mixer.session.recordArm(id) == 2 ? "" : "record.circle");
                 record.setToggleState(mixer.session.recordingArmed(id), dontSendNotification);
                 const auto &settings = slotSettings();
                 firstSlot = jlimit(0, maximumFirstSlot(), firstSlot);

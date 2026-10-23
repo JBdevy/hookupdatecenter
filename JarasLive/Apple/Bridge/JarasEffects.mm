@@ -654,7 +654,10 @@ struct CatDynamicsKernel {
                 std::copy_n(left+offset,count,dryLeft.data());
                 if(right) std::copy_n(right+offset,count,dryRight.data());
             }
-            if(trigger) { if(current) current->processor.process(left+offset,right?right+offset:nullptr,count,rate); }
+            if(trigger) {
+                if(current) current->processor.process(left+offset,right?right+offset:nullptr,count,rate);
+                else { std::fill_n(left+offset,count,0.f); if(right) std::fill_n(right+offset,count,0.f); }
+            }
             else gate.process(left+offset,right?right+offset:nullptr,count,rate);
             if(ramping) for(unsigned frame=0;frame<count;++frame) {
                 blend=enabled?std::min(1.0,blend+step):std::max(0.0,blend-step);

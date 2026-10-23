@@ -443,13 +443,9 @@ private struct TimelineGridContent: View, Equatable {
                                         #endif
                                         #if os(macOS)
                                         ForEach(Array(song.parts.enumerated()).filter { $0.element.parentRegionID == nil && ($0.element.id == editingRegion || $0.element.id == unifyingRegion) }, id: \.element.id) { index, part in
-                                            let edgePadding: CGFloat = renderMetadata.regionParentIDs.contains(part.id) ? 0 : 10
-                                            Color.clear
-                                                .frame(width: max(1, (part.endTime - part.startTime) * pixelsPerSecond) + edgePadding * 2, height: edgePadding > 0 ? 24 : 16)
-                                                .background { regionEditorAnchors(part, index: index) }
-                                                .alignmentGuide(.leading) { _ in 0 }
-                                                .alignmentGuide(.top) { _ in 0 }
-                                                .offset(x: part.startTime * pixelsPerSecond - edgePadding, y: verticalOffset + CGFloat(regionLanes.lanes[part.id] ?? 0) * 16 - (edgePadding > 0 ? 4 : 0))
+                                            regionPopupAnchor(part, index: index, pixelsPerSecond: pixelsPerSecond,
+                                                verticalOffset: verticalOffset, lane: regionLanes.lanes[part.id] ?? 0,
+                                                isParent: renderMetadata.regionParentIDs.contains(part.id))
                                         }
                                         #else
                                         ForEach(Array(song.parts.enumerated()).filter { $0.element.parentRegionID == nil && ($0.element.id == editingRegion || $0.element.id == unifyingRegion || $0.element.id == movingRegion || $0.element.id == resizingRegion || ($0.element.startTime <= visibleEnd && $0.element.endTime >= visibleStart)) }, id: \.element.id) { index, part in
@@ -648,7 +644,7 @@ private struct TimelineGridContent: View, Equatable {
             }
         }
         #if os(macOS)
-        .background(EditorSelectionArea(scope: .grid) { selectAllItems() })
+        .background(EditorSelectionArea(scope: .grid, moveCursor: moveEditingCursor) { selectAllItems() })
         .background(RegionShortcut(hasDeletionSelection: { deleteTarget != .none }, delete: { deleteSelection() }, undo: { show.undo() }, redo: { show.redo() }, create: {
             if let range = TimelineAreaSelection.shared.range, range.song == show.current?.id {
                 show.regionFromTimeSelection(song: range.song, start: range.start, end: range.end)
@@ -1046,6 +1042,17 @@ private struct TimelineGridContent: View, Equatable {
         }
         return song
     }
+    private func regionPopupAnchor(_ part: Part, index: Int, pixelsPerSecond: CGFloat,
+                                   verticalOffset: CGFloat, lane: Int, isParent: Bool) -> some View {
+        let padding: CGFloat = isParent ? 0 : 10
+        let width = max(1, CGFloat(part.endTime - part.startTime) * pixelsPerSecond) + padding * 2
+        let x = CGFloat(part.startTime) * pixelsPerSecond - padding
+        let y = verticalOffset + CGFloat(lane) * 16 - (padding > 0 ? 4 : 0)
+        return Color.clear.frame(width: width, height: padding > 0 ? 24 : 16)
+            .background { regionEditorAnchors(part, index: index) }
+            .alignmentGuide(.leading) { _ in 0 }.alignmentGuide(.top) { _ in 0 }
+            .offset(x: x, y: y)
+    }
     @ViewBuilder private func regionEditorAnchors(_ part: Part, index: Int) -> some View {
         // Closed editors must not publish anchors for every region on resize.
         if editingRegion == part.id {
@@ -1188,6 +1195,15 @@ private struct TimelineGridContent: View, Equatable {
         movingClip = nil; movingTrack = nil; provisionalTrack = nil
         insertionPreview.update(nil)
     }
+    private func moveEditingCursor(_ direction: Int) -> Bool {
+        guard !gridInteractionBlocked else { return false }
+        let transport = show.snapshot.transport
+        let current = transport.editPosition ?? transport.position
+        let step = Double(direction) / max(0.01, Double(zoomState.value))
+        show.pauseTimelineFollow()
+        show.send(.editSeek, value: max(0, current + step))
+        return true
+    }
     private func selectAllItems() -> Bool {
         guard let song = visibleSong else { return false }
         let all = Set(song.tracks.flatMap(\.clips).map(\.id))
@@ -1300,7 +1316,9 @@ private struct TimelineGridContent: View, Equatable {
                     }.value
                     if !show.replaceRenderedItem(result, original: clip, track: track.id, project: project.id) {
                         if let path = result.audioFile?.path { try? FileManager.default.removeItem(at: directory.appendingPathComponent(path)) }
-                        showingReRender = false
+                        reRenderProgress.error = JarasLocalization.string(show.message.isEmpty
+                            ? "The selected items changed during re-render. Render again to apply the new timing."
+                            : show.message)
                         return
                     }
                 }
@@ -1652,12 +1670,6 @@ private struct TimelineGridContent: View, Equatable {
                         if secondary { draggingSub = true } else { draggingMain = true }
                         if let song = show.current { show.send(secondary ? .subSeek : .editSeek, value: gridPosition(Double(value.location.x / width) * duration, song: song, pixelsPerSecond: width / duration)) }
                     }.onEnded { _ in draggingSub = false; draggingMain = false })
-                .contextMenu {
-                    if !secondary {
-                        Button("Create marker") { beginMarker() }
-                        Button("Create tempo marker") { beginTempoMarker() }
-                    }
-                }
                 .accessibilityLabel(LocalizedStringKey(secondary ? "Agulha Sub Play" : "Agulha de edição"))
             }
         }.frame(width: 28, height: height, alignment: .topLeading).offset(x: x - 14)
@@ -3254,8 +3266,7 @@ private final class NativeTimelineBaseMountView: NSView {
         let drawingChanged = previous.map {
             $0.extent != value.extent || $0.contentHeight != value.contentHeight || $0.layoutWidth != value.layoutWidth ||
             $0.rulerHeight != value.rulerHeight || $0.regionLanes != value.regionLanes || $0.rows != value.rows ||
-            $0.sections != value.sections || $0.divisions != value.divisions || $0.bands != value.bands ||
-            $0.editPosition != value.editPosition
+            $0.sections != value.sections || $0.divisions != value.divisions || $0.bands != value.bands
         } ?? true
         if drawingChanged || bodyChanged || headerChanged || self.style != style { revision &+= 1 }
         configuration = value; self.style = style
@@ -3282,7 +3293,10 @@ private final class NativeTimelineBaseMountView: NSView {
         wheel.verticalOffsetChanged = value.verticalOffsetChanged
         wheel.interactionBlocked = value.interactionBlocked
         wheel.extend = value.extend
+        // Cursor navigation updates input/needles without rebuilding static
+        // grid tiles, ticks and item geometry while arming/cancelling a section.
         wheel.position = value.editPosition / value.extent
+        wheel.cursorX = value.editPosition * pixelsPerSecond
         wheel.livePosition = value.livePosition
         wheel.modelUnitWidth = value.extent * 10
         wheel.changeTrackHeight = { [weak self] factor, smooth in
@@ -3770,6 +3784,9 @@ private final class NativeTimelineNeedlesView: NSView {
         return abs(point.x - editX) <= 14 ? false : nil
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
+        if let event = NSApp.currentEvent,
+           event.type == .rightMouseDown || event.type == .rightMouseDragged || event.type == .rightMouseUp ||
+           (event.type == .leftMouseDown && event.modifierFlags.contains(.control)) { return nil }
         guard let window, !NativeTimelineInputGate.shared.isBlocked(window), window.attachedSheet == nil,
               target(at: convert(point, from: superview)) != nil else { return nil }
         return self
@@ -3784,16 +3801,7 @@ private final class NativeTimelineNeedlesView: NSView {
         let position = min(max(0, convert(event.locationInWindow, from: nil).x / max(1, size.width)), 1) * extent
         seek(position, dragging); sample(); paint()
     }
-    override func rightMouseDown(with event: NSEvent) {
-        guard target(at: convert(event.locationInWindow, from: nil)) == false else { return }
-        let menu = NSMenu()
-        for (title, selector) in [("Create marker", #selector(createMarker)), ("Create tempo marker", #selector(createTempoMarker))] {
-            let item = NSMenuItem(title: JarasLocalization.string(title), action: selector, keyEquivalent: ""); item.target = self; menu.addItem(item)
-        }
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
-    }
-    @objc private func createMarker() { marker(false) }
-    @objc private func createTempoMarker() { marker(true) }
+
 }
 #endif
 
@@ -4827,13 +4835,10 @@ private final class TimelineRenderMetadata {
         let title: String
     }
     private var itemTitles: [UUID: TitleEntry] = [:]
-    private struct RateProgramKey: Hashable {
-        let owner: UUID
-        let end: Double
-    }
-    private var itemRatePrograms: [RateProgramKey: [TimelineTempoSection]] = [:]
+    private var tempoPrograms: AudioTempoPrograms
     init(song: Song, audibilityTracks: [Track]? = nil) {
         self.song = song
+        tempoPrograms = AudioTempoPrograms(song: song)
         affectsAudio = song.tempoMarkersAffectAudio
         hasClickTrack = song.tracks.contains { $0.kind == .click }
         soloAudibleTracks = TrackHierarchy.soloAudibleTracks(audibilityTracks ?? song.tracks)
@@ -4884,8 +4889,7 @@ private final class TimelineRenderMetadata {
         // Preview gain is deliberately outside the document render key. Check
         // the full clip so every preview field reaches the waveform fragments.
         if let cached, cached.source == clip { return cached.fragments }
-        let sections = sectionsLocked(until: song.duration)
-        let fragments = sections.isEmpty ? [clip] : song.tempoAudioSegments(clip, sections: sections)
+        let fragments = tempoPrograms.fragments(for: clip)
         let entry = FragmentEntry(source: clip, fragments: fragments)
         if preview { waveformPreview = entry } else { audio[clip.id] = entry }
         return fragments
@@ -4910,17 +4914,7 @@ private final class TimelineRenderMetadata {
         guard affectsAudio, clip.frozenMIDI != true, clip.renderedTiming != true, clip.renderedTempo != true else { return [clip.audioRate] }
         lock.lock(); defer { lock.unlock() }
         let end = clip.startTime + clip.duration
-        let extent = max(song.duration, end)
-        let sections = sectionsLocked(until: extent)
-        let program: [TimelineTempoSection]
-        if let owner = song.tempoOwner(for: clip) {
-            let key = RateProgramKey(owner: owner.id, end: extent)
-            if let cached = itemRatePrograms[key] { program = cached }
-            else {
-                program = song.audioTempoSections(owner: owner, until: extent, sections: sections)
-                itemRatePrograms[key] = program
-            }
-        } else { program = sections }
+        let program = tempoPrograms.program(for: clip)
         // Share the owned tempo program across stems. Labels need only rates,
         // not cloned playback fragments or source offsets for offscreen items.
         return program.compactMap { section in

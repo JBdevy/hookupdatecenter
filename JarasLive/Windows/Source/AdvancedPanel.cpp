@@ -5,39 +5,12 @@
 #include "TimelineBulkEditing.h"
 #include "MarkerRegionConversion.h"
 #include "ConversionReportPanel.h"
+#include "PlaylistEditor.h"
 namespace catlive {
 namespace {
 const char *colourKeys[]{"jaras.setlist.allRegionsTextColor", "jaras.setlist.playlistTextColor",
-                         "jaras.setlist.unifiedTextColor"};
-constexpr uint32 colourDefaults[]{0xffffff, 0x00ff9a, 0xffeb3b};
-class ColourEditor final : public Component {
-  public:
-    ColourEditor(Colour initial, std::function<void(Colour)> commit)
-        : selected(initial), save(std::move(commit)),
-          selector(ColourSelector::showColourAtTop | ColourSelector::showSliders |
-                   ColourSelector::showColourspace) {
-        addAndMakeVisible(selector);
-        selector.setCurrentColour(selected, dontSendNotification);
-        selector.setColour(ColourSelector::backgroundColourId, theme::panel);
-        addAndMakeVisible(apply);
-        apply.onClick = [this] {
-            save(selector.getCurrentColour().withAlpha(1.f));
-            if (auto *callout = findParentComponentOfClass<CallOutBox>())
-                callout->dismiss();
-        };
-        setSize(300, 340);
-    }
-    void resized() override {
-        selector.setBounds(getLocalBounds().withTrimmedBottom(44));
-        apply.setBounds(getWidth() - 94, getHeight() - 36, 82, 26);
-    }
-
-  private:
-    Colour selected;
-    std::function<void(Colour)> save;
-    ColourSelector selector;
-    TextButton apply{"Save"};
-};
+                         "jaras.setlist.unifiedTextColor", "jaras.setlist.blockTextColor"};
+constexpr uint32 colourDefaults[]{0xffffff, 0x00ff9a, 0xffeb3b, 0x69ed91};
 } // namespace
 AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function<void(String)> fail)
     : appearance(settings), session(value), error(std::move(fail)) {
@@ -60,7 +33,7 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
         tab->getProperties().set("fontSize", 13);
         tab->setColour(TextButton::buttonOnColourId, theme::green.withAlpha(.15f));
         tab->setColour(TextButton::textColourOnId, Colours::white);
-        const char *icons[]{"metronome", "grid", "record", "waveform", "video", "setlist", "keyboard"};
+        const char *icons[]{"metronome", "grid", "record.circle", "waveform", "video", "setlist", "piano"};
         tab->getProperties().set("leadingIcon", icons[i]);
         tab->onClick = [this, i] { select(i); };
     }
@@ -128,14 +101,21 @@ void AdvancedPanel::colourRow(const String &name, const String &key, uint32 init
     swatch->onClick = [safe, button, key, initial] {
         if (!safe || !button)
             return;
-        auto editor = std::make_unique<ColourEditor>(
-            safe->appearance.colour(key, initial), [safe, button, key](Colour colour) {
-                if (!safe || !button)
-                    return;
-                safe->save(key, (int)(colour.getARGB() & 0xffffffu));
-                button->setColour(TextButton::buttonColourId, colour);
-            });
-        CallOutBox::launchAsynchronously(std::move(editor), button->getScreenBounds(), nullptr);
+        auto holder=std::make_shared<SafePointer<RegionEditor>>();
+        auto dismiss=[holder]{if(*holder)if(auto *callout=(*holder)->findParentComponentOfClass<CallOutBox>())callout->dismiss();};
+        const auto original=safe->appearance.colour(key,initial).getARGB()&0xffffffu;
+        auto editor=std::make_unique<RegionEditor>("",original,false,
+            [safe,button,key,dismiss](String,unsigned colour,bool){
+                if(safe&&button){safe->appearance.clearPreview(key);safe->save(key,(int)colour);button->setColour(TextButton::buttonColourId,Colour(0xff000000u|colour));}
+                dismiss();
+            },dismiss,false,false);
+        *holder=editor.get();editor->setName(button->getName());editor->setSize(336,340);
+        editor->previewColour=[safe,button,key](unsigned colour){
+            if(safe&&button){safe->appearance.preview(key,(int)colour);button->setColour(TextButton::buttonColourId,Colour(0xff000000u|colour));}
+        };
+        editor->finishPreview=[safe,key]{if(safe)safe->appearance.clearPreview(key);};
+        localization::panel(*editor);
+        CallOutBox::launchAsynchronously(std::move(editor),button->getScreenBounds(),nullptr);
     };
     if (reset) {
         auto *resetButton = new TextButton("Restaurar");
@@ -330,8 +310,9 @@ void AdvancedPanel::select(int index) {
                [this](int id) { save("jaras.setlist.fontStyle", id - 1); });
         const StringArray names{String::fromUTF8("Letras das músicas em All Regions"),
                                 String::fromUTF8("Letras das músicas nas playlists"),
-                                String::fromUTF8("Letras das músicas dentro das gavetas")};
-        for (int i = 0; i < 3; ++i)
+                                String::fromUTF8("Letras das músicas dentro das gavetas"),
+                                "Block text color"};
+        for (int i = 0; i < names.size(); ++i)
             colourRow(names[i], colourKeys[i], colourDefaults[i], 142 + i * 40);
     }
     if (index == 6) {

@@ -56,8 +56,35 @@ class TempoEditMap {
         if(!relative || !std::isfinite(*active->tempoBPM) || *active->tempoBPM<=0) return 1;
         return *active->tempoBPM / active->tempoReferenceBPM.value_or(song.bpm);
     }
+    struct RatePoint { double time, speed; };
+    using Program = std::vector<RatePoint>;
+    static Program program(const Song& song, const Part* part=nullptr) {
+        const double limit=part?ownerLimit(song,*part):0;
+        std::vector<const TimelineMarker*> markers;
+        if(song.markers) for(const auto& marker:*song.markers)
+            if(marker.tempoBPM && (!part || (marker.position>=part->startTime && marker.position<limit &&
+                (!marker.regionOwnerID || marker.regionOwnerID==part->id || marker.regionOwnerID==part->parentRegionID)))) markers.push_back(&marker);
+        std::sort(markers.begin(),markers.end(),[](auto a,auto b){return a->position==b->position?a->id<b->id:a->position<b->position;});
+        Program result;
+        for(auto marker:markers) {
+            const auto mode=marker->tempoTimebase.value_or("global");
+            const bool relative=mode=="relative" || (mode=="global" && song.timeSettings.value_or(ProjectTimeSettings{}).timebase==ProjectTimebase::relative);
+            const double speed=relative && std::isfinite(*marker->tempoBPM) && *marker->tempoBPM>0 ? *marker->tempoBPM/marker->tempoReferenceBPM.value_or(song.bpm):1;
+            if(!result.empty() && result.back().time==marker->position) result.back().speed=speed;
+            else result.push_back({marker->position,speed});
+        }
+        return result;
+    }
+    static double speedAt(const Program& program, double time) {
+        auto found=std::upper_bound(program.begin(),program.end(),time,[](double at,const auto& point){return at<point.time;});
+        return found==program.begin()?1:std::prev(found)->speed;
+    }
+
 public:
     static const Part* tempoOwner(const Song& song, const AudioClip& clip) { return owner(song, clip); }
+    static double tempoEditEnd(const Song& song, const Part& part) {
+        return folder(song,part) ? part.endTime : std::min(part.endTime,ownerLimit(song,part));
+    }
     // Playback and editor cursors use the same persisted ownership and tempo
     // reference as tempo edits, including tails inside a following song.
     static double playbackRate(const Song& song, const AudioClip& clip, double time) {
@@ -82,26 +109,35 @@ public:
         for(const Song* song:{&before,&after}) if(song->markers) for(const auto& marker:*song->markers) if(marker.tempoBPM) points.push_back(marker.position);
         points.erase(std::remove_if(points.begin(),points.end(),[](double p){return !std::isfinite(p)||p<0;}),points.end());
         std::sort(points.begin(),points.end()); points.erase(std::unique(points.begin(),points.end()),points.end());
+        const auto oldGlobal=program(before),newGlobal=program(after);
         double output=0;
         for(size_t i=1;i<points.size();++i) {
             const double start=points[i-1],end=points[i],middle=start+(end-start)/2;
             const bool filled=std::any_of(occupied.begin(),occupied.end(),[&](const auto& interval){return interval.first<=middle && middle<interval.second;});
-            const double scale=filled ? rate(before,middle)/rate(after,middle) : 1;
+            const double scale=filled ? speedAt(oldGlobal,middle)/speedAt(newGlobal,middle) : 1;
             spans.push_back({start,end,output,scale}); output+=(end-start)*scale;
         }
+        // Compile each owner's tempo program once for the whole edit. Looking
+        // up ownership and scanning every marker per stem/interval stalls UI.
+        std::unordered_map<ID,std::pair<Program,Program>> programs;
         auto resizedDuration=[&](double start,double end,const Part& part) {
             const bool reversed=end<start;
             if(reversed) std::swap(start,end);
-            const auto found=std::find_if(after.parts.begin(),after.parts.end(),[&](const auto& value){return value.id==part.id;});
-            const Part* next=found==after.parts.end()?&part:&*found;
+            auto cached=programs.find(part.id);
+            if(cached==programs.end()) {
+                const auto found=std::find_if(after.parts.begin(),after.parts.end(),[&](const auto& value){return value.id==part.id;});
+                cached=programs.emplace(part.id,std::make_pair(program(before,&part),program(after,found==after.parts.end()?&part:&*found))).first;
+            }
+            const auto& oldProgram=cached->second.first;
+            const auto& newProgram=cached->second.second;
             std::vector<double> edges{start,end};
-            for(const Song* song:{&before,&after}) if(song->markers) for(const auto& marker:*song->markers)
-                if(marker.tempoBPM && marker.position>start && marker.position<end) edges.push_back(marker.position);
+            for(const auto* program:{&oldProgram,&newProgram}) for(const auto& point:*program)
+                if(point.time>start && point.time<end) edges.push_back(point.time);
             std::sort(edges.begin(),edges.end());edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
             double duration=0;
             for(size_t i=1;i<edges.size();++i) {
                 const double middle=edges[i-1]+(edges[i]-edges[i-1])/2;
-                duration+=(edges[i]-edges[i-1])*rate(before,middle,&part)/rate(after,middle,next);
+                duration+=(edges[i]-edges[i-1])*speedAt(oldProgram,middle)/speedAt(newProgram,middle);
             }
             return reversed?-duration:duration;
         };

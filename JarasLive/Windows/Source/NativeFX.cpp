@@ -487,7 +487,7 @@ void NativeFX::applyAutomation(const AutomationProgram &program, double time) {
 void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds) {
     ScopedNoDenormals noDenormals;
     for (auto &e : effects) {
-        if (e->kind == "CatLive Trigger" && e->trigger.hasSample())
+        if (e->kind == "CatLive Trigger")
             e->trigger.process(buffer.getWritePointer(0), buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr, samples, e->sampleRate);
         if (e->kind == "Cat Gate")
             e->gate.process(buffer.getWritePointer(0), buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr, samples, e->sampleRate);

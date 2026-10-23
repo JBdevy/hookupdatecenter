@@ -15,6 +15,8 @@ enum Entry { case region(Part, Int); var id: UUID { switch self { case .region(l
  @Published var setlistRevision: UInt64 = 0
  @Published var selection: Set<UUID> = []
  var moves = 0
+ var deferPress = false
+ var deferredPressWasNotMouseDown = false
  func moveSetlistEntries(_ ids:Set<UUID>,relativeTo target:UUID,after:Bool) {
   guard !ids.contains(target) else { return }
   let moving=setlistEntries.filter { ids.contains($0.id) }
@@ -33,8 +35,13 @@ struct Fixture: View {
    ForEach(show.setlistEntries,id:\.id) { entry in
     Button {} label:{Text(entry.id.uuidString.prefix(8)).frame(width:280,height:34).background(Color.gray.opacity(0.3)).contentShape(Rectangle())}.buttonStyle(SetlistPressStyle(select: {
       let flags = NSApp.currentEvent?.modifierFlags ?? []
-      if flags.contains(.command) { if !show.selection.insert(entry.id).inserted { show.selection.remove(entry.id) } }
-      else if !(NSApp.currentEvent?.type == .leftMouseDown && show.selection.count > 1 && show.selection.contains(entry.id)) { show.selection = [entry.id] }
+      let apply = {
+       if show.deferPress { show.deferredPressWasNotMouseDown = NSApp.currentEvent?.type != .leftMouseDown }
+       if flags.contains(.command) { if !show.selection.insert(entry.id).inserted { show.selection.remove(entry.id) } }
+       else if !SetlistSelectionPhase.press.preservesSelection(selected: show.selection.contains(entry.id), count: show.selection.count, modifying: false) { show.selection = [entry.id] }
+      }
+      if show.deferPress { DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: apply) }
+      else { apply() }
      }))
      .modifier(PlaylistRegionDrag(show:show,playlist:show.selectedRegionPlaylist!.id,entry:entry.id,block:false,selection:$show.selection, released: { show.selection = [entry.id] }))
    }
@@ -81,7 +88,15 @@ MainActor.assumeIsolated {
  precondition(show.moves==moves && show.setlistEntries.map(\.id)==original,"Escape must cancel without reordering")
  drag(from:point(150,27),to:point(450,118))
  precondition(show.moves==moves && show.setlistEntries.map(\.id)==original,"dropping outside must cancel without reordering")
- show.selection = Set(original.prefix(2)); pump(0.2)
+ show.selection = Set(original.prefix(2)); show.deferPress = true; pump(0.2)
+ let held = point(150,27)
+ DispatchQueue.global().async { event(.mouseMoved,held); event(.leftMouseDown,held); event(.mouseMoved,held) }
+ pump(0.5)
+ precondition(show.deferredPressWasNotMouseDown, "regression must deliver selection after the global mouse-down event")
+ precondition(show.selection == Set(original.prefix(2)), "holding a selected row must keep all songs selected even after a deferred SwiftUI callback")
+ DispatchQueue.global().async { event(.leftMouseUp,held) }; pump(0.4)
+ precondition(show.selection == [original[0]], "only mouse-up without dragging may collapse the held selection")
+ show.deferPress = false; show.selection = Set(original.prefix(2)); pump(0.2)
  drag(from:point(150,27),to:point(150,150))
  precondition(show.setlistEntries.map(\.id)==[original[2],original[3],original[0],original[1]],
               "dragging a selected row preserves and moves both songs in their original order")

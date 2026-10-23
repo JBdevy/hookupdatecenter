@@ -70,6 +70,16 @@ void Session::notify() {
     if (changed)
         changed();
 }
+jaras::Project Session::makeEmptyProject(String name) {
+    jaras::Project p;
+    p.id = uuid();
+    p.masterColor = 0x414141;
+    p.name = utf8(name.trim().isEmpty() ? "Untitled" : name.trim());
+    p.createdAt = p.updatedAt = utf8(Time::getCurrentTime().toISO8601(true));
+    p.songs.push_back(emptySong("Timeline"));
+    p.setlists.push_back({uuid(), p.name, {p.songs.front().id}});
+    return p;
+}
 void Session::newProject(String name) {
     if(jaras::projectSync::readOnly() && (transport().playing || transport().subPlay.playing)) return;
     jaras::projectSync::Internal initialProject;
@@ -79,13 +89,7 @@ void Session::newProject(String name) {
         throw std::runtime_error("Pare a gravação antes de criar outro projeto.");
     cancelBPMDetection();
     core.execute({jaras::CommandKind::stopAll});
-    jaras::Project p;
-    p.id = uuid();
-    p.masterColor = 0x414141;
-    p.name = utf8(name.trim().isEmpty() ? "Untitled" : name.trim());
-    p.createdAt = p.updatedAt = utf8(Time::getCurrentTime().toISO8601(true));
-    p.songs.push_back(emptySong("Timeline"));
-    p.setlists.push_back({uuid(), p.name, {p.songs.front().id}});
+    auto p = makeEmptyProject(name);
     subCursorPreviewUntil = 0;
     focusedRegion.reset(); ++setlistFocusRevision;
     core.loadProject(std::move(p));
@@ -629,10 +633,13 @@ void Session::cleanTimelineMedia(std::function<void(String)> completed) {
 }
 jaras::TransportState Session::presentationTransport() const {
     auto value = transport();
-    if (audio.presentationLatencyFrames() == 0) return value;
+    // The core/UI state is sampled at 8 Hz. The running needle and viewport
+    // must use the device's sample clock even when no plugin adds latency.
+    if (audio.transportClockPending() ||
+        (audio.presentationLatencyFrames() == 0 && !audio.hasLiveDevice())) return value;
     const auto audible = audio.presentationState();
     value.position = audible.position;
-    value.subPlay.position = audible.subPosition;
+    if (audible.subPlaying) value.subPlay.position = audible.subPosition;
     value.playing = audible.playing;
     value.subPlay.playing = audible.subPlaying;
     presentationQueues.apply(value);
@@ -646,9 +653,17 @@ jaras::TransportState Session::presentationTransport() const {
     return value;
 }
 void Session::syncClock() {
+    // A prepared seek is not applied until the next device callback. Do not
+    // advance the core with samples from the old head or resend that seek in
+    // this interval. The callback resets elapsed at the actual commit boundary.
+    if(audio.transportClockPending())return;
     auto elapsed = audio.takeElapsed();
     if (elapsed <= 0)
         return;
+    // Compare clocks from the same observation, before advancing the model.
+    // Region/scope resolution can outlast a device block; reading the audio
+    // head afterwards mistakes that valid progress for drift and rewinds it.
+    const auto actual = audio.state();
     const auto before = transport();
     const auto old = before.songId;
     const auto oldJump = before.sectionJumpSerial;
@@ -665,18 +680,21 @@ void Session::syncClock() {
     if (old != transport().songId && song())
         prepare();
     else {
-        auto actual = audio.state();
         const auto &expected = transport();
         auto *device = audio.devices.getCurrentAudioDevice();
         double tolerance =
             device
                 ? std::max(.003, device->getCurrentBufferSizeSamples() / audio.sampleRate() * 1.5)
                 : .003;
-        if (expected.playing != actual.playing || expected.subPlay.playing != actual.subPlaying ||
-            oldJump != expected.sectionJumpSerial || oldPromotion != expected.subPlayPromotion ||
-            std::abs(expected.position - actual.position) > tolerance)
-            publishTransport(oldJump != expected.sectionJumpSerial ||
-                             oldPromotion != expected.subPlayPromotion);
+        const bool aligned = expected.playing == actual.playing &&
+            expected.subPlay.playing == actual.subPlaying &&
+            std::abs(expected.position - actual.position) <= tolerance &&
+            (!expected.subPlay.playing || std::abs(expected.subPlay.position - actual.subPosition) <= tolerance);
+        const bool transition = oldJump != expected.sectionJumpSerial || oldPromotion != expected.subPlayPromotion;
+        if (!aligned || transition)
+            // Loops already wrap at a sample boundary inside the audio engine.
+            // Acknowledge the core's loop event without replaying its onset.
+            publishTransport(transition, aligned);
     }
 }
 void Session::publishTransport(bool preserveLatency, bool routingOnly) {
@@ -703,7 +721,31 @@ void Session::publishTransport(bool preserveLatency, bool routingOnly) {
                 state.loopEnd = p.endTime;
             }
     if (routingOnly) audio.updateTransportRouting(state);
+    else if(!inspection && audio.hasLiveDevice())audio.transportAsync(state);
     else audio.transport(state);
+    if(!inspection && audio.hasLiveDevice()) {
+        std::optional<AudioEngine::State> destination;
+        if(song() && t.playing) {
+            std::optional<double> at;
+            if(t.queuedSectionMarkerId) {
+                // A region ID is the virtual INICIO section, just as in the
+                // shared transport. It has no physical timeline marker.
+                for(const auto &part:song()->parts)if(part.id==*t.queuedSectionMarkerId)at=part.startTime;
+                if(!at && song()->markers)
+                    for(const auto &marker:*song()->markers)if(marker.id==*t.queuedSectionMarkerId)at=marker.position;
+            }
+            if(!at && t.queuedRegionId)
+                for(const auto &part:song()->parts)if(part.id==*t.queuedRegionId)at=jaras::playbackRegionStart(*song(),part);
+            if(at) {
+                auto future=t;future.position=*at;future.playbackStartRegionId=jaras::playbackEntryRegion(*song(),*at);
+                future.ignoreNextAfter.reset();
+                destination.emplace();destination->playing=true;destination->subPlaying=true;
+                destination->position=*at;destination->subPosition=*at;
+                destination->scope[0]=destination->scope[1]=jaras::playbackScope(*song(),future);
+            }
+        }
+        audio.prewarmTransportDestination(destination);
+    }
 }
 void Session::warnTransportFadeout(String warning) {
     if (transportFadeoutWarning) transportFadeoutWarning(warning);
@@ -850,10 +892,13 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
         const auto &afterCommand = transport();
         const bool unchangedHeads = beforeCommand.songId == afterCommand.songId &&
             beforeCommand.position == afterCommand.position &&
-            beforeCommand.subPlay.position == afterCommand.subPlay.position &&
+            (beforeCommand.subPlay.position == afterCommand.subPlay.position ||
+             (!beforeCommand.subPlay.playing && !afterCommand.subPlay.playing)) &&
             beforeCommand.playing == afterCommand.playing &&
             beforeCommand.subPlay.playing == afterCommand.subPlay.playing;
-        publishTransport(unchangedHeads);
+        // Queueing a section/region changes routing, not the running source
+        // clocks. Do not re-prime and restart every stem merely to arm a jump.
+        publishTransport(unchangedHeads, unchangedHeads);
     }
     startTimerHz(transport().playing || transport().subPlay.playing ? 60 : 8);
     if (fadeoutRequested && !completingFadeout && !transport().playing) cancelTransportFadeout();
@@ -1855,7 +1900,7 @@ void Session::timerCallback() {
             if(audioOutputWarning) audioOutputWarning(message);
             notify();
         }
-        if (audio.isRecording() && audio.recordedSamples() > 0 && !audio.state().playing) {
+        if (audio.isRecording() && audio.recordedSamples() > 0 && !audio.transportClockPending() && !audio.state().playing) {
             toggleRecording();
             return;
         }

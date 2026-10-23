@@ -367,10 +367,10 @@ wheel.point = master.convert(NSPoint(x: 30, y: 150), to: nil)
 wheel.flags = .shift; wheel.precise = false; wheel.dx = 0; wheel.dy = 1
 let initialHorizontal = scroll.contentView.bounds.minX
 let initialSlotPosition = slotScroll.contentView.bounds.origin
-for n in 0..<2 {
+for n in 0..<1 {
     wheel.time = 10 + Double(n) * 0.05
     precondition(view.routeWheel(wheel) && requestedModes.isEmpty,
-                 "Two physical notches must not trigger the deliberate three-notch gesture")
+                 "A single physical notch must not trigger the two-notch gesture")
 }
 wheel.time = 10.2; precondition(view.routeWheel(wheel))
 precondition(requestedModes == [true], "Shift-wheel up switches to FX/instrument slots only")
@@ -383,7 +383,7 @@ for n in 0..<3 { wheel.time = 12 + Double(n) * 0.05; precondition(view.routeWhee
 precondition(requestedModes == [true, false], "Shift-wheel down restores normal layout")
 wheel.precise = true; wheel.dy = 10_000; wheel.time = 13
 precondition(view.routeWheel(wheel) && requestedModes.count == 2,
-             "One accelerated spike is limited to sixty points and cannot change the layout")
+             "One accelerated spike is limited to forty points and cannot change the layout")
 wheel.inertialPhase = .changed
 for n in 1...10 { wheel.time = 13 + Double(n) * 0.01; precondition(view.routeWheel(wheel)) }
 precondition(requestedModes.count == 2, "Momentum never contributes to the mode gesture")
@@ -401,7 +401,7 @@ precondition(view.routeWheel(wheel))
 wheel.point = NSPoint(x: -30, y: -30); wheel.time = 16.1
 precondition(!view.routeWheel(wheel), "The gesture only belongs to the hovered mixer")
 wheel.point = master.convert(NSPoint(x: 30, y: 150), to: nil)
-for n in 0..<2 { wheel.time = 16.2 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
+for n in 0..<1 { wheel.time = 16.2 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
 precondition(requestedModes.count == 4, "Leaving the panel resets a partial gesture")
 wheel.time = 16.4; precondition(view.routeWheel(wheel))
 precondition(requestedModes.count == 5)
@@ -427,13 +427,12 @@ private var modeGesture = FooterMixerModeGesture()
 func modeStep(_ delta: CGFloat, _ time: TimeInterval, precise: Bool = false) -> Bool? {
     modeGesture.consume(delta: delta, precise: precise, timestamp: time, momentum: false)
 }
-precondition(modeStep(1, 1) == nil && modeStep(1, 1.1) == nil && modeStep(-1, 1.2) == nil)
-precondition(modeStep(-1, 1.3) == nil)
-precondition(modeStep(-1, 1.4) == false, "A reversal starts a fresh threshold")
+precondition(modeStep(1, 1) == nil && modeStep(-1, 1.1) == nil)
+precondition(modeStep(-1, 1.2) == false, "Two notches after reversing complete the gesture")
 modeGesture.reset()
-for time in [1.5, 1.6, 1.7, 1.8, 1.9] { precondition(modeStep(1, time) == nil) }
-for time in [2.1, 2.2] { precondition(modeStep(1, time) == nil) }
-precondition(modeStep(1, 2.3) == true, "Cooldown survives a released Shift or reversed gesture")
+for time in [1.3, 1.4, 1.5, 1.6, 1.7] { precondition(modeStep(1, time) == nil) }
+precondition(modeStep(1, 1.9) == nil)
+precondition(modeStep(1, 2) == true, "Cooldown survives a released Shift or reversed gesture")
 modeGesture.reset()
 precondition(modeStep(4, 4) == nil && modeStep(4, 4.7) == nil)
 precondition(modeStep(4, 4.8) == true, "A gap over 0.6 seconds discards incomplete progress")

@@ -50,6 +50,35 @@ public enum ClickTempoDetector {
     public static func sections(onsets: [Double], beatsPerBar: Int = 4) -> [Section] {
         analyze(onsets: onsets, beatsPerBar: beatsPerBar).sections
     }
+    /// Public tempo markers are musical edits, not every sub-beat correction
+    /// needed by the click analyzer. Sample at most once per two measures and
+    /// absorb small detection errors around an integral BPM (140.164 -> 140).
+    public static func markerSections(_ input: [Section], beatsPerBar: Int = 4, beatUnit: Int = 4,
+                                      until end: Double) -> [Section] {
+        func rounded(_ value: Double) -> Double {
+            let integer = value.rounded()
+            return abs(value - integer) <= 0.25 ? integer : value
+        }
+        let sections = input.filter { $0.position.isFinite && $0.bpm.isFinite && $0.bpm >= 60 && $0.bpm <= 300 && $0.position < end }
+            .sorted { $0.position < $1.position }
+        guard let first = sections.first else { return [] }
+        var result = [Section(position: first.position, bpm: rounded(first.bpm))]
+        var index = 1
+        while index < sections.count {
+            let previous = result.last!
+            if abs(rounded(sections[index].bpm) - previous.bpm) < 0.01 { index += 1; continue }
+            let bars = 2 * Double(max(1, beatsPerBar)) * 4 / Double(max(1, beatUnit)) * 60 / previous.bpm
+            let position = max(sections[index].position, previous.position + bars)
+            guard position < end else { break }
+            // Use the tempo still present at the two-bar boundary, rather than
+            // keeping a short fluctuation which has already returned to normal.
+            while index + 1 < sections.count && sections[index + 1].position <= position { index += 1 }
+            let bpm = rounded(sections[index].bpm)
+            if abs(bpm - previous.bpm) >= 0.01 { result.append(Section(position: position, bpm: bpm)) }
+            index += 1
+        }
+        return result
+    }
     private struct Analysis { var sections: [Section] }
     private static func analyze(onsets: [Double], beatsPerBar: Int) -> Analysis {
         var times: [Double] = []
@@ -208,6 +237,8 @@ public enum ClickTempoDetector {
     public static func markersWithMeter(song: Song, region: Part, transientsFor: (AudioFile) throws -> [Transient]) throws -> (markers: [TimelineMarker], hasClickAudio: Bool) {
         // Analyze a private Free Grid snapshot; never publish a temporary mode.
         var song = song
+        var region = region
+        region.endTime = song.tempoEditEnd(for: region)
         var timing = song.projectTime; timing.timebase = .free
         song.timeSettings = timing
         var pulses: [Transient] = []
@@ -227,9 +258,11 @@ public enum ClickTempoDetector {
         }
         var unique: [Transient] = []
         for pulse in pulses.sorted(by: { $0.position < $1.position }) where unique.last.map({ pulse.position - $0.position > 0.08 }) ?? true { unique.append(pulse) }
-        let analysis = hasClickAudio ? analyze(onsets: unique.map(\.position), beatsPerBar: meter(transients: unique)?.beats ?? song.meterBeats)
+        let signature = meter(transients: unique)
+        let analysis = hasClickAudio ? analyze(onsets: unique.map(\.position), beatsPerBar: signature?.beats ?? song.meterBeats)
             : Analysis(sections: [])
-        let sections = analysis.sections
+        let sections = markerSections(analysis.sections, beatsPerBar: signature?.beats ?? song.meterBeats,
+                                      beatUnit: signature?.unit ?? song.meterUnit, until: region.endTime)
         var markers = sections.enumerated().map { index, section in
             let end = index + 1 < sections.count ? sections[index + 1].position : region.endTime
             let detectedMeter = meter(transients: unique.filter { $0.position >= section.position && $0.position < end })
@@ -259,7 +292,8 @@ public extension Song {
         var timing = projectTime; timing.timebase = .free; timeSettings = timing
         if markers == nil { markers = [] }
         if let region {
-            markers!.removeAll { $0.isTempo && $0.position >= region.startTime && $0.position < region.endTime }
+            let end = tempoEditEnd(for: region)
+            markers!.removeAll { $0.isTempo && $0.position >= region.startTime && $0.position < end }
         }
         for marker in detected {
             // A marker already at the onset is updated, never duplicated.

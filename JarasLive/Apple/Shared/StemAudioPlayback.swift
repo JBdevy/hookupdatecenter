@@ -389,10 +389,24 @@ struct TimecodePlaybackSpan {
     private var preparedJump: PreparedJump?
     private var appliedJumpBoundaries: [ObjectIdentifier: UInt64] = [:]
     private var boundaryTails: [(Voice, UInt64)] = []
+    // Keep future-head work below one long UI stall. All batches retain the
+    // same sample-clock deadline; this changes preparation, never onset time.
+    static func jumpPreparationBatchSize(pending: Int, seconds: Double, interval: Double) -> Int {
+        guard pending > 0 else { return 0 }
+        let cadence = max(1.0 / 30.0, min(0.25, interval))
+        let passes = max(1, Int(max(0, seconds - 0.15) / (cadence * 2)))
+        return max(1, (pending + passes - 1) / passes)
+    }
+    private func retireSilently(_ voice: Voice) {
+        JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
+        retiredVoices.append(voice)
+    }
     private func cancelPreparedJump() {
         if preparedJump != nil { metronome?.cancelJump(); clickGenerators.first?.cancelJump() }
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
-        for key in Array(voices.keys) where key.head == 2 { remove(key) }
+        for key in Array(voices.keys) where key.head == 2 {
+            if let voice = voices.removeValue(forKey: key) { retireSilently(voice) }
+        }
         for voice in voices.values { voice.effects?.setPlaybackBoundary() }
         headAudioClock[2] = nil; lastPosition[2] = nil; preparedJump = nil
     }
@@ -3039,7 +3053,8 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 monitor.gate.outputVolume = tracks[id] == nil || tracks[id]?.inputMonitoring == false ? 0 : 1
             }
             allowsTempoChanges = song.projectTime.timebase == .relative || song.tempoMarkersAffectAudio
-            let tempoSections = song.tempoSections(until: song.duration)
+            var tempoPrograms = AudioTempoPrograms(song: song)
+            let playbackStarts = PlaybackItemStartIndex(song: song)
             let previousFragmentOwners = Dictionary(uniqueKeysWithValues: clipFragments.flatMap { original, fragments in
                 fragments.map { ($0, original) }
             })
@@ -3051,7 +3066,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                     if clip.isProjectionMedia && VideoMediaSettings.shared.noAudio { return false }
                     return !missingAudioPaths.contains(path)
                 }.flatMap { clip in
-                    let fragments = song.tempoAudioSegments(clip, sections: tempoSections)
+                    let fragments = tempoPrograms.fragments(for: clip)
                     clipFragments[clip.id] = fragments.map(\.id)
                     if let last = fragments.last {
                         let sourceEnd = last.sourceOffset + last.duration * last.audioRate
@@ -3063,9 +3078,10 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                             for (a, b) in zip(fragments, fragments.dropFirst()) { contiguousNext[a.id] = b.id; contiguousPrevious[b.id] = a.id }
                         }
                     }
+                    let playbackStart = playbackStarts.start(for: clip)
                     for fragment in fragments {
                         fragmentStarts[fragment.id] = clip.startTime
-                        fragmentPlaybackStarts[fragment.id] = song.playbackItemStart(clip)
+                        fragmentPlaybackStarts[fragment.id] = playbackStart
                     }
                     return fragments.map { (track.id, $0) }
                 }
@@ -3354,8 +3370,11 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             }
         }
         let nowHost = mach_absolute_time()
-        for (voice, end) in boundaryTails where nowHost >= end { recycle(voice) }
+        for (voice, end) in boundaryTails where nowHost >= end { retireSilently(voice) }
         boundaryTails.removeAll { nowHost >= $0.1 }
+        // Retired heads are already silent. Reset their converters separately
+        // instead of resetting every outgoing stem in the same UI callback.
+        if realtime, running, !retiredVoices.isEmpty { recycle(retiredVoices.removeFirst()) }
         var promotedJump = false
         if let jump = preparedJump, let previous = lastPosition[0] {
             let expected = jump.destination + max(0, previous + elapsed - jump.boundary)
@@ -3385,7 +3404,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             nextJump!.0 != jump.boundary || nextJump!.1 != jump.destination || nextJump!.2 != jump.section || nextJump!.3 != jump.region {
             cancelPreparedJump()
         }
-        if realtime, preparedJump == nil, let next = nextJump, next.0 - transport.position <= 1.0,
+        if realtime, preparedJump == nil, let next = nextJump, next.0 - transport.position <= 2.0,
            let host = audioHostTime(position: next.0, head: 0), host > nowHost + AVAudioTime.hostTime(forSeconds: 0.015) {
             appliedJumpBoundaries.removeAll(keepingCapacity: true)
             preparedJump = PreparedJump(boundary: next.0, destination: next.1, host: host, section: next.2, region: next.3, revision: revision)
@@ -3464,7 +3483,17 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             let schedulingPosition = max(audiblePosition, headAudioClock[head]?.position ?? position)
             var scheduled: [(VoiceKey, Voice, AVAudioFramePosition, AVAudioFrameCount, Double)] = []
             let lookahead = 2 + max(0, position - schedulingPosition)
-            for index in playbackClipIndex.candidates(at: schedulingPosition, lookahead: lookahead) {
+            let candidates = playbackClipIndex.candidates(at: schedulingPosition, lookahead: lookahead)
+            let pending = head == 2 ? candidates.filter {
+                let clip = clips[$0].1
+                return voices[VoiceKey(clip: clip.id, head: head)] == nil && clip.audioFile != nil && scope.allows(fragmentPlaybackStarts[clip.id])
+            }.count : 0
+            let secondsToJump = preparedJump.map { jump in
+                let now = mach_absolute_time()
+                return jump.host > now ? AVAudioTime.seconds(forHostTime: jump.host - now) : 0
+            } ?? 0
+            let preparationBudget = head == 2 ? Self.jumpPreparationBatchSize(pending: pending, seconds: secondsToJump, interval: elapsed) : Int.max
+            for index in candidates {
                 let (track, clip) = clips[index]
                 guard scope.allows(fragmentPlaybackStarts[clip.id]) else { continue }
                 if let prepareEnd, clip.startTime >= prepareEnd { continue }
@@ -3478,6 +3507,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                     continue
                 }
                 guard voices[key] == nil, !hasContinuousPredecessor(clip.id, head: head), let audio = clip.audioFile else { continue }
+                if scheduled.count >= preparationBudget { break }
                 // While the tempo is being dragged, distant onsets have no
                 // stable deadline. Reserve only the imminent audio horizon;
                 // ordinary lookahead resumes as soon as editing settles.
@@ -3645,10 +3675,18 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             // Both heads use the same host clock. Rendering fades the outgoing
             // source at the boundary; no UI timer stops or restarts the audio.
             var reference: Double?
+            let pendingBoundaries = voices.filter { key, voice in
+                key.head == 0 && voice.effects.map { appliedJumpBoundaries[ObjectIdentifier($0.equalizer)] != jump.host } == true
+            }.count
+            let boundaryNow = mach_absolute_time()
+            let seconds = jump.host > boundaryNow ? AVAudioTime.seconds(forHostTime: jump.host - boundaryNow) : 0
+            var boundaryBudget = Self.jumpPreparationBatchSize(pending: pendingBoundaries, seconds: seconds, interval: elapsed)
             for (key, voice) in voices where key.head == 0 {
                 guard let effects = voice.effects else { continue }
                 let id = ObjectIdentifier(effects.equalizer)
                 guard appliedJumpBoundaries[id] != jump.host else { continue }
+                guard boundaryBudget > 0 else { break }
+                boundaryBudget -= 1
                 // Device latency queries synchronize with the audio I/O unit.
                 // A prepared boundary is immutable: apply it once per voice,
                 // including newly scheduled voices, instead of every UI tick.
@@ -4025,8 +4063,10 @@ struct VerticalTrackMeter: NSViewRepresentable {
         }
         peakLabel.contentsScale = scale
         peakLabel.backgroundColor = nil
+        // The meter starts 4pt below the row top. Its native coordinates
+        // run upwards: center 33pt below its top aligns with the fader at y=37.
         peakLabel.frame = sidePeak
-            ? CGRect(x: 21, y: 0, width: max(0, bounds.width - 21), height: peakHeight)
+            ? CGRect(x: 21, y: max(0, bounds.height - 33 - peakHeight / 2), width: max(0, bounds.width - 21), height: peakHeight)
             : CGRect(x: 13, y: max(0, bounds.height - peakHeight) * 0.75,
                      width: max(0, bounds.width - 13), height: peakHeight)
         pendingDrawing = true; pendingPeak = true

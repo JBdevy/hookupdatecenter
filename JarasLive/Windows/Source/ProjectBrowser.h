@@ -42,7 +42,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     void paint(Graphics &) override;
     void resized() override;
     void refresh();
-    std::function<void()> createEmpty, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
+    std::function<void()> createEmpty, createEmptyInNewTab, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
         browse, resume;
     std::function<void(File)> open, openInNewTab, deleteProject;
     void setProjectOpen(bool);
@@ -61,6 +61,14 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
         enum Icon { document, plusDocument, folder, plusFolder, waveform, archive, back, piano, recording };
         Action(String title, Icon symbol) : Button(title), icon(symbol) {}
         void paintButton(Graphics &, bool, bool) override;
+        std::function<void(const MouseEvent &)> contextMenu;
+        void mouseDown(const MouseEvent &e) override {
+            if (e.mods.isPopupMenu()) { if (isEnabled() && contextMenu) contextMenu(e); return; }
+            Button::mouseDown(e);
+        }
+        void mouseUp(const MouseEvent &e) override {
+            if (!e.mods.isPopupMenu()) Button::mouseUp(e);
+        }
 
       private:
         Icon icon;

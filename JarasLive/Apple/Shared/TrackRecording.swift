@@ -966,7 +966,7 @@ private struct RecordingButtonStyle: ButtonStyle {
             .foregroundStyle(transport ? Color.white : active ? Color.black : Color.red)
             .background(transport ? (active ? JarasTheme.transportRed : JarasTheme.liveOffRed).opacity(configuration.isPressed ? 0.85 : 1) :
                 active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
-                JarasTheme.text.opacity(configuration.isPressed ? 0.24 : 0.12))
+                (configuration.isPressed ? Color(hex: 0x565656) : JarasTheme.trackButton))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay(RoundedRectangle(cornerRadius: cornerRadius).stroke(transport ? (active ? JarasTheme.transportRed : Color.white.opacity(0.45)) : .clear))
             .contentShape(Rectangle())

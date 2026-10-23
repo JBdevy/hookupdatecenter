@@ -51,15 +51,15 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
     let screenPoint = window.convertPoint(toScreen: view.convert(NSPoint(x: 50, y: 100), to: nil))
     let point = CGPoint(x: screenPoint.x, y: NSScreen.screens[0].frame.height - screenPoint.y)
     postedShift(true)
-    for n in 0..<3 {
+    for n in 0..<2 {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1 + Double(n) * 0.08) { postedWheel(1, point: point) }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { postedShift(false) }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
         precondition(postedModes == [true] && postedPresentationModes.contains(true),
-                     "Three real Shift wheel notches must update both persisted mode and SwiftUI presentation")
+                     "Two real Shift wheel notches must update both persisted mode and SwiftUI presentation")
         postedShift(true)
-        for n in 0..<3 {
+        for n in 0..<2 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1 + Double(n) * 0.08) { postedWheel(-1, point: point) }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { postedShift(false) }

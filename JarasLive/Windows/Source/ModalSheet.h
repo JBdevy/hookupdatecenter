@@ -31,7 +31,7 @@ class ModalSheet final : public Component {
         g.fillAll(Colours::black.withAlpha(.48f));
         DropShadow(Colours::black.withAlpha(.3f), 20, {0, 8}).drawForRectangle(g, frame);
         g.setColour(theme::background);
-        g.fillRoundedRectangle(frame.toFloat(), 16);
+        g.fillRoundedRectangle(frame.toFloat(), (float)(double)content->getProperties().getWithDefault("sheetCornerRadius",16.0));
         if (headerHeight == 0) return;
         g.setColour(theme::line);
         g.drawHorizontalLine(frame.getY() + headerHeight - 1,
@@ -122,8 +122,9 @@ class ModalSheet final : public Component {
         explicit RoundedContentRenderer(Component &component) : owner(component) {}
         void paint(Graphics &g) override {
             Path clip;
+            const auto radius=(float)(double)owner.getProperties().getWithDefault("sheetCornerRadius",16.0);
             clip.addRoundedRectangle(0, 0, (float)owner.getWidth(), (float)owner.getHeight(),
-                                     16, 16, false, false, true, true);
+                                     radius, radius, false, false, true, true);
             Graphics::ScopedSaveState saved(g);
             g.reduceClipRegion(clip);
             // paintEntireComponent bypasses this painting hook, as it does

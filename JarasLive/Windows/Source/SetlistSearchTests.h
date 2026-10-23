@@ -20,13 +20,55 @@ inline jaras::Project fixture() {
 inline std::vector<String> strings(const var &values) {
     std::vector<String> result;for (const auto &value:list(values)) result.push_back(value.toString());return result;
 }
-inline void click(SetlistRows &rows,int row) {
-    const Point<float> at{20.f,(float)rows.rowTop(row)+15};
-    rows.getModel()->listBoxItemClicked(row,MouseEvent(Desktop::getInstance().getMainMouseSource(),at,
-        ModifierKeys(ModifierKeys::leftButtonModifier),1,0,0,0,0,&rows,&rows,Time::getCurrentTime(),at,
+inline void click(Workspace &workspace,int row) {
+    auto *rows=dynamic_cast<ListBox *>(uiFeatureTests::find(workspace,"setlistSearchResults"));
+    require(rows,"Search result popup missing");const Point<float> at{20.f,(float)row*34+15};
+    rows->getModel()->listBoxItemClicked(row,MouseEvent(Desktop::getInstance().getMainMouseSource(),at,
+        ModifierKeys(ModifierKeys::leftButtonModifier),1,0,0,0,0,rows,rows,Time::getCurrentTime(),at,
         Time::getCurrentTime(),1,false));
+    floatingControlTests::pump();
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Tab toggles focused setlist search and Advanced changes both numbering modes persistently",[&] {
+        auto project=fixture();project.regionSetlist->playlists[0].regionIds={"outside","early","late"};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        const auto preferences=directory.getNonexistentChildFile("setlist-id-switch",".json");
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,preferences);workspace.setSize(1366,768);
+        workspace.addToDesktop(ComponentPeer::windowIsTemporary);workspace.setVisible(true);workspace.grabKeyboardFocus();floatingControlTests::pump();
+        auto state=[&]{return get(workspace.diagnostics(),"setlist");};
+        require(strings(get(state(),"displayedNumbers"))==std::vector<String>{"1","2","","3"},"Playlist numbering did not follow playlist order independently of stored IDs and blocks");
+        require(workspace.getPeer()->handleKeyPress(KeyPress(KeyPress::tabKey)),"Native Tab was not handled");floatingControlTests::pump();
+        auto *field=dynamic_cast<TextEditor *>(uiFeatureTests::find(workspace,"setlistSearchField"));
+        require(field && field->hasKeyboardFocus(false) && flag(state(),"searching"),"Tab did not focus the popup search field");
+        require(workspace.getPeer()->handleKeyPress(KeyPress(KeyPress::tabKey)),"Second Tab was not handled while typing");floatingControlTests::pump();
+        require(!flag(state(),"searching") && !field->isShowing(),"Second Tab failed to close focused search");
+        workspace.keyStateChanged(false);
+        require(workspace.getPeer()->handleKeyPress(KeyPress(KeyPress::tabKey)),"Third Tab was not handled");floatingControlTests::pump();
+        require(flag(state(),"searching") && field->hasKeyboardFocus(false),"Third Tab failed to reopen and focus search");
+        field->setText("02",false);field->onTextChange();
+        require(list(get(state(),"searchResultIDs")).isEmpty(),"Playlist ID mode incorrectly searched global region IDs");
+        field->onEscapeKey();floatingControlTests::pump();
+        workspace.openAdvanced();floatingControlTests::pump();
+        DocumentWindow *advanced=nullptr;auto &desktop=Desktop::getInstance();
+        for(int i=0;i<desktop.getNumComponents();++i)if(auto *window=dynamic_cast<DocumentWindow *>(desktop.getComponent(i));window && uiFeatureTests::find(*window,"advancedTab5"))advanced=window;
+        require(advanced,"Advanced window missing");
+        auto *tab=dynamic_cast<Button *>(uiFeatureTests::find(*advanced,"advancedTab5"));require(tab,"Setlist Advanced tab missing");tab->onClick();
+        std::function<ComboBox *(Component &)> findMode=[&](Component &c)->ComboBox * {
+            if(auto *box=dynamic_cast<ComboBox *>(&c);box && box->getName()=="Setlist ID mode")return box;
+            for(auto *child:c.getChildren())if(auto *box=findMode(*child))return box;return nullptr;
+        };
+        auto *mode=findMode(*advanced);require(mode,"Advanced ID mode selector missing");
+        mode->setSelectedId(2,dontSendNotification);mode->onChange();floatingControlTests::pump();
+        require(flag(state(),"regionIDs") && strings(get(state(),"displayedNumbers"))==std::vector<String>{"6","2","","1"},"Advanced did not immediately apply region IDs to the visible playlist");
+        require(Appearance(preferences).regionIDs(),"Region ID mode was not persisted");
+        auto *toggle=dynamic_cast<Button *>(uiFeatureTests::find(workspace,"setlistSearchToggle"));toggle->onClick();floatingControlTests::pump();
+        field->setText("02",false);field->onTextChange();require(strings(get(state(),"searchResultIDs"))==std::vector<String>{"early"},"Region ID search differs from the displayed ID");
+        field->onEscapeKey();floatingControlTests::pump();
+        mode->setSelectedId(1,dontSendNotification);mode->onChange();floatingControlTests::pump();
+        require(!Appearance(preferences).regionIDs() && strings(get(state(),"displayedNumbers"))==std::vector<String>{"1","2","","3"},"Returning to playlist numbering did not restore visible IDs");
+        advanced->closeButtonPressed();floatingControlTests::pump();
+    });
     test("Setlist search uses persisted IDs and finds every song, including accented children outside the playlist",[&] {
         auto project=fixture();
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
@@ -41,15 +83,33 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         require(rows->getRowHeight(0)==28 && rows->getRowHeight(1)==38 && rows->rowTop(1)==28,
                 "Compact block rows must not reserve the height of a song");
         auto state=[&]{return get(workspace.diagnostics(),"setlist");};
-        auto ids=[&]{return strings(get(state(),"rowIDs"));};
+        auto ids=[&]{return strings(get(state(),flag(state(),"searching")?"searchResultIDs":"rowIDs"));};
         auto query=[&](const String &text){field->setText(text,false);field->onTextChange();};
         require(ids()==std::vector<String>{"block","late"} &&
                 (int)list(get(state(),"rowRegionNumbers"))[1]==1,"Normal playlist did not retain the region's creation ID");
-        toggle->onClick();
+        toggle->onClick();floatingControlTests::pump();
         require(flag(state(),"searching") && field->isVisible() &&
                 ids()==std::vector<String>{"early","family","child-a","child-b","outside","late"},
                 "Opening empty search stayed in the playlist, omitted children, kept blocks or sorted by creation order");
+        require(strings(get(state(),"rowIDs"))==std::vector<String>{"block","late"},"Search popup replaced the underlying playlist");
+        auto *popup=uiFeatureTests::find(workspace,"setlistSearchPopover");
+        require(popup && field->getParentComponent()==popup && popup->getHeight()==360,"Search did not open in its anchored fixed-size popup");
         query("cancao");
+        auto *searchRows=dynamic_cast<ListBox *>(uiFeatureTests::find(workspace,"setlistSearchResults"));
+        require(searchRows && searchRows->getSelectedRow()==0,"Typing did not highlight the first search result");
+        field->keyPressed(KeyPress(KeyPress::downKey));
+        require(searchRows->getSelectedRow()==1,"Down did not move the search highlight");
+        session.notify();
+        require(searchRows->getSelectedRow()==1,"Workspace refresh reset the keyboard search highlight");
+        field->keyPressed(KeyPress(KeyPress::downKey));
+        require(searchRows->getSelectedRow()==1,"Down moved past the last result");
+        field->keyPressed(KeyPress(KeyPress::upKey));
+        require(searchRows->getSelectedRow()==0,"Up did not move the search highlight");
+        field->keyPressed(KeyPress(KeyPress::downKey));field->onReturnKey();
+        require(!flag(state(),"searching") && session.transport().regionId=="outside",
+                "Enter ignored the highlighted result");
+        auto restored=*session.project().regionSetlist; restored.selectedId="last"; session.configureSetlist(restored);
+        toggle->onClick();floatingControlTests::pump();query("cancao");
         require(ids()==std::vector<String>{"early","outside"},"Search did not ignore accents or included matching playlist blocks");
         query(String::fromUTF8(u8"CANC\u0327A\u0303O"));
         require(ids()==std::vector<String>{"early","outside"},"Decomposed accents did not match the composed song names");
@@ -65,7 +125,7 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
                 "Enter did not select the first chronological result, switch to All Regions and restore its normal list");
         require(strings(get(state(),"rowRegionNumbers"))==std::vector<String>{"2","3","6","1"},
                 "All Regions renumbered stored IDs by their timeline order");
-        toggle->onClick();query("graca");click(*rows,0);
+        toggle->onClick();floatingControlTests::pump();query("graca");click(workspace,0);
         require(!session.project().regionSetlist->selectedId && session.transport().editPosition==20 &&
                 strings(get(state(),"visibleSelectedEntries"))==std::vector<String>{"child-a"} &&
                 ids()==std::vector<String>{"early","family","child-a","child-b","outside","late"},
@@ -80,7 +140,7 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
                 "Second click selected the normal-list row that replaced the search result");
         auto familyState=*session.project().regionSetlist;familyState.selectedId="family-list";
         session.configureSetlist(familyState);
-        toggle->onClick();query("05");click(*rows,0);
+        toggle->onClick();floatingControlTests::pump();query("05");click(workspace,0);
         require(session.project().regionSetlist->selectedId=="family-list" && session.transport().editPosition==30 &&
                 strings(get(state(),"visibleSelectedEntries"))==std::vector<String>{"child-b"} && !flag(state(),"searching"),
                 "Searching a child already in the playlist unnecessarily switched to All Regions or failed to close search");
@@ -98,8 +158,8 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         require(toggle && field && rows,"Setlist search controls missing");
         auto state=[&]{return get(workspace.diagnostics(),"setlist");};
         auto query=[&](const String &text){field->setText(text,false);field->onTextChange();};
-        toggle->onClick();query("02");
-        require(strings(get(state(),"rowIDs"))==std::vector<String>{"late"},
+        toggle->onClick();floatingControlTests::pump();query("02");
+        require(strings(get(state(),"searchResultIDs"))==std::vector<String>{"late"},
                 "Playlist numbering mode searched region IDs instead of only names");
         field->onEscapeKey();
         require(!flag(state(),"searching") && strings(get(state(),"rowIDs"))==std::vector<String>{"block","late"} &&
@@ -107,7 +167,7 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         session.command(jaras::CommandKind::selectRegion,"early");session.command(jaras::CommandKind::play);
         uiFeatureTests::render(session,48000);
         const auto audioBefore=session.audio.state();const auto editBefore=session.transport().editPosition;
-        toggle->onClick();query("graca");click(*rows,0);
+        toggle->onClick();floatingControlTests::pump();query("graca");click(workspace,0);
         const auto audioAfter=session.audio.state();
         require(audioAfter.playing && std::abs(audioAfter.position-audioBefore.position)<.0001 &&
                 session.transport().playing && session.transport().regionId=="early" &&

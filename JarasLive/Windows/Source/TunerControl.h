@@ -18,7 +18,7 @@ class TunerControl final : public Component, private Timer {
         startTimerHz(8);
     }
     void resized() override {
-        down.setBounds(35, 0, 20, getHeight());
+        down.setBounds(48, 0, 20, getHeight());
         up.setBounds(getWidth() - 24, 0, 20, getHeight());
     }
     const jaras::Part *region() const {
@@ -48,15 +48,15 @@ class TunerControl final : public Component, private Timer {
         g.drawRoundedRectangle(bounds, 4, 1);
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(9));
-        g.drawText("Tuner", 5, 0, 30, getHeight(), Justification::centredLeft);
+        g.drawText("Tuner", 5, 0, 42, getHeight(), Justification::centredLeft);
         g.setColour(theme::green);
         g.setFont(theme::semiboldFont(11));
         auto *part = region();
-        g.drawText(String(part ? part->pitchSemitones.value_or(0) : 0) + "st", 55, 0,
-                   getWidth() - 79, getHeight(), Justification::centred);
+        g.drawText(String(part ? part->pitchSemitones.value_or(0) : 0) + "st", 68, 0,
+                   getWidth() - 92, getHeight(), Justification::centred);
     }
     void mouseDown(const MouseEvent &e) override {
-        if (e.mods.isPopupMenu() && e.x >= 55 && e.x < getWidth() - 24 && region())
+        if (e.mods.isPopupMenu() && e.x >= 68 && e.x < getWidth() - 24 && region())
             configure();
     }
 

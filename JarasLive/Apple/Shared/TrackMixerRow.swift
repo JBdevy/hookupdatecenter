@@ -153,10 +153,10 @@ struct TrackMixerHeightGeometry {
         let meterTop: CGFloat = mix(2, 4)
         let bodyWidth = max(0, width - bodyX - 4)
         let centeredY = max(0, (height - 21) / 2)
-        // The group action has its own space immediately before Patch.
-        // Anchor it to the control row so widening never separates the two.
-        let controlsX = max(0, width - controlsWidth - 4)
-        let titleX = bodyX
+        // Name/number and folder stay anchored to the meter side of the row.
+        // Only the right-hand controls follow the sidebar's changing width.
+        let controlsX = max(folder ? 51 : 0, width - controlsWidth - 4)
+        let titleX: CGFloat = standard ? 22 : 14
         let titleY = lowerTitle ? Self.titleY(height) : mix(centeredY, 3)
         let controlsY = mix(centeredY, 3), controlsHeight = mix(21, 24)
         let clear = lowerTitle ? min(1, max(0, (titleY - controlsY - controlsHeight) / 8)) : 0
@@ -168,7 +168,7 @@ struct TrackMixerHeightGeometry {
             CGRect(x: titleX, y: titleY, width: titleWidth, height: titleHeight(height)),
             CGRect(x: controlsX, y: controlsY, width: controlsWidth, height: controlsHeight),
             CGRect(x: bodyX, y: 27, width: bodyWidth, height: volumeHeight(height)),
-            CGRect(x: folder ? controlsX - 31 : bodyX, y: folder ? controlsY + (controlsHeight - 20) / 2 : 4, width: 28 * p, height: 20 * p),
+            CGRect(x: folder ? 20 : bodyX, y: folder ? controlsY + (controlsHeight - 20) / 2 : 4, width: 28 * p, height: 20 * p),
             CGRect(x: max(bodyX, width - 90), y: 32, width: min(86, bodyWidth), height: 24 * p)
         ]
     }
@@ -234,7 +234,7 @@ private struct TrackMixerButtonsContainer<Content: View>: View {
         } else if standard {
             let expanded = height >= 64
             let controlHeight: CGFloat = expanded ? 24 : 21
-            let widths: [CGFloat] = [34, 28, expanded && !showsFader ? 0 : 22, 22, expanded ? 42 : 0, 22, 22]
+            let widths: [CGFloat] = [expanded ? 34 : 0, expanded ? 28 : 0, expanded && showsFader ? 22 : 0, 22, expanded ? 42 : 0, 22, 22]
             let visibleCount = widths.filter { $0 > 0 }.count
             let width = widths.reduce(0, +) + CGFloat(max(0, visibleCount - 1)) * 3
             let frames = widths.indices.map { index in
@@ -273,7 +273,7 @@ struct TrackMixerContinuousLayout: Layout {
         }
     }
 }
-/// The pan stays mounted, but occupies no space in a collapsed strip.
+/// Patch, Env, FX and pan stay mounted but occupy no space in a collapsed strip.
 @available(macOS 13, *)
 struct TrackMixerButtonsLayout: Layout {
     let showsFader: Bool
@@ -286,14 +286,14 @@ struct TrackMixerButtonsLayout: Layout {
     func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let expanded = (proposal.height ?? 24) >= 24
-        let visible = subviews.indices.filter { !($0 == 4 && !expanded) && !($0 == 2 && expanded && !showsFader) }
+        let visible = subviews.indices.filter { !(!expanded && ($0 < 3 || $0 == 4)) && !($0 == 2 && expanded && !showsFader) }
         return CGSize(width: visible.reduce(CGFloat(0)) { $0 + Self.controlWidths[$1] } + CGFloat(max(0, visible.count - 1)) * 3, height: expanded ? 24 : 21)
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let expanded = bounds.height >= 24
         var x = bounds.minX
         for i in subviews.indices {
-            let hidden = (i == 4 && !expanded) || (i == 2 && expanded && !showsFader)
+            let hidden = (!expanded && (i < 3 || i == 4)) || (i == 2 && expanded && !showsFader)
             let width = Self.controlWidths[i]
             subviews[i].place(at: CGPoint(x: hidden ? bounds.maxX + 1024 : x, y: bounds.minY), anchor: .topLeading, proposal: ProposedViewSize(width: width, height: bounds.height))
             if !hidden { x += width + 3 }
@@ -1300,7 +1300,7 @@ private struct CompactTrackButtonStyle: ButtonStyle {
             else { configuration.label }
         }.font(.jarasSystem(size: 10, weight: .semibold))
             .frame(width: width, height: 21)
-            .background(activeColor.map { $0.opacity(configuration.isPressed ? 0.75 : 1) } ?? JarasTheme.text.opacity(configuration.isPressed ? 0.24 : 0.12))
+            .background(activeColor.map { $0.opacity(configuration.isPressed ? 0.75 : 1) } ?? (configuration.isPressed ? Color(hex: 0x565656) : JarasTheme.trackButton))
             .clipShape(RoundedRectangle(cornerRadius: 3)).contentShape(Rectangle())
     }
 }
@@ -2627,8 +2627,8 @@ private struct FooterMixerModeGesture {
         direction = nextDirection; lastTime = timestamp
         guard !triggered else { return nil }
         if let lastAction, timestamp >= lastAction, timestamp - lastAction < 0.6 { return nil }
-        accumulated += min(60, abs(delta) * (precise ? 1 : 40))
-        guard accumulated >= 100 else { return nil }
+        accumulated += min(40, abs(delta) * (precise ? 1 : 40))
+        guard accumulated >= 60 else { return nil }
         triggered = true; lastAction = timestamp
         return direction > 0
     }
@@ -3708,15 +3708,17 @@ private struct BatchPatchEditor: View {
 struct EditorSelectionArea: NSViewRepresentable {
     enum Scope: Int { case grid, tracks, setlist }
     let scope: Scope
+    var moveCursor: ((Int) -> Bool)? = nil
     let selectAll: () -> Bool
     func makeNSView(context: Context) -> EditorSelectionAreaView { EditorSelectionAreaView() }
     func updateNSView(_ view: EditorSelectionAreaView, context: Context) {
-        view.scope = scope; view.selectAll = selectAll
+        view.scope = scope; view.selectAll = selectAll; view.moveCursor = moveCursor
     }
 }
 final class EditorSelectionAreaView: NSView {
     var scope = EditorSelectionArea.Scope.grid
     var selectAll: (() -> Bool)?
+    var moveCursor: ((Int) -> Bool)?
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -3733,7 +3735,7 @@ final class EditorSelectionAreaView: NSView {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
             guard let self else { return event }
-            if event.type == .keyDown { return self.selectAll(event) ? nil : event }
+            if event.type == .keyDown { return (self.moveCursor(event) || self.selectAll(event)) ? nil : event }
             self.handlePointer(event)
             return event
         }
@@ -3754,6 +3756,17 @@ final class EditorSelectionAreaView: NSView {
     func activeScope(in window: NSWindow?) -> EditorSelectionArea.Scope? {
         guard let window, let area = focus.object(forKey: window), area.window === window, !area.isHiddenOrHasHiddenAncestor else { return nil }
         return area.scope
+    }
+    func moveCursor(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown, event.keyCode == 123 || event.keyCode == 124,
+              event.modifierFlags.intersection([.command, .control, .shift, .option]).isEmpty,
+              let window = event.window, window.isKeyWindow, window.attachedSheet == nil,
+              window.sheetParent == nil, NSApp.modalWindow == nil, ControlMappings.shared.editing == nil,
+              !NativeTimelineInputGate.shared.isBlocked(window),
+              !(window.firstResponder is NSTextView), !(window.firstResponder is NSTextField),
+              let area = focus.object(forKey: window), area.scope == .grid,
+              area.window === window, !area.isHiddenOrHasHiddenAncestor else { return false }
+        return area.moveCursor?(event.keyCode == 123 ? -1 : 1) ?? false
     }
     func selectAll(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection([.command, .control, .shift, .option])

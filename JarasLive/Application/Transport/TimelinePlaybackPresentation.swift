@@ -69,7 +69,11 @@ public struct TransportSongDisplays {
         let root = selected?.parentRegionID ?? selected?.id
         let running = transport.playing ? song?.playingSetlistRegion(transport.regionId, position: transport.position,
             expanded: Set(root.map { [$0] } ?? [])) : nil
-        current = transport.ignoreNextRegionId.flatMap { id in parts.first { $0.id == id } } ?? running ?? selected
+        let cursor = transport.editPosition ?? transport.position
+        let stopped = selected.flatMap { cursor >= $0.startTime && cursor < $0.endTime ? $0 : nil } ?? song?.sectionRegion(at: cursor)
+        current = transport.playing
+            ? transport.ignoreNextRegionId.flatMap { id in parts.first { $0.id == id } } ?? running ?? selected
+            : stopped
         next = transport.playing && transport.ignoreNextAfter == nil ? song?.nextDrawerRegion(transport.regionId, position: transport.position) : nil
         queued = transport.subPlay.playing ? song?.sectionRegion(at: transport.subPlay.position) : parts.first { $0.id == transport.queuedRegionId }
         func bpm(_ region: Part?, at position: Double? = nil) -> Double? {

@@ -97,7 +97,7 @@ struct ItemHeader {
     juce::Rectangle<float> item, visible, muteRect, fxRect, phaseRect, panRect, panLabel, gainRect, gainLabel;
     float titleLeft = 0;
     bool editable = false, midi = false;
-    ItemHeader(juce::Rectangle<float> bounds, float viewportWidth, const jaras::Track &track, const jaras::AudioClip &clip)
+    ItemHeader(juce::Rectangle<float> bounds, float viewportWidth, const jaras::Track &track, const jaras::AudioClip &clip, const String &title = {})
         : item(bounds), editable(jaras::fixedTrackName(track.role).empty() || (clip.audioFile && clip.audioFile->path.rfind("Videos/",0)==0)), midi(bool(clip.midi)) {
         visible = bounds.getIntersection({0, bounds.getY(), viewportWidth, std::min(17.f,bounds.getHeight())});
         const float x = visible.getX() + 2.6f, y = bounds.getY(), width = visible.getWidth();
@@ -115,7 +115,7 @@ struct ItemHeader {
         const auto labelWidth = [&](const String& label) { return std::ceil(GlyphArrangement::getStringWidth(readoutFont,label)) + 2.f; };
         const float gainWidth = labelWidth(gainText(clip.gain.value_or(1)));
         const float panWidth = labelWidth(panText(clip.pan.value_or(0)));
-        const float nameWidth = std::max(24.f, std::ceil(GlyphArrangement::getStringWidth(readoutFont, text(clip.name)))) + 3.f;
+        const float nameWidth = std::max(24.f, std::ceil(GlyphArrangement::getStringWidth(readoutFont, title.isNotEmpty() ? title : text(clip.name)))) + 3.f;
         const float gainThreshold = 4.6f + 23.1f + nameWidth + 19.5f + .5f + gainWidth + 1.f;
         const float fxThreshold = gainThreshold + ((!midi || clip.fxJSON) ? 27.f : 0.f);
         const float phaseThreshold = fxThreshold + (!midi ? 20.5f : 0.f);
@@ -146,7 +146,7 @@ struct ItemHeader {
             Image image(Image::ARGB, 32, 32, true); Graphics g(image);
             Path curve; curve.startNewSubPath(6, in ? 26.f : 6.f);
             curve.cubicTo(14, in ? 26.f : 6.f, 16, in ? 6.f : 26.f, 26, in ? 6.f : 26.f);
-            g.setColour(Colours::black); g.strokePath(curve, PathStrokeType(6, PathStrokeType::curved, PathStrokeType::rounded));
+            g.setColour(Colour(0xff54ff93)); g.strokePath(curve, PathStrokeType(6, PathStrokeType::curved, PathStrokeType::rounded));
             g.setColour(Colours::white); g.strokePath(curve, PathStrokeType(3, PathStrokeType::curved, PathStrokeType::rounded));
             return MouseCursor(image, 8, 8, 2.f);
         };
