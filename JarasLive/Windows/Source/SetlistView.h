@@ -5,6 +5,21 @@ class Workspace::Setlist final : public Component,
                                  private ListBoxModel,
                                  private ChangeListener, private Timer {
   public:
+    bool stepPlaylist(int direction) {
+        if (!w.session.song()) return false;
+        auto state = currentState();
+        std::vector<jaras::ID> ids;
+        for (const auto &playlist : state.playlists)
+            if (playlist.songId == w.session.song()->id) ids.push_back(playlist.id);
+        if (ids.empty()) return false;
+        const auto found = std::find(ids.begin(), ids.end(), state.selectedId.value_or(jaras::ID{}));
+        const int count = (int)ids.size();
+        const int index = found == ids.end() ? (direction > 0 ? 0 : count - 1)
+            : ((int)std::distance(ids.begin(), found) + direction + count) % count;
+        state.selectedId = ids[(size_t)index];
+        apply(std::move(state));
+        return true;
+    }
     explicit Setlist(Workspace &owner) : w(owner) {
         w.appearance.addChangeListener(this);
         addAndMakeVisible(list);

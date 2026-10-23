@@ -4898,6 +4898,10 @@ bool Workspace::keyPressed(const KeyPress &key) {
         code -= ('a' - 'A');
     const bool isRepeat = !heldShortcutKeys.insert(code).second;
     const bool ctrl = mods.isCtrlDown(), shift = mods.isShiftDown(), alt = mods.isAltDown();
+    if (ctrl && !alt && !shift && (code == KeyPress::upKey || code == KeyPress::downKey)) {
+        if (!projectReady || loginPanel) return false;
+        return setlist->stepPlaylist(code == KeyPress::downKey ? 1 : -1);
+    }
     if (ctrl && !alt && !shift && code == 'Q') {
         JUCEApplication::getInstance()->systemRequestedQuit();
         return true;

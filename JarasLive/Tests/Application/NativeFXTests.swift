@@ -185,7 +185,10 @@ final class NativeFXTests: XCTestCase {
         XCTAssertEqual(song.pitch(for: drums.id, region: first), 0)
         XCTAssertEqual(song.pitch(for: video.id, region: first), 0)
         let marker = try XCTUnwrap(song.markers?.first { $0.sourceRegionID == second.id })
-        XCTAssertEqual(song.markerLabel(marker), "-6st  " + marker.name)
+        XCTAssertEqual(song.markerLabel(marker), "-6st  SECOND")
+        song.parts[song.parts.firstIndex { $0.id == second.id }!].uppercaseName = false
+        XCTAssertEqual(song.markerLabel(marker), "-6st  Second")
+        song.parts[song.parts.firstIndex { $0.id == second.id }!].uppercaseName = true
         let copy = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
         XCTAssertEqual(copy, project)
         _ = try project.disunifyRegion(group)
