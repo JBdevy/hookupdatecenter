@@ -22,6 +22,8 @@ final class AVAudioSession {
     var preferredInput: Port?
     var currentRoute = Route(inputs: [])
     var maximumOutputNumberOfChannels = 8, outputNumberOfChannels = 8, preferredOutputNumberOfChannels = 8
+    var maximumInputNumberOfChannels = 8, preferredInputNumberOfChannels = 1
+    var inputChannelChanges = 0
     func setCategory(_ category: Category, mode: Mode, options: CategoryOptions) throws {
         self.category = category; self.mode = mode; categoryOptions = options; categoryChanges += 1
     }
@@ -30,6 +32,9 @@ final class AVAudioSession {
         preferredInput = port; currentRoute.inputs = port.map { [$0] } ?? []
     }
     func setPreferredOutputNumberOfChannels(_ count: Int) throws { preferredOutputNumberOfChannels = count; outputNumberOfChannels = count }
+    func setPreferredInputNumberOfChannels(_ count: Int) throws {
+        preferredInputNumberOfChannels = count; inputChannelChanges += 1
+    }
 }
 final class InputCatalogProbe {
     static let defaultMobileInput = "system"
@@ -50,8 +55,10 @@ precondition(probe.inputUID.isEmpty && session.preferredInput == nil, "Listing i
 rejected { try probe.requireLocalInput() }
 probe.inputUID = "usb"; try probe.configure(); try probe.requireLocalInput(expectedUID: "usb")
 precondition(session.preferredInput?.uid == "usb")
+precondition(session.preferredInputNumberOfChannels == 8, "Expose every input channel on a multichannel interface")
 try probe.configure()
 precondition(session.categoryChanges == 1, "Repeated route recovery must not generate category-change loops")
+precondition(session.inputChannelChanges == 1, "Repeated configuration must not renegotiate unchanged input channels")
 session.ports = [.init(uid: "builtin")]; session.currentRoute.inputs = [.init(uid: "builtin")]
 try probe.configure()
 precondition(probe.inputUID == "usb" && !probe.error.isEmpty, "Keep the missing input selected and report disconnection")
