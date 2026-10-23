@@ -125,9 +125,9 @@ import AVFoundation
                 rendered += count; try tick()
                 // scheduleSegment streams through AVAudioPlayerNode's file I/O
                 // worker. Offline rendering has no device clock to pace that
-                // worker; yield briefly between slices on shared CI runners.
+                // worker; pace slices at their audio duration on shared CI runners.
                 // PCM, alignment, dropout and overshoot assertions stay exact.
-                Thread.sleep(forTimeInterval: 0.001)
+                Thread.sleep(forTimeInterval: Double(count) / rate)
             }
             precondition(!dry || dryError < 0.0001,
                          "\(kind) stage \(stage): bypass/removal changed scheduled PCM, error=\(dryError)")
