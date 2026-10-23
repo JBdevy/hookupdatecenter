@@ -10,14 +10,15 @@ struct DAWRemoteState {
 }
 enum DAWRemoteCommand { enum Action:String { case pan,volume,mute,solo,resetMeterPeak,tempo,pitch,phase } }
 enum TrackKind { case standard,click,chords;var isText:Bool{self == .chords};var isTeleprompter:Bool{false} }
-struct Track {let id:UUID;var kind:TrackKind = .standard}
+struct Track {let id:UUID;var kind:TrackKind = .standard;var parentTrackID:UUID? = nil}
 struct Song {var tracks:[Track]}
-@MainActor final class ShowController {var current:Song?;init(_ tracks:[Track]){current=Song(tracks:tracks)};func send(_ action:DAWRemoteCommand.Action,target:UUID){TouchProbe.shared.log(action.rawValue)};func insertClickItems(track:UUID){TouchProbe.shared.log("insert")};var canDrop:Bool{true};func canDropTrack(_ source:UUID,on target:UUID,after:Bool)->Bool{source != target};func dropTrack(_ source:UUID,on target:UUID,before:UUID?){TouchProbe.shared.log("reorder")}}
+@MainActor final class ShowController {var current:Song?;init(_ tracks:[Track]){current=Song(tracks:tracks)};func send(_ action:DAWRemoteCommand.Action,target:UUID){TouchProbe.shared.log(action.rawValue)};func insertClickItems(track:UUID){TouchProbe.shared.log("insert")};var canDrop:Bool{true};func canDropTrack(_ source:UUID,on target:UUID,after:Bool)->Bool{source != target};func dropTrack(_ source:UUID,on target:UUID,before:UUID?,outsideGroup:Bool = false){TouchProbe.shared.log("reorder")}}
 @MainActor final class TouchProbe:ObservableObject {
  static let shared=TouchProbe();@Published var event="none";@Published var selection=0;@Published var editing=false
  @Published var muted=false;@Published var solo=false
  func log(_ value:String){event=value}
 }
+struct TrackGroupButton:View {let show:ShowController;let project:UUID;let track:UUID;let parent:UUID?;var body:some View {Button("Folder") {TouchProbe.shared.log("folder")}}}
 struct TrackRecordButton:View {let show:ShowController;let track:Track;var body:some View{Button("REC"){TouchProbe.shared.log("rec")}.buttonStyle(.bordered)}}
 enum JarasTheme {static let text=Color.white,green=Color.green,yellow=Color.yellow,mixer=Color(white:0.2),background=Color(white:0.086),panel=Color(white:0.114),display=Color(white:0.063)}
 func remoteColor(_ color:UInt32)->Color{.white}

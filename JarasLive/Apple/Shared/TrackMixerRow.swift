@@ -1023,7 +1023,7 @@ private struct TrackGroupSymbol: View {
         }.foregroundStyle(JarasTheme.green)
     }
 }
-private struct TrackGroupButton: View {
+struct TrackGroupButton: View {
     let show: ShowController
     let project: UUID
     let track: UUID

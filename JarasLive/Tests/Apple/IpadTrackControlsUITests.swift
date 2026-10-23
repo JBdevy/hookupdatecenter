@@ -21,6 +21,14 @@ final class TrackTouchTests:XCTestCase {
   if meter.exists { XCTAssertGreaterThan(meter.frame.height, 0); XCTAssertLessThanOrEqual(meter.frame.height, 60) }
   XCTAssertTrue(app.buttons["REC"].exists);XCTAssertTrue(app.buttons["M"].firstMatch.exists);XCTAssertTrue(app.buttons["S"].firstMatch.exists)
  }
+ func testEmptyTrackAreaSelectsWithoutChangingControls() {
+  let app=XCUIApplication();app.launch()
+  let row=app.otherElements["normal-row"].firstMatch
+  XCTAssertTrue(row.waitForExistence(timeout:10))
+  row.coordinate(withNormalizedOffset:CGVector(dx:0.15,dy:0.08)).tap()
+  XCTAssertEqual(app.staticTexts["selection"].label,"Selected: 1")
+  XCTAssertEqual(app.staticTexts["event"].label,"none")
+ }
  func testLongPressOffersPatchAndAddStems() {
   let app=XCUIApplication();app.launch();let name=app.staticTexts["01  Normal track"]
   XCTAssertTrue(name.waitForExistence(timeout:10));name.press(forDuration:0.8)

@@ -5817,10 +5817,13 @@ void Workspace::editRegion(ID id) {
             if (safe) safe->perform([&] { safe->session.edit([&](jaras::Project &p) {
                 for (auto &song : p.songs) for (auto &part : song.parts) if (part.id == id) {
                     part.name = utf8(name); part.color = colour; part.uppercaseName = upper;
+                    if (song.markers) for (auto &marker : *song.markers) if (marker.sourceRegionID == id) {
+                        marker.name = part.name; marker.color = colour;
+                    }
                 }
             }, false); close(); });
         };
-        ModalSheet::open(*this, String::fromUTF8("Editar região"), std::make_unique<RegionEditor>(text(part.name), part.color.value_or(0x705264), part.uppercaseName.value_or(true), save, close), 300, 404);
+        ModalSheet::open(*this, String::fromUTF8("Editar música"), std::make_unique<RegionEditor>(text(part.name), part.color.value_or(0x705264), part.uppercaseName.value_or(true), save, close), 300, 404);
         return;
     }
 }
@@ -5853,6 +5856,10 @@ void Workspace::editMarker(ID id, double position, bool section) {
     if(section) marker.section=true;
     if (!id.empty() && session.song()->markers) for (const auto &m : *session.song()->markers) if (m.id == id) marker = m;
     if (marker.tempoBPM) {editTempoMarker(id,position);return;}
+    if (marker.sourceRegionID && std::any_of(session.song()->parts.begin(), session.song()->parts.end(),
+            [&](const auto &part) { return part.id == *marker.sourceRegionID; })) {
+        editRegion(*marker.sourceRegionID); return;
+    }
     auto safe = SafePointer<Workspace>(this);
     auto close = [safe] { if (safe) ModalSheet::dismiss(*safe); };
     auto save = [safe, marker, songID = session.song()->id, projectID = session.project().id, close](String name, unsigned colour, bool) mutable {

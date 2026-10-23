@@ -285,7 +285,7 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
     public func markerLabel(_ marker: TimelineMarker) -> String {
         if let bpm = marker.tempoBPM { return String(format: "%g  %d/%d", bpm, marker.tempoBeats ?? 4, marker.tempoUnit ?? 4) }
         guard let id = marker.sourceRegionID, let region = parts.first(where: { $0.id == id }) else { return marker.isSection ? marker.name.uppercased() : marker.name }
-        return "\(region.semitones)st  " + marker.name
+        return "\(region.semitones)st  " + region.displayName
     }
     public var markerRegionEnds: [UUID: Double] {
         var result: [UUID: Double] = [:]

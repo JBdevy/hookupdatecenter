@@ -742,11 +742,17 @@ private struct TimelineGridContent: View, Equatable {
             }
         }
         .sheet(item: $editingMarker) { marker in
+            if let source = marker.sourceRegionID, let part = show.current?.parts.first(where: { $0.id == source }) {
+                RegionEditor(region: part, initialColor: part.color ?? marker.color) { name, color, uppercase in
+                    show.editRegion(part.id, name: name, color: color, uppercaseName: uppercase)
+                }.environment(\.locale, locale)
+            } else {
             NameColorEditor(title: marker.isSection ? "Section marker" : "Editar marcador", initialName: marker.markerEditorName, initialColor: marker.color, save: { name, color in
                 var edited = marker; edited.name = name; edited.color = color
                 edited.section = false; edited.loopSection = false
                 show.setMarker(edited)
             }, maximumNameLength: marker.unifiedRegionID == nil ? (marker.isSection ? TimelineMarker.maximumSectionNameLength : TimelineMarker.maximumNameLength) : nil).environment(\.locale, locale)
+            }
         }
         .onChange(of: selectedTrack) { show.reportTrackSelection($0) }
         .onChange(of: show.trackSelectionRequest) { request in
@@ -1057,7 +1063,7 @@ private struct TimelineGridContent: View, Equatable {
         // Closed editors must not publish anchors for every region on resize.
         if editingRegion == part.id {
             Color.clear.popover(isPresented: Binding(get: { editingRegion == part.id }, set: { if !$0 { editingRegion = nil } })) {
-                RegionEditor(region: part, initialColor: part.color ?? (index % 2 == 0 ? 0x705264 : 0x885965)) { name, color, uppercase in
+                RegionEditor(region: part, initialColor: part.color ?? 0x705264) { name, color, uppercase in
                     show.editRegion(part.id, name: name, color: color, uppercaseName: uppercase)
                 }.environment(\.locale, locale)
             }

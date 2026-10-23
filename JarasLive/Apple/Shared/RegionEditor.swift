@@ -5,7 +5,7 @@ struct RegionEditor: View {
     let save: (String, UInt32, Bool) -> Void
     @State private var uppercaseName = true
     var body: some View {
-        NameColorEditor(title: "Editar região", initialName: region.name, initialColor: initialColor,
+        NameColorEditor(title: "Edit song", initialName: region.name, initialColor: initialColor,
                         save: { save($0, $1, uppercaseName) }, uppercaseName: $uppercaseName)
             .onAppear { uppercaseName = region.usesUppercase }
     }

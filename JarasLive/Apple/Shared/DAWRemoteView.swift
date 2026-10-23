@@ -937,6 +937,10 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var removal: DAWRemoteCommand?
     @State private var confirmingRemoval = false
     @State private var duplicateQueueWarning = false
+    @State private var selectedSetlistEntries: Set<UUID> = []
+    @State private var setlistSelectionAnchor: UUID?
+    @State private var draggingSetlistEntries: Set<UUID> = []
+    @State private var setlistRowHeights: [UUID: CGFloat] = [:]
     private enum PrompterPanel: Int, Identifiable {
         case first = 1, second = 2
         var id: Int { rawValue }
@@ -1180,12 +1184,18 @@ private struct RemoteSidebarRail<Content: View>: View {
             if localShow?.current?.groupsForTrackSelection(selectedTracks).isEmpty == false {
                 Button("Ungroup") { localShow?.ungroupTracks(selectedTracks) }
             }
+            if localShow?.current?.tracks.contains(where: { selectedTracks.contains($0.id) && $0.parentTrackID != nil }) == true {
+                Button("Remove from group") {
+                    for id in selectedTracks { localShow?.removeTrackFromGroup(id) }
+                }
+            }
             Button("Cancel", role: .cancel) {}
         }
     }
     private var workspaceState: some View {
         workspaceContent
-        .onChange(of: state.project) { _ in editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; trackScrolling.pointerReset = UUID(); deletingTracks = nil; splittingItems = nil; nativeMarker = nil; nativeNormalization = false; tempoStepPending = false; pitchStepPending = false }
+        .onChange(of: state.selectedPlaylist) { _ in selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil }
+        .onChange(of: state.project) { _ in selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; trackScrolling.pointerReset = UUID(); deletingTracks = nil; splittingItems = nil; nativeMarker = nil; nativeNormalization = false; tempoStepPending = false; pitchStepPending = false }
         .onAppear {
             if local, let localShow {
                 localShow.togglePartsPanel = { [open = $nativeLeftPartsOpen] in open.wrappedValue.toggle() }
@@ -1245,13 +1255,18 @@ private struct RemoteSidebarRail<Content: View>: View {
                     close: { nativeNormalization = false })
             }
         }
-        .sheet(item: $nativeMarker) { marker in
-            if marker.isTempo { TempoMarkerEditor(marker: marker, save: { localShow?.setMarker($0) }) }
-            else {
-                NameColorEditor(title: marker.isSection ? "Section marker" : "Editar marcador", initialName: marker.name,
-                    initialColor: marker.color, save: { name, color in
-                        var edited = marker; edited.name = name; edited.color = color; localShow?.setMarker(edited)
-                    }, maximumNameLength: marker.isSection ? TimelineMarker.maximumSectionNameLength : TimelineMarker.maximumNameLength)
+        .overlay {
+            if let marker = nativeMarker {
+                IpadCompactModal {
+                    if marker.isTempo {
+                        TempoMarkerEditor(marker: marker, save: { localShow?.setMarker($0) }, close: { nativeMarker = nil })
+                    } else {
+                        NameColorEditor(title: marker.isSection ? "Section marker" : "Editar marcador", initialName: marker.markerEditorName,
+                            initialColor: marker.color, save: { name, color in
+                                var edited = marker; edited.name = name; edited.color = color; localShow?.setMarker(edited)
+                            }, close: { nativeMarker = nil }, maximumNameLength: marker.isSection ? TimelineMarker.maximumSectionNameLength : TimelineMarker.maximumNameLength)
+                    }
+                }
             }
         }
         .onReceive(localShow?.$addTrackRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
@@ -1476,7 +1491,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     case .mixer: trackMixer
                     case .setlist: setlist
                     case .grid:
-                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX,
+                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 },
                             control: { action($0, target: $1, value: $2) }, preview: { scrubPosition = $0 }, seek: { position in
                                 scrubPosition = nil
                                 if local { action(.seek, value: position); return }
@@ -1869,7 +1884,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 let widths = start.resizingTrack(by: translation / panelSpace)
                                 if panelWidths != widths { livePanelWidths = widths }
                             }, ended: finishPanelResize)
-                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX,
+                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 },
                             control: { action($0, target: $1, value: $2) },
                             preview: { scrubPosition = $0 }, seek: { position in
                                 scrubPosition = nil
@@ -1888,6 +1903,8 @@ private struct RemoteSidebarRail<Content: View>: View {
                         }
                         let setlistWidth = prompterFullscreen ? 0 : prompterPanel == nil ? panelSpace * panelWidths.setlist : max(1, contentWidth - (local ? 22 : 10)) * prompterSetlistFraction
                         setlist.frame(width: setlistWidth).clipped()
+                            .opacity(setlistWidth > 0 ? 1 : 0)
+                            .animation(nil, value: setlistWidth == 0)
                             .allowsHitTesting(setlistWidth > 0).accessibilityHidden(setlistWidth == 0)
                         if parts.total > 0 {
                             resizeHandle(label: "Resize sections", changed: { translation in
@@ -2378,6 +2395,23 @@ private struct RemoteSidebarRail<Content: View>: View {
         let ids = selectedTracks.contains(clicked) ? selectedTracks : [clicked]
         return state.tracks.filter { ids.contains($0.id) }.map(\.id)
     }
+    private func selectSetlistEntry(_ id: UUID) {
+        trackScrolling.selectionScope = .setlist
+        if local, hardwareModifiers.contains(.shift), let anchor = setlistSelectionAnchor {
+            let ids = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search).compactMap { entry -> UUID? in
+                if case .region(let row) = entry { return row.region.id }; return nil
+            }
+            if let first = ids.firstIndex(of: anchor), let last = ids.firstIndex(of: id) {
+                selectedSetlistEntries = Set(ids[min(first, last)...max(first, last)])
+            }
+        } else if local, !hardwareModifiers.intersection([.command, .control]).isEmpty {
+            if !selectedSetlistEntries.insert(id).inserted { selectedSetlistEntries.remove(id) }
+            setlistSelectionAnchor = id
+        } else {
+            selectedSetlistEntries = [id]; setlistSelectionAnchor = id
+            action(.selectRegion, target: id)
+        }
+    }
     private var setlist: some View {
         let played = Set(state.playedLiveRegionIDs ?? [])
         return VStack(spacing: 8) {
@@ -2452,16 +2486,30 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 case .block(let block): RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0).equatable()
                                 case .region(let row):
                                 let region = row.region
-                                Button { action(.selectRegion, target: region.id) } label: {
-                                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: region.id == state.focusedRegion,
+                                Button { selectSetlistEntry(region.id) } label: {
+                                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: selectedSetlistEntries.contains(region.id) || region.id == state.focusedRegion,
                                         active: state.playing && region.id == state.setlistCurrentEntryId, queued: state.playing && region.id == (state.setlistQueuedEntryId),
                                         color: remoteColor(region.color), nameColor: remoteColor(region.nameColor ?? (row.child ? 0xffeb3b : 0xffffff)),
                                         duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.setlistCurrentEntryId ? state.position : region.start)))),
                                         progress: min(1, max(0, (state.position - region.start) / max(0.001, region.end - region.start))),
                                         queueProgress: min(1, max(0, ((state.playbackEnd ?? state.position) - state.position) / max(0.001, (state.playbackEnd ?? state.position) - (state.queueStartedAt ?? state.position)))))
                                 }.buttonStyle(RemoteFullAreaButtonStyle())
+                                    .onDrag {
+                                        guard local, state.selectedPlaylist != nil else { return NSItemProvider() }
+                                        if !selectedSetlistEntries.contains(region.id) { selectedSetlistEntries = [region.id] }
+                                        draggingSetlistEntries = selectedSetlistEntries
+                                        return NSItemProvider(object: ("catlive-setlist:" + region.id.uuidString) as NSString)
+                                    }
+                                    .background {
+                                        GeometryReader { geometry in
+                                            Color.clear.onAppear { setlistRowHeights[region.id] = geometry.size.height }
+                                                .onChange(of: geometry.size.height) { setlistRowHeights[region.id] = $0 }
+                                        }
+                                    }
+                                    .onDrop(of: [UTType.text], delegate: IpadSetlistDrop(show: localShow, target: region.id,
+                                        project: state.project, playlist: state.selectedPlaylist, height: setlistRowHeights[region.id] ?? 38, moving: $draggingSetlistEntries))
                                     .contextMenu {
-                                        if let playlist = state.selectedPlaylist, region.parentRegion == nil {
+                                        if let playlist = state.selectedPlaylist, region.parentRegion == nil, !selectedSetlistEntries.contains(region.id) || selectedSetlistEntries.count == 1 {
                                             Button("Duplicate region") { action(.duplicateRegion, target: region.id, playlist: playlist) }
                                         }
                                         if row.hasDrawer { Button(drawerExpanded ? "Close drawer" : "Open drawer") { toggleDrawer(region.id) } }
@@ -2684,12 +2732,15 @@ private struct RemoteNativeTimeline: View {
     var openItemFX: ((UUID) -> Void)? = nil
     @State private var viewport = IpadTimelineViewport()
     @State private var rulerDrag = IpadTimelineRulerDrag()
+    @ObservedObject private var timeSelection = TimelineAreaSelection.shared
+    @State private var rulerPointerViewport: IpadTimelineViewport?
     @State private var gestureControl = IpadTimelineGestureControl()
     @State private var followsPlayback = true
     @State private var pointerStart: (project: UUID, song: Song, item: UUID?, time: Double, point: CGPoint, selection: TimelinePointerSelection)?
     @State private var pointerDragged = false
     @State private var drawingMIDI = false
     @State private var selectionRectangle: CGRect?
+    var openMarkerEditor: ((TimelineMarker) -> Void)? = nil
     let control: (DAWRemoteCommand.Action, UUID, Double) -> Void
     let preview: (Double) -> Void
     let seek: (Double) -> Void
@@ -2799,6 +2850,15 @@ private struct RemoteNativeTimeline: View {
             }.overlay(alignment: .topLeading) {
                 ZStack(alignment: .topLeading) {
                     Canvas { context, size in
+                        if local, let selection = timeSelection.range, selection.song == state.song {
+                            let left = max(start, selection.start), right = min(end, selection.end)
+                            if right > left {
+                                let rect = CGRect(x: (left - start) / span * size.width, y: 0,
+                                    width: (right - left) / span * size.width, height: size.height)
+                                context.fill(Path(rect), with: .color(JarasTheme.green.opacity(0.16)))
+                                context.stroke(Path(rect), with: .color(JarasTheme.green), lineWidth: 1 / displayScale)
+                            }
+                        }
                         if state.loop, let lower = state.loopStart, let upper = state.loopEnd, upper > lower {
                             let left = max(start, lower), right = min(end, upper)
                             if right > left {
@@ -2860,7 +2920,9 @@ private struct RemoteNativeTimeline: View {
                         .offset(y: gridTop)
                 }.clipped().allowsHitTesting(false)
             }
-        }.background(remoteColor(state.gridBackgroundColor ?? UInt32(TimelineAppearanceDefaults.background)))
+            .frame(width: width, height: max(0, geometry.size.height), alignment: .topLeading)
+            .clipped()
+        }.clipped().background(remoteColor(state.gridBackgroundColor ?? UInt32(TimelineAppearanceDefaults.background)))
             .background {
                 if local {
                     IpadTimelineGestureProbe(control: gestureControl, pan: { translation, width in
@@ -3084,13 +3146,39 @@ private struct RemoteNativeTimeline: View {
                 })
             .background {
                 if local {
-                    IpadTimelinePointerProbe(enabled: editorEnabled, capturesPointer: false,
+                    IpadTimelinePointerProbe(enabled: editorEnabled, capturesPointer: true,
                         reset: scrolling.pointerReset, accepts: { _ in true }, wantsAutoScroll: { _ in false },
-                        event: { _ in }, wheel: { handleWheel($0, modifiers: $1, width: width) })
+                        event: { rulerPointer($0, width: width) }, wheel: { handleWheel($0, modifiers: $1, width: width) })
                 }
             }
             .onChange(of: scrolling.pointerReset) { _ in rulerDrag.reset() }
             .accessibilityLabel(local ? "Time ruler: drag to scroll" : "Régua de tempo: arraste com o transporte parado")
+    }
+    private func rulerPointer(_ event: IpadTimelinePointerEvent, width: CGFloat) {
+        guard local, editorEnabled, let show = localShow, let song = show.current else { return }
+        switch event.phase {
+        case .began:
+            pauseFollowing(); rulerPointerViewport = viewport
+        case .moved, .ended:
+            guard let original = rulerPointerViewport else { return }
+            if event.secondary {
+                func time(_ x: CGFloat) -> Double {
+                    TimelineTempo.snap(max(0, original.start + Double(x / max(1, width)) * original.span), song: song,
+                        pixelsPerSecond: width / original.span,
+                        enabled: TimelineSnapPreference.enabled && !event.modifiers.contains(.shift), includeItemEdges: true)
+                }
+                timeSelection.update(song: song.id, from: time(event.origin.x), to: time(event.position.x))
+                show.updateActiveLoopArea()
+            } else if event.distance >= 3 {
+                var moved = original
+                moved.pan(pixels: Double(event.position.x - event.origin.x), width: width)
+                viewport = moved
+            } else if event.phase == .ended {
+                seek(max(0, original.start + Double(event.position.x / max(1, width)) * original.span))
+            }
+            if event.phase == .ended { rulerPointerViewport = nil }
+        case .cancelled: rulerPointerViewport = nil
+        }
     }
     private func tempoLane(width: CGFloat, song: Song?) -> some View {
         ZStack(alignment: .topLeading) {
@@ -3109,7 +3197,14 @@ private struct RemoteNativeTimeline: View {
                     text?.draw(at: CGPoint(x: rect.minX + 3, y: rect.minY + 2), context: &labelContext)
                 }
             }
+            if local, let song {
+                ForEach((song.markers ?? []).filter { $0.isTempo && $0.position >= start && $0.position <= end }) { marker in
+                    markerTarget(marker, width: (TimelineStaticText.label(song.markerLabel(marker), style: .regionIdentifier, displayScale: displayScale)?.width ?? 24) + 6, height: 16)
+                        .offset(x: gridX(marker.position, width: width))
+                }
+            }
         }.frame(height: 16).clipped().contentShape(Rectangle())
+            .contextMenu { if local { Button("Tempo marker") { createMarker(tempo: true) } } }
             .onTapGesture { pauseFollowing() }.accessibilityLabel("BPM / Compasso")
     }
     private func regionDestination(_ id: UUID, original: Double, translation: Double, width: Double) -> Double {
@@ -3144,6 +3239,7 @@ private struct RemoteNativeTimeline: View {
                                 show.moveRegion(move.id, start: move.start)
                             }
                         }))
+                        .contextMenu { Button("Editar região") { pauseFollowing(); openRegionActions?(part.id) } }
                         .offset(x: (left - start) / span * width, y: CGFloat(lanes.lanes[part.id] ?? 0) * RemoteNativeGridMetrics.regionHeight(local: local))
                 }
             } else if let region {
@@ -3176,8 +3272,41 @@ private struct RemoteNativeTimeline: View {
                         in: rect.insetBy(dx: marker.isSection ? 7 : 3, dy: 2))
                 }
             }
+            if local {
+                let widths = Dictionary(uniqueKeysWithValues: markers.map { ($0.id, Double(($0.name as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: 9, weight: .semibold)]).width)) })
+                let ends = Dictionary(uniqueKeysWithValues: markers.map { ($0.id, min(end, regionEnds[$0.id] ?? end)) })
+                let flags = TimelineMarker.flagWidths(markers, scale: width / span, widths: widths, regionEnds: ends)
+                ForEach(markers) { marker in
+                    markerTarget(marker, width: flags[marker.id] ?? 12, height: RemoteNativeGridMetrics.markerHeight(local: local))
+                        .offset(x: gridX(marker.position, width: width))
+                }
+            }
         }.frame(height: RemoteNativeGridMetrics.markerHeight(local: local)).clipped().contentShape(Rectangle())
+            .contextMenu {
+                if local {
+                    Button("Editar marcador") { createMarker() }
+                    Button("Section marker") { createMarker(section: true) }
+                    Button("Tempo marker") { createMarker(tempo: true) }
+                }
+            }
             .onTapGesture { if local { pauseFollowing() } }.accessibilityLabel("Marcadores da música")
+    }
+    private func markerTarget(_ marker: TimelineMarker, width: CGFloat, height: CGFloat) -> some View {
+        Color.clear.frame(width: max(1, width), height: height).contentShape(Rectangle())
+            .onTapGesture(count: 2) { pauseFollowing(); openMarkerEditor?(marker) }
+            .contextMenu {
+                Button("Editar marcador") { pauseFollowing(); openMarkerEditor?(marker) }
+                Button("Delete", role: .destructive) { localShow?.deleteManualMarker(marker.id) }
+            }.accessibilityLabel(marker.name)
+    }
+    private func createMarker(section: Bool = false, tempo: Bool = false) {
+        guard let show = localShow, let song = show.current else { return }
+        let time = show.snapshot.transport.editPosition ?? position
+        guard show.canCreateMarker(at: time, tempo: tempo), !section || show.canCreateSectionMarker(at: time) else { return }
+        let settings = song.tempoSection(at: time)
+        openMarkerEditor?(TimelineMarker(id: UUID(), name: tempo ? "TEMPO" : "", position: time, color: 0x51ef93,
+            tempoBPM: tempo ? settings.bpm : nil, tempoBeats: tempo ? settings.beats : nil,
+            tempoUnit: tempo ? settings.unit : nil, tempoTimebase: tempo ? .global : nil, section: section ? true : nil))
     }
     private func cursor(width: CGFloat) -> some View {
         ZStack(alignment: .leading) {
@@ -3536,12 +3665,7 @@ private struct IpadNativeWaveformRow: View {
         MetalWaveformView(frame: TimelineMetalWaveformFrameBuilder.make(items: items, viewport: viewport,
             scale: scale, cache: cache, owner: owner, contentRevision: Int(truncatingIfNeeded: revision)))
             .frame(width: width, height: viewport.height).clipped()
-            .overlay(alignment: .bottomTrailing) {
-                if !cache.preparingSourcePaths.isEmpty, items.contains(where: { cache.preparingSourcePaths.contains($0.sourcePath ?? $0.url.path) }) {
-                    Text("Loading waveforms…").font(.jarasSystem(size: 9)).foregroundStyle(.white.opacity(0.8))
-                        .padding(3).background(JarasTheme.panel.opacity(0.85)).cornerRadius(3).padding(2)
-                }
-            }.allowsHitTesting(false)
+            .allowsHitTesting(false)
     }
 }
 private final class IpadWaveformRowSources {
@@ -4177,14 +4301,17 @@ private struct RemoteNativeMixerRow: View, Equatable {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 3) {
                 if compact || !hasVolume {
-                    if isGroup { Image(systemName: "folder.fill").font(.jarasSystem(size: 11)).foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)) }
+                    if isGroup, let localShow, let nativeTrack {
+                        TrackGroupButton(show: localShow, project: project, track: track.id, parent: nativeTrack.parentTrackID)
+                            .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
+                    }
                     Text(String(format: "%02d  %@", number, track.name)).font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1)
                         .foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if !compact && hasVolume { Spacer(minLength: 0) }
                 HStack(spacing: 3) {
                 if !local || kind == .standard {
-                if isGroup && !compact { Image(systemName: "folder.fill").font(.jarasSystem(size: 11)).foregroundStyle(remoteColor(track.nameColor ?? 0xffffff)) }
+
                 if patchVisible, let openPatch { Button("Patch", action: openPatch).buttonStyle(RemoteNativeTrackButtonStyle(activeColor: nil, width: 44)) }
                 if fxVisible, let openFX { Button("FX", action: openFX).buttonStyle(RemoteNativeTrackButtonStyle(activeColor: nil)) }
                 if let localShow, let row = localShow.current?.tracks.first(where: { $0.id == track.id }), row.kind == .standard {
@@ -4218,6 +4345,10 @@ private struct RemoteNativeMixerRow: View, Equatable {
             }
             if hasVolume {
             HStack(spacing: 3) {
+                if hasVolume && track.canMeter != false {
+                    RemotePeakReadout(decibels: track.peakDB, name: track.name, project: project, song: song, target: track.id, nameColor: track.nameColor ?? 0xffffff, reset: { send(.resetMeterPeak, 0) }).equatable()
+                        .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
+                }
                 Text(remoteDecibelText(track.volume)).font(.jarasSystem(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(JarasTheme.text).frame(width: 36, alignment: .leading)
                     .contentShape(Rectangle()).onTapGesture(count: 2) { send(.volume, 1) }
@@ -4231,8 +4362,8 @@ private struct RemoteNativeMixerRow: View, Equatable {
             }
             if hasVolume {
             HStack(spacing: 4) {
-                if hasVolume && track.canMeter != false {
-                    RemotePeakReadout(decibels: track.peakDB, name: track.name, project: project, song: song, target: track.id, nameColor: track.nameColor ?? 0xffffff, reset: { send(.resetMeterPeak, 0) }).equatable()
+                if isGroup, let localShow, let nativeTrack {
+                    TrackGroupButton(show: localShow, project: project, track: track.id, parent: nativeTrack.parentTrackID)
                         .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
                 }
                 Text(String(format: "%02d  %@", number, track.name)).font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1)

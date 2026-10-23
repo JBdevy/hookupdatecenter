@@ -1173,15 +1173,15 @@ class Workspace::Setlist final : public Component,
         if (!targets.count(entry.id)) targets = {entry.id};
         for (const auto &row : entries) if (row.block) targets.erase(row.id);
         PopupMenu menu;
-        if (targets.size() == 1 && !entry.hasChildren) menu.addItem(1, "Multiloops");
-        menu.addItem(2, String::fromUTF8("Detectar BPM…"));
-        menu.addItem(3, String::fromUTF8("Exportar áudio"));
         menu.addItem(4, String::fromUTF8("Editar música"));
-        menu.addItem(6,"Config Init");
-        if (!entry.child) menu.addItem(5, selectedPlaylist() ? "Remover da playlist" : String::fromUTF8("Excluir região"));
+        menu.addItem(2, String::fromUTF8("Detectar BPM…"));
+        if (targets.size() == 1 && !entry.hasChildren) menu.addItem(1, "Multiloops");
         const auto playlist = selectedPlaylist() ? selectedPlaylist()->id : ID{};
         if (!playlist.empty() && targets.size()==1 && !entry.child && !searching)
             menu.addItem(7, localization::translate("Duplicate region"));
+        menu.addItem(6,"Config Init");
+        menu.addItem(3, String::fromUTF8("Exportar áudio"));
+        if (!entry.child) menu.addItem(5, selectedPlaylist() ? "Remover da playlist" : String::fromUTF8("Excluir região"));
         std::set<ID> sources;
         for (const auto &id : targets) sources.insert(selectedPlaylist() ? selectedPlaylist()->resolvedRegionId(id) : id);
         menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({Desktop::getMousePosition().x,Desktop::getMousePosition().y,1,1}),
@@ -1210,6 +1210,7 @@ class Workspace::Setlist final : public Component,
     }
     void editEntry(Entry entry, std::set<ID> targets = {}) {
         if (targets.empty()) targets.insert(entry.block ? entry.id : entry.sourceId);
+        if (!entry.block && targets.size() == 1) { w.editRegion(entry.sourceId); return; }
         const auto self = SafePointer<Setlist>(this);
         bool uppercase = true;
         String name = entry.name;
@@ -1248,9 +1249,10 @@ class Workspace::Setlist final : public Component,
                             for (auto &song : project.songs)
                                 for (auto &p : song.parts)
                                     if (targets.count(p.id)) {
-                                        p.name = utf8(name);
                                         p.color = colour;
-                                        p.uppercaseName = uppercase;
+                                        if (song.markers) for (auto &marker : *song.markers) if (marker.sourceRegionID == p.id) {
+                                            marker.name = p.name; marker.color = colour;
+                                        }
                                     }
                         },
                         false);
@@ -1261,7 +1263,7 @@ class Workspace::Setlist final : public Component,
         };
         ModalSheet::open(w, entry.block ? "Editar bloco" : String::fromUTF8("Editar música"),
                          std::make_unique<RegionEditor>(name, entry.colour.getARGB() & 0xffffff,
-                                                        uppercase, save, close),
+                                                        uppercase, save, close, entry.block, entry.block),
                          300, 404);
     }
     void removeRegion(Entry entry) { w.deleteRegions({entry.sourceId}, true); }

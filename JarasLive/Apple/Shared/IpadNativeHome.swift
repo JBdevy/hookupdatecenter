@@ -34,10 +34,14 @@ extension UTType {
                         mode("Native", detail: "Play your projects directly on this iPad.", icon: "waveform", action: { enter() })
                         mode("Remote", detail: "Control or follow your PC’s session.", icon: "network", action: { remote = true })
                     }.frame(maxWidth: 760)
-                    if !purchases.unlocked, purchases.trialDaysRemaining > 0 {
-                        HStack {
-                            Text("Free trial: \(purchases.trialDaysRemaining) day(s) remaining")
+                    if !purchases.unlocked {
+                        VStack(spacing: 8) {
+                            if purchases.trialDaysRemaining > 0 {
+                                Text("Free trial: \(purchases.trialDaysRemaining) day(s) remaining")
+                            }
                             Button("Unlock Native mode") { showingPurchase = true }
+                                .buttonStyle(.bordered).controlSize(.large)
+                                .accessibilityIdentifier("catlive-home-unlock-native")
                         }.font(.jarasCallout).foregroundStyle(JarasTheme.green)
                     }
                     if entering { ProgressView() }

@@ -387,7 +387,13 @@ void Engine::editRegion(const ID& id, std::string name, unsigned color, bool upp
     projectSync::requireWritable();
     if (name.empty() || color > 0xFFFFFF) throw std::invalid_argument("Invalid region settings");
     for (auto& song : project_.songs) if (song.id == transport_.songId)
-        for (auto& part : song.parts) if (part.id == id) { part.name = std::move(name); part.color = color; part.uppercaseName = uppercaseName; return; }
+        for (auto& part : song.parts) if (part.id == id) {
+            part.name = std::move(name); part.color = color; part.uppercaseName = uppercaseName;
+            if (song.markers) for (auto& marker : *song.markers) if (marker.sourceRegionID == id) {
+                marker.name = part.name; marker.color = color;
+            }
+            return;
+        }
     throw std::invalid_argument("Unknown region");
 }
 void Engine::moveClip(const ID& clipId, double start, const ID& destination) {
@@ -486,6 +492,9 @@ void Engine::setMarker(ID id, std::string name, double position, unsigned color,
     marker.tempoBPM = bpm; marker.tempoBeats = beats; marker.tempoUnit = unit;
     marker.tempoTimebase = std::move(timebase);
     if (std::isfinite(position)) song->duration = std::max(song->duration, position);
+    if (marker.sourceRegionID) for (auto& part : song->parts) if (part.id == *marker.sourceRegionID) {
+        part.name = marker.name; part.color = marker.color;
+    }
     if (found == song->markers->end()) song->markers->push_back(std::move(marker)); else *found = std::move(marker);
     const TempoEditMap map(beforeTempoEdit,*song);
     if(retime) map.apply(*song);

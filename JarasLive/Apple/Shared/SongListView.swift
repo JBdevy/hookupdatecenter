@@ -128,7 +128,26 @@ struct SongListView: View {
     }
     #endif
     private struct EntryEdit: Identifiable { let id: UUID; let name: String; let color: UInt32; let block: Bool; var regionTargets: Set<UUID> = [] }
-    @State private var editingEntry: EntryEdit?
+    // Only the presentation host observes editor changes; opening a dialog must
+    // not rebuild every row in a large playlist.
+    private final class EntryEditorState: ObservableObject {
+        @Published var entry: EntryEdit?
+        @Published var blockSymbol = true
+        @Published var uppercaseName = true
+    }
+    @State private var entryEditor = EntryEditorState()
+    private var editingEntry: EntryEdit? {
+        get { entryEditor.entry }
+        nonmutating set { entryEditor.entry = newValue }
+    }
+    private var editingBlockSymbol: Bool {
+        get { entryEditor.blockSymbol }
+        nonmutating set { entryEditor.blockSymbol = newValue }
+    }
+    private var editingUppercaseName: Bool {
+        get { entryEditor.uppercaseName }
+        nonmutating set { entryEditor.uppercaseName = newValue }
+    }
     @State private var entryCache = SetlistEntryCache()
     @State private var expandedRegions: Set<UUID> = []
     private struct EntryRemoval {
@@ -152,8 +171,6 @@ struct SongListView: View {
     @State private var blockSymbolTargets = Set<UUID>()
     @State private var editingMultipleSymbols = false
     @State private var multipleSymbolDraft = true
-    @State private var editingBlockSymbol = true
-    @State private var editingUppercaseName = true
     @State private var showingBlockDefaults = false
     @State private var blockSymbolDraft = true
     @State private var createdBlock: UUID?
@@ -381,6 +398,11 @@ struct SongListView: View {
                                     let targets = selectedEntries.contains(region.id) ? selectedEntries : [region.id]
                                     let sourceID = show.playlistRegionSourceID(region.id)
                                     let source = song?.parts.first { $0.id == sourceID } ?? region
+                                    Button("Edit song") { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: sourceID, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: Set(targets.map(show.playlistRegionSourceID))) }
+                                    Button("Detect BPM…") { show.detectBPMRegions = visible.compactMap { entry in
+                                        if case .region(let part, _) = entry, targets.contains(part.id) { return show.playlistRegionSourceID(part.id) }; return nil
+                                    } }
+                                    if targets.count == 1 && !content.unifiedRegionIDs.contains(sourceID) { Button("Multiloops") { multiLoopRegion = source } }
                                     if playlist != nil && targets.count == 1 && region.parentRegionID == nil {
                                         Button("Duplicate region") {
                                             if let duplicate = show.duplicatePlaylistRegion(region.id) {
@@ -388,10 +410,7 @@ struct SongListView: View {
                                             }
                                         }
                                     }
-                                    if targets.count == 1 && !content.unifiedRegionIDs.contains(sourceID) { Button("Multiloops") { multiLoopRegion = source } }
-                                    Button("Detect BPM…") { show.detectBPMRegions = visible.compactMap { entry in
-                                        if case .region(let part, _) = entry, targets.contains(part.id) { return show.playlistRegionSourceID(part.id) }; return nil
-                                    } }
+                                    Button("Config Init") { configInitSelection = region.subplayInitSelection; configInitRegion = source }
                                     Button("Export Audio") {
                                         guard let current = show.current else { return }
                                         let selection = AudioExportPlan.contextRegions(clicked: sourceID, selected: Set(selectedEntries.map(show.playlistRegionSourceID)), in: current)
@@ -399,8 +418,6 @@ struct SongListView: View {
                                         regionExport = RegionAudioExportRequest(project: show.snapshot.project, song: current,
                                             regions: selection, mediaDirectory: mediaDirectory)
                                     }
-                                    Button("Config Init") { configInitSelection = region.subplayInitSelection; configInitRegion = source }
-                                    Button("Edit song") { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: sourceID, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: Set(targets.map(show.playlistRegionSourceID))) }
                                     if region.parentRegionID == nil {
                                     Button(playlist == nil ? "Delete region" : "Remove from playlist", role: .destructive) {
                                         requestRemoval([region.id], keyboard: false)
@@ -537,13 +554,7 @@ struct SongListView: View {
             }.padding(20).frame(width: 320).background(JarasTheme.panel)
         }
         .sheet(item: $multiLoopRegion) { region in MultiLoopsEditor(show: show, regionID: region.id) }
-        .sheet(item: $editingEntry) { edit in
-            NameColorEditor(title: edit.block ? "Edit block" : "Edit song", initialName: edit.name, initialColor: edit.color, save: { name, color in
-                if edit.block { show.editSetlistBlock(edit.id, name: name, color: color, symbol: editingBlockSymbol) }
-                else if edit.regionTargets.count > 1 { show.editRegionColors(edit.regionTargets, color: color) }
-                else { show.editRegion(edit.id, name: name, color: color, uppercaseName: editingUppercaseName) }
-            }, symbol: edit.block ? $editingBlockSymbol : nil, uppercaseName: edit.block || edit.regionTargets.count > 1 ? nil : $editingUppercaseName, nameEditable: edit.regionTargets.count <= 1, showsName: edit.regionTargets.count <= 1).background(JarasTheme.panel)
-        }
+        .background(EntryEditorHost(show: show, state: entryEditor))
         .sheet(isPresented: $editingMultipleSymbols) {
             VStack(alignment: .leading, spacing: 16) {
                 Toggle("SIMBOL", isOn: $multipleSymbolDraft)
@@ -561,6 +572,26 @@ struct SongListView: View {
                     Button("Salvar") { defaultBlockSymbol = blockSymbolDraft; showingBlockDefaults = false }.keyboardShortcut(.defaultAction)
                 }
             }.padding(18).frame(width: 280).background(JarasTheme.panel)
+        }
+    }
+    private struct EntryEditorHost: View {
+        @ObservedObject var show: ShowController
+        @ObservedObject var state: EntryEditorState
+        var body: some View {
+            Color.clear.frame(width: 0, height: 0)
+        .sheet(item: $state.entry) { edit in
+            if !edit.block, edit.regionTargets.count <= 1, let part = show.current?.parts.first(where: { $0.id == edit.id }) {
+                RegionEditor(region: part, initialColor: part.color ?? 0x705264) { name, color, uppercase in
+                    show.editRegion(part.id, name: name, color: color, uppercaseName: uppercase)
+                }.background(JarasTheme.panel)
+            } else {
+            NameColorEditor(title: edit.block ? "Edit block" : "Edit song", initialName: edit.name, initialColor: edit.color, save: { name, color in
+                if edit.block { show.editSetlistBlock(edit.id, name: name, color: color, symbol: state.blockSymbol) }
+                else if edit.regionTargets.count > 1 { show.editRegionColors(edit.regionTargets, color: color) }
+                else { show.editRegion(edit.id, name: name, color: color, uppercaseName: state.uppercaseName) }
+            }, symbol: edit.block ? $state.blockSymbol : nil, uppercaseName: edit.block || edit.regionTargets.count > 1 ? nil : $state.uppercaseName, nameEditable: edit.regionTargets.count <= 1, showsName: edit.regionTargets.count <= 1).background(JarasTheme.panel)
+            }
+        }
         }
     }
     private func copyPlaylist(_ id: UUID?) {

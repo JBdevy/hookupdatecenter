@@ -475,6 +475,8 @@ struct IpadTimelineFocus: Equatable {
 }
 
 struct IpadTimelineViewport: Equatable {
+    // Bound the amount of item/region geometry mounted on the iPad at once.
+    static let maximumSpan = 600.0
     var start = 0.0
     var span = 60.0
     var end: Double { start + span }
@@ -495,7 +497,7 @@ struct IpadTimelineViewport: Equatable {
     }
     mutating func zoom(factor: Double, centeredOn time: Double) {
         guard factor.isFinite, factor > 0, time.isFinite else { return }
-        span = min(86400, max(0.25, span / factor))
+        span = min(Self.maximumSpan, max(0.25, span / factor))
         center(on: time)
     }
     mutating func pan(pixels: Double, width: Double) {
@@ -505,7 +507,7 @@ struct IpadTimelineViewport: Equatable {
     mutating func zoom(factor: Double, anchor: Double) {
         guard factor.isFinite, factor > 0, anchor.isFinite else { return }
         let fraction = min(1, max(0, anchor)), position = start + fraction * span
-        span = min(86400, max(0.25, span / factor))
+        span = min(Self.maximumSpan, max(0.25, span / factor))
         start = min(604800 - span, max(0, position - fraction * span))
     }
 }
@@ -683,6 +685,26 @@ struct IpadTrackControlsBoundsKey: PreferenceKey {
 /// Dragging the grip is a direct gesture, not a system drag-and-drop session.
 /// The scroll view yields only touches starting on the grip. All destination
 /// validation and the single undoable subtree move use the desktop controller.
+struct IpadSetlistDrop: DropDelegate {
+    let show: ShowController?
+    let target: UUID
+    let project: UUID
+    let playlist: UUID?
+    let height: CGFloat
+    @Binding var moving: Set<UUID>
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let show, let playlist else { return false }
+        return !moving.isEmpty && !moving.contains(target) && show.snapshot.project.id == project && show.selectedRegionPlaylist?.id == playlist
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: validateDrop(info: info) ? .move : .forbidden) }
+    func performDrop(info: DropInfo) -> Bool {
+        guard validateDrop(info: info), let show else { return false }
+        show.moveSetlistEntries(moving, relativeTo: target, after: info.location.y >= height / 2)
+        moving = []
+        return true
+    }
+}
+
 struct IpadTrackReorderModifier: ViewModifier {
     let show: ShowController?
     let track: UUID
@@ -712,6 +734,7 @@ struct IpadTrackReorderModifier: ViewModifier {
     private weak var scroll: UIScrollView?
     private var point = CGPoint.zero
     private var below = false
+    private var outsideGroup = false
     private var clock: CADisplayLink?
     private var previousTime: CFTimeInterval = 0
     @MainActor private final class TickTarget {
@@ -739,13 +762,13 @@ struct IpadTrackReorderModifier: ViewModifier {
     fileprivate func move(to point: CGPoint) { self.point = point; updateDestination() }
     fileprivate func end(at point: CGPoint) {
         self.point = point; updateDestination()
-        let sourceID = source?.track, targetID = destination?.track, show = source?.show, after = below
+        let sourceID = source?.track, targetID = destination?.track, show = source?.show, after = below, outside = outsideGroup
         cancel()
         guard let sourceID, let targetID, let show, let tracks = show.current?.tracks,
               show.canDropTrack(sourceID, on: targetID, after: after),
               let index = tracks.firstIndex(where: { $0.id == targetID }) else { return }
         let before = after ? (index + 1 < tracks.count ? tracks[index + 1].id : nil) : targetID
-        show.dropTrack(sourceID, on: targetID, before: before)
+        show.dropTrack(sourceID, on: targetID, before: before, outsideGroup: outside)
     }
     func cancel() {
         clock?.invalidate(); clock = nil
@@ -765,6 +788,7 @@ struct IpadTrackReorderModifier: ViewModifier {
             guard y >= frame.minY, y < frame.maxY else { continue }
             let after = y >= frame.midY
             guard show.canDropTrack(sourceID, on: target, after: after) else { return }
+            outsideGroup = point.x < frame.maxX - view.rowWidth + 16
             destination = view; below = after; view.showInsertion(after: after)
             return
         }
@@ -1030,7 +1054,7 @@ final class IpadTrackSelectionTouchView: UIView, UIGestureRecognizerDelegate {
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        !(otherGestureRecognizer is UIPanGestureRecognizer) && !(otherGestureRecognizer is UILongPressGestureRecognizer)
+        !(otherGestureRecognizer is UILongPressGestureRecognizer)
     }
     override func accessibilityActivate() -> Bool { tap?(); return true }
     @objc private func tapped() { tap?() }
@@ -1209,7 +1233,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
     @ObservedObject var show: ShowController
     let id: UUID
     let close: () -> Void
-    @State private var editing = false
+    @State private var editing = true
     @State private var unifying = false
     @State private var deleting = false
     @State private var name = ""
@@ -1221,6 +1245,11 @@ struct IpadDialogButtonStyle: ButtonStyle {
     var body: some View {
         VStack(spacing: 14) {
             IpadModalHeader(title: "Editar região", subtitle: region?.name, close: close)
+            Menu("Actions") {
+                Button("Edit song") { unifying = false; editing = true }
+                if canUnify { Button("Unify regions") { name = ""; editing = false; unifying = true } }
+                Button("Delete region", role: .destructive) { deleting = true }
+            }
             if let region {
                 if editing {
                     NameColorEditor(title: "Editar região", initialName: region.name, initialColor: region.color ?? 0x705264, save: { name, color in

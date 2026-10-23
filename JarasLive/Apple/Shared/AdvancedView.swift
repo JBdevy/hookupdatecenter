@@ -154,6 +154,7 @@ struct AdvancedView: View {
 struct TempoMarkerEditor: View {
     let marker: TimelineMarker
     let save: (TimelineMarker) -> Void
+    var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var bpm: String
     @State private var beats: String
@@ -161,8 +162,8 @@ struct TempoMarkerEditor: View {
     @State private var timebase: TempoMarkerTimebase
     @State private var invalid = false
     @State private var shake = 0.0
-    init(marker: TimelineMarker, save: @escaping (TimelineMarker) -> Void) {
-        self.marker = marker; self.save = save
+    init(marker: TimelineMarker, save: @escaping (TimelineMarker) -> Void, close: (() -> Void)? = nil) {
+        self.marker = marker; self.save = save; self.close = close
         _bpm = State(initialValue: String(format: "%g", marker.tempoBPM ?? 120))
         _beats = State(initialValue: String(marker.tempoBeats ?? 4)); _unit = State(initialValue: String(marker.tempoUnit ?? 4))
         _timebase = State(initialValue: marker.tempoTimebase ?? .global)
@@ -188,11 +189,12 @@ struct TempoMarkerEditor: View {
                 }.labelsHidden().frame(maxWidth: .infinity).accessibilityLabel("Timebase")
             }
             HStack {
-                Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer(); Button("Cancel") { finish() }.keyboardShortcut(.cancelAction)
                 Button("Apply", action: apply).keyboardShortcut(.defaultAction)
             }
         }.padding(20).frame(width: 420).foregroundStyle(JarasTheme.text).background(JarasTheme.background)
     }
+    private func finish() { if let close { close() } else { dismiss() } }
     private func apply() {
         guard let value = Double(bpm.replacingOccurrences(of: ",", with: ".")), value.isFinite, TimelineTempo.bpmRange.contains(value),
               let beats = Int(beats), (1...32).contains(beats), let unit = Int(unit), TimelineTempo.beatUnits.contains(unit) else {
@@ -202,7 +204,7 @@ struct TempoMarkerEditor: View {
         var edited = marker; edited.name = "TEMPO"; edited.color = 0x999999
         edited.tempoBPM = value; edited.tempoBeats = beats; edited.tempoUnit = unit
         edited.tempoTimebase = timebase
-        save(edited); dismiss()
+        save(edited); finish()
     }
 }
 

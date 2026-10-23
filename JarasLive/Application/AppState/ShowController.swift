@@ -2851,6 +2851,12 @@ public struct ShowTimelinePresentationState: Equatable {
                 try executor.editRegion(region.id, name: region.name, color: color, uppercaseName: region.usesUppercase)
                 snapshot.project.songs[song].parts[index].color = color
                 snapshot.project.songs[song].parts[index].uppercaseName = region.usesUppercase
+                for markerIndex in snapshot.project.songs[song].markers?.indices ?? 0..<0 {
+                    if snapshot.project.songs[song].markers![markerIndex].sourceRegionID == region.id {
+                        snapshot.project.songs[song].markers![markerIndex].name = region.name
+                        snapshot.project.songs[song].markers![markerIndex].color = color
+                    }
+                }
                 changed = true
             }
         } catch { message = error.localizedDescription }
@@ -2868,6 +2874,12 @@ public struct ShowTimelinePresentationState: Equatable {
             snapshot.project.songs[song].parts[region].uppercaseName = uppercase
             snapshot.project.songs[song].parts[region].name = name
             snapshot.project.songs[song].parts[region].color = color
+            for index in snapshot.project.songs[song].markers?.indices ?? 0..<0 {
+                if snapshot.project.songs[song].markers![index].sourceRegionID == id {
+                    snapshot.project.songs[song].markers![index].name = name
+                    snapshot.project.songs[song].markers![index].color = color
+                }
+            }
             markChanged(refreshAudio: false)
         }
         catch { message = error.localizedDescription }
@@ -3014,6 +3026,10 @@ public struct ShowTimelinePresentationState: Equatable {
             } else {
                 if snapshot.project.songs[song].markers == nil { snapshot.project.songs[song].markers = [] }
                 snapshot.project.songs[song].markers!.append(value)
+            }
+            if let source = value.sourceRegionID, let index = snapshot.project.songs[song].parts.firstIndex(where: { $0.id == source }) {
+                snapshot.project.songs[song].parts[index].name = value.name
+                snapshot.project.songs[song].parts[index].color = value.color
             }
             snapshot.project.songs[song].duration = max(snapshot.project.songs[song].duration, value.position)
             if value.isTempo && (previous?.tempoBPM != value.tempoBPM || previous?.tempoTimebase != value.tempoTimebase) {
