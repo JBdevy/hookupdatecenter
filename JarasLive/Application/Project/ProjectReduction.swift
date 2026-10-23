@@ -61,6 +61,47 @@ public enum ProjectReduction {
         }
         return result
     }
+    public struct SizeEstimate: Sendable {
+        public var frames: Double = 0
+        public var files = 0
+        public var copiedBytes: Double = 0
+        public var documentBytes: Double = 0
+        public func bytes(for format: AudioExportFormat) -> Double {
+            // MP3 is CBR 320 kbps. Allow for encoder delay, tags and file headers.
+            let audio = format == .mp3 ? frames / 48000 * 40000 : frames * 8
+            return audio + Double(files) * 8192 + copiedBytes + documentBytes
+        }
+    }
+    public static func estimate(_ groups: [ProjectReductionTrack], project: Project,
+                                fileSize: (String) -> Double) -> SizeEstimate {
+        var estimate = SizeEstimate()
+        var retained = project
+        for i in retained.songs.indices { retained.songs[i].tracks = [] }
+        for group in groups {
+            guard let si = project.songs.firstIndex(where: { !group.sources.isDisjoint(with: $0.tracks.map(\.id)) }) else { continue }
+            let song = project.songs[si], sources = song.tracks.filter { group.sources.contains($0.id) }
+            let ranges = sampleAligned(spans(sources, in: song))
+            if sources.count == 1 && (sources[0].parentTrackID == nil || ranges.isEmpty) {
+                retained.songs[si].tracks.append(sources[0])
+            } else {
+                estimate.frames += ranges.reduce(0) { $0 + (($1.end - $1.start) * 48000).rounded() }
+                estimate.files += ranges.count
+                var output = Track(id: group.id, name: group.name, role: .other)
+                output.clips = sources.flatMap { source in
+                    source.clips.filter { !isAudio($0, track: source) }.map { original in
+                        var clip = original
+                        if clip.audioFile == nil { clip.audioFile = source.audioFile }
+                        return clip
+                    }
+                }
+                retained.songs[si].tracks.append(output)
+            }
+        }
+        // Shared references are copied once, including samples used by retained FX.
+        estimate.copiedBytes = retained.mediaPaths.reduce(0) { $0 + max(0, fileSize($1)) }
+        estimate.documentBytes = Double((try? JSONEncoder().encode(retained).count) ?? 0) + Double(estimate.files) * 2048
+        return estimate
+    }
     /// Group processing is already printed by the writer. Keep only the
     /// destination lanes, detached from every original folder.
     public static func retain(_ ids: Set<UUID>, in project: inout Project) {

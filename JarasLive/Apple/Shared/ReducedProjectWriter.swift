@@ -8,7 +8,11 @@ struct ProjectReductionProgress: Sendable {
 
 enum ReducedProjectWriter {
     static func write(project: Project, groups: [ProjectReductionTrack], media: URL, target: URL,
-                      instruments: [UUID: [String: OfflineMIDIInstrument]], cancellation: AudioExportCancellation,
+                      instruments: [UUID: [String: OfflineMIDIInstrument]], cancellation: AudioExportCancellation, format: AudioExportFormat = .wav,
+                      availableCapacity: (URL) throws -> Double = { folder in
+                          let attributes = try FileManager.default.attributesOfFileSystem(forPath: folder.path)
+                          return (attributes[.systemFreeSize] as? NSNumber)?.doubleValue ?? -1
+                      },
                       progress: @escaping @Sendable (ProjectReductionProgress) -> Void) throws {
         func report(_ fraction: Double, _ message: String) {
             progress(ProjectReductionProgress(fraction: fraction, message: message))
@@ -21,6 +25,14 @@ enum ReducedProjectWriter {
         var completed = false
         var names = Set(project.mediaPaths.map { $0.lowercased() })
         defer { if !completed { try? fm.removeItem(at: folder) } }
+        let estimate = ProjectReduction.estimate(groups, project: project) { path in
+            let url = media.appendingPathComponent(path)
+            return Double((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        let free = try availableCapacity(folder)
+        if free >= 0 && free < estimate.bytes(for: format) + 64 * 1024 * 1024 {
+            throw ProjectError.invalid(String(format: "Espaço insuficiente. Projeto estimado: %.2f GB; disponível: %.2f GB. Escolha outro formato ou disco.", estimate.bytes(for: format) / 1e9, free / 1e9))
+        }
         let stems = folder.appendingPathComponent("Stems", isDirectory: true)
         try fm.createDirectory(at: stems, withIntermediateDirectories: true)
         var result = project
@@ -60,19 +72,25 @@ enum ReducedProjectWriter {
             renderProject.masterFX = nil; renderProject.masterAutomation = nil; renderProject.masterVolume = 1; renderProject.masterPan = 0; renderProject.masterMute = false; renderProject.masterSolo = false; renderProject.masterMono = false; renderProject.masterPhaseInverted = false
             let base = group.name.components(separatedBy: CharacterSet(charactersIn: "/\\:\n\r")).joined(separator: "_").prefix(80)
             let jobs = spans.enumerated().map { n, span -> AudioExportJob in
-                var suffix = n + 1, file = "\(base) - \(n + 1).wav"
-                while !names.insert(("Stems/" + file).lowercased()).inserted { suffix += 1; file = "\(base) - \(suffix).wav" }
+                var suffix = n + 1, file = "\(base) - \(n + 1).\(format.fileExtension)"
+                while !names.insert(("Stems/" + file).lowercased()).inserted { suffix += 1; file = "\(base) - \(suffix).\(format.fileExtension)" }
                 return AudioExportJob(id: "\(index)-\(n)", fileName: file, start: span.start, end: span.end)
             }
-            try OfflineAudioExport.run(project: renderProject, song: renderSong, plan: AudioExportPlan(jobs: jobs), mediaDirectory: media, outputDirectory: stems, sampleRate: 48000, encoding: AudioExportEncoding(bitDepth: 32, floatingPoint: true), cancellation: cancellation, printTrackPolarity: true, midiInstrumentsByTrack: instruments) { value in
+            var renderingFile = jobs.first?.fileName ?? group.name
+            do { try OfflineAudioExport.run(project: renderProject, song: renderSong, plan: AudioExportPlan(jobs: jobs), mediaDirectory: media, outputDirectory: stems, sampleRate: 48000, encoding: AudioExportEncoding(format: format, bitDepth: 32, floatingPoint: true), cancellation: cancellation, printTrackPolarity: true, midiInstrumentsByTrack: instruments) { value in
                 // Offline export reports a fraction for the current file, not the whole plan.
                 let jobIndex = jobs.firstIndex(where: { $0.fileName == value.fileName }) ?? 0
                 let job = jobs[jobIndex]
+                renderingFile = job.fileName
                 let region = sourceSong.parts.filter { $0.startTime < job.end && $0.endTime > job.start }
                     .min { ($0.endTime - $0.startTime) < ($1.endTime - $1.startTime) }?.name ?? "Fora de região"
                 let groupFraction = (Double(jobIndex) + value.fraction) / Double(jobs.count)
                 report(0.9 * (Double(index) + groupFraction) / Double(groups.count),
                        "Renderizando \(trackLabel)\nMúsica/região \(jobIndex + 1)/\(jobs.count): \(region) — \(job.fileName)")
+            }
+            } catch {
+                if cancellation.cancelled { throw CancellationError() }
+                throw ProjectError.invalid("Falha ao renderizar \(group.name) — \(renderingFile): \(error.localizedDescription)")
             }
             var track = Track(id: group.id, name: group.name, role: .other, color: sourceTracks.first?.color)
             track.clips = jobs.map { job in AudioClip(id: UUID(), name: group.name, startTime: job.start, duration: job.duration, audioFile: AudioFile(path: "Stems/" + job.fileName), renderedTiming: true) }

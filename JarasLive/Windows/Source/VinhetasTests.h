@@ -7,7 +7,7 @@ struct VinhetasPanelProbe {
     static void run(const File &directory) {
         const ScopedValueSetter<var> restore(VinhetasPanel::globalState,var{});
         Appearance preferences(directory.getNonexistentChildFile("pads-midi",".json"));
-        VinhetasAudio audio;
+        VinhetasAudio audio; audio.setOutputAvailable(true);
         auto sample=std::make_shared<VinhetasAudio::Sample>();sample->pcm.setSize(2,44100);
         for(int ch=0;ch<2;ch++)FloatVectorOperations::fill(sample->pcm.getWritePointer(ch),.025f,44100);
         auto *pcm=audio.retain(sample);VinhetasPanel panel(audio,preferences);
@@ -71,9 +71,15 @@ template<class Test> void run(const File &directory, Test &&test) {
         recordingCaptureTests::require(audio.meterLevels(track.id)[0]>.01f && audio.meterLevels(track.id)[1]>.01f,"VINHETAS-FX meters did not receive pad audio with stopped transport");
         song.tracks[0].mute=true;audio.setMixer(project,song);level(0);
         recordingCaptureTests::require(!audio.state().playing,"A pad started the transport");
+        song.tracks.clear();audio.prepareSong(song,directory);audio.setMixer(project,song);level(0);
+        recordingCaptureTests::require(!audio.vinhetas.active(0,0),"Deleting VINHETAS-FX left a sounding voice");
+        recordingCaptureTests::require(!audio.vinhetas.enqueue({VinhetasAudio::Kind::start,2,0,0,1,pcm}),"Missing VINHETAS-FX accepted an audible trigger");level(0);
+        song.tracks.push_back(track);audio.prepareSong(song,directory);audio.setMixer(project,song);level(0);
+        recordingCaptureTests::require(audio.vinhetas.enqueue({VinhetasAudio::Kind::start,3,0,0,1,pcm}),"Existing VINHETAS-FX rejected a trigger");level(.0125f);
+
     });
     test("Vinhetas overlaps voices, gates independently and changes gain without restarting", [] {
-        VinhetasAudio audio;
+        VinhetasAudio audio; audio.setOutputAvailable(true);
         auto sample=std::make_shared<VinhetasAudio::Sample>();sample->rate=44100;
         sample->pcm.setSize(2,44100);
         for(int ch=0;ch<2;ch++)FloatVectorOperations::fill(sample->pcm.getWritePointer(ch),.025f,44100);

@@ -32,13 +32,17 @@ import AVFoundation
         self.audio = StemAudioPlayback.shared
         #endif
         startVoice = { [weak self] voice, url, volume in
-            guard let self, let buffer = self.buffers[url.lastPathComponent], let audio = self.audio else {
-                self?.error = "Aguarde o carregamento do áudio do pad."; self?.finished(voice.id); return
+            guard let self else { return }
+            guard let track = self.show?.current?.tracks.first(where: { $0.role.rawValue == "vinhetas" }) else {
+                self.finished(voice.id); return
+            }
+            guard let buffer = self.buffers[url.lastPathComponent], let audio = self.audio else {
+                self.error = "Aguarde o carregamento do áudio do pad."; self.finished(voice.id); return
             }
             do {
                 self.voiceEngines[voice.id] = audio
                 try audio.playPad(voice.id, buffer: buffer, gain: Float(volume),
-                    track: self.show?.current?.tracks.first { $0.role.rawValue == "vinhetas" }?.id,
+                    track: track.id,
                     finished: { [weak self] in self?.finished(voice.id) })
             } catch { self.error = error.localizedDescription; self.finished(voice.id) }
         }

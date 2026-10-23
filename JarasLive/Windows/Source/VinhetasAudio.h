@@ -29,7 +29,9 @@ class VinhetasAudio {
         for(const auto &mapping:midiMappings)if((mapping.load(std::memory_order_acquire)&0xffff00ffu)==key)return true;
         return false;
     }
+    void setOutputAvailable(bool available) { outputAvailable.store(available, std::memory_order_release); }
     bool enqueue(Command command) {
+        if (command.kind == Kind::start && !outputAvailable.load(std::memory_order_acquire)) return false;
         const auto w = write.load(std::memory_order_relaxed), r = read.load(std::memory_order_acquire);
         if (w - r == capacity) return false;
         // Publish the accepted voice before exposing its command to the callback.
@@ -49,7 +51,15 @@ class VinhetasAudio {
         return sample;
     }
     const Sample *retain(std::shared_ptr<Sample> sample) { auto result=sample.get(); samples.push_back(std::move(sample)); return result; }
+    // Called by the render thread, or while its callback is detached/locked.
+    void discard() {
+        auto r = read.load(std::memory_order_relaxed); const auto w = write.load(std::memory_order_acquire);
+        while (r != w) { apply(commands[r % capacity]); ++r; }
+        read.store(r, std::memory_order_release);
+        for (auto &voice : voices) finish(voice);
+    }
     void render(juce::AudioBuffer<float> &destination, int count, double rate) {
+        if (!outputAvailable.load(std::memory_order_acquire)) { discard(); return; }
         auto r = read.load(std::memory_order_relaxed); const auto w = write.load(std::memory_order_acquire);
         while (r != w) { apply(commands[r % capacity]); ++r; }
         read.store(r, std::memory_order_release);
@@ -73,6 +83,7 @@ class VinhetasAudio {
     bool active(int preset, int pad) const { return counts[size_t(preset * 16 + pad)].load(std::memory_order_relaxed) > 0; }
   private:
     struct Voice { const Sample *sample = nullptr; uint64_t token = 0; int preset = 0, pad = 0; double position = 0; float gain = 1; };
+    std::atomic<bool> outputAvailable{false};
     std::array<std::atomic<uint32_t>,22> midiMappings{};
     std::array<Command, capacity> commands{};
     std::atomic<size_t> read{0}, write{0};

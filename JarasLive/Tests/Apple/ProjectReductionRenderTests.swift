@@ -92,3 +92,41 @@ for (name, sources, dry) in [("FlatMix", Set([a.id,b.id]), 0.15), ("FlatSingle",
     precondition(abs(pcm.floatChannelData![0][100] - Float(dry * 0.25 * pow(10,6.0/20))) < 0.001, "Ancestor gain/FX lost or applied twice")
 }
 print("Reduction render: PCM gain, region boundaries, selected tracks, destination protection and cancellation passed")
+
+// All advertised formats must contain decodable audio and match the size preview.
+for ch in 0..<2 { for n in 0..<192000 { buffer.floatChannelData![ch][n] = 0.1 * sin(Float(n) * 2 * .pi * 440 / 48000) } }
+file = try AVAudioFile(forWriting: root.appendingPathComponent("input.wav"), settings: format.settings)
+try file!.write(from: buffer); file = nil
+project.songs[0].tracks = [a,b]
+let size = ProjectReduction.estimate([group], project: project) { _ in 0 }
+for outputFormat in AudioExportFormat.allCases {
+    let destination = root.appendingPathComponent("Format-\(outputFormat.rawValue)/Test.jl")
+    try ReducedProjectWriter.write(project: project, groups: [group], media: root, target: destination, instruments: [:], cancellation: AudioExportCancellation(), format: outputFormat) { _ in }
+    let output = try ProjectDocumentCodec.decode(Data(contentsOf: destination))
+    var actualBytes = Double(try Data(contentsOf: destination).count)
+    for clip in output.songs[0].tracks[0].clips {
+        let url = destination.deletingLastPathComponent().appendingPathComponent(clip.audioFile!.path)
+        precondition(url.pathExtension == outputFormat.fileExtension)
+        actualBytes += Double(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize!)
+        let reader = try AVAudioFile(forReading: url)
+        precondition(abs(Double(reader.length) / reader.processingFormat.sampleRate - clip.duration) < 0.1)
+        let pcm = AVAudioPCMBuffer(pcmFormat: reader.processingFormat, frameCapacity: 4096)!
+        reader.framePosition = 12000; try reader.read(into: pcm)
+        let peak = (0..<Int(pcm.frameLength)).map { abs(pcm.floatChannelData![0][$0]) }.max()!
+        precondition(abs(peak - 0.15) < 0.01, "Encoding changed the rendered gain")
+    }
+    precondition(actualBytes <= size.bytes(for: outputFormat) * 1.05, "Size preview underestimates rendered output")
+    print("REDUCTION_FORMAT_OK", outputFormat.rawValue, "bytes", actualBytes, "estimate", size.bytes(for: outputFormat))
+}
+
+let noSpaceTarget = root.appendingPathComponent("FullDisk/FullDisk.jl")
+let noSpaceProgress = ReductionProgressLog()
+var rejectedBeforeRendering = false
+do {
+    try ReducedProjectWriter.write(project: project, groups: [group], media: root, target: noSpaceTarget, instruments: [:], cancellation: AudioExportCancellation(), availableCapacity: { _ in 0 }) { noSpaceProgress.append($0) }
+} catch {
+    rejectedBeforeRendering = error.localizedDescription.contains("Espaço insuficiente") && error.localizedDescription.contains("disponível")
+}
+precondition(rejectedBeforeRendering && !FileManager.default.fileExists(atPath: noSpaceTarget.deletingLastPathComponent().path))
+precondition(!noSpaceProgress.values.contains { $0.message.contains("Renderizando") })
+print("REDUCTION_FULL_DISK_REJECTED_BEFORE_RENDER_OK")

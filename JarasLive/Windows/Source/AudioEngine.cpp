@@ -780,6 +780,11 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     if(peakProject==nextPeakProject){for(const auto &bus:buses)heldPeaks[bus->id]=bus->held.amplitude();}
     else masterPeakHold.clear();
     peakProject=nextPeakProject;
+    const auto oldPadBus = std::find_if(buses.begin(), buses.end(), [](const auto &bus) { return bus->vinhetasBus; });
+    const auto newPadTrack = std::find_if(song.tracks.begin(), song.tracks.end(), [](const auto &track) { return track.role.id == "vinhetas"; });
+    if (oldPadBus == buses.end() || newPadTrack == song.tracks.end() || (*oldPadBus)->id != newPadTrack->id) {
+        vinhetas.setOutputAvailable(false); vinhetas.discard();
+    }
     buses.clear();
     stage("releaseMilliseconds");
     busOrder.clear();
@@ -874,6 +879,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             buses.push_back(std::move(bus));
             ++workDone;progress();
         }
+        vinhetas.setOutputAvailable(std::any_of(buses.begin(), buses.end(), [](const auto &bus) { return bus->vinhetasBus; }));
         for (size_t i = 0; i < song.tracks.size(); ++i) {
             if (song.tracks[i].parentTrackID)
                 for (size_t j = 0; j < song.tracks.size(); ++j)
@@ -1195,7 +1201,13 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback
                 }
             }
         } else cancelTrackFadeout();
+        const auto oldPad = std::find_if(buses.begin(), buses.end(), [](const auto &bus) { return bus->vinhetasBus; });
+        const auto newPad = std::find_if(prepared.buses.begin(), prepared.buses.end(), [](const auto &bus) { return bus->vinhetasBus; });
+        if (oldPad == buses.end() || newPad == prepared.buses.end() || (*oldPad)->id != (*newPad)->id) {
+            vinhetas.setOutputAvailable(false); vinhetas.discard();
+        }
         voices.swap(prepared.voices);buses.swap(prepared.buses);busOrder.swap(prepared.busOrder);
+        vinhetas.setOutputAvailable(std::any_of(buses.begin(), buses.end(), [](const auto &bus) { return bus->vinhetasBus; }));
         readerContext.swap(prepared.readerContext);latencyPlan.swap(prepared.latencyPlan);
         masterFX.swap(prepared.masterFX);masterMIDI.swap(prepared.masterMIDI);
         std::swap(masterAutomation,prepared.masterAutomation);
@@ -2277,7 +2289,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     if (routedHardware)
         liveMidi.clear();
     liveRecordBuffer.clear(0,samples);
-    if (std::none_of(buses.begin(), buses.end(), [](const auto &bus) { return bus->vinhetasBus; })) vinhetas.render(liveRecordBuffer, samples, sr);
+    if (std::none_of(buses.begin(), buses.end(), [](const auto &bus) { return bus->vinhetasBus; })) vinhetas.discard();
     if (allowInstrument) {
         if (masterMIDI && !masterMIDI->empty())
             masterMIDI->live(liveRecordBuffer, liveMidi, samples);

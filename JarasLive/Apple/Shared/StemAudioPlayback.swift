@@ -476,21 +476,28 @@ struct TimecodePlaybackSpan {
     func detachOutputCapture(_ track: UUID) { recordingTaps.removeValue(forKey: track)?.removeTap(onBus: 0) }
     var outputCaptureFormat: AVAudioFormat { AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)! }
     private var padPlayers: [UUID: AVAudioPlayerNode] = [:]
+    private var padTracks: [UUID: UUID] = [:]
+    private var padCompletions: [UUID: @MainActor () -> Void] = [:]
     func playPad(_ id: UUID, buffer: AVAudioPCMBuffer, gain: Float, track: UUID?, finished: @escaping @MainActor () -> Void) throws {
+        guard let track, let playback = latestPlayback,
+              playback.snapshot.project.songs.first(where: { $0.id == playback.snapshot.transport.songId })?
+                .tracks.contains(where: { $0.id == track && $0.role.rawValue == "vinhetas" }) == true else { finished(); return }
         try prepareDevice()
         let player = AVAudioPlayerNode(); engine.attach(player)
-        let destination = track.map { trackBus(for: $0).mix } ?? masterBus
+        let destination = trackBus(for: track).mix
         engine.connect(player, to: destination, fromBus: 0, toBus: destination.nextAvailableInputBus, format: buffer.format)
-        player.volume = gain; padPlayers[id] = player
+        player.volume = gain; padPlayers[id] = player; padTracks[id] = track; padCompletions[id] = finished
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor in self?.stopPad(id); finished() }
+            Task { @MainActor in self?.stopPad(id) }
         }
         do { if !engine.isRunning { try engine.start() }; player.play(); startMeterClock() }
         catch { stopPad(id); throw error }
     }
     func stopPad(_ id: UUID) {
         guard let player = padPlayers.removeValue(forKey: id) else { return }
-        player.stop(); engine.detach(player); startMeterClock()
+        padTracks[id] = nil
+        let finished = padCompletions.removeValue(forKey: id)
+        player.stop(); engine.detach(player); startMeterClock(); finished?()
     }
     func setPadGain(_ id: UUID, gain: Float) { padPlayers[id]?.volume = gain }
 
@@ -3007,6 +3014,9 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         guard directory != nil else { return }
         if !outputAllowed {
             latestPlayback = (snapshot, revision)
+        let padDestination = snapshot.project.songs.first { $0.id == snapshot.transport.songId }?
+            .tracks.first { $0.role.rawValue == "vinhetas" }?.id
+        for (voice, destination) in Array(padTracks) where destination != padDestination { stopPad(voice) }
             stop()
             return
         }
@@ -3039,6 +3049,9 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             }
         }
         latestPlayback = (snapshot, revision)
+        let padDestination = snapshot.project.songs.first { $0.id == snapshot.transport.songId }?
+            .tracks.first { $0.role.rawValue == "vinhetas" }?.id
+        for (voice, destination) in Array(padTracks) where destination != padDestination { stopPad(voice) }
         // An edit can republish the last transport sample after plugin loading
         // or history work. Compare positions at their sample epochs; receipt
         // time would turn that unchanged position into a false backward seek.

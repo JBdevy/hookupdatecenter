@@ -11,6 +11,9 @@ import UniformTypeIdentifiers
     @State private var checked = Set<UUID>()
     @State private var name = ""
     @State private var naming = false
+    @State private var choosingFormat = false
+    @State private var format: AudioExportFormat = .wav
+    @State private var estimate: ProjectReduction.SizeEstimate?
     @State private var busy = false
     @State private var progress = 0.0
     @State private var progressMessage = ""
@@ -21,6 +24,7 @@ import UniformTypeIdentifiers
     private var sources: [Track] { ProjectReduction.sourceTracks(in: documents.show.snapshot.project) }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if choosingFormat { formatSelection } else {
             Text("Reduzir projeto").font(.jarasTitle2.bold())
             if needsSave {
                 Text("Salve o projeto antes de reduzir.").foregroundStyle(JarasTheme.yellow)
@@ -85,6 +89,7 @@ import UniformTypeIdentifiers
                 Button("Reduzir", action: reduce).buttonStyle(StageButtonStyle(color: JarasTheme.green))
                     .disabled(needsSave || busy || groups.isEmpty || TrackRecording.shared.recording)
             }
+            }
         }.padding(24).frame(width: 720)
             .background(JarasTheme.panel.contentShape(Rectangle()).onTapGesture { finishEditing() })
             .interactiveDismissDisabled(busy)
@@ -98,6 +103,32 @@ import UniformTypeIdentifiers
                     if !value.isEmpty { groups.append(ProjectReductionTrack(name: value, sources: checked)); checked = []; selected = nil }
                 }
             }
+    }
+    private var formatSelection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Formato do projeto reduzido").font(.jarasTitle2.bold())
+            Text("Tamanho aproximado do projeto, incluindo as mídias que serão copiadas.")
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            ForEach(AudioExportFormat.allCases, id: \.self) { option in
+                Button { format = option } label: {
+                    HStack {
+                        Image(systemName: format == option ? "largecircle.fill.circle" : "circle")
+                        Text(verbatim: option.rawValue).bold().frame(width: 55, alignment: .leading)
+                        Text(option == .mp3 ? "320 kbps · estéreo · 48 kHz" : "32-bit float · estéreo · 48 kHz")
+                        Spacer()
+                        if let estimate { Text(verbatim: String(format: "≈ %.2f GB", estimate.bytes(for: option) / 1e9)).monospacedDigit() }
+                        else { ProgressView().controlSize(.small) }
+                    }.padding(12).contentShape(Rectangle())
+                }.buttonStyle(.plain).background(format == option ? JarasTheme.green.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            }
+            Text("O formato vale para os áudios renderizados. Pistas individuais mantidas sem renderização conservam os arquivos originais. MP3 usa compressão com perda.")
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            HStack {
+                Button("Voltar") { choosingFormat = false }
+                Spacer()
+                Button("Escolher local…") { chooseDestination() }.buttonStyle(StageButtonStyle(color: JarasTheme.green)).disabled(estimate == nil)
+            }
+        }
     }
     private var draftURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -128,10 +159,25 @@ import UniformTypeIdentifiers
         guard !needsSave, let document = documents.currentURL else { return }
         do { try ProjectReduction.validate(groups, project: documents.show.snapshot.project) }
         catch { self.error = error.localizedDescription; return }
+        error = ""; estimate = nil; choosingFormat = true
+        let project = documents.show.snapshot.project, definitions = groups, media = document.deletingLastPathComponent()
+        Task {
+            let value = await Task.detached(priority: .userInitiated) {
+                ProjectReduction.estimate(definitions, project: project) { path in
+                    Double((try? media.appendingPathComponent(path).resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                }
+            }.value
+            estimate = value
+        }
+    }
+    private func chooseDestination() {
+        guard !needsSave, let document = documents.currentURL else { return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
         panel.nameFieldStringValue = document.deletingPathExtension().lastPathComponent + " - Reduzido.jl"
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let chosen = panel.url else { return }
+        choosingFormat = false
+        let selectedFormat = format
         let target = ProjectDirectoryPolicy.newProjectDestination(for: chosen)
         let project = documents.show.snapshot.project, media = document.deletingLastPathComponent(), definitions = groups
         let instruments = Dictionary(uniqueKeysWithValues: project.songs.flatMap(\.tracks).filter { $0.clips.contains { $0.midi != nil } }.map { ($0.id, ItemReRender.midiInstruments(for: $0, projectDirectory: media)) })
@@ -142,7 +188,7 @@ import UniformTypeIdentifiers
             do {
                 guard !documents.show.needsSave else { throw ProjectError.invalid("Salve o projeto antes de reduzir.") }
                 try await Task.detached(priority: .userInitiated) {
-                    try ReducedProjectWriter.write(project: project, groups: definitions, media: media, target: target, instruments: instruments, cancellation: token) { value in
+                    try ReducedProjectWriter.write(project: project, groups: definitions, media: media, target: target, instruments: instruments, cancellation: token, format: selectedFormat) { value in
                         DispatchQueue.main.async {
                             if value.fraction >= progress {
                                 progress = value.fraction; progressMessage = value.message

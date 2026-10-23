@@ -1,6 +1,7 @@
 #pragma once
 #include "AudioEngine.h"
 #include "MP3Writer.h"
+#include "AiffFloatWriter.h"
 namespace catlive {
 struct ExportEncoding {
     String format = "WAV";
@@ -199,9 +200,12 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         TemporaryFile temporary(destination);
         std::unique_ptr<AudioFormatWriter> writer;
         std::unique_ptr<MP3Writer> mp3;
+        std::unique_ptr<AiffFloatWriter> aiffFloat;
         if (encoding.format == "MP3")
             mp3 = std::make_unique<MP3Writer>(temporary.getFile(), (int)encoding.rate,
                                               encoding.channels, encoding.bitrate);
+        else if(encoding.format == "AIFF" && encoding.floatingPoint && encoding.bits == 32)
+            aiffFloat = std::make_unique<AiffFloatWriter>(temporary.getFile(),encoding.rate,encoding.channels,(int64)std::llround((job.end-job.start)*encoding.rate));
         else {
             auto stream = std::make_unique<FileOutputStream>(temporary.getFile());
             if (!stream->openedOk())
@@ -256,6 +260,7 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
             }
             if (mp3)
                 mp3->write(buffer, count);
+            else if(aiffFloat) aiffFloat->write(buffer,count);
             else if (!writer->writeFromAudioSampleBuffer(buffer, 0, count))
                 throw std::runtime_error("Falha ao gravar o áudio.");
             if (progress && at % (int64)encoding.rate < 1024)
@@ -263,6 +268,8 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         }
         if (mp3)
             mp3->finish();
+        if(aiffFloat) aiffFloat->finish();
+        aiffFloat.reset();
         writer.reset();
         mp3.reset();
         if (engine.getUnderruns())

@@ -57,11 +57,20 @@ class ProjectReductionPanel final : public Component, private Timer {
         auto safe=SafePointer<ProjectReductionPanel>(this);
         dialog->enterModalState(true,ModalCallbackFunction::create([safe,dialog,selected](int result){if(!safe||result!=1)return;auto name=dialog->getTextEditorContents("name").trim();if(name.isEmpty())return;projectReduction::Group group;group.name=name;group.sources=selected;safe->groups.push_back(group);safe->refreshing=true;safe->right.deselectAllRows();safe->refreshing=false;safe->left.updateContent();safe->right.repaint();safe->timerCallback();}),true);
     }
-    void run(const File &target){
+    void run(const File &target,const String &format){
         if(needsSave()||work)return;const auto original=session.project();const auto media=session.document.getParentDirectory();const auto definitions=groups;
         work=std::make_shared<Work>();auto state=work;auto safe=SafePointer<ProjectReductionPanel>(this);ModalSheet::blockDismiss(*this,true);timerCallback();
-        Thread::launch([safe,state,original,definitions,media,target]{String error;try{projectReduction::write(original,definitions,media,target,state->cancel,[state](const projectReduction::Progress &p){std::lock_guard<std::mutex> lock(state->mutex);state->progress=p.fraction;state->message=p.message;});}catch(const std::exception &e){error=String::fromUTF8(e.what());}
+        Thread::launch([safe,state,original,definitions,media,target,format]{String error;try{projectReduction::write(original,definitions,media,target,state->cancel,[state](const projectReduction::Progress &p){std::lock_guard<std::mutex> lock(state->mutex);state->progress=p.fraction;state->message=p.message;},format);}catch(const std::exception &e){error=String::fromUTF8(e.what());}
             MessageManager::callAsync([safe,error,target]{if(!safe)return;safe->work.reset();ModalSheet::blockDismiss(*safe,false);safe->status.setText(error.isEmpty()?String::fromUTF8("Projeto reduzido salvo: ")+target.getFullPathName():error,dontSendNotification);safe->timerCallback();});
+        });
+    }
+    void chooseDestination(const String &format){
+        auto safe=SafePointer<ProjectReductionPanel>(this);
+        chooser=std::make_unique<FileChooser>("Reduzir projeto",session.document.getSiblingFile(session.document.getFileNameWithoutExtension()+" - Reduzido.jl"),"*.jl",true);
+        chooser->launchAsync(FileBrowserComponent::saveMode|FileBrowserComponent::canSelectFiles,[safe,format](const FileChooser &fc){
+            if(!safe||fc.getResult()==File{})return;auto chosen=fc.getResult().withFileExtension("jl"),folder=chosen.getParentDirectory();
+            if(folder.getFileName()!=chosen.getFileNameWithoutExtension())folder=folder.getChildFile(chosen.getFileNameWithoutExtension());
+            safe->run(folder.getChildFile(chosen.getFileName()),format);
         });
     }
     void timerCallback()override{
@@ -83,8 +92,18 @@ public:
         reduce.setColour(TextButton::buttonColourId,theme::green);status.setColour(Label::textColourId,theme::secondary);status.setJustificationType(Justification::topLeft);progressBar.setColour(ProgressBar::foregroundColourId,theme::green);
         create.onClick=[this]{createTrack();};remove.onClick=[this]{if(editing<0)return;groups.erase(groups.begin()+editing);refreshing=true;editing=-1;left.deselectAllRows();right.deselectAllRows();refreshing=false;left.updateContent();right.repaint();timerCallback();};cancel.onClick=[this]{if(work)work->cancel=true;else ModalSheet::dismiss(*this);};
         auto safe=SafePointer<ProjectReductionPanel>(this);saveButton.onClick=[safe]{if(safe)safe->save([safe]{if(safe)safe->timerCallback();});};
-        reduce.onClick=[this,safe]{chooser=std::make_unique<FileChooser>("Reduzir projeto",session.document.getSiblingFile(session.document.getFileNameWithoutExtension()+" - Reduzido.jl"),"*.jl",true);
-            chooser->launchAsync(FileBrowserComponent::saveMode|FileBrowserComponent::canSelectFiles,[safe](const FileChooser &fc){if(!safe||fc.getResult()==File{})return;auto chosen=fc.getResult().withFileExtension("jl"),folder=chosen.getParentDirectory();if(folder.getFileName()!=chosen.getFileNameWithoutExtension())folder=folder.getChildFile(chosen.getFileNameWithoutExtension());safe->run(folder.getChildFile(chosen.getFileName()));});};
+        reduce.onClick=[this,safe]{
+            const auto size=projectReduction::estimate(session.project(),groups,session.document.getParentDirectory());
+            auto *dialog=new AlertWindow("Formato do projeto reduzido",String::fromUTF8("Tamanho aproximado do projeto, incluindo as mídias copiadas.\nO formato vale para os áudios renderizados; pistas individuais mantêm os arquivos originais. MP3 usa compressão com perda."),MessageBoxIconType::NoIcon);
+            StringArray options;for(const String format:{String("WAV"),String("AIFF"),String("MP3")})
+                options.add(format+String::fromUTF8(" — ")+(format=="MP3"?String("320 kbps"):String("32-bit float"))+String::fromUTF8(" · estéreo · 48 kHz — ≈ ")+String(size.bytes(format)/1e9,2)+" GB");
+            dialog->addComboBox("format",options,"Formato");dialog->getComboBoxComponent("format")->setSelectedItemIndex(0);
+            dialog->addButton("Voltar",0,KeyPress(KeyPress::escapeKey));dialog->addButton("Escolher local...",1,KeyPress(KeyPress::returnKey));
+            dialog->enterModalState(true,ModalCallbackFunction::create([safe,dialog](int result){
+                if(!safe||result!=1)return;const String format=StringArray{"WAV","AIFF","MP3"}[dialog->getComboBoxComponent("format")->getSelectedItemIndex()];
+                MessageManager::callAsync([safe,format]{if(!safe)return;safe->chooseDestination(format);});
+            }),true);
+        };
         startTimerHz(10);timerCallback();
     }
     ~ProjectReductionPanel()override{if(work)work->cancel=true;}

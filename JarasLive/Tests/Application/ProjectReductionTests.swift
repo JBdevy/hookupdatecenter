@@ -45,6 +45,27 @@ final class ProjectReductionTests: XCTestCase {
         XCTAssertEqual(aligned.map(\.start), [0,2]); XCTAssertEqual(aligned.map(\.end), [2,4])
         XCTAssertTrue(aligned.allSatisfy { (($0.end - $0.start) * 48000).rounded() > 0 })
     }
+    func testEstimateUsesRegionDurationsAndCountsCopiedFilesOnce() {
+        var project = Project.empty(name: "Estimate")
+        var a = Track(id: UUID(), name: "A", role: .other)
+        var b = Track(id: UUID(), name: "B", role: .other)
+        a.clips = [AudioClip(id: UUID(), name: "a", startTime: 0, duration: 2, audioFile: AudioFile(path: "input.wav"))]
+        b.clips = a.clips
+        project.songs[0].tracks = [a,b]
+        project.songs[0].parts = [Part(id: UUID(), name: "Song", startTime: 0, endTime: 10)]
+        let mixed = [ProjectReductionTrack(name: "Mix", sources: [a.id,b.id])]
+        let estimate = ProjectReduction.estimate(mixed, project: project) { _ in XCTFail("Rendered originals should not be copied"); return 999 }
+        XCTAssertEqual(estimate.frames, 96000)
+        XCTAssertEqual(estimate.files, 1)
+        XCTAssertEqual(estimate.bytes(for: .wav), estimate.bytes(for: .aiff))
+        XCTAssertEqual(estimate.bytes(for: .wav) - estimate.bytes(for: .mp3), 688000)
+        var reads = 0
+        let copies = ProjectReduction.estimate([ProjectReductionTrack(name: "One", sources: [a.id]), ProjectReductionTrack(name: "Two", sources: [b.id])], project: project) { path in
+            XCTAssertEqual(path, "input.wav"); reads += 1; return 123456
+        }
+        XCTAssertEqual(reads, 1); XCTAssertEqual(copies.copiedBytes, 123456); XCTAssertEqual(copies.frames, 0)
+        XCTAssertEqual(copies.bytes(for: .wav), copies.bytes(for: .mp3))
+    }
     func testIPadFiltersItemsWithoutRemovingMixedTrack() {
         var project = Project.empty(name: "Mixed")
         var track = Track(id: UUID(), name: "Mixed", role: .other)

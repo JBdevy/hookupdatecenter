@@ -55,6 +55,21 @@ import AVFoundation
         let value = samples[Int(frames - 256) * 2]
         precondition(abs(value-expected)<0.0002, "Output capture FX=\(postFX) fader=\(postFader) got=\(value) expected=\(expected)")
     }
+    var removed = capturedState
+    removed.project.songs[0].tracks = []
+    try audio.update(removed, revision: 3)
+    if !engine.isRunning { try engine.start() }
+    try expect(0, "Deleting VINHETAS-FX must stop sounding pads")
+    var rejected = 0
+    for route in [Optional<UUID>.none, Optional(track.id)] {
+        try audio.playPad(UUID(), buffer: input, gain: 1, track: route, finished: { rejected += 1 })
+        try expect(0, "Missing pad track must never fall back to Master")
+    }
+    precondition(rejected == 2)
+    try audio.update(capturedState, revision: 4)
+    if !engine.isRunning { try engine.start() }
+    try expect(0, "Recreating a pad track must not resume stopped voices")
+    print("VINHETAS_MISSING_ROUTE_AND_TRACK_DELETION_SILENT_OK rate=\(rate)")
     audio.stopPad(captureVoice)
     print("VINHETAS_OUTPUT_CAPTURE_PREFX_POSTFX_POSTFADER_PCM_OK rate=\(rate)")
     print("VINHETAS_STOPPED_TRANSPORT_OVERLAP_GATE_LIVE_GAIN_PCM_OK rate=\(rate)")

@@ -33,6 +33,27 @@ template<class Test,class Fixture> void run(const File &directory,Test &&test,Fi
     for(const auto &c:clips){std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(target.getParentDirectory().getChildFile(text(c.audioFile->path))));
         recordingCaptureTests::require(reader&&reader->lengthInSamples==96000,"Render duration changed");AudioBuffer<float> pcm(2,512);reader->read(&pcm,0,512,12000,true,true);
         recordingCaptureTests::require(std::abs(pcm.getSample(0,100)-.15f)<.001f,"Combined gain differs from actual PCM");}
+    const auto size=projectReduction::estimate(p,{g},root);
+    recordingCaptureTests::require(size.frames==192000&&size.files==2&&size.copiedBytes==0,"Size estimate does not match region outputs");
+    recordingCaptureTests::require(size.bytes("WAV")==size.bytes("AIFF")&&size.bytes("WAV")>size.bytes("MP3"),"Format size estimates are incorrect");
+    for(const String encoding:{String("AIFF"),String("MP3")}){
+        const auto formatTarget=root.getChildFile(encoding+"/Test.jl");
+        projectReduction::write(p,{g},root,formatTarget,cancel,[](const projectReduction::Progress &){},encoding);
+        const auto formatted=ProjectCodec::decode(ProjectCodec::read(formatTarget));
+        double bytes=(double)formatTarget.getSize();
+        for(const auto &clip:formatted.songs[0].tracks[0].clips){
+            const auto file=formatTarget.getParentDirectory().getChildFile(text(clip.audioFile->path));bytes+=file.getSize();
+            recordingCaptureTests::require(file.hasFileExtension(encoding.toLowerCase()),"Selected format not applied");
+            std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
+            recordingCaptureTests::require(reader&&std::abs(reader->lengthInSamples/reader->sampleRate-2)<.1,"Encoded file unreadable or duration incorrect");
+            if(encoding=="AIFF")recordingCaptureTests::require(reader->usesFloatingPointData,"AIFF silently lost float headroom");
+        }
+        recordingCaptureTests::require(bytes<=size.bytes(encoding)*1.05,"Project preview underestimated encoded files");
+    }
+    const auto fullDisk=root.getChildFile("FullDisk/FullDisk.jl");bool noSpace=false,renderStarted=false;
+    try{projectReduction::write(p,{g},root,fullDisk,cancel,[&](const projectReduction::Progress &event){if(event.message.contains("Renderizando"))renderStarted=true;},"WAV",0);}
+    catch(const std::exception &error){noSpace=String::fromUTF8(error.what()).contains(String::fromUTF8("Espaço insuficiente"));}
+    recordingCaptureTests::require(noSpace&&!renderStarted&&!fullDisk.getParentDirectory().exists(),"Insufficient disk space was not caught before rendering");
     auto nested=p;jaras::Track outer;outer.id=uuid();outer.name="Outer";outer.role.id="other";outer.volume=.5;
     jaras::Track inner;inner.id=uuid();inner.name="Inner";inner.role.id="other";inner.volume=.5;inner.parentTrackID=outer.id;
     for(auto &t:nested.songs[0].tracks)t.parentTrackID=inner.id;
@@ -49,11 +70,13 @@ template<class Test,class Fixture> void run(const File &directory,Test &&test,Fi
         recordingCaptureTests::require(std::abs(pcm.getSample(0,100)-(single?.05f:.15f)*.25f)<.001f,"Ancestor group gain lost or doubled");
     }
     auto boosted=p;boosted.songs[0].tracks[0].volume=8;boosted.songs[0].tracks[1].volume=8;
-    const auto boostTarget=root.getChildFile("Float/Float.jl");projectReduction::write(boosted,{g},root,boostTarget,cancel,[](const projectReduction::Progress &){});
+    for(const String encoding:{String("WAV"),String("AIFF")}){
+    const auto boostTarget=root.getChildFile("Float-"+encoding+"/Float.jl");projectReduction::write(boosted,{g},root,boostTarget,cancel,[](const projectReduction::Progress &){},encoding);
     const auto boost=ProjectCodec::decode(ProjectCodec::read(boostTarget));
     std::unique_ptr<AudioFormatReader> floatReader(formats.createReaderFor(boostTarget.getParentDirectory().getChildFile(text(boost.songs[0].tracks[0].clips[0].audioFile->path))));
     AudioBuffer<float> loud(2,512);floatReader->read(&loud,0,512,12000,true,true);
     recordingCaptureTests::require(floatReader->usesFloatingPointData&&std::abs(loud.getSample(0,100)-1.6f)<.001f,"Reduction clipped floating point headroom");
+    }
         bool rejected=false;try{projectReduction::write(p,{g},root,target,cancel,[](const projectReduction::Progress &){});}catch(...){rejected=true;}
     recordingCaptureTests::require(rejected&&target.existsAsFile(),"Existing project was not protected");
     cancel=true;const auto cancelled=root.getChildFile("Cancelled/Cancelled.jl");try{projectReduction::write(p,{g},root,cancelled,cancel,[](const projectReduction::Progress &){});}catch(...){}
