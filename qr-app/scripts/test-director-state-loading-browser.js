@@ -7,7 +7,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const { chromium } = require('playwright-core')
 
-const root = path.resolve(__dirname, '..')
+const root = path.resolve(process.env.VSHOOK_TEST_ROOT || path.join(__dirname, '..'))
 const base = 'http://192.0.2.10:47831'
 const source = fs.readFileSync(path.join(root, 'vsdiretor.js'), 'utf8')
 const full = {
@@ -112,6 +112,23 @@ async function run() {
       }
     }
 
+    for (const role of ['director', 'musician']) {
+      const f = await fixture(browser, role, {...full, projectId:'A', activePage:'regions'})
+      try {
+        await f.page.locator('.musicListRenderCache .item').first().waitFor({state:'visible'})
+        const count = f.polls()
+        f.set({connected:true, projectId:'A', activePage:'regions', markers:[{id:'m',name:'$Part',pos:60}]})
+        await waitFor(() => f.polls() >= count+2, 'partial marker state arrives')
+        assert.equal(await f.page.locator('.musicListRenderCache .item').count(), 1, 'partial update retains music')
+        f.set({...full, projectId:'B', standby:true, playing:false, activePage:'regions', regions:[]})
+        await waitFor(async () => (await f.page.locator('.musicListRenderCache .item').count()) === 0, 'another project clears the previous list')
+        f.set({...full, projectId:'B', activePage:'regions', regions:[{id:'song-2',name:'Novo projeto',start:0,end:60}]})
+        await waitFor(async () => (await f.page.locator('.musicListRenderCache').innerText()).includes('NOVO PROJETO'), 'full state of new project becomes visible')
+        assert.deepEqual(f.errors, [])
+        console.log(`DOM_OK: ${role} partial update retains music; project switch clears and reloads the list`)
+      } finally { await f.page.close() }
+    }
+
     // The same production client serves both QR roles and both screen sizes.
     for (const role of ['director', 'musician']) {
       for (const tablet of [false, true]) {
@@ -133,6 +150,31 @@ async function run() {
           console.log(`DOM_OK: ${role} ${tablet ? 'tablet' : 'phone'} next-part popup, five-second lead, no repeats`)
         } finally { await f.page.close() }
       }
+    }
+
+    for (const role of ['director', 'musician']) {
+      const payload = { ...full, currentPage: 'regions', currentSongStart: 0, currentSongEnd: 120,
+        playPosition: 26, armedMarkerId: 'back',
+        markers: [{id:'verse',name:'$Verso',pos:30}, {id:'back',name:'*2Volta',pos:10}, {id:'far',name:'*1Outra',pos:140}] }
+      const f = await fixture(browser, role, payload, {tablet:true})
+      try {
+        await f.page.locator('.directorPopup').filter({hasText:'VOLTA'}).waitFor({state:'visible'})
+        f.set({...payload, armedMarkerId:'far'})
+        await f.page.locator('.directorPopup').filter({hasText:'OUTRA'}).waitFor({state:'visible'})
+        f.set({...payload, armedMarkerId:null})
+        await f.page.locator('.directorPopup').filter({hasText:'VERSO'}).waitFor({state:'visible'})
+        f.set({...payload, armedMarkerId:null, loopActive:true, loopStartPos:0, loopEndPos:30})
+        await f.page.locator('.directorPopup').waitFor({state:'hidden', timeout:1200})
+        f.set({...payload, armedMarkerId:null, loopActive:true, loopStartPos:0, loopEndPos:60})
+        await f.page.locator('.directorPopup').filter({hasText:'VERSO'}).waitFor({state:'visible'})
+        f.set({...payload, armedMarkerId:'back', loopActive:true, loopStartPos:0, loopEndPos:30})
+        await f.page.locator('.directorPopup').filter({hasText:'VOLTA'}).waitFor({state:'visible'})
+        f.set({...payload, armedMarkerId:null, loopActive:false, playPosition:31})
+        await f.page.locator('.directorPopup').waitFor({state:'hidden', timeout:1200})
+        if (role === 'musician') assert.equal(f.commands.length, 0)
+        assert.deepEqual(f.errors, [])
+        console.log(`DOM_OK: ${role} armed backward/other song, confirmed cancellation, crossing clears cue`)
+      } finally { await f.page.close() }
     }
 
     const tunerSong = { id: 'song-1', name: 'Música fixture', sourceNumber: 7, startPos: 0, endPos: 120 }
@@ -200,7 +242,7 @@ async function run() {
         if (role === 'musician') assert.equal(shell.commands.length, 0)
         else assert(shell.commands.some(command => command.type === 'set_project_tab'))
         const loadedScript = await shell.page.locator('script[data-vshook-mode-script]').getAttribute('src')
-        assert(loadedScript.includes('tuner-parts-v1'), 'QR shell must request the refreshed client asset')
+        assert(loadedScript.includes('parts-state-v2'), 'QR shell must request the refreshed client asset')
         console.log(`DOM_OK: QR index -> project discovery -> ${role} -> visible music, refreshed script loaded`)
       } finally { await shell.page.close() }
     }

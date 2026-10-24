@@ -19,7 +19,8 @@
     "sync:android": "npm run build && npx cap sync android",
     "sync:ios": "npm run build && npx cap sync ios",
     "build:android:apk": "npm run build && npx cap sync android && cd android && ./gradlew assembleDebug",
-    "build:android:aab": "npm run build && npx cap sync android && cd android && ./gradlew bundleRelease"
+    "build:android:aab": "npm run build && npx cap sync android && cd android && ./gradlew bundleRelease",
+    "test:director-parts-notices": "node scripts/test-director-parts-notices.js"
   },
   "dependencies": {
     "@capacitor/android": "^6.2.0",

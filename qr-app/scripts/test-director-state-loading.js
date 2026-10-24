@@ -16,6 +16,8 @@ function fixture(musician) {
   const state = { activeTab: 'playlist', hashRegionDrawerChildren: {}, hashRegionDrawers: {} }
   const context = vm.createContext({ state, IS_MUSICIAN_MONITOR: musician, now: () => 1000 })
   for (const name of [
+    'getProjects', 'getProjectItemId', 'getProjectItemIndex', 'getSnapshotActiveProjectSelection',
+    'getPremixProjectPayload', 'snapshotProjectChanged',
     'normalizeSharedPage', 'syncSharedInterfaceState', 'getPlaylistSongs',
     'getActivePlaylist', 'getPlaylistItems', 'getRegions', 'getMarkers',
     'getRegionsWithOpenDrawers', 'isHashChild', 'getId', 'getName', 'isBlock',

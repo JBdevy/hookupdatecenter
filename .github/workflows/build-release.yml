@@ -25,6 +25,11 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Validate QR song loading and Parts notices
+        run: |
+          node qr-app/scripts/test-director-state-loading.js
+          node qr-app/scripts/test-director-parts-notices.js
+
       - name: Validate Apple direct connection and offline license policy
         run: |
           npm run test:apple-peer
@@ -152,6 +157,11 @@ jobs:
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
+
+      - name: Validate QR song loading and Parts notices
+        run: |
+          node qr-app/scripts/test-director-state-loading.js
+          node qr-app/scripts/test-director-parts-notices.js
 
       - name: Validate macOS signing secrets
         env:
