@@ -212,7 +212,7 @@ struct TimecodePlaybackSpan {
     private var licenseAllowed = true
     private var usesSelectedHardware: Bool {
         #if os(iOS)
-        realtime && engine === AudioDeviceSettings.shared.engine
+        realtime && (engine === AudioDeviceSettings.shared.engine || auxiliarySelectedHardware)
         #else
         realtime && !engine.isInManualRenderingMode && (engine === AudioDeviceSettings.shared.engine || auxiliarySelectedHardware)
         #endif

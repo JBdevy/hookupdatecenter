@@ -1143,7 +1143,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private var workspaceContent: some View {
         VStack(spacing: 0) {
-            if !observer, let tabs = state.projectTabs, tabs.count > 1 {
+            if !local, !observer, let tabs = state.projectTabs, tabs.count > 1 {
                 RemoteProjectTabStrip(tabs: tabs, enabled: controlsEnabled && state.projects?.busy != true) {
                     action(.selectProjectTab, target: $0)
                 }

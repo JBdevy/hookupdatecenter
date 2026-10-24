@@ -34,8 +34,8 @@ enum AppStartupPresentation {
 }
 @MainActor final class AppContainer: ObservableObject {
     let auth: AuthService, show: ShowController
-    #if os(macOS)
     let remoteProjectTabID = UUID()
+    #if os(macOS)
     var desktopWorkspaceHost: NSHostingView<AnyView>?
     var desktopWorkspaceIdentity: UUID?
     var desktopWorkspaceEnvironment: String?
@@ -134,7 +134,9 @@ enum AppStartupPresentation {
                     InstrumentLibrary.shared.setProjectDirectory(url?.deletingLastPathComponent())
                 }
                 #else
-                InstrumentLibrary.shared.setProjectDirectory(url?.deletingLastPathComponent())
+                if NativeProjectTabs.shared.isForeground(show) {
+                    InstrumentLibrary.shared.setProjectDirectory(url?.deletingLastPathComponent())
+                }
                 #endif
             }
             #if os(macOS)
@@ -165,6 +167,9 @@ enum AppStartupPresentation {
                     #if os(macOS)
                     guard DesktopProjectTabs.shared.isForeground(show) else { return }
                     #endif
+                    #if os(iOS)
+                    guard NativeProjectTabs.shared.isForeground(show) else { return }
+                    #endif
                     let instruments = Set(show.snapshot.project.songs.flatMap(\.tracks).filter { track in
                         track.fx?.instrumentKeys.isEmpty == false || (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
                     }.map(\.id))
@@ -193,7 +198,7 @@ enum AppStartupPresentation {
                 #if os(macOS)
                 let foreground = DesktopProjectTabs.shared.isForeground(show)
                 #else
-                let foreground = true
+                let foreground = NativeProjectTabs.shared.isForeground(show)
                 #endif
                 if foreground && repeatWasEnabled && !repeatEnabled { TimelineAreaSelection.shared.clear() }
                 repeatWasEnabled = repeatEnabled
@@ -289,7 +294,7 @@ enum AppStartupPresentation {
             }
             do { try audio.startDeviceSession() } catch { audio.onError(error) }
             #else
-            AudioDeviceSettings.shared.mobileSessionEvent = { [weak self] event in self?.handleMobileAudioEvent(event) }
+            AudioDeviceSettings.shared.mobileSessionEvent = { event in NativeProjectTabs.shared.handleAudioEvent(event) }
             #endif
         }
         show.onStop = { [weak auth] in auth?.transportDidStop() }
@@ -324,7 +329,7 @@ enum AppStartupPresentation {
         mobileRouteRevision &+= 1
         mobileRouteRecovery?.cancel(); mobileRouteRecovery = nil
         let transition = localPlaybackTransition
-        let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        let audio = projectAudio, settings = AudioDeviceSettings.shared
         if enabled {
             guard !localPlaybackEnabled else { return true }
             do {
@@ -335,19 +340,20 @@ enum AppStartupPresentation {
                 localPlaybackEnabled = true
                 try audio.startDeviceSession()
                 if documents.ready { show.preparePlayback() }
-                TrackRecording.shared.setLocalAudioAvailable(true)
+                projectRecorder.setLocalAudioAvailable(true)
                 return true
             } catch {
                 localPlaybackEnabled = false
-                settings.beginLocalRouteChange()
-                TrackRecording.shared.setLocalAudioAvailable(false)
+                let lastAudioTab = !NativeProjectTabs.shared.hasEnabledAudio(excluding: self)
+                if lastAudioTab { settings.beginLocalRouteChange() }
+                projectRecorder.setLocalAudioAvailable(false)
                 audio.suspendDeviceSession()
                 show.message = error.localizedDescription
                 do {
                     try await audio.waitForSuspendedProcessors()
-                    try await TrackRecording.shared.waitForLocalHardwareSuspension()
+                    try await projectRecorder.waitForLocalHardwareSuspension()
                     guard transition == localPlaybackTransition else { return false }
-                    try settings.deactivateLocalSession()
+                    if lastAudioTab { try settings.deactivateLocalSession() }
                 }
                 catch { show.message += "\n" + error.localizedDescription }
                 return false
@@ -355,28 +361,29 @@ enum AppStartupPresentation {
         }
         show.send(.stopAll)
         localPlaybackEnabled = false
-        settings.beginLocalRouteChange()
-        TrackRecording.shared.setLocalAudioAvailable(false)
+        let lastAudioTab = !NativeProjectTabs.shared.hasEnabledAudio(excluding: self)
+        if lastAudioTab { settings.beginLocalRouteChange() }
+        projectRecorder.setLocalAudioAvailable(false)
         audio.suspendDeviceSession()
         do {
             try await audio.waitForSuspendedProcessors()
-            try await TrackRecording.shared.waitForLocalHardwareSuspension()
-            await TrackRecording.shared.finishAndWait()
+            try await projectRecorder.waitForLocalHardwareSuspension()
+            await projectRecorder.finishAndWait()
             guard transition == localPlaybackTransition else { return true }
-            try settings.deactivateLocalSession(); return true
+            if lastAudioTab { try settings.deactivateLocalSession() }; return true
         }
         catch { settings.error = error.localizedDescription; show.message = error.localizedDescription; return false }
     }
-    private func handleMobileAudioEvent(_ event: MobileAudioSessionEvent) {
+    func handleMobileAudioEvent(_ event: MobileAudioSessionEvent) {
         guard localPlaybackEnabled else { return }
-        let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        let audio = projectAudio, settings = AudioDeviceSettings.shared
         switch event {
         case .interrupted:
             mobileRouteRevision &+= 1
             mobileRouteRecovery?.cancel(); mobileRouteRecovery = nil
             settings.beginLocalRouteChange()
             audio.suspendDeviceSession()
-            TrackRecording.shared.setLocalAudioAvailable(false)
+            projectRecorder.setLocalAudioAvailable(false)
             show.send(.stopAll)
         case .interruptionEnded:
             recoverMobileRoute(outputRemoved: false)
@@ -387,7 +394,7 @@ enum AppStartupPresentation {
         }
     }
     private func recoverMobileRoute(outputRemoved: Bool) {
-        let audio = StemAudioPlayback.shared, settings = AudioDeviceSettings.shared
+        let audio = projectAudio, settings = AudioDeviceSettings.shared
         let disconnectedNotice = JarasLocalization.string("Audio device disconnected. Playback stopped.")
         settings.error = ""
         mobileRouteRevision &+= 1
@@ -397,7 +404,7 @@ enum AppStartupPresentation {
         settings.beginLocalRouteChange()
         if !alreadySuspended {
             audio.suspendDeviceSession()
-            TrackRecording.shared.setLocalAudioAvailable(false)
+            projectRecorder.setLocalAudioAvailable(false)
             show.send(.stopAll)
         }
         if outputRemoved { show.message = disconnectedNotice }
@@ -408,8 +415,8 @@ enum AppStartupPresentation {
                 try await Task.sleep(nanoseconds: 150_000_000)
                 guard let self else { return }
                 try await audio.waitForSuspendedProcessors()
-                try await TrackRecording.shared.waitForLocalHardwareSuspension()
-                await TrackRecording.shared.finishAndWait()
+                try await projectRecorder.waitForLocalHardwareSuspension()
+                await projectRecorder.finishAndWait()
                 try Task.checkCancellation()
                 guard localPlaybackEnabled, transition == localPlaybackTransition,
                       revision == mobileRouteRevision, !settings.localSessionInterrupted else { return }
@@ -418,7 +425,7 @@ enum AppStartupPresentation {
                 try audio.startDeviceSession()
                 if documents.ready { show.preparePlayback() }
                 settings.inputDeviceChanged?()
-                TrackRecording.shared.setLocalAudioAvailable(true)
+                projectRecorder.setLocalAudioAvailable(true)
                 if show.message == disconnectedNotice { show.message = "" }
                 mobileRouteRecovery = nil
             } catch is CancellationError { }
@@ -428,7 +435,7 @@ enum AppStartupPresentation {
                 // route fails. Reconnecting USB or choosing an output schedules
                 // another recovery; neither action requires relaunching the app.
                 audio.suspendDeviceSession()
-                TrackRecording.shared.setLocalAudioAvailable(false)
+                projectRecorder.setLocalAudioAvailable(false)
                 settings.finishLocalRouteChange()
                 settings.error = error.localizedDescription
                 show.message = error.localizedDescription

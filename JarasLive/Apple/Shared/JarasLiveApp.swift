@@ -131,7 +131,7 @@ struct RootView: View {
                 #if os(iOS)
                 if documents.ready && !browsingNative {
                     IpadStandaloneWorkspace(show: container.show, documents: documents, auth: auth, backend: container.backend, onExit: {
-                        Task { if await container.closeNativeProject() { browsingNative = true } }
+                        browsingNative = true
                     })
                         .id(documents.opened)
                 } else {

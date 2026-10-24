@@ -112,18 +112,21 @@ import Combine
     func stop() {
         guard running else { return }
         running = false; subscriptions.removeAll()
-        VinhetasController.shared.unbind()
+        let foreground = NativeProjectTabs.shared.isForeground(show)
+        if foreground { VinhetasController.shared.unbind() }
         if ControlMappings.shared.endNativeSession(mappingSession) {
             show?.togglePartsPanel = {}; show?.toggleSetlistPanel = {}; show?.toggleTracksPanel = {}; show?.toggleTeleprompterWindow = {}
         }
+        if foreground {
         DAWRemoteSession.nativeHost.stop()
         for index in 1...2 { TeleprompterRemote.panel(index).setEnabled(false) }
         TPNoticeController.shared.clear()
         VideoPlayback.shared.setVisible(false)
         VideoPlayback.teleprompter.setProjectionEnabled(false)
         VideoPlayback.teleprompter2.setProjectionEnabled(false)
+        }
         session.endLocalWorkspace(); state = nil
-        UIApplication.shared.isIdleTimerDisabled = false
+        if foreground { UIApplication.shared.isIdleTimerDisabled = false }
     }
 }
 
@@ -187,7 +190,7 @@ import Combine
             if let state = local.state {
                 NativeRemoteWorkspace(state: state, computerName: UIDevice.current.name,
                     timer: local.timer, send: local.send, exitRemote: {
-                        show.send(.stop); onExit()
+                        onExit()
                     }, local: true, localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 }, openPatch: { patch = .init(track: $0) }, openTrackFX: { fx = .init(track: $0) },
                     openSelectedPatch: { patch = .init(track: $0.first, targets: $0.map { Optional($0) }) },
                     openSelectedFX: { fx = .init(track: $0.first, targets: $0.map { Optional($0) }) },

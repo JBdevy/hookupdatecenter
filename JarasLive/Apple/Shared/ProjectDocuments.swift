@@ -1418,11 +1418,9 @@ struct ProjectBrowserView: View {
                                     .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.panel).contentShape(Rectangle())
                             }.buttonStyle(.plain)
                                 .contextMenu {
-                                    #if os(macOS)
                                     if documents.ready, !RecentProjectEntry.isMissing(url), documents.openInNewProjectTab != nil {
                                         Button("Open in new tab") { documents.openInNewProjectTab?(url); completed() }
                                     }
-                                    #endif
                                     Button(role: .destructive) { documents.requestDeletion(url) } label: {
                                         Label(RecentProjectEntry.isMissing(url) ? "Remove from recents" : "Delete project", systemImage: "trash")
                                     }
