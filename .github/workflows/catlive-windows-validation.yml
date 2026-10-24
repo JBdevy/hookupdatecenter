@@ -2,6 +2,11 @@ name: CatLive Windows - release validation
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão da cópia de teste (sem publicação)'
+        required: true
+        default: '1.11'
 
 permissions:
   contents: read
@@ -34,7 +39,9 @@ jobs:
       - name: Build and test candidate
         id: build
         shell: pwsh
-        run: ./JarasLive/Windows/build.ps1 -Version 1.02 -BuildDirectory "$env:RUNNER_TEMP/catlive-windows" -Installer
+        env:
+          CATLIVE_RELEASE_VERSION: ${{ inputs.version }}
+        run: ./JarasLive/Windows/build.ps1 -Version $env:CATLIVE_RELEASE_VERSION -BuildDirectory "$env:RUNNER_TEMP/catlive-windows" -Installer
       - name: Capture and exercise native interface
         shell: pwsh
         run: |
@@ -57,7 +64,7 @@ jobs:
         if: always() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: CatLive-1.02-Windows-candidate
+          name: CatLive-${{ inputs.version }}-Windows-candidate
           path: |
             ${{ runner.temp }}/catlive-windows/package/CatLive-*-Windows-x64.zip
             ${{ runner.temp }}/catlive-windows/installer/Catlive-*.exe

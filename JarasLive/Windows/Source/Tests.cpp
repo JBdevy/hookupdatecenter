@@ -2524,6 +2524,22 @@ int runTests(const File &directory) {
                 pedalReleased = event.getMessage().getControllerValue() == 0 && event.samplePosition == 20;
         }
         expect(pedalReleased, "Pedal release did not reach the previous track at its original sample");
+        input.clear(); current.clear();
+        for (int channel : {2, 3}) {
+            input.addEvent(MidiMessage::noteOn(channel, 60, (uint8)100), 10);
+            input.addEvent(MidiMessage::controllerEvent(channel, 64, 127), 20);
+            input.addEvent(MidiMessage::pitchWheel(channel, 9000), 30);
+            input.addEvent(MidiMessage::noteOff(channel, 60), 40);
+        }
+        // The same live buffer feeds MIDI capture and the track's VST3 chain,
+        // independently of the selected audio/MIDI recording mode.
+        appendLiveTrackMIDI(current, input, 128, true, 3);
+        expect(current.getNumEvents() == 4, "Input channel must filter notes, controllers and pitch bend before capture and instruments");
+        for (const auto event : current)
+            expect(event.getMessage().getChannel() == 3, "Another MIDI channel reached the track");
+        current.clear();
+        appendLiveTrackMIDI(current, input, 128, true, 0);
+        expect(current.getNumEvents() == 8, "All channels must restore Omni input");
     });
     test("MIDI clips preserve source offset, loops, rate, gain and frozen state", [&] {
         jaras::Track track;
