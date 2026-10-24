@@ -96,52 +96,61 @@ inline std::vector<Tick> ticks(const jaras::Song &song, double start, double end
     const double spacing = 130 + 50 * jlimit(0., 1., -std::log10(scale));
     const double labelSeconds = spacing / scale, columnSeconds = 8 / scale;
     const double densityStart = std::floor(std::max(0., start) / columnSeconds) * columnSeconds;
-    double previousLabel = -std::numeric_limits<double>::infinity();
+    const double densityEnd = (std::floor(end / columnSeconds) + 1) * columnSeconds;
     double lastColumn = -std::numeric_limits<double>::infinity();
-    for (const auto &section : parts) {
-        if (section.start > end) break;
-        if (section.end <= (lastColumn + 1) * columnSeconds) continue;
+    bool lastColumnHasLabel = false;
+    const auto hierarchyStep=[](uint64_t index) { return index & (~index + 1); };
+    auto firstSection=std::upper_bound(parts.begin(),parts.end(),densityStart,
+        [](double time,const Section &section){return time<section.end;});
+    for (auto it=firstSection;it!=parts.end();++it) {
+        const auto &section=*it;
+        if (section.start > densityEnd) break;
+        const size_t sectionIndex=(size_t)(it-parts.begin());
         const double bar = 60 / section.bpm * section.beats * 4 / section.unit;
         if (!std::isfinite(bar) || bar <= 0 || section.end <= section.start) continue;
+        const double boundaryEnd=sectionIndex+1<parts.size()?section.end:std::numeric_limits<double>::infinity();
         const double stride = std::pow(2., std::max(0., std::ceil(std::log2(16 / std::max(.001, bar * scale)))));
         const double first = std::max(0., std::floor(std::floor((densityStart - section.start) / bar) / stride) * stride);
-        const double last = std::max(first, std::ceil((std::min(section.end, end) - section.start) / bar));
+        const double last = std::max(first, std::ceil((std::min(section.end, densityEnd) - section.start) / bar));
         const bool distant = bar * scale < 64;
-        const double step = bar / section.beats * section.unit / (divisions == 0 ? 4 : divisions);
-        const double minor = distant ? bar * stride / 2 : step * std::pow(2., std::max(0., std::ceil(std::log2(16 / std::max(.001, step * scale)))));
-        if (!std::isfinite(minor) || minor <= 0) continue;
-        const double labelBars = std::max(stride, std::pow(2., std::max(0., std::ceil(std::log2(spacing / (bar * scale))))));
-        const double labelMinor = std::max(1., std::ceil(spacing / (minor * scale)));
-        const double firstAllowed = previousLabel + labelSeconds;
-        const double lastBar = std::max(0., std::ceil((section.end - section.start) / bar) - 1);
-        double lastCandidate = section.start + std::floor(lastBar / labelBars) * labelBars * bar;
-        if (!distant) {
-            const double labelStep = minor * labelMinor;
-            for (double i = lastBar; i >= std::max(0., lastBar - 1); --i) {
-                const double origin = section.start + i * bar;
-                const double available = std::min(bar - labelSeconds, std::nextafter(section.end - origin, 0.));
-                if (available >= labelStep) lastCandidate = std::max(lastCandidate, origin + std::floor(available / labelStep) * labelStep);
-            }
+        const double base = bar / section.beats * section.unit / (divisions == 0 ? 4 : divisions);
+        const double minor = distant ? bar * stride / 2 : base * std::pow(2., std::max(0., std::ceil(std::log2(16 / std::max(.001, base * scale)))));
+        if (!std::isfinite(base) || base<=0 || !std::isfinite(minor) || minor <= 0) continue;
+        double boundaryClearance=std::numeric_limits<double>::infinity();
+        if(sectionIndex>0) {
+            const auto step=(size_t)hierarchyStep(sectionIndex);
+            const double left=parts[sectionIndex-step].start;
+            const double right=sectionIndex+step<parts.size()?parts[sectionIndex+step].start:std::numeric_limits<double>::infinity();
+            boundaryClearance=std::min(section.start-left,right-section.start);
         }
-        if (lastCandidate >= firstAllowed) previousLabel = lastCandidate;
-        if (section.end <= densityStart) continue;
-        const auto append = [&](double time, bool primary, bool labeled) {
-            if (time < densityStart || time > end || time >= section.end) return;
+        // Fixed higher-priority neighbours make visibility monotonic with zoom,
+        // including at tempo boundaries. Match the Mac/iPad ruler hierarchy.
+        const auto append = [&](double time, bool primary, double clearance) {
+            if (time < densityStart || time > densityEnd || time >= section.end) return;
+            const bool labeled=clearance+1e-9>=labelSeconds;
             const double column = std::floor(time / columnSeconds + 1e-9);
-            if (column == lastColumn) return;
-            lastColumn = column;
-            if (time < std::max(0., start)) return;
-            result.push_back({time, primary, labeled && time >= firstAllowed ? label(time) : String()});
+            if (column == lastColumn) {
+                if(!labeled || lastColumnHasLabel)return;
+                result.pop_back();
+            }
+            lastColumn = column; lastColumnHasLabel=labeled;
+            result.push_back({time, primary, labeled ? label(time) : String()});
         };
         for (double i = first; i <= last; i += stride) {
             const double time = section.start + i * bar;
             if (time >= section.end) break;
-            append(time, true, std::fmod(i, labelBars) == 0);
-            if (distant) append(time + minor, false, false);
-            else for (int sub = 1; sub * minor < std::min(bar, section.end - time) - 1e-9; ++sub)
-                append(time + sub * minor, false, std::fmod(sub, labelMinor) == 0 && (bar - sub * minor) * scale >= spacing);
+            const double clearance=i==0?boundaryClearance:
+                std::min((double)hierarchyStep((uint64_t)i)*bar,boundaryEnd-time);
+            append(time, true, clearance);
+            if (distant) append(time + minor, false, 0);
+            else for (int sub = 1; sub * minor < std::min(bar, section.end - time) - 1e-9; ++sub) {
+                const double offset=sub*minor;
+                const auto index=(uint64_t)std::max<int64>(1,(int64)std::llround(offset/base));
+                append(time+offset,false,std::min({(double)hierarchyStep(index)*base,bar-offset,boundaryEnd-time-offset}));
+            }
         }
     }
+    result.erase(std::remove_if(result.begin(),result.end(),[&](const auto &tick){return tick.time<std::max(0.,start)||tick.time>end;}),result.end());
     return result;
 }
 }

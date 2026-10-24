@@ -194,6 +194,52 @@ final class TempoMarkerTests: XCTestCase {
             }
         }
     }
+    func testRulerZoomAddsIntermediateLabelsWithoutReplacingExistingReferences() {
+        for beats in [3, 4, 7] {
+            for divisions in [4, 8, 16] {
+                let sections = [TimelineTempoSection(start: 0, end: 600, bpm: 123,
+                    beats: beats, unit: 4, timebase: .free)]
+                var previous: Set<Int64> = []
+                for step in 0...600 {
+                    let scale = 0.1 * pow(20_000, Double(step) / 600)
+                    let ticks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 32,
+                        pixelsPerSecond: scale, divisions: divisions)
+                    let labels = ticks.filter { !$0.label.isEmpty }
+                    let current = Set(labels.map { Int64(($0.time * 1_000_000).rounded()) })
+                    XCTAssertTrue(previous.isSubset(of: current),
+                        "Zoom must add references, not swap them: meter=\(beats)/4 divisions=\(divisions) scale=\(scale)")
+                    for pair in zip(labels, labels.dropFirst()) {
+                        XCTAssertGreaterThanOrEqual((pair.1.time - pair.0.time) * scale, 130 - 1e-6)
+                    }
+                    previous = current
+                }
+            }
+        }
+    }
+    func testRulerReferencesRemainStableAcrossTempoBoundariesAndViewportEdges() {
+        let edges = [0.0, 17.3, 19.7, 54.11, 54.12, 140, 200, 280]
+        let sections = (0..<(edges.count - 1)).map { i in
+            TimelineTempoSection(start: edges[i], end: edges[i + 1], bpm: [123.0, 145, 164][i % 3],
+                beats: [4, 7, 3][i % 3], unit: 4, timebase: .free)
+        }
+        var previous: Set<Int64> = []
+        for step in 0...600 {
+            let scale = 0.01 * pow(200_000, Double(step) / 600)
+            let ticks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 240, pixelsPerSecond: scale, divisions: 8)
+            let labels = ticks.filter { !$0.label.isEmpty }
+            let current = Set(labels.map { Int64(($0.time * 1_000_000).rounded()) })
+            XCTAssertTrue(previous.isSubset(of: current), "Tempo boundaries replaced visible references at scale \(scale)")
+            previous = current
+            let tile = TimelineTimeRuler.ticks(in: sections, from: 42.37, to: 173.19, pixelsPerSecond: scale, divisions: 8)
+            let expected = ticks.filter { $0.time >= 42.37 && $0.time <= 173.19 }
+            XCTAssertEqual(tile.map(\.time), expected.map(\.time))
+            XCTAssertEqual(tile.map(\.label), expected.map(\.label))
+            for pair in zip(labels, labels.dropFirst()) {
+                XCTAssertGreaterThanOrEqual((pair.1.time - pair.0.time) * scale,
+                    TimelineTimeRuler.labelSpacing(through: 280, pixelsPerSecond: scale) - 1e-6)
+            }
+        }
+    }
     func testDistantGridRetainsExtraHalfwayLinesAndInvalidScaleIsRejected() {
         let sections = [TimelineTempoSection(start: 0, end: 120, bpm: 120, beats: 4, unit: 4, timebase: .free)]
         let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 8, pixelsPerSecond: 8)

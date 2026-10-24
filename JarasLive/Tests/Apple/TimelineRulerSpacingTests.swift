@@ -57,7 +57,8 @@ for backingScale in [1.0, 2.0, 3.0] {
 }
 let tiny = TimelineTimeRuler.ticks(in: dense, from: 0, to: 24, pixelsPerSecond: 0.01)
 precondition(tiny.filter { !$0.label.isEmpty }.count == 1, "nearby section starts share the same collision rule")
-precondition(tiny.count >= 160, "dense tempo changes retain their grid lines")
+precondition(tiny.count <= Int(ceil(24 * 0.01 / 8)) + 2,
+             "dense tempo changes retain the bounded screen-column density at distant zoom")
 let simple = [TimelineTempoSection(start: 0, end: 1000, bpm: 120, beats: 4, unit: 4, timebase: .free)]
 var previousInterval = 0.0
 for scale in [100.0, 40, 8, 1, 0.5, 0.1] {

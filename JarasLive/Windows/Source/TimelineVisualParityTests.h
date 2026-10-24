@@ -18,6 +18,18 @@ inline int differences(const Image &a, const Image &b, juce::Rectangle<int> area
             changed += a.getPixelAt(x,y) != b.getPixelAt(x,y);
     return changed;
 }
+inline int maximumChannelDifference(const Image &a, const Image &b) {
+    require(a.isValid() && b.isValid() && a.getBounds() == b.getBounds(), "Timeline snapshots have different dimensions");
+    int maximum = 0;
+    for (int y = 0; y < a.getHeight(); ++y)
+        for (int x = 0; x < a.getWidth(); ++x) {
+            const auto before = a.getPixelAt(x,y), after = b.getPixelAt(x,y);
+            maximum = std::max({maximum, std::abs(before.getRed()-after.getRed()),
+                std::abs(before.getGreen()-after.getGreen()), std::abs(before.getBlue()-after.getBlue()),
+                std::abs(before.getAlpha()-after.getAlpha())});
+        }
+    return maximum;
+}
 inline void save(const File &directory, const char *name, const Image &image) {
     FileOutputStream output(directory.getChildFile(name));
     require(output.openedOk(), "Cannot create timeline visual regression screenshot");
@@ -41,7 +53,7 @@ inline void fit(Workspace &workspace) {
 }
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
-    test("Timeline time selection and active loop have identical ruler-down pixels including cursor Heads", [&] {
+    test("Timeline time selection and active loop have equivalent ruler-down pixels including cursor Heads", [&] {
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture())); session.audio.setOffline(true);
         Auth auth; Lighting lighting(session);
@@ -70,7 +82,11 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                 "Loop did not adopt the selected time bounds");
         const auto loop=capture();
         save(directory,"timeline-time-selection.png",selection); save(directory,"timeline-loop.png",loop);
-        require(differences(selection,loop,loop.getBounds())==0,
+        // Repainting a fractional grid edge can quantize its antialias
+        // coverage by 3/255, including when enabling Repeat. Keep the same
+        // per-channel bound used below when disabling it; an extra overlay,
+        // moved boundary or cursor remains far outside this tolerance.
+        require(maximumChannelDifference(selection,loop)<=3,
                 "Loop adds different pixels, opacity, or cursor Heads compared with the same time selection");
         const int top=(int)num(state,"headerHeight")-16;
         // A 1px outline centered on the ruler boundary has half a pixel of
@@ -101,13 +117,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         // Repainting a cached fractional grid edge can quantize its coverage
         // by up to 3/255. A retained 12% overlay or yellow boundary is much
         // larger; check every pixel without requiring bit-identical coverage.
-        int maximumDifference=0;
-        for(int y=0;y<baseline.getHeight();++y)for(int x=0;x<baseline.getWidth();++x){
-            const auto before=baseline.getPixelAt(x,y),after=disabled.getPixelAt(x,y);
-            maximumDifference=std::max({maximumDifference,std::abs(before.getRed()-after.getRed()),
-                std::abs(before.getGreen()-after.getGreen()),std::abs(before.getBlue()-after.getBlue())});
-        }
-        require(maximumDifference<=3,
+        require(maximumChannelDifference(baseline,disabled)<=3,
                 "Disabling Repeat left a stale overlay in the cached canvas or cursor Heads");
     });
 

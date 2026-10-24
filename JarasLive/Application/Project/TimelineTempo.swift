@@ -751,90 +751,84 @@ public enum TimelineTimeRuler {
         let spacing = minimumLabelSpacing.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
             ?? labelSpacing(through: sections.last?.end ?? end, pixelsPerSecond: scale)
         let labelSeconds = spacing / scale
-        // Tempo sections are ordered, non-overlapping intervals. Keep a fixed
-        // screen-space density across their boundaries: restarting the grid at
-        // each tiny ramp segment must not draw thousands of coincident lines.
-        let columnWidth = TimelineTempo.minimumGridSpacing / 2
-        let columnSeconds = columnWidth / scale
+        let columnSeconds = TimelineTempo.minimumGridSpacing / 2 / scale
         let densityStart = floor(max(0, start) / columnSeconds) * columnSeconds
+        // Finish the last column before clipping, so tiled/scrolling views
+        // choose the same representative even at the viewport's right edge.
+        let densityEnd = (floor(end / columnSeconds) + 1) * columnSeconds
         var result: [Tick] = []
-        var previousLabel = -Double.infinity
         var lastColumn: Double?
-        func firstSection(endingAfter time: Double, from first: Int) -> Int {
-            var low = first, high = sections.count
+        var lastColumnHasLabel = false
+        func firstSection(endingAfter time: Double) -> Int {
+            var low = 0, high = sections.count
             while low < high {
                 let middle = (low + high) / 2
                 if sections[middle].end <= time { low = middle + 1 } else { high = middle }
             }
             return low
         }
-        var sectionIndex = labels ? 0 : firstSection(endingAfter: densityStart, from: 0)
+        // Every reference has fixed higher-priority neighbours. Its visibility
+        // depends only on their distance and zoom, never on which other labels
+        // happened to be drawn first. This preserves references across tempo
+        // boundaries as well as within a bar (8 -> 4 -> 2 -> 1 subdivisions).
+        func hierarchyStep(_ index: Int) -> Int { index & (~index + 1) }
+        var sectionIndex = firstSection(endingAfter: densityStart)
         while sectionIndex < sections.count {
+            let indexOfSection = sectionIndex
             let section = sections[sectionIndex]
-            if section.start > end { break }
+            if section.start > densityEnd { break }
             sectionIndex += 1
-            if let lastColumn, section.end <= (lastColumn + 1) * columnSeconds {
-                sectionIndex = firstSection(endingAfter: (lastColumn + 1) * columnSeconds, from: sectionIndex)
-                continue
-            }
             let bar = section.barSeconds
             guard bar.isFinite, bar > 0, section.start.isFinite, section.end.isFinite,
                   section.end > section.start else { continue }
+            let boundaryEnd = sectionIndex < sections.count ? section.end : Double.infinity
             let strideBars = TimelineTempo.barStride(bar: bar, pixelsPerSecond: scale)
             let first = max(0, Int(floor((densityStart - section.start) / bar)) / strideBars * strideBars)
-            let last = max(first, Int(ceil((min(section.end, end) - section.start) / bar)))
+            let last = max(first, Int(ceil((min(section.end, densityEnd) - section.start) / bar)))
             let distant = bar * scale < TimelineTempo.minimumGridSpacing * 4
+            let base = bar / Double(section.beats) * Double(section.unit) / Double(divisions == 0 ? 4 : divisions)
             let minor = distant ? bar * Double(strideBars) / 2 :
                 TimelineTempo.gridStep(bar: bar, beats: section.beats, pixelsPerSecond: scale,
                                        divisions: divisions == 0 ? 4 : divisions, unit: section.unit)
-            guard minor > 0, minor.isFinite else { continue }
-            let labelBars = max(strideBars, Int(pow(2, max(0, ceil(log2(spacing / (bar * scale)))))))
-            let labelMinor = max(1, Int(ceil(spacing / (minor * scale))))
-            let firstAllowedLabel = previousLabel + labelSeconds
-            // Account for earlier sections without scanning their offscreen bars.
-            // Candidates within a section already have the required separation;
-            // only its first candidates can conflict with the preceding section.
-            if labels {
-                let lastBar = max(0, Int(ceil((section.end - section.start) / bar)) - 1)
-                var lastCandidate = section.start + Double(lastBar / labelBars * labelBars) * bar
-                if !distant {
-                    let labelStep = minor * Double(labelMinor)
-                    for index in stride(from: lastBar, through: max(0, lastBar - 1), by: -1) {
-                        let origin = section.start + Double(index) * bar
-                        let available = min(bar - labelSeconds, (section.end - origin).nextDown)
-                        if available >= labelStep {
-                            lastCandidate = max(lastCandidate, origin + floor(available / labelStep) * labelStep)
-                        }
-                    }
-                }
-                if lastCandidate >= firstAllowedLabel { previousLabel = lastCandidate }
+            guard base > 0, base.isFinite, minor > 0, minor.isFinite else { continue }
+            let boundaryClearance: Double
+            if indexOfSection == 0 { boundaryClearance = .infinity }
+            else {
+                let step = hierarchyStep(indexOfSection)
+                let left = sections[indexOfSection - step].start
+                let right = indexOfSection + step < sections.count ? sections[indexOfSection + step].start : Double.infinity
+                boundaryClearance = min(section.start - left, right - section.start)
             }
-            guard section.end > densityStart else { continue }
-            func append(_ time: Double, primary: Bool, labeled: Bool) {
-                guard time >= densityStart, time <= end, time < section.end else { return }
+            func append(_ time: Double, primary: Bool, clearance: Double) {
+                guard time >= densityStart, time <= densityEnd, time < section.end else { return }
+                let labeled = clearance + 1e-9 >= labelSeconds
                 let column = floor(time / columnSeconds + 1e-9)
-                guard column != lastColumn else { return }
-                lastColumn = column
-                guard time >= max(0, start) else { return }
-                result.append(Tick(time: time, primary: primary,
-                                   label: labels && labeled && time >= firstAllowedLabel ? timeLabel(time) : ""))
+                if column == lastColumn {
+                    guard labeled && !lastColumnHasLabel else { return }
+                    result.removeLast()
+                }
+                lastColumn = column; lastColumnHasLabel = labeled
+                result.append(Tick(time: time, primary: primary, label: labels && labeled ? timeLabel(time) : ""))
             }
             for index in stride(from: first, through: last, by: strideBars) {
                 let time = section.start + Double(index) * bar
                 guard time < section.end else { continue }
-                append(time, primary: true, labeled: index % labelBars == 0)
+                let barClearance = index == 0 ? boundaryClearance :
+                    min(Double(hierarchyStep(index)) * bar, boundaryEnd - time)
+                append(time, primary: true, clearance: barClearance)
                 if distant {
-                    append(time + minor, primary: false, labeled: false)
+                    append(time + minor, primary: false, clearance: 0)
                 } else {
-                    var subdivision = 1
                     for offset in stride(from: minor, to: min(bar, section.end - time) - 1e-9, by: minor) {
-                        append(time + offset, primary: false,
-                               labeled: subdivision % labelMinor == 0 && (bar - offset) * scale >= spacing)
-                        subdivision += 1
+                        let subdivision = max(1, Int((offset / base).rounded()))
+                        let clearance = min(Double(hierarchyStep(subdivision)) * base,
+                                            bar - offset, boundaryEnd - time - offset)
+                        append(time + offset, primary: false, clearance: clearance)
                     }
                 }
             }
         }
+        result.removeAll { $0.time < max(0, start) || $0.time > end }
         return result
     }
     private static func timeLabel(_ time: Double) -> String {

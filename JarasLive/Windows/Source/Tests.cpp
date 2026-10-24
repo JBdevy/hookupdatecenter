@@ -1111,6 +1111,56 @@ int runTests(const File &directory) {
         expect(timelineGrid::label(5.25) == "00:00:05.250", "Fractional ruler label");
         expect(timelineGrid::ticks(song, 0, 10, 0).empty(), "Invalid zoom rejected");
     });
+    test("Ruler zoom adds intermediate labels without replacing existing references", [&] {
+        for (const int beats : {3,4,7}) for (const int divisions : {4,8,16}) {
+            jaras::Song song; song.duration=600; song.bpm=123;
+            song.beatsPerBar=beats; song.beatUnit=4;
+            song.timeSettings=jaras::ProjectTimeSettings{};
+            song.timeSettings->divisions=divisions;
+            std::set<int64> previous;
+            for (int step=0;step<=600;++step) {
+                const double scale=.1*std::pow(20000.,step/600.);
+                const auto ticks=timelineGrid::ticks(song,0,32,scale);
+                std::set<int64> current;
+                double last=-std::numeric_limits<double>::infinity();
+                for (const auto &tick : ticks) if(tick.label.isNotEmpty()) {
+                    current.insert((int64)std::llround(tick.time*1000000));
+                    expect((tick.time-last)*scale>=130-1e-6,"Zoomed ruler labels overlap");
+                    last=tick.time;
+                }
+                expect(std::includes(current.begin(),current.end(),previous.begin(),previous.end()),
+                       "Zoom replaced existing ruler references instead of adding intermediate labels");
+                previous=std::move(current);
+            }
+        }
+    });
+    test("Ruler references remain stable across tempo boundaries and viewport edges", [&] {
+        jaras::Song song;song.duration=280;song.bpm=123;song.timeSettings=jaras::ProjectTimeSettings{};
+        song.timeSettings->divisions=8;song.markers=std::vector<jaras::TimelineMarker>{};
+        const double edges[]={0,17.3,19.7,54.11,54.12,140,200};
+        const double tempos[]={123,145,164};const int beats[]={4,7,3};
+        for(int i=0;i<7;++i){jaras::TimelineMarker marker;marker.id=std::to_string(i);marker.position=edges[i];
+            marker.tempoBPM=tempos[i%3];marker.tempoBeats=beats[i%3];marker.tempoUnit=4;song.markers->push_back(marker);}
+        std::set<int64> previous;
+        for(int step=0;step<=600;++step){
+            const double scale=.01*std::pow(200000.,step/600.);
+            const auto ticks=timelineGrid::ticks(song,0,240,scale);
+            std::set<int64> current;double last=-std::numeric_limits<double>::infinity();
+            std::vector<timelineGrid::Tick> expected;
+            for(const auto &tick:ticks){
+                if(tick.time>=42.37&&tick.time<=173.19)expected.push_back(tick);
+                if(tick.label.isEmpty())continue;
+                current.insert((int64)std::llround(tick.time*1000000));
+                expect((tick.time-last)*scale>=130+50*jlimit(0.,1.,-std::log10(scale))-1e-6,"Tempo boundary ruler labels overlap");last=tick.time;
+            }
+            expect(std::includes(current.begin(),current.end(),previous.begin(),previous.end()),"Tempo boundaries replaced visible ruler references");
+            previous=std::move(current);
+            const auto tile=timelineGrid::ticks(song,42.37,173.19,scale);
+            expect(tile.size()==expected.size(),"Viewport edges changed ruler density");
+            for(size_t i=0;i<std::min(tile.size(),expected.size());++i)
+                expect(tile[i].time==expected[i].time&&tile[i].label==expected[i].label,"Scrolling changed ruler references");
+        }
+    });
     test("Cursor and item snapping match Mac tempo divisions and timeline anchors", [&] {
         auto song=projectFixture().songs.front();song.bpm=120;song.beatsPerBar=4;song.beatUnit=4;song.duration=40;
         song.parts={jaras::Part{uuid(),"Region",3.13,7.17}};
