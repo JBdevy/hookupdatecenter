@@ -11,17 +11,59 @@ struct DAWRemoteState {
 enum DAWRemoteCommand { enum Action:String { case pan,volume,mute,solo,resetMeterPeak,tempo,pitch,phase } }
 enum TrackKind { case standard,click,chords;var isText:Bool{self == .chords};var isTeleprompter:Bool{false} }
 struct FixtureTrackRole { var rawValue = "other" }
-struct Track {let id:UUID;var role = FixtureTrackRole();var kind:TrackKind = .standard;var parentTrackID:UUID? = nil}
+struct FixturePlugin { var category = "Instrument" }
+struct FixtureFX { var instrumentKeys: [String] = []; var externalPlugins: [FixturePlugin]? }
+enum FixtureRecordingMode { case audio, midi }
+struct Track {
+ let id:UUID;var role = FixtureTrackRole();var kind:TrackKind = .standard;var parentTrackID:UUID? = nil
+ var fx: FixtureFX?; var recordingChannels: Int?; var midiChannel: Int?; var recordingFormat: String?
+ var recordingPostFader: Bool?; var recordingPostFX: Bool?; var inputMonitoring: Bool?; var recordsOutput = false
+ var recordingMode: FixtureRecordingMode { recordingChannels == 0 ? .midi : .audio }
+}
 struct Song {var tracks:[Track]}
-@MainActor final class ShowController {var current:Song?;init(_ tracks:[Track]){current=Song(tracks:tracks)};func send(_ action:DAWRemoteCommand.Action,target:UUID){TouchProbe.shared.log(action.rawValue)};func insertClickItems(track:UUID){TouchProbe.shared.log("insert")};var canDrop:Bool{true};func canDropTrack(_ source:UUID,on target:UUID,after:Bool)->Bool{source != target};func dropTrack(_ source:UUID,on target:UUID,before:UUID?,outsideGroup:Bool = false){TouchProbe.shared.log("reorder")}}
+@MainActor final class ShowController: ObservableObject {
+ @Published var current:Song?
+ init(_ tracks:[Track]){current=Song(tracks:tracks)}
+ func send(_ action:DAWRemoteCommand.Action,target:UUID){TouchProbe.shared.log(action.rawValue)}
+ func insertClickItems(track:UUID){TouchProbe.shared.log("insert")}
+ var canDrop:Bool{true}
+ func canDropTrack(_ source:UUID,on target:UUID,after:Bool)->Bool{source != target}
+ func dropTrack(_ source:UUID,on target:UUID,before:UUID?,outsideGroup:Bool = false){TouchProbe.shared.log("reorder")}
+ func mixerControlTargets(_ id: UUID) -> [Track] { current?.tracks.filter { $0.id == id } ?? [] }
+ private func change(_ id: UUID, _ edit: (inout Track) -> Void) {
+  guard var song = current, let index = song.tracks.firstIndex(where: { $0.id == id }) else { return }
+  edit(&song.tracks[index]); current = song
+ }
+ func setRecordingChannels(_ id: UUID, channel: Int) { change(id) { $0.recordingChannels = channel } }
+ func setMIDIChannel(_ id: UUID, channel: Int) { change(id) { $0.midiChannel = channel == 0 ? nil : channel } }
+ func setRecordingFormat(_ id: UUID, format: String?) { change(id) { $0.recordingFormat = format } }
+ func setRecordingStage(_ id: UUID, postFader: Bool? = nil, postFX: Bool? = nil, output: Bool? = nil) {
+  change(id) { if let postFader { $0.recordingPostFader = postFader }; if let postFX { $0.recordingPostFX = postFX }; if let output { $0.recordsOutput = output } }
+ }
+ func setInputMonitoring(_ id: UUID, enabled: Bool) { change(id) { $0.inputMonitoring = enabled } }
+}
+struct MediaProcessingFormat {
+ var bitrate = 320; var recordingDisplayName = "WAV 24-bit"
+ static func load(_ key: String) -> Self { Self() }
+}
+@MainActor final class TrackRecording: ObservableObject {
+ static let shared = TrackRecording()
+ @Published var armState = RecordingArmState()
+ var recording = false; var busy = false
+ var armed: Set<UUID> { armState.armed }
+ func setMode(_ mode: RecordingArmState.Mode, tracks: Set<UUID>, requiresAudioInput: Bool) {
+  armState.set(mode, tracks: tracks); TouchProbe.shared.log("rec")
+ }
+}
+extension View { func jarasHelp(_ help: String) -> some View { self } }
 @MainActor final class TouchProbe:ObservableObject {
  static let shared=TouchProbe();@Published var event="none";@Published var selection=0;@Published var editing=false
  @Published var muted=false;@Published var solo=false
  func log(_ value:String){event=value}
 }
 struct TrackGroupButton:View {let show:ShowController;let project:UUID;let track:UUID;let parent:UUID?;var body:some View {Button("Folder") {TouchProbe.shared.log("folder")}}}
-struct TrackRecordButton:View {let show:ShowController;let track:Track;var body:some View{Button("REC"){TouchProbe.shared.log("rec")}.buttonStyle(.bordered)}}
-enum JarasTheme {static let text=Color.white,green=Color.green,yellow=Color.yellow,mixer=Color(white:0.2),background=Color(white:0.086),panel=Color(white:0.114),display=Color(white:0.063)}
+enum JarasTheme {static let text=Color.white,green=Color.green,yellow=Color.yellow,mixer=Color(white:0.2),background=Color(white:0.086),panel=Color(white:0.114),display=Color(white:0.063),transportRed=Color.red,liveOffRed=Color.red,trackButton=Color.gray}
+extension Color { init(hex: UInt32) { self.init(red: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255, blue: Double(hex & 255) / 255) } }
 func remoteColor(_ color:UInt32)->Color{.white}
 enum TrackNameContrast{static func components(_ color:UInt32,emphasized:Bool)->(red:Double,green:Double,blue:Double){(0.2,0.5,0.3)}}
 struct GroupTrackConnector:Shape {let last:Bool;func path(in r:CGRect)->Path{Path{p in p.move(to:.zero);p.addLine(to:CGPoint(x:0,y:r.height));p.addLine(to:CGPoint(x:r.width,y:r.height))}}}
@@ -43,6 +85,11 @@ struct RowFrameProbe: UIViewRepresentable {
 struct TouchFixtureView:View {
  @ObservedObject var probe=TouchProbe.shared
  @StateObject private var reordering=IpadTrackReorderController()
+ @StateObject private var show = ShowController([
+  Track(id: UUID(uuidString:"00000000-0000-0000-0000-000000000001")!),
+  Track(id: UUID(uuidString:"00000000-0000-0000-0000-000000000002")!, kind: .click),
+  Track(id: UUID(uuidString:"00000000-0000-0000-0000-000000000003")!, kind: .chords)
+ ])
  @State private var rowWidth:CGFloat=450
  @State private var compactRows=false
  @State private var icons=false
@@ -50,7 +97,6 @@ struct TouchFixtureView:View {
  let click=UUID(uuidString:"00000000-0000-0000-0000-000000000002")!
  let text=UUID(uuidString:"00000000-0000-0000-0000-000000000003")!
  var body:some View {
- let show=ShowController([Track(id:id),Track(id:click,kind:.click),Track(id:text,kind:.chords)])
  VStack {
   RemoteStepFixture()
   HStack {

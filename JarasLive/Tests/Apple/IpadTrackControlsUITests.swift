@@ -1,11 +1,29 @@
 import XCTest
 final class TrackTouchTests:XCTestCase {
+ func testRecordHoldOpensSettingsWithoutArmingAndKeepsMIDIChannelInAudioMode() {
+  let app = XCUIApplication(); app.launch()
+  let rec = app.buttons["Arm track for recording"].firstMatch
+  XCTAssertTrue(rec.waitForExistence(timeout: 10))
+  rec.press(forDuration: 0.8)
+  XCTAssertTrue(app.staticTexts["Recording mode"].waitForExistence(timeout: 3), app.debugDescription)
+  XCTAssertEqual(app.staticTexts["event"].label, "none", "Opening REC options must not arm the track")
+  XCTAssertFalse(app.buttons["Add Stems"].exists, "The track menu must not steal the REC hold")
+  let channels = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "MIDI channel")).firstMatch
+  XCTAssertTrue(channels.exists, app.debugDescription)
+  channels.tap(); app.buttons["3"].firstMatch.tap()
+  app.buttons["MIDI"].tap()
+  XCTAssertTrue(channels.label.contains("3"))
+  app.buttons["Stereo"].tap()
+  XCTAssertTrue(channels.label.contains("3"), "Input MIDI channel must survive switching to audio recording")
+  app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.9)).tap()
+  rec.tap(); XCTAssertEqual(app.staticTexts["event"].label, "rec")
+ }
  func testIconsExtendRowsAndHaveTheirOwnNativeMenuEntry() {
   let app=XCUIApplication();app.launch()
   let toggle=app.buttons["Toggle icons"]
   XCTAssertTrue(toggle.waitForExistence(timeout:10))
   let row=app.otherElements["normal-row-frame"].firstMatch
-  let labels=["Patch","FX","REC","M","S"]
+  let labels=["Patch","FX","Arm track for recording","M","S"]
   let originalWidth=row.frame.width
   let positions=labels.map {app.buttons[$0].firstMatch.frame.minX-row.frame.minX}
   toggle.tap()
@@ -39,7 +57,7 @@ final class TrackTouchTests:XCTestCase {
   let meter = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Audio meter")).firstMatch
   XCTAssertTrue(meter.exists,"Compact tracks must retain their audio meter: \(app.debugDescription)")
   if meter.exists { XCTAssertGreaterThan(meter.frame.height, 0); XCTAssertLessThanOrEqual(meter.frame.height, 60) }
-  XCTAssertTrue(app.buttons["REC"].exists);XCTAssertTrue(app.buttons["M"].firstMatch.exists);XCTAssertTrue(app.buttons["S"].firstMatch.exists)
+  XCTAssertTrue(app.buttons["Arm track for recording"].exists);XCTAssertTrue(app.buttons["M"].firstMatch.exists);XCTAssertTrue(app.buttons["S"].firstMatch.exists)
  }
  func testEmptyTrackAreaSelectsWithoutChangingControls() {
   let app=XCUIApplication();app.launch()
@@ -80,7 +98,7 @@ final class TrackTouchTests:XCTestCase {
  func testControlsAndSelection() {
   let app=XCUIApplication();app.launch();XCTAssertTrue(app.buttons["Patch"].waitForExistence(timeout:10))
   let event=app.staticTexts["event"]
-  for (label,result) in [("Patch","patch"),("FX","fx"),("REC","rec"),("M","mute"),("S","solo"),("Insert","insert"),("Add text","text")] {
+  for (label,result) in [("Patch","patch"),("FX","fx"),("Arm track for recording","rec"),("M","mute"),("S","solo"),("Insert","insert"),("Add text","text")] {
    app.buttons[label].firstMatch.tap();XCTAssertTrue(event.waitForExistence(timeout:2));XCTAssertEqual(event.label,result,"\(label) must receive its touch")
   }
   let row=app.staticTexts["01  Normal track"].firstMatch
@@ -89,7 +107,7 @@ final class TrackTouchTests:XCTestCase {
   app.buttons["edit"].tap()
   let grip=app.descendants(matching:.any)["Move track"].firstMatch
   XCTAssertTrue(grip.exists);XCTAssertLessThanOrEqual(grip.frame.width,36)
-  for (label,result) in [("Patch","patch"),("FX","fx"),("REC","rec"),("S","solo")] {
+  for (label,result) in [("Patch","patch"),("FX","fx"),("Arm track for recording","rec"),("S","solo")] {
    app.buttons[label].firstMatch.tap();XCTAssertEqual(event.label,result,"Editing must leave \(label) interactive")
   }
   app.buttons["M"].firstMatch.tap();XCTAssertEqual(event.label,"mute")

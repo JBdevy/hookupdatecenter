@@ -974,6 +974,7 @@ struct TrackRecordButton: View {
         .background(TrackControlSelectionExclusion())
         .immediateRightClick { editingMode = true }
         #else
+        .frame(minWidth: 28, minHeight: 28).contentShape(Rectangle())
         .overlay { IpadTapHoldTouchSurface(tap: toggleArm, hold: { editingMode = true }) }
         #endif
         .popover(isPresented: $editingMode) {

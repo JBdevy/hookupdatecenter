@@ -803,14 +803,16 @@ final class IpadTapHoldControl: UIButton {
         hold.minimumPressDuration = 0.5; hold.allowableMovement = 12
         hold.cancelsTouchesInView = true
         addGestureRecognizer(hold)
+        let secondary = UITapGestureRecognizer(target: self, action: #selector(secondaryPressed))
+        secondary.buttonMaskRequired = .secondary
+        secondary.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        secondary.cancelsTouchesInView = true
+        addGestureRecognizer(secondary)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        if isEnabled, event?.buttonMask.contains(.secondary) == true {
-            suppressTapAfterHold = true; isHighlighted = false; holdAction?()
-            return false
-        }
-        return super.beginTracking(touch, with: event)
+    @objc private func secondaryPressed() {
+        guard isEnabled else { return }
+        suppressTapAfterHold = true; isHighlighted = false; holdAction?()
     }
     override var isHighlighted: Bool {
         didSet { backgroundColor = isHighlighted ? UIColor.white.withAlphaComponent(0.12) : .clear }
@@ -4719,25 +4721,88 @@ private struct IpadTrackAudioContextMenu: ViewModifier {
     var count = 1
     @ViewBuilder func body(content: Content) -> some View {
         if enabled {
-            content.contextMenu {
-                if let openPatch { Button("Patch", action: openPatch) }
-                if let soundDesigner { Button("Sound Designer", action: soundDesigner) }
-                if let fx { Button("FX", action: fx) }
-                if let addAudio { Button("Add Stems", action: addAudio) }
-                if let group { Button("Create group", action: group) }
-                if let ungroup { Button("Ungroup", action: ungroup) }
-                if let removeFromGroup { Button("Remove from group", action: removeFromGroup) }
-                if let link { Button("Link tracks", action: link) }
-                if let unlink { Button("Unlink tracks", action: unlink) }
-                if let edit { Button("Editar pista", action: edit) }
-                if let icon { Button("Ícone da pista", action: icon) }
-                if let duplicate { Button(LocalizedStringKey(count > 1 ? "Duplicate tracks" : "Duplicate track"), action: duplicate) }
-                if let remove {
-                    Divider()
-                    Button(LocalizedStringKey(count > 1 ? "Delete tracks" : "Delete track"), role: .destructive, action: remove)
+            content.overlayPreferenceValue(IpadTrackControlsBoundsKey.self) { anchors in
+                GeometryReader { proxy in
+                    let areas = IpadTrackMenuSurface.areas(in: CGRect(origin: .zero, size: proxy.size),
+                                                         excluding: anchors.map { proxy[$0] })
+                    ForEach(areas.indices, id: \.self) { index in
+                        let area = areas[index]
+                        IpadTrackMenuSurface(actions: menuActions)
+                            .frame(width: area.width, height: area.height)
+                            .position(x: area.midX, y: area.midY)
+                    }
                 }
             }
         } else { content }
+    }
+    private var menuActions: [IpadTrackMenuAction] {
+        var actions: [IpadTrackMenuAction] = []
+        func append(_ title: String, _ action: (() -> Void)?, destructive: Bool = false) {
+            if let action { actions.append(IpadTrackMenuAction(title: JarasLocalization.string(title), destructive: destructive, action: action)) }
+        }
+        append("Patch", openPatch); append("Sound Designer", soundDesigner); append("FX", fx)
+        append("Add Stems", addAudio); append("Create group", group); append("Ungroup", ungroup)
+        append("Remove from group", removeFromGroup); append("Link tracks", link); append("Unlink tracks", unlink)
+        append("Editar pista", edit); append("Ícone da pista", icon)
+        append(count > 1 ? "Duplicate tracks" : "Duplicate track", duplicate)
+        append(count > 1 ? "Delete tracks" : "Delete track", remove, destructive: true)
+        return actions
+    }
+}
+
+private struct IpadTrackMenuAction {
+    let title: String
+    let destructive: Bool
+    let action: () -> Void
+}
+
+/// The row menu owns only its empty/name area. A context menu on the whole
+/// SwiftUI row intercepts holds and secondary clicks intended for REC controls.
+private struct IpadTrackMenuSurface: UIViewRepresentable {
+    let actions: [IpadTrackMenuAction]
+    @Environment(\.isEnabled) private var enabled
+    func makeUIView(context: Context) -> TouchView { TouchView() }
+    func updateUIView(_ view: TouchView, context: Context) {
+        view.actions = actions; view.isUserInteractionEnabled = enabled
+    }
+    // A representable covering the whole row still blocks sibling UIKit
+    // controls on iPadOS 16 even if its UIView rejects their hit. Create actual
+    // separate surfaces so no UIKit/SwiftUI wrapper covers a control or grip.
+    static func areas(in bounds: CGRect, excluding controls: [CGRect]) -> [CGRect] {
+        controls.reduce([bounds]) { areas, control in
+            areas.flatMap { area -> [CGRect] in
+                let cut = area.intersection(control)
+                guard !cut.isNull, !cut.isEmpty else { return [area] }
+                return [CGRect(x: area.minX, y: area.minY, width: area.width, height: cut.minY - area.minY),
+                        CGRect(x: area.minX, y: cut.maxY, width: area.width, height: area.maxY - cut.maxY),
+                        CGRect(x: area.minX, y: cut.minY, width: cut.minX - area.minX, height: cut.height),
+                        CGRect(x: cut.maxX, y: cut.minY, width: area.maxX - cut.maxX, height: cut.height)]
+                    .filter { $0.width > 0.5 && $0.height > 0.5 }
+            }
+        }
+    }
+    final class TouchView: UIView, UIContextMenuInteractionDelegate {
+        var actions: [IpadTrackMenuAction] = []
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            backgroundColor = .clear; isAccessibilityElement = false
+            addInteraction(UIContextMenuInteraction(delegate: self))
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                    configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+            guard point(inside: location, with: nil), !actions.isEmpty else { return nil }
+            let actions = actions
+            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
+                var items: [UIMenuElement] = []
+                for action in actions {
+                    let item = UIAction(title: action.title, attributes: action.destructive ? .destructive : []) { _ in action.action() }
+                    if action.destructive { items.append(UIMenu(options: .displayInline, children: [item])) }
+                    else { items.append(item) }
+                }
+                return UIMenu(children: items)
+            }
+        }
     }
 }
 

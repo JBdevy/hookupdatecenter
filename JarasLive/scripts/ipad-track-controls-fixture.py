@@ -18,6 +18,11 @@ parts=[fixture[0],icons,midiState,midiIndicator,palette,section(b,'struct IpadTr
 # Only the full-area style is needed, up to the next declaration.
 s=a[a.index('private struct RemoteFullAreaButtonStyle:'):];end=s.index('\n}\n')+3
 parts.insert(-1,s[:end])
+recording=(root/'Apple/Shared/TrackRecording.swift').read_text()
+arming=(root/'Application/Controls/RecordingArmState.swift').read_text()
+parts.insert(1,arming[arming.index('public struct RecordingArmState:'):])
+parts.insert(-1,section(a,'struct IpadTapHoldTouchSurface:', 'private struct IpadTeleprompterRemoteHold:'))
+parts.insert(-1,section(recording,'struct TrackRecordButton:', 'struct TransportRecordButton:'))
 (p/'Fixture.swift').write_text('\n'.join(parts))
 objects={}
 def uid(s):return hashlib.sha1(s.encode()).hexdigest()[:24].upper()

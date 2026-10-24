@@ -780,6 +780,7 @@ struct IpadTrackReorderModifier: ViewModifier {
                 GeometryReader { geometry in
                     IpadTrackReorderSurface(show: show, track: track, controller: controller, rowWidth: geometry.size.width)
                         .frame(width: 36)
+                        .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                 }
             }
