@@ -1190,6 +1190,9 @@ struct IpadCompactModal<Content: View>: View {
             }.frame(width: geometry.size.width, height: availableHeight)
                 .frame(maxHeight: .infinity, alignment: .top)
         }
+        // Reserve the input view exactly once. SwiftUI's automatic keyboard
+        // avoidance plus this explicit frame otherwise lifts the card twice.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
             keyboardFrame = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) ?? .zero
         }

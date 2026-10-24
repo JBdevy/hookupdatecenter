@@ -97,6 +97,7 @@ import UIKit
         #else
         WindowGroup("CatLive") {
             appContent.statusBarHidden(true).persistentSystemOverlays(.hidden)
+                .background(IpadTextKeyboardScope())
                 .onAppear { UIApplication.shared.isIdleTimerDisabled = scenePhase == .active }
         }
         .onChange(of: scenePhase) { phase in
