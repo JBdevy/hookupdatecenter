@@ -28,13 +28,13 @@ BRANCH="$(git branch --show-current)"
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
-  read -r -p 'Versão do CatLive [1.10]: ' VERSION
-  VERSION="${VERSION:-1.10}"
+  read -r -p 'Versão do CatLive [1.13]: ' VERSION
+  VERSION="${VERSION:-1.13}"
 fi
 VERSION="${VERSION#v}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]{2}$ ]] || { echo 'Use a versão no formato X.XX (ex.: 1.00).' >&2; exit 1; }
 
-FILES=('JarasLive' '.github/workflows/catlive-macos-pkg.yml' 'build catlive macos.command' 'build catlive.bat' 'build catlive windows.bat' 'scripts/publish-catlive-desktop.ps1' 'scripts/test-catlive-desktop-release.cjs')
+FILES=('JarasLive' '.github/workflows/catlive-macos-pkg.yml' 'build catlive macos.command' 'build catlive.bat' 'build catlive windows.bat' 'scripts/publish-catlive-desktop.ps1' 'scripts/test-catlive-desktop-release.cjs' 'scripts/codesign-with-retry.py' 'scripts/test-codesign-retry.py')
 echo 'Alterações do CatLive que serão enviadas:'
 git status --short -- "${FILES[@]}"
 

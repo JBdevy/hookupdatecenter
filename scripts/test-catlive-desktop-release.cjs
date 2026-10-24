@@ -53,7 +53,11 @@ const publication = workflow.slice(workflow.indexOf('      - name: Publish both 
 assert(publication.includes('token: ${{ secrets.CATLIVE_RELEASE_TOKEN }}') &&
        publication.includes('github-token: ${{ secrets.CATLIVE_RELEASE_TOKEN }}'),
        'Release replacement and tag updates must use the publication credential with workflow permission.');
-assert(publisher.includes("$Version='1.10'") && read('build catlive macos.command').includes('${VERSION:-1.10}'));
+assert(publisher.includes("$Version='1.13'") && read('build catlive macos.command').includes('${VERSION:-1.13}'));
+for (const entry of [publisher, read('build catlive macos.command')]) {
+    for (const file of ['scripts/codesign-with-retry.py', 'scripts/test-codesign-retry.py'])
+        assert(entry.includes(file) && fs.existsSync(path.join(root, file)), 'Release entry points must include signing helpers.');
+}
 for (const entry of [publisher, read('build catlive macos.command')])
     assert(entry.includes('space-before-tab,cr-at-eol diff --cached --check'), 'Preserved CRLF must not block source validation.');
 console.log('All-user destinations, minimal native Mac UI and obsolete checksum cleanup validated.');
