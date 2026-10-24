@@ -1,6 +1,41 @@
 import XCTest
 @testable import JarasApplication
 final class TempoMarkerTests: XCTestCase {
+    func testUnifiedTempoRoundTripKeepsRestoreBoundaryOutsideOwnedAudio() {
+        var song = resizeSong()
+        let parent = UUID()
+        song.parts[0].startTime = 0; song.parts[0].endTime = 12; song.parts[0].parentRegionID = parent
+        song.parts[1].startTime = 10; song.parts[1].endTime = 30; song.parts[1].parentRegionID = parent
+        song.parts.append(Part(id: parent, name: "Unified", startTime: 0, endTime: 30))
+        song.markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0, color: 0,
+            regionOwnerID: song.parts[0].id, tempoBPM: 120, tempoTimebase: .relative, tempoReferenceBPM: 120),
+            TimelineMarker(id: UUID(), name: "TEMPO", position: 10.5, color: 0,
+            regionOwnerID: song.parts[1].id, tempoBPM: 160, tempoTimebase: .relative, tempoReferenceBPM: 160)]
+        for index in 0..<2 {
+            song.tracks[0].clips[index].startTime = song.parts[index].startTime
+            song.tracks[0].clips[index].duration = song.parts[index].endTime - song.parts[index].startTime
+            song.tracks[0].clips[index].regionOwnerID = song.parts[index].id
+        }
+        for step in 0..<20 {
+            let before = song, group = song.parts.first { $0.id == parent }!
+            for marker in song.regionTempoChange(step % 2 == 0 ? 1 : -1, region: group) {
+                if let index = song.markers!.firstIndex(where: { $0.id == marker.id }) { song.markers![index] = marker }
+                else { song.markers!.append(marker) }
+            }
+            TempoEditMap(before: before, after: song).apply(to: &song)
+            let currentGroup = song.parts.first { $0.id == parent }!
+            XCTAssertEqual(song.markers!.count, 3, "The restoring boundary must not drift inside the group and multiply")
+            XCTAssertEqual(song.markers!.last!.position, currentGroup.endTime, accuracy: 0.000001)
+            XCTAssertEqual(song.markers!.last!.tempoBPM, 160)
+            XCTAssertEqual(song.hasUnrenderedTempo(in: currentGroup), step % 2 == 0,
+                "Returning the entire unified region to its original BPM must restore every effective rate")
+            if step % 2 == 1 {
+                XCTAssertEqual(currentGroup.endTime, 30, accuracy: 0.000001)
+                XCTAssertEqual(song.tracks[0].clips[1].duration, 20, accuracy: 0.000001)
+                XCTAssertEqual(song.markers![1].position, 10.5, accuracy: 0.000001)
+            }
+        }
+    }
     func testCachedPlaybackProgramsMatchUncachedFragmentsForEveryOwnerAndPreview() {
         var song = resizeSong()
         let group = UUID()

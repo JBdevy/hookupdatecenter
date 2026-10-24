@@ -52,6 +52,34 @@ inline void click(SetlistRows &rows,int row) {
         Time::getCurrentTime(),1,false));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Unified Remote tempo returns to white after repeated BPM round trips", [&] {
+        auto project=fixture();auto &song=project.songs[0];song.timeSettings=jaras::ProjectTimeSettings{};
+        song.timeSettings->timebase=jaras::ProjectTimebase::relative;
+        song.parts={{uuid(),"First",0,12},{uuid(),"Second",10,30},{uuid(),"Unified",0,30}};
+        const auto groupID=song.parts[2].id;
+        song.parts[0].parentRegionID=groupID;song.parts[1].parentRegionID=groupID;
+        project.regionSetlist=jaras::RegionSetlist{};
+        auto a=tempoEditing::boundary(song,0),b=tempoEditing::boundary(song,10.5);
+        a.tempoBPM=120;a.tempoReferenceBPM=120;a.regionOwnerID=song.parts[0].id;
+        b.tempoBPM=160;b.tempoReferenceBPM=160;b.regionOwnerID=song.parts[1].id;
+        song.markers=std::vector<jaras::TimelineMarker>{a,b};
+        for(int index=0;index<2;++index) {
+            jaras::AudioClip clip;clip.id=uuid();clip.startTime=song.parts[index].startTime;
+            clip.duration=song.parts[index].endTime-clip.startTime;clip.regionOwnerID=song.parts[index].id;
+            clip.audioFile=jaras::AudioFile{"source.wav",{}};song.tracks[0].clips.push_back(clip);
+        }
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Appearance preferences(directory.getNonexistentChildFile("remote-unified-tempo",".json"));
+        StageState stage(preferences);remote::Presentation presentation(session,stage);
+        require(presentation.apply(remote::Command::decode(request(session,groupID))),"Unified selection failed");
+        for(int index=0;index<10;++index) {
+            session.setTempo(index%2?120:121);
+            require(flag(presentation.snapshot(0),"tempoNeedsRender")==!(index%2),
+                ("Unified tempo indicator mismatch at step "+std::to_string(index)+", BPM "+std::to_string(session.tempoBPM())).c_str());
+            require(session.song()->markers->size()==3,"Unified tempo restoration generated extra boundary markers");
+        }
+    });
     test("Remote tempo indicator follows effective rates, region selection and completed renders", [&] {
         auto project=fixture();auto &song=project.songs[0];song.bpm=120;
         jaras::AudioClip clip;clip.id=uuid();clip.duration=4;clip.audioFile=jaras::AudioFile{"source.wav",{}};

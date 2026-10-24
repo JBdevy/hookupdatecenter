@@ -46,6 +46,31 @@ static void edit(Engine& engine,const ID& id,double bpm,bool batch=false) {
 }
 int main() {
     try {
+        {
+            auto song=fixture().songs[0];song.parts[0].endTime=12;
+            auto first=song.tracks[0].clips[0],last=song.tracks[0].clips.back();
+            first.startTime=0;first.duration=12;first.playbackRate=1;
+            last.playbackRate=1;song.tracks[0].clips={first,last};
+            auto a=tempo("a-start",0,"a"),b=tempo("b-start",10.5,"b",160);b.tempoReferenceBPM=160;
+            song.markers=std::vector<TimelineMarker>{a,b};
+            for(int step=0;step<20;++step) {
+                const auto before=song;const double end=song.parts[2].endTime;
+                bool hasBoundary=false;
+                for(auto& marker:*song.markers) {
+                    if(std::abs(marker.position-end)<.000001)hasBoundary=true;
+                    else if(marker.position<end)*marker.tempoBPM+=step%2?-1:1;
+                }
+                if(!hasBoundary){auto boundary=tempo("restore",end,{},160);boundary.tempoReferenceBPM=160;song.markers->push_back(boundary);}
+                TempoEditMap(before,song).apply(song);
+                expect(song.markers->size()==3,"Unified boundary drift created extra tempo markers");
+                near(song.markers->back().position,song.parts[2].endTime,"Restoring tempo must follow the unified region end");
+                near(*song.markers->back().tempoBPM,160,"Restoring tempo was edited as part of the group");
+                if(step%2) {
+                    for(const auto& item:song.tracks[0].clips)
+                        near(TempoEditMap::playbackRate(song,item,item.startTime+item.duration-.0000001),1,"Returning unified BPM left altered audio in its tail");
+                }
+            }
+        }
         for(bool batch:{false,true}) {
             Engine engine;engine.loadProject(fixture());
             edit(engine,"b-start",240,batch);

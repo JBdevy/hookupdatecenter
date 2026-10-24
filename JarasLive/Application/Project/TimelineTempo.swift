@@ -533,9 +533,20 @@ struct TempoEditMap {
     private var clipDurations: [UUID: Double] = [:]
     private var clipStarts: [UUID: Double] = [:]
     private var regionDurations: [UUID: Double] = [:]
+    private var tempoEndRegions: [UUID: UUID] = [:]
+    private var markerStarts: [UUID: Double] = [:]
     var changesTime: Bool { spans.contains { abs($0.scale - 1) > 1e-12 } }
     init(before: Song, after: Song) {
         let folderIDs = Set(before.parts.compactMap(\.parentRegionID))
+        // Owned overlapping tails can give a unified region a different end
+        // from the global time map. Keep its restoring tempo at that actual
+        // end, otherwise the next edit treats it as an internal tempo change.
+        let groups = before.parts.filter { folderIDs.contains($0.id) }
+        for marker in after.markers ?? [] where marker.isTempo && marker.regionOwnerID == nil {
+            guard !before.parts.contains(where: { abs($0.startTime - marker.position) < 0.000001 }),
+                  let group = groups.first(where: { abs($0.endTime - marker.position) < 0.000001 }) else { continue }
+            tempoEndRegions[marker.id] = group.id
+        }
         var occupied = before.parts.filter { !folderIDs.contains($0.id) }.map { ($0.startTime, $0.endTime) }
         occupied += before.tracks.filter { $0.kind == .standard }.flatMap { track in
             track.clips.filter { ($0.audioFile != nil || track.audioFile != nil) && before.tempoOwner(for: $0) == nil }.map { ($0.startTime, $0.startTime + $0.duration) }
@@ -592,6 +603,12 @@ struct TempoEditMap {
             return Self.position(end, in: program) - Self.position(start, in: program)
         }
         let folders = Set(before.parts.compactMap(\.parentRegionID))
+        for marker in after.markers ?? [] {
+            guard let ownerID = marker.regionOwnerID,
+                  let owner = before.parts.first(where: { $0.id == ownerID }), !folders.contains(ownerID) else { continue }
+            let offset = resizedDuration(start: min(owner.startTime, marker.position), end: max(owner.startTime, marker.position), owner: owner)
+            markerStarts[marker.id] = position(owner.startTime) + (marker.position < owner.startTime ? -offset : offset)
+        }
         for part in before.parts where !folders.contains(part.id) {
             regionDurations[part.id] = resizedDuration(start: part.startTime, end: part.endTime, owner: part)
         }
@@ -640,7 +657,13 @@ struct TempoEditMap {
             let children = song.parts.filter { $0.parentRegionID == song.parts[i].id }
             if let end = children.map(\.endTime).max() { song.parts[i].endTime = end }
         }
-        if song.markers != nil { for i in song.markers!.indices { song.markers![i].position = position(song.markers![i].position) } }
+        if song.markers != nil {
+            let ends = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0.endTime) })
+            for i in song.markers!.indices {
+                song.markers![i].position = tempoEndRegions[song.markers![i].id].flatMap { ends[$0] }
+                    ?? markerStarts[song.markers![i].id] ?? position(song.markers![i].position)
+            }
+        }
         song.duration = position(song.duration)
         for track in song.tracks { for clip in track.clips { song.duration = max(song.duration, clip.startTime + clip.duration) } }
         for part in song.parts { song.duration = max(song.duration, part.endTime) }

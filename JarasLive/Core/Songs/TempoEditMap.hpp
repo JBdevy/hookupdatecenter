@@ -9,7 +9,8 @@ namespace jaras {
 class TempoEditMap {
     struct Span { double start, end, output, scale; };
     std::vector<Span> spans;
-    std::unordered_map<ID,double> clipStarts,clipDurations,regionDurations;
+    std::unordered_map<ID,double> clipStarts,clipDurations,regionDurations,markerStarts;
+    std::unordered_map<ID,ID> tempoEndRegions;
     static bool folder(const Song& song,const Part& part) {
         return std::any_of(song.parts.begin(),song.parts.end(),[&](const auto& child){return child.parentRegionID==part.id;});
     }
@@ -93,6 +94,14 @@ public:
         return clip.playbackRate * rate(song, time, owner(song, clip));
     }
     TempoEditMap(const Song& before,const Song& after) {
+        // Match the Swift map: a unified region's restoring tempo follows its
+        // owned tail, not a global mapping that can drift inside that tail.
+        if(after.markers) for(const auto& marker:*after.markers) if(marker.tempoBPM && !marker.regionOwnerID) {
+            if(std::any_of(before.parts.begin(),before.parts.end(),[&](const auto& part){return std::abs(part.startTime-marker.position)<.000001;})) continue;
+            for(const auto& part:before.parts) if(std::abs(part.endTime-marker.position)<.000001 && folder(before,part)) {
+                tempoEndRegions[marker.id]=part.id;break;
+            }
+        }
         std::vector<std::pair<double,double>> occupied;
         for(const auto& part:before.parts) if(!folder(before,part)) occupied.emplace_back(part.startTime,part.endTime);
         for(const auto& track:before.tracks) if(fixedTrackName(track.role).empty())
@@ -141,6 +150,11 @@ public:
             }
             return reversed?-duration:duration;
         };
+        if(after.markers) for(const auto& marker:*after.markers) if(marker.regionOwnerID) {
+            const auto owner=std::find_if(before.parts.begin(),before.parts.end(),[&](const auto& part){return part.id==*marker.regionOwnerID;});
+            if(owner!=before.parts.end() && !folder(before,*owner))
+                markerStarts[marker.id]=position(owner->startTime)+resizedDuration(owner->startTime,marker.position,*owner);
+        }
         for(const auto& part:before.parts) if(!folder(before,part)) regionDurations[part.id]=resizedDuration(part.startTime,part.endTime,part);
         for(const auto& track:before.tracks) if(fixedTrackName(track.role).empty()) for(const auto& clip:track.clips)
             if(const auto* part=owner(before,clip)) {
@@ -171,7 +185,12 @@ public:
             for(const auto& child:song.parts) if(child.parentRegionID==part.id) end=std::max(end,child.endTime);
             part.endTime=end;
         }
-        if(song.markers) for(auto& marker:*song.markers) marker.position=position(marker.position);
+        if(song.markers) for(auto& marker:*song.markers) {
+            const auto anchor=tempoEndRegions.find(marker.id);
+            const auto region=anchor==tempoEndRegions.end()?song.parts.end():std::find_if(song.parts.begin(),song.parts.end(),[&](const auto& part){return part.id==anchor->second;});
+            const auto onset=markerStarts.find(marker.id);
+            marker.position=region!=song.parts.end()?region->endTime:onset!=markerStarts.end()?onset->second:position(marker.position);
+        }
         song.duration=position(song.duration);
         for(const auto& track:song.tracks) for(const auto& clip:track.clips) song.duration=std::max(song.duration,clip.startTime+clip.duration);
         for(const auto& part:song.parts) song.duration=std::max(song.duration,part.endTime);
