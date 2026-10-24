@@ -155,15 +155,29 @@ jobs:
           python3 scripts/prepare-catstem.py
           python3 scripts/prepare-catstem-realtime.py
 
-      - name: Validate native audio playback, unified song entry and timecode
+      - name: Validate audio rendering and unified song entry
         working-directory: JarasLive
-        run: |
-          bash scripts/test-audio.sh
-          JARAS_AUDIO_TEST_SOURCE=Tests/Apple/NativeFXPlaybackTests.swift bash scripts/test-audio.sh
-          bash scripts/test-cat-dynamics.sh
-          JARAS_AUDIO_TEST_SOURCE=Tests/Apple/TriggerGateRenderTests.swift bash scripts/test-audio.sh
-          bash scripts/test-timecode.sh
-          bash scripts/test-timecode-signal.sh
+        run: bash scripts/test-audio.sh
+
+      - name: Validate native FX playback continuity at 44.1 and 48 kHz
+        working-directory: JarasLive
+        run: JARAS_AUDIO_TEST_SOURCE=Tests/Apple/NativeFXPlaybackTests.swift bash scripts/test-audio.sh
+
+      - name: Validate Cat Dynamics
+        working-directory: JarasLive
+        run: bash scripts/test-cat-dynamics.sh
+
+      - name: Validate Trigger and Gate rendering
+        working-directory: JarasLive
+        run: JARAS_AUDIO_TEST_SOURCE=Tests/Apple/TriggerGateRenderTests.swift bash scripts/test-audio.sh
+
+      - name: Validate timecode transport
+        working-directory: JarasLive
+        run: bash scripts/test-timecode.sh
+
+      - name: Validate timecode signals
+        working-directory: JarasLive
+        run: bash scripts/test-timecode-signal.sh
 
       - name: Build universal CatLive app
         shell: bash
