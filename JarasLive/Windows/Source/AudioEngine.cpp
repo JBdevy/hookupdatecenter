@@ -2279,10 +2279,11 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             }
         bus.fxInput.store(std::max(fxInput, bus.fxInput.load() * .85f));
         bus.fxOutput.store(std::max(fxOutput, bus.fxOutput.load() * .85f));
+        const double elapsed = samples / rate.load();
         bus.held.record(peak);
-        bus.peak.store(meterDisplay::measuredLevel(peak), std::memory_order_relaxed);
+        bus.peak.store(meterDisplay::envelope(bus.peak.load(), peak, elapsed), std::memory_order_relaxed);
         for (int ch = 0; ch < 2; ++ch)
-            bus.levels[(size_t)ch].store(meterDisplay::measuredLevel(stereoPeak[(size_t)ch]), std::memory_order_relaxed);
+            bus.levels[(size_t)ch].store(meterDisplay::envelope(bus.levels[(size_t)ch].load(), stereoPeak[(size_t)ch], elapsed), std::memory_order_relaxed);
     }
     renderProfile.mark();
     if (routedHardware)
@@ -2373,9 +2374,10 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 std::max(maxPeak, std::max(std::abs(range.getStart()), std::abs(range.getEnd())));
         }
     masterPeakHold.record(masterBuffer.getMagnitude(0,samples));
-    meter.store(meterDisplay::measuredLevel(maxPeak), std::memory_order_relaxed);
+    meter.store(meterDisplay::envelope(meter.load(), maxPeak, samples / rate.load()), std::memory_order_relaxed);
     for (int ch = 0; ch < 2; ++ch)
-        masterLevels[(size_t)ch].store(meterDisplay::measuredLevel(masterBuffer.getMagnitude(ch, 0, samples)), std::memory_order_relaxed);
+        masterLevels[(size_t)ch].store(meterDisplay::envelope(masterLevels[(size_t)ch].load(),
+            masterBuffer.getMagnitude(ch, 0, samples), samples / rate.load()), std::memory_order_relaxed);
     if(latencyPlan&&latencyPlan->total) {
         for(int h=0;h<2;h++) {
             native::TimelineDelay::Frame shown;

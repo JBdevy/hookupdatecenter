@@ -31,19 +31,19 @@ import Foundation
     withExtendedLifetime(peakSubscription) {}
     print("PEAK_HOLD_MINUS24_THRESHOLD_HIGHER_ONLY_NO_TIMED_RESET_OK")
     let measuredMeter = TrackMeterLevel()
-    for elapsed in [1.0 / 120, 1.0 / 30, 0.5] {
-        measuredMeter.update(left: 1, right: 0.1, elapsed: elapsed)
-        precondition(measuredMeter.levels == SIMD2(1, 0.1))
-        measuredMeter.update(left: 0.01, right: 0.05, elapsed: elapsed)
-        precondition(measuredMeter.levels == SIMD2(0.01, 0.05), "Falling levels follow the new measurement immediately on both channels")
-        measuredMeter.update(left: 0, right: 0, elapsed: elapsed)
-        precondition(measuredMeter.levels == .zero, "Silence cannot leave a synthetic tail")
+    for frequency in [30.0, 60.0, 120.0] {
+        measuredMeter.reset()
+        measuredMeter.update(left: 1, right: 0.1, elapsed: 0)
+        precondition(measuredMeter.levels == SIMD2(1, 0.1), "Attack must remain immediate")
+        for _ in 0..<Int(frequency / 10) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(abs(20 * log10(measuredMeter.levels.x) + 18) < 0.001, "Fall starts immediately and reaches -18 dB after 100 ms")
+        precondition(abs(measuredMeter.levels.x / measuredMeter.levels.y - 10) < 0.001, "Stereo channels fall independently")
+        for _ in 0..<Int(frequency * 0.3) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(measuredMeter.levels == .zero, "Silence must clear the short smoothing tail within 400 ms")
+        measuredMeter.update(left: 0.8, right: 0.2, elapsed: 1 / frequency)
+        precondition(measuredMeter.levels == SIMD2(0.8, 0.2))
     }
-    measuredMeter.update(left: .nan, right: .infinity, elapsed: 0)
-    precondition(measuredMeter.levels == .zero)
-    measuredMeter.update(left: 0.0009, right: 0.001, elapsed: 0)
-    precondition(measuredMeter.levels == SIMD2(0, 0.001), "The visible -60 dB floor stays unchanged")
-    print("METER_MEASURED_STEREO_LEVELS_NO_HOLD_OR_RELEASE_TAIL_OK")
+    print("METER_SHORT_SMOOTH_RELEASE_NO_HOLD_AND_INSTANT_STEREO_ATTACK_OK")
     let level = TrackMeterLevel(), meter = NativeVerticalTrackMeterView(frame: NSRect(x: 5, y: 0, width: 40, height: 80))
     meter.bind(level, showScale: true); document.addSubview(meter)
     window.orderFront(nil)

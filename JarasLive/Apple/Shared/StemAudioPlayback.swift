@@ -156,18 +156,22 @@ import SwiftUI
     let peakHold = PeakHold()
     @Published private(set) var levels = SIMD2<Double>(repeating: 0)
     var level: Double { max(levels.x, levels.y) }
-    // Moving bars show the measured peak for the current polling interval.
-    // Do not keep a previous level alive with a synthetic release envelope.
-    // The separate numeric maximum remains available until explicitly reset.
-    func reset() { if levels != .zero { levels = .zero } }
+    // Instant attack and a short falling envelope: 60 dB in one third of a
+    // second. No peak-hold delay; the numeric maximum is separate.
+    static let releaseDecibelsPerSecond = 180.0
+    private var envelope = SIMD2<Double>(repeating: 0)
+    func reset() { envelope = .zero; if levels != .zero { levels = .zero } }
     func update(peak: Double, elapsed: Double) { update(left: peak, right: peak, elapsed: elapsed) }
-    func update(left: Double, right: Double, elapsed _: Double) {
+    func update(left: Double, right: Double, elapsed: Double) {
         peakHold.record(max(left, right))
-        func visible(_ value: Double) -> Double {
-            value.isFinite && value >= 0.001 ? value : 0
+        let decay = pow(10, -Self.releaseDecibelsPerSecond * max(0, elapsed) / 20)
+        let measured = SIMD2(left, right)
+        for channel in 0..<2 {
+            let input = measured[channel].isFinite ? max(0, measured[channel]) : 0
+            envelope[channel] = max(input, envelope[channel] * decay)
+            if envelope[channel] < 0.001 { envelope[channel] = 0 }
         }
-        let measured = SIMD2(visible(left), visible(right))
-        if levels != measured { levels = measured }
+        if levels != envelope { levels = envelope }
     }
 }
 

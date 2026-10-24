@@ -966,12 +966,16 @@ int runTests(const File &directory) {
         }
         expect(parent.calls==4,"Wheel reaches parent exactly once");
     });
-    test("Meter bars follow current measurements without peak hold or release tail", [&] {
-        for (float sample : {1.f, .1f, .01f, 0.f, .8f, .05f, 0.f})
-            expect(meterDisplay::measuredLevel(sample)==sample,"Current measurement must replace previous level immediately");
-        expect(meterDisplay::measuredLevel(.0009f)==0,"Silence threshold");
-        expect(meterDisplay::measuredLevel(.001f)==.001f,"Visible -60 dB floor");
-        expect(meterDisplay::measuredLevel(std::numeric_limits<float>::quiet_NaN())==0,"Invalid measurement cannot freeze bars");
+    test("Meter bars use a short smooth fall without hold and keep instant attack", [&] {
+        for(int block:{64,128,480,1024}) {
+            float level=1;const double elapsed=double(block)/48000;const int count=(int)(.1/elapsed);
+            for(int i=0;i<count;++i)level=meterDisplay::envelope(level,0,elapsed);
+            expect(std::abs(20*std::log10(level)+180*count*elapsed)<.001,"Fall must follow elapsed audio time, not callback count");
+            for(int i=0;i<(int)(.3/elapsed);++i)level=meterDisplay::envelope(level,0,elapsed);
+            expect(level==0,"Silence clears short tail within 400 ms");
+        }
+        expect(meterDisplay::envelope(0,.8f,.01)==.8f,"Immediate attack");
+        expect(meterDisplay::envelope(.001f,0,.1)==0,"Silence threshold");
         meterDisplay::PeakHold peak;peak.record(1);peak.record(.01f);
         expect(peak.amplitude()==1,"Numeric maximum remains independent of moving bars");
     });

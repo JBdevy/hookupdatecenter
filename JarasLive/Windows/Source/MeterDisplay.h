@@ -35,10 +35,12 @@ public:
     }
     void mouseDown(const MouseEvent &e)override{if(e.mods.isLeftButtonDown()){clear();repaint();}}
 };
-// Show the current measured block without holding a previous bar level.
-// Numeric peak retention is handled separately by PeakHold.
-inline float measuredLevel(float input) noexcept {
-    return std::isfinite(input) && input >= .001f ? input : 0.f;
+// Match TrackMeterLevel: immediate attack, no hold, short 180 dB/s fall.
+// The independent numeric peak is retained by PeakHold.
+inline float envelope(float previous, float input, double elapsed) noexcept {
+    input = std::isfinite(input) ? std::max(0.f, input) : 0.f;
+    const auto level = std::max(input, previous * (float)std::pow(10., -180. * std::max(0., elapsed) / 20.));
+    return level < .001f ? 0.f : level;
 }
 inline void bar(Graphics &g, juce::Rectangle<float> bounds, float amplitude) {
     if (bounds.isEmpty()) return;
