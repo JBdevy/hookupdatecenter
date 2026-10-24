@@ -15,6 +15,7 @@
 #include "RemoteTransport.h"
 #include "RemoteHost.h"
 #include "RemotePresentation.h"
+#include "RemoteProjectCatalog.h"
 #include "LicenseProof.h"
 #include "TimelineGrid.h"
 #include "TimelineBulkEditing.h"
@@ -327,6 +328,25 @@ int runTests(const File &directory) {
     midiTakePlaybackTests::registerTests(test);
     regionLaneTests::registerTests(directory,test);
     setlistSearchTests::registerTests(directory,test);
+    test("Remote recent projects retain opaque IDs and support opening in a new tab", [&] {
+        remote::ProjectCatalog catalog;
+        const auto first = directory.getChildFile("one/Concert.jl"), second = directory.getChildFile("two/Concert.jl");
+        auto rows = list(catalog.update(StringArray{first.getFullPathName(), first.getFullPathName(), second.getFullPathName()}, first));
+        expect(rows.size() == 2 && (bool)rows[0]["current"] && !(bool)rows[1]["current"], "Recent project identity or deduplication failed");
+        const auto firstID = remote::modelID(rows[0]["id"]), secondID = remote::modelID(rows[1]["id"]);
+        expect(firstID != secondID && catalog.file(firstID) == first && catalog.file(secondID) == second, "Same-named project paths were conflated");
+        auto reordered = list(catalog.update(StringArray{second.getFullPathName(), first.getFullPathName()}, second));
+        expect(remote::modelID(reordered[0]["id"]) == secondID, "Reordering changed remote project identity");
+        expect(!JSON::toString(var(reordered)).contains(directory.getFullPathName()), "Remote leaked host file paths");
+        auto request = object(); put(request, "id", remote::wireID(uuid())); put(request, "project", remote::wireID(uuid()));
+        put(request, "action", "openRecentProjectInNewTab"); put(request, "target", remote::wireID(firstID)); put(request, "value", 0);
+        expect(remote::Command::decode(request).target == firstID, "New-tab command lost its target");
+        put(request, "value", 1); bool rejected = false;
+        try { (void)remote::Command::decode(request); } catch (...) { rejected = true; }
+        expect(rejected, "New-tab command accepted arbitrary payload");
+        catalog.update(StringArray{first.getFullPathName()}, first);
+        expect(!catalog.file(secondID) && !catalog.file(uuid()), "Removed or unissued projects could be opened remotely");
+    });
     remoteSetlistSelectionTests::registerTests(directory,test);
     addTrackVisibilityTests(directory,test);
     addWorkspaceSetlistPresentationTests(directory,test);

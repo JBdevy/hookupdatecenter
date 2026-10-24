@@ -191,7 +191,9 @@ class Host final : private Timer {
                 if (!at->second.isObject())
                     continue;
                 auto value = at->second.clone();
-                if (client.mode != "director") put(value, "projectTabs", var());
+                if (client.mode != "director") {
+                    put(value, "projectTabs", var()); put(value, "projects", var());
+                }
                 const auto current = ++sequence;
                 put(value, "sequence", (int64)current);
                 if (transport.send(entry.first, packet(2, value))) {

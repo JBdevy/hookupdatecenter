@@ -3796,6 +3796,18 @@ void Workspace::activateProjectTab() {
         if (!projectReady || loginPanel) return var();
         auto state = remotePresentation->snapshot(panel);
         if (remoteProjectTabs) put(state, "projectTabs", remoteProjectTabs());
+        const auto now = Time::getMillisecondCounterHiRes();
+        if (remoteRecentReadAt == 0 || now - remoteRecentReadAt >= 1000) {
+            remoteRecentPaths = RecentProjects::read(); remoteRecentReadAt = now;
+        }
+        auto projects = object();
+        put(projects, "recent", remoteProjectCatalog.update(remoteRecentPaths, session.document));
+        put(projects, "busy", session.busy);
+        put(projects, "canOpen", !session.busy && !session.audio.isRecording());
+        put(projects, "canOpenInNewTab", bool(openInNewProjectTab));
+        put(projects, "status", session.busy ? "Opening project…" : session.audio.isRecording() ? "Stop recording on the PC to open a project." : "");
+        put(projects, "error", remoteProjectError);
+        put(state, "projects", projects);
         return state;
     };
     remoteHost->perform = [safe = SafePointer<Workspace>(this)](const remote::Command &command) {
@@ -3809,6 +3821,29 @@ void Workspace::activateProjectTab() {
             MessageManager::callAsync([safe, project, target] {
                 if (safe && safe->session.project().id == project && safe->selectRemoteProjectTab)
                     safe->selectRemoteProjectTab(remote::wireID(target));
+            });
+            return true;
+        }
+        if (command.action == "openRecentProject" || command.action == "openRecentProjectInNewTab") {
+            if (remote::wireID(command.project) != remote::wireID(safe->session.project().id) ||
+                safe->session.busy || safe->session.audio.isRecording()) return false;
+            safe->remoteProjectError.clear();
+            // Revalidate the catalog before resolving a potentially stale command.
+            safe->remoteRecentPaths = RecentProjects::read();
+            safe->remoteProjectCatalog.update(safe->remoteRecentPaths, safe->session.document);
+            const auto file = safe->remoteProjectCatalog.file(command.target);
+            if (!file || !file->existsAsFile()) {
+                safe->remoteProjectError = "This project is no longer available in the PC's recent projects.";
+                return false;
+            }
+            const bool inNewTab = command.action == "openRecentProjectInNewTab";
+            if (inNewTab && !safe->openInNewProjectTab) return false;
+            if (*file == safe->session.document) return true;
+            const auto project = safe->session.project().id;
+            MessageManager::callAsync([safe, project, file = *file, inNewTab] {
+                if (!safe || safe->session.project().id != project || safe->session.busy || safe->session.audio.isRecording()) return;
+                if (inNewTab) safe->openInNewProjectTab(file);
+                else safe->openProject(file);
             });
             return true;
         }

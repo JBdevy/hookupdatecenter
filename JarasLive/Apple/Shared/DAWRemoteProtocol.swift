@@ -126,7 +126,7 @@ enum DAWRemoteNoticeDelivery: Equatable {
 struct DAWRemoteCommand: Codable {
     enum Action: String, Codable {
         case play, pause, stop, subPlay, subStop, toggleLoop, seek, queueSection, cancelSection, toggleMultiLoopBypass, toggleSetlistLive
-        case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, selectProjectTab
+        case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, openRecentProjectInNewTab, selectProjectTab
         case remotePanel, noticeSend, noticeClear, noticePin, noticeDestination, noticeSaveTemplate
         case requestImage
         case timerStart, timerStop
@@ -167,7 +167,7 @@ struct DAWRemoteCommand: Codable {
         case .noticeClear: return target == nil && value == 0
         case .noticePin: return target == nil && (value == 0 || value == 1)
         case .noticeDestination: return target == nil && (value == 1 || value == 2) && enabled != nil
-        case .openRecentProject, .selectProjectTab: return target != nil && value == 0
+        case .openRecentProject, .openRecentProjectInNewTab, .selectProjectTab: return target != nil && value == 0
         case .clipGain: return target != nil && (0...pow(10, 24.0 / 20)).contains(value)
         case .clipMute, .queueSection: return target != nil && value == 0
         case .volume: return (0...4).contains(value)
@@ -277,6 +277,7 @@ struct DAWRemoteState: Codable, Equatable {
         var recent: [RecentProject]
         var busy: Bool
         var canOpen: Bool
+        var canOpenInNewTab: Bool? = nil
         var status: String
         var error: String
         var valid: Bool {

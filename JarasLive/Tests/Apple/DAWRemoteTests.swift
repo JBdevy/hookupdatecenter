@@ -254,6 +254,17 @@ if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(o
 } else { fatalError("open recent project packet") }
 require(!DAWRemoteCommand(project: project, action: .openRecentProject).valid, "open project requires explicit opaque target")
 require(!DAWRemoteCommand(project: project, action: .openRecentProject, target: UUID(), value: 1).valid, "open project rejects arbitrary payload values")
+let openInNewTab = DAWRemoteCommand(project: project, song: song, action: .openRecentProjectInNewTab, target: reordered[0].id)
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(openInNewTab)) {
+    require(decoded.action == .openRecentProjectInNewTab && decoded.target == reordered[0].id, "new-tab command preserves its opaque project target")
+} else { fatalError("open recent project in new tab packet") }
+require(!DAWRemoteCommand(project: project, action: .openRecentProjectInNewTab).valid, "new tab requires an issued project target")
+require(!DAWRemoteCommand(project: project, action: .openRecentProjectInNewTab, target: UUID(), value: 1).valid, "new tab rejects arbitrary payloads")
+require(projectsFixture.projects?.canOpenInNewTab == nil, "legacy hosts do not advertise new-tab support")
+projectsFixture.projects?.canOpenInNewTab = true
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(projectsFixture)) {
+    require(decoded.projects?.canOpenInNewTab == true, "new-tab capability roundtrips independently of replace-project support")
+} else { fatalError("new-tab capability packet") }
 _ = catalog.update([firstProject], current: firstProject)
 require(catalog.url(for: firstCatalog[1].id) == nil, "removed recent project identifiers are revoked")
 projectsFixture.projects?.recent.append(reordered[0])

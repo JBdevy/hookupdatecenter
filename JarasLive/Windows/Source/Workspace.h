@@ -23,6 +23,7 @@
 #include "MacPopupMenuLook.h"
 #include "ExternalMediaDrop.h"
 #include "TapTempo.h"
+#include "RemoteProjectCatalog.h"
 #include "TrackVisibility.h"
 namespace catlive {
 namespace native { class TransportButtons; }
@@ -173,6 +174,10 @@ class Workspace final : public Component,
     StageState stage;
     std::unique_ptr<remote::Presentation> remotePresentation;
     std::shared_ptr<remote::Host> remoteHost;
+    remote::ProjectCatalog remoteProjectCatalog;
+    StringArray remoteRecentPaths;
+    double remoteRecentReadAt = 0;
+    String remoteProjectError;
     std::array<std::unique_ptr<TeleprompterHTTP>,2> teleprompterHTTP;
     void openTPRemote(int);
     std::unique_ptr<StageTimerControl> stageTimer;

@@ -469,9 +469,9 @@ enum PortableProjectImportPrompt: String, Identifiable {
             "Could not open the project. Check the Mac for details."
         return .init(recent: recent, busy: busy,
                      canOpen: !busy && !recording && missingAudioPrompt == nil,
-                     status: status, error: error)
+                     canOpenInNewTab: openInNewProjectTab != nil, status: status, error: error)
     }
-    func openRemoteProject(_ id: UUID) {
+    func openRemoteProject(_ id: UUID, inNewTab: Bool = false) {
         remoteProjectError = ""
         guard remoteProjectBrowser.canOpen else { return }
         guard let url = remoteProjectCatalog.url(for: id) else {
@@ -479,6 +479,10 @@ enum PortableProjectImportPrompt: String, Identifiable {
             return
         }
         guard url != currentURL?.standardizedFileURL else { return }
+        if inNewTab {
+            openInNewProjectTab?(url)
+            return
+        }
         // The normal document transition flushes unsaved changes before replacing
         // the project, and keeps the current project if saving or loading fails.
         open(url)

@@ -557,9 +557,11 @@ struct DAWRemoteClientView: View {
                 if let target = command.target { Self.selectProjectTabHandler?(target) }
                 return
             }
-            if command.action == .openRecentProject {
+            if command.action == .openRecentProject || command.action == .openRecentProjectInNewTab {
                 #if os(macOS)
-                if let target = command.target { documents?.openRemoteProject(target) }
+                if let target = command.target {
+                    documents?.openRemoteProject(target, inNewTab: command.action == .openRecentProjectInNewTab)
+                }
                 #endif
                 return
             }
@@ -1604,7 +1606,9 @@ private struct RemoteSidebarRail<Content: View>: View {
             .sheet(isPresented: $settingsOpen) { NativeRemoteSettingsView().presentationDetents([.large]).preferredColorScheme(.dark) }
             .sheet(isPresented: $projectsOpen) {
                 NativeRemoteProjectsView(state: state, computerName: computerName,
-                    open: { action(.openRecentProject, target: $0) }, close: { projectsOpen = false })
+                    open: { action(.openRecentProject, target: $0) },
+                    openInNewTab: { action(.openRecentProjectInNewTab, target: $0) },
+                    close: { projectsOpen = false })
             }
             .alert("Do you want to save this project?", isPresented: $confirmSave) {
                 Button("Cancel", role: .cancel) {}
@@ -2027,7 +2031,9 @@ private struct RemoteSidebarRail<Content: View>: View {
             }
             .sheet(isPresented: $projectsOpen) {
                 NativeRemoteProjectsView(state: state, computerName: computerName,
-                    open: { action(.openRecentProject, target: $0) }, close: { projectsOpen = false })
+                    open: { action(.openRecentProject, target: $0) },
+                    openInNewTab: { action(.openRecentProjectInNewTab, target: $0) },
+                    close: { projectsOpen = false })
             }
             #if os(iOS)
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
@@ -4946,6 +4952,7 @@ private final class IpadMixerMeterView: UIView {
     let state: DAWRemoteState
     let computerName: String
     let open: (UUID) -> Void
+    let openInNewTab: (UUID) -> Void
     let close: () -> Void
     @State private var requested: UUID?
     private var browser: DAWRemoteState.ProjectBrowser? { state.projects }
@@ -4987,7 +4994,15 @@ private final class IpadMixerMeterView: UIView {
                                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                                         .background(RemoteSurface.panel).clipShape(RoundedRectangle(cornerRadius: 8))
                                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(project.current ? JarasTheme.green.opacity(0.45) : JarasTheme.line))
-                                }.buttonStyle(RemoteFullAreaButtonStyle()).disabled(project.current || !browser.canOpen)
+                                }.buttonStyle(RemoteFullAreaButtonStyle())
+                                    .contextMenu {
+                                        if browser.canOpenInNewTab == true {
+                                            Button { requested = project.id; openInNewTab(project.id) } label: {
+                                                Label("Open in new tab", systemImage: "plus.square.on.square")
+                                            }
+                                        }
+                                    }
+                                    .disabled(project.current || !browser.canOpen)
                             }
                         }
                     }
@@ -5009,6 +5024,10 @@ private final class IpadMixerMeterView: UIView {
             .background(RemoteSurface.background).foregroundStyle(JarasTheme.text)
             .onChange(of: browser?.recent.first(where: { $0.current })?.id) { current in
                 if let requested, current == requested { close() }
+            }
+            .onChange(of: state.projectTabs?.first(where: { $0.selected })?.id) { _ in
+                // Each tab owns its recent-project catalog, so opaque IDs can change.
+                if requested != nil { close() }
             }
     }
 }
