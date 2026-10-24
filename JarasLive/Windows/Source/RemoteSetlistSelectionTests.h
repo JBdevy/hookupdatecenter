@@ -52,6 +52,33 @@ inline void click(SetlistRows &rows,int row) {
         Time::getCurrentTime(),1,false));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Remote tempo indicator follows effective rates, region selection and completed renders", [&] {
+        auto project=fixture();auto &song=project.songs[0];song.bpm=120;
+        jaras::AudioClip clip;clip.id=uuid();clip.duration=4;clip.audioFile=jaras::AudioFile{"source.wav",{}};
+        clip.playbackRate=1.25;clip.regionOwnerID=song.parts[0].id;
+        song.tracks[0].clips={clip,clip};song.tracks[0].clips[1].id=uuid();
+        jaras::TimelineMarker marker;marker.id=uuid();marker.position=10;marker.name="Tempo";marker.tempoBPM=140;
+        song.markers=std::vector<jaras::TimelineMarker>{marker};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Appearance preferences(directory.getNonexistentChildFile("remote-tempo",".json"));
+        StageState stage(preferences);remote::Presentation presentation(session,stage);
+        auto select=[&](int index){require(presentation.apply(remote::Command::decode(request(session,song.parts[index].id))),"Tempo fixture region selection failed");};
+        select(0);require(flag(presentation.snapshot(0),"tempoNeedsRender"),"Changed source rate must highlight Remote BPM");
+        select(1);const auto other=presentation.snapshot(0);
+        require(!flag(other,"tempoNeedsRender") && num(other,"bpm")==140,
+                "Remote must show the selected region's tempo and must not inherit another region's altered rate");
+        select(0);song.tracks[0].clips[0].playbackRate=1;
+        session.restoreSnapshot(ProjectCodec::encode(project));
+        require(flag(presentation.snapshot(0),"tempoNeedsRender"),"Partial render must retain yellow BPM");
+        song.tracks[0].clips[1].playbackRate=1;song.tracks[0].clips[1].tempoBasePlaybackRate=.8;
+        session.restoreSnapshot(ProjectCodec::encode(project));
+        require(!flag(presentation.snapshot(0),"tempoNeedsRender"),"Unity-rate items must clear yellow BPM despite historical reference rates");
+        song.tracks[0].clips[1].playbackRate=1.1;
+        session.restoreSnapshot(ProjectCodec::encode(project));
+        require(flag(presentation.snapshot(0),"tempoNeedsRender"),"A later rate change must invalidate the cached indicator");
+    });
+
     test("Setlist drag preview contains only draggable selected rows at display resolution",[&] {
         struct Model final : ListBoxModel {
             int getNumRows() override {return 9;}

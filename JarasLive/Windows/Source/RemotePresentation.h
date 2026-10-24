@@ -5,6 +5,7 @@
 #include "StageContent.h"
 #include "PlaylistOccurrences.h"
 #include "RegionEditing.h"
+#include "TempoEditing.h"
 namespace catlive::remote {
 class Presentation final {
   public:
@@ -129,7 +130,16 @@ class Presentation final {
         put(result, "editPosition", t.editPosition);
         put(result, "subPlayPosition", t.subPlay.position);
         put(result, "duration", song ? song->duration : 0);
-        put(result, "bpm", song ? song->bpm : 120);
+        put(result, "bpm", session.tempoBPM());
+        const auto *tempoRegion = song ? tempoEditing::region(*song, session.transport()) : nullptr;
+        const ID songID = song ? song->id : ID{}, regionID = tempoRegion ? tempoRegion->id : ID{};
+        if (tempoRevision != session.revision || tempoSong != songID || tempoRegionID != regionID) {
+            tempoRevision = session.revision;
+            tempoSong = songID;
+            tempoRegionID = regionID;
+            tempoNeedsRender = song && tempoEditing::needsRender(*song, tempoRegion);
+        }
+        put(result, "tempoNeedsRender", tempoNeedsRender);
         put(result, "playing", t.playing);
         put(result, "paused", t.paused);
         put(result, "subPlaying", t.subPlay.playing);
@@ -445,6 +455,9 @@ class Presentation final {
   private:
     Session &session;
     StageState &stage;
+    uint64_t tempoRevision = ~uint64_t{0};
+    ID tempoSong, tempoRegionID;
+    bool tempoNeedsRender = false;
     ID timerRevision = uuid(), timerCommand, noticeImageID = uuid();
     int timerTarget = -1;
     bool timerRunning = false;

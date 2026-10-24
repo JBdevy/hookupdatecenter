@@ -313,6 +313,7 @@ struct DAWRemoteState: Codable, Equatable {
     var pendingSave: Bool
     var saving: Bool
     var message: String
+    var tempoNeedsRender: Bool? = nil
     var loopStart: Double? = nil
     var loopEnd: Double? = nil
     var multiLoopsBypassed: Bool? = nil

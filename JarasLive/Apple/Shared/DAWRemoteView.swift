@@ -484,6 +484,7 @@ struct DAWRemoteClientView: View {
                 masterVolume: snapshot.project.masterVolume ?? 1, masterMute: snapshot.project.masterMute ?? false,
                 masterSolo: snapshot.project.masterSolo ?? false, masterMono: snapshot.project.masterMono ?? false,
                 pendingSave: show.hasUnsavedChanges, saving: show.saving, message: show.message,
+                tempoNeedsRender: show.tempoControlNeedsRender,
                 loopStart: transport.loop.start ?? song?.parts.first(where: { $0.id == transport.regionId })?.startTime,
                 loopEnd: transport.loop.end ?? song?.parts.first(where: { $0.id == transport.regionId })?.endTime,
                 multiLoopsBypassed: transport.multiLoopsBypassed == true,
@@ -2323,6 +2324,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 Text(verbatim: pitch ? "Tuner" : "BPM").font(.jarasSystem(size: 8))
                 Text(verbatim: pitch ? String(format: "%+dst", state.pitchSemitones ?? 0) : String(format: "%.0f", state.bpm))
                     .monospacedDigit().font(.jarasSystem(size: 12, weight: .semibold))
+                    .foregroundStyle(pitch ? JarasTheme.green : state.tempoNeedsRender == true ? JarasTheme.yellow : JarasTheme.text)
             }.lineLimit(1).minimumScaleFactor(0.6).frame(maxWidth: .infinity)
             Button { if pitch { stepPitch(1) } else { stepTempo(1) } } label: {
                 Image(systemName: "plus").frame(width: buttonWidth, height: 32).contentShape(Rectangle())
@@ -2361,7 +2363,9 @@ private struct RemoteSidebarRail<Content: View>: View {
             Button { stepTempo(-1) } label: {
                 Image(systemName: "minus").frame(width: 28, height: 32)
             }.accessibilityLabel("Diminuir BPM")
-            Text(String(format: "%.0f BPM", state.bpm)).monospacedDigit().frame(minWidth: local ? 48 : 70, maxWidth: .infinity)
+            Text(String(format: "%.0f BPM", state.bpm)).monospacedDigit()
+                .foregroundStyle(state.tempoNeedsRender == true ? JarasTheme.yellow : JarasTheme.text)
+                .frame(minWidth: local ? 48 : 70, maxWidth: .infinity)
             Button { stepTempo(1) } label: {
                 Image(systemName: "plus").frame(width: 28, height: 32)
             }.accessibilityLabel("Aumentar BPM")

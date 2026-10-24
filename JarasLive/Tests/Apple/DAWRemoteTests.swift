@@ -32,7 +32,16 @@ let legacyTrackJSON = try JSONSerialization.jsonObject(with: Data(legacyTrackPac
 require((legacyTrackJSON["tracks"] as! [[String: Any]])[0]["linkedTrack"] == nil, "unlinked state omits optional link metadata for older peers")
 if case .state(let decoded) = try DAWRemoteWire.decode(legacyTrackPacket) {
     require(decoded.tracks[0].linkedTrack == nil, "legacy state without link metadata remains compatible")
+    require(decoded.tempoNeedsRender == nil, "older hosts without the tempo indicator remain compatible")
 } else { fatalError("legacy track state packet") }
+for pending in [true, false] {
+    var tempoFixture = fixture
+    tempoFixture.tempoNeedsRender = pending
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(tempoFixture)) {
+        require(decoded.tempoNeedsRender == pending, "Remote preserves the host tempo-render indicator, including clearing it after render")
+    } else { fatalError("tempo indicator state packet") }
+}
+print("REMOTE_TEMPO_RENDER_INDICATOR_AND_LEGACY_COMPATIBILITY_OK")
 var linkedFixture = fixture
 let partnerTrackID = UUID()
 linkedFixture.tracks[0].linkedTrack = partnerTrackID
