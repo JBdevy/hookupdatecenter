@@ -1143,15 +1143,10 @@ itemFXProject.songs[0].tracks = [itemFXTrack]; itemFXProject.masterVolume = 0.5
 var itemFXState = ShowSnapshot(project: itemFXProject, transport: TransportState(playing: true, songId: itemFXProject.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: true, position: 0)))
 let itemFXBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
 @MainActor func itemFXPeak() throws -> Float {
-    var maximum: Float = 0
-    for block in 0..<24 {
-        let status = try itemFXEngine.renderOffline(512, to: itemFXBuffer)
-        precondition(status == .success)
-        if block > 15 {
-            for sample in 0..<Int(itemFXBuffer.frameLength) { maximum = max(maximum, abs(itemFXBuffer.floatChannelData![0][sample])) }
-        }
-    }
-    return maximum
+    // These assertions measure steady gain, not time-stretcher startup. Use
+    // the same latency-aware priming as the other independent-chain tests.
+    // A fixed 16-block warmup can still contain only preroll on the CI graph.
+    return try settledPCMPeak(itemFXEngine, itemFXBuffer)
 }
 try itemFXAudio.update(itemFXState, revision: 1)
 let itemFXInitial = try itemFXPeak()
