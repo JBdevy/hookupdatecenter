@@ -901,6 +901,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     var openSelectedFX: (([UUID]) -> Void)? = nil
     var openTrackDetails: ((Set<UUID>) -> Void)? = nil
     var openTrackIcon: ((Set<UUID>) -> Void)? = nil
+    var openClickSound: ((UUID) -> Void)? = nil
     var openMasterDetails: (() -> Void)? = nil
     var openItemMenu: ((UUID) -> Void)? = nil
     var openSelectedItemMenu: ((UUID, Set<UUID>) -> Void)? = nil
@@ -1436,13 +1437,17 @@ private struct RemoteSidebarRail<Content: View>: View {
             show.deleteItems(trackScrolling.itemSelection.items.intersection(visibleTracks.flatMap(\.clips).map(\.id)))
             trackScrolling.itemSelection.retain(Set(show.current?.tracks.flatMap(\.clips).map(\.id) ?? []))
         case .tracks:
-            let ids = selectedTracks.intersection(song.tracks.map(\.id))
-            guard !ids.isEmpty else { return }
-            if show.snapshot.project.tracksContainItems(ids) { deletingTracks = (state.project, song.id, ids) }
-            else { deleteNativeTracks(ids) }
+            requestNativeTrackDeletion(selectedTracks)
         case .setlist:
             if let id = show.focusedRegion { requestRemoval(.deleteRegion, id: id, playlist: state.selectedPlaylist) }
         }
+    }
+    private func requestNativeTrackDeletion(_ selection: Set<UUID>) {
+        guard let show = localShow, let song = show.current else { return }
+        let ids = selection.intersection(song.tracks.map(\.id))
+        guard !ids.isEmpty else { return }
+        if show.snapshot.project.tracksContainItems(ids) { deletingTracks = (state.project, song.id, ids) }
+        else { deleteNativeTracks(ids) }
     }
     private func deleteNativeTracks(_ ids: Set<UUID>) {
         guard let show = localShow else { return }
@@ -2420,7 +2425,6 @@ private struct RemoteSidebarRail<Content: View>: View {
         let hierarchy = DAWRemoteTrackHierarchy(state.tracks)
         let ancestors = Dictionary(uniqueKeysWithValues: visibleTracks.map { ($0.id, hierarchy.ancestors(of: $0.id)) })
         let folders = hierarchy.folders
-        let patchableTracks = Set(localShow?.current?.tracks.filter { $0.kind == .standard }.map(\.id) ?? [])
         let phaseInvertedTracks = Set(localShow?.current?.tracks.filter { $0.phaseInverted == true }.map(\.id) ?? [])
         return VStack(spacing: local ? 0 : 1) {
             // Match the grid's region, marker, tempo and time lanes so both lists
@@ -2444,7 +2448,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                             let guides = (ancestors[track.id] ?? []).map { nextAncestors.contains($0) }
                             RemoteNativeMixerRow(track: track, project: state.project, song: state.song, number: number + 1,
                                 compact: DAWRemoteItemLayout.rowHeight(track, scale: trackScrolling.heightScale) < 70,
-                                local: local, localShow: localShow, showsInstrumentIcons: trackIconWidth > 0, nativePhaseInverted: phaseInvertedTracks.contains(track.id),
+                                local: local, localShow: localShow, nativeContextMenu: local, showsInstrumentIcons: trackIconWidth > 0, nativePhaseInverted: phaseInvertedTracks.contains(track.id),
                                 editing: local && editingTracks, selected: selectedTracks.contains(track.id),
                                 selection: selectedTracks, groupGuides: guides, isGroup: folders.contains(track.id),
                                 select: { toggleTrackSelection(track.id) }, selectionMenu: {
@@ -2461,11 +2465,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                             }.equatable().frame(height: DAWRemoteItemLayout.rowHeight(track, scale: trackScrolling.heightScale))
                                 .modifier(IpadTrackReorderModifier(show: localShow, track: track.id,
                                     enabled: local && editingTracks, controller: trackReordering))
-                                .modifier(IpadTrackAudioContextMenu(enabled: local && !editingTracks,
-                                    openPatch: patchableTracks.contains(track.id) ? openPatch.map { callback in { callback(track.id) } } : nil,
-                                    addAudio: groupableTracks.contains(track.id) ? addTrackAudio.map { callback in { callback(track.id) } } : nil,
-                                    edit: openTrackDetails.map { callback in { callback(Set(selectionTargets(track.id))) } },
-                                    icon: openTrackIcon.map { callback in { callback(Set(selectionTargets(track.id))) } }))
+                                .modifier(nativeTrackMenu(track.id))
                         }
                     }
                     #if os(iOS)
@@ -2474,6 +2474,46 @@ private struct RemoteSidebarRail<Content: View>: View {
                 }.background(RemoteSurface.background)
             }
         }
+    }
+    private func nativeTrackMenu(_ id: UUID) -> IpadTrackAudioContextMenu {
+        let project = state.project, songID = state.song
+        let song = localShow?.current
+        let track = song?.tracks.first { $0.id == id }
+        let ids = Set(selectionTargets(id))
+        let standard = track?.kind == .standard
+        let patchable = track.map { [.standard, .timecode, .video, .click].contains($0.kind) } ?? false
+        let canGroup = standard && ids.count > 1 && ids.isSubset(of: groupableTracks)
+        let folder = song?.tracks.contains { $0.parentTrackID == id } == true
+        func guarded(_ action: (() -> Void)?) -> (() -> Void)? {
+            guard let action else { return nil }
+            return {
+                guard localShow?.snapshot.project.id == project, localShow?.current?.id == songID else { return }
+                trackScrolling.selectionScope = .tracks
+                selectedTracks = ids; localShow?.setMixerTrackSelection(ids, anchor: id)
+                action()
+            }
+        }
+        return IpadTrackAudioContextMenu(enabled: local,
+            openPatch: guarded(patchable ? {
+                if standard { openSelectedPatch?(selectionTargets(id)) } else { openPatch?(id) }
+            } : nil),
+            addAudio: guarded(standard && ids.count == 1 ? addTrackAudio.map { callback in { callback(id) } } : nil),
+            fx: guarded(standard ? { openSelectedFX?(selectionTargets(id)) } : nil),
+            soundDesigner: guarded(track?.kind == .click ? openClickSound.map { callback in { callback(id) } } : nil),
+            group: guarded(canGroup ? { groupTracks?(ids) } : nil),
+            ungroup: guarded(folder ? { localShow?.ungroupTrack(id) } : nil),
+            removeFromGroup: guarded(track?.parentTrackID != nil ? { localShow?.removeTrackFromGroup(id) } : nil),
+            link: guarded(song?.linkableTracks(ids) != nil ? {
+                guard let show = localShow, let song = show.current, let indices = song.linkableTracks(ids) else { return }
+                let top = song.tracks[indices[0]]
+                show.linkTracks(ids, defaultInput: TrackRecording.shared.defaultInputPatch.firstChannel,
+                    color: top.color ?? JarasTheme.roleHex(top.role))
+            } : nil),
+            unlink: guarded(track?.stereoLink != nil ? { localShow?.unlinkTracks(id) } : nil),
+            edit: guarded(openTrackDetails.map { callback in { callback(ids) } }),
+            icon: guarded(openTrackIcon.map { callback in { callback(ids) } }),
+            duplicate: guarded(standard && track?.role.rawValue != "vinhetas" ? { localShow?.duplicateTracks(ids) } : nil),
+            remove: guarded({ requestNativeTrackDeletion(ids) }), count: ids.count)
     }
     private func toggleTrackSelection(_ id: UUID) {
         trackScrolling.selectionScope = .tracks
@@ -4665,18 +4705,39 @@ private struct IpadTrackAudioContextMenu: ViewModifier {
     let enabled: Bool
     let openPatch: (() -> Void)?
     let addAudio: (() -> Void)?
+    var fx: (() -> Void)? = nil
+    var soundDesigner: (() -> Void)? = nil
+    var group: (() -> Void)? = nil
+    var ungroup: (() -> Void)? = nil
+    var removeFromGroup: (() -> Void)? = nil
+    var link: (() -> Void)? = nil
+    var unlink: (() -> Void)? = nil
     var edit: (() -> Void)? = nil
     var icon: (() -> Void)? = nil
+    var duplicate: (() -> Void)? = nil
+    var remove: (() -> Void)? = nil
+    var count = 1
     @ViewBuilder func body(content: Content) -> some View {
-        if enabled, edit != nil || icon != nil || openPatch != nil || addAudio != nil {
+        if enabled {
             content.contextMenu {
+                if let openPatch { Button("Patch", action: openPatch) }
+                if let soundDesigner { Button("Sound Designer", action: soundDesigner) }
+                if let fx { Button("FX", action: fx) }
+                if let addAudio { Button("Add Stems", action: addAudio) }
+                if let group { Button("Create group", action: group) }
+                if let ungroup { Button("Ungroup", action: ungroup) }
+                if let removeFromGroup { Button("Remove from group", action: removeFromGroup) }
+                if let link { Button("Link tracks", action: link) }
+                if let unlink { Button("Unlink tracks", action: unlink) }
                 if let edit { Button("Editar pista", action: edit) }
                 if let icon { Button("Ícone da pista", action: icon) }
-                if let openPatch { Button("Patch", action: openPatch) }
-                if let addAudio { Button("Add Stems", action: addAudio) }
+                if let duplicate { Button(LocalizedStringKey(count > 1 ? "Duplicate tracks" : "Duplicate track"), action: duplicate) }
+                if let remove {
+                    Divider()
+                    Button(LocalizedStringKey(count > 1 ? "Delete tracks" : "Delete track"), role: .destructive, action: remove)
+                }
             }
-        }
-        else { content }
+        } else { content }
     }
 }
 
@@ -4711,6 +4772,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
     var compact = false
     var local = false
     var localShow: ShowController? = nil
+    var nativeContextMenu = false
     var showsInstrumentIcons = false
     var nativePhaseInverted = false
     var editing = false
@@ -4727,7 +4789,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
     let send: (DAWRemoteCommand.Action, Double) -> Void
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.project == rhs.project && lhs.song == rhs.song && lhs.number == rhs.number &&
-            lhs.compact == rhs.compact && lhs.local == rhs.local && lhs.nativePhaseInverted == rhs.nativePhaseInverted &&
+            lhs.compact == rhs.compact && lhs.local == rhs.local && lhs.nativeContextMenu == rhs.nativeContextMenu && lhs.nativePhaseInverted == rhs.nativePhaseInverted &&
             lhs.editing == rhs.editing && lhs.selected == rhs.selected && lhs.showsInstrumentIcons == rhs.showsInstrumentIcons &&
             lhs.selection == rhs.selection && lhs.groupGuides == rhs.groupGuides && lhs.isGroup == rhs.isGroup && lhs.track.hasSameMixerControls(as: rhs.track)
     }
@@ -4844,7 +4906,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
                 if local {
                     GeometryReader { proxy in
                         IpadTrackSelectionSurface(excluded: anchors.map { proxy[$0] }, name: track.name,
-                            selected: selected, holdEnabled: editing, tap: { select?() }, hold: { selectionMenu?() })
+                            selected: selected, holdEnabled: editing && !nativeContextMenu, tap: { select?() }, hold: { selectionMenu?() })
                     }
                 }
             }

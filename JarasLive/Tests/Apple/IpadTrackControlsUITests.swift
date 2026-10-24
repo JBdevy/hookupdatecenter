@@ -4,7 +4,7 @@ final class TrackTouchTests:XCTestCase {
   let app=XCUIApplication();app.launch()
   let toggle=app.buttons["Toggle icons"]
   XCTAssertTrue(toggle.waitForExistence(timeout:10))
-  let row=app.otherElements["normal-row"].firstMatch
+  let row=app.otherElements["normal-row-frame"].firstMatch
   let labels=["Patch","FX","REC","M","S"]
   let originalWidth=row.frame.width
   let positions=labels.map {app.buttons[$0].firstMatch.frame.minX-row.frame.minX}
@@ -51,8 +51,11 @@ final class TrackTouchTests:XCTestCase {
  }
  func testLongPressOffersPatchAndAddStems() {
   let app=XCUIApplication();app.launch();let name=app.staticTexts["01  Normal track"]
-  XCTAssertTrue(name.waitForExistence(timeout:10));name.press(forDuration:0.8)
-  XCTAssertTrue(app.buttons["Add Stems"].waitForExistence(timeout:3))
+  XCTAssertTrue(name.waitForExistence(timeout:10));name.press(forDuration:1.2)
+  XCTAssertTrue(app.buttons["Add Stems"].waitForExistence(timeout:5), app.debugDescription)
+  XCTAssertTrue(app.buttons["Duplicate track"].exists)
+  XCTAssertTrue(app.buttons["Delete track"].exists)
+  XCTAssertFalse(app.buttons["Criar item MIDI"].exists)
   app.buttons.matching(identifier:"Patch").allElementsBoundByIndex.last!.tap()
   XCTAssertEqual(app.staticTexts["event"].label,"context-patch")
  }
@@ -90,7 +93,9 @@ final class TrackTouchTests:XCTestCase {
    app.buttons[label].firstMatch.tap();XCTAssertEqual(event.label,result,"Editing must leave \(label) interactive")
   }
   app.buttons["M"].firstMatch.tap();XCTAssertEqual(event.label,"mute")
-  row.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).press(forDuration:0.7)
-  XCTAssertEqual(event.label,"menu")
+  row.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).press(forDuration:1.2)
+  let group=app.buttons["Create group"]
+  XCTAssertTrue(group.waitForExistence(timeout:5));group.tap()
+  XCTAssertEqual(event.label,"group")
  }
 }

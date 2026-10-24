@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import Combine
 
 /// The iPad workspace uses the same ShowController/audio engine as the desktop.
@@ -164,6 +165,7 @@ import Combine
     @State private var itemMenuAction: String?
     @State private var itemMenuTargets: Set<UUID> = []
     @State private var editingTextItem: UUID?
+    @State private var clickSoundTrack: UUID?
     @State private var trackEdit: TrackDetailsEditRequest?
     @State private var fx: FXTarget?
     @State private var patch: PatchTarget?
@@ -175,7 +177,7 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || exportingProject || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || trackEdit != nil || fx != nil
+        clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || exportingProject || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || trackEdit != nil || fx != nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -196,6 +198,7 @@ import Combine
                     openSelectedFX: { fx = .init(track: $0.first, targets: $0.map { Optional($0) }) },
                     openTrackDetails: { presentTrackDetails($0) },
                     openTrackIcon: { presentTrackDetails($0, iconOnly: true) },
+                    openClickSound: { clickSoundTrack = $0 },
                     openMasterDetails: {
                         trackEdit = .init(project: show.snapshot.project.id, tracks: [], name: "Master",
                             color: show.snapshot.project.masterColor ?? 0x414141, nameEditable: false)
@@ -286,6 +289,11 @@ import Combine
                 ScrollView {
                     TeleprompterRemoteView(close: { remoteTeleprompter = nil }, remote: TeleprompterRemote.panel(index))
                 }
+            }
+        } else if let track = clickSoundTrack {
+            IpadCompactModal(preferredSize: CGSize(width: 420, height: 300)) {
+                IpadClickSoundDesigner(show: show, track: track, directory: documents.currentURL?.deletingLastPathComponent(),
+                    close: { clickSoundTrack = nil })
             }
         } else if let edit = trackEdit {
             if edit.iconOnly {
@@ -1392,6 +1400,72 @@ struct IpadLeadOptions: View {
                 guard !detection.markers.isEmpty else { error = JarasLocalization.string("No stable click tempo was found."); return }
                 if show.applyDetectedTempo(detection.markers, project: project, song: song.id, region: region) { close() }
                 else { error = JarasLocalization.string(show.message) }
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+}
+#endif
+
+#if os(iOS)
+private struct IpadClickSoundDesigner: View {
+    @ObservedObject var show: ShowController
+    let track: UUID
+    let directory: URL?
+    let close: () -> Void
+    @State private var choosingFile = false
+    @State private var busy = false
+    @State private var error = ""
+    private var sound: AudioFile? { show.current?.tracks.first { $0.id == track }?.clickSound }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Sound Designer", systemImage: "waveform").font(.jarasHeadline).foregroundStyle(JarasTheme.green)
+            Text(sound.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "Click padrão")
+                .font(.jarasSystem(size: 13, weight: .medium)).lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                .background(Color.black.opacity(0.3)).cornerRadius(8)
+            Text("WAV, AIFF ou MP3. O som escolhido será copiado para a pasta Stems deste projeto.")
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            if !error.isEmpty { Text(error).font(.jarasCaption).foregroundStyle(.red) }
+            HStack {
+                Button("Escolher arquivo…", action: choose).disabled(busy || directory == nil)
+                if busy { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Usar padrão") { show.setClickSound(track: track, file: nil); error = "" }.disabled(busy || sound == nil)
+            }.buttonStyle(.bordered)
+            HStack { Spacer(); Button("Fechar", action: close).keyboardShortcut(.cancelAction).disabled(busy) }
+        }.padding(22).frame(width: 360).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+        .fileImporter(isPresented: $choosingFile, allowedContentTypes: ["wav", "aif", "aiff", "mp3"].compactMap { UTType(filenameExtension: $0) }) { result in
+            switch result {
+            case .success(let source): importSound(source)
+            case .failure(let failure): error = failure.localizedDescription
+            }
+        }
+    }
+    private func choose() {
+        guard directory != nil, show.canControl() else { return }
+        choosingFile = true
+    }
+    private func importSound(_ source: URL) {
+        guard let directory, show.canControl() else { return }
+        let project = show.snapshot.project.id
+        busy = true; error = ""
+        Task {
+            defer { busy = false }
+            do {
+                let file = try await Task.detached(priority: .userInitiated) {
+                    let file = try ClickSoundImport.copy(source, to: directory)
+                    do { _ = try ClickAudioSample.load(sampleRate: 48000, url: directory.appendingPathComponent(file.path)) }
+                    catch { try? FileManager.default.removeItem(at: directory.appendingPathComponent(file.path)); throw error }
+                    return file
+                }.value
+                guard show.snapshot.project.id == project else {
+                    try? FileManager.default.removeItem(at: directory.appendingPathComponent(file.path)); return
+                }
+                show.setClickSound(track: track, file: file)
+                if sound != file {
+                    try? FileManager.default.removeItem(at: directory.appendingPathComponent(file.path))
+                    error = show.message
+                }
             } catch { self.error = error.localizedDescription }
         }
     }
