@@ -162,7 +162,6 @@ let appIsQuitting = false;
 let quitCleanupStarted = false;
 let updateInstallerQuitWatchdog = null;
 let checkTimer = null;
-let updateReminderTimer = null;
 let bundledReaperAssetsSyncTimer = null;
 let pendingExtensionInstallTimer = null;
 let pendingExtensionInstallNoticeShown = false;
@@ -313,7 +312,6 @@ const UPDATES_HISTORY_API_URL = `${BACKEND_URL}/api/updates?limit=50&platform=${
 const SUPPORT_API_URL = `${BACKEND_URL}/api/support`;
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const CHAT_PRESENCE_HEARTBEAT_MS = 20 * 1000;
-const UPDATE_REMINDER_INTERVAL_MS = 20 * 60 * 1000;
 const LICENSE_OFFLINE_GRACE_MS = 15 * 24 * 60 * 60 * 1000;
 const LICENSE_OFFLINE_WARNING_MS = 3 * 24 * 60 * 60 * 1000;
 const LICENSE_OFFLINE_WARNING_MESSAGE =
@@ -520,39 +518,6 @@ function isUpdateInstalled(update) {
 
 function hasPendingInstallableUpdate(update) {
   return !!(update && hasInstallableFiles(update) && !isUpdateInstalled(update));
-}
-
-function notifyPendingUpdate(force = false) {
-  const update = store.get('latestUpdate');
-  if (!hasPendingInstallableUpdate(update)) return false;
-  const lastAt = Date.parse(store.get('lastUpdateReminderAt') || '');
-  if (!force && Number.isFinite(lastAt) && Date.now() - lastAt < UPDATE_REMINDER_INTERVAL_MS) return false;
-  notifyUpdate(update);
-  store.set('lastUpdateReminderAt', new Date().toISOString());
-  return true;
-}
-
-function notifyHookCenterUpdate(update) {
-  if (!Notification.isSupported()) return;
-  const n = new Notification({
-    title: 'Nova versão do Hook Center disponível',
-    body: `Versão ${update.version || ''} disponível. Clique para atualizar.`,
-    silent: false
-  });
-  n.on('click', showMainWindow);
-  n.show();
-}
-
-function notifyUpdate(update) {
-
-  if (!Notification.isSupported()) return;
-  const n = new Notification({
-    title: update.title || 'Nova atualização do VS Hook disponível',
-    body: `Versão ${update.version || ''} disponível. Clique para conferir.`,
-    silent: false
-  });
-  n.on('click', showMainWindow);
-  n.show();
 }
 
 function notifyLicense(message) {
@@ -1849,10 +1814,6 @@ async function checkForUpdates(manual = false) {
     mainWindow.webContents.send('update-status', getAppState());
   }
 
-  if (shouldNotify && !manual) {
-    notifyPendingUpdate(true);
-  }
-
   if (manual) showMainWindow();
 
   return { ok: true, hasUpdate: shouldNotify, update, offline: !fetchedUpdate, state: getAppState() };
@@ -1928,7 +1889,6 @@ async function checkHookCenterUpdates(manual = false) {
   if (fetchedUpdate || !store.get('hookCenterLatest')) store.set('hookCenterLatest', update);
   store.set('hookCenterUpdateAvailable', hasUpdate);
   if (isValidWindow(mainWindow)) mainWindow.webContents.send('update-status', getAppState());
-  if (hasUpdate && !manual) notifyHookCenterUpdate(update);
   if (manual) showMainWindow();
   return { ok: true, hasUpdate, update, offline: !fetchedUpdate, state: getAppState() };
 }
@@ -10194,7 +10154,6 @@ function prepareForAppQuit() {
   if (bridgeWatchTimer) clearInterval(bridgeWatchTimer);
   if (bridgeNetworkWatchTimer) clearInterval(bridgeNetworkWatchTimer);
   if (directCableWatchTimer) clearInterval(directCableWatchTimer);
-  if (updateReminderTimer) clearInterval(updateReminderTimer);
   if (chatPresenceTimer) clearInterval(chatPresenceTimer);
   if (bundledReaperAssetsSyncTimer) {
     clearTimeout(bundledReaperAssetsSyncTimer);
@@ -10205,7 +10164,6 @@ function prepareForAppQuit() {
   bridgeWatchTimer = null;
   bridgeNetworkWatchTimer = null;
   directCableWatchTimer = null;
-  updateReminderTimer = null;
   chatPresenceTimer = null;
   chatPresenceHeartbeatInFlight = false;
   bundledReaperAssetsSyncTimer = null;
@@ -10301,9 +10259,6 @@ app.whenReady().then(async () => {
     await checkLicenseStatus(false);
   }, CHECK_INTERVAL_MS);
 
-  updateReminderTimer = setInterval(() => {
-    notifyPendingUpdate(false);
-  }, UPDATE_REMINDER_INTERVAL_MS);
 });
 
 app.on('activate', () => {
