@@ -51,9 +51,13 @@ import Foundation
                  "Disarming one input must decay its level while another input remains armed")
     precondition(secondMeter.levels.x > 0.03,
                  "Disarming another track must preserve the active input meter")
+    let beforeDisarm = secondMeter.level
     audio.setInputMonitor(second.id, source: nil)
-    precondition(firstMeter.levels == .zero && secondMeter.levels == .zero,
-                 "Disarming the final input must clear levels immediately before polling idles")
+    precondition(secondMeter.level == beforeDisarm, "The last input should descend rather than snap off")
+    try await Task.sleep(nanoseconds: 100_000_000)
+    precondition(secondMeter.level > 0 && secondMeter.level < beforeDisarm, "Idle UI clock must continue the short release without rendering audio")
+    try await Task.sleep(nanoseconds: 500_000_000)
+    precondition(firstMeter.levels == .zero && secondMeter.levels == .zero, "The idle release must end without leaving a stuck meter")
     try await pump(0.08)
     precondition(firstMeter.levels == .zero && secondMeter.levels == .zero,
                  "A stale render peak must not restore the disarmed meter")
@@ -61,7 +65,14 @@ import Foundation
     try await pump(0.18)
     precondition(firstMeter.levels.x > 0.015 && firstMeter.levels.x < 0.12,
                  "Rearming must use the current signal rather than a stale held input")
+    let beforeStop = firstMeter.level
     audio.setInputMonitor(first.id, source: nil)
+    audio.stop()
+    precondition(firstMeter.level == beforeStop, "Stop must preserve the first animation frame")
+    try await Task.sleep(nanoseconds: 80_000_000)
+    precondition(firstMeter.level > 0 && firstMeter.level < beforeStop, "Stop must finish the display descent without further audio callbacks")
+    try await Task.sleep(nanoseconds: 550_000_000)
+    precondition(firstMeter.levels == .zero && audio.masterMeter.levels == .zero)
     audio.prepareForClosing()
     print("INPUT_MONITOR_STOPPED_TRANSPORT_DISARM_ONE_LAST_AND_REARM_PCM_OK rate=\(rate)")
 }

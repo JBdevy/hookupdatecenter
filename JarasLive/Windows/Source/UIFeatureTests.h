@@ -2,6 +2,7 @@
 #include "TransportFadeoutPanel.h"
 #include "TransportFadeoutOverlay.h"
 #include "EditorSelectionAreas.h"
+#include "TrackDeletionConfirmationPanel.h"
 
 namespace catlive {
 namespace uiFeatureTests {
@@ -39,6 +40,17 @@ void addUIFeatureTests(const File &directory, Register &&test) {
     const auto require = [](bool okay, const char *message) {
         if (!okay) throw std::runtime_error(message);
     };
+    test("Track deletion confirms only selected tracks containing items across project songs", [&, require] {
+        jaras::Project project; project.songs.emplace_back();
+        jaras::Track empty; empty.id=uuid();
+        jaras::Track occupied; occupied.id=uuid(); occupied.clips.emplace_back();
+        project.songs[0].tracks={empty,occupied};
+        require(!tracksContainItems(project,{empty.id}),"An empty selected track must delete immediately");
+        require(tracksContainItems(project,{occupied.id}),"A selected track with an item needs confirmation");
+        require(tracksContainItems(project,{empty.id,occupied.id}),"Mixed selections must protect their items");
+        project.songs.emplace_back(); auto linked=empty; linked.clips.emplace_back(); project.songs[1].tracks={linked};
+        require(tracksContainItems(project,{empty.id}),"Shared track IDs must protect items in other songs");
+    });
     test("Fadeout preferences keep project-specific tracks and safe defaults", [&, require] {
         const auto file = directory.getChildFile("fadeout-ui-preferences.json");
         require(file.replaceWithText("{}"), "Could not prepare UI preferences");

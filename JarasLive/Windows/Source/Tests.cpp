@@ -970,9 +970,9 @@ int runTests(const File &directory) {
         for(int block:{64,128,480,1024}) {
             float level=1;const double elapsed=double(block)/48000;const int count=(int)(.1/elapsed);
             for(int i=0;i<count;++i)level=meterDisplay::envelope(level,0,elapsed);
-            expect(std::abs(20*std::log10(level)+180*count*elapsed)<.001,"Fall must follow elapsed audio time, not callback count");
-            for(int i=0;i<(int)(.3/elapsed);++i)level=meterDisplay::envelope(level,0,elapsed);
-            expect(level==0,"Silence clears short tail within 400 ms");
+            expect(std::abs(20*std::log10(level)+120*count*elapsed)<.001,"Fall must follow elapsed audio time, not callback count");
+            for(int i=0;i<(int)(.5/elapsed);++i)level=meterDisplay::envelope(level,0,elapsed);
+            expect(level==0,"Silence clears short tail within 600 ms");
         }
         expect(meterDisplay::envelope(0,.8f,.01)==.8f,"Immediate attack");
         expect(meterDisplay::envelope(.001f,0,.1)==0,"Silence threshold");

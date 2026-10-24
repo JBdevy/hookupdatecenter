@@ -35,11 +35,11 @@ public:
     }
     void mouseDown(const MouseEvent &e)override{if(e.mods.isLeftButtonDown()){clear();repaint();}}
 };
-// Match TrackMeterLevel: immediate attack, no hold, short 180 dB/s fall.
+// Match TrackMeterLevel: immediate attack, no hold, short 120 dB/s fall.
 // The independent numeric peak is retained by PeakHold.
 inline float envelope(float previous, float input, double elapsed) noexcept {
     input = std::isfinite(input) ? std::max(0.f, input) : 0.f;
-    const auto level = std::max(input, previous * (float)std::pow(10., -180. * std::max(0., elapsed) / 20.));
+    const auto level = std::max(input, previous * (float)std::pow(10., -120. * std::max(0., elapsed) / 20.));
     return level < .001f ? 0.f : level;
 }
 inline void bar(Graphics &g, juce::Rectangle<float> bounds, float amplitude) {

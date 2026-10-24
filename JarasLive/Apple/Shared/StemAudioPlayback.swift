@@ -156,9 +156,9 @@ import SwiftUI
     let peakHold = PeakHold()
     @Published private(set) var levels = SIMD2<Double>(repeating: 0)
     var level: Double { max(levels.x, levels.y) }
-    // Instant attack and a short falling envelope: 60 dB in one third of a
+    // Instant attack and a short falling envelope: 60 dB in half a
     // second. No peak-hold delay; the numeric maximum is separate.
-    static let releaseDecibelsPerSecond = 180.0
+    static let releaseDecibelsPerSecond = 120.0
     private var envelope = SIMD2<Double>(repeating: 0)
     func reset() { envelope = .zero; if levels != .zero { levels = .zero } }
     func update(peak: Double, elapsed: Double) { update(left: peak, right: peak, elapsed: elapsed) }
@@ -1379,7 +1379,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         guard !usesSelectedHardware || AudioDeviceSettings.shared.localSessionEnabled else { return }
         #endif
         let active = transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padPlayers.isEmpty
-        if !active { resetIdleMeterLevels() }
+            || masterMeter.level > 0 || meters.values.contains { $0.level > 0 }
         guard meterTimer == nil || meterTimerActive != active else { return }
         meterTimer?.invalidate()
         meterTimerActive = active
@@ -1532,11 +1532,13 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
         for (voice, _) in boundaryTails { recycle(voice) }; boundaryTails.removeAll()
         lastPosition.removeAll(); headAudioClock.removeAll()
-        for meter in meters.values { meter.reset() }
+        // Audio stops now; keep the last displayed levels only for their
+        // short visual descent, driven by the UI clock after rendering stops.
+        if !realtime { for meter in meters.values { meter.reset() }; masterMeter.reset() }
         drainNativeMeterPeaks()
-        masterMeter.reset(); _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)
+        _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)
         for bank in trackPeaks.values { _ = bank.takePeak(0); _ = bank.takePeak(1) }
-        lastMeterUpdate = 0
+        lastMeterUpdate = ProcessInfo.processInfo.systemUptime
         if deviceSessionActive { startMeterClock() }
     }
     func prepareForClosing() {
@@ -3803,21 +3805,24 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             bank.recordPeak(JarasEqualizer.takeOutputPeak(bus.controls, channel: 1), slot: 1)
         }
     }
-    private func resetIdleMeterLevels() {
-        // The last REC disarm stops the active meter clock. Do not leave its
-        // last input sample painted indefinitely; preserve the held peak number.
-        for meter in meters.values { meter.reset() }
-        masterMeter.reset()
+    private func decayIdleMeterLevels(now: Double) {
+        // Stop/disarm must silence audio immediately, while the display finishes
+        // its short release even when no audio callback is running.
+        let elapsed = lastMeterUpdate == 0 ? 1.0 / 30 : max(0, now - lastMeterUpdate)
+        lastMeterUpdate = now
+        for meter in meters.values { meter.update(peak: 0, elapsed: elapsed) }
+        masterMeter.update(peak: 0, elapsed: elapsed)
         for bank in trackPeaks.values { _ = bank.takePeak(0); _ = bank.takePeak(1) }
         _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)
-        lastMeterUpdate = 0
+        // Return to the low-frequency idle clock once every bar reaches zero.
+        if deviceSessionActive { startMeterClock() }
     }
     private func pollMeters(now: Double = ProcessInfo.processInfo.systemUptime) {
         #if os(iOS)
         guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
         #endif
         guard engine.isRunning, transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padPlayers.isEmpty else {
-            resetIdleMeterLevels()
+            decayIdleMeterLevels(now: now)
             return
         }
         if now - lastMeterUpdate >= 1.0 / 30.0 - 0.002 {

@@ -17,6 +17,7 @@
 #include "MissingMediaPanel.h"
 #include "ValidationNoticePanel.h"
 #include "ProjectOpenConfirmationPanel.h"
+#include "TrackDeletionConfirmationPanel.h"
 #include "TimebaseConfirmationPanel.h"
 #include "ImportNoticePanel.h"
 #include "AdvancedPanel.h"
@@ -5051,8 +5052,7 @@ bool Workspace::keyPressed(const KeyPress &key) {
             const auto ids = selectedTracks.empty() ? std::set<ID>{selectedTrack} : selectedTracks;
             const auto project = session.project().id;
             const auto song = session.song() ? session.song()->id : ID{};
-            confirm(ids.size() == 1 ? "Excluir pista?" : "Excluir " + String((int)ids.size()) + " pistas?",
-                    String::fromUTF8("Esta ação pode ser desfeita."),
+            confirmTrackDeletion(ids,
                     [safe = Component::SafePointer<Workspace>(this), ids, project, song] {
                         if (safe && safe->session.project().id == project && safe->session.song() && safe->session.song()->id == song)
                             safe->perform([&] {
@@ -5196,6 +5196,11 @@ void Workspace::prompt(const String &title, const String &label, const String &i
                                 }
                             }),
                             true);
+}
+void Workspace::confirmTrackDeletion(const std::set<ID> &ids, std::function<void()> remove) {
+    if (!tracksContainItems(session.project(), ids)) { remove(); return; }
+    ModalSheet::open(*this, localization::translate("Delete selected tracks and their items?"),
+        std::make_unique<TrackDeletionConfirmationPanel>(std::move(remove)), 320, 190);
 }
 void Workspace::confirm(const String &title, const String &message, std::function<void()> done) {
     AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon, title, message, "Continuar",
@@ -6112,9 +6117,7 @@ void Workspace::showTrackMenu(ID id, Point<int> point) {
                     if(!safe || safe->session.project().id!=project)return;
                     safe->perform([&]{safe->session.edit([&](jaras::Project &p){for(auto &song:p.songs)for(const auto &target:targets)trackTree::remove(song,target);});});
                 };
-                bool containsItems=false;for(const auto &song:w.session.project().songs)for(const auto &track:song.tracks)if(targets.count(track.id) && !track.clips.empty())containsItems=true;
-                if(containsItems)w.confirm(targets.size()>1?"Excluir pistas?":"Excluir pista?",String::fromUTF8("Excluir as pistas selecionadas e seus itens?"),remove);
-                else remove();
+                w.confirmTrackDeletion(targets, remove);
             }
         });
 }

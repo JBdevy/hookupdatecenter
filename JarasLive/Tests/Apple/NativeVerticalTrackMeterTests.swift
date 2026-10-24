@@ -36,10 +36,10 @@ import Foundation
         measuredMeter.update(left: 1, right: 0.1, elapsed: 0)
         precondition(measuredMeter.levels == SIMD2(1, 0.1), "Attack must remain immediate")
         for _ in 0..<Int(frequency / 10) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
-        precondition(abs(20 * log10(measuredMeter.levels.x) + 18) < 0.001, "Fall starts immediately and reaches -18 dB after 100 ms")
+        precondition(abs(20 * log10(measuredMeter.levels.x) + 12) < 0.001, "Fall starts immediately and reaches -12 dB after 100 ms")
         precondition(abs(measuredMeter.levels.x / measuredMeter.levels.y - 10) < 0.001, "Stereo channels fall independently")
-        for _ in 0..<Int(frequency * 0.3) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
-        precondition(measuredMeter.levels == .zero, "Silence must clear the short smoothing tail within 400 ms")
+        for _ in 0..<Int(frequency * 0.5) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(measuredMeter.levels == .zero, "Silence must clear the short smoothing tail within 600 ms")
         measuredMeter.update(left: 0.8, right: 0.2, elapsed: 1 / frequency)
         precondition(measuredMeter.levels == SIMD2(0.8, 0.2))
     }

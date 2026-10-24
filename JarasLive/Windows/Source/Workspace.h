@@ -290,6 +290,7 @@ class Workspace final : public Component,
     bool lastSubCursorVisible = false;
     void prompt(const String &, const String &, const String &, std::function<void(String)>);
     void confirm(const String &, const String &, std::function<void()>);
+    void confirmTrackDeletion(const std::set<ID> &, std::function<void()>);
     void newProject();
     void deleteRecentProject(const File &);
     void createProject(bool withStems, int recordingChannels = 0, bool inNewTab = false);
