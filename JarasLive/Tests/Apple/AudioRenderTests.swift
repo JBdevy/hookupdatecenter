@@ -723,6 +723,7 @@ snapshot.transport.subPlay.position = 0
 // TimePitch's treatment of DC at non-unit rates is not an amplitude reference;
 // exercise changed-tempo dual playback separately with musical PCM below.
 try renderer.update(snapshot, revision: 3)
+let subplayStartSample = engine.manualRenderingSampleTime
 let dual = try peak()
 precondition(dual > 0.16 && dual < 0.24, "main and subplay mix independent streams: \(dual)")
 let gainItemID = snapshot.project.songs[0].tracks[0].clips[0].id
@@ -734,6 +735,11 @@ renderer.previewItemGain(gainItemID, gain: 1)
 let restoredDual = try peak()
 precondition(restoredDual > 0.16 && restoredDual < 0.24, "item gain preview restores both existing streams: \(restoredDual)")
 print("ITEM_GAIN_PREVIEW_PRIMARY_AND_SUBPLAY_OK")
+// Promotion transfers the *current* secondary playhead, just as transport
+// does in the app. Reusing its old zero position after rendering three batches
+// of audio describes a backward seek, which correctly adds an onset ramp.
+snapshot.transport.position = snapshot.transport.subPlay.position
+    + Double(engine.manualRenderingSampleTime - subplayStartSample) / outputFormat.sampleRate
 snapshot.transport.subPlayPromotion = 1
 snapshot.transport.subPlay.playing = false
 try renderer.update(snapshot, revision: 3)
@@ -1006,6 +1012,8 @@ for _ in 0..<32 {
 var finishPCM: [Float] = []
 for take in 0..<3 {
     finishState.project.songs[0].tracks[0].clips.append(AudioClip(id: UUID(), name: "Finished recording", startTime: 0, duration: 1, audioFile: AudioFile(path: "tone.wav")))
+    // Finalization does not seek: advance the snapshot with the rendered audio.
+    finishState.transport.position = 2 + Double(finishEngine.manualRenderingSampleTime) / outputFormat.sampleRate
     try finishRenderer.update(finishState, revision: UInt64(take + 2))
     for _ in 0..<8 {
         let status = try finishEngine.renderOffline(512, to: output)
@@ -2288,7 +2296,7 @@ for route in [0, 1, 2] {
 }
 print("INPUT_MONITOR_MASTER_GROUP_HARDWARE_OFF_RECORDED_AUDIO_AND_MIDI_CAPTURE_OK")
 
-// The last REC disarm must clear moving bars even without a transport tick.
+// The last REC disarm must finish the meter release without a transport tick.
 try audioAutoreleasepool {
     let engine = AVAudioEngine()
     try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 512)
@@ -2313,13 +2321,16 @@ try audioAutoreleasepool {
     }
     playback.setInputMonitor(track.id, source: monitor(), format: outputFormat)
     // Raw input metering bypasses the idle playback graph. Seed the received
-    // input sample; the regression is losing the final UI reset on detach.
+    // input sample; the regression is freezing the final sample on detach.
     meter.update(left: 0.2, right: 0.4, elapsed: 1.0/30)
     playback.masterMeter.update(peak: 0.2, elapsed: 1.0/30)
     let peak = meter.peakHold.decibels
     playback.setInputMonitor(track.id, source: nil)
+    precondition(meter.level > 0 && playback.masterMeter.level > 0,
+        "disarm preserves the display release instead of abruptly clearing bars")
+    RunLoop.main.run(until: Date().addingTimeInterval(0.8))
     precondition(meter.level == 0 && playback.masterMeter.level == 0,
-        "last disarm clears moving bars immediately instead of freezing the last sample")
+        "last disarm finishes the meter release instead of freezing the last sample")
     precondition(meter.peakHold.decibels == peak, "disarm preserves the independent held peak readout")
     playback.setInputMonitor(track.id, source: monitor(), format: outputFormat)
     playback.setInputMonitor(other.id, source: monitor(), format: outputFormat)
@@ -2327,6 +2338,7 @@ try audioAutoreleasepool {
     playback.setInputMonitor(track.id, source: nil)
     precondition(otherMeter.level > 0.01, "disarming one track preserves another armed input's metering")
     playback.setInputMonitor(other.id, source: nil)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.8))
     precondition(otherMeter.level == 0 && meter.level == 0)
     playback.prepareForClosing()
 }

@@ -4,16 +4,28 @@ import Foundation
 /// Metadata only: never decode audio or traverse unrelated sibling projects.
 public enum RecentProjectStorage {
     public static func bytes(at document: URL) throws -> Int64 {
+        // External iPad projects can belong to a File Provider. Coordinate the
+        // document read and retain the granted URLs while inspecting metadata.
+        var coordinationError: NSError?
+        var result: Result<Int64, Error>?
+        NSFileCoordinator().coordinate(readingItemAt: document, options: [], error: &coordinationError) { granted in
+            result = Result { try measure(granted) }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let result else { throw CocoaError(.fileReadUnknown) }
+        return try result.get()
+    }
+    private static func measure(_ document: URL) throws -> Int64 {
         let project = try ProjectDocumentCodec.decode(Data(contentsOf: document))
         let root = document.deletingLastPathComponent()
-        var files: Set<URL> = [document.resolvingSymlinksInPath().standardizedFileURL]
+        var files: [String: URL] = [document.resolvingSymlinksInPath().standardizedFileURL.path: document]
         for path in project.mediaPaths {
             try Task.checkCancellation()
             let url = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path))
-            files.insert(url.resolvingSymlinksInPath().standardizedFileURL)
+            files[url.resolvingSymlinksInPath().standardizedFileURL.path] = url
         }
         var total: Int64 = 0
-        for file in files {
+        for file in files.values {
             try Task.checkCancellation()
             do {
                 let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])

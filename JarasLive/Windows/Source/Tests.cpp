@@ -2672,6 +2672,8 @@ int runTests(const File &directory) {
         }
     });
     test("WASAPI-independent stereo render, mixer, Sub Play, seek and sample loop", [&] {
+        const auto trace = [&](const char *stage) { directory.getChildFile("progress.log").appendText(String("AUDIO_STAGE ") + stage + "\n"); };
+        trace("fixture");
         auto folder = directory.getChildFile("Audio");
         folder.createDirectory();
         auto file = folder.getChildFile("signal.wav");
@@ -2691,6 +2693,7 @@ int runTests(const File &directory) {
             expect(writer->writeFromAudioSampleBuffer(buffer, 0, 48000), "WAV fixture failed");
         }
 
+        trace("item fade render");
         {
             auto p=projectFixture();auto &song=p.songs[0];song.duration=1;song.parts.clear();song.markers.reset();p.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
             auto &track=song.tracks[0];track.volume=1;track.pan=0;track.phaseInverted=false;track.fxJSON.reset();track.automationJSON.reset();
@@ -2712,6 +2715,7 @@ int runTests(const File &directory) {
             AudioBuffer<float> out(2,512);AudioEngine::State state;state.playing=true;state.position=.1;engine.transport(state);engine.render(out.getArrayOfWritePointers(),2,512);
             expect(std::abs(out.getSample(0,100)-.05)<.0001 && std::abs(out.getSample(1,100)-.1)<.0001,"Master volume envelope must affect rendered output");
         }
+        trace("streaming playback");
         AudioEngine engine;
         jaras::Song song;
         song.id = uuid();
@@ -2773,6 +2777,7 @@ int runTests(const File &directory) {
                "Changed media reused a stale decoder");
         engine.setMixer(p, song); engine.transport(state); render();
 
+        trace("command backlog");
         // Thousands of edits without a device callback used to fill the queue
         // in visual inspection. The last mixer and transport values must survive.
         for (int edit = 0; edit < 1500; ++edit) {
@@ -2801,6 +2806,7 @@ int runTests(const File &directory) {
         engine.transport(state);
         render();
         expect(std::abs(output.getSample(0, 100) - .05f) < .002f, "Master fader incorrect");
+        trace("subplay");
         state.subPlaying = true;
         state.subPosition = .1;
         engine.transport(state);
@@ -2813,6 +2819,7 @@ int runTests(const File &directory) {
         song.tracks[0].mute = false;
         engine.setMixer(p, song);
         state.subPlaying = false;
+        trace("loop");
         state.position = .195;
         state.loop = true;
         state.loopStart = .1;
@@ -2827,6 +2834,7 @@ int runTests(const File &directory) {
         render();
         expect(output.getMagnitude(0, 480) == 0, "Stopped transport emitted audio");
         p.masterVolume = .5;
+        trace("master output patch");
         p.masterOutputs = std::vector<jaras::OutputPatch>{{3, 2}};
         engine.prepareSong(song, folder, {}, &p);
         engine.setOffline(true);
@@ -2862,6 +2870,7 @@ int runTests(const File &directory) {
         p.masterMute = false;
         p.masterVolume = 1;
         p.masterOutputs = std::vector<jaras::OutputPatch>{{1, 2}};
+        trace("send routing");
         auto &sourceTrack = song.tracks[0];
         sourceTrack.outputs = std::vector<jaras::OutputPatch>{{-1, 2}};
         jaras::Track destination;
@@ -2893,6 +2902,7 @@ int runTests(const File &directory) {
         render();
         expect(std::abs(output.getSample(0, 100) + .05f) < .002f,
                "Restoring an inverted track applied polarity twice");
+        trace("feedback rejection");
         song.tracks[0].routing->transmitters.push_back(sourceId);
         bool feedback = false;
         try {
@@ -2901,6 +2911,7 @@ int runTests(const File &directory) {
             feedback = true;
         }
         expect(feedback, "Audio routing accepted a feedback cycle");
+        trace("done");
     });
     test("Export plan tokens, collision naming and secondary outputs match desktop documents", [&] {
         auto p = projectFixture();

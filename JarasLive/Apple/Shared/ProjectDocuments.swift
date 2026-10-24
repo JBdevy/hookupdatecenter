@@ -1406,9 +1406,9 @@ struct ProjectBrowserView: View {
                                         #endif
                                     }
                                     Spacer()
-                                    Text(recentStorage[url] ?? "…").font(.jarasCaption)
+                                    Text(recentStorage[url] ?? NSLocalizedString("Calculating…", comment: "Project storage size")).font(.jarasCaption)
                                         .foregroundStyle(JarasTheme.secondary).fixedSize()
-                                        .accessibilityLabel(Text("Project size") + Text(": " + (recentStorage[url] ?? "…")))
+                                        .accessibilityLabel(Text("Project size") + Text(": " + (recentStorage[url] ?? NSLocalizedString("Calculating…", comment: "Project storage size"))))
                                     Image(systemName: "chevron.right")
                                 }
                                     .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.panel).contentShape(Rectangle())

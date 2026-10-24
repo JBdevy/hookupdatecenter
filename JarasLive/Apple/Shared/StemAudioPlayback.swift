@@ -1538,7 +1538,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         drainNativeMeterPeaks()
         _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)
         for bank in trackPeaks.values { _ = bank.takePeak(0); _ = bank.takePeak(1) }
-        lastMeterUpdate = ProcessInfo.processInfo.systemUptime
+        // Offline rendering uses sample time, not the device's uptime clock.
+        lastMeterUpdate = realtime ? ProcessInfo.processInfo.systemUptime : 0
         if deviceSessionActive { startMeterClock() }
     }
     func prepareForClosing() {

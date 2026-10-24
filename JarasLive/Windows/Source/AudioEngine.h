@@ -427,7 +427,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         bool mute = false, solo = false, mono = false, phase = false;
     };
     AbstractFifo fifo{1024};
-    std::array<Update, 1024> updates;
+    // Allocate once when constructing the engine, outside the audio callback.
+    // Embedding 1024 transport/mixer commands made nested offline render engines
+    // exceed the Windows thread stack during export/re-render integration tests.
+    std::unique_ptr<Update[]> updates = std::make_unique<Update[]>(1024);
     State current;
     float masterVolume = 1, masterPan = 0;
     bool masterMute = false, masterMono = false, masterPhase = false, masterSolo = false;

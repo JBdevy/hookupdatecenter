@@ -54,17 +54,16 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
             require(session.song()->tracks.size()==3,"Tracks removed before confirmation");
             return modal;
         };
-        auto click=[&](Component *modal,const String &label) {
-            Button *button=nullptr;
-            for(auto *child:modal->getChildren())if(auto *candidate=dynamic_cast<Button *>(child);candidate && candidate->getButtonText()==label)button=candidate;
+        auto click=[&](Component *modal,const String &componentID) {
+            auto *button=dynamic_cast<Button *>(uiFeatureTests::find(*modal,componentID));
             require(button,"Confirmation action button missing");button->triggerClick();pump();
             require(!Component::getCurrentlyModalComponent(),"Confirmation did not close after clicking its button");
         };
-        click(request(),"Cancelar");
+        click(request(),"cancelTrackDeletion");
         require(list(get(w.diagnostics(),"selectedTracks")).size()==2 && session.song()->tracks.size()==3,"Cancel removed tracks or their selection");
-        auto *pending=request();session.busy=true;click(pending,"Continuar");session.busy=false;
+        auto *pending=request();session.busy=true;click(pending,"confirmTrackDeletion");session.busy=false;
         require(list(get(w.diagnostics(),"selectedTracks")).size()==2 && session.song()->tracks.size()==3,"Declined edit lost the selection needed to retry Delete");
-        click(request(),"Continuar");
+        click(request(),"confirmTrackDeletion");
         require(session.song()->tracks.size()==1 && session.song()->tracks[0].id==remaining,"Delete left a selected track or removed the unselected track");
         session.undo();require(JSON::toString(session.snapshot())==before,"One Undo did not restore group, items and FX exactly");
         session.redo();require(session.song()->tracks.size()==1,"One Redo did not remove the selection");
