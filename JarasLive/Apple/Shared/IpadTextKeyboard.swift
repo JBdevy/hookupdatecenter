@@ -137,7 +137,7 @@ final class IpadTextKeyboardView: UIInputView, UICollectionViewDataSource, UICol
     private let keyColor = UIColor(white: 0.40, alpha: 1)
     private let specialKeyColor = UIColor(white: 0.27, alpha: 1)
     private let green = UIColor(red: 0.39, green: 0.75, blue: 0.26, alpha: 1)
-    private let keyboardHeight: CGFloat = 198
+    private let keyboardHeight: CGFloat = 222
 
     init(target: UIView) {
         self.target = target
@@ -194,7 +194,7 @@ final class IpadTextKeyboardView: UIInputView, UICollectionViewDataSource, UICol
         }
         var unit: UIButton?
         for (index, keys) in lines.enumerated() {
-            let line = row(height: 36); line.distribution = .fill
+            let line = row(height: 42); line.distribution = .fill
             if index == 1, let unit {
                 let indent = UIView(); line.addArrangedSubview(indent)
                 indent.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 0.4).isActive = true
@@ -220,7 +220,7 @@ final class IpadTextKeyboardView: UIInputView, UICollectionViewDataSource, UICol
                 if let unit { button.widthAnchor.constraint(equalTo: unit.widthAnchor).isActive = true }
             }
         }
-        let bottom = row(height: 34); bottom.distribution = .fill
+        let bottom = row(height: 40); bottom.distribution = .fill
         let changePage: () -> Void = { [weak self] in guard let self else { return }; page = page == .letters ? .numbers : .letters; rebuild() }
         add(page == .letters ? ".?123" : "ABC", id: "page", to: bottom, action: changePage)
         add("", id: "emoji", to: bottom, label: "Emoji") { [weak self] in
@@ -305,7 +305,7 @@ final class IpadTextKeyboardView: UIInputView, UICollectionViewDataSource, UICol
         let grid = UICollectionView(frame: .zero, collectionViewLayout: layout)
         grid.backgroundColor = .clear; grid.dataSource = self; grid.delegate = self
         grid.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "emoji")
-        grid.heightAnchor.constraint(equalToConstant: 118).isActive = true
+        grid.heightAnchor.constraint(equalToConstant: 136).isActive = true
         container.addArrangedSubview(grid)
     }
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { Self.emoji.count }
