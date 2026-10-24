@@ -194,13 +194,8 @@ import Combine
                     }, local: true, localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 }, openPatch: { patch = .init(track: $0) }, openTrackFX: { fx = .init(track: $0) },
                     openSelectedPatch: { patch = .init(track: $0.first, targets: $0.map { Optional($0) }) },
                     openSelectedFX: { fx = .init(track: $0.first, targets: $0.map { Optional($0) }) },
-                    openTrackDetails: { ids in
-                        let tracks = (show.current?.tracks ?? []).filter { ids.contains($0.id) }
-                        guard let first = tracks.first else { return }
-                        trackEdit = .init(project: show.snapshot.project.id, tracks: Set(tracks.map(\.id)),
-                            name: first.name, color: first.color ?? JarasTheme.roleHex(first.role),
-                            nameEditable: tracks.count == 1 && first.kind == .standard && first.role.rawValue != "vinhetas")
-                    },
+                    openTrackDetails: { presentTrackDetails($0) },
+                    openTrackIcon: { presentTrackDetails($0, iconOnly: true) },
                     openMasterDetails: {
                         trackEdit = .init(project: show.snapshot.project.id, tracks: [], name: "Master",
                             color: show.snapshot.project.masterColor ?? 0x414141, nameEditable: false)
@@ -234,6 +229,14 @@ import Combine
             Button("OK") { recorder.error = "" }
         } message: { Text(LocalizedStringKey(recorder.error)) }
         .environment(\.jarasNativePalette, true)
+    }
+    private func presentTrackDetails(_ ids: Set<UUID>, iconOnly: Bool = false) {
+        let tracks = (show.current?.tracks ?? []).filter { ids.contains($0.id) }
+        guard let first = tracks.first else { return }
+        trackEdit = .init(project: show.snapshot.project.id, tracks: Set(tracks.map(\.id)),
+            name: first.name, color: first.color ?? JarasTheme.roleHex(first.role),
+            nameEditable: tracks.count == 1 && first.kind == .standard && first.role.rawValue != "vinhetas",
+            instrumentIcon: first.instrumentIcon, iconOnly: iconOnly)
     }
     private func presentItemMenu(_ id: UUID, targets: Set<UUID>) {
         itemMenuTargets = targets; itemMenuAction = nil; itemMenu = .init(clip: id)
@@ -285,7 +288,11 @@ import Combine
                 }
             }
         } else if let edit = trackEdit {
-            IpadCompactModal {
+            if edit.iconOnly {
+                IpadCompactModal(preferredSize: CGSize(width: 530, height: 500)) {
+                    TrackInstrumentPickerModal(show: show, request: edit, close: { trackEdit = nil }).id(edit.id)
+                }
+            } else { IpadCompactModal {
                 NameColorEditor(title: "Editar pista", initialName: edit.name, initialColor: edit.color, save: { name, color in
                     guard edit.project == show.snapshot.project.id else { return }
                     if edit.tracks.isEmpty {
@@ -297,7 +304,7 @@ import Combine
                     }
                 }, close: { trackEdit = nil }, nameEditable: edit.nameEditable, showsName: edit.nameEditable)
                 .id(edit.id)
-            }
+            } }
         } else if let item = editingTextItem {
             IpadCompactModal(preferredSize: CGSize(width: 560, height: 360)) {
                 TextItemEditor(text: show.current?.tracks.flatMap(\.clips).first(where: { $0.id == item })?.text ?? "",

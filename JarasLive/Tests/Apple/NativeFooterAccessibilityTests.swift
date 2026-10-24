@@ -49,16 +49,16 @@ private struct FooterAXFixture: View {
                 Button("Prepare resize") { prepareFooterAXResize() }
                 Button("Verify and close") { verifyFooterAXFixture() }
             }.frame(height: 32)
-            FooterNativeHeightHost(storedHeight: 232, minimum: 232, maximum: 723.55859375, active: true,
+            FooterNativeHeightHost(storedHeight: 273, minimum: 273, maximum: 723.55859375, active: true,
                 identity: "ax-mixer", role: .mixer, resizeCoordinator: coordinator) {
                 VStack(spacing: 0) {
-                    FooterMixerResizeInput(height: 232, maximum: 723.55859375, changed: { _ in }, ended: { _ in }).frame(height: 8)
+                    FooterMixerResizeInput(height: 273, maximum: 723.55859375, changed: { _ in }, ended: { _ in }).frame(height: 8)
                     FooterAXActions()
                 }
             }
             FooterNativeHeightHost(storedHeight: 27, minimum: 27, maximum: 161.046875, active: true,
                 identity: "ax-display", role: .display, resizeCoordinator: coordinator,
-                displayAvailableHeight: 850, fallbackMixerHeight: 232) {
+                displayAvailableHeight: 850, fallbackMixerHeight: 273) {
                 FooterAXDisplay(label: "Native").overlay(FooterDisplayResizeInput(height: 27, maximum: 161.046875,
                     changed: { _ in }, ended: { _ in }))
             }

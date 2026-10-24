@@ -332,6 +332,7 @@ jaras::Project ProjectCodec::decode(const json &input) {
             optionalNum(rt, "color", t.color);
             optionalNum(rt, "phaseInverted", t.phaseInverted);
             optionalNum(rt, "heightScale", t.heightScale);
+            optionalText(rt, "instrumentIcon", t.instrumentIcon);
             optionalText(rt, "parentTrackID", t.parentTrackID);
             optionalJSON(rt, "automation", t.automationJSON);
             optionalNum(rt, "midiInput", t.midiInput);
@@ -649,6 +650,7 @@ json ProjectCodec::encode(const jaras::Project &p, json input) {
             if (t.parentTrackID)
                 put(rt, "parentTrackID", *t.parentTrackID);
             emit(rt, "heightScale", t.heightScale);
+            emit(rt, "instrumentIcon", t.instrumentIcon);
             emit(rt, "phaseInverted", t.phaseInverted);
             if (t.audioFile)
                 put(rt, "audioFile", audioJSON(*t.audioFile));

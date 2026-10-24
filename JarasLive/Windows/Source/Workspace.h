@@ -215,6 +215,7 @@ class Workspace final : public Component,
     int footerLeftWidth = 155, footerRightWidth = 230;
     juce::Rectangle<int> footerSongBounds;
     bool mixerDetached = false;
+    bool showsTrackIcons = false;
     bool layoutInitialized = false, layoutActive = true, restoringLayout = false;
     double layoutSaveTime = 0;
     String lastSavedLayout;
@@ -322,6 +323,7 @@ class Workspace final : public Component,
     void createTrack();
     void specialTrackAction(ID,const String &);
     void editTrack(ID);
+    void editTrackIcon(ID);
     void showClipMenu(ID, Point<int>);
     std::function<void(int)> clipMenuAction(ID, ID ownerID = {});
     void openMIDIEditor(ID);

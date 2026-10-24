@@ -240,7 +240,15 @@ void Engine::promoteSubPlay(std::optional<ID> preferredRegion) {
     ++transport_.subPlayPromotion;
     transport_.queuedRegionId.reset(); transport_.queuedPlaylistEntryId.reset(); autoRegionQueue_ = false;
     syncRegion();
-    if (const auto* active = region(transport_.regionId)) playStart_ = active->startTime;
+    if (const auto* active = region(transport_.regionId)) {
+        playStart_ = active->startTime;
+        // Only the edit cue returns to the incoming song's beginning. The
+        // promoted audio head must keep its already-consumed Subplay position.
+        const auto* entry = region(transport_.playbackStartRegionId);
+        const bool entryInActive = entry && (entry->id == active->id || entry->parentRegionID == active->id);
+        transport_.editPosition = entryInActive && currentSong()
+            ? playbackRegionStart(*currentSong(), *entry) : active->startTime;
+    }
 }
 const Part* Engine::playbackBounds(const Part* part) const {
     if (part && part->parentRegionID) {

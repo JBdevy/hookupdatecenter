@@ -31,6 +31,7 @@ final class TrackDuplicationTests: XCTestCase {
         var project = Project.empty(name: "Track copy")
         var track = Track(id: UUID(), name: "Piano", role: .keys)
         track.volume = 0.7; track.pan = -0.25; track.phaseInverted = true; track.heightScale = 0.7
+        track.instrumentIcon = "piano"
         track.mute = true; track.solo = true; track.color = 0x123456
         track.midiInput = 2; track.midiChannel = 3; track.inputMonitoring = true
         track.inputPatch = OutputPatch(firstChannel: 3, channelCount: 2)
@@ -74,7 +75,7 @@ final class TrackDuplicationTests: XCTestCase {
         XCTAssertTrue(ids.contains(copy.id)); XCTAssertNotEqual(copy.id, original.id)
         XCTAssertEqual(copy.name, original.name); XCTAssertEqual(copy.role, original.role)
         XCTAssertEqual(copy.volume, original.volume); XCTAssertEqual(copy.pan, original.pan)
-        XCTAssertEqual(copy.color, original.color); XCTAssertEqual(copy.heightScale, original.heightScale)
+        XCTAssertEqual(copy.instrumentIcon, original.instrumentIcon); XCTAssertEqual(copy.color, original.color); XCTAssertEqual(copy.heightScale, original.heightScale)
         XCTAssertEqual(copy.phaseInverted, original.phaseInverted); XCTAssertEqual(copy.mute, original.mute); XCTAssertEqual(copy.solo, original.solo)
         XCTAssertEqual(copy.midiInput, original.midiInput); XCTAssertEqual(copy.midiChannel, original.midiChannel)
         XCTAssertEqual(copy.inputMonitoring, original.inputMonitoring); XCTAssertEqual(copy.inputPatch, original.inputPatch)

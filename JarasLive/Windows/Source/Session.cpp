@@ -1393,6 +1393,30 @@ void Session::edit(const std::function<void(jaras::Project &)> &change, bool reb
         audio.setMixer(project(), *song());
     notify();
 }
+void Session::setTrackInstrumentIcon(const std::set<ID> &ids, std::optional<std::string> icon) {
+    if(busy || jaras::projectSync::readOnly() || ids.empty()) return;
+    if(icon && icon->empty()) icon.reset();
+    auto p=project();
+    bool changed=false;
+    for(auto &song:p.songs) for(auto &track:song.tracks) if(ids.count(track.id) && track.instrumentIcon!=icon) {
+        track.instrumentIcon=icon;changed=true;
+    }
+    if(!changed) return;
+    syncClock();core.applyProjectEdit(std::move(p));
+    // Icons are project metadata outside Undo, including existing redo snapshots.
+    auto rebase=[&](auto &history) {
+        for(auto &entry:history) if(entry.project.isObject()) {
+            entry.project=entry.project.clone();
+            for(auto song:list(get(entry.project,"songs"))) for(auto track:list(get(song,"tracks")))
+                if(ids.count(utf8(str(track,"id")))) {
+                    if(icon) put(track,"instrumentIcon",text(*icon));
+                    else if(auto *object=track.getDynamicObject()) object->removeProperty("instrumentIcon");
+                }
+        }
+    };
+    rebase(undoHistory);rebase(redoHistory);
+    dirty=true;notify();
+}
 void Session::configureEffects(const ID &id, const var &settings) {
     if (jaras::projectSync::readOnly()) return;
     configureEffects(std::map<ID, var>{{id, settings}});

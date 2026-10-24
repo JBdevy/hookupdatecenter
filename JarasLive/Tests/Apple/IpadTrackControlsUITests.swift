@@ -1,5 +1,25 @@
 import XCTest
 final class TrackTouchTests:XCTestCase {
+ func testIconsExtendRowsAndHaveTheirOwnNativeMenuEntry() {
+  let app=XCUIApplication();app.launch()
+  let toggle=app.buttons["Toggle icons"]
+  XCTAssertTrue(toggle.waitForExistence(timeout:10))
+  let row=app.otherElements["normal-row"].firstMatch
+  let labels=["Patch","FX","REC","M","S"]
+  let originalWidth=row.frame.width
+  let positions=labels.map {app.buttons[$0].firstMatch.frame.minX-row.frame.minX}
+  toggle.tap()
+  XCTAssertEqual(row.frame.width,originalWidth+40,accuracy:1)
+  for (label,x) in zip(labels,positions) {
+   XCTAssertEqual(app.buttons[label].firstMatch.frame.minX-row.frame.minX,x,accuracy:1,
+                  "Adding an icon must not compress or move track controls")
+  }
+  toggle.tap();XCTAssertEqual(row.frame.width,originalWidth,accuracy:1)
+  app.staticTexts["01  Normal track"].press(forDuration:0.8)
+  let icon=app.buttons["Ícone da pista"]
+  XCTAssertTrue(icon.waitForExistence(timeout:3));icon.tap()
+  XCTAssertEqual(app.staticTexts["event"].label,"track-icon")
+ }
  func testCompactRowsKeepPatchAndFXUntilTheirControlsActuallyNeedTheSpace() {
   let app=XCUIApplication();app.launch()
   XCTAssertTrue(app.buttons["Compact 285"].waitForExistence(timeout:10))

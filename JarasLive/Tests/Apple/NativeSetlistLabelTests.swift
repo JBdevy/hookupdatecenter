@@ -276,6 +276,16 @@ private func testFocusPreservesManualDrawerState() {
         "Closing a playing child's drawer must move its visible highlight back to the parent")
     precondition(setlistVisibleRegionID(normal, parent: nil, expanded: expanded) == normal)
     precondition(setlistVisibleRegionID(parent, parent: nil, expanded: expanded) == parent)
+    let duplicate = UUID()
+    precondition(setlistQueuedRegionID(child, occurrence: parent, parent: parent, expanded: []) == parent)
+    precondition(setlistQueuedRegionID(child, occurrence: parent, parent: parent, expanded: [parent]) == child)
+    precondition(setlistQueuedRegionID(child, occurrence: nil, parent: parent, expanded: [parent]) == child)
+    precondition(setlistQueuedRegionID(child, occurrence: nil, parent: parent, expanded: []) == parent)
+    precondition(setlistQueuedRegionID(parent, occurrence: parent, parent: nil, expanded: [parent]) == parent)
+    precondition(setlistQueuedRegionID(normal, occurrence: duplicate, parent: nil, expanded: []) == duplicate)
+    precondition(setlistQueuedRegionID(child, occurrence: duplicate, parent: parent, expanded: [parent]) == duplicate)
+    precondition(setlistQueuedRegionID(nil, occurrence: nil, parent: nil, expanded: [parent]) == nil)
+    print("SETLIST_QUEUE_HIGHLIGHTS_ONLY_VISIBLE_CHILD_AND_PRESERVES_DUPLICATE_OCCURRENCE_OK")
     print("SETLIST_FOCUS_PRESERVES_MANUAL_DRAWER_AND_HIGHLIGHTS_VISIBLE_PARENT_OK")
 }
 

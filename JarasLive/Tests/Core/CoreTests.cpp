@@ -194,12 +194,12 @@ static void testSubplaySurvivesOutgoingEnd() {
         expect(engine.transport().playing && !engine.transport().subPlay.playing && engine.transport().subPlayPromotion == 1 &&
                engine.transport().regionId == "b" && engine.transport().position == 32.25,
                "outgoing end promotes running Subplay before STOP, with or without Auto/queue");
-        expect(engine.transport().editPosition == 32.25,
-               "promotion carries the edit cursor to the incoming Subplay position");
+        expect(engine.transport().editPosition == 30,
+               "promotion cues the incoming song start while audio continues at the Subplay position");
         engine.advance(0.5);
         expect(engine.transport().playing && engine.transport().position == 32.75 && engine.transport().subPlayPromotion == 1,
                "incoming playback keeps advancing without repeating or inheriting outgoing STOP");
-        expect(engine.transport().editPosition == 32.25, "promoted edit cursor remains at the handoff position");
+        expect(engine.transport().editPosition == 30, "promoted edit cursor remains at the incoming song start");
         engine.execute({CommandKind::stopAll});
         expect(!engine.transport().playing && !engine.transport().subPlay.playing, "explicit Stop All still stops both heads");
     }
@@ -214,8 +214,27 @@ static void testSubplaySurvivesOutgoingEnd() {
         if (prepare) engine.execute({CommandKind::subPlay});
         expect(engine.transport().subPlay.playing, "fixture has an active manual or automatic pre-roll");
         engine.advance(1.25);
-        expect(engine.transport().playing && engine.transport().position == 21.25 && engine.transport().subPlayPromotion == 1,
+        expect(engine.transport().playing && engine.transport().position == 21.25 && engine.transport().editPosition == 20 && engine.transport().subPlayPromotion == 1,
                "STOP and prepare-only policies cannot silence a song that already started");
+    }
+    for (bool queued : {false, true}) for (bool manualStop : {false, true}) {
+        Project project; project.id = "sub-drawer"; project.name = "Drawer handoff";
+        Part child{"child", "Incoming drawer song", 35, 50}; child.parentRegionID = "unified";
+        project.songs = {{"song", "Timeline", 100, 120, {},
+            {{"out", "Outgoing", 0, 10}, {"unified", "Unified", 30, 60}, child}}};
+        Engine engine; engine.loadProject(project);
+        engine.execute({CommandKind::selectRegion, "out"}); engine.execute({CommandKind::play}); engine.advance(8);
+        if (queued) engine.execute({CommandKind::queueRegion, "child"});
+        engine.execute({CommandKind::subPlay}); engine.execute({CommandKind::subSeek, "", 35});
+        engine.advance(manualStop ? 1.25 : 2.25);
+        if (manualStop) engine.execute({CommandKind::stop});
+        const auto handoff = manualStop ? 36.25 : 37.25;
+        expect(engine.transport().playing && !engine.transport().subPlay.playing &&
+               engine.transport().position == handoff && engine.transport().editPosition == 35,
+               "drawer promotion cues the child song start, not the parent or handoff position");
+        engine.advance(0.25);
+        expect(engine.transport().position == handoff + 0.25 && engine.transport().editPosition == 35,
+               "moving the edit cue never restarts the promoted audio head");
     }
     // The final region may also be the end of the complete timeline. Incoming
     // Subplay earlier in that same timeline must survive that boundary too.
@@ -1220,7 +1239,7 @@ int main() {
     overlap.execute({CommandKind::subPlay}); overlap.advance(1);
     expect(overlap.transport().position == 4 && overlap.transport().editPosition == editBefore && overlap.transport().subPlay.position == 11, "queued subplay does not move the main or editing cursor early");
     overlap.advance(1.25);
-    expect(overlap.transport().position == 12.25 && overlap.transport().editPosition == 12.25 && overlap.transport().regionId == "r2", "handoff uses current subplay position including fractional elapsed time");
+    expect(overlap.transport().position == 12.25 && overlap.transport().editPosition == 10 && overlap.transport().regionId == "r2", "handoff preserves fractional audio position while cuing the incoming song start");
     expect(!overlap.transport().subPlay.playing && overlap.transport().subPlayPromotion == 1 && overlap.transport().queuedRegionId == "r3", "promoted playback clears subplay and advances the queue once");
     overlap.execute({CommandKind::stop});
     expect(overlap.transport().position == 22, "Stop without active Sub Play prepares the next queued region after promotion");

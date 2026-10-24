@@ -53,6 +53,8 @@ class Presentation final {
                 put(v, "mute", track.mute);
                 put(v, "solo", track.solo);
                 put(v, "heightScale", track.heightScale.value_or(1));
+                if (track.instrumentIcon)
+                    put(v, "instrumentIcon", text(*track.instrumentIcon));
                 if (track.parentTrackID)
                     put(v, "parentTrack", wireID(*track.parentTrackID));
                 if (track.stereoLinkPartner)

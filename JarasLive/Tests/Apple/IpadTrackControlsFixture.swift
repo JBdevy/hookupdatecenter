@@ -4,7 +4,7 @@ struct DAWRemoteState {
  struct Track: Equatable, Identifiable {
   let id:UUID;var name:String;var mute=false;var solo=false;var pan=0.0;var volume=1.0
   var color:UInt32=0x338855;var nameColor:UInt32?=0xffffff;var emphasized:Bool?=false;var silenced:Bool?=false
-  var canMeter:Bool?=true;var linkedTrack:UUID?=nil;var peakDB:Double? = -6
+  var instrumentIcon:String?=nil;var canMeter:Bool?=true;var linkedTrack:UUID?=nil;var peakDB:Double? = -6
   func hasSameMixerControls(as other:Self)->Bool{self==other}
  }
 }
@@ -39,6 +39,7 @@ struct TouchFixtureView:View {
  @StateObject private var reordering=IpadTrackReorderController()
  @State private var rowWidth:CGFloat=450
  @State private var compactRows=false
+ @State private var icons=false
  let id=UUID(uuidString:"00000000-0000-0000-0000-000000000001")!
  let click=UUID(uuidString:"00000000-0000-0000-0000-000000000002")!
  let text=UUID(uuidString:"00000000-0000-0000-0000-000000000003")!
@@ -47,6 +48,7 @@ struct TouchFixtureView:View {
  VStack {
   RemoteStepFixture()
   HStack {
+   Button("Toggle icons"){icons.toggle()}
    Button("Compact 285"){rowWidth=285;compactRows=true}
    Button("Compact 235"){rowWidth=235;compactRows=true}
    Button("Compact 190"){rowWidth=190;compactRows=true}
@@ -56,21 +58,21 @@ struct TouchFixtureView:View {
   Text("Selected: \(probe.selection)").accessibilityIdentifier("selection")
   ScrollView {
    VStack(spacing:12){
-    RemoteNativeMixerRow(track:.init(id:id,name:"Normal track",mute:probe.muted,solo:probe.solo),project:id,song:nil,
-     number:1,compact:compactRows,local:true,localShow:show,editing:probe.editing,selected:probe.selection>0,
+    RemoteNativeMixerRow(track:.init(id:id,name:"Normal track",mute:probe.muted,solo:probe.solo,instrumentIcon:icons ? "drums" : nil),project:id,song:nil,
+     number:1,compact:compactRows,local:true,localShow:show,showsInstrumentIcons:icons,editing:probe.editing,selected:probe.selection>0,
      select:{probe.selection+=1},selectionMenu:{probe.log("menu")},openPatch:{probe.log("patch")},openFX:{probe.log("fx")}){action,value in
       probe.log(action.rawValue);if action == .mute{probe.muted.toggle()};if action == .solo{probe.solo.toggle()}
-    }.frame(width:rowWidth,height:compactRows ? 60 : 90).modifier(IpadTrackReorderModifier(show:show,track:id,enabled:probe.editing,controller:reordering)).modifier(IpadTrackAudioContextMenu(enabled:!probe.editing,openPatch:{probe.log("context-patch")},addAudio:{probe.log("add-audio")})).accessibilityIdentifier("normal-row")
+    }.frame(width:rowWidth+(icons ? 40 : 0),height:compactRows ? 60 : 90).modifier(IpadTrackReorderModifier(show:show,track:id,enabled:probe.editing,controller:reordering)).modifier(IpadTrackAudioContextMenu(enabled:!probe.editing,openPatch:{probe.log("context-patch")},addAudio:{probe.log("add-audio")},icon:{probe.log("track-icon")})).accessibilityIdentifier("normal-row")
     RemoteNativeMixerRow(track:.init(id:click,name:"Click track"),project:id,song:nil,number:2,local:true,localShow:show,select:{probe.selection+=1}){action,_ in probe.log(action.rawValue)}.frame(width:450,height:90).accessibilityIdentifier("click-row")
     RemoteNativeMixerRow(track:.init(id:text,name:"Text track"),project:id,song:nil,number:3,local:true,localShow:show,select:{probe.selection+=1},addText:{probe.log("text")}){action,_ in probe.log(action.rawValue)}.frame(width:450,height:60)
     ForEach(0..<12){n in Text("Track \(n)").frame(width:450,height:90).background(Color.gray)}
    }
-  }.frame(width:470,height:550)
+  }.frame(width:530,height:550)
  }.preferredColorScheme(.dark).environment(\.jarasNativePalette,true)
  }
 }
 
-struct StepFixtureState {var bpm=120.0;var pitchSemitones:Int?=0;var pitchRegion:UUID?=UUID()}
+struct StepFixtureState {var tempoNeedsRender:Bool?=nil;var bpm=120.0;var pitchSemitones:Int?=0;var pitchRegion:UUID?=UUID()}
 struct RemoteStepFixture:View {
  @State private var state=StepFixtureState()
  @State private var tempoStepPending=false

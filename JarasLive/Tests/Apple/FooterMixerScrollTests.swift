@@ -440,6 +440,9 @@ print("MIXER_MODE_GESTURE_REVERSAL_IDLE_GAP_RESET_AND_COOLDOWN_OK")
 for height: CGFloat in [80, 160, 242, 255, 350, 600] {
     let normal = FooterMixerStripLayout(height: height, slotsOnly: false)
     let compact = FooterMixerStripLayout(height: height, slotsOnly: true)
+    let icons = FooterMixerStripLayout(height: height, slotsOnly: true, iconHeight: 30)
+    precondition(icons.controlsHeight == 0 && icons.slotsHeight == max(0, height - 64),
+                 "The icon stays below the name when only slots are shown")
     precondition(normal.controlsHeight == min(187, max(100, height - 34)))
     precondition(normal.slotsHeight == max(0, height - 34 - normal.controlsHeight),
                  "Normal fader/pan/meter geometry is unchanged")

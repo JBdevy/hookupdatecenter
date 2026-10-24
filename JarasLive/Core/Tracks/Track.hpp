@@ -47,6 +47,7 @@ struct Track {
     std::optional<std::string> stereoLinkJSON;
     std::optional<bool> phaseInverted;
     std::optional<double> heightScale;
+    std::optional<std::string> instrumentIcon;
     std::optional<AudioFile> clickSound;
 };
 }

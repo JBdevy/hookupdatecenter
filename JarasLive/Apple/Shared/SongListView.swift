@@ -84,6 +84,16 @@ private func setlistVisibleRegionID(_ id: UUID, parent: UUID?, expanded: Set<UUI
     if let parent, !expanded.contains(parent) { return parent }
     return id
 }
+/// A queued drawer song owns its highlight while visible; the occurrence still
+/// controls playlist progression and is retained when the drawer is closed.
+private func setlistQueuedRegionID(_ region: UUID?, occurrence: UUID?, parent: UUID?, expanded: Set<UUID>) -> UUID? {
+    guard let region else { return occurrence }
+    if let parent {
+        if expanded.contains(parent), occurrence == nil || occurrence == parent || occurrence == region { return region }
+        return occurrence ?? parent
+    }
+    return occurrence ?? region
+}
 @MainActor private final class SetlistEntryCache {
     struct Key: Equatable {
         let controller: ObjectIdentifier
@@ -266,6 +276,8 @@ struct SongListView: View {
         let ignoredRegion = transport.ignoreNextRegionId.flatMap { id in song?.parts.first { $0.id == id } }
         let displayedPlaying = transport.playing ? song?.playingSetlistRegion(ignoredRegion?.id ?? transport.regionId, position: ignoredRegion?.startTime ?? transport.position, expanded: expandedRegions) : nil
         let displayedPlayingID = transport.playing ? (transport.playlistEntryId.flatMap { show.isPlaylistDuplicate($0) ? $0 : nil } ?? displayedPlaying?.id) : nil
+        let displayedQueuedID = setlistQueuedRegionID(transport.queuedRegionId, occurrence: transport.queuedPlaylistEntryId,
+            parent: transport.queuedRegionId.flatMap { content.regionParents[$0] }, expanded: expandedRegions)
         let playbackEnd = transport.ignoreNextEnd ?? playingBounds?.endTime ?? transport.position
         VStack(spacing: 0) {
             GeometryReader { geometry in
@@ -376,7 +388,7 @@ struct SongListView: View {
                                     .id(block.id)
                             case .region(let region, let number):
                             let active = displayedPlayingID == region.id
-                            let queued = transport.playing && (transport.queuedPlaylistEntryId ?? transport.queuedRegionId) == region.id
+                            let queued = transport.playing && displayedQueuedID == region.id
                             let regionEnd = active && ignoredRegion != nil ? playbackEnd : region.endTime
                             let duration = max(0.001, regionEnd - region.startTime)
                             let remaining = active ? max(0, regionEnd - transport.position) : duration

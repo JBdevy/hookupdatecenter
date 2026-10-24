@@ -2505,6 +2505,33 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         catch { message = error.localizedDescription }
     }
+    /// Save track artwork outside Undo; name/color retain their existing history.
+    public func editTrackDetails(_ ids: Set<UUID>, name: String?, color: UInt32?,
+                                 instrumentIcon: String?, project: UUID) {
+        guard canControl(), !finishing, snapshot.project.id == project,
+              !ids.isEmpty, color == nil || color! <= 0xffffff else { return }
+        var next = snapshot.project
+        for song in next.songs.indices {
+            for index in next.songs[song].tracks.indices where ids.contains(next.songs[song].tracks[index].id) {
+                var track = next.songs[song].tracks[index]
+                if ids.count == 1, let name, track.fixedName == nil, track.role.rawValue != "vinhetas" {
+                    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    track.name = trimmed
+                }
+                if let color { track.color = color }
+                track.instrumentIcon = instrumentIcon
+                next.songs[song].tracks[index] = track
+            }
+        }
+        guard next != snapshot.project else { return }
+        do {
+            tick(); try executor.applyProjectEdit(next)
+            snapshot = try executor.snapshot()
+            history?.setTrackInstrumentIcon(ids, icon: instrumentIcon)
+            markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
+        } catch { message = error.localizedDescription }
+    }
     /// Called once when a native row-height drag finishes. Preview lives in the grid.
     public func setTrackHeightScale(_ id: UUID, scale: Double, project: UUID, song: UUID) {
         guard canControl(), !finishing, snapshot.project.id == project, current?.id == song,

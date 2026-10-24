@@ -771,7 +771,7 @@ class Workspace::Setlist final : public Component,
         }
         const auto t = w.session.presentationTransport();
         const bool active = t.playing && (entry.child ? t.regionId==entry.sourceId : t.playlistEntryId.value_or(t.regionId.value_or(ID{})) == entry.id),
-                   queued = t.playing && (entry.child ? t.queuedRegionId==entry.sourceId : t.queuedPlaylistEntryId.value_or(t.queuedRegionId.value_or(ID{})) == entry.id);
+                   queued = t.playing && playlistOccurrences::queuedVisibleEntry(w.session.song(), t.queuedRegionId, t.queuedPlaylistEntryId, expanded) == entry.id;
         const auto state = currentState();
         const bool played = state.playedLiveRegionIDs &&
             std::find(state.playedLiveRegionIDs->begin(), state.playedLiveRegionIDs->end(), entry.sourceId) != state.playedLiveRegionIDs->end();

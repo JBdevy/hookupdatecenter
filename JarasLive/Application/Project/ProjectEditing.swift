@@ -728,6 +728,21 @@ public struct ProjectEditHistory {
     public var canUndo: Bool { !past.isEmpty }
     public var canRedo: Bool { !future.isEmpty }
     public init(_ project: Project) { baseline = project }
+    /// Track artwork is document metadata, deliberately outside Undo/Redo.
+    /// Rebase only matching track identities; clips and all other edit history stay intact.
+    public mutating func setTrackInstrumentIcon(_ ids: Set<UUID>, icon: String?) {
+        func update(_ project: inout Project) {
+            for song in project.songs.indices {
+                for track in project.songs[song].tracks.indices
+                    where ids.contains(project.songs[song].tracks[track].id) {
+                    project.songs[song].tracks[track].instrumentIcon = icon
+                }
+            }
+        }
+        update(&baseline)
+        for index in past.indices { update(&past[index]) }
+        for index in future.indices { update(&future[index]) }
+    }
     public mutating func record(_ project: Project, preservingMediaStorage: Bool = false) {
         guard project != baseline else { return }
         past.append(baseline); if past.count > 100 { past.removeFirst() }

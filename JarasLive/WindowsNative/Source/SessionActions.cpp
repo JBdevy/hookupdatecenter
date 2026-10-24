@@ -250,7 +250,7 @@ Track importedTrack(const json& value) {
     object(value, {"id", "name", "role", "volume", "pan", "mute", "solo", "output", "audioFile", "clips", "patch",
         "color", "inputPatch", "inputMonitoring", "recordingChannels", "recordingFormat", "fx", "automation",
         "midiInput", "midiChannel", "parentTrackID", "secondaryPatch", "outputs", "timecode", "importedTimecodeItems",
-        "routing", "stereoLink", "phaseInverted", "heightScale", "clickSound"});
+        "routing", "stereoLink", "phaseInverted", "heightScale", "instrumentIcon", "clickSound"});
     Track result;
     result.id = identifier(field(value, "id")); result.name = text(field(value, "name"));
     setting(value, "role", result.role.id, identifier);
@@ -268,6 +268,7 @@ Track importedTrack(const json& value) {
     TRACK_OPTIONAL("secondaryPatch", secondaryPatch, patch); TRACK_OPTIONAL("outputs", outputs, patches);
     TRACK_OPTIONAL("timecode", timecode, timecode); TRACK_OPTIONAL("routing", routing, routing);
     TRACK_OPTIONAL("phaseInverted", phaseInverted, boolean); TRACK_OPTIONAL("heightScale", heightScale, number);
+    TRACK_OPTIONAL("instrumentIcon", instrumentIcon, text);
     TRACK_OPTIONAL("clickSound", clickSound, audioFile);
 #undef TRACK_OPTIONAL
     for (const auto& raw : array(field(value, "clips"))) result.clips.push_back(item(raw));

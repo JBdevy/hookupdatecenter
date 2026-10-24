@@ -589,6 +589,9 @@ struct TrackDetailsEditRequest: Identifiable {
     let name: String
     let color: UInt32
     let nameEditable: Bool
+    var instrumentIcon: String? = nil
+    var iconOnly = false
+    var iconRequest: Self { var request = self; request.iconOnly = true; return request }
 }
 private struct EditTrackDetailsKey: EnvironmentKey {
     static let defaultValue: (TrackDetailsEditRequest) -> Void = { _ in }

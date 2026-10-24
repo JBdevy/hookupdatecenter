@@ -654,7 +654,7 @@ struct TrackMixerRow: View, Equatable {
         #else
         let sameHeightMode = lhs.compactHeight == rhs.compactHeight && lhs.minimalHeight == rhs.minimalHeight
         #endif
-        return lhs.show === rhs.show && lhs.projectID == rhs.projectID && lhs.trackSelection == rhs.trackSelection && lhs.track == rhs.track && lhs.nextTrack == rhs.nextTrack && lhs.number == rhs.number && lhs.selected == rhs.selected && lhs.silenced == rhs.silenced && lhs.showsMeterScale == rhs.showsMeterScale && lhs.showsFader == rhs.showsFader && lhs.projectDirectory == rhs.projectDirectory && sameHeightMode && lhs.isFolder == rhs.isFolder && lhs.groupDepth == rhs.groupDepth && lhs.lastChild == rhs.lastChild && (lhs.groupSelection != nil) == (rhs.groupSelection != nil) && (lhs.deleteTracks != nil) == (rhs.deleteTracks != nil)
+        return lhs.show === rhs.show && lhs.projectID == rhs.projectID && lhs.trackSelection == rhs.trackSelection && lhs.track == rhs.track && lhs.nextTrack == rhs.nextTrack && lhs.number == rhs.number && lhs.selected == rhs.selected && lhs.silenced == rhs.silenced && lhs.showsMeterScale == rhs.showsMeterScale && lhs.showsFader == rhs.showsFader && lhs.showsInstrumentIcons == rhs.showsInstrumentIcons && lhs.projectDirectory == rhs.projectDirectory && sameHeightMode && lhs.isFolder == rhs.isFolder && lhs.groupDepth == rhs.groupDepth && lhs.lastChild == rhs.lastChild && (lhs.groupSelection != nil) == (rhs.groupSelection != nil) && (lhs.deleteTracks != nil) == (rhs.deleteTracks != nil)
     }
     @Environment(\.openFX) private var openFX
     @Environment(\.editTextItem) private var editTextItem
@@ -672,6 +672,7 @@ struct TrackMixerRow: View, Equatable {
         Color(hex: JarasTheme.trackNameHex(track, emphasized: selected && track.kind == .standard, silenced: silenced))
     }
     let showsFader: Bool
+    var showsInstrumentIcons = false
     var compactHeight = false
     var minimalHeight = false
     let isFolder: Bool
@@ -726,7 +727,7 @@ struct TrackMixerRow: View, Equatable {
         let editTargets = Set(targets.compactMap { $0 })
         let details = TrackDetailsEditRequest(project: project, tracks: editTargets,
             name: track.name, color: track.color ?? JarasTheme.roleHex(track.role),
-            nameEditable: editTargets.count == 1 && track.kind == .standard && track.role.rawValue != "vinhetas")
+            nameEditable: editTargets.count == 1 && track.kind == .standard && track.role.rawValue != "vinhetas", instrumentIcon: track.instrumentIcon)
         let title = (number < 10 ? "0" : "") + String(number) + "  " + track.name
         let titleColor = JarasTheme.trackNameHex(track, emphasized: selected && track.kind == .standard, silenced: silenced)
         HStack(spacing: 4) {
@@ -858,22 +859,35 @@ struct TrackMixerRow: View, Equatable {
             }.padding(.top, compactHeight ? 0 : 3).padding(.trailing, 4)
             }
             #endif
+            if showsInstrumentIcons {
+                GeometryReader { geometry in
+                    ZStack {
+                        JarasTheme.mixer
+                        if let raw = track.instrumentIcon, let icon = TrackInstrumentIcon(rawValue: raw) {
+                            TrackInstrumentIconView(icon: icon)
+                                .frame(width: min(32, max(0, geometry.size.height - 4)),
+                                       height: min(32, max(0, geometry.size.height - 4)))
+                                .foregroundStyle(.white)
+                        }
+                    }.overlay(alignment: .leading) { Color.white.opacity(0.14).frame(width: 1) }
+                }.frame(width: TrackMixerColumnGeometry.iconWidth).allowsHitTesting(false)
+            }
         }.frame(maxHeight: .infinity).clipped()
             .background { HStack(spacing: 0) {
                 if track.parentTrackID != nil { JarasTheme.mixer.frame(width: 16) }
                 JarasTheme.track(track, emphasized: selected && track.kind == .standard).opacity(selected && track.kind == .standard ? 0.65 : 0.50).saturation(silenced ? 0 : 1)
             }.allowsHitTesting(false) }
-            .overlay { Rectangle().stroke(selected && track.kind == .standard ? Color.white.opacity(0.65) : .clear, lineWidth: 1).padding(.leading, track.parentTrackID == nil ? 0 : 16).allowsHitTesting(false) }
-            .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.line).frame(height: 1).padding(.leading, track.parentTrackID == nil ? 0 : 16) }
+            .overlay { Rectangle().stroke(selected && track.kind == .standard ? Color.white.opacity(0.65) : .clear, lineWidth: 1).padding(.leading, track.parentTrackID == nil ? 0 : 16).padding(.trailing, showsInstrumentIcons ? 40 : 0).allowsHitTesting(false) }
+            .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.line).frame(height: 1).padding(.leading, track.parentTrackID == nil ? 0 : 16).padding(.trailing, showsInstrumentIcons ? 40 : 0) }
             .background { GeometryReader { geometry in
                 if track.kind == .standard { Color.clear.onDrop(of: [TrackReorderState.type], delegate: TrackInsertionDrop(show: show, track: track.id, nextTrack: nextTrack, height: geometry.size.height, state: dragState)) }
             } }
             .overlay(alignment: dropSide == true ? .bottom : .top) {
-                if dropSide != nil { Rectangle().fill(dragState.indicatorColor).frame(height: 3).shadow(color: dragState.indicatorColor, radius: 4).allowsHitTesting(false) }
+                if dropSide != nil { Rectangle().fill(dragState.indicatorColor).frame(height: 3).shadow(color: dragState.indicatorColor, radius: 4).padding(.trailing, showsInstrumentIcons ? 40 : 0).allowsHitTesting(false) }
             }
             .overlay { if dragState.blockedTarget == track.id { TrackDropBlockedBadge() } }
             #if os(macOS)
-            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, dragName: track.name, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, group: show.current?.tracks.contains(where: { trackSelection.contains($0.id) && $0.stereoLink != nil }) == true ? nil : groupSelection, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard && track.role.rawValue != "vinhetas" ? {
+            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, dragName: track.name, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, icon: { editTrackDetails(details.iconRequest) }, group: show.current?.tracks.contains(where: { trackSelection.contains($0.id) && $0.stereoLink != nil }) == true ? nil : groupSelection, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard && track.role.rawValue != "vinhetas" ? {
                 let range = TimelineAreaSelection.shared.range
                 let valid = range?.song == show.current?.id
                 if let id = show.addMIDIItem(track: track.id, start: valid ? range?.start : nil, duration: valid ? range.map { $0.end - $0.start } : nil) { MIDIEditorWindows.shared.open(show: show, item: id) }
@@ -884,6 +898,7 @@ struct TrackMixerRow: View, Equatable {
                 Button("Patch") { patchTarget = editorTarget(project: project) }
                 if track.kind == .standard { Button("FX") { fxTarget = editorTarget(project: project) } }
                 Button("Editar pista") { editTrackDetails(details) }
+                Button("Ícone da pista") { editTrackDetails(details.iconRequest) }
                 if let duplicateSelection {
                     Button(LocalizedStringKey(deletionTargets.count > 1 ? "Duplicate tracks" : "Duplicate track"), action: duplicateSelection)
                 }
@@ -2041,6 +2056,7 @@ private struct TrackRightClickInput: NSViewRepresentable {
     let patch: () -> Void
     let fx: () -> Void
     let edit: () -> Void
+    var icon: (() -> Void)? = nil
     let group: (() -> Void)?
     let ungroup: (() -> Void)?
     var removeFromGroup: (() -> Void)? = nil
@@ -2052,7 +2068,7 @@ private struct TrackRightClickInput: NSViewRepresentable {
     var deleteTracks: (() -> Void)? = nil
     var deleteTrackCount = 1
     func makeNSView(context: Context) -> TrackRightClickView { TrackRightClickView() }
-    func updateNSView(_ view: TrackRightClickView, context: Context) { view.interactionBlocked = interactionBlocked; view.project = project; view.track = track; view.kind = kind; view.dragName = dragName; view.select = select; view.patch = patch; view.fx = fx; view.edit = edit; view.group = group; view.ungroup = ungroup; view.removeFromGroup = removeFromGroup; view.link = link; view.unlink = unlink; view.soundDesigner = soundDesigner; view.createMIDI = createMIDI; view.duplicateTracks = duplicateTracks; view.deleteTracks = deleteTracks; view.deleteTrackCount = deleteTrackCount; view.action = { [weak view] in view?.openMenu() } }
+    func updateNSView(_ view: TrackRightClickView, context: Context) { view.interactionBlocked = interactionBlocked; view.project = project; view.track = track; view.kind = kind; view.dragName = dragName; view.select = select; view.patch = patch; view.fx = fx; view.edit = edit; view.icon = icon; view.group = group; view.ungroup = ungroup; view.removeFromGroup = removeFromGroup; view.link = link; view.unlink = unlink; view.soundDesigner = soundDesigner; view.createMIDI = createMIDI; view.duplicateTracks = duplicateTracks; view.deleteTracks = deleteTracks; view.deleteTrackCount = deleteTrackCount; view.action = { [weak view] in view?.openMenu() } }
 }
 /// Resolve one row per click, including after native scroll hosting recycles rows.
 /// The title also calls this route directly, so selecting it never relies solely
@@ -2237,6 +2253,7 @@ private final class TrackRightClickView: RightClickTargetView {
     var patch: (() -> Void)?
     var fx: (() -> Void)?
     var edit: (() -> Void)?
+    var icon: (() -> Void)?
     var group: (() -> Void)?
     var ungroup: (() -> Void)?
     var removeFromGroup: (() -> Void)?
@@ -2265,6 +2282,7 @@ private final class TrackRightClickView: RightClickTargetView {
         append(JarasLocalization.string("Link tracks"), link)
         append(JarasLocalization.string("Unlink tracks"), unlink)
         append(JarasLocalization.string("Editar pista"), edit)
+        append(JarasLocalization.string("Ícone da pista"), icon)
         append(JarasLocalization.string(deleteTrackCount > 1 ? "Duplicate tracks" : "Duplicate track"), duplicateTracks)
         if deleteTracks != nil {
             menu.addItem(.separator())
@@ -2401,15 +2419,15 @@ struct FooterMixerPanel: View {
     let active: Bool
     let maximumHeight: CGFloat
     var resizeCoordinator: FooterVerticalResizeCoordinator? = nil
-    @AppStorage("jaras.footerMixerHeight") private var storedHeight = 232.0
+    @AppStorage("jaras.footerMixerHeight") private var storedHeight = 273.0
     @State private var resizeStart: CGFloat?
     @State private var resizeHeight: CGFloat?
     @State private var hovering = false
     private var heightLimit: CGFloat { min(723.55859375, maximumHeight) }
-    private var height: CGFloat { min(heightLimit, max(232, resizeHeight ?? storedHeight)) }
+    private var height: CGFloat { min(heightLimit, max(273, resizeHeight ?? storedHeight)) }
     var body: some View {
         #if os(macOS)
-        FooterNativeHeightHost(storedHeight: CGFloat(storedHeight), minimum: 232, maximum: heightLimit,
+        FooterNativeHeightHost(storedHeight: CGFloat(storedHeight), minimum: 273, maximum: heightLimit,
             active: active, identity: AnyHashable(FooterMixerHeightContentIdentity(show: ObjectIdentifier(show), active: active)),
             role: .mixer, resizeCoordinator: resizeCoordinator) {
             VStack(spacing: 0) {
@@ -2426,7 +2444,7 @@ struct FooterMixerPanel: View {
             }.frame(height: 8).contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global).onChanged { value in
                     if resizeStart == nil { resizeStart = height }
-                    resizeHeight = min(heightLimit, max(232, (resizeStart ?? height) - value.translation.height))
+                    resizeHeight = min(heightLimit, max(273, (resizeStart ?? height) - value.translation.height))
                 }.onEnded { _ in
                     if let resizeHeight { storedHeight = resizeHeight }
                     resizeHeight = nil; resizeStart = nil
@@ -2461,8 +2479,8 @@ private enum FooterMixerMetrics {
 private struct FooterMixerStripLayout {
     let controlsHeight: CGFloat
     let slotsHeight: CGFloat
-    init(height: CGFloat, slotsOnly: Bool) {
-        let innerHeight = max(0, height - 8)
+    init(height: CGFloat, slotsOnly: Bool, iconHeight: CGFloat = 0) {
+        let innerHeight = max(0, height - 8 - iconHeight)
         // Keep the normal mixer unchanged. The compact mode gives everything
         // above the fixed lower name row to the existing FX/instrument slots.
         controlsHeight = slotsOnly ? 0 : min(187, max(100, innerHeight - 26))
@@ -2483,6 +2501,7 @@ private struct FooterMixerRenderState: Equatable {
     let selection: Set<UUID>
     var masterRight = false
     var slotsOnly = false
+    var showsInstrumentIcons: Bool { tracks.contains { $0.instrumentIcon.flatMap(TrackInstrumentIcon.init(rawValue:)) != nil } }
 }
 struct FooterHorizontalMixer: View {
     @AppStorage("catlive.barMixer.masterRight") private var masterRight = false
@@ -2523,12 +2542,12 @@ private final class FooterMixerStripVersions {
     private var counter: UInt64 = 0
     private(set) var masterVersion: UInt64 = 0
     func update(_ state: FooterMixerRenderState, active: Bool, locale: String) -> [UInt64] {
-        let commonChanged = previous?.project != state.project || previous?.selection != state.selection || previous?.slotsOnly != state.slotsOnly || previousActive != active || previousLocale != locale
+        let commonChanged = previous?.project != state.project || previous?.selection != state.selection || previous?.slotsOnly != state.slotsOnly || previous?.showsInstrumentIcons != state.showsInstrumentIcons || previousActive != active || previousLocale != locale
         if previous?.project != state.project || previousActive != active || previousLocale != locale ||
             previous?.masterFX != state.masterFX || previous?.masterVolume != state.masterVolume ||
             previous?.masterPan != state.masterPan || previous?.masterMute != state.masterMute ||
             previous?.masterSolo != state.masterSolo || previous?.masterMono != state.masterMono ||
-            previous?.masterColor != state.masterColor || previous?.masterRight != state.masterRight || previous?.slotsOnly != state.slotsOnly {
+            previous?.masterColor != state.masterColor || previous?.masterRight != state.masterRight || previous?.slotsOnly != state.slotsOnly || previous?.showsInstrumentIcons != state.showsInstrumentIcons {
             counter &+= 1; masterVersion = counter
         }
         let next = state.tracks.enumerated().map { index, track -> UInt64 in
@@ -2554,7 +2573,7 @@ private struct FooterMixerContent: View, Equatable {
         HStack(spacing: 0) {
             HStack(spacing: 3) {
                 ForEach(Array(range), id: \.self) { index in
-                    FooterMixerStrip(show: show, track: state.tracks[index], selection: state.selection, active: active, slotsOnly: state.slotsOnly).equatable()
+                    FooterMixerStrip(show: show, track: state.tracks[index], selection: state.selection, active: active, slotsOnly: state.slotsOnly, showsInstrumentIcons: state.showsInstrumentIcons).equatable()
                         .id(state.tracks[index].id)
                 }
             }
@@ -2567,7 +2586,7 @@ private struct FooterMixerContent: View, Equatable {
             let versions = stripVersions.update(state, active: active, locale: locale.identifier)
             FooterMixerScroll(contentWidth: CGFloat(count) * FooterMixerMetrics.stride + 7, stride: FooterMixerMetrics.stride, count: count, active: active,
                 masterWidth: FooterMixerMetrics.masterWidth, masterRight: state.masterRight, masterVersion: stripVersions.masterVersion,
-                masterContent: AnyView(FooterMixerStrip(masterState: state, show: show, track: nil, selection: [], active: active, slotsOnly: state.slotsOnly).equatable().padding(5)
+                masterContent: AnyView(FooterMixerStrip(masterState: state, show: show, track: nil, selection: [], active: active, slotsOnly: state.slotsOnly, showsInstrumentIcons: state.showsInstrumentIcons).equatable().padding(5)
                     .environment(\.openFX, openFX).environment(\.locale, locale).environment(\.editTrackDetails, editTrackDetails)),
                 versions: versions, retainStrip: { index in
                     state.tracks.indices.contains(index) && TrackSelectionRouter.shared.pinnedTracks.contains(state.tracks[index].id)
@@ -2575,7 +2594,7 @@ private struct FooterMixerContent: View, Equatable {
             #else
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 3) {
-                    ForEach(state.tracks) { FooterMixerStrip(show: show, track: $0, selection: state.selection, active: active, slotsOnly: state.slotsOnly) }
+                    ForEach(state.tracks) { FooterMixerStrip(show: show, track: $0, selection: state.selection, active: active, slotsOnly: state.slotsOnly, showsInstrumentIcons: state.showsInstrumentIcons) }
                 }.padding(5)
             }.scrollIndicators(.visible)
             #endif
@@ -3011,13 +3030,14 @@ private final class FooterMixerScrollView: NSView {
 private struct FooterMixerStrip: View, Equatable {
     var masterState: FooterMixerRenderState? = nil
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.show === rhs.show && lhs.track == rhs.track && lhs.selection == rhs.selection && lhs.active == rhs.active && lhs.masterState == rhs.masterState && lhs.slotsOnly == rhs.slotsOnly
+        lhs.show === rhs.show && lhs.track == rhs.track && lhs.selection == rhs.selection && lhs.active == rhs.active && lhs.masterState == rhs.masterState && lhs.slotsOnly == rhs.slotsOnly && lhs.showsInstrumentIcons == rhs.showsInstrumentIcons
     }
     let show: ShowController
     let track: Track?
     let selection: Set<UUID>
     let active: Bool
     var slotsOnly = false
+    var showsInstrumentIcons = false
     @Environment(\.editTrackDetails) private var editTrackDetails
     @State private var patchPresented = false
     @State private var fxPresented = false
@@ -3050,11 +3070,13 @@ private struct FooterMixerStrip: View, Equatable {
         #endif
         show.setMixerTrackSelection(ids, anchor: track.id)
     }
-    private func edit() {
+    private func edit() { editDetails(iconOnly: false) }
+    private func editIcon() { editDetails(iconOnly: true) }
+    private func editDetails(iconOnly: Bool) {
         guard let track else { colorPresented = true; return }
         let ids = Set(targets.compactMap { $0 })
         editTrackDetails(TrackDetailsEditRequest(project: show.snapshot.project.id, tracks: ids,
-            name: track.name, color: track.color ?? JarasTheme.roleHex(track.role), nameEditable: ids.count == 1 && track.kind == .standard && track.role.rawValue != "vinhetas"))
+            name: track.name, color: track.color ?? JarasTheme.roleHex(track.role), nameEditable: ids.count == 1 && track.kind == .standard && track.role.rawValue != "vinhetas", instrumentIcon: track.instrumentIcon, iconOnly: iconOnly))
     }
     private func link() {
         guard let song = show.current, let indices = song.linkableTracks(selection) else { return }
@@ -3184,7 +3206,7 @@ private struct FooterMixerStrip: View, Equatable {
     var body: some View {
         let deleteIDs = deletionTargets, deleteProject = show.snapshot.project.id
         GeometryReader { geometry in
-            let layout = FooterMixerStripLayout(height: geometry.size.height, slotsOnly: slotsOnly)
+            let layout = FooterMixerStripLayout(height: geometry.size.height, slotsOnly: slotsOnly, iconHeight: showsInstrumentIcons ? 30 : 0)
             let controlsHeight = layout.controlsHeight
             let slotsHeight = layout.slotsHeight
             VStack(spacing: 0) {
@@ -3224,6 +3246,13 @@ private struct FooterMixerStrip: View, Equatable {
                     #endif
                 }.frame(maxWidth: .infinity).frame(height: 22).padding(.top, 4)
                     .foregroundStyle(.white).accessibilityHint(Text(verbatim: track?.name ?? "Master"))
+                if showsInstrumentIcons {
+                    Group {
+                        if let raw = track?.instrumentIcon, let icon = TrackInstrumentIcon(rawValue: raw) {
+                            TrackInstrumentIconView(icon: icon).foregroundStyle(.white)
+                        } else { Color.clear }
+                    }.frame(height: 28).padding(.top, 2).allowsHitTesting(false)
+                }
             }.padding(4)
         }.frame(width: track == nil ? FooterMixerMetrics.masterWidth : FooterMixerMetrics.width).frame(maxHeight: .infinity)
             .background(color.opacity(selected ? 0.38 : 0.24)).overlay(alignment: .top) { color.frame(height: 3) }
@@ -3232,7 +3261,7 @@ private struct FooterMixerStrip: View, Equatable {
             .overlay {
                 if let track {
                     TrackRightClickInput(project: show.snapshot.project.id, track: track.id, kind: track.kind, dragName: track.name, select: select,
-                        patch: { patchPresented = true }, fx: { fxPresented = true }, edit: edit,
+                        patch: { patchPresented = true }, fx: { fxPresented = true }, edit: edit, icon: editIcon,
                         group: canGroup ? { show.groupTracks(selection) } : nil,
                         ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil,
                         link: canLink ? link : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil,
@@ -3252,6 +3281,7 @@ private struct FooterMixerStrip: View, Equatable {
                     Button("Patch") { patchPresented = true }
                     if hasStandardControls { Button("FX") { fxPresented = true } }
                     Button("Editar pista", action: edit)
+                    Button("Ícone da pista", action: editIcon)
                     if let duplicateSelection {
                         Button(LocalizedStringKey(deleteIDs.count > 1 ? "Duplicate tracks" : "Duplicate track"), action: duplicateSelection)
                     }
@@ -3607,7 +3637,7 @@ private struct PhaseInvertGlyph: Shape {
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 370),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         panel.title = "CatLive · Hoz-Mixer"
-        panel.minSize = NSSize(width: 360, height: 240)
+        panel.contentMinSize = NSSize(width: 360, height: 273)
         panel.isReleasedWhenClosed = false; panel.delegate = self
         let host = NSHostingView(rootView: DetachedMixerContent(show: show, owner: self, openFX: openFX, editTrack: editTrack).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }

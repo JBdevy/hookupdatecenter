@@ -42,6 +42,19 @@ for pending in [true, false] {
     } else { fatalError("tempo indicator state packet") }
 }
 print("REMOTE_TEMPO_RENDER_INDICATOR_AND_LEGACY_COMPATIBILITY_OK")
+require(fixture.tracks[0].instrumentIcon == nil, "Older projects/hosts do not invent a track icon")
+var iconFixture = fixture
+for icon: String? in ["drums", "saxophone", "vocal", nil] {
+    let previous = iconFixture.tracks[0]
+    iconFixture.tracks[0].instrumentIcon = icon
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(iconFixture)) {
+        require(decoded.tracks[0].instrumentIcon == icon, "Remote must follow host icon changes and removal")
+        require(!decoded.tracks[0].hasSameMixerControls(as: previous), "Icon change/removal must invalidate the retained row")
+        require(decoded.tracks[0].volume == previous.volume && decoded.tracks[0].clips == previous.clips,
+                "Icon presentation must not change audio or grid data")
+    } else { fatalError("track icon state packet") }
+}
+print("REMOTE_TRACK_ICON_CHANGES_REMOVAL_AND_LEGACY_COMPATIBILITY_OK")
 var linkedFixture = fixture
 let partnerTrackID = UUID()
 linkedFixture.tracks[0].linkedTrack = partnerTrackID

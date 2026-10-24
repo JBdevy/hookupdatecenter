@@ -4,6 +4,48 @@
 #include "ProjectDeletionPanel.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void trackIconWidth(const File &directory) {
+        using floatingControlTests::require;
+        auto project=floatingControlTests::fixture();
+        auto &tracks=project.songs.front().tracks;
+        tracks[1].parentTrackID=tracks[0].id;
+        const auto target=tracks[0].id;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);
+        Workspace w(session,auth,lighting,false,directory.getChildFile("track-icon-width-layout.json"));
+        w.setSize(1600,900);w.projectOpened(false);w.mixerVisible=true;
+        w.partsLeftVisible=false;w.partsRightVisible=false;w.setlistVisible=false;
+        std::function<Component *(Component &,const String &)> find=[&](Component &parent,const String &id)->Component * {
+            if(parent.getComponentID()==id)return &parent;
+            for(auto *child:parent.getChildren())if(auto *result=find(*child,id))return result;
+            return nullptr;
+        };
+        const auto frames=[&] {
+            std::vector<juce::Rectangle<int>> result;
+            for(const auto &track:session.song()->tracks) {
+                auto *row=find(w,"trackRow:"+text(track.id));require(row!=nullptr,"Missing track row");
+                for(auto *child:row->getChildren())if(child->isVisible())result.push_back(child->getBounds());
+            }
+            return result;
+        };
+        for(int width:{281,350,480}) {
+            w.mixerWidth=width;w.rebuild();
+            const auto before=frames();const int viewport=w.tracksViewport.getWidth();
+            const auto toolbar=w.addTrack.getBounds();
+            session.setTrackInstrumentIcon({target},std::string("drums"));w.rebuild();
+            require(w.tracksViewport.getWidth()==viewport+40&&w.mixerWidth==width,
+                    "Track icon column consumed the saved control width");
+            require(frames()==before&&w.addTrack.getBounds()==toolbar,
+                    "Track icons moved group/child controls or the toolbar");
+            w.mixerVisible=false;w.resized();
+            require(w.tracksViewport.getWidth()==0&&!w.tracksViewport.isVisible(),"Hidden mixer retained its icon column");
+            w.mixerVisible=true;w.resized();
+            require(w.tracksViewport.getWidth()==viewport+40&&frames()==before,"Restoring mixer changed its control width");
+            session.setTrackInstrumentIcon({target},std::nullopt);w.rebuild();
+            require(w.tracksViewport.getWidth()==viewport&&frames()==before,"Removing the last icon changed the saved body width");
+        }
+    }
     static void deleteRecentWhilePlaying(const File &directory) {
         using floatingControlTests::require;
         struct RestoreRecents { StringArray saved=RecentProjects::read(); ~RestoreRecents(){RecentProjects::write(saved);} } recents;
@@ -229,6 +271,7 @@ struct WorkspaceLayoutTests {
 };
 namespace workspaceLayoutTests {
 template<class Test> void registerTests(const File &directory,Test &test) {
+    test("Track icon column extends the mixer without moving group or child controls; hiding and removal restore width",[&]{WorkspaceLayoutTests::trackIconWidth(directory);});
     test("Deleting another recent project during playback preserves the current dirty project and audio clock",[&]{WorkspaceLayoutTests::deleteRecentWhilePlaying(directory);});
     test("Item context unifies the full selection per track with audio, MIDI, result selection and Undo; LR swap preserves unselected items",[&]{WorkspaceLayoutTests::unifyItems(directory);});
     test("Generated MIDI and text items advance edit cursor without seeking playback",[&]{WorkspaceLayoutTests::generatedItems(directory);});

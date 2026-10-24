@@ -236,8 +236,12 @@ private struct TimelineGridContent: View, Equatable {
                     let contentHeight = max(geometry.size.height, rulerHeight + rows.totalHeight + row * 2)
                     SidebarResizeLayer(state: mixerResizeState) { liveLabelWidth in
                     let requestedLabelWidth = liveLabelWidth ?? CGFloat(savedLabelWidth)
-                    let labelWidth = requestedLabelWidth <= 0 ? 0 : min(maximumLabelWidth, max(SidebarWidthLimits.trackMixer, requestedLabelWidth))
-                    let mountedLabelWidth = labelWidth > 0 ? labelWidth : min(maximumLabelWidth, max(SidebarWidthLimits.trackMixer, CGFloat(restoreLabelWidth)))
+                    let showsInstrumentIcons = song.tracks.contains { $0.instrumentIcon.flatMap(TrackInstrumentIcon.init(rawValue:)) != nil }
+                    // The saved/divider width describes the controls. Icons extend
+                    // the sidebar to the right without taking space from those controls.
+                    let mixerColumns = TrackMixerColumnGeometry(requestedWidth: requestedLabelWidth, maximum: maximumLabelWidth, showsIcons: showsInstrumentIcons)
+                    let labelWidth = mixerColumns.totalWidth
+                    let mountedLabelWidth = labelWidth > 0 ? labelWidth : TrackMixerColumnGeometry(requestedWidth: CGFloat(restoreLabelWidth), maximum: maximumLabelWidth, showsIcons: showsInstrumentIcons).totalWidth
                     let resizeViewport = mixerResizeState.limitsWidthToVisibleRows
                         ? CGRect(x: 0, y: verticalScroll.offset, width: 0, height: geometry.size.height) : nil
                     let extent = max(timelineExtent, song.duration + 120, TimelineZoomLimits.minimumExtent(viewportWidth: geometry.size.width - labelWidth - dividerWidth))
@@ -284,9 +288,10 @@ private struct TimelineGridContent: View, Equatable {
                                             let silenced = show.current?.isSilenced(track) ?? song.isSilenced(track)
                                             VStack(spacing: 0) {
                                             TimelineLiveMixerRow(show: show, track: track, index: index) { liveTrack in
-                                            TrackMixerRow(show: show, projectID: show.snapshot.project.id, track: mixerMetadata(liveTrack), trackSelection: selectedTracks, nextTrack: index + 1 < song.tracks.count ? song.tracks[index + 1].id : nil, number: index + 1, selected: track.kind == .standard && selectedTracks.contains(track.id), silenced: silenced, showsMeterScale: true, showsFader: (slot.width ?? mountedLabelWidth) >= 180, compactHeight: audioHeight < 64, minimalHeight: audioHeight < 56, isFolder: index + 1 < song.tracks.count && song.tracks[index + 1].parentTrackID == track.id, groupDepth: groupDepths[track.id] ?? 0, lastChild: index + 1 == song.tracks.count || song.tracks[index + 1].parentTrackID != track.parentTrackID, groupSelection: selectedTracks.contains(track.id) && selectedTracks.count > 1 ? { show.groupTracks(selectedTracks) } : nil, select: { selectTrack(track.id, in: song) }, importVideo: { documents.chooseVideo(track: track.id) }, projectDirectory: documents.currentURL?.deletingLastPathComponent(), deleteTracks: { requestTrackDeletion($0) }).equatable()
+                                            TrackMixerRow(show: show, projectID: show.snapshot.project.id, track: mixerMetadata(liveTrack), trackSelection: selectedTracks, nextTrack: index + 1 < song.tracks.count ? song.tracks[index + 1].id : nil, number: index + 1, selected: track.kind == .standard && selectedTracks.contains(track.id), silenced: silenced, showsMeterScale: true, showsFader: (slot.width ?? mountedLabelWidth) >= 180, showsInstrumentIcons: showsInstrumentIcons, compactHeight: audioHeight < 64, minimalHeight: audioHeight < 56, isFolder: index + 1 < song.tracks.count && song.tracks[index + 1].parentTrackID == track.id, groupDepth: groupDepths[track.id] ?? 0, lastChild: index + 1 == song.tracks.count || song.tracks[index + 1].parentTrackID != track.parentTrackID, groupSelection: selectedTracks.contains(track.id) && selectedTracks.count > 1 ? { show.groupTracks(selectedTracks) } : nil, select: { selectTrack(track.id, in: song) }, importVideo: { documents.chooseVideo(track: track.id) }, projectDirectory: documents.currentURL?.deletingLastPathComponent(), deleteTracks: { requestTrackDeletion($0) }).equatable()
                                             }.frame(height: audioHeight).clipped()
                                             TrackAutomationLaneHeaders(show: show, track: track, height: envelopeHeight)
+                                                .padding(.trailing, showsInstrumentIcons ? 40 : 0)
                                             }.frame(width: slot.width, height: slot.height).clipped().jarasPlaced(at: slotIndex)
                                     }
                                 }
@@ -298,9 +303,10 @@ private struct TimelineGridContent: View, Equatable {
                                             let silenced = show.current?.isSilenced(track) ?? song.isSilenced(track)
                                             VStack(spacing: 0) {
                                             TimelineLiveMixerRow(show: show, track: track, index: index) { liveTrack in
-                                            TrackMixerRow(show: show, projectID: show.snapshot.project.id, track: mixerMetadata(liveTrack), trackSelection: selectedTracks, nextTrack: index + 1 < song.tracks.count ? song.tracks[index + 1].id : nil, number: index + 1, selected: track.kind == .standard && selectedTracks.contains(track.id), silenced: silenced, showsMeterScale: true, showsFader: mountedLabelWidth >= 180, compactHeight: rows.audioHeights[index] < 64, minimalHeight: rows.audioHeights[index] < 56, isFolder: index + 1 < song.tracks.count && song.tracks[index + 1].parentTrackID == track.id, groupDepth: groupDepths[track.id] ?? 0, lastChild: index + 1 == song.tracks.count || song.tracks[index + 1].parentTrackID != track.parentTrackID, groupSelection: selectedTracks.contains(track.id) && selectedTracks.count > 1 ? { show.groupTracks(selectedTracks) } : nil, select: { selectTrack(track.id, in: song) }, importVideo: { documents.chooseVideo(track: track.id) }, projectDirectory: documents.currentURL?.deletingLastPathComponent(), deleteTracks: { requestTrackDeletion($0) }).equatable()
+                                            TrackMixerRow(show: show, projectID: show.snapshot.project.id, track: mixerMetadata(liveTrack), trackSelection: selectedTracks, nextTrack: index + 1 < song.tracks.count ? song.tracks[index + 1].id : nil, number: index + 1, selected: track.kind == .standard && selectedTracks.contains(track.id), silenced: silenced, showsMeterScale: true, showsFader: mountedLabelWidth >= 180, showsInstrumentIcons: showsInstrumentIcons, compactHeight: rows.audioHeights[index] < 64, minimalHeight: rows.audioHeights[index] < 56, isFolder: index + 1 < song.tracks.count && song.tracks[index + 1].parentTrackID == track.id, groupDepth: groupDepths[track.id] ?? 0, lastChild: index + 1 == song.tracks.count || song.tracks[index + 1].parentTrackID != track.parentTrackID, groupSelection: selectedTracks.contains(track.id) && selectedTracks.count > 1 ? { show.groupTracks(selectedTracks) } : nil, select: { selectTrack(track.id, in: song) }, importVideo: { documents.chooseVideo(track: track.id) }, projectDirectory: documents.currentURL?.deletingLastPathComponent(), deleteTracks: { requestTrackDeletion($0) }).equatable()
                                             }.frame(height: rows.audioHeights[index]).clipped()
                                             TrackAutomationLaneHeaders(show: show, track: track, height: rows.envelopeHeights[index])
+                                                .padding(.trailing, showsInstrumentIcons ? 40 : 0)
                                             }.frame(height: rows.heights[index]).clipped()
                                         } else { Color.clear.frame(height: rows.heights[index]) }
                                     }
@@ -609,7 +615,8 @@ private struct TimelineGridContent: View, Equatable {
                                 }
                                 .font(.jarasSystem(size: 9, weight: .bold, design: .monospaced))
                                 .foregroundStyle(JarasTheme.secondary)
-                                .frame(width: labelWidth, height: rulerHeight).clipped().background(JarasTheme.mixer)
+                                .frame(width: mixerColumns.bodyWidth, height: rulerHeight).clipped()
+                                .frame(width: labelWidth, alignment: .leading).background(JarasTheme.mixer)
                                 .overlay(alignment: .bottom) {
                                     Rectangle().fill(JarasTheme.line).frame(height: 1).allowsHitTesting(false)
                                 }
@@ -635,7 +642,7 @@ private struct TimelineGridContent: View, Equatable {
                             #endif
                         }
                         .overlay(alignment: .topLeading) {
-                            mixerDivider(width: labelWidth, maximum: maximumLabelWidth)
+                            mixerDivider(columns: mixerColumns, maximum: maximumLabelWidth)
                                 .frame(width: 20, height: geometry.size.height)
                                 .offset(x: labelWidth + dividerWidth / 2 - 10)
                         }
@@ -1609,21 +1616,22 @@ private struct TimelineGridContent: View, Equatable {
     }
 
     @ViewBuilder
-    private func mixerDivider(width: CGFloat, maximum: CGFloat) -> some View {
+    private func mixerDivider(columns: TrackMixerColumnGeometry, maximum: CGFloat) -> some View {
         #if os(macOS)
-        MixerResizeHandle(width: width, maximum: maximum, minimum: SidebarWidthLimits.trackMixer, scrollController: mixerScrollController, onToggle: toggleMixer, onEnd: { finalWidth in
+        MixerResizeHandle(width: columns.totalWidth, maximum: maximum + columns.iconExtension, minimum: SidebarWidthLimits.trackMixer + columns.iconExtension, scrollController: mixerScrollController, onToggle: toggleMixer, onEnd: { totalWidth in
+            let finalWidth = columns.storedWidth(for: totalWidth)
             if finalWidth > 0 { restoreLabelWidth = Double(finalWidth) }
             savedLabelWidth = Double(finalWidth)
             mixerResizeState.update(nil)
-        }) { mixerResizeState.update($0) }
+        }) { mixerResizeState.update(columns.storedWidth(for: $0)) }
         #else
         Rectangle().fill(JarasTheme.line)
             .overlay { Capsule().fill(JarasTheme.secondary).frame(width: 2, height: 28) }
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { value in
-                    if resizeStart == nil { resizeStart = width }
-                    savedLabelWidth = Double(min(maximum, max(SidebarWidthLimits.trackMixer, (resizeStart ?? width) + value.translation.width)))
+                    if resizeStart == nil { resizeStart = columns.bodyWidth }
+                    savedLabelWidth = Double(min(maximum, max(SidebarWidthLimits.trackMixer, (resizeStart ?? columns.bodyWidth) + value.translation.width)))
                 }.onEnded { _ in resizeStart = nil })
         #endif
     }

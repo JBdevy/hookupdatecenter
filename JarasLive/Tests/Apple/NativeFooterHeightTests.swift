@@ -2,6 +2,11 @@ import AppKit
 import SwiftUI
 import QuartzCore
 
+extension Font {
+    static func jarasSystem(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {
+        .system(size: size, weight: weight, design: design)
+    }
+}
 enum FooterJournal {
     static var rootBodies = 0, playlistReads = 0, made = 0
     static var fontScales: [CGFloat] = []
@@ -19,6 +24,7 @@ final class ShowController {
     let snapshot = FooterTestSnapshot()
     let current: FooterTestSong? = FooterTestSong(displayName: "Current song")
     let focusedRegion: UUID? = nil
+    func playlistRegionSourceID(_ id: UUID) -> UUID { id }
     var listedRegions: [FooterTestRegion] {
         FooterJournal.playlistReads += 1
         return [FooterTestRegion(startTime: 0, endTime: 185)]
@@ -62,17 +68,17 @@ private struct FooterResizeFixture: View {
         let _ = { FooterJournal.rootBodies += 1 }()
         VStack(spacing: 0) {
             FooterGeometryProbe(role: "workspace").frame(maxWidth: .infinity, maxHeight: .infinity)
-            FooterNativeHeightHost(storedHeight: 232, minimum: 232, maximum: 723.55859375,
+            FooterNativeHeightHost(storedHeight: 273, minimum: 273, maximum: 723.55859375,
                 active: true, identity: "mixer", role: .mixer, resizeCoordinator: coordinator) {
                 VStack(spacing: 0) {
-                    FooterMixerResizeInput(height: 232, maximum: 723.55859375, changed: { _ in },
+                    FooterMixerResizeInput(height: 273, maximum: 723.55859375, changed: { _ in },
                         ended: { FooterJournal.mixerCommits.append($0) }).frame(height: 8)
                     FooterScrollProbe().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }.background(FooterGeometryProbe(role: "mixer"))
             }
             FooterNativeHeightHost(storedHeight: 27, minimum: 27, maximum: 161.046875,
                 active: true, identity: "display", role: .display, resizeCoordinator: coordinator,
-                displayAvailableHeight: 850, fallbackMixerHeight: 232) {
+                displayAvailableHeight: 850, fallbackMixerHeight: 273) {
                 FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true)
                     .overlay(FooterDisplayResizeInput(height: 27, maximum: 161.046875, changed: { _ in },
                         ended: { FooterJournal.displayCommits.append($0) }))
@@ -112,7 +118,7 @@ MainActor.assumeIsolated {
     }
     pump(0.15)
     let initiallyClosed = FooterHeightContainerView(frame: CGRect(x: 0, y: 0, width: 800, height: 0))
-    initiallyClosed.configure(storedHeight: 232, minimum: 232, maximum: 700, active: false, role: .mixer, coordinator: nil)
+    initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: false, role: .mixer, coordinator: nil)
     var madeClosedContent = 0
     initiallyClosed.setContent(identity: "closed", environment: EnvironmentValues()) {
         madeClosedContent += 1
@@ -121,7 +127,7 @@ MainActor.assumeIsolated {
     expect(madeClosedContent == 0 && initiallyClosed.contentAssignments == 0,
            "closed mixer must not instantiate its controls on first launch")
     expect(initiallyClosed.subviews.allSatisfy(\.isHidden), "closed mixer native subtree must be hidden")
-    initiallyClosed.configure(storedHeight: 232, minimum: 232, maximum: 700, active: true, role: .mixer, coordinator: nil)
+    initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: true, role: .mixer, coordinator: nil)
     initiallyClosed.setContent(identity: "closed", environment: EnvironmentValues()) {
         madeClosedContent += 1
         return AnyView(FooterScrollProbe())
@@ -129,9 +135,9 @@ MainActor.assumeIsolated {
     expect(madeClosedContent == 1 && initiallyClosed.subviews.allSatisfy { !$0.isHidden },
            "opening mounts visible content exactly once")
     let retainedMixerRoot = initiallyClosed.subviews.first!
-    initiallyClosed.configure(storedHeight: 232, minimum: 232, maximum: 700, active: false, role: .mixer, coordinator: nil)
+    initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: false, role: .mixer, coordinator: nil)
     expect(retainedMixerRoot.isHidden, "closing excludes retained controls from tracking traversal")
-    initiallyClosed.configure(storedHeight: 232, minimum: 232, maximum: 700, active: true, role: .mixer, coordinator: nil)
+    initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: true, role: .mixer, coordinator: nil)
     initiallyClosed.setContent(identity: "closed", environment: EnvironmentValues()) {
         madeClosedContent += 1
         return AnyView(FooterScrollProbe())
@@ -165,7 +171,7 @@ MainActor.assumeIsolated {
         let started = CFAbsoluteTimeGetCurrent()
         mixer.mouseDragged(with: at(.leftMouseDragged, y: mixerY + CGFloat(delta)))
         timings.append((CFAbsoluteTimeGetCurrent() - started) * 1000)
-        expect(near(mixerHost.frame.height, 232 + CGFloat(delta)), "every one-pixel event must reach native mixer geometry synchronously; \(mixerHost.frame.height)")
+        expect(near(mixerHost.frame.height, 273 + CGFloat(delta)), "every one-pixel event must reach native mixer geometry synchronously; \(mixerHost.frame.height)")
         expect(near(scroll.frame.height, mixerHost.frame.height - 8), "the native clip viewport must grow in the same event")
         expect(near(mixerHost.convert(mixerHost.bounds, to: root).minY, initialMixerTop - CGFloat(delta)), "the moving edge must follow the exact pointer displacement")
         expect(document.frame == documentFrame && near(scroll.contentView.bounds.minX, 650) && near(scroll.contentView.bounds.minY, 300), "resize must preserve document coordinates and scroll offsets")
@@ -173,19 +179,19 @@ MainActor.assumeIsolated {
         expect(mixerHost.contentAssignments == mixerAssignments && displayHost.contentAssignments == displayAssignments, "interactive resize must retain both SwiftUI roots")
         expect(FooterJournal.made == made && Set(descendants(FooterVerticalResizeView.self, in: root).map(ObjectIdentifier.init)) == identities, "native controls and resize identities must survive every delta")
     }
-    mixerHost.configure(storedHeight: 232, minimum: 232, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
-    expect(near(mixerHost.effectiveHeight, 292), "stale configuration during drag must preserve its live height")
+    mixerHost.configure(storedHeight: 273, minimum: 273, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
+    expect(near(mixerHost.effectiveHeight, 273 + 60), "stale configuration during drag must preserve its live height")
     for delta: CGFloat in [90, 25, -1000, 5000, 0, 61] {
         mixer.mouseDragged(with: at(.leftMouseDragged, y: mixerY + delta))
-        expect(near(mixerHost.frame.height, min(723.55859375, max(232, 232 + delta))), "bursts, reversal and bounds must apply without a frame wait")
+        expect(near(mixerHost.frame.height, min(723.55859375, max(273, 273 + delta))), "bursts, reversal and bounds must apply without a frame wait")
     }
     mixer.mouseUp(with: at(.leftMouseUp, y: mixerY + 47))
-    expect(FooterJournal.mixerCommits == [279] && near(mixerHost.frame.height, 279), "mouse-up must apply and commit its own final position once")
-    mixerHost.configure(storedHeight: 232, minimum: 232, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
+    expect(FooterJournal.mixerCommits == [273 + 47] && near(mixerHost.frame.height, 273 + 47), "mouse-up must apply and commit its own final position once")
+    mixerHost.configure(storedHeight: 273, minimum: 273, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
     pump()
-    expect(near(mixerHost.frame.height, 279), "stale defaults after mouse-up must not jump to the old preference")
+    expect(near(mixerHost.frame.height, 273 + 47), "stale defaults after mouse-up must not jump to the old preference")
     mixer.mouseDragged(with: at(.leftMouseDragged, y: mixerY + 200))
-    expect(FooterJournal.mixerCommits.count == 1 && near(mixerHost.frame.height, 279), "events after mouse-up must be inert")
+    expect(FooterJournal.mixerCommits.count == 1 && near(mixerHost.frame.height, 273 + 47), "events after mouse-up must be inert")
     expect(!mixer.cursorPushed, "mouse-up must release its owned cursor")
     print("FOOTER_MIXER_EXACT_60_DELTAS_NATIVE_LAYOUT_ROOT_IDENTITY_SCROLL_AND_FINAL_COMMIT_OK mean_ms=\(timings.reduce(0,+)/Double(timings.count))")
 
@@ -200,25 +206,25 @@ MainActor.assumeIsolated {
     expect(FooterJournal.displayCommits == [147], "display must persist once on mouse-up")
     let savedMixerY = initialY(mixer)
     mixer.mouseDown(with: at(.leftMouseDown, y: savedMixerY))
-    mixer.mouseDragged(with: at(.leftMouseDragged, y: savedMixerY + 441))
+    mixer.mouseDragged(with: at(.leftMouseDragged, y: savedMixerY + 400))
     expect(near(mixerHost.frame.height, 720) && near(displayHost.frame.height, 130), "both native footers must share available height during mixer drag")
-    mixer.mouseDragged(with: at(.leftMouseDragged, y: savedMixerY + 350))
+    mixer.mouseDragged(with: at(.leftMouseDragged, y: savedMixerY + 309))
     expect(near(mixerHost.frame.height, 629) && near(displayHost.frame.height, 147), "display must restore its preferred height as soon as space returns")
-    mixer.mouseUp(with: at(.leftMouseUp, y: savedMixerY + 441))
+    mixer.mouseUp(with: at(.leftMouseUp, y: savedMixerY + 400))
     expect(near(displayHost.frame.height, 130) && FooterJournal.mixerCommits.last == 720, "coordinated limits must not jump after final commit")
-    mixerHost.configure(storedHeight: 720, minimum: 232, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
+    mixerHost.configure(storedHeight: 720, minimum: 273, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
     displayHost.configure(storedHeight: 147, minimum: 27, maximum: 161.046875, active: true, role: .display, coordinator: coordinator)
     pump(); expect(near(displayHost.frame.height, 130), "persisted values must preserve the coordinated limit")
-    mixerHost.configure(storedHeight: 232, minimum: 232, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
+    mixerHost.configure(storedHeight: 273, minimum: 273, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
     pump(); expect(near(displayHost.frame.height, 147), "reducing mixer must restore the saved display preference")
     coordinator.configure(availableHeight: 200, mixerHeight: 180)
-    mixerHost.configure(storedHeight: 232, minimum: 232, maximum: 180, active: true, role: .mixer, coordinator: coordinator)
+    mixerHost.configure(storedHeight: 273, minimum: 273, maximum: 180, active: true, role: .mixer, coordinator: coordinator)
     pump()
     expect(near(mixerHost.frame.height, 180) && near(displayHost.frame.height, 27), "short windows must reserve the same mixer minimum as the outer footer limit")
-    mixerHost.configure(storedHeight: 232, minimum: 232, maximum: 180, active: false, role: .mixer, coordinator: coordinator)
+    mixerHost.configure(storedHeight: 273, minimum: 273, maximum: 180, active: false, role: .mixer, coordinator: coordinator)
     pump(); expect(near(mixerHost.frame.height, 0) && near(displayHost.frame.height, 147), "closing mixer must release its reserved height and retain the display preference")
-    coordinator.configure(availableHeight: 850, mixerHeight: 232)
-    mixerHost.configure(storedHeight: 232, minimum: 232, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
+    coordinator.configure(availableHeight: 850, mixerHeight: 273)
+    mixerHost.configure(storedHeight: 273, minimum: 273, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
     pump()
     print("FOOTER_DISPLAY_LIVE_PRODUCTION_FONTS_CAPTURED_CONTENT_COORDINATED_LIMITS_AND_RESTORE_OK")
 
@@ -243,10 +249,10 @@ MainActor.assumeIsolated {
     begin(); mixer.isHidden = true; cancelled("hidden handle"); mixer.isHidden = false
     begin(); let oldSuperview = mixer.superview!, oldFrame = mixer.frame
     mixer.removeFromSuperview(); cancelled("detached handle"); oldSuperview.addSubview(mixer); mixer.frame = oldFrame; pump()
-    begin(); mixerHost.configure(storedHeight: 232, minimum: 232, maximum: 723.55859375, active: false, role: .mixer, coordinator: coordinator)
+    begin(); mixerHost.configure(storedHeight: 273, minimum: 273, maximum: 723.55859375, active: false, role: .mixer, coordinator: coordinator)
     pump()
     expect(!mixer.isDragging && !mixer.cursorPushed && near(mixerHost.frame.height, 0), "deactivating a footer must cancel its gesture and release cursor")
-    mixerHost.configure(storedHeight: 232, minimum: 232, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
+    mixerHost.configure(storedHeight: 273, minimum: 273, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
     cancelled("deactivated footer")
     begin(); let foreign = FooterMixerResizeView(); foreign.mouseExited(with: at(.mouseMoved, y: 0))
     expect(mixer.cursorPushed && NSCursor.current == NSCursor.resizeUpDown, "another handle must not replace the active drag cursor")

@@ -26,6 +26,8 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var phaseInverted: Bool? = nil
     /// Visual row proportion; absent in existing projects means the standard height.
     public var heightScale: Double? = nil
+    /// Optional visual identity; unknown future identifiers survive round trips.
+    public var instrumentIcon: String? = nil
     public var mute = false, solo = false
     public var output = 1
     public var automation: TrackAutomation?

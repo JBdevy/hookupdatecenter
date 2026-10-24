@@ -350,6 +350,57 @@ int runTests(const File &directory) {
     remoteSetlistSelectionTests::registerTests(directory,test);
     addTrackVisibilityTests(directory,test);
     addWorkspaceSetlistPresentationTests(directory,test);
+    test("Setlist drawer queue highlights the child without changing playlist occurrence", [&] {
+        jaras::Song song; jaras::Part child{"child", "Song", 10, 20}; child.parentRegionID = "parent";
+        song.parts = {{"parent", "Unified", 0, 30}, child};
+        auto visible = [&](std::optional<ID> region, std::optional<ID> entry, std::set<ID> expanded) {
+            return playlistOccurrences::queuedVisibleEntry(&song, region, entry, expanded);
+        };
+        expect(visible("child", "parent", {}) == "parent", "Closed drawer lost queue indication");
+        expect(visible("child", "parent", {"parent"}) == "child", "Open drawer highlighted the parent");
+        expect(visible("child", {}, {"parent"}) == "child", "Child without occurrence was hidden");
+        expect(visible("child", {}, {}) == "parent", "Closed child without occurrence was hidden");
+        expect(visible("parent", "parent", {"parent"}) == "parent", "Queued parent highlighted a child");
+        expect(visible("parent", "copy", {"parent"}) == "copy", "Queued duplicate lost its occurrence");
+        expect(visible("child", "copy", {"parent"}) == "copy", "Duplicate inherited another drawer's highlight");
+        expect(!visible({}, {}, {"parent"}), "Empty queue highlighted a row");
+    });
+    test("Track icon metadata persists without entering undo and preserves redo", [&] {
+        auto p=projectFixture();for(auto &t:p.songs[0].tracks)t.clips.clear();
+        const auto id=p.songs[0].tracks[0].id;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(p));session.audio.setOffline(true);
+        session.setTrackInstrumentIcon({id},"vocal");
+        Appearance iconPreferences(directory.getNonexistentChildFile("track-icon-remote", ".json"));
+        StageState iconStage(iconPreferences);remote::Presentation iconPresentation(session,iconStage);
+        expect(str(iconPresentation.snapshot(0)["tracks"][0],"instrumentIcon")=="vocal","Remote omitted the project's icon");
+        expect(!session.canUndo(),"Icon created an undo entry");
+        expect(session.song()->tracks[0].instrumentIcon=="vocal","Icon not applied");
+        session.edit([](auto &value){value.songs[0].tracks[0].name="Renamed";},false);
+        session.setTrackInstrumentIcon({id},"saxophone");
+        session.undo();
+        expect(session.song()->tracks[0].name==p.songs[0].tracks[0].name && session.song()->tracks[0].instrumentIcon=="saxophone","Undo reverted the icon or lost the name edit");
+        session.setTrackInstrumentIcon({id},"backs");
+        expect(session.canRedo(),"Icon cleared redo");session.redo();
+        expect(session.song()->tracks[0].name=="Renamed" && session.song()->tracks[0].instrumentIcon=="backs","Redo reverted the icon");
+        auto saved=session.snapshot();session.setTrackInstrumentIcon({id},{});
+        expect(!iconPresentation.snapshot(0)["tracks"][0].hasProperty("instrumentIcon"),"Remote retained a removed icon");
+        expect(!ProjectCodec::decode(session.snapshot()).songs[0].tracks[0].instrumentIcon,"Removed icon survived serialization");
+        expect(ProjectCodec::decode(saved).songs[0].tracks[0].instrumentIcon=="backs","Saved icon was changed by clear");
+    });
+    test("Track icon catalog renders all Mac identities at compact and expanded sizes", [&] {
+        expect(trackIcons::catalog().size()==37,"Catalog differs from Mac");
+        std::set<std::string> unique;
+        for(const auto &icon:trackIcons::catalog()) {
+            expect(unique.insert(icon.id).second,"Duplicate icon ID");
+            for(int size:{16,26,32,38}) {
+                Image image(Image::ARGB,size,size,true);
+                { Graphics g(image); trackIcons::draw(g,icon,image.getBounds().toFloat()); }
+                bool painted=false;for(int y=0;y<size;++y)for(int x=0;x<size;++x)painted|=image.getPixelAt(x,y).getAlpha()>0;
+                if(!painted) throw std::runtime_error(std::string("Blank icon: ")+icon.id+" at "+std::to_string(size));
+            }
+        }
+    });
     masterMixerTests::registerTests(directory,test);
     workspaceLayoutTests::registerTests(directory,test);
     test("Transport Fadeout waits for silence, cancels and blocks Subplay without changing saved faders", [&] {

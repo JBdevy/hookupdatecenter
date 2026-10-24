@@ -246,13 +246,15 @@ struct DAWRemoteState: Codable, Equatable {
         var peakDB: Double? = nil
         var canMeter: Bool? = nil
         var parentTrack: UUID? = nil
+        /// Presentation metadata owned by the host project, never a Remote edit.
+        var instrumentIcon: String? = nil
         /// Clip geometry belongs to the grid. Position packets or changes to
         /// clips must not rebuild the mixer's faders and native touch views.
         func hasSameMixerControls(as other: Self) -> Bool {
             id == other.id && name == other.name && color == other.color &&
             volume == other.volume && pan == other.pan && mute == other.mute && solo == other.solo &&
             nameColor == other.nameColor && emphasized == other.emphasized && silenced == other.silenced &&
-            linkedTrack == other.linkedTrack && peakDB == other.peakDB && canMeter == other.canMeter && parentTrack == other.parentTrack
+            linkedTrack == other.linkedTrack && peakDB == other.peakDB && canMeter == other.canMeter && parentTrack == other.parentTrack && instrumentIcon == other.instrumentIcon
         }
     }
     struct Region: Codable, Identifiable, Equatable {

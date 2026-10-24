@@ -473,7 +473,8 @@ struct DAWRemoteClientView: View {
                           nameColor: JarasTheme.trackNameHex(track, emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute),
                           emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute, laneCount: items?.lanes ?? 1, linkedTrack: track.stereoLink?.partner, heightScale: track.heightScale,
                           peakDB: sendsPeaks && !track.kind.isText && track.kind != .timecode ? StemAudioPlayback.shared.meter(for: track.id).peakHold.decibels : nil,
-                          canMeter: !track.kind.isText && track.kind != .timecode, parentTrack: track.parentTrackID)
+                          canMeter: !track.kind.isText && track.kind != .timecode, parentTrack: track.parentTrackID,
+                          instrumentIcon: track.instrumentIcon)
                 }, regions: cachedRegions, timelineRegions: cachedTimelineRegions,
                 currentRegion: transport.regionId, queuedRegion: transport.queuedRegionId, focusedRegion: show.focusedRegion,
                 currentPlaylistEntryId: transport.playlistEntryId, queuedPlaylistEntryId: transport.queuedPlaylistEntryId,
@@ -899,6 +900,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     var openSelectedPatch: (([UUID]) -> Void)? = nil
     var openSelectedFX: (([UUID]) -> Void)? = nil
     var openTrackDetails: ((Set<UUID>) -> Void)? = nil
+    var openTrackIcon: ((Set<UUID>) -> Void)? = nil
     var openMasterDetails: (() -> Void)? = nil
     var openItemMenu: ((UUID) -> Void)? = nil
     var openSelectedItemMenu: ((UUID, Set<UUID>) -> Void)? = nil
@@ -1221,6 +1223,9 @@ private struct RemoteSidebarRail<Content: View>: View {
         .confirmationDialog("Tracks", isPresented: $trackActionsOpen, titleVisibility: .visible) {
             if !selectedTracks.isEmpty, let openTrackDetails {
                 Button("Editar pista") { openTrackDetails(selectedTracks) }
+            }
+            if local, !selectedTracks.isEmpty, let openTrackIcon {
+                Button("Ícone da pista") { openTrackIcon(selectedTracks) }
             }
             if !selectedTracks.isEmpty, let openSelectedPatch {
                 Button("Patch") { openSelectedPatch(state.tracks.filter { selectedTracks.contains($0.id) }.map(\.id)) }
@@ -1822,8 +1827,9 @@ private struct RemoteSidebarRail<Content: View>: View {
             let railButton = railWidth - 8
             let contentWidth = max(0, geometry.size.width - (sidebarHidden ? 0 : railWidth + 1))
             let panelSpace = max(1, contentWidth - (local ? 44 : 20))
+            let iconExtension = panelWidths.track > 0 ? min(trackIconWidth, panelSpace * panelWidths.grid) : 0
             let baseSetlist = prompterFullscreen ? 0 : prompterPanel == nil ? panelSpace * panelWidths.setlist : max(1, contentWidth - (local ? 22 : 10)) * prompterSetlistFraction
-            let freeSpace = prompterPanel == nil ? panelSpace * panelWidths.grid : max(0, contentWidth - (local ? 22 : 10) - baseSetlist)
+            let freeSpace = prompterPanel == nil ? panelSpace * panelWidths.grid - iconExtension : max(0, contentWidth - (local ? 22 : 10) - baseSetlist)
             let rightPartsVisible = sectionsOpen && verticalSections && baseSetlist > 0 && !prompterFullscreen
             let nativeParts = RemoteNativePartsLayout(available: freeSpace,
                 leftRequested: liveNativeLeftPartsWidth ?? nativeLeftPartsWidth,
@@ -1951,7 +1957,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                     finishNativePartsResize(available: freeSpace, leftVisible: true, rightVisible: rightPartsVisible)
                                 }).frame(width: leftParts.handle).clipped()
                             }
-                            trackMixer.frame(width: panelSpace * panelWidths.track).clipped()
+                            trackMixer.frame(width: panelSpace * panelWidths.track + iconExtension).clipped()
                                 .allowsHitTesting(!mixerCollapsed).accessibilityHidden(mixerCollapsed)
                             resizeHandle(label: "Ajustar largura do Track-Mixer", changed: { translation in
                                 let start = trackResizeStart ?? panelWidths
@@ -1972,7 +1978,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 guard !state.playing, let region = selectedTimelineRegion else { return }
                                 pendingSeek = position; seekSentAt = Date()
                                 action(.seek, target: region.id, value: position)
-                            }).frame(width: max(0, panelSpace * panelWidths.grid - parts.total - leftParts.total)).clipped()
+                            }).frame(width: max(0, panelSpace * panelWidths.grid - parts.total - leftParts.total - iconExtension)).clipped()
                                 .allowsHitTesting(panelWidths.grid > 0).accessibilityHidden(panelWidths.grid == 0)
                         resizeHandle(label: "Ajustar largura do Setlist", changed: { translation in
                             let start = setlistResizeStart ?? panelWidths
@@ -2407,6 +2413,9 @@ private struct RemoteSidebarRail<Content: View>: View {
         let preview = regionMovePreview.map { song.previewMovingRegion($0.id, to: $0.start) } ?? song
         return RemoteNativeGridMetrics.rulerAreaHeight(local: true, regionCount: RegionLanes(parts: preview.parts).count)
     }
+    private var trackIconWidth: CGFloat {
+        state.tracks.contains { $0.instrumentIcon.flatMap(TrackInstrumentIcon.init(rawValue:)) != nil } ? 40 : 0
+    }
     private var trackMixer: some View {
         let hierarchy = DAWRemoteTrackHierarchy(state.tracks)
         let ancestors = Dictionary(uniqueKeysWithValues: visibleTracks.map { ($0.id, hierarchy.ancestors(of: $0.id)) })
@@ -2422,10 +2431,10 @@ private struct RemoteSidebarRail<Content: View>: View {
                         get: { editingTracks }, set: { editingTracks = $0; if !$0 { trackReordering.cancel() } }))
                         .padding(.horizontal, 4)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .frame(height: nativeRulerHeight).background(RemoteSurface.panel)
+                        .frame(height: nativeRulerHeight).padding(.trailing, trackIconWidth).background(RemoteSurface.panel)
                         .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.line).frame(height: 1).allowsHitTesting(false) }
                 }
-            } else { masterStrip }
+            } else { masterStrip.padding(.trailing, trackIconWidth).background(RemoteSurface.panel) }
             HStack(spacing: 1) {
                 RemoteTrackScrollRail(controller: trackScrolling).frame(width: 28)
                 ScrollView(.vertical) {
@@ -2435,7 +2444,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                             let guides = (ancestors[track.id] ?? []).map { nextAncestors.contains($0) }
                             RemoteNativeMixerRow(track: track, project: state.project, song: state.song, number: number + 1,
                                 compact: DAWRemoteItemLayout.rowHeight(track, scale: trackScrolling.heightScale) < 70,
-                                local: local, localShow: localShow, nativePhaseInverted: phaseInvertedTracks.contains(track.id),
+                                local: local, localShow: localShow, showsInstrumentIcons: trackIconWidth > 0, nativePhaseInverted: phaseInvertedTracks.contains(track.id),
                                 editing: local && editingTracks, selected: selectedTracks.contains(track.id),
                                 selection: selectedTracks, groupGuides: guides, isGroup: folders.contains(track.id),
                                 select: { toggleTrackSelection(track.id) }, selectionMenu: {
@@ -2455,7 +2464,8 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 .modifier(IpadTrackAudioContextMenu(enabled: local && !editingTracks,
                                     openPatch: patchableTracks.contains(track.id) ? openPatch.map { callback in { callback(track.id) } } : nil,
                                     addAudio: groupableTracks.contains(track.id) ? addTrackAudio.map { callback in { callback(track.id) } } : nil,
-                                    edit: openTrackDetails.map { callback in { callback(Set(selectionTargets(track.id))) } }))
+                                    edit: openTrackDetails.map { callback in { callback(Set(selectionTargets(track.id))) } },
+                                    icon: openTrackIcon.map { callback in { callback(Set(selectionTargets(track.id))) } }))
                         }
                     }
                     #if os(iOS)
@@ -4656,10 +4666,12 @@ private struct IpadTrackAudioContextMenu: ViewModifier {
     let openPatch: (() -> Void)?
     let addAudio: (() -> Void)?
     var edit: (() -> Void)? = nil
+    var icon: (() -> Void)? = nil
     @ViewBuilder func body(content: Content) -> some View {
-        if enabled, edit != nil || openPatch != nil || addAudio != nil {
+        if enabled, edit != nil || icon != nil || openPatch != nil || addAudio != nil {
             content.contextMenu {
                 if let edit { Button("Editar pista", action: edit) }
+                if let icon { Button("Ícone da pista", action: icon) }
                 if let openPatch { Button("Patch", action: openPatch) }
                 if let addAudio { Button("Add Stems", action: addAudio) }
             }
@@ -4699,6 +4711,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
     var compact = false
     var local = false
     var localShow: ShowController? = nil
+    var showsInstrumentIcons = false
     var nativePhaseInverted = false
     var editing = false
     var selected = false
@@ -4715,17 +4728,18 @@ private struct RemoteNativeMixerRow: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.project == rhs.project && lhs.song == rhs.song && lhs.number == rhs.number &&
             lhs.compact == rhs.compact && lhs.local == rhs.local && lhs.nativePhaseInverted == rhs.nativePhaseInverted &&
-            lhs.editing == rhs.editing && lhs.selected == rhs.selected &&
+            lhs.editing == rhs.editing && lhs.selected == rhs.selected && lhs.showsInstrumentIcons == rhs.showsInstrumentIcons &&
             lhs.selection == rhs.selection && lhs.groupGuides == rhs.groupGuides && lhs.isGroup == rhs.isGroup && lhs.track.hasSameMixerControls(as: rhs.track)
     }
     var body: some View {
         GeometryReader { geometry in
+        let iconWidth: CGFloat = showsInstrumentIcons ? 40 : 0
         let nativeTrack = localShow?.current?.tracks.first { $0.id == track.id }
         let kind = nativeTrack?.kind ?? .standard
         let vinhetas = nativeTrack?.role.rawValue == "vinhetas"
         let hasVolume = !local || !kind.isText
         let hierarchyWidth: CGFloat = !groupGuides.isEmpty ? 16 + CGFloat(min(4, groupGuides.count - 1)) * 8 : 0
-        let controlLayout = RemoteNativeTrackControlLayout(width: geometry.size.width, compact: compact,
+        let controlLayout = RemoteNativeTrackControlLayout(width: max(0, geometry.size.width - iconWidth), compact: compact,
             editing: editing, hierarchyWidth: hierarchyWidth, isGroup: isGroup, hasVolume: hasVolume,
             hasRecord: localShow != nil && kind == .standard, hasPatch: openPatch != nil, hasFX: openFX != nil)
         let patchVisible = !local || controlLayout.patch
@@ -4846,7 +4860,21 @@ private struct RemoteNativeMixerRow: View, Equatable {
                         .allowsHitTesting(false)
                 }
             }
-
+            .padding(.trailing, iconWidth)
+            .overlay(alignment: .trailing) {
+                if showsInstrumentIcons {
+                    ZStack {
+                        JarasTheme.mixer
+                        if let raw = track.instrumentIcon, let icon = TrackInstrumentIcon(rawValue: raw) {
+                            TrackInstrumentIconView(icon: icon).foregroundStyle(.white)
+                                .frame(width: min(32, max(0, geometry.size.height - 4)),
+                                       height: min(32, max(0, geometry.size.height - 4)))
+                        }
+                    }.frame(width: iconWidth)
+                        .overlay(alignment: .leading) { Color.white.opacity(0.14).frame(width: 1) }
+                        .allowsHitTesting(false)
+                }
+            }
         }
     }
 }

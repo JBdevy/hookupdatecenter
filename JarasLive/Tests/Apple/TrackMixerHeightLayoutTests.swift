@@ -131,6 +131,49 @@ for height in [24.0, 36, 40, 48, 52, 55, 56, 58, 60, 63, 64, 78.4, 89.6] {
     precondition(title.bounds.height >= 14, "A full line of text remains visible")
 }
 print("MIXER_HEIGHT_STABLE_NATIVE_CONTROLS_AND_DIRECT_LAYOUT_OK")
+
+// Adding the first icon must extend the sidebar, retaining the real native
+// control frames. Exercise grouped rows and persisted resize widths as well.
+private struct IconColumnFixture: View {
+    let width: CGFloat
+    let icons: Bool
+    let child: Bool
+    var body: some View {
+        let columns = TrackMixerColumnGeometry(requestedWidth: width, maximum: 486.5, showsIcons: icons)
+        HStack(spacing: TrackMixerColumnGeometry.spacing) {
+            if child { Color.clear.frame(width: 12) }
+            TrackMixerContinuousLayout(meterWidth: 52, standard: true, lowerTitle: true, folder: true) {
+                ForEach(0..<7) { slot in
+                    Probe(counts: Counts(), slot: slot)
+                        .frame(width: slot == 3 ? 210 : nil, height: slot == 5 ? 20 : nil)
+                }
+            }
+            if icons { Color.clear.frame(width: TrackMixerColumnGeometry.iconWidth) }
+        }.frame(width: columns.totalWidth, height: 80)
+    }
+}
+for width: CGFloat in [SidebarWidthLimits.trackMixer, 350, 486.5] {
+    for child in [false, true] {
+        let iconHost = NSHostingView(rootView: IconColumnFixture(width: width, icons: false, child: child))
+        window.contentView = iconHost
+        func frames(_ icons: Bool) -> [CGRect] {
+            let columns = TrackMixerColumnGeometry(requestedWidth: width, maximum: 486.5, showsIcons: icons)
+            window.setContentSize(NSSize(width: columns.totalWidth, height: 80))
+            iconHost.rootView = IconColumnFixture(width: width, icons: icons, child: child)
+            iconHost.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.01)); iconHost.layoutSubtreeIfNeeded()
+            return probes(iconHost).sorted { $0.slot < $1.slot }.map { $0.convert($0.bounds, to: iconHost) }
+        }
+        let before = frames(false), withIcons = frames(true), after = frames(false)
+        precondition(before.count == 7 && before == withIcons && before == after,
+            "Adding/removing icons must preserve meter, Patch, folder, title and fader frames")
+        let columns = TrackMixerColumnGeometry(requestedWidth: width, maximum: 486.5, showsIcons: true)
+        precondition(columns.storedWidth(for: columns.totalWidth + 10) == width + 10,
+            "Resizing must save only the control width, without accumulating icon widths")
+        precondition(TrackMixerColumnGeometry(requestedWidth: 0, maximum: 486.5, showsIcons: true).totalWidth == 0,
+            "Hiding the mixer must also hide the icon column")
+    }
+}
+print("MIXER_ICONS_EXTEND_SIDEBAR_WITHOUT_MOVING_NATIVE_CONTROLS_OK")
 window.close()
 
 for width: CGFloat in [265,281,400,700] {

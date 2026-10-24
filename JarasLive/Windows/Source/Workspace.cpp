@@ -1,3 +1,4 @@
+#include "TrackInstrumentPicker.h"
 #include "ProjectReductionPanel.h"
 #include "MeterDisplay.h"
 #include "SpecialTrackControls.h"
@@ -1183,6 +1184,8 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         }
         return depth ? 16 + (depth - 1) * 8 : 0;
     }
+    int iconWidth() const { return w.showsTrackIcons?40:0; }
+    int bodyWidth() const { return getWidth()-iconWidth(); }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         if (auto *t = track()) {
@@ -1202,10 +1205,10 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             g.setColour(colour);
             const auto lanes = automation::visible(*t);
             const int body = getHeight() - lanes.size() * 32;
-            g.fillRect(indent, 0, getWidth() - indent, body - 1);
+            g.fillRect(indent, 0, bodyWidth() - indent, body - 1);
             if (emphasized) {
                 g.setColour(Colours::white.withAlpha(.65f));
-                g.drawRect((float)indent + .5f, .5f, (float)getWidth() - indent - 1, (float)body - 2, 1.f);
+                g.drawRect((float)indent + .5f, .5f, (float)bodyWidth() - indent - 1, (float)body - 2, 1.f);
             }
             const float meterInset=body>=64?4.f:2.f;
             const auto levels = w.session.audio.meterLevels(id);
@@ -1226,27 +1229,36 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             const int titleX = indent + 24;
             const bool textTrack=jaras::isTeleprompterRole(t->role)||t->role.id=="chords";
             const int titleY = expanded ? (textTrack?3:47) : std::max(0, (body - 21) / 2);
-            const int titleRight = textTrack&&special ? special->getX()-4 : expanded ? getWidth()-4 : (jaras::fixedTrackName(t->role).empty()?record.getX()-4:special?special->getX()-4:getWidth()-4);
+            const int titleRight = textTrack&&special ? special->getX()-4 : expanded ? bodyWidth()-4 : (jaras::fixedTrackName(t->role).empty()?record.getX()-4:special?special->getX()-4:bodyWidth()-4);
             g.drawText(number + text(t->name), titleX, titleY,
                        std::max(1, titleRight - titleX), expanded ? 16 : 21,
                        Justification::centredLeft, true);
             for (int i = 0; i < lanes.size(); ++i) {
                 const int y = body + i * 32;
                 g.setColour(theme::background);
-                g.fillRect(0, y, getWidth(), 32);
+                g.fillRect(0, y, bodyWidth(), 32);
                 g.setColour(Colours::white);
                 g.setFont(theme::semiboldFont(11));
-                g.drawText(str(lanes[i], "name"), 8, y, getWidth() - 90, 32,
+                g.drawText(str(lanes[i], "name"), 8, y, bodyWidth() - 90, 32,
                            Justification::centredLeft);
                 g.setColour(flag(lanes[i], "enabled", true) ? theme::green : theme::secondary);
-                g.drawEllipse((float)getWidth() - 78, y + 11.f, 10, 10, 1);
+                g.drawEllipse((float)bodyWidth() - 78, y + 11.f, 10, 10, 1);
                 g.setColour(theme::secondary);
-                drawInterfaceIcon(g, "mixer", {(float)getWidth() - 56, y + 8.f, 16, 16});
-                drawInterfaceIcon(g, "close", {(float)getWidth() - 26, y + 9.f, 14, 14});
+                drawInterfaceIcon(g, "mixer", {(float)bodyWidth() - 56, y + 8.f, 16, 16});
+                drawInterfaceIcon(g, "close", {(float)bodyWidth() - 26, y + 9.f, 14, 14});
+            }
+        }
+        if(iconWidth()) {
+            g.setColour(Colour(0xff202020));g.fillRect(bodyWidth(),0,iconWidth(),getHeight());
+            g.setColour(theme::line);g.drawVerticalLine(bodyWidth(),0,(float)getHeight());
+            if(const auto *t=track()) if(const auto *icon=trackIcons::find(t->instrumentIcon)) {
+                const int body=getHeight()-automation::visible(*t).size()*32;
+                const float size=std::max(0.f,std::min(32.f,(float)body-4));
+                trackIcons::draw(g,*icon,{bodyWidth()+(40-size)/2,(body-size)/2,size,size});
             }
         }
         g.setColour(theme::line.withAlpha(.7f));
-        g.drawHorizontalLine(getHeight() - 1, 0, (float)getWidth());
+        g.drawHorizontalLine(getHeight() - 1, 0, (float)bodyWidth());
     }
     void resized() override {
         const auto *t = track();
@@ -1254,7 +1266,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         const bool expanded = body >= 64;
         const int y = expanded ? 3 : std::max(0, (body - 21) / 2);
         const int h = expanded ? 24 : 21;
-        int x = getWidth() - 4;
+        int x = bodyWidth() - 4;
         auto place = [&](Component &control, int width) {
             x -= width; control.setBounds(x, y, width, h); x -= 3;
         };
@@ -1284,20 +1296,20 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         folder.setBounds(groupIndent() + 20, y + (h - 20) / 2, 28, 20);
         folder.setVisible(expanded && isFolder());
         phase.setVisible(expanded&&standard&&t->role.id!="vinhetas"); volume.setVisible(expanded&&!textTrack);
-        phase.setBounds(getWidth() - 26, 27, 22, 20);
+        phase.setBounds(bodyWidth() - 26, 27, 22, 20);
         phase.getProperties().set("plain", true);
         const int volumeLeft = (meterReadout ? 68 : 22) + groupIndent();
-        volume.setBounds(volumeLeft, 27, std::max(1, getWidth() - (standard ? 30 : 4) - volumeLeft), 20);
+        volume.setBounds(volumeLeft, 27, std::max(1, bodyWidth() - (standard ? 30 : 4) - volumeLeft), 20);
     }
     void mouseDown(const MouseEvent &e) override {
         if (auto *t = track()) {
             const auto lanes = automation::visible(*t);
             const int body = getHeight() - lanes.size() * 32;
-            if (e.y >= body && lanes.size()) {
+            if (e.x < bodyWidth() && e.y >= body && lanes.size()) {
                 const int index = jlimit(0, lanes.size() - 1, (e.y - body) / 32);
-                if (e.x > getWidth() - 30 || e.x > getWidth() - 82 && e.x < getWidth() - 60) {
+                if (e.x > bodyWidth() - 30 || e.x > bodyWidth() - 82 && e.x < bodyWidth() - 60) {
                     const auto curveID = str(lanes[index], "id");
-                    const bool hide = e.x > getWidth() - 30;
+                    const bool hide = e.x > bodyWidth() - 30;
                     w.perform([&] {
                         w.session.edit([&](jaras::Project &p) {
                             for (auto &s : p.songs)
@@ -3056,7 +3068,7 @@ void Workspace::paintOverChildren(Graphics &g) {
             g.fillRect(x,(float)timeline->getY()+timeline->headerHeight(),1.f,(float)timeline->getHeight()-timeline->headerHeight());
         }
     }
-    auto boundsFor=[&](const ID &id)->juce::Rectangle<int>{if(const auto *song=session.song()){auto i=trackTree::index(*song,id);if(i<(size_t)rows.size())return getLocalArea(rows[(int)i],rows[(int)i]->getLocalBounds());}return {};};
+    auto boundsFor=[&](const ID &id)->juce::Rectangle<int>{if(const auto *song=session.song()){auto i=trackTree::index(*song,id);if(i<(size_t)rows.size())return getLocalArea(rows[(int)i],rows[(int)i]->getLocalBounds().withWidth(rows[(int)i]->bodyWidth()));}return {};};
     Graphics::ScopedSaveState saved(g);g.reduceClipRegion(tracksViewport.getBounds());
     if(trackDropPreview){auto r=boundsFor(trackDropPreview->indicator);g.setColour(trackDropPreview->joins?theme::yellow:theme::green);g.fillRect(r.getX(),trackDropPreview->after?r.getBottom()-2:r.getY(),r.getWidth(),2);}
     if(!trackDropBlocked.empty()){auto r=boundsFor(trackDropBlocked);g.setColour(Colours::red);g.drawRect(r.reduced(2),2);g.setFont(theme::font(11));g.drawText("Destino indisponível",r,Justification::centred);}
@@ -3636,7 +3648,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     partsRightWidth = (int)appearance.value("catlive.partsRightWidth",0);
     if (partsRightWidth>0) partsRightWidth=jlimit(160,900,partsRightWidth);
     footerHeightSetting = jlimit(27, 161, (int)appearance.value("catlive.footerDisplayHeight", 27));
-    mixerHeightSetting = jlimit(232, 724, (int)appearance.value("jaras.footerMixerHeight", 300));
+    mixerHeightSetting = jlimit(273, 724, (int)appearance.value("jaras.footerMixerHeight", 300));
     auto bindDivider = [this](DragDivider &divider, const String &id, int &value, int minimum, int maximum, int sign, const String &key) {
         addAndMakeVisible(divider); divider.setComponentID(id);
         divider.started = [this, &value] { resizeStart = value; };
@@ -3671,7 +3683,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     partsRightDivider.scrollMetrics=[this]{return setlistPlacement==SetlistPlacement::detached?setlist->scrollMetrics():DragDivider::ScrollMetrics{};};
     partsRightDivider.scrollTo=[this](int y){if(setlistPlacement==SetlistPlacement::detached)setlist->scrollTo(y);};
     bindDivider(footerHeightDivider, "footerHeightDivider", footerHeightSetting, 27, 161, -1, "catlive.footerDisplayHeight");
-    bindDivider(mixerHeightDivider, "mixerHeightDivider", mixerHeightSetting, 232, 724, -1, "jaras.footerMixerHeight");
+    bindDivider(mixerHeightDivider, "mixerHeightDivider", mixerHeightSetting, 273, 724, -1, "jaras.footerMixerHeight");
     resourceUsage.sample();
     fadeoutOverlay = std::make_unique<TransportFadeoutOverlay>(session, [this] {
         session.cancelTransportFadeout();
@@ -3732,7 +3744,7 @@ void Workspace::restoreWorkspaceLayout() {
     setlistWidth=jlimit(minimumSetlistWidth,900,(int)appearance.value("jaras.setlistWidth",num(state,"setlistWidth",setlistWidth)));
     partsLeftWidth=jlimit(160,900,(int)appearance.value("catlive.partsLeftWidth",num(state,"partsLeftWidth",partsLeftWidth)));
     partsRightWidth=jlimit(0,900,(int)appearance.value("catlive.partsRightWidth",num(state,"partsRightWidth",partsRightWidth)));
-    mixerHeightSetting=jlimit(232,724,(int)appearance.value("jaras.footerMixerHeight",num(state,"mixerHeight",mixerHeightSetting)));
+    mixerHeightSetting=jlimit(273,724,(int)appearance.value("jaras.footerMixerHeight",num(state,"mixerHeight",mixerHeightSetting)));
     footerHeightSetting=jlimit(27,161,(int)appearance.value("catlive.footerDisplayHeight",num(state,"footerHeight",footerHeightSetting)));
     const auto placement=(SetlistPlacement)jlimit(0,2,(int)num(state,"setlistPlacement",0));
     setlistDockSide=(SetlistPlacement)jlimit(0,1,(int)num(state,"setlistDockSide",0));
@@ -4021,7 +4033,7 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     panel->setSize(width, height);
     window->setContentOwned(panel.release(), true);
     window->setResizeLimits(preferencesPanel ? width : name.startsWith("Piano Roll") ? 760 : 360,
-                            preferencesPanel ? height + 32 : name.startsWith("Piano Roll") ? 440 : 240, 3840, 2160);
+                            preferencesPanel ? height + 32 : name.startsWith("Piano Roll") ? 440 : name == "Mixer" ? 305 : 240, 3840, 2160);
     window->centreAroundComponent(this, width, height + 32);
     if (savedPlacement.isNotEmpty()) window->restoreWindowStateFromString(savedPlacement);
     window->onClose = [safe = SafePointer<Workspace>(this), name, preferencesPanel,
@@ -4229,7 +4241,7 @@ void Workspace::paint(Graphics &g) {
 }
 void Workspace::resized() {
     if (fadeoutOverlay) fadeoutOverlay->setBounds(getLocalBounds());
-    const int mixerHeight = footerMixerVisible ? jlimit(232, 724, mixerHeightSetting) : 0;
+    const int mixerHeight = footerMixerVisible ? jlimit(273, 724, mixerHeightSetting) : 0;
     const bool compactTransport = getWidth() < 1270, narrowTransport = getWidth() < 900;
     const int rail = 32, title = 32, transport = narrowTransport ? 166 : compactTransport ? 126 : 86;
     const int footerHeight = jlimit(27, 161, footerHeightSetting);
@@ -4288,7 +4300,10 @@ void Workspace::resized() {
     const int leftPartsWidth=partsLeftVisible?jlimit(partsMinimum,std::max(partsMinimum,partsBudget-sectionsWidth),partsLeftWidth):0;
     const int right=setlistVisible&&!detachedSetlist?jlimit(setlistMinimum,
         std::max(setlistMinimum,columnsBudget-sectionsWidth-mixerMinimum-leftPartsWidth),setlistWidth):0;
-    const int left=mixerVisible?std::min(mixerWidth,std::max(mixerMinimum,columnsBudget-right-sectionsWidth-leftPartsWidth)):0;
+    // mixerWidth remains the user's control-area width. Append the icon column
+    // rather than squeezing Patch/faders/M/S into a narrower track body.
+    const int mixerBodyWidth=mixerVisible?std::min(mixerWidth,std::max(mixerMinimum,columnsBudget-right-sectionsWidth-leftPartsWidth)):0;
+    const int left=mixerBodyWidth+(mixerVisible&&showsTrackIcons?40:0);
     const int leadingSetlist = setlistPlacement == SetlistPlacement::left ? right : 0;
     const int partsX = rail + leadingSetlist;
     const int mixerX = partsX + leftPartsWidth;
@@ -4397,7 +4412,7 @@ void Workspace::resized() {
         rows[i]->setVisible(!rowHidden(i));
         rows[i]->setBounds(0, rowTop(i), std::max(1, left - 8), rowHeight(i));
     }
-    addTrack.setBounds(mixerX + left - 48, workspaceBounds.getY() + 20, 32, 24);
+    addTrack.setBounds(mixerX + mixerBodyWidth - 48, workspaceBounds.getY() + 20, 32, 24);
     addTrack.setVisible(mixerVisible);
     timelineLock.setBounds(addTrack.getX() - 30, addTrack.getY(), 24, 24);
     timelineLock.setVisible(mixerVisible);
@@ -4600,6 +4615,7 @@ int Workspace::rowAt(int y) const {
     return -1;
 }
 void Workspace::rebuild() {
+    showsTrackIcons=trackIcons::visible(session.song());
     if(trackVisibility.load(appearance,session.project().id))pruneTrackVisibilitySelection(trackSelectionFromFooter);
     std::set<ID> liveItems;
     if (const auto *song = session.song()) for (const auto &track : song->tracks)
@@ -6077,6 +6093,19 @@ void Workspace::editTrack(ID id) {
                                                     save, close, false, track.role.id!="vinhetas"),
                      300, 370);
 }
+void Workspace::editTrackIcon(ID id) {
+    const auto *song=session.song(); if(!song) return;
+    const auto at=trackTree::index(*song,id); if(at==song->tracks.size()) return;
+    const auto targets=trackSelected(id)?selectedTracks:std::set<ID>{id};
+    const auto project=session.project().id;
+    const auto &track=song->tracks[at];
+    auto save=[safe=SafePointer<Workspace>(this),targets,project](std::optional<std::string> value) {
+        if(!safe || safe->session.project().id!=project) return;
+        safe->perform([&]{safe->session.setTrackInstrumentIcon(targets,std::move(value));});
+    };
+    ModalSheet::open(*this,String::fromUTF8("Ícone da pista"),
+        std::make_unique<TrackInstrumentPicker>(targets.size()>1?String((int)targets.size())+" pistas selecionadas":text(track.name),track.instrumentIcon,save),530,504);
+}
 void Workspace::specialTrackAction(ID id,const String &action) {
     if(action=="settings") {showPanel("Timecode",std::make_unique<PatchPanel>(session,id,[safe=SafePointer<Workspace>(this)](String error){if(safe)safe->showError(error);}),360,400);return;}
     if(action=="text"){addTextItem(id,session.transport().editPosition);return;}
@@ -6116,10 +6145,11 @@ void Workspace::showTrackMenu(ID id, Point<int> point) {
     if (track.role.id=="generatedClick") menu.addItem(2,"Sound Designer");
     if (standard) { menu.addItem(3,"FX"); if(track.role.id!="vinhetas")menu.addItem(4,"Criar item MIDI"); if(groupable)menu.addItem(5,String::fromUTF8("Criar grupo")); }
     if (trackTree::end(*song,at)>at+1) menu.addItem(6,"Desagrupar");
-    if (track.parentTrackID) menu.addItem(7,"Retirar do grupo");
+    if (track.parentTrackID) menu.addItem(7,"Remover do grupo");
     if (standard && trackEditing::linkable(*song,targets)) menu.addItem(8,"Vincular pistas");
     if (track.stereoLinkPartner) menu.addItem(9,String::fromUTF8("Desvincular pistas"));
     menu.addItem(10,String::fromUTF8("Editar pista"));
+    menu.addItem(13,String::fromUTF8("Ícone da pista"));
     if (standard && track.role.id!="vinhetas") menu.addItem(12, targets.size() > 1 ? "Duplicar pistas" : "Duplicar pista");
     menu.addSeparator(); menu.addItem(11,targets.size()>1 ? "Excluir pistas" : "Excluir pista");
     const auto project = session.project().id, songID = song->id;
@@ -6132,6 +6162,7 @@ void Workspace::showTrackMenu(ID id, Point<int> point) {
             if(choice==3)w.openFX(id);
             if(choice==4)w.addMIDIItem(id,w.session.transport().editPosition);
             if(choice==10)w.editTrack(id);
+            if(choice==13)w.editTrackIcon(id);
             if(choice==12)w.perform([&] {
                 const auto copies=w.session.duplicateTracks(targets);
                 if (!copies.empty()) {

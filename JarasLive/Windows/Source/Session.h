@@ -66,6 +66,7 @@ class Session final : private Timer {
     void configureEffects(const std::map<ID, var> &);
     String copyEffect(const ID &source, const String &effect, const ID &destination, const String &before = {});
     void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false);
+    void setTrackInstrumentIcon(const std::set<ID> &, std::optional<std::string>);
     void resizeItem(const ID &, double start, double end);
     std::vector<ID> duplicateTracks(const std::set<ID> &);
     void undo();

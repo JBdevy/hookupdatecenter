@@ -1,5 +1,6 @@
 #pragma once
 #include "Session.h"
+#include "TrackInstrumentIcons.h"
 #include "GainFader.h"
 #include "MeterDisplay.h"
 #include "FXChain.h"
@@ -68,6 +69,8 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         repaint();
     }
     void refresh() {
+        const bool icons=trackIcons::visible(session.song());
+        if(icons!=showsIcons){showsIcons=icons;master->resized();master->repaint();for(auto *strip:strips){strip->resized();strip->repaint();}}
         std::vector<ID> wanted;
         if (const auto *song = session.song())
             for (const auto &track : song->tracks)
@@ -323,6 +326,8 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             }
             g.setColour(Colours::white);g.setFont(theme::semiboldFont(10));
             g.drawFittedText(text(t->name), geometry.name, Justification::centred, 1, 1.f);
+            if(mixer.showsIcons && !id.empty()) if(const auto *icon=trackIcons::find(t->instrumentIcon))
+                trackIcons::draw(g,*icon,{(getWidth()-26.f)/2,(float)geometry.name.getBottom()+2,26,26});
         }
         void resized() override {
             const auto *t=track();const bool standard=t&&jaras::fixedTrackName(t->role).empty(),textTrack=t&&(jaras::isTeleprompterRole(t->role)||t->role.id=="chords");
@@ -468,15 +473,16 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         friend struct HozMixerFocusTests;
         struct StripLayout { juce::Rectangle<int> slots,name;int controlsY=0,controlsHeight=0; };
         StripLayout layout() const {
+            const int height=std::max(1,getHeight()-(mixer.showsIcons?30:0));
             if(mixer.slotsOnly) {
-                const int nameTop=std::max(3,getHeight()-26);
+                const int nameTop=std::max(3,height-26);
                 return {{3,13,std::max(0,getWidth()-6),std::max(0,nameTop-17)},
-                        {3,nameTop,std::max(0,getWidth()-6),std::min(22,std::max(0,getHeight()-nameTop))},nameTop,0};
+                        {3,nameTop,std::max(0,getWidth()-6),std::min(22,std::max(0,height-nameTop))},nameTop,0};
             }
             // Match FooterMixerStrip: the docked panel hides FX at 255 pt and below.
             // The 22 pt allowance accounts for the Mac host's inset/chrome beyond
             // this strip's bounds; growth above the threshold belongs to FX slots.
-            const int inner=std::max(0,getHeight()-22);
+            const int inner=std::max(0,height-22);
             const int controls=std::min(187,std::max(100,inner-26));
             const int slots=std::max(0,inner-controls-26);
             return {{3,13,std::max(0,getWidth()-6),slots},
@@ -557,7 +563,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
     std::function<void(ID,Point<int>)> openContextMenu;
     std::function<void(ID,String)> specialAction;
     std::function<bool(ID)> isTrackVisible;
-    bool masterRight=false,slotsOnly=false;
+    bool masterRight=false,slotsOnly=false,showsIcons=false;
     HozMixerFocusGesture focusGesture;
     double wheelRemainder=0;
     std::optional<trackDrop::Destination> dropPreview;ID blocked;

@@ -14,6 +14,20 @@ enum SidebarWidthLimits {
     static let setlist: CGFloat = setlistDefault
     #endif
 }
+struct TrackMixerColumnGeometry {
+    static let iconWidth: CGFloat = 40
+    static let spacing: CGFloat = 4
+    let bodyWidth: CGFloat
+    let iconExtension: CGFloat
+    var totalWidth: CGFloat { bodyWidth > 0 ? bodyWidth + iconExtension : 0 }
+
+    init(requestedWidth: CGFloat, maximum: CGFloat, showsIcons: Bool) {
+        bodyWidth = requestedWidth <= 0 ? 0 : min(maximum, max(SidebarWidthLimits.trackMixer, requestedWidth))
+        iconExtension = showsIcons ? Self.iconWidth + Self.spacing : 0
+    }
+
+    func storedWidth(for total: CGFloat) -> CGFloat { max(0, total - iconExtension) }
+}
 private struct WorkspaceProjectIdentity: Hashable {
     let project: UUID
     let document: URL?
@@ -73,11 +87,11 @@ struct MainView: View {
     @AppStorage("jaras.layout.setlist.dockSide") private var setlistDockPlacement: SetlistPlacement = .right
     @State private var keyboardSettings = false
     @AppStorage("catlive.footerDisplayHeight") private var storedFooterHeight = 27.0
-    @AppStorage("jaras.footerMixerHeight") private var footerMixerHeight = 232.0
+    @AppStorage("jaras.footerMixerHeight") private var footerMixerHeight = 273.0
     @State private var footerResizeCoordinator = FooterVerticalResizeCoordinator()
     private func maximumFooterHeight(workspaceHeight: CGFloat) -> CGFloat {
         min(161.046875, max(27, workspaceHeight - 150 - (keyboardOpen ? 108 : 0)
-            - (footerMixerOpen ? min(723.55859375, max(232, footerMixerHeight)) : 0)))
+            - (footerMixerOpen ? min(723.55859375, max(273, footerMixerHeight)) : 0)))
     }
     @AppStorage("jaras.trackColumnWidth") private var mixerWidth = Double(SidebarWidthLimits.trackMixer)
     @AppStorage("jaras.trackColumnRestoreWidth") private var mixerRestoreWidth = Double(SidebarWidthLimits.trackMixer)
@@ -294,7 +308,7 @@ struct MainView: View {
                     active: true, identity: AnyHashable(ObjectIdentifier(show)), role: .display,
                     resizeCoordinator: footerResizeCoordinator,
                     displayAvailableHeight: workspaceHeight - 150 - (keyboardOpen ? 108 : 0),
-                    fallbackMixerHeight: footerMixerOpen ? min(723.55859375, max(232, footerMixerHeight)) : 0) {
+                    fallbackMixerHeight: footerMixerOpen ? min(723.55859375, max(273, footerMixerHeight)) : 0) {
                     GeometryReader { geometry in
                         HStack(spacing: 14) {
                             ResourceUsageView().fixedSize(horizontal: true, vertical: false)
@@ -433,14 +447,21 @@ struct MainView: View {
                 if let edit = trackEdit {
                     ZStack {
                         Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { trackEdit = nil }
-                        NameColorEditor(title: "Editar pista", initialName: edit.name, initialColor: edit.color, save: { name, color in
-                            guard edit.project == show.snapshot.project.id else { return }
-                            if edit.nameEditable, let track = edit.tracks.first {
-                                show.editTrack(track, name: name, color: color)
+                        Group {
+                            if edit.iconOnly {
+                                TrackInstrumentPickerModal(show: show, request: edit, close: { trackEdit = nil })
                             } else {
-                                show.editTrackColors(edit.tracks, color: color, project: edit.project)
+                                NameColorEditor(title: "Editar pista", initialName: edit.name, initialColor: edit.color,
+                                    save: { name, color in
+                                        guard edit.project == show.snapshot.project.id else { return }
+                                        if edit.nameEditable, let track = edit.tracks.first {
+                                            show.editTrack(track, name: name, color: color)
+                                        } else {
+                                            show.editTrackColors(edit.tracks, color: color, project: edit.project)
+                                        }
+                                    }, close: { trackEdit = nil }, nameEditable: edit.nameEditable, showsName: edit.nameEditable)
                             }
-                        }, close: { trackEdit = nil }, nameEditable: edit.nameEditable, showsName: edit.nameEditable)
+                        }
                         .background(JarasTheme.panel)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .shadow(color: .black.opacity(0.4), radius: 18)
@@ -1102,7 +1123,7 @@ final class FooterVerticalResizeCoordinator {
         display?.refreshHeight()
     }
     var displayMaximum: CGFloat {
-        let mixerHeight = mixer.map { $0.active ? max(232, $0.effectiveHeight) : 0 } ?? fallbackMixerHeight
+        let mixerHeight = mixer.map { $0.active ? max(273, $0.effectiveHeight) : 0 } ?? fallbackMixerHeight
         return min(161.046875, max(27, availableHeight - mixerHeight))
     }
     func heightChanged(role: FooterHeightRole) { if role == .mixer { display?.refreshHeight() } }
@@ -1369,7 +1390,7 @@ struct FooterMixerResizeInput: NSViewRepresentable {
     let ended: (CGFloat) -> Void
     func makeNSView(context: Context) -> FooterMixerResizeView { FooterMixerResizeView() }
     func updateNSView(_ view: FooterMixerResizeView, context: Context) {
-        view.height = height; view.minimum = 232; view.maximum = maximum; view.changed = changed; view.ended = ended
+        view.height = height; view.minimum = 273; view.maximum = maximum; view.changed = changed; view.ended = ended
     }
 }
 final class FooterMixerResizeView: FooterVerticalResizeView {

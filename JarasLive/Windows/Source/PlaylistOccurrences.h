@@ -5,6 +5,16 @@
 #include <set>
 
 namespace catlive::playlistOccurrences {
+inline std::optional<jaras::ID> queuedVisibleEntry(const jaras::Song* song,
+    const std::optional<jaras::ID>& region, const std::optional<jaras::ID>& occurrence,
+    const std::set<jaras::ID>& expanded) {
+    if (song && region) for (const auto& part : song->parts) if (part.id == *region && part.parentRegionID) {
+        const auto& parent = *part.parentRegionID;
+        if (expanded.count(parent) && (!occurrence || occurrence == parent || occurrence == region)) return region;
+        return occurrence ? occurrence : part.parentRegionID;
+    }
+    return occurrence ? occurrence : region;
+}
 inline bool duplicate(jaras::RegionPlaylist &playlist, const jaras::ID &entry, jaras::ID copy) {
     const auto at = std::find(playlist.regionIds.begin(), playlist.regionIds.end(), entry);
     if (at == playlist.regionIds.end() || copy.empty() || playlist.containsEntry(copy)) return false;
