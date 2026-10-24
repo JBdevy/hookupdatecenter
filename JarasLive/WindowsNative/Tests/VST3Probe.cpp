@@ -6,7 +6,41 @@
 #include <algorithm>
 #include <cmath>
 #include <windows.h>
+#include <dbghelp.h>
+#include <sstream>
+#include <thread>
+#include <chrono>
+#include <atomic>
 using namespace catlive::native;
+namespace {
+nlohmann::json *crashReport = nullptr;
+std::filesystem::path crashReportPath;
+LONG WINAPI recordPluginCrash(EXCEPTION_POINTERS *fault) {
+    if (!crashReport || !fault || !fault->ExceptionRecord) return EXCEPTION_EXECUTE_HANDLER;
+    try {
+        const auto code=fault->ExceptionRecord->ExceptionCode;
+        std::ostringstream message;message<<"Plugin process crashed (0x"<<std::hex<<code<<") during "<<crashReport->value("stage",std::string("scan"))<<".";
+        (*crashReport)["success"]=false;(*crashReport)["error"]=message.str();
+        (*crashReport)["exceptionCode"]=code;
+        MEMORY_BASIC_INFORMATION info{};
+        if(VirtualQuery(fault->ExceptionRecord->ExceptionAddress,&info,sizeof(info))){
+            wchar_t name[32768]{};
+            if(GetModuleFileNameW(static_cast<HMODULE>(info.AllocationBase),name,32768))
+                (*crashReport)["faultModule"]=std::filesystem::path(name).filename().u8string();
+            (*crashReport)["faultOffset"]=uintptr_t(fault->ExceptionRecord->ExceptionAddress)-uintptr_t(info.AllocationBase);
+        }
+        std::ofstream(crashReportPath)<<crashReport->dump(2);
+        if(GetEnvironmentVariableW(L"CATLIVE_VST3_CRASH_DUMP",nullptr,0)){
+            auto path=crashReportPath;path+=L".dmp";
+            auto file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+            if(file!=INVALID_HANDLE_VALUE){MINIDUMP_EXCEPTION_INFORMATION exception{GetCurrentThreadId(),fault,FALSE};
+                MiniDumpWriteDump(GetCurrentProcess(),GetCurrentProcessId(),file,MiniDumpNormal,&exception,nullptr,nullptr);CloseHandle(file);}
+        }
+    } catch (...) {}
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+}
+
 static std::vector<std::uint8_t> decodeState(const std::string &text) {
     static const std::string alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     if(text.size()>90*1024*1024)throw std::runtime_error("VST3 state too large.");
@@ -20,11 +54,14 @@ static std::vector<std::uint8_t> decodeState(const std::string &text) {
 }
 int wmain(int argc, wchar_t **argv) {
     if(argc<3)return 2;
-    const auto apartment=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+    const auto apartment=OleInitialize(nullptr);
     nlohmann::json report;
+    crashReport=&report;crashReportPath=argv[2];SetUnhandledExceptionFilter(recordPluginCrash);
     auto stage=[&](const char *name){report["stage"]=name;std::ofstream(std::filesystem::path(argv[2]))<<report.dump(2);};
     int code=0;
     try {
+        stage("load-module");
+        const auto module = vst3::retainModule(argv[1]);
         stage("scan");
         const auto descriptions=vst3::scan(argv[1]);
         report["plugins"]=nlohmann::json::array();
@@ -45,8 +82,20 @@ int wmain(int argc, wchar_t **argv) {
         if(argc>3&&(std::wstring(argv[3])==L"--process"||std::wstring(argv[3])==L"--validate")){
             const bool validate=std::wstring(argv[3])==L"--validate";
             if(descriptions.empty())throw std::runtime_error("No VST3 audio classes.");
+            auto selected=descriptions.begin();bool showEditor=false,freshEditor=false;
+            for(int arg=4;arg<argc;++arg){
+                const std::wstring option=argv[arg];
+                if(option==L"--editor")showEditor=true;
+                if(option==L"--fresh-editor")freshEditor=showEditor=true;
+                if(option.rfind(L"--class-id=",0)==0){
+                    const auto value=option.substr(11);const std::string id(value.begin(),value.end());
+                    selected=std::find_if(descriptions.begin(),descriptions.end(),[&](const auto &d){return d.classID==id;});
+                    if(selected==descriptions.end())throw std::runtime_error("Requested VST3 class was not found.");
+                }
+            }
+            report["validatedClass"]=selected->name;
             stage("create-processor");
-            auto plugin=std::make_unique<vst3::Processor>(descriptions.front(),vst3::State{},48000,512);
+            auto plugin=std::make_unique<vst3::Processor>(*selected,vst3::State{},48000,512);
             std::array<float,512> left{},right{};
             vst3::Transport transport;transport.playing=true;
             stage("process");
@@ -66,14 +115,33 @@ int wmain(int argc, wchar_t **argv) {
             const auto state=plugin->state();
             report["componentStateBytes"]=state.component.size();report["controllerStateBytes"]=state.controller.size();
             report["latencySamples"]=plugin->latency();
+            if(!freshEditor){
             stage("release-processor");plugin.reset();
             stage("restore-processor");
-            plugin=std::make_unique<vst3::Processor>(descriptions.front(),state,48000,512);
+            plugin=std::make_unique<vst3::Processor>(*selected,state,48000,512);
             left.fill(.05f);right.fill(.05f);
             if(!plugin->process(left.data(),right.data(),512,transport))throw std::runtime_error("Restored VST3 process failed.");
             report["restored"]=true;
-            if(argc>4&&std::wstring(argv[4])==L"--editor"){
+            }
+            if(showEditor){
                 stage("open-editor");
+                // The native application processes realtime VST3 audio on its
+                // audio thread while the editor runs on the UI thread.
+                struct AudioLoop {
+                    std::atomic<bool> stop{false},okay{true};
+                    std::thread thread;
+                    explicit AudioLoop(vst3::Processor &processor):thread([this,&processor]{
+                        std::array<float,512> left{},right{};vst3::Transport transport;
+                        auto next=std::chrono::steady_clock::now();
+                        while(!stop.load()){
+                            left.fill(0);right.fill(0);
+                            if(!processor.process(left.data(),right.data(),512,transport))okay=false;
+                            transport.seconds+=512./48000;transport.quarterNotes=transport.seconds*2;
+                            next+=std::chrono::microseconds(10667);std::this_thread::sleep_until(next);
+                        }
+                    }){}
+                    ~AudioLoop(){stop=true;if(thread.joinable())thread.join();}
+                } audio(*plugin);
                 auto window=CreateWindowExW(0,L"STATIC",L"CatLive native VST3 validation",WS_OVERLAPPEDWINDOW,
                     0,0,800,600,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
                 if(!window)throw std::runtime_error("Could not create editor validation HWND.");
@@ -84,7 +152,11 @@ int wmain(int argc, wchar_t **argv) {
                     SetWindowPos(window,nullptr,0,0,bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
                 });
                 const auto until=GetTickCount64()+1000;
-                while(GetTickCount64()<until){MSG message;while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}Sleep(5);}
+                while(GetTickCount64()<until){
+                    MSG message;while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}
+                    if(!audio.okay.load())throw std::runtime_error("VST3 editor playback failed.");
+                    Sleep(5);
+                }
                 report["nativeEditor"]={{"width",editor->width()},{"height",editor->height()}};
             }
             stage("close-processor");
@@ -93,6 +165,6 @@ int wmain(int argc, wchar_t **argv) {
         report["success"]=true;
     }catch(const std::exception &e){report["success"]=false;report["error"]=e.what();code=1;}
     std::ofstream(std::filesystem::path(argv[2]))<<report.dump(2);
-    if(SUCCEEDED(apartment))CoUninitialize();
+    if(SUCCEEDED(apartment))OleUninitialize();
     return code;
 }

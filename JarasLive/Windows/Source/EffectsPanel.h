@@ -618,8 +618,22 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         externalEditor.reset();externalEditorKey=key();
         externalEditor=std::make_unique<ExternalEffectEditor>(std::move(plugin),
             [this](const KeyPress &press){return globalKey && globalKey(press);},
-            [this](bool down){if(globalKeyState)globalKeyState(down);});
+            [this](bool down){if(globalKeyState)globalKeyState(down);},
+            [this](int width,int height){fitExternalEditor(width,height);});
         addAndMakeVisible(*externalEditor);resized();
+    }
+    void fitExternalEditor(int width,int height) {
+        auto *window=findParentComponentOfClass<DocumentWindow>();
+        if(!window)return;
+        const int borderWidth=window->getWidth()-getWidth(),borderHeight=window->getHeight()-getHeight();
+        auto area=window->getBounds().withSize(std::max(360,width+190+borderWidth),std::max(240,height+40+borderHeight));
+        if(const auto *display=Desktop::getInstance().getDisplays().getDisplayForRect(window->getBounds())) {
+            const auto visible=display->userArea;
+            area.setSize(std::min(area.getWidth(),visible.getWidth()),std::min(area.getHeight(),visible.getHeight()));
+            area.setPosition(jlimit(visible.getX(),visible.getRight()-area.getWidth(),area.getX()),
+                             jlimit(visible.getY(),visible.getBottom()-area.getHeight(),area.getY()));
+        }
+        window->setBounds(area);
     }
     ComboBox presets;
     Array<var> presetEntries;

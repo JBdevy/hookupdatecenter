@@ -297,8 +297,10 @@ struct MainView: View {
                     resizeCoordinator: footerResizeCoordinator)
                 if keyboardOpen { FooterPianoKeyboard().frame(height: 108) }
                 #if os(macOS)
-                if vinhetasOpen && !vinhetasWindow.detached {
-                    VinhetasPanel(createTrack: { _ = show.createVinhetasTrack() }).frame(height: 240)
+                FooterNativeHeightHost(storedHeight: 240, minimum: 240, maximum: 240,
+                    active: vinhetasOpen && !vinhetasWindow.detached,
+                    identity: AnyHashable(ObjectIdentifier(show)), role: .auxiliary) {
+                    VinhetasPanel(createTrack: { _ = show.createVinhetasTrack() })
                         .onAppear { VinhetasController.shared.bind(show: show) }
                 }
                 #endif
@@ -1105,7 +1107,7 @@ private struct FooterProjectNameDisplay: View {
 }
 
 #if os(macOS)
-enum FooterHeightRole { case display, mixer }
+enum FooterHeightRole { case display, mixer, auxiliary }
 
 /// Shares only native geometry. No publications, project edits or preferences
 /// are emitted while a divider is moving.
@@ -1174,7 +1176,7 @@ struct FooterNativeHeightHost<Content: View>: NSViewRepresentable {
             // Copying the entire environment hides this nested host's accessible
             // descendants. Forward presentation and actions explicitly instead.
             AnyView(content().environment(\.locale, environment.locale)
-                .environment(\.colorScheme, environment.colorScheme)
+                    .environment(\.colorScheme, environment.colorScheme)
                 .environment(\.font, environment.font)
                 .environment(\.controlSize, environment.controlSize).environment(\.isEnabled, environment.isEnabled)
                 .environment(\.layoutDirection, environment.layoutDirection).environment(\.dynamicTypeSize, environment.dynamicTypeSize)
@@ -1209,7 +1211,9 @@ final class FooterHeightContainerView: NSView {
         super.init(frame: frameRect)
         if #available(macOS 13, *) { host.sizingOptions = [] }
         if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
-        host.autoresizingMask = [.width, .height]; addSubview(host)
+        // Keep the retained content at its last real size while this container is hidden.
+        // Autoresizing it to height zero reflows every mixer control on close and again on open.
+        host.autoresizingMask = []; addSubview(host)
         setContentHuggingPriority(.required, for: .vertical)
         setContentCompressionResistancePriority(.required, for: .vertical)
     }

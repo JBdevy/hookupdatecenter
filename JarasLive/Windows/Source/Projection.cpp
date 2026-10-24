@@ -73,7 +73,7 @@ void Projection::resized() {
 }
 void Projection::paint(Graphics &g) {
     g.fillAll(Colours::black);
-    if (image.isValid()) {
+    if (image.isValid() && !(stage && stage->preview && flag(stage->settings(profile),"previewEnabled",true) && !flag(stage->settings(profile),"ignorePreview"))) {
         g.setOpacity(mediaOpacity);
         const auto bounds = mediaBounds();
         const bool stretch = stage && flag(stage->settings(profile), "mediaStretch");
@@ -181,7 +181,7 @@ void Projection::paintVideoSurface(HDC dc) {
     }
 }
 void Projection::updateVideoSurface() {
-    if(videoFile==File()) {
+    if(videoFile==File() || (stage && stage->preview && flag(stage->settings(profile),"previewEnabled",true) && !flag(stage->settings(profile),"ignorePreview"))) {
         if(videoSurface)ShowWindow(videoSurface,SW_HIDE);
         return;
     }
@@ -285,7 +285,8 @@ void Projection::timerCallback() {
     const jaras::AudioClip *clip = nullptr;
     const auto transport = session.presentationTransport();
     const auto at = transport.playing || transport.paused ? transport.position : transport.editPosition;
-    if (auto *song = session.song()) clip = firstProjectionItem(*song,at,role);
+    if (!(stage && stage->preview && flag(stage->settings(profile),"previewEnabled",true) && !flag(stage->settings(profile),"ignorePreview")))
+        if (auto *song = session.song()) clip = firstProjectionItem(*song,at,role);
     if (!clip) {
         if(videoFrame.pixels||videoFile.existsAsFile()) {
             videoFrame={};videoFile={};videoSequence=0;grayscaleSequence=0;grayscalePixels.clear();videoDecoder.reset();updateVideoSurface();repaint();

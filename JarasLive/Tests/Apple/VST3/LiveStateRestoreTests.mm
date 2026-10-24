@@ -20,6 +20,7 @@ int main(int argc,char **argv){@autoreleasepool{
     require(block&&entered&&release&&overlaps&&destroyed,"fixture diagnostics");
     NSMutableDictionary *spec=[@{@"id":@"fixture",@"classID":@"1234123456785678ABCDEF0012345678",@"path":path,@"bypassed":@NO} mutableCopy];
     auto state=[](float value){return [[NSData dataWithBytes:&value length:sizeof(value)]base64EncodedStringWithOptions:0];};
+    spec[@"strictImportState"]=@YES; // Reject restoration before the initial controller handshake.
     spec[@"componentState"]=state(.25f);spec[@"controllerState"]=state(.25f);
     auto node=[JarasVST3 makeNode];NSError *error=nil;
     require([JarasVST3 configure:node plugins:@[spec] error:&error],"initial configure");

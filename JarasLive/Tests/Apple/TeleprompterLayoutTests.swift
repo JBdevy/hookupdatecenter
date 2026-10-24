@@ -76,6 +76,51 @@ MainActor.assumeIsolated {
     var base = TeleprompterSettings()
     base.songNameEnabled = true; base.progressEnabled = true
     base.textCase = "original"
+    for index in 1...2 {
+        var content = fixture(base, index: index, preview: true)
+        let plain = pixels(content)
+        content.blocks[0].rows[0].liveExecuted = true
+        precondition(pixels(content) != plain, "TP Live strike/red must change actual rendered text")
+        content.blocks[0].rows[0].liveExecuted = false
+        precondition(pixels(content) == plain, "Clearing Live restores the original preview")
+        content.blocks[0].rows[0].playing = true
+        content.blocks[0].rows[0].playbackProgress = 0.25
+        let active = pixels(content)
+        precondition(active != plain, "Playing preview needs a visible background/progress")
+        content.blocks[0].rows[0].playbackProgress = 0.75
+        precondition(pixels(content) != active, "Preview progress advances while song identity is unchanged")
+        content.blocks[0].rows[0].playing = false
+        content.blocks[0].rows[0].queued = true
+        content.blocks[0].rows[0].playbackProgress = 0.25
+        precondition(pixels(content) != active, "Queued song has a yellow background, distinct from playing red")
+    }
+    for position in ["left-top", "right-top", "left-bottom", "right-bottom"] {
+        var paired = base; paired.clockPosition = position; paired.localClockPosition = "left"
+        let original = pixels(fixture(paired))
+        paired.localClockPosition = "right"
+        precondition(pixels(fixture(paired)) == original, "Side clocks always occupy opposite halves")
+        paired.localClockScale = 25
+        precondition(pixels(fixture(paired)) == original, "Paired local clock follows timer scale")
+        paired.clockScale = 60
+        precondition(pixels(fixture(paired)) != original, "Timer scale changes the paired clocks")
+    }
+    do {
+        var settings = base
+        settings.songNameEnabled = true; settings.queueNameEnabled = true; settings.progressEnabled = true
+        let visible = pixels(fixture(settings, preview: true))
+        settings.songNameEnabled = false; settings.queueNameEnabled = false; settings.progressEnabled = false
+        precondition(pixels(fixture(settings, preview: true)) == visible, "Preview ignores titles and the global progress bar")
+        settings.isClear = true
+        precondition(pixels(fixture(settings, preview: true)) == visible, "Preview stays opaque and suppresses media even with Clear enabled")
+        settings = base; settings.localClockEnabled = false; settings.clockPosition = "left-top"
+        let soloTimer = pixels(fixture(settings))
+        settings.clockPosition = "right-top"
+        precondition(pixels(fixture(settings)) == soloTimer, "A lone timer is always centered")
+        settings.clockEnabled = false; settings.localClockEnabled = true; settings.localClockPosition = "left"
+        let soloLocal = pixels(fixture(settings))
+        settings.localClockPosition = "right"
+        precondition(pixels(fixture(settings)) == soloLocal, "A lone local clock is always centered")
+    }
     var checked = 0
     for index in 1...2 {
         for field in TPSettingField.all {
@@ -99,10 +144,10 @@ MainActor.assumeIsolated {
             checked += 1
         }
         for edge in ["left", "right"] {
-            base.clockPosition = edge + "-top"
+            base.clockPosition = "center-top"
             var next = base; next.localClockPosition = edge == "left" ? "right" : "left"
             base.localClockPosition = edge
-            precondition(pixels(fixture(base, index: index)) != pixels(fixture(next, index: index)), "local clock edge must not be overridden by timer edge")
+            precondition(pixels(fixture(base, index: index)) != pixels(fixture(next, index: index)), "the central timer preserves the local-clock edge preference")
         }
         for field in TPSettingField.all {
             guard case .choice(_, _, let path, let options) = field, field.id.hasSuffix("FontFamily") || field.id == "fontFamily" else { continue }
@@ -148,5 +193,5 @@ MainActor.assumeIsolated {
     let reopened = TeleprompterPreferences(defaults: defaults)
     precondition(reopened.settings.textScale == 45 && reopened.selected == .night, "appearance survives reopening")
     reopened.select(.day); precondition(reopened.settings.textScale == 80, "day appearance survives reopening")
-    print("PASS: \(checked) rendered TP setting checks, same-edge clocks, clear-media scale, live updates, independent windows/presets and persistence")
+    print("PASS: \(checked) rendered TP setting checks, central and paired clocks, clear-media scale, live updates, independent windows/presets and persistence")
 }

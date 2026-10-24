@@ -344,6 +344,19 @@ private struct WorkspaceSettingsContent: View {
     }
 }
 
+@MainActor private final class WorkspaceToolPresentation: ObservableObject {
+    @Published var generation = 0
+}
+private struct WorkspaceAdvancedContent: View {
+    let show: ShowController
+    let documents: ProjectDocuments?
+    let close: () -> Void
+    @ObservedObject var presentation: WorkspaceToolPresentation
+    var body: some View {
+        AdvancedView(show: show, documents: documents, close: close, presentationID: presentation.generation)
+    }
+}
+
 private struct WorkspaceToolContent<Content: View>: View {
     @AppStorage("jaras.language") private var language = "en"
     let content: Content
@@ -363,6 +376,8 @@ private struct WorkspaceToolContent<Content: View>: View {
     @Published private(set) var settingsOpen = false
     private var windows: [Tool: NSPanel] = [:]
     private var settingsSelection: WorkspaceSettingsSelection?
+    private let advancedPresentation = WorkspaceToolPresentation()
+    private var discardingWindows = false
     private weak var show: ShowController?
     private var projectObservation: AnyCancellable?
 
@@ -387,14 +402,17 @@ private struct WorkspaceToolContent<Content: View>: View {
     }
     func openAdvanced(show: ShowController, documents: ProjectDocuments?) {
         bind(show)
+        if windows[.advanced]?.isVisible != true { advancedPresentation.generation &+= 1 }
         present(.advanced, title: "Advanced", size: NSSize(width: 760, height: 420)) { panel in
-            AdvancedView(show: show, documents: documents, close: { [weak panel] in panel?.close() })
+            WorkspaceAdvancedContent(show: show, documents: documents,
+                close: { [weak panel] in panel?.close() }, presentation: advancedPresentation)
         }
     }
     func openSettings(auth: AuthService, show: ShowController, backend: any BackendClient,
                       section: SettingsView.Section? = nil) {
         bind(show)
-        if let section { settingsSelection?.section = section }
+        if windows[.settings]?.isVisible != true { settingsSelection?.section = section ?? .general }
+        else if let section { settingsSelection?.section = section }
         let selection = settingsSelection ?? WorkspaceSettingsSelection(section ?? .general)
         settingsSelection = selection
         present(.settings, title: "Configurações", size: NSSize(width: 940, height: 540)) { _ in
@@ -404,7 +422,14 @@ private struct WorkspaceToolContent<Content: View>: View {
     }
     private func present<Content: View>(_ tool: Tool, title: String, size: NSSize,
                                        @ViewBuilder content: (NSPanel) -> Content) {
-        if let panel = windows[tool] { panel.makeKeyAndOrderFront(nil); return }
+        if let panel = windows[tool] {
+            if !panel.isVisible {
+                panel.contentView?.isHidden = false
+                attachWorkspacePanel(panel)
+            }
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
         let panel = makeWorkspacePanel(title: JarasLocalization.string(title), size: size, minimum: size)
         panel.identifier = NSUserInterfaceItemIdentifier("catlive.tool." + tool.rawValue)
         panel.delegate = self
@@ -412,6 +437,7 @@ private struct WorkspaceToolContent<Content: View>: View {
             panel?.title = JarasLocalization.string(title)
         }).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
+        if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
         panel.contentView = host
         InterfaceScaling.shared.register(panel)
         panel.center()
@@ -423,13 +449,21 @@ private struct WorkspaceToolContent<Content: View>: View {
         guard let panel = notification.object as? NSPanel,
               let tool = windows.first(where: { $0.value === panel })?.key else { return }
         panel.parent?.removeChildWindow(panel)
+        if tool == .settings { settingsOpen = false; ControlMappings.shared.editing = nil }
+        if !discardingWindows && tool != .textItem {
+            // Keep the hosting tree and native window; hide it from layout,
+            // hit testing and accessibility until the next presentation.
+            panel.contentView?.isHidden = true
+            return
+        }
         windows.removeValue(forKey: tool)
         panel.contentView = nil
-        if tool == .settings { settingsOpen = false; settingsSelection = nil }
     }
     func closeAll() {
-        for panel in Array(windows.values) { panel.close() }
+        discardingWindows = true
+        for panel in Array(windows.values) { panel.close(); panel.contentView = nil }
         windows.removeAll()
+        discardingWindows = false
         settingsOpen = false
         settingsSelection = nil
     }

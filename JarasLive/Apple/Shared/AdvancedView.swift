@@ -4,6 +4,7 @@ struct AdvancedView: View {
     @ObservedObject var show: ShowController
     let documents: ProjectDocuments?
     var close: (() -> Void)? = nil
+    var presentationID: Int = 0
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
         case transport = "Transport", timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist", keyboard = "Keyboard"
@@ -30,8 +31,8 @@ struct AdvancedView: View {
     @State private var shake = 0.0
     @FocusState private var focus: Int?
 
-    init(show: ShowController, documents: ProjectDocuments? = nil, close: (() -> Void)? = nil) {
-        self.show = show; self.documents = documents; self.close = close
+    init(show: ShowController, documents: ProjectDocuments? = nil, close: (() -> Void)? = nil, presentationID: Int = 0) {
+        self.show = show; self.documents = documents; self.close = close; self.presentationID = presentationID
         let timing = show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming.load() ?? GlobalProjectTiming()
         _bpm = State(initialValue: String(format: "%g", timing.bpm))
         _beats = State(initialValue: String(timing.beats))
@@ -95,6 +96,11 @@ struct AdvancedView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #endif
         .foregroundStyle(JarasTheme.text).background(JarasTheme.background)
+        .onChange(of: presentationID) { _ in
+            let timing = show.current.map { GlobalProjectTiming(song: $0) } ?? GlobalProjectTiming.load() ?? GlobalProjectTiming()
+            bpm = String(format: "%g", timing.bpm); beats = String(timing.beats); unit = String(timing.unit)
+            settings = timing.settings; invalidField = nil; applyError = ""; focus = nil
+        }
         .onChange(of: show.current?.projectTime.timebase) { value in
             if let value { settings.timebase = value }
         }

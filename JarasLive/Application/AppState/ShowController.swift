@@ -3214,7 +3214,12 @@ public struct ShowTimelinePresentationState: Equatable {
     public func save() async {
         let session = projectSessionID
         do { try await flushProject(); if projectSessionID == session { message = "Projeto salvo." } }
-        catch { if projectSessionID == session { message = error.localizedDescription } }
+        catch {
+            if projectSessionID == session {
+                message = error.localizedDescription
+                modalNotice = error.localizedDescription
+            }
+        }
     }
     private func trackLocation(_ id: UUID) -> (song: Int, track: Int)? {
         for song in snapshot.project.songs.indices {

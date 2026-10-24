@@ -15,7 +15,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
     private var preview: Bool { settings.displaysPreview(content.preview) }
     var body: some View {
         GeometryReader { geometry in
-            if settings.isClear { media().scaleEffect(settings.mediaScale / 100).frame(maxWidth: .infinity, maxHeight: .infinity).clipped() }
+            if settings.isClear && !preview { media().scaleEffect(settings.mediaScale / 100).frame(maxWidth: .infinity, maxHeight: .infinity).clipped() }
             else {
                 let animatedBorders = settings.rgbWindowBorderEnabled || settings.rgbClockBorderEnabled || settings.rgbTextBoxBorderEnabled || settings.rgbChordBorderEnabled
                 TimelineView(.periodic(from: .now,by: animatedBorders ? 0.2 : 0.5)) { context in
@@ -45,10 +45,10 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         let timerHere = settings.clockEnabled && settings.clockPosition.hasSuffix(top ? "top" : "bottom")
         let localHere = settings.localClockEnabled && (settings.clockEnabled ? timerHere : top)
         if timerHere || localHere { clockRow(date: date,size: size,timer: timerHere,local: localHere) }
-        if settings.songNameEnabled && !content.song.isEmpty && settings.songNamePosition == (top ? "top" : "bottom") {
+        if !preview && settings.songNameEnabled && !content.song.isEmpty && settings.songNamePosition == (top ? "top" : "bottom") {
             title(content.song,color: settings.songNameColor,font: settings.songNameFontFamily,scale: settings.songNameScale)
         }
-        if settings.queueNameEnabled && !content.queued.isEmpty && settings.queueNamePosition == (top ? "top" : "bottom") {
+        if !preview && settings.queueNameEnabled && !content.queued.isEmpty && settings.queueNamePosition == (top ? "top" : "bottom") {
             title(content.queued,color: settings.queueNameColor,font: settings.queueNameFontFamily,scale: settings.queueNameScale)
         }
         if !preview && settings.chordsEnabled && !content.chords.isEmpty && settings.chordPosition == (top ? "top" : "bottom") {
@@ -57,7 +57,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
                 .frame(maxWidth: .infinity)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(border(settings.chordColor,rgb: settings.rgbChordBorderEnabled,date: date),lineWidth: 1))
         }
-        if settings.progressEnabled && settings.progressPosition == (top ? "top" : "bottom") {
+        if !preview && settings.progressEnabled && settings.progressPosition == (top ? "top" : "bottom") {
             GeometryReader { bar in Color(hex: settings.progressColor).frame(width: bar.size.width * content.progress) }
                 .frame(height: 5).background(Color.white.opacity(0.1))
         }
@@ -65,33 +65,27 @@ struct TeleprompterProjectionLayout<Media: View>: View {
     private func clockRow(date: Date, size: CGSize, timer: Bool, local: Bool) -> some View {
         let width = max(1,size.width - 16), side = !settings.clockPosition.hasPrefix("center")
         let font = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.clockScale / 100)
-        let localSideFont = max(size.height > size.width ? 15 : 18,min(width / 11,size.height / 8) * settings.localClockScale / 100)
-        let sameSide = side && timer && local && settings.clockPosition.hasPrefix(settings.localClockPosition)
+        let localSideFont = font
         let localOnlyFont = max(10,min(24,size.height/28) * settings.localClockScale / 100)
-        let height = !timer ? localOnlyFont + 10 : sameSide ? font + localSideFont + 24 : max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
+        let height = !timer ? localOnlyFont + 10 : max(28,(side && local ? max(font,localSideFont) : font) + (side && local ? 10 : 18))
         // Keep a real clock column on narrow phone screens, including fullscreen.
         let timerLimit = compactPhone && local && !side ? max(1, width - 152) : width
         let timerWidth = min(timerLimit,max(118,tpTimerTextWidth(font) + 36))
         return ZStack {
-            if sameSide {
-                // Both controls may be assigned to the same edge. Stack them
-                // there instead of silently overriding the local-clock setting.
-                VStack(alignment: settings.localClockPosition == "left" ? .leading : .trailing, spacing: 4) {
-                    timerText(font: font,date: date)
-                    localClock(date,font: localSideFont)
-                }.frame(maxWidth: .infinity, alignment: settings.localClockPosition == "left" ? .leading : .trailing)
-            } else if side && timer && local {
+            if side && timer && local {
                 HStack(spacing: 8) {
-                    if settings.clockPosition.hasPrefix("right") { localClock(date,font: localSideFont).frame(maxWidth: .infinity) }
-                    timerText(font: font,date: date).frame(maxWidth: .infinity)
-                    if settings.clockPosition.hasPrefix("left") { localClock(date,font: localSideFont).frame(maxWidth: .infinity) }
+                    if settings.clockPosition.hasPrefix("right") { localClock(date,font: localSideFont, fillWidth: true).frame(width: max(1, (width - 8) / 2)) }
+                    timerText(font: font,date: date, fillWidth: true).frame(width: max(1, (width - 8) / 2))
+                    if settings.clockPosition.hasPrefix("left") { localClock(date,font: localSideFont, fillWidth: true).frame(width: max(1, (width - 8) / 2)) }
                 }
             } else {
                 if timer {
                     timerText(font: font,date: date).frame(width: timerWidth)
-                        .frame(maxWidth: .infinity,alignment: settings.clockPosition.hasPrefix("left") ? .leading : settings.clockPosition.hasPrefix("right") ? .trailing : .center)
+                        .frame(maxWidth: .infinity,alignment: .center)
                 }
-                if local {
+                if local && !timer {
+                    localClock(date,font: localOnlyFont).frame(maxWidth: .infinity, alignment: .center)
+                } else if local {
                     let localWidth = timer ? max(0,(width-timerWidth)/2-8) : width
                     let localFont = max(10,min(24,size.height/28) * settings.localClockScale / 100)
                     HStack {
@@ -103,17 +97,19 @@ struct TeleprompterProjectionLayout<Media: View>: View {
             }
         }.frame(height: height).frame(maxWidth: .infinity)
     }
-    private func timerText(font: CGFloat,date: Date) -> some View {
+    private func timerText(font: CGFloat,date: Date, fillWidth: Bool = false) -> some View {
         Text(timerValue().text).opacity(timerValue().opacity).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
             .foregroundStyle(Color(hex: timerValue().expired ? settings.clockExpiredColor : settings.clockColor)).padding(.horizontal,10).padding(.vertical,5)
+            .frame(maxWidth: fillWidth ? .infinity : nil, maxHeight: fillWidth ? .infinity : nil)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.clockBorderEnabled ? border(settings.clockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 2))
     }
-    private func localClock(_ date: Date,font: CGFloat) -> some View {
+    private func localClock(_ date: Date,font: CGFloat, fillWidth: Bool = false) -> some View {
         let values = Calendar.current.dateComponents([.hour,.minute,.second],from: date)
         return Text(String(format: "%02d:%02d:%02d",values.hour ?? 0,values.minute ?? 0,values.second ?? 0)).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
             .foregroundStyle(Color(hex: settings.localClockColor)).padding(.horizontal,5).padding(.vertical,5)
+            .frame(maxWidth: fillWidth ? .infinity : nil, maxHeight: fillWidth ? .infinity : nil)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.localClockBorderEnabled ? border(settings.localClockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 1))
-            .padding(.horizontal,fullscreen && !compactPhone ? 24 : 0)
+            .padding(.horizontal,fullscreen && !compactPhone && !fillWidth ? 24 : 0)
     }
     private var compactPhone: Bool {
         #if os(iOS)
@@ -140,51 +136,116 @@ struct TeleprompterProjectionLayout<Media: View>: View {
             .frame(maxWidth: .infinity,maxHeight: .infinity,alignment: alignment)
     }
     private func previewGrid(size: CGSize) -> some View {
-        let blocks = content.blocks
-        let columns = max(1, blocks.count)
+        let blocks = Array(content.blocks.prefix(4))
+        let columns = min(2, max(1, blocks.count))
+        let rowCount = max(1, (blocks.count + columns - 1) / columns)
         let width = max(1, (size.width - 12 - CGFloat(columns - 1) * 8) / CGFloat(columns))
-        let height = max(1, size.height - 12)
-        let mostRows = max(1, blocks.map { $0.rows.count + ($0.name.isEmpty ? 0 : 1) }.max() ?? 1)
-        let fit = max(1, min((width - 12) / 13, (height - 12 - CGFloat(mostRows - 1) * 3) / CGFloat(mostRows) / 2.4))
-        let font = max(1, fit * settings.previewScale / 100)
-        // A preview page contains at most four columns. Eager, explicitly sized
-        // columns avoid stale lazy-grid cells retaining their previous geometry.
-        return HStack(alignment: .top, spacing: 8) {
-            ForEach(blocks) { block in
-                VStack(alignment: .leading, spacing: 3) {
-                    if !block.name.isEmpty {
-                        Text(settings.display(block.name) + (settings.previewBlockDurationEnabled && block.rows.reduce(0, { $0 + $1.duration }) > 0 ? " • " + tpTime(Int(ceil(block.rows.reduce(0, { $0 + $1.duration })))) : ""))
-                            .font(tpFont(settings.previewFontFamily, size: font))
-                            .foregroundStyle(Color(hex: block.color)).lineLimit(2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+        let layout = tpPreviewLayout(blocks: blocks.map { (previewHeading($0), previewTitles($0)) },
+            family: settings.previewFontFamily, columns: columns, width: max(1, width - 18),
+            height: max(1, size.height - 12 - CGFloat(rowCount - 1) * 8))
+        let font = layout.font * settings.previewScale / 100
+        // Explicit cells prevent old geometry surviving a preview/page change.
+        return VStack(alignment: .leading, spacing: 8) {
+            ForEach(0..<rowCount, id: \.self) { row in
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(Array(blocks.dropFirst(row * columns).prefix(columns))) { block in
+                        previewBlock(block, width: width, height: layout.heights[row], font: font)
                     }
-                    ForEach(block.rows) { song in
-                        Text(settings.display(song.name) + (settings.previewSongDurationEnabled ? " • " + tpTime(Int(ceil(song.duration))) : ""))
-                            .font(tpFont(settings.previewFontFamily, size: font))
-                            .underline(settings.previewUnderlineEnabled)
-                            .foregroundStyle(Color(hex: song.color)).lineLimit(2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }.multilineTextAlignment(.leading)
-                    .padding(6).frame(width: width, alignment: .topLeading)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: block.color).opacity(0.7)))
-                    .frame(width: width, height: height, alignment: .topLeading).clipped()
+                }
             }
-        }.id(blocks.map(\.id))
-            .padding(6).frame(width: max(1, size.width), height: max(1, size.height), alignment: .topLeading)
+        }.padding(6).frame(width: max(1, size.width), height: max(1, size.height), alignment: .topLeading)
             .clipped().transaction { $0.animation = nil }
+    }
+    private func previewHeading(_ block: DAWRemoteTeleprompter.Block) -> String {
+        block.name.isEmpty ? "" : settings.display(block.name) +
+            (settings.previewBlockDurationEnabled ? " • " + tpTime(Int(ceil(block.rows.reduce(0, { $0 + $1.duration })))) : "")
+    }
+    private func previewTitles(_ block: DAWRemoteTeleprompter.Block) -> [String] {
+        block.rows.map { settings.display($0.name) + (settings.previewSongDurationEnabled ? " • " + tpTime(Int(ceil($0.duration))) : "") }
+    }
+    private func previewBlock(_ block: DAWRemoteTeleprompter.Block, width: CGFloat, height: CGFloat, font: CGFloat) -> some View {
+        let heading = previewHeading(block)
+        let titles = previewTitles(block)
+        return VStack(alignment: .leading, spacing: 4) {
+            if !heading.isEmpty {
+                Text(heading).font(tpFont(settings.previewFontFamily, size: font))
+                    .foregroundStyle(Color(hex: block.nameColor ?? 0x69ed91)).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Rectangle().fill(Color(hex: block.color).opacity(0.85)).frame(height: 2).padding(.vertical, 2)
+            }
+            ForEach(Array(block.rows.enumerated()), id: \.element.id) { index, song in
+                Text(titles[index]).font(tpFont(settings.previewFontFamily, size: font))
+                    .underline(settings.previewUnderlineEnabled).strikethrough(song.liveExecuted == true)
+                    .foregroundStyle(Color(hex: song.previewTextColor)).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 3).padding(.bottom, 4)
+                    .background(song.hasPlaybackHighlight ? Color(hex: song.playing == true ? 0x701818 : 0x665000) : .clear)
+                    .overlay(alignment: .bottomLeading) {
+                        if song.hasPlaybackHighlight {
+                            GeometryReader { geometry in
+                                Rectangle().fill(Color(hex: song.playing == true ? 0xff4040 : 0xffdf40))
+                                    .frame(width: geometry.size.width * song.progressFraction, height: 3)
+                            }.frame(height: 3)
+                        }
+                    }
+            }
+            Spacer(minLength: 0)
+        }.multilineTextAlignment(.leading).padding(6)
+            .frame(width: width, height: height, alignment: .topLeading)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: block.color).opacity(0.7)))
+            .clipped()
     }
     private func border(_ color: UInt32,rgb: Bool,date: Date) -> Color {
         rgb ? Color(hue: date.timeIntervalSince1970.truncatingRemainder(dividingBy: 6)/6,saturation: 0.9,brightness: 1) : Color(hex: color)
     }
 }
 
+private let tpFontNames = ["arial":["Arial-BoldMT"],"segoe":["SegoeUI-Bold","HelveticaNeue-Bold"],"bahnschrift":["Bahnschrift","DINAlternate-Bold"],"verdana":["Verdana-Bold"],"tahoma":["Tahoma-Bold"],"georgia":["Georgia-Bold"],"trebuchet":["TrebuchetMS-Bold"],"impact":["Impact"],"mono":["CourierNewPS-BoldMT"]]
+private final class TPPreviewLayout: NSObject {
+    let font: CGFloat
+    let heights: [CGFloat]
+    init(font: CGFloat, heights: [CGFloat]) { self.font = font; self.heights = heights }
+}
+private let tpPreviewLayoutCache: NSCache<NSString, TPPreviewLayout> = { let cache = NSCache<NSString, TPPreviewLayout>(); cache.countLimit = 256; return cache }()
+private func tpPreviewLayout(blocks: [(String, [String])], family: String, columns: Int, width: CGFloat, height: CGFloat) -> TPPreviewLayout {
+    var cacheParts: [String] = [family, String(columns), String(Double(width)), String(Double(height))]
+    for block in blocks { cacheParts.append(block.0); cacheParts.append(contentsOf: block.1); cacheParts.append("\u{1e}") }
+    let key = cacheParts.joined(separator: "\u{1f}") as NSString
+    if let cached = tpPreviewLayoutCache.object(forKey: key) { return cached }
+    let rows = max(1, (blocks.count + columns - 1) / columns)
+    func rowHeights(_ size: CGFloat) -> [CGFloat] {
+        #if os(macOS)
+        let native = tpFontNames[family]?.compactMap { NSFont(name: $0, size: size) }.first ?? NSFont.systemFont(ofSize: size, weight: .bold)
+        #else
+        let native = tpFontNames[family]?.compactMap { UIFont(name: $0, size: size) }.first ?? UIFont.boldSystemFont(ofSize: size)
+        #endif
+        func textHeight(_ text: String) -> CGFloat {
+            let rect = (text as NSString).boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: native], context: nil)
+            return ceil(min(rect.height, size * 2.4)) + 2
+        }
+        var heights = Array(repeating: CGFloat(16), count: rows)
+        for (index, block) in blocks.enumerated() {
+            let required = (block.0.isEmpty ? 0 : textHeight(block.0) + 14) + block.1.reduce(0) { $0 + textHeight($1) + 8 } + 16
+            heights[index / columns] = max(heights[index / columns], required)
+        }
+        return heights
+    }
+    var low: CGFloat = 1, high: CGFloat = 96
+    for _ in 0..<12 { let mid = (low + high) / 2; if rowHeights(mid).reduce(0, +) <= height { low = mid } else { high = mid } }
+    let font = max(1, floor(low * 2) / 2), needed = rowHeights(font)
+    // Give a dense row more space while preserving the 2 × 2 order and shared font.
+    let total = max(1, needed.reduce(0, +))
+    let result = TPPreviewLayout(font: font, heights: needed.map { max(1, height * $0 / total) })
+    tpPreviewLayoutCache.setObject(result, forKey: key)
+    return result
+}
 private func tpFont(_ name: String,size: CGFloat) -> Font {
     // Imported Windows families may not be installed on Mac/iOS. Choose their
     // native counterpart instead of making several menu choices all render as
     // the same default font. Use the original whenever it is available.
-    let names = ["arial":["Arial-BoldMT"],"segoe":["SegoeUI-Bold","HelveticaNeue-Bold"],"bahnschrift":["Bahnschrift","DINAlternate-Bold"],"verdana":["Verdana-Bold"],"tahoma":["Tahoma-Bold"],"georgia":["Georgia-Bold"],"trebuchet":["TrebuchetMS-Bold"],"impact":["Impact"],"mono":["CourierNewPS-BoldMT"]]
-    if let font = names[name]?.first(where: { tpFontAvailable($0, size: size) }) { return .custom(font,size: size) }
+
+    if let font = tpFontNames[name]?.first(where: { tpFontAvailable($0, size: size) }) { return .custom(font,size: size) }
     return .system(size: size,weight: .bold,design: name == "mono" ? .monospaced : .default)
 }
 func tpNoticeFont(_ name: String,size: CGFloat) -> Font {
@@ -223,6 +284,7 @@ private struct TPPreviewSong: Identifiable, Equatable, Codable {
     let name: String
     let duration: Double
     let color: UInt32
+    var liveExecuted = false
 }
 private struct TPPreviewBlock: Identifiable, Equatable, Codable {
     let id: String
@@ -235,6 +297,7 @@ private struct TPProjectionData: Equatable {
     var text = "", chords = "", song = "", queued = ""
     var currentRegion: UUID?, queuedRegion: UUID?
     var progress = 0.0
+    var previewPlayback = TeleprompterPreviewPlayback()
     var preview: [TPPreviewBlock] = []
 }
 @MainActor private final class TPProjectionDisplay: ObservableObject {
@@ -281,6 +344,8 @@ private struct LocalizedTeleprompterConfig: View {
     private var preferenceObservation: AnyCancellable?
     private var cachedProject: UUID?, cachedSong: UUID?
     private var cachedRevision: UInt64?
+    private var cachedLiveEnabled = false
+    private var cachedLiveMarks: [UUID] = []
     private var lastRemoteRefresh = 0.0
     private var cachedPreview: [TPPreviewBlock] = []
     init(index: Int) {
@@ -309,7 +374,7 @@ private struct LocalizedTeleprompterConfig: View {
             // next main-queue turn so progress mode also changes while stopped.
             DispatchQueue.main.async { [weak self] in
                 guard let self, let show = self.show else { return }
-                self.video.setProjectionEnabled(self.visible && (!self.preferences.settings.displaysPreview(self.previewActive) || self.preferences.settings.isClear))
+                self.video.setProjectionEnabled(self.visible && !self.preferences.settings.displaysPreview(self.previewActive))
                 self.update(show.snapshot,revision: show.projectRevision)
             }
         }
@@ -326,7 +391,7 @@ private struct LocalizedTeleprompterConfig: View {
         window.contentView = host
         self.window = window; visible = true; display.fullscreen = false
         if index == 2 { previewActive = Self.shared.previewActive; display.previewActive = previewActive }
-        video.setProjectionEnabled(!preferences.settings.displaysPreview(previewActive) || preferences.settings.isClear)
+        video.setProjectionEnabled(!preferences.settings.displaysPreview(previewActive))
         cachedRevision = nil
         update(show.snapshot,revision: show.projectRevision)
         window.restorePlacement(key: "jaras.teleprompterWindow.\(index)"); window.makeKeyAndOrderFront(nil)
@@ -339,7 +404,7 @@ private struct LocalizedTeleprompterConfig: View {
     private func setPreview(_ active: Bool) {
         previewActive = active
         display.previewActive = active
-        video.setProjectionEnabled(visible && (!preferences.settings.displaysPreview(active) || preferences.settings.isClear))
+        video.setProjectionEnabled(visible && !preferences.settings.displaysPreview(active))
     }
     func selectPreviewPage(_ page: Int) {
         previewPage = min(5,max(0,page))
@@ -363,7 +428,10 @@ private struct LocalizedTeleprompterConfig: View {
             return
         }
         let song = snapshot.transport.multiLoop?.projectionSong(originalSong) ?? originalSong
-        if cachedProject != snapshot.project.id || cachedSong != song.id || cachedRevision != revision {
+        let liveEnabled = snapshot.project.regionSetlist?.liveEnabled == true
+        let liveMarks = snapshot.project.regionSetlist?.playedLiveRegionIDs ?? []
+        if cachedProject != snapshot.project.id || cachedSong != song.id || cachedRevision != revision || cachedLiveEnabled != liveEnabled || cachedLiveMarks != liveMarks {
+            cachedLiveEnabled = liveEnabled; cachedLiveMarks = liveMarks
             cachedProject = snapshot.project.id; cachedSong = song.id; cachedRevision = revision
             cachedPreview = preview(song: song,project: snapshot.project)
         }
@@ -394,30 +462,37 @@ private struct LocalizedTeleprompterConfig: View {
             next.progress = (min(1,max(0,(position - clip.startTime) / clip.duration)) * 1000).rounded() / 1000
         }
         next.preview = cachedPreview
+        next.previewPlayback = TeleprompterPreviewPlayback(song: song, transport: transport,
+            playlist: snapshot.project.regionSetlist?.playlists.first { $0.id == snapshot.project.regionSetlist?.selectedId && $0.songId == song.id })
         if visible, display.data != next { display.data = next }
         if let window, display.fullscreen != window.isProjectionFullscreen { display.fullscreen = window.isProjectionFullscreen }
         if TeleprompterRemote.panel(index).enabled {
             let blocks = Array(next.preview.dropFirst(previewPage * 4).prefix(4)).map { block in
                 TeleprompterRemoteBlock(name: block.name, color: block.color, duration: block.duration, songs: block.songs.map {
-                    TeleprompterRemoteSong(name: $0.name, color: $0.id == next.currentRegion ? preferences.settings.highlightColor : $0.id == next.queuedRegion ? preferences.settings.queueNameColor : $0.color, duration: $0.duration)
-                })
+                    TeleprompterRemoteSong(name: $0.name, color: $0.id == next.currentRegion ? preferences.settings.highlightColor : $0.id == next.queuedRegion ? preferences.settings.queueNameColor : $0.color, duration: $0.duration, liveExecuted: $0.liveExecuted,
+                        playing: next.previewPlayback.playingEntry == $0.id, queued: next.previewPlayback.queuedEntry == $0.id,
+                        playbackProgress: next.previewPlayback.progress(for: $0.id))
+                }, nameColor: UInt32(AppearanceColor.shared("jaras.setlist.blockTextColor", default: 0x69ed91).value))
             }
             TeleprompterRemote.panel(index).update(text: next.text, chords: next.chords, song: next.song, queued: next.queued, progress: next.progress, preview: previewActive, blocks: blocks, snapshot: snapshot)
         }
     }
     private func preview(song: Song, project: Project) -> [TPPreviewBlock] {
         let state = project.regionSetlist ?? RegionSetlist()
+        let played = SetlistLivePlaybackTracker.previewMarks(project: project)
         let playlist = state.playlists.first { $0.id == state.selectedId && $0.songId == song.id }
-        let regions = playlist.map { list in list.regionIds.compactMap { list.region(forEntry: $0, in: song) } } ?? song.parts.filter { $0.parentRegionID == nil }.sorted { $0.startTime < $1.startTime }
+        let entries = TeleprompterPreviewEntry.make(song: song, playlist: playlist)
         let blocks = Dictionary(grouping: (state.blocks ?? []).filter { $0.songId == song.id && $0.playlistId == playlist?.id },by: \.beforeRegionId)
         var result = [TPPreviewBlock(id: song.id.uuidString,name: "",color: 0xffea00)]
-        for region in regions {
-            for block in blocks[region.id] ?? [] {
+        for entry in entries {
+            let region = entry.region
+            for block in entry.blockAnchors.flatMap({ blocks[$0] ?? [] }) {
                 result.append(TPPreviewBlock(id: block.id.uuidString,name: block.name,color: block.color))
             }
             let last = result.count - 1
             result[last].duration += region.endTime - region.startTime
-            result[last].songs.append(TPPreviewSong(id: region.id,name: region.displayName,duration: region.endTime-region.startTime,color: region.color ?? result[last].color))
+            result[last].songs.append(TPPreviewSong(id: entry.id,name: region.displayName,duration: region.endTime-region.startTime,color: region.color ?? result[last].color,
+                liveExecuted: played.contains(region.id)))
         }
         result += (blocks[nil] ?? []).map { TPPreviewBlock(id: $0.id.uuidString,name: $0.name,color: $0.color) }
         return result.filter { !$0.name.isEmpty || !$0.songs.isEmpty }
@@ -545,6 +620,7 @@ private struct TeleprompterRightClick: NSViewRepresentable {
 private final class TeleprompterRightClickView: RightClickTargetView { override var priority: Int { 100 } }
 
 private struct TeleprompterProjectionView: View {
+    @ObservedObject private var blockTextColor = AppearanceColor.shared("jaras.setlist.blockTextColor", default: 0x69ed91)
     let index: Int
     @ObservedObject var display: TPProjectionDisplay
     @ObservedObject var preferences: TeleprompterPreferences
@@ -555,8 +631,10 @@ private struct TeleprompterProjectionView: View {
         let data = display.data, settings = preferences.settings
         let blocks = Array(data.preview.dropFirst(display.previewPage * 4).prefix(4)).map { block in
             DAWRemoteTeleprompter.Block(id: UUID(uuidString: block.id)!, name: block.name, color: block.color, rows: block.songs.map { song in
-                .init(id: song.id, name: song.name, color: song.id == data.currentRegion ? settings.highlightColor : song.id == data.queuedRegion ? settings.queueNameColor : song.color, duration: song.duration)
-            })
+                .init(id: song.id, name: song.name, color: song.id == data.currentRegion ? settings.highlightColor : song.id == data.queuedRegion ? settings.queueNameColor : song.color, duration: song.duration, liveExecuted: song.liveExecuted,
+                    playing: data.previewPlayback.playingEntry == song.id, queued: data.previewPlayback.queuedEntry == song.id,
+                    playbackProgress: data.previewPlayback.progress(for: song.id))
+            }, nameColor: UInt32(blockTextColor.value))
         }
         return .init(index: index, text: data.text, chords: data.chords, song: data.song, queued: data.queued,
                      progress: data.progress, style: .init(), preview: display.previewActive, blocks: blocks, settings: settings)
@@ -565,7 +643,7 @@ private struct TeleprompterProjectionView: View {
         TeleprompterProjectionLayout(content: content, fullscreen: display.fullscreen,
             timerValue: { (timer.displayText(spaced: true), timer.displayOpacity(), timer.expired()) },
             media: { ProjectionMediaSurface(controller: video) })
-            .overlay { if !preferences.settings.isClear { TPNoticeOverlay(index: index) } }.environment(\.locale, Locale(identifier: language))
+            .overlay { if !preferences.settings.displaysPreview(display.previewActive) && !preferences.settings.isClear { TPNoticeOverlay(index: index) } }.environment(\.locale, Locale(identifier: language))
     }
 }
 #else

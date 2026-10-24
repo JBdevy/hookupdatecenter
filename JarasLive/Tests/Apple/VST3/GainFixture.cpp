@@ -9,6 +9,7 @@
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
+#include "pluginterfaces/vst/vstspeaker.h"
 #include <atomic>
 #include <cstring>
 #include <algorithm>
@@ -50,6 +51,11 @@ extern "C" __attribute__((visibility("default"))) int32 catliveLastSetupMode(){r
 extern "C" __attribute__((visibility("default"))) int32 catliveLastProcessMode(){return lastProcessMode.load();}
 extern "C" __attribute__((visibility("default"))) unsigned catliveProcessingSetups(){return processingSetups.load();}
 extern "C" __attribute__((visibility("default"))) unsigned catliveProcessModeMismatches(){return processModeMismatches.load();}
+#ifndef CATLIVE_FIXTURE_CHANNELS
+#define CATLIVE_FIXTURE_CHANNELS 2
+#endif
+static constexpr int fixtureChannels=CATLIVE_FIXTURE_CHANNELS;
+static constexpr SpeakerArrangement fixtureArrangement=fixtureChannels==1?SpeakerArr::kMono:fixtureChannels==2?SpeakerArr::kStereo:SpeakerArr::k51;
 static const TUID cid=INLINE_UID(0x12341234,0x56785678,0xABCDEF00,0x12345678);
 class Editor final: public IPlugView {
     uint32 refs = 1; IPlugFrame *frame = nullptr; ViewRect size{0,0,32,32};
@@ -101,6 +107,7 @@ public:
 class Gain final: public IComponent,public IAudioProcessor,public IEditController,public IMidiMapping {
     std::atomic<uint32> refs{1};std::atomic<float> gain{0.5f};std::atomic<uint64> inputSilence{0};bool note=false,held=false,pedal=false;
     int32 configuredMode=-1;
+    bool controllerSynchronized=false;
 #ifdef CATLIVE_STATE_RESTORE_DIAGNOSTICS
     std::atomic<bool> inProcess{false};
 #endif
@@ -148,11 +155,16 @@ if(FUnknownPrivate::iidEqual(id,IMidiMapping_iid))*out=static_cast<IMidiMapping*
     }
     tresult PLUGIN_API setIoMode(IoMode) override{return kResultOk;}
     int32 PLUGIN_API getBusCount(MediaType type,BusDirection dir) override{return type==kAudio?1:dir==kInput?1:0;}
-    tresult PLUGIN_API getBusInfo(MediaType type,BusDirection dir,int32 index,BusInfo &info) override{if(index)return kInvalidArgument;info.mediaType=type;info.direction=dir;info.channelCount=type==kAudio?2:16;info.busType=kMain;info.flags=BusInfo::kDefaultActive;return kResultOk;}
+    tresult PLUGIN_API getBusInfo(MediaType type,BusDirection dir,int32 index,BusInfo &info) override{if(index)return kInvalidArgument;info.mediaType=type;info.direction=dir;info.channelCount=type==kAudio?fixtureChannels:16;info.busType=kMain;info.flags=BusInfo::kDefaultActive;return kResultOk;}
     tresult PLUGIN_API getRoutingInfo(RoutingInfo&,RoutingInfo&) override{return kNotImplemented;}
     tresult PLUGIN_API activateBus(MediaType,BusDirection,int32,TBool) override{return kResultOk;}
     tresult PLUGIN_API setActive(TBool) override{return kResultOk;}
     tresult PLUGIN_API setState(IBStream *stream) override{
+#if defined(CATLIVE_STATE_RESTORE_DIAGNOSTICS) && !defined(CATLIVE_SEPARATE_CONTROLLER)
+        // Model plugins that establish their internal processor/controller link
+        // on the initial setComponentState handshake, before preset restoration.
+        if(!controllerSynchronized)return kNotInitialized;
+#endif
 #ifdef CATLIVE_STATE_RESTORE_DIAGNOSTICS
         if(inProcess.load())++concurrentStateWrites;
 #endif
@@ -166,8 +178,8 @@ if(FUnknownPrivate::iidEqual(id,IMidiMapping_iid))*out=static_cast<IMidiMapping*
         if (const auto delay = stateDelayMicros.load()) std::this_thread::sleep_for(std::chrono::microseconds(delay));
 #endif
         float v=gain.load();auto mask=inputSilence.load();auto result=stream->write(&v,4,nullptr);return result==kResultOk?stream->write(&mask,8,nullptr):result;}
-    tresult PLUGIN_API setBusArrangements(SpeakerArrangement*,int32 in,SpeakerArrangement*,int32 out) override{return in==1&&out==1?kResultOk:kResultFalse;}
-    tresult PLUGIN_API getBusArrangement(BusDirection,int32,SpeakerArrangement &arr) override{arr=3;return kResultOk;}
+    tresult PLUGIN_API setBusArrangements(SpeakerArrangement* inputs,int32 in,SpeakerArrangement* outputs,int32 out) override{return in==1&&out==1&&inputs[0]==fixtureArrangement&&outputs[0]==fixtureArrangement?kResultOk:kResultFalse;}
+    tresult PLUGIN_API getBusArrangement(BusDirection,int32,SpeakerArrangement &arr) override{arr=fixtureArrangement;return kResultOk;}
     tresult PLUGIN_API canProcessSampleSize(int32 size) override{return size==kSample32?kResultOk:kResultFalse;}
     uint32 PLUGIN_API getLatencySamples() override{
 #ifdef CATLIVE_MODULE_LIFECYCLE_DIAGNOSTICS
@@ -201,7 +213,7 @@ if(FUnknownPrivate::iidEqual(id,IMidiMapping_iid))*out=static_cast<IMidiMapping*
 #endif
                 }if(e.type==Event::kNoteOffEvent){held=false;note=pedal;}
             }
-            for(int c=0;c<2;c++){
+            for(int c=0;c<fixtureChannels;c++){
                 const float value=data.inputs[0].channelBuffers32[c][f]*gain.load()*(tempoGain && data.processContext ? float(data.processContext->tempo/120.0) : 1.0f)+(note?0.125f
 #ifdef CATLIVE_NOTE_ATTACK_COUNTER
                 *attacks
@@ -217,7 +229,7 @@ if(FUnknownPrivate::iidEqual(id,IMidiMapping_iid))*out=static_cast<IMidiMapping*
         return kResultOk;
     }
     uint32 PLUGIN_API getTailSamples() override{return 0;}
-    tresult PLUGIN_API setComponentState(IBStream *stream) override{return setState(stream);}
+    tresult PLUGIN_API setComponentState(IBStream *stream) override{controllerSynchronized=true;return setState(stream);}
     int32 PLUGIN_API getParameterCount() override{return 2;}
     tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo &info) override{info.id=index;UString(info.title,128).fromAscii(index==0?"Gain":"Sustain");info.defaultNormalizedValue=index==0?0.5:0;info.flags=ParameterInfo::kCanAutomate;return kResultOk;}
     tresult PLUGIN_API getParamStringByValue(ParamID,ParamValue value,String128 text) override{UString(text,128).printFloat(value,3);return kResultOk;}

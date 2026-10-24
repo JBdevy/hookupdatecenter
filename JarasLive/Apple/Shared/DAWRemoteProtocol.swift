@@ -130,6 +130,7 @@ struct DAWRemoteCommand: Codable {
         case remotePanel, noticeSend, noticeClear, noticePin, noticeDestination, noticeSaveTemplate
         case requestImage
         case timerStart, timerStop
+        case togglePreview, selectPreviewPage
         case editRegion, deleteRegion, duplicateRegion, renamePlaylist, duplicatePlaylist, deletePlaylist
     }
     var id = UUID()
@@ -160,6 +161,8 @@ struct DAWRemoteCommand: Codable {
         case .resetMeterPeak: return value == 0
         case .timerStart: return target == nil && (0...359999).contains(value) && value.rounded() == value
         case .timerStop: return target == nil && value == 0
+        case .togglePreview: return target == nil && value == 0
+        case .selectPreviewPage: return target == nil && (0...5).contains(value) && value.rounded() == value
         case .requestImage: return target != nil && value == 0
         case .remotePanel: return target == nil && (0...3).contains(value) && value.rounded() == value
         case .noticeSend: return target == nil && text != nil && (-1...2).contains(value) && value.rounded() == value
@@ -270,7 +273,8 @@ struct DAWRemoteState: Codable, Equatable {
         var color: UInt32
         var beforeRegion: UUID?
         var symbol: Bool = true
-        var valid: Bool { name.utf8.count <= 4096 && color <= 0xffffff }
+        var nameColor: UInt32? = nil
+        var valid: Bool { name.utf8.count <= 4096 && color <= 0xffffff && (nameColor ?? 0) <= 0xffffff }
     }
     struct RecentProject: Codable, Identifiable, Equatable {
         var id: UUID; var name: String; var current: Bool
@@ -369,6 +373,10 @@ struct DAWRemoteState: Codable, Equatable {
     /// Separators belonging to the current playlist (or All regions), in their
     /// saved order. These are presentation headers, never playback regions.
     var setlistBlocks: [SetlistBlock]? = nil
+    /// Global host controls, independent of which TP the Remote is viewing.
+    /// Missing fields identify a host without Preview control support.
+    var previewActive: Bool? = nil
+    var previewPage: Int? = nil
     /// Original unified songs keep their active child; only aliases replace the displayed row ID.
     var setlistCurrentEntryId: UUID? {
         if let id = currentPlaylistEntryId, regions.contains(where: { $0.id == id && $0.sourceRegionId != nil }) { return id }
@@ -386,6 +394,7 @@ struct DAWRemoteState: Codable, Equatable {
         (gridTempo ?? []).count <= 32768 && (gridTempo ?? []).allSatisfy(\.valid) &&
         (footerLoopBeatPhase == nil || [0, 1, 3].contains(footerLoopBeatPhase!)) &&
         (gridDivisions == nil || [0, 2, 4, 8].contains(gridDivisions!)) &&
+        (previewPage == nil || (0...5).contains(previewPage!)) &&
         (playedLiveRegionIDs ?? []).count <= 8192 &&
         Set(playedLiveRegionIDs ?? []).count == (playedLiveRegionIDs ?? []).count &&
         (setlistBlocks ?? []).count <= 8192 && (setlistBlocks ?? []).allSatisfy(\.valid) &&
@@ -707,9 +716,18 @@ struct DAWRemoteTeleprompter: Codable, Equatable {
     }
     struct Row: Codable, Equatable, Identifiable {
         var id: UUID; var name: String; var color: UInt32; var duration: Double
+        // Optional fields let updated clients keep accepting older hosts.
+        var liveExecuted: Bool? = nil
+        var playing: Bool? = nil
+        var queued: Bool? = nil
+        var playbackProgress: Double? = nil
+        var progressFraction: Double { min(1, max(0, playbackProgress ?? 0)) }
+        var hasPlaybackHighlight: Bool { playing == true || queued == true }
+        var previewTextColor: UInt32 { liveExecuted == true ? 0xff4040 : hasPlaybackHighlight ? 0xffffff : color }
     }
     struct Block: Codable, Equatable, Identifiable {
         var id: UUID; var name: String; var color: UInt32; var rows: [Row]
+        var nameColor: UInt32? = nil
     }
     var index: Int
     var text: String, chords: String, song: String, queued: String
@@ -742,7 +760,8 @@ struct DAWRemoteTeleprompter: Codable, Equatable {
         (1...2).contains(index) && progress.isFinite && (0...1).contains(progress) && style.valid &&
         text.utf8.count <= 65536 && chords.utf8.count <= 65536 && song.utf8.count <= 4096 && queued.utf8.count <= 4096 &&
         blocks.count <= 4 && blocks.allSatisfy { block in
-            block.rows.count <= 8192 && block.rows.allSatisfy { $0.duration.isFinite && $0.duration >= 0 }
+            block.rows.count <= 8192 && block.rows.allSatisfy { $0.duration.isFinite && $0.duration >= 0 &&
+                ($0.playbackProgress.map { $0.isFinite && (0...1).contains($0) } ?? true) }
         }
     }
 }
@@ -801,5 +820,44 @@ struct DAWRemoteTrackHierarchy {
             result.append(parent); next = parents[parent]
         }
         return Array(result.reversed())
+    }
+}
+
+/// Observer cues use the host's audible position, never a local wall clock.
+/// The same snapshot is published by desktop hosts and the iPad native host.
+struct DAWRemoteSectionCue: Equatable {
+    var marker: UUID
+    var name: String
+    var seconds: Int
+    var armed: Bool
+
+    static func current(in state: DAWRemoteState, leadTime: Double = 5) -> Self? {
+        guard state.playing, !state.paused, leadTime.isFinite, leadTime > 0 else { return nil }
+        let playback = state.sectionPlayback
+        let position = playback?.position ?? state.position
+        guard position.isFinite else { return nil }
+        let markers = (state.markers ?? []).filter { $0.section == true }
+        let target: DAWRemoteState.Marker
+        let boundary: Double
+        let armed: Bool
+        if let id = playback?.queuedMarker {
+            guard let marker = markers.first(where: { $0.id == id }),
+                  let trigger = playback?.nextTrigger else { return nil }
+            target = marker; boundary = trigger; armed = true
+        } else {
+            let region = state.timelineRegions.first { $0.id == playback?.currentRegion }
+                ?? state.timelineRegions.filter { position >= $0.start && position < $0.end }
+                    .sorted { ($0.parentRegion != nil ? 0 : 1, $0.end - $0.start) < ($1.parentRegion != nil ? 0 : 1, $1.end - $1.start) }.first
+            guard let region else { return nil }
+            let end = playback?.currentEnd ?? region.end
+            guard let marker = markers.filter({ $0.position > position && $0.position >= region.start && $0.position < end })
+                .min(by: { $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position }) else { return nil }
+            // A loop returns before this marker, so it is not the next audible section.
+            if state.loop, let loopEnd = state.loopEnd, marker.position >= loopEnd { return nil }
+            target = marker; boundary = marker.position; armed = false
+        }
+        let remaining = boundary - position
+        guard remaining.isFinite, remaining > 0, remaining <= leadTime else { return nil }
+        return .init(marker: target.id, name: target.name, seconds: Int(ceil(remaining)), armed: armed)
     }
 }

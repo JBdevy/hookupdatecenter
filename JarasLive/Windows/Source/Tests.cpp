@@ -260,22 +260,44 @@ int runTests(const File &directory) {
         auto descriptions=native::vst3::scan(std::filesystem::u8path(utf8(editorFixture)));
         expect(!descriptions.empty(),"Editor fixture is empty");
         auto processor=std::make_shared<native::vst3::Processor>(descriptions.front(),native::vst3::State{},48000);
+        struct AudioLoop {
+            std::atomic<bool> stop{false},okay{true};std::atomic<unsigned> blocks{0};std::thread thread;
+            explicit AudioLoop(native::vst3::Processor &processor):thread([this,&processor]{
+                AudioBuffer<float> buffer(2,512);native::vst3::Transport transport;
+                while(!stop.load()){
+                    buffer.clear();if(!processor.process(buffer.getWritePointer(0),buffer.getWritePointer(1),512,transport))okay=false;
+                    ++blocks;transport.seconds+=512./48000;Thread::sleep(10);
+                }
+            }){}
+            ~AudioLoop(){stop=true;if(thread.joinable())thread.join();}
+        } audio(*processor);
         DocumentWindow manager("FX embedded regression",Colours::black,DocumentWindow::closeButton);
         manager.setUsingNativeTitleBar(true);
-        auto embedded=std::make_unique<ExternalEffectEditor>(processor,[](const KeyPress&){return false;},[](bool){});
+        Point<int> requestedSize;
+        auto embedded=std::make_unique<ExternalEffectEditor>(processor,[](const KeyPress&){return false;},[](bool){},
+            [&](int width,int height){requestedSize={width,height};});
         manager.setContentNonOwned(embedded.get(),false);manager.centreWithSize(740,560);manager.setVisible(true);
-        floatingControlTests::pump();
+        // Let asynchronous native editors finish startup before testing disposal.
+        // One short dispatch pass can close them before their workers are created.
+        const auto editorDeadline=Time::getMillisecondCounterHiRes()+1500;
+        while(Time::getMillisecondCounterHiRes()<editorDeadline)floatingControlTests::pump();
         auto *host=dynamic_cast<HWNDComponent*>(embedded->getChildComponent(0));
         expect(host&&host->getHWND(),"Native view was not attached to manager");
         const auto hwnd=static_cast<HWND>(host->getHWND());
         expect(GetAncestor(hwnd,GA_ROOT)==manager.getPeer()->getNativeHandle(),"Plugin opened in a separate window");
         expect(GetWindow(hwnd,GW_CHILD)!=nullptr,"Plugin canvas missing");
+        expect(requestedSize.x>0&&requestedSize.y>0,"Opening a plugin did not request a manager size");
+        RECT pluginRect{};GetClientRect(GetWindow(hwnd,GW_CHILD),&pluginRect);
+        const auto pixels=embedded->getPeer()->getAreaCoveredBy(*embedded).toFloat()*embedded->getPeer()->getPlatformScaleFactor();
+        const auto scale=pixels.getWidth()/embedded->getWidth();
+        expect(std::abs(requestedSize.x*scale-pluginRect.right)<=2&&std::abs(requestedSize.y*scale-pluginRect.bottom)<=2,
+               "Preferred manager size does not account for native editor pixels/DPI");
         manager.setContentComponentSize(120,80);floatingControlTests::pump();
         RECT client{};GetClientRect(hwnd,&client);
         expect(client.right>0&&client.bottom>0&&client.right<200,"Host did not follow manager bounds");
         manager.clearContentComponent();embedded.reset();expect(!IsWindow(hwnd),"Native editor survived disposal");
-        AudioBuffer<float> buffer(2,64);buffer.clear();native::vst3::Transport transport;
-        expect(processor->process(buffer.getWritePointer(0),buffer.getWritePointer(1),64,transport),"Closing editor interrupted processor");
+        const auto blocks=audio.blocks.load();floatingControlTests::pump();
+        expect(audio.okay.load()&&audio.blocks.load()>blocks,"Closing editor interrupted processor");
     });
     trackDuplicationTests::run(test);
     trackDuplicationTests::runSession<Session>(test);
@@ -637,10 +659,36 @@ int runTests(const File &directory) {
         expect(restored.regionSetlist->playedLiveRegionIDs==std::optional<std::vector<ID>>{{song.parts[0].id}},"Windows Live history not persisted");
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(restored));session.audio.setOffline(true);
         Appearance preferences(directory.getNonexistentChildFile("live-occurrences",".json"));
-        StageState stage(preferences);remote::Presentation remote(session,stage);
+        StageState stage(preferences);remote::Presentation remote(session,stage);stage.preview=true;
+        const auto previewRow=[&](int index,const ID &id){
+            for(const auto &block:list(get(StageContent::make(session,stage,index).payload,"blocks")))
+                for(const auto &row:list(get(block,"rows")))if(str(row,"id")==text(id))return row;
+            return var();
+        };
+        for(int panel:{1,2}){
+            expect(flag(previewRow(panel,song.parts[0].id),"liveExecuted"),"TP preview omitted Live marks");
+            expect(!flag(previewRow(panel,song.parts[1].id),"liveExecuted"),"TP preview marked an unplayed song");
+        }
+        session.command(jaras::CommandKind::selectRegion,song.parts[0].id);
+        session.command(jaras::CommandKind::play);
+        session.command(jaras::CommandKind::queueRegion,song.parts[1].id);
+        expect(flag(previewRow(1,song.parts[0].id),"playing"),"Preview misses playing highlight");
+        expect(flag(previewRow(1,song.parts[1].id),"queued") && num(previewRow(1,song.parts[1].id),"playbackProgress")>.99,
+               "Preview queue countdown must start full");
+        session.command(jaras::CommandKind::stopAll);
+        expect(!flag(previewRow(1,song.parts[0].id),"playing"),"Stopped preview still highlights playback");
         remote::Command command;command.id=uuid();command.project=p.id;command.song=song.id;command.action="toggleSetlistLive";
         expect(remote.apply(command),"Remote Live toggle failed");
         expect(!session.project().regionSetlist->liveEnabled.value_or(false) && session.project().regionSetlist->playedLiveRegionIDs->empty(),"Remote Live off retained played marks");
+        expect(!flag(previewRow(1,song.parts[0].id),"liveExecuted"),"Preview did not clear marks with Live off");
+        auto grouped=restored;auto parent=grouped.songs[0].parts[0];parent.id=uuid();parent.name="Hidden wrapper";parent.endTime=40;
+        for(auto &part:grouped.songs[0].parts)part.parentRegionID=parent.id;
+        grouped.songs[0].parts.push_back(parent);
+        session.restoreSnapshot(ProjectCodec::encode(grouped));session.audio.setOffline(true);
+        const auto expanded=list(get(list(get(StageContent::make(session,stage,1).payload,"blocks"))[0],"rows"));
+        expect(expanded.size()==2 && str(expanded[0],"id")==text(song.parts[0].id) && str(expanded[1],"id")==text(song.parts[1].id),
+               "Preview must contain drawer songs, never the special wrapper");
+        expect(!flag(expanded[0],"queued")&&!flag(expanded[1],"queued"),"No queued region must not highlight preview rows");
     });
     test("Edit cursor selects setlist songs without changing playback or queue", [&] {
         Session session; auto p=projectFixture(); auto &song=p.songs[0];
@@ -4943,6 +4991,21 @@ int runTests(const File &directory) {
         put(request, "value", 0);
         expect(presentation.apply(remote::Command::decode(request)) && !stage.running,
                "Remote timer stop failed");
+        stage.preview = false;
+        put(request, "action", "togglePreview");
+        auto previewCommand = remote::Command::decode(request);
+        expect(previewCommand.allowed("director") && !previewCommand.allowed("observer") &&
+                   !previewCommand.allowed("notices"), "Preview must remain a director control");
+        expect(presentation.apply(previewCommand) && stage.preview &&
+                   flag(presentation.snapshot(0), "previewActive"),
+               "Remote Preview controls the host and reports its state even outside TP panels");
+        expect(presentation.apply(previewCommand) && !stage.preview &&
+                   !flag(presentation.snapshot(0), "previewActive"), "Remote can turn host Preview off");
+        put(request, "action", "selectPreviewPage");
+        put(request, "value", 5);
+        expect(presentation.apply(remote::Command::decode(request)) && stage.previewPage == 5 &&
+                   num(presentation.snapshot(0), "previewPage") == 5,
+               "Remote block selection controls and reflects the host Preview page");
         directory.getChildFile("remote-state.json")
             .replaceWithText(JSON::toString(presentation.snapshot(1)));
     });

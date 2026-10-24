@@ -109,7 +109,9 @@ public:
         const auto size=std::min<int64>(n,available);
         if(size)memcpy(data,bytes.data()+position,size);
         position+=size;if(count)*count=int32(size);
-        return size==n?kResultOk:kResultFalse;
+        // Match the VST3 MemoryStream contract: a valid short/EOF read is
+        // successful; the byte count communicates how much was available.
+        return kResultOk;
     }
     tresult PLUGIN_API write(void *data,int32 n,int32 *count) override {
         if(count)*count=0;
@@ -264,6 +266,12 @@ public:
         controller=query<IEditController>(component);
         if(!controller){TUID cid{};if(component->getControllerClassId(cid)==kResultOk&&module->factory->createInstance(cid,IEditController::iid,(void **)&controller)==kResultOk&&controller){if(controller->initialize(&host)!=kResultOk)throw std::runtime_error("VST3 controller initialization failed.");controllerInitialized=true;}}
         if(controller){controller->setComponentHandler(this);source=query<IConnectionPoint>(component);destination=query<IConnectionPoint>(controller);if(source&&destination){source->connect(destination);destination->connect(source);}}
+        // Initialize the controller/processor link before restoring a saved
+        // preset, matching the handshake used for a newly inserted instance.
+        if(controller && [spec[@"componentState"] length]){
+            Stream initial;
+            if(component->getState(&initial)==kResultOk){initial.position=0;controller->setComponentState(&initial);}
+        }
         auto restore=[&](NSString *key,auto target){NSData *data=[[NSData alloc] initWithBase64EncodedString:spec[key]?:@"" options:0];if(data.length){Stream stream(data);target(stream);}};
         restore(@"componentState",[&](Stream &stream){if(component->setState(&stream)!=kResultOk && [spec[@"strictImportState"] boolValue])throw std::runtime_error("VST3 rejected the imported processor state.");});
         if(controller){Stream stream;if(component->getState(&stream)==kResultOk){stream.position=0;controller->setComponentState(&stream);}restore(@"controllerState",[&](Stream &stream){if(controller->setState(&stream)!=kResultOk && [spec[@"strictImportState"] boolValue])throw std::runtime_error("VST3 rejected the imported controller state.");});}
@@ -271,10 +279,24 @@ public:
         for(auto &channel:midiParameters)std::fill(std::begin(channel),std::end(channel),kNoParamId);
         if(auto mapping=query<IMidiMapping>(controller)){for(int channel=0;channel<16;channel++)for(int cc=0;cc<130;cc++)mapping->getMidiControllerAssignment(0,channel,cc,midiParameters[channel][cc]);mapping->release();}
         int inCount=component->getBusCount(kAudio,kInput),outCount=component->getBusCount(kAudio,kOutput);
-        if(inCount>64||outCount<1||outCount>64)throw std::runtime_error("Unsupported VST3 audio bus layout.");
-        std::vector<SpeakerArrangement> in(inCount),out(outCount);
-        for(int dir=0;dir<2;dir++){auto &arr=dir?out:in;for(int i=0;i<(int)arr.size();i++){BusInfo info{};component->getBusInfo(kAudio,dir?kOutput:kInput,i,info);processor->getBusArrangement(dir?kOutput:kInput,i,arr[i]);if(info.busType==kMain&&(dir?mainOut:mainIn)==-1){(dir?mainOut:mainIn)=i;arr[i]=SpeakerArr::kStereo;}}}
-        if(mainOut<0||processor->setBusArrangements(in.data(),inCount,out.data(),outCount)!=kResultOk)throw std::runtime_error("This VST3 processor does not support a stereo output.");
+        if(inCount<0||inCount>64||outCount<1||outCount>64)throw std::runtime_error("Unsupported VST3 audio bus layout.");
+        std::vector<SpeakerArrangement> in(inCount),out(outCount),nativeIn(inCount),nativeOut(outCount);
+        for(int dir=0;dir<2;++dir){
+            auto &arr=dir?out:in;
+            for(int i=0;i<int(arr.size());++i){
+                BusInfo info{};component->getBusInfo(kAudio,dir?kOutput:kInput,i,info);
+                processor->getBusArrangement(dir?kOutput:kInput,i,arr[i]);
+                (dir?nativeOut:nativeIn)[i]=arr[i];
+                if(info.busType==kMain&&(dir?mainOut:mainIn)==-1){(dir?mainOut:mainIn)=i;arr[i]=SpeakerArr::kStereo;}
+            }
+        }
+        if(mainOut<0)throw std::runtime_error("This VST3 processor has no main audio output.");
+        if(processor->setBusArrangements(in.data(),inCount,out.data(),outCount)!=kResultOk){
+            const auto supported=[](SpeakerArrangement bus){const auto channels=SpeakerArr::getChannelCount(bus);return channels==1||channels==2;};
+            if(!supported(nativeOut[mainOut])||(mainIn>=0&&!supported(nativeIn[mainIn]))||
+               processor->setBusArrangements(nativeIn.data(),inCount,nativeOut.data(),outCount)!=kResultOk)
+                throw std::runtime_error("This VST3 processor requires an unsupported channel layout (CatLive supports mono and stereo).");
+        }
         inputs.resize(inCount);outputs.resize(outCount);
         storage.reserve((inCount+outCount)*2);pointers.resize(inCount+outCount);
         for(int dir=0;dir<2;dir++){auto &buses=dir?outputs:inputs;for(int i=0;i<(int)buses.size();i++){BusInfo info{};component->getBusInfo(kAudio,dir?kOutput:kInput,i,info);if(info.channelCount<0||info.channelCount>64||(dir&&i==mainOut&&info.channelCount<1))throw std::runtime_error("Unsupported VST3 bus width.");auto &p=pointers[(dir?inCount:0)+i];p.resize(info.channelCount);for(int c=0;c<info.channelCount;c++){storage.emplace_back(frames,0);p[c]=storage.back().data();}buses[i].numChannels=info.channelCount;buses[i].channelBuffers32=p.data();component->activateBus(kAudio,dir?kOutput:kInput,i,i==(dir?mainOut:mainIn));}}
@@ -326,8 +348,11 @@ public:
                     ? static_cast<const float*>(buffer->mBuffers[c].mData) : nullptr;
                 bool silent=true;
                 if(source) {
-                    memcpy(destination,source,count*sizeof(float));
-                    for(unsigned frame=0;frame<count;++frame) if(source[frame]!=0) { silent=false; break; }
+                    if(input.numChannels==1 && buffer->mNumberBuffers>1 && buffer->mBuffers[1].mData){
+                        const auto right=static_cast<const float*>(buffer->mBuffers[1].mData);
+                        for(unsigned frame=0;frame<count;++frame)destination[frame]=.5f*(source[frame]+right[frame]);
+                    } else memcpy(destination,source,count*sizeof(float));
+                    for(unsigned frame=0;frame<count;++frame) if(destination[frame]!=0) { silent=false; break; }
                 } else memset(destination,0,count*sizeof(float));
                 if(silent) input.silenceFlags |= uint64(1)<<c;
             }
@@ -440,7 +465,10 @@ public:
             extra.height = std::max(0.0, owner.window.contentView.bounds.size.height-owner.frame.size.height);
         }
         [owner setFrameSize:NSMakeSize(rect->getWidth(),rect->getHeight())];
-        [owner.window setContentSize:NSMakeSize(rect->getWidth()+extra.width,rect->getHeight()+extra.height)];
+        if([owner.identifier isEqualToString:@"catlive.managedPluginEditor"])
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"CatLivePluginEditorSizeChanged" object:owner];
+        else
+            [owner.window setContentSize:NSMakeSize(rect->getWidth()+extra.width,rect->getHeight()+extra.height)];
         resizing = false;
         return kResultOk;
     }

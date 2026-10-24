@@ -5,9 +5,11 @@ void Projection::paintStage(Graphics &g) {
     const auto settings = stage->settings(profile);
     const auto content = StageContent::make(session,*stage,profile).payload;
     const auto notices = stage->preferences.value("jaras.notices.appearance", object());
+    const bool preview = stage->preview && flag(settings, "previewEnabled", true) &&
+                         !flag(settings, "ignorePreview");
     const bool showingNotice =
-        stage->noticeActive() && flag(notices, profile == 1 ? "window1" : "window2", true);
-    const bool clear = flag(settings, "clearMode");
+        !preview && stage->noticeActive() && flag(notices, profile == 1 ? "window1" : "window2", true);
+    const bool clear = !preview && flag(settings, "clearMode");
     auto box = getLocalBounds().toFloat().reduced(7);
     const auto rgb = Colour::fromHSV((float)std::fmod(StageState::now() / 6, 1.), 1.f, 1.f, 1.f);
     auto color = [&](String key, uint32 fallback = 0xffffff) {
@@ -22,8 +24,6 @@ void Projection::paintStage(Graphics &g) {
                : mode == "lowercase" ? unicodeCase(value, false)
                                      : value;
     };
-    const bool preview = stage->preview && flag(settings, "previewEnabled", true) &&
-                         !flag(settings, "ignorePreview");
     if (preview || (showingNotice && flag(notices, "cleanDisplay", true)))
         g.fillAll(Colours::black);
     auto label = [&](String value, juce::Rectangle<float> area, String family, float size,
@@ -38,42 +38,32 @@ void Projection::paintStage(Graphics &g) {
         const auto position = str(settings, "clockPosition", "center-top");
         const bool timerEnabled = flag(settings,"clockEnabled",true);
         const bool top = !timerEnabled || position.endsWith("top");
-        const float size =
-            (float)jlimit(16., 76., getHeight() / 8. * num(settings, "clockScale", 100) / 100.);
-        const float localSize = (float)jlimit(
-            12., 42., getHeight() / 18. * num(settings, "localClockScale", 100) / 100.);
-        const float clockHeight = timerEnabled ? size * 1.3f : localSize * 1.4f;
-        if (flag(settings, "clockEnabled", true) || flag(settings, "localClockEnabled", true)) {
-            auto row =
-                top ? box.removeFromTop(clockHeight + 6) : box.removeFromBottom(clockHeight + 6);
-            if (flag(settings, "clockEnabled", true)) {
-                const float width = std::min(row.getWidth(), size * 6.1f);
-                const float x = position.startsWith("left")    ? row.getX()
-                                : position.startsWith("right") ? row.getRight() - width
-                                                               : row.getCentreX() - width / 2;
-                juce::Rectangle<float> clock{x, row.getY(), width, clockHeight};
-                if (flag(settings, "clockBorderEnabled", true)) {
-                    g.setColour(border("clockBorderColor", "rgbClockBorderEnabled"));
-                    g.drawRoundedRectangle(clock, 5, 2);
-                }
-                label(stage->timeText(true), clock.reduced(5), "fontFamily", size,
-                      color(stage->seconds() < 0 ? "clockExpiredColor" : "clockColor"));
+        const bool localEnabled=flag(settings,"localClockEnabled",true);
+        const bool paired=timerEnabled&&localEnabled&&!position.startsWith("center");
+        const float size=std::max(getHeight()>getWidth()?15.f:18.f,
+            std::min((box.getWidth()-16)/11,getHeight()/8.f)*(float)num(settings,"clockScale",100)/100);
+        const float localSize=paired?size:std::max(10.f,std::min(24.f,getHeight()/28.f)*(float)num(settings,"localClockScale",100)/100);
+        const float clockHeight=timerEnabled?size+(paired?10:18):localSize+10;
+        if(timerEnabled||localEnabled) {
+            auto row=top?box.removeFromTop(clockHeight+6):box.removeFromBottom(clockHeight+6);
+            const float timerWidth=paired?(row.getWidth()-8)/2:std::min(row.getWidth(),size*7.2f+36);
+            const float timerX=!localEnabled?row.getCentreX()-timerWidth/2:position.startsWith("left")?row.getX():position.startsWith("right")?row.getRight()-timerWidth:row.getCentreX()-timerWidth/2;
+            if(timerEnabled) {
+                juce::Rectangle<float> clock{timerX,row.getY(),timerWidth,clockHeight};
+                if(flag(settings,"clockBorderEnabled",true)){g.setColour(border("clockBorderColor","rgbClockBorderEnabled"));g.drawRoundedRectangle(clock,5,2);}
+                label(stage->timeText(true),clock.reduced(10,5),"fontFamily",size,color(stage->seconds()<0?"clockExpiredColor":"clockColor"));
             }
-            if (flag(settings, "localClockEnabled", true)) {
-                const float width = std::min(row.getWidth() / 3, localSize * 5.4f);
-                const bool left = str(settings, "localClockPosition", "right") == "left";
-                juce::Rectangle<float> local{left ? row.getX() : row.getRight() - width, row.getY(),
-                                             width, localSize * 1.4f};
-                if (flag(settings, "localClockBorderEnabled", true)) {
-                    g.setColour(color("localClockBorderColor"));
-                    g.drawRoundedRectangle(local, 4, 1);
-                }
-                label(Time::getCurrentTime().formatted("%H:%M:%S"), local, "fontFamily", localSize,
-                      color("localClockColor"));
+            if(localEnabled) {
+                const bool left=paired?position.startsWith("right"):str(settings,"localClockPosition","right")=="left";
+                const float available=timerEnabled&&!paired?std::max(0.f,(row.getWidth()-timerWidth)/2-8):row.getWidth();
+                const float width=paired?timerWidth:std::min(available,localSize*5.4f+10);
+                juce::Rectangle<float> local{!timerEnabled?row.getCentreX()-width/2:left?row.getX():row.getRight()-width,row.getY(),width,paired?clockHeight:localSize+10};
+                if(flag(settings,"localClockBorderEnabled",true)){g.setColour(color("localClockBorderColor"));g.drawRoundedRectangle(local,5,1);}
+                label(Time::getCurrentTime().formatted("%H:%M:%S"),local.reduced(5),"fontFamily",localSize,color("localClockColor"));
             }
         }
         auto title = [&](String value, String key, float base) {
-            if (value.isEmpty() || !flag(settings, Identifier(key + "Enabled")))
+            if (preview || value.isEmpty() || !flag(settings, Identifier(key + "Enabled")))
                 return;
             const float size = (float)jlimit(
                 10., 90., base * num(settings, Identifier(key + "Scale"), 100) / 100.);
@@ -95,7 +85,7 @@ void Projection::paintStage(Graphics &g) {
             label(chords, area.reduced(5), "chordFontFamily", size, color("chordColor"),
                   Justification::centred, 2);
         }
-        if (flag(settings, "progressEnabled")) {
+        if (!preview && flag(settings, "progressEnabled")) {
             const double progress=num(content,"progress");
             auto area = str(settings, "progressPosition", "bottom") == "top"
                             ? box.removeFromTop(7)
@@ -113,24 +103,83 @@ void Projection::paintStage(Graphics &g) {
     }
     if (preview && song && !clear) {
         const auto blocks=list(get(content,"blocks"));
-        const int columns=std::max(1,std::min(4,blocks.size()));
-        int rows=1;for(const auto &block:blocks)rows=std::max(rows,list(get(block,"songs")).size()+(str(block,"name").isNotEmpty()?1:0));
-        const float width=(box.getWidth()-12-(columns-1)*8)/columns;
-        const float font=std::max(9.f,std::min((width-20)/13,(box.getHeight()-20)/rows/1.1f)*(float)num(settings,"previewScale",100)/100);
-        for(int i=0;i<blocks.size();++i) {
+        const int columns=std::max(1,std::min(2,blocks.size())),gridRows=std::max(1,(std::min(4,blocks.size())+columns-1)/columns);
+        const float width=std::max(1.f,(box.getWidth()-12-(columns-1)*8)/columns);
+        const float available=std::max(1.f,box.getHeight()-12-(gridRows-1)*8);
+        const auto rowText=[&](const var &value,bool title){
+            auto text=str(value,"name");if(flag(settings,title?"previewBlockDurationEnabled":"previewSongDurationEnabled",true)&&num(value,"duration")>0)text+=String::fromUTF8(" • ")+clockText(std::ceil(num(value,"duration")));
+            return display(text);
+        };
+        const auto textHeight=[&](const String &text,float size){
+            GlyphArrangement glyphs;glyphs.addJustifiedText(StageState::font(settings,"previewFontFamily",size),text,0,0,std::max(1.f,width-18),Justification::left);
+            return std::ceil(std::min(size*2.4f,std::max(size*1.2f,glyphs.getBoundingBox(0,-1,true).getHeight())))+2;
+        };
+        struct PreviewLayout { float font; std::array<float,2> heights; };
+        String cacheKey=String(width)+":"+String(available)+":"+str(settings,"previewFontFamily");
+        for(int i=0;i<std::min(4,blocks.size());++i){cacheKey+="\nBLOCK:"+rowText(blocks[i],true);for(const auto &value:list(get(blocks[i],"songs")))cacheKey+="\n"+rowText(value,false);}
+        static std::map<String,PreviewLayout> layouts;
+        PreviewLayout layout;
+        if(auto at=layouts.find(cacheKey);at!=layouts.end())layout=at->second;
+        else {
+            const auto heights=[&](float size){
+                std::array<float,2> rows{16,gridRows>1?16.f:0.f};
+                for(int i=0;i<std::min(4,blocks.size());++i){
+                    const auto &block=blocks[i];float used=str(block,"name").isEmpty()?16:textHeight(rowText(block,true),size)+30;
+                    for(const auto &value:list(get(block,"songs")))used+=textHeight(rowText(value,false),size)+8;
+                    rows[i/columns]=std::max(rows[i/columns],used);
+                }
+                return rows;
+            };
+            float low=1,high=96;
+            for(int n=0;n<12;++n){const float mid=(low+high)/2;const auto rows=heights(mid);if(rows[0]+rows[1]<=available)low=mid;else high=mid;}
+            layout.font=std::max(1.f,std::floor(low*2)/2);layout.heights=heights(layout.font);
+            const float total=std::max(1.f,layout.heights[0]+layout.heights[1]);
+            for(auto &height:layout.heights)height=available*height/total;
+            if(layouts.size()>256)layouts.clear();layouts[cacheKey]=layout;
+        }
+        const float font=std::max(1.f,layout.font*(float)num(settings,"previewScale",100)/100);
+        for(int i=0;i<std::min(4,blocks.size());++i) {
             const auto &block=blocks[i];const auto songs=list(get(block,"songs"));
             const bool heading=str(block,"name").isNotEmpty();
-            auto frame=juce::Rectangle<float>(box.getX()+6+i*(width+8),box.getY()+6,width,(songs.size()+(heading?1:0))*(font*1.2f+3)+12);
-            g.setColour(Colour(0xff000000|(uint32)(int64)get(block,"color")).withAlpha(.7f));g.drawRoundedRectangle(frame,6,1);
+            auto frame=juce::Rectangle<float>(box.getX()+6+(i%columns)*(width+8),box.getY()+6+(i/columns)*(layout.heights[0]+8),width,layout.heights[i/columns]);
+            // The stroke is centred on its path. Keep it inside the cell and
+            // outside the text clip so fractional row heights cannot cut it off.
+            g.setColour(Colour(0xff000000|(uint32)(int64)get(block,"color")).withAlpha(.7f));
+            g.drawRoundedRectangle(frame.reduced(.5f),6,1);
             auto body=frame.reduced(6);
+            Graphics::ScopedSaveState cellClip(g);g.reduceClipRegion(body.getSmallestIntegerContainer());
             auto row=[&](const var &value,bool title){
                 auto text=str(value,"name");if(flag(settings,title?"previewBlockDurationEnabled":"previewSongDurationEnabled",true)&&num(value,"duration")>0)text+=String::fromUTF8(" • ")+clockText(std::ceil(num(value,"duration")));
-                const auto area=body.removeFromTop(font*1.2f+3);
-                const auto ink=Colour(0xff000000|(uint32)(int64)get(value,"color"));
-                label(text,area,"previewFontFamily",title?font*1.05f:font,ink,Justification::centredLeft,2);
-                if(!title&&flag(settings,"previewUnderlineEnabled",true)){g.setColour(ink);g.drawHorizontalLine((int)area.getBottom()-2,area.getX(),area.getRight());}
+                const auto area=body.removeFromTop(textHeight(display(text),font)+4);
+                body.removeFromTop(4);
+                const bool played=!title&&flag(value,"liveExecuted");
+                const bool active=!title&&flag(value,"playing"),waiting=!title&&flag(value,"queued");
+                const auto ink=played?Colour(0xffff4040):active||waiting?Colours::white:Colour(0xff000000|(uint32)(int64)(title?get(value,"nameColor",0x69ed91):get(value,"color")));
+                auto textArea=area;
+                if(active||waiting){
+                    g.setColour(Colour(active?0xff701818:0xff665000));g.fillRect(area);
+                    g.setColour(Colour(active?0xffff4040:0xffffdf40));
+                    g.fillRect(juce::Rectangle<float>(area.getX(),area.getBottom()-3,area.getWidth()*(float)jlimit(0.,1.,num(value,"playbackProgress")),3));
+                    textArea=textArea.reduced(3,0).withTrimmedBottom(4);
+                }
+                const auto rowFont=StageState::font(settings,"previewFontFamily",font);
+                GlyphArrangement glyphs;
+                glyphs.addFittedText(rowFont,display(text),textArea.getX(),textArea.getY(),textArea.getWidth(),textArea.getHeight(),Justification::centredLeft,2,1.f);
+                g.setColour(ink);glyphs.draw(g);
+                if(played){
+                    // Strike each fitted line, including long names that wrap.
+                    for(int first=0;first<glyphs.getNumGlyphs();){
+                        int end=first+1;const auto baseline=glyphs.getGlyph(first).getBaselineY();
+                        while(end<glyphs.getNumGlyphs()&&std::abs(glyphs.getGlyph(end).getBaselineY()-baseline)<.5f)++end;
+                        const auto bounds=glyphs.getBoundingBox(first,end-first,false);
+                        g.fillRect(juce::Rectangle<float>(bounds.getX(),bounds.getCentreY(),bounds.getWidth(),std::max(1.f,font/18)).getIntersection(textArea));
+                        first=end;
+                    }
+                }
+                if(!title&&flag(settings,"previewUnderlineEnabled",true)){g.setColour(ink);g.drawHorizontalLine((int)textArea.getBottom()-2,textArea.getX(),textArea.getRight());}
             };
-            if(heading)row(block,true);for(const auto &value:songs)row(value,false);
+            if(heading){row(block,true);g.setColour(Colour(0xff000000|(uint32)(int64)get(block,"color")).withAlpha(.85f));g.fillRect(body.removeFromTop(2));body.removeFromTop(6);}
+            for(const auto &value:songs)row(value,false);
         }
     } else if (!clear && str(content,"text").isNotEmpty()) {
         if (flag(settings, "textBoxEnabled", true)) {

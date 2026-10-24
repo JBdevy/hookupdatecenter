@@ -52,6 +52,28 @@ inline void click(SetlistRows &rows,int row) {
         Time::getCurrentTime(),1,false));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Remote section cues preserve Parts timing and armed destination for observers", [&] {
+        auto project=fixture();project.regionSetlist.reset();auto &song=project.songs[0];song.parts={{uuid(),"Playing",0,20}};
+        const auto region=song.parts[0].id,next=uuid(),target=uuid();
+        song.markers=std::vector<jaras::TimelineMarker>{{next,"Chorus",10,0},{target,"Bridge",2,0}};
+        for(auto &marker:*song.markers)marker.section=true;
+        Session session;session.inspection=true;session.core.loadProject(project);
+        Appearance preferences(directory.getNonexistentChildFile("remote-section-cues",".json"));
+        StageState stage(preferences);remote::Presentation presentation(session,stage);
+        session.core.execute({jaras::CommandKind::selectRegion,region});
+        session.core.execute({jaras::CommandKind::play});session.core.advance(5);
+        auto packet=presentation.snapshot(0),section=get(packet,"sectionPlayback");
+        require(str(section,"currentRegion")==remote::wireID(region)&&num(section,"position")==5,
+                "Observer needs the audible section region and position without subscribing to Parts");
+        require(list(get(packet,"markers")).size()==2,"Observer needs section names");
+        session.core.execute({jaras::CommandKind::queueSection,target});
+        section=get(presentation.snapshot(2),"sectionPlayback");
+        require(str(section,"queuedMarker")==remote::wireID(target)&&num(section,"nextTrigger")==10,
+                "Observer TP must announce the armed destination at the actual trigger, not its old timestamp");
+        session.core.execute({jaras::CommandKind::cancelSection});
+        require(get(get(presentation.snapshot(0),"sectionPlayback"),"queuedMarker").isVoid(),
+                "Cancelling must clear observer's armed warning");
+    });
     test("Unified Remote tempo returns to white after repeated BPM round trips", [&] {
         auto project=fixture();auto &song=project.songs[0];song.timeSettings=jaras::ProjectTimeSettings{};
         song.timeSettings->timebase=jaras::ProjectTimebase::relative;

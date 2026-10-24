@@ -529,7 +529,13 @@ struct DAWRemoteClientView: View {
                 songDisplays: .init(current: displays.current?.displayName ?? song?.name, currentBPM: displays.currentBPM,
                     next: displays.next?.displayName, nextBPM: displays.nextBPM, queued: displays.queued?.displayName, queuedBPM: displays.queuedBPM,
                     playlistSeconds: cachedPlaylistSeconds),
-                setlistBlocks: cachedBlocks)
+                setlistBlocks: cachedBlocks.map { block in
+                    var block = block
+                    block.nameColor = UInt32(AppearanceColor.shared("jaras.setlist.blockTextColor", default: 0x69ed91).value)
+                    return block
+                },
+                previewActive: TeleprompterWindow.shared.previewActive,
+                previewPage: TeleprompterWindow.shared.previewPage)
         }
         session.noticeSendHandler = { [weak show] command in
             guard command.valid, command.action == .noticeSend, let show,
@@ -546,6 +552,8 @@ struct DAWRemoteClientView: View {
             guard let show, command.project == show.snapshot.project.id else { return }
             let documents = Self.documents.flatMap { $0.show === show ? $0 : nil }
             if command.action == .remotePanel { return }
+            if command.action == .togglePreview { TeleprompterWindow.shared.togglePreview(); return }
+            if command.action == .selectPreviewPage { TeleprompterWindow.shared.selectPreviewPage(Int(command.value)); return }
             if handleNotice(command) { return }
             if command.action == .timerStart {
                 let timer = TeleprompterTimerController.shared, seconds = Int(command.value)
@@ -737,23 +745,30 @@ struct DAWRemoteClientView: View {
             style: style, preview: settings.displaysPreview(previewActive), settings: settings)
         if result.preview, let song {
             let setlist = snapshot.project.regionSetlist ?? RegionSetlist()
+            let played = SetlistLivePlaybackTracker.previewMarks(project: snapshot.project)
             let playlist = setlist.playlists.first { $0.id == setlist.selectedId && $0.songId == song.id }
-            let regions = playlist.map { list in list.regionIds.compactMap { list.region(forEntry: $0, in: song) } } ?? song.parts.filter { $0.parentRegionID == nil }.sorted { $0.startTime < $1.startTime }
+            let playback = TeleprompterPreviewPlayback(song: song, transport: transport, playlist: playlist)
+            let entries = TeleprompterPreviewEntry.make(song: song, playlist: playlist)
             let headers = Dictionary(grouping: (setlist.blocks ?? []).filter { $0.songId == song.id && $0.playlistId == playlist?.id }, by: \.beforeRegionId)
             var blocks = [DAWRemoteTeleprompter.Block(id: song.id, name: "", color: 0xffea00, rows: [])]
-            for part in regions {
-                for header in headers[part.id] ?? [] {
+            for entry in entries {
+                let part = entry.region
+                for header in entry.blockAnchors.flatMap({ headers[$0] ?? [] }) {
                     blocks.append(.init(id: header.id, name: settings.display(header.name), color: header.color, rows: []))
                 }
                 let last = blocks.count - 1
-                blocks[last].rows.append(.init(id: part.id, name: settings.display(part.displayName),
+                blocks[last].rows.append(.init(id: entry.id, name: settings.display(part.displayName),
                     color: part.id == (transport.playlistEntryId ?? region?.id) ? settings.highlightColor : part.id == (transport.queuedPlaylistEntryId ?? queued?.id) ? settings.queueNameColor : part.color ?? blocks[last].color,
-                    duration: max(0, part.endTime - part.startTime)))
+                    duration: max(0, part.endTime - part.startTime),
+                    liveExecuted: played.contains(part.id),
+                    playing: playback.playingEntry == entry.id, queued: playback.queuedEntry == entry.id,
+                    playbackProgress: playback.progress(for: entry.id)))
             }
             blocks += (headers[nil] ?? []).map { .init(id: $0.id, name: settings.display($0.name), color: $0.color, rows: []) }
+            for index in blocks.indices { blocks[index].nameColor = UInt32(AppearanceColor.shared("jaras.setlist.blockTextColor", default: 0x69ed91).value) }
             result.blocks = Array(blocks.filter { !$0.name.isEmpty || !$0.rows.isEmpty }.dropFirst(previewPage * 4).prefix(4))
         }
-        if !result.preview || settings.isClear, let media, let file = media.audioFile, let directory,
+        if !result.preview, let media, let file = media.audioFile, let directory,
            UTType(filenameExtension: URL(fileURLWithPath: file.path).pathExtension)?.conforms(to: .image) == true {
             result.imageID = remote.imageID(for: directory.appendingPathComponent(file.path), project: snapshot.project.id)
             result.mediaName = media.name
@@ -1159,6 +1174,11 @@ private struct RemoteSidebarRail<Content: View>: View {
                 }
                 else if observer { observerWorkspace }
                 else { directorWorkspace }
+            }
+        }
+        .overlay(alignment: .top) {
+            if observer, controlsEnabled, let cue = DAWRemoteSectionCue.current(in: state) {
+                RemoteObserverSectionCue(cue: cue).padding(16).allowsHitTesting(false)
             }
         }
         .overlay {
@@ -1899,6 +1919,12 @@ private struct RemoteSidebarRail<Content: View>: View {
                     if local, let openRemoteSettings {
                         IpadNativeRemoteToggle(openSettings: openRemoteSettings, width: railButton)
                         IpadNativePreviewButton(width: railButton)
+                    } else if !local {
+                        IpadPreviewButton(width: railButton, active: state.previewActive == true,
+                            page: state.previewPage ?? 0,
+                            toggle: { action(.togglePreview) },
+                            selectPage: { action(.selectPreviewPage, value: Double($0)) })
+                            .disabled(state.previewActive == nil)
                     }
                     Spacer(minLength: RemoteSidebarMetrics.groupSpacing)
                     if local, let localShow {
@@ -2776,7 +2802,7 @@ private struct RemoteSetlistBlockLabel: View, Equatable {
             }
             Text(verbatim: block.name)
                 .font(fontStyle == 2 ? .system(size: 13 * scale, weight: .bold).italic() : .system(size: 13 * scale, weight: fontStyle == 0 ? .regular : .bold))
-                .foregroundStyle(JarasTheme.green).lineLimit(2)
+                .foregroundStyle(remoteColor(block.nameColor ?? 0x69ed91)).lineLimit(2)
         }.padding(.horizontal, 10).padding(.vertical, 5 * scale)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(remoteColor(block.color).opacity(0.15))
@@ -5627,7 +5653,7 @@ private struct RemoteNativeProjectionImage: View {
                 }
             })
             .overlay {
-                if !content.resolvedSettings.isClear, let notices = state.notices, notices.active && (index == 1 ? notices.window1 : notices.window2) {
+                if !content.resolvedSettings.displaysPreview(content.preview) && !content.resolvedSettings.isClear, let notices = state.notices, notices.active && (index == 1 ? notices.window1 : notices.window2) {
                     RemoteNativeNoticeOverlay(notice: notices, project: state.project, remote: remote)
                 }
             }
@@ -6337,21 +6363,55 @@ private struct IpadNativePreviewButton: View {
     let width: CGFloat
     @ObservedObject private var preview = TeleprompterWindow.shared
     var body: some View {
-        Button { preview.togglePreview() } label: {
+        IpadPreviewButton(width: width, active: preview.previewActive, page: preview.previewPage,
+            toggle: { preview.togglePreview() }, selectPage: { preview.selectPreviewPage($0) })
+    }
+}
+private struct IpadPreviewButton: View {
+    let width: CGFloat
+    let active: Bool
+    let page: Int
+    let toggle: () -> Void
+    let selectPage: (Int) -> Void
+    var body: some View {
+        Button(action: toggle) {
             Text(verbatim: "P\nR\nE\nV\nI\nE\nW")
                 .font(.jarasSystem(size: 10, weight: .heavy)).multilineTextAlignment(.center)
                 .foregroundStyle(Color.black).frame(width: width, height: 108)
-                .modifier(RemoteControlSurface(color: preview.previewActive ? JarasTheme.green : JarasTheme.liveOffRed, radius: 5))
+                .modifier(RemoteControlSurface(color: active ? JarasTheme.green : JarasTheme.liveOffRed, radius: 5))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Preview")
-            .accessibilityValue(preview.previewActive ? "On" : "Off").contextMenu {
-            ForEach(0..<6) { page in
-                Button { preview.selectPreviewPage(page) } label: {
-                    if preview.previewPage == page { Label("Blocks \(page * 4 + 1)–\(page * 4 + 4)", systemImage: "checkmark") }
-                    else { Text("Blocks \(page * 4 + 1)–\(page * 4 + 4)") }
+            .accessibilityValue(active ? "On" : "Off").contextMenu {
+            ForEach(0..<6) { candidate in
+                Button { selectPage(candidate) } label: {
+                    if page == candidate { Label("Blocks \(candidate * 4 + 1)–\(candidate * 4 + 4)", systemImage: "checkmark") }
+                    else { Text("Blocks \(candidate * 4 + 1)–\(candidate * 4 + 4)") }
                 }
             }
         }
+    }
+}
+#endif
+
+#if os(iOS)
+private struct RemoteObserverSectionCue: View {
+    let cue: DAWRemoteSectionCue
+    var body: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(LocalizedStringKey(cue.armed ? "Armed section" : "Next section"))
+                    .font(.jarasSystem(size: 13, weight: .semibold)).foregroundStyle(JarasTheme.yellow)
+                Text(verbatim: cue.name).font(.jarasSystem(size: 23, weight: .bold))
+                    .foregroundStyle(.white).lineLimit(3)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Text(verbatim: "\(cue.seconds) s").font(.jarasSystem(size: 28, weight: .bold, design: .monospaced))
+                .foregroundStyle(JarasTheme.yellow).fixedSize()
+        }.padding(18).frame(maxWidth: 520)
+            .background(RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.94)))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(JarasTheme.yellow, lineWidth: 2))
+            .shadow(color: .black.opacity(0.6), radius: 14, y: 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("observerSectionCue")
     }
 }
 #endif

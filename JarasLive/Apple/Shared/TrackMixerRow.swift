@@ -2428,12 +2428,14 @@ struct FooterMixerPanel: View {
     var body: some View {
         #if os(macOS)
         FooterNativeHeightHost(storedHeight: CGFloat(storedHeight), minimum: 273, maximum: heightLimit,
-            active: active, identity: AnyHashable(FooterMixerHeightContentIdentity(show: ObjectIdentifier(show), active: active)),
+            active: active, identity: AnyHashable(ObjectIdentifier(show)),
             role: .mixer, resizeCoordinator: resizeCoordinator) {
             VStack(spacing: 0) {
                 FooterMixerResizeInput(height: height, maximum: heightLimit, changed: { _ in }, ended: { storedHeight = $0 })
                     .frame(height: 8).jarasHelp("Drag to resize mixer")
-                FooterHorizontalMixer(show: show, active: active).frame(maxHeight: .infinity)
+                // The native container owns visibility. Keep its controls and meters mounted;
+                // toggling active rebuilt every visible channel twice on each open/close.
+                FooterHorizontalMixer(show: show).frame(maxHeight: .infinity)
             }
         }.clipped().allowsHitTesting(active).accessibilityHidden(!active)
         #else
@@ -2463,12 +2465,6 @@ struct FooterMixerPanel: View {
         #endif
     }
 }
-#if os(macOS)
-private struct FooterMixerHeightContentIdentity: Hashable {
-    let show: ObjectIdentifier
-    let active: Bool
-}
-#endif
 
 private enum FooterMixerMetrics {
     static let width: CGFloat = 83

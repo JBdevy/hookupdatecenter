@@ -87,8 +87,10 @@ struct Command {
                  a == "queueSection")
             valid = target && zero;
         else if (a == "toggleMultiLoopBypass" || a == "toggleSetlistLive" || a == "cancelSection" ||
-                 a == "timerStop" || a == "noticeClear")
+                 a == "timerStop" || a == "noticeClear" || a == "togglePreview")
             valid = !target && zero;
+        else if (a == "selectPreviewPage")
+            valid = !target && range(0, 5) && integral;
         else if (a == "timerStart")
             valid = !target && range(0, 359999) && integral;
         else if (a == "remotePanel")

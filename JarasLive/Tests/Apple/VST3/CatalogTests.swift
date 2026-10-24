@@ -5,6 +5,7 @@ if CommandLine.arguments.count > 3 && CommandLine.arguments[1] == "--scan-vst3" 
     let count = (try? String(contentsOf: counter)).flatMap(Int.init) ?? 0
     try String(count + 1).write(to: counter, atomically: true, encoding: .utf8)
     if module.lastPathComponent == "Slow.vst3" { Thread.sleep(forTimeInterval: 31) }
+    if module.lastPathComponent == "Stuck.vst3", (try? String(contentsOf: module)) != "recovered" { Thread.sleep(forTimeInterval: 10) }
     let plugin = RecognizedPlugin(classID: "fixture", name: "Kontakt", path: module.path, vendor: "Native Instruments", category: "Instrument|Sampler")
     struct Response: Encodable { let plugins: [RecognizedPlugin]; let error: String }
     try JSONEncoder().encode(Response(plugins: [plugin], error: "")).write(to: URL(fileURLWithPath: CommandLine.arguments[3]))
@@ -66,6 +67,24 @@ Task { @MainActor in
         precondition(plugin.matches(query: "kontakt", type: "Fx", vendor: "Other", allowsInstruments: true), "Search must ignore categories")
         precondition(plugin.matches(query: "native", type: "Fx", vendor: "Other", allowsInstruments: true))
         precondition(!plugin.matches(query: "kontakt", type: "", vendor: "", allowsInstruments: false), "Search cannot enable unsupported instruments in item FX")
+        precondition(PluginCatalog.pluginTimeout == 120, "Production timeout must be two minutes")
+        let stuck = root.appendingPathComponent("Stuck.vst3")
+        let healthy = root.appendingPathComponent("Healthy.vst3")
+        try "stuck".write(to: stuck, atomically: true, encoding: .utf8)
+        try "healthy".write(to: healthy, atomically: true, encoding: .utf8)
+        defaults.set([stuck.path, healthy.path], forKey: "jaras.plugins.paths")
+        let bounded = PluginCatalog(defaults: defaults, executable: executable, timeout: 0.3)
+        bounded.scan(); try await wait(bounded, limit: 4)
+        precondition(bounded.completedPlugins == 2 && bounded.plugins.count == 1 && bounded.hasFailedPlugins)
+        precondition(bounded.status.contains("2 minutes"), "Timeout must be reported")
+        let cachedFailure = PluginCatalog(defaults: defaults, executable: executable, timeout: 0.3)
+        cachedFailure.scan(); try await wait(cachedFailure, limit: 3)
+        precondition((try? String(contentsOf: stuck.appendingPathExtension("scans"))) == "1", "Failed plugin was loaded after reopening")
+        cachedFailure.scan(retryFailed: true); try await wait(cachedFailure, limit: 3)
+        precondition((try? String(contentsOf: stuck.appendingPathExtension("scans"))) == "2", "Manual retry was ignored")
+        try "recovered".write(to: stuck, atomically: true, encoding: .utf8)
+        cachedFailure.scan(); try await wait(cachedFailure, limit: 3)
+        precondition(cachedFailure.plugins.count == 2 && !cachedFailure.hasFailedPlugins, "Changed plugin did not recover")
         print("Plugin catalog: slow scan, persistent cache, changed/missing bundles, cancellation, filters and global search passed")
     } catch { fatalError("Catalog test failed: \(error)") }
     exit(0)

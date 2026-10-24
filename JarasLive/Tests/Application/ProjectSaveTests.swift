@@ -1381,6 +1381,7 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertTrue(show.hasUnsavedChanges)
         XCTAssertFalse(show.saving)
         XCTAssertEqual(show.message, "Disk unavailable")
+        XCTAssertEqual(show.modalNotice, "Disk unavailable", "A failed Save must show its error, not only retain the pending indicator")
         XCTAssertNil(show.lastSavedAt, "failed writes must not advance the displayed saved date")
     }
     @MainActor func testDetachedOrDifferentDocumentCannotReportSuccessfulSaveOrClearDirtyState() async throws {

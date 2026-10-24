@@ -1797,3 +1797,10 @@
 "Save and close" = "Save and close";
 
 "The project will be saved before closing." = "The project will be saved before closing.";
+
+"Retry failed plugins" = "Retry failed plugins";
+"Plugin did not respond within 2 minutes; skipped." = "Plugin did not respond within 2 minutes; skipped.";
+
+"Next section" = "Next section";
+
+"Armed section" = "Armed section";

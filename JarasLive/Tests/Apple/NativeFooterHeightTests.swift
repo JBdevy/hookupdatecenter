@@ -134,9 +134,15 @@ MainActor.assumeIsolated {
     }
     expect(madeClosedContent == 1 && initiallyClosed.subviews.allSatisfy { !$0.isHidden },
            "opening mounts visible content exactly once")
+    initiallyClosed.frame.size = CGSize(width: 800, height: 273)
+    initiallyClosed.layoutSubtreeIfNeeded()
     let retainedMixerRoot = initiallyClosed.subviews.first!
+    let retainedFrame = retainedMixerRoot.frame
     initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: false, role: .mixer, coordinator: nil)
+    initiallyClosed.frame.size.height = 0
+    initiallyClosed.layoutSubtreeIfNeeded()
     expect(retainedMixerRoot.isHidden, "closing excludes retained controls from tracking traversal")
+    expect(retainedMixerRoot.frame == retainedFrame, "hidden mixer must retain its geometry instead of reflowing every control to zero height")
     initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: true, role: .mixer, coordinator: nil)
     initiallyClosed.setContent(identity: "closed", environment: EnvironmentValues()) {
         madeClosedContent += 1

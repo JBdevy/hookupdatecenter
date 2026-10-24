@@ -106,7 +106,8 @@ import Combine
         remote.update(text: content.text, chords: content.chords, song: content.song, queued: content.queued,
             progress: content.progress, preview: content.preview, blocks: content.blocks.map {
                 TeleprompterRemoteBlock(name: $0.name, color: $0.color, duration: $0.rows.reduce(0) { $0 + $1.duration },
-                    songs: $0.rows.map { TeleprompterRemoteSong(name: $0.name, color: $0.color, duration: $0.duration) })
+                    songs: $0.rows.map { TeleprompterRemoteSong(name: $0.name, color: $0.color, duration: $0.duration,
+                        liveExecuted: $0.liveExecuted, playing: $0.playing, queued: $0.queued, playbackProgress: $0.playbackProgress) }, nameColor: $0.nameColor)
             }, snapshot: show.snapshot)
     }
     func send(_ command: DAWRemoteCommand) { session.send(command); refresh() }

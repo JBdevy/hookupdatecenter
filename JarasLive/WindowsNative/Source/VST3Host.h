@@ -21,6 +21,9 @@ struct Transport {
 };
 // Scan in a child process: third-party DLL entry points may crash or hang.
 std::vector<Description> scan(const std::filesystem::path &);
+// Keep the factory/module loaded for a complete scan/validation session, including
+// destroy-and-restore checks. DLL unload/reload is not a processor state round trip.
+std::shared_ptr<void> retainModule(const std::filesystem::path &);
 class Editor;
 // No JUCE dependency. Control methods and destruction belong to the UI thread;
 // process() belongs to one audio thread and never acquires locks or allocates.

@@ -1831,3 +1831,10 @@
 "Save and close" = "Salvar e fechar";
 
 "The project will be saved before closing." = "O projeto será salvo antes de fechar.";
+
+"Retry failed plugins" = "Tentar plugins com falha";
+"Plugin did not respond within 2 minutes; skipped." = "Plugin sem resposta por 2 minutos; ignorado.";
+
+"Next section" = "Próximo trecho";
+
+"Armed section" = "Trecho engatilhado";

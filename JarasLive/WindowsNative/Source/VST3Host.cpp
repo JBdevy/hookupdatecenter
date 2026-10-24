@@ -115,7 +115,9 @@ public:
         const auto size=std::min<int64>(n,available);
         if(size)memcpy(data,bytes.data()+position,size);
         position+=size;if(count)*count=int32(size);
-        return size==n?kResultOk:kResultFalse;
+        // Match VST3 MemoryStream: valid short/EOF reads succeed and report
+        // their actual byte count; preset readers may probe past the last chunk.
+        return kResultOk;
     }
     tresult PLUGIN_API write(void *data,int32 n,int32 *count) override {
         if(count)*count=0;
@@ -339,6 +341,13 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
             source=query<IConnectionPoint>(component);destination=query<IConnectionPoint>(controller);
             if(source&&destination){source->connect(destination);destination->connect(source);}
         }
+        // Complete the controller's initial synchronization before applying a
+        // saved preset. Roland processors use this handshake to connect their
+        // parameter engine; restoring first dereferences an uninitialized peer.
+        if(controller && !state.component.empty()){
+            Stream initial;
+            if(component->getState(&initial)==kResultOk){initial.position=0;controller->setComponentState(&initial);}
+        }
         if(!state.component.empty()){
             Stream stream(state.component);
             if(component->setState(&stream)!=kResultOk)throw std::runtime_error("The VST3 processor rejected its saved state.");
@@ -359,17 +368,23 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         }
         const int inCount=component->getBusCount(kAudio,kInput),outCount=component->getBusCount(kAudio,kOutput);
         if(inCount<0||inCount>64||outCount<1||outCount>64)throw std::runtime_error("Unsupported VST3 audio bus layout.");
-        std::vector<SpeakerArrangement> in(inCount),out(outCount);
+        std::vector<SpeakerArrangement> in(inCount),out(outCount),nativeIn(inCount),nativeOut(outCount);
         for(int dir=0;dir<2;++dir){
             auto &arr=dir?out:in;
             for(int i=0;i<int(arr.size());++i){
                 BusInfo info{};component->getBusInfo(kAudio,dir?kOutput:kInput,i,info);
                 processor->getBusArrangement(dir?kOutput:kInput,i,arr[i]);
+                (dir?nativeOut:nativeIn)[i]=arr[i];
                 if(info.busType==kMain&&(dir?mainOut:mainIn)==-1){(dir?mainOut:mainIn)=i;arr[i]=SpeakerArr::kStereo;}
             }
         }
-        if(mainOut<0||processor->setBusArrangements(in.data(),inCount,out.data(),outCount)!=kResultOk)
-            throw std::runtime_error("This VST3 processor does not support a stereo output.");
+        if(mainOut<0)throw std::runtime_error("This VST3 processor has no main audio output.");
+        if(processor->setBusArrangements(in.data(),inCount,out.data(),outCount)!=kResultOk){
+            const auto supported=[](SpeakerArrangement bus){const auto channels=SpeakerArr::getChannelCount(bus);return channels==1||channels==2;};
+            if(!supported(nativeOut[mainOut])||(mainIn>=0&&!supported(nativeIn[mainIn]))||
+               processor->setBusArrangements(nativeIn.data(),inCount,nativeOut.data(),outCount)!=kResultOk)
+                throw std::runtime_error("This VST3 processor requires an unsupported channel layout (CatLive supports mono and stereo).");
+        }
         inputs.resize(inCount);outputs.resize(outCount);pointers.resize(inCount+outCount);
         for(int dir=0;dir<2;++dir){
             auto &buses=dir?outputs:inputs;
@@ -417,7 +432,11 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
                 auto destination=input.channelBuffers32[c];
                 const float *original=int(index)==mainIn&&c<2?(c?right:left):nullptr;
                 bool silent=true;
-                if(original){std::copy_n(original,count,destination);for(int f=0;f<count;++f)if(original[f]!=0){silent=false;break;}}
+                if(original){
+                    if(input.numChannels==1){for(int f=0;f<count;++f)destination[f]=.5f*(left[f]+right[f]);}
+                    else std::copy_n(original,count,destination);
+                    for(int f=0;f<count;++f)if(destination[f]!=0){silent=false;break;}
+                }
                 else std::fill_n(destination,count,0.f);
                 if(silent)input.silenceFlags|=uint64(1)<<c;
             }
@@ -552,6 +571,7 @@ std::unique_ptr<Editor> Processor::openEditor(void *parent,std::function<void(in
     editor->resizeOwner(editor->w,editor->h);
     return std::unique_ptr<Editor>(new Editor(std::move(editor)));
 }
+std::shared_ptr<void> retainModule(const std::filesystem::path &path){ return loadModule(path); }
 std::vector<Description> scan(const std::filesystem::path &path){
     auto module=loadModule(path);
     auto *f2=query<IPluginFactory2>(module->factory);auto *f3=query<IPluginFactory3>(module->factory);

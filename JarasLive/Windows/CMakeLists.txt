@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(CatLiveWindows VERSION 1.1.0 LANGUAGES C CXX)
-set(CATLIVE_VERSION "1.12" CACHE STRING "Public CatLive version (X.XX)")
+set(CATLIVE_VERSION "1.13" CACHE STRING "Public CatLive version (X.XX)")
 if(NOT CATLIVE_VERSION MATCHES "^[0-9]+\\.[0-9][0-9]$")
     message(FATAL_ERROR "CATLIVE_VERSION must use X.XX format.")
 endif()
@@ -61,6 +61,12 @@ juce_add_gui_app(CatLive PRODUCT_NAME "CatLive" COMPANY_NAME "Hook Developer"
     BUNDLE_ID "com.hookdeveloper.catlive" VERSION "${CATLIVE_BINARY_VERSION}"
     ICON_BIG "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveIcon.appiconset/icon-256@1x.png")
 juce_generate_juce_header(CatLive)
+# JUCE 8.0.15's resource rule only depends on its icon. Track Info.txt too,
+# otherwise incremental version changes leave FileVersion/ProductVersion stale.
+get_target_property(catlive_generated_sources CatLive JUCE_GENERATED_SOURCES_DIRECTORY)
+get_target_property(catlive_info_file CatLive JUCE_INFO_FILE)
+add_custom_command(OUTPUT "${catlive_generated_sources}/CatLive_resources.rc" APPEND
+    DEPENDS "${catlive_info_file}")
 add_library(CatLiveVST3 STATIC "${CATLIVEROOT}/WindowsNative/Source/VST3Host.cpp"
     "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp"
     "${CATLIVEROOT}/Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp"
@@ -71,7 +77,7 @@ target_compile_options(CatLiveVST3 PRIVATE /utf-8)
 target_link_libraries(CatLiveVST3 PRIVATE ole32 user32)
 add_executable(CatLiveVST3Probe "${CATLIVEROOT}/WindowsNative/Tests/VST3Probe.cpp")
 target_include_directories(CatLiveVST3Probe PRIVATE "${CATLIVEROOT}/WindowsNative/ThirdParty")
-target_link_libraries(CatLiveVST3Probe PRIVATE CatLiveVST3)
+target_link_libraries(CatLiveVST3Probe PRIVATE CatLiveVST3 dbghelp)
 add_dependencies(CatLive CatLiveVST3Probe)
 add_custom_command(TARGET CatLive POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "$<TARGET_FILE:CatLiveVST3Probe>" "$<TARGET_FILE_DIR:CatLive>/CatLiveVST3Probe.exe")

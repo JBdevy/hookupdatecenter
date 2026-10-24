@@ -46,12 +46,17 @@ class VST3Catalog final {
         return SHA256(metadata.toRawUTF8(),(size_t)metadata.getNumBytesAsUTF8()).toHexString();
     }
     void cancelScan() { cancelRequested = true; }
-    void scan() {
+    static constexpr int pluginTimeoutMilliseconds = 120000;
+    bool hasFailedPlugins() const {
+        for (const auto &entry : cache) if (str(entry.second,"error").isNotEmpty()) return true;
+        return false;
+    }
+    void scan(bool retryFailed = false) {
         if (scanning) return;
         cancelRequested = false; scanning = true; status = String::fromUTF8("Escaneando plugins…");
         scanProgress = -1.0; currentPlugin.clear(); completedPlugins = totalPlugins = 0; ++revision;
         auto roots = paths; auto previousCache = cache; auto previousPlugins = plugins; auto weak = std::weak_ptr<int>(alive);
-        worker.addJob([this, roots, previousCache, previousPlugins, weak] {
+        worker.addJob([this, roots, previousCache, previousPlugins, weak, retryFailed] {
             Array<var> found; StringArray failures; std::set<String> seen;
             Array<File> candidates;
             std::function<void(File)> visit = [&](File folder) {
@@ -79,9 +84,13 @@ class VST3Catalog final {
                     const auto stamp = fingerprint(folder);
                     const auto cached = previousCache.find(path.toLowerCase());
                     if (stamp.isNotEmpty() && cached != previousCache.end() && str(cached->second,"fingerprint") == stamp) {
-                        found.addArray(list(get(cached->second,"plugins")));
-                        report(++completed, folder.getFileNameWithoutExtension());
-                        continue;
+                        const auto error = str(cached->second,"error");
+                        if (error.isEmpty() || !retryFailed) {
+                            if (error.isNotEmpty()) failures.add(folder.getFileName() + ": " + error);
+                            else found.addArray(list(get(cached->second,"plugins")));
+                            report(++completed, folder.getFileNameWithoutExtension());
+                            continue;
+                        }
                     }
                     // Upgrade the previous successful catalog without running its plugins again.
                     // Future scans compare the installed bundle against this initial baseline.
@@ -99,9 +108,21 @@ class VST3Catalog final {
                     try {
                         ChildProcess process;
                         const auto helper = File::getSpecialLocation(File::currentExecutableFile).getSiblingFile("CatLiveVST3Probe.exe");
-                        if (!process.start(StringArray{helper.getFullPathName(),path,output.getFullPathName(),"--validate"})) throw std::runtime_error("Falha ao iniciar o scanner.");
-                        while (process.isRunning() && !stopping.load() && !cancelRequested.load()) Thread::sleep(25);
+                        // Discover every audio class, as the macOS catalog does.
+                        // A shell can contain mono, stereo and surround plugins;
+                        // instantiating only its first class rejects unrelated
+                        // valid classes. Audio/state validation belongs to loading
+                        // the selected class (and the explicit --validate test).
+                        const auto command = probeCommand ? probeCommand(folder, output) : StringArray{helper.getFullPathName(),path,output.getFullPathName(),"--scan"};
+                        if (!process.start(command, 0)) throw std::runtime_error("Falha ao iniciar o scanner.");
+                        const auto deadline = Time::getMillisecondCounterHiRes() + probeTimeoutMilliseconds;
+                        while (process.isRunning() && !stopping.load() && !cancelRequested.load()
+                               && Time::getMillisecondCounterHiRes() < deadline) Thread::sleep(25);
                         if (stopping.load() || cancelRequested.load()) { if (process.isRunning()) process.kill(); output.deleteFile(); break; }
+                        if (process.isRunning()) {
+                            process.kill(); process.waitForProcessToFinish(1000);
+                            throw std::runtime_error("Plugin sem resposta por 2 minutos; ignorado.");
+                        }
                         const auto result = JSON::parse(output);
                         if (process.getExitCode()!=0 || !flag(result,"success")) throw std::runtime_error(utf8(str(result,"error","Falha ao verificar plugin.")));
                         Array<var> verified;
@@ -113,7 +134,18 @@ class VST3Catalog final {
                                 cache[path.toLowerCase()]=record; save();
                             });
                         }
-                    } catch (const std::exception &e) { failures.add(folder.getFileName() + ": " + String::fromUTF8(e.what())); }
+                    } catch (const std::exception &e) {
+                        const auto error = String::fromUTF8(e.what());
+                        failures.add(folder.getFileName() + ": " + error);
+                        // Never quarantine a user cancellation or a bundle replaced during its scan.
+                        if (!stopping.load() && !cancelRequested.load() && stamp.isNotEmpty() && fingerprint(folder) == stamp) {
+                            auto record=object(); put(record,"path",path); put(record,"fingerprint",stamp);
+                            put(record,"plugins",Array<var>{}); put(record,"error",error);
+                            MessageManager::callAsync([this,weak,path,record] {
+                                if (!weak.expired()) { cache[path.toLowerCase()]=record; save(); }
+                            });
+                        }
+                    }
                     output.deleteFile();
                     report(++completed, folder.getFileNameWithoutExtension());
             }
@@ -140,7 +172,9 @@ class VST3Catalog final {
     std::map<String,var> cache;
     VST3Catalog() : VST3Catalog(File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/vst3-catalog.json")) {}
   public:
-    explicit VST3Catalog(File storage) : file(std::move(storage)) {
+    using ProbeCommand = std::function<StringArray(const File &, const File &)>;
+    explicit VST3Catalog(File storage, ProbeCommand command = {}, int timeoutMilliseconds = pluginTimeoutMilliseconds)
+        : file(std::move(storage)), probeCommand(std::move(command)), probeTimeoutMilliseconds(std::max(1,timeoutMilliseconds)) {
         const auto saved = JSON::parse(file);
         if (get(saved,"paths").isArray()) for (const auto &path : list(get(saved,"paths"))) paths.add(path.toString());
         else { paths.add("C:\\Program Files\\Common Files\\VST3");
@@ -151,6 +185,8 @@ class VST3Catalog final {
     }
     ~VST3Catalog() { stopping = true; alive.reset(); worker.removeAllJobs(true,25000); }
   private:
+    ProbeCommand probeCommand;
+    const int probeTimeoutMilliseconds;
     void save() {
         auto saved = object(); Array<var> values; for (const auto &path : paths) values.add(path);
         put(saved,"paths",values); put(saved,"plugins",plugins);
@@ -182,6 +218,7 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
         search.onTextChange = [this] { refresh(); };
         addAndMakeVisible(list); list.setComponentID("externalPluginList"); list.setRowHeight(64); list.setColour(ListBox::backgroundColourId,theme::panel); list.setOutlineThickness(0);
         addAndMakeVisible(scan); scan.onClick=[] { auto &catalog=VST3Catalog::shared(); if(catalog.scanning)catalog.cancelScan();else catalog.scan(); }; scan.getProperties().set("flat",true);
+        addAndMakeVisible(retry); retry.onClick=[] { VST3Catalog::shared().scan(true); }; retry.getProperties().set("flat",true);
         addAndMakeVisible(cancel); cancel.onClick=dismiss; cancel.getProperties().set("flat",true);
         addAndMakeVisible(message); message.setFont(theme::font(11)); message.setColour(Label::textColourId,theme::secondary);
         addAndMakeVisible(progress); progress.setPercentageDisplay(true);
@@ -197,11 +234,13 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
         current.setBounds(20,getHeight()-116,getWidth()-40,26);
         progress.setBounds(20,getHeight()-84,getWidth()-40,16);
         scan.setBounds(20,getHeight()-46,150,28); cancel.setBounds(getWidth()-110,getHeight()-46,90,28);
-        message.setBounds(182,getHeight()-46,std::max(20,getWidth()-306),28);
+        retry.setBounds(180,getHeight()-46,125,28);
+        const int messageLeft=retry.isVisible()?315:182;
+        message.setBounds(messageLeft,getHeight()-46,std::max(20,getWidth()-messageLeft-124),28);
     }
   private:
     std::function<void(var)> picked; std::function<void()> dismiss;
-    TextEditor search; ComboBox typeFilter,vendorFilter; Label typeLabel,vendorLabel; ListBox list; TextButton scan{"Escanear plugins"},cancel{"Fechar"}; Label message;
+    TextEditor search; ComboBox typeFilter,vendorFilter; Label typeLabel,vendorLabel; ListBox list; TextButton scan{"Escanear plugins"},retry{String::fromUTF8("Tentar falhas")},cancel{"Fechar"}; Label message;
     ProgressBar progress{VST3Catalog::shared().scanProgress}; Label current;
     Array<var> matches; String selected; uint64 revision = ~uint64(0);
     bool instrumentsAllowed = true;
@@ -230,6 +269,7 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
         list.updateContent(); list.repaint();
         message.setText(catalog.scanning ? catalog.status : String(matches.size()) + " plugins",dontSendNotification);
         scan.setButtonText(catalog.scanning?"Cancelar escaneamento":"Escanear plugins"); revision=catalog.revision;
+        retry.setVisible(!catalog.scanning && catalog.hasFailedPlugins());
         const bool layoutChanged=progress.isVisible()!=catalog.scanning;
         progress.setVisible(catalog.scanning); current.setVisible(catalog.scanning);
         if(layoutChanged) if(auto *window=findParentComponentOfClass<DocumentWindow>()) window->setContentComponentSize(getWidth(),getHeight()+(catalog.scanning?60:-60));

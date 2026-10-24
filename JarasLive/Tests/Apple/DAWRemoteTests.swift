@@ -674,6 +674,39 @@ waitFor("independent local teleprompter subscriptions") { observer.remoteState?.
 require(roleCommandCount == 0, "observer cannot control Mac even with raw packets")
 director.send(.init(project: project, action: .play))
 waitFor("director changes are mirrored to observer") { director.remoteState?.playing == true && observer.remoteState?.playing == true && roleCommandCount == 1 }
+// Observer cue delivery uses the shared host path (Mac and iPad native).
+let nextCueID = UUID(), armedCueID = UUID()
+rolesFixture.timelineRegions = [.init(id: regionID, name: "Playing", start: 0, end: 20, color: 0)]
+rolesFixture.markers = [.init(id: nextCueID, name: "Refrão", position: 10, color: 0, section: true),
+                       .init(id: armedCueID, name: "Ponte", position: 2, color: 0, section: true),
+                       .init(id: UUID(), name: "Ordinary cue", position: 6, color: 0)]
+rolesFixture.position = 4.9
+rolesFixture.sectionPlayback = .init(currentRegion: regionID, secondaryRegion: nil, position: 4.9,
+    secondaryPosition: nil, queuedMarker: nil, queueStartedAt: nil, nextTrigger: nil, currentEnd: 20)
+require(DAWRemoteSectionCue.current(in: rolesFixture) == nil, "cue stays hidden before the five-second window")
+rolesFixture.position = 5; rolesFixture.sectionPlayback?.position = 5
+waitFor("observer receives upcoming section over the real encrypted connection") {
+    observer.remoteState.flatMap { DAWRemoteSectionCue.current(in: $0) } == .init(marker: nextCueID, name: "Refrão", seconds: 5, armed: false)
+}
+rolesFixture.sectionPlayback?.queuedMarker = armedCueID
+rolesFixture.sectionPlayback?.nextTrigger = 10
+waitFor("armed destination overrides natural next section, even for a backward jump") {
+    observer.remoteState.flatMap { DAWRemoteSectionCue.current(in: $0) } == .init(marker: armedCueID, name: "Ponte", seconds: 5, armed: true)
+}
+rolesFixture.sectionPlayback?.position = 9.1
+require(DAWRemoteSectionCue.current(in: rolesFixture)?.seconds == 1, "countdown follows host audible position")
+rolesFixture.sectionPlayback?.queuedMarker = nil
+require(DAWRemoteSectionCue.current(in: rolesFixture)?.marker == nextCueID, "cancel restores natural next marker immediately")
+rolesFixture.loop = true; rolesFixture.loopEnd = 10
+require(DAWRemoteSectionCue.current(in: rolesFixture) == nil, "a loop returning at a marker must not announce an unreachable section")
+rolesFixture.loop = false; rolesFixture.sectionPlayback?.position = 10
+require(DAWRemoteSectionCue.current(in: rolesFixture) == nil, "cue disappears after crossing the section marker")
+rolesFixture.sectionPlayback?.position = 8; rolesFixture.paused = true
+require(DAWRemoteSectionCue.current(in: rolesFixture) == nil, "paused transport hides countdown")
+rolesFixture.paused = false; rolesFixture.playing = false
+waitFor("Stop removes observer cue") { observer.remoteState?.playing == false && observer.remoteState.flatMap { DAWRemoteSectionCue.current(in: $0) } == nil }
+rolesFixture.playing = true; rolesFixture.sectionPlayback = nil; rolesFixture.markers = nil
+print("REMOTE_OBSERVER_SECTION_CUE_NATURAL_ARMED_CANCEL_LOOP_STOP_AND_HOST_DELIVERY_OK")
 let observerNext = UUID()
 rolesFixture.regions.append(.init(id: observerNext, name: "Next", start: 12, end: 20, color: 0x123456))
 rolesFixture.regions.reverse(); rolesFixture.focusedRegion = observerNext; rolesFixture.queuedRegion = observerNext

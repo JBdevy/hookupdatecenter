@@ -22,14 +22,14 @@ int main(int argc,char **argv) { @autoreleasepool {
     int64 position=-1;
     assert(stream.seek(-2,IBStream::kIBSeekEnd,&position)==kResultOk&&position==2);
     uint8 output[]{9,9,9,9};
-    assert(stream.read(output,4,&count)==kResultFalse&&count==2);
+    assert(stream.read(output,4,&count)==kResultOk&&count==2);
     assert(output[0]==3&&output[1]==4&&output[2]==9&&output[3]==9);
-    assert(stream.read(output,1,&count)==kResultFalse&&count==0);
+    assert(stream.read(output,1,&count)==kResultOk&&count==0);
     assert(stream.tell(&position)==kResultOk&&position==4);
 
     // Legal sparse seek/write round-trips plugin state, including zero fill.
     assert(stream.seek(8,IBStream::kIBSeekSet,nullptr)==kResultOk);
-    assert(stream.read(output,1,&count)==kResultFalse&&count==0&&stream.position==8);
+    assert(stream.read(output,1,&count)==kResultOk&&count==0&&stream.position==8);
     assert(stream.write(original,2,&count)==kResultOk&&count==2);
     assert(stream.bytes.size()==10&&stream.bytes[4]==0&&stream.bytes[7]==0);
     assert(stream.seek(-2,IBStream::kIBSeekCur,nullptr)==kResultOk);
@@ -67,7 +67,7 @@ int main(int argc,char **argv) { @autoreleasepool {
     for(size_t length=0;length<4;++length) {
         Stream truncated([NSData dataWithBytes:original length:length]);
         std::fill(std::begin(output),std::end(output),uint8(99));
-        assert(truncated.read(output,4,&count)==kResultFalse&&count==length);
+        assert(truncated.read(output,4,&count)==kResultOk&&count==length);
         for(size_t i=0;i<4;++i)assert(output[i]==(i<length?original[i]:99));
     }
 

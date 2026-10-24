@@ -218,7 +218,10 @@ class SettingsPanel final : public Component, private Timer {
                 });
         });
         addButton(catalog.scanning?"Cancelar escaneamento":"Escanear plugins",204,y,180,[] { auto &catalog=VST3Catalog::shared(); if(catalog.scanning)catalog.cancelScan();else catalog.scan(); });
-        deviceFields.getLast()->setEnabled(true); y+=44;
+        deviceFields.getLast()->setEnabled(true);
+        if (catalog.hasFailedPlugins())
+            addButton("Tentar falhas",398,y,148,[] { VST3Catalog::shared().scan(true); });
+        y+=44;
         addLabel(catalog.status,y,64);y+=72;
         if (catalog.scanning) {
             auto *label = new Label(); deviceFields.add(label); page.addAndMakeVisible(label); scanningPlugin = label;

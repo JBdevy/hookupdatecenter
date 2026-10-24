@@ -6,6 +6,7 @@
 #include "PlaylistOccurrences.h"
 #include "RegionEditing.h"
 #include "TempoEditing.h"
+#include "PartsPresentation.h"
 namespace catlive::remote {
 class Presentation final {
   public:
@@ -131,6 +132,32 @@ class Presentation final {
         put(result, "position", t.position);
         put(result, "editPosition", t.editPosition);
         put(result, "subPlayPosition", t.subPlay.position);
+        // Preserve the same audible region/trigger used by Parts, including
+        // a queued section whose destination is in another song.
+        auto section = object();
+        put(section, "position", t.playing ? t.position : t.editPosition);
+        if (song) {
+            auto primary = t; if (!t.playing) primary.position = t.editPosition;
+            const auto *part = partsPresentation::region(*song, primary);
+            if (part) {
+                put(section, "currentRegion", wireID(part->id));
+                put(section, "currentEnd", partsPresentation::end(*part, t));
+                if (t.queuedSectionMarkerId)
+                    if (const auto trigger = partsPresentation::trigger(*song, *part, t))
+                        put(section, "nextTrigger", *trigger);
+            }
+            if (t.subPlay.playing) {
+                auto secondary=t;secondary.position=t.subPlay.position;secondary.ignoreNextEnd.reset();secondary.ignoreNextRegionId.reset();
+                if (const auto *part=partsPresentation::region(*song,secondary)) put(section,"secondaryRegion",wireID(part->id));
+                put(section,"secondaryPosition",t.subPlay.position);
+            } else if (t.queuedRegionId) put(section,"secondaryRegion",wireID(*t.queuedRegionId));
+        }
+        if (t.queuedSectionMarkerId) {
+            put(section, "queuedMarker", wireID(*t.queuedSectionMarkerId));
+            put(section, "queueStartedAt", t.sectionQueueStartedAt);
+        }
+        put(result, "sectionPlayback", section);
+
         put(result, "duration", song ? song->duration : 0);
         put(result, "bpm", session.tempoBPM());
         const auto *tempoRegion = song ? tempoEditing::region(*song, session.transport()) : nullptr;
@@ -174,6 +201,7 @@ class Presentation final {
                     auto v = object();
                     put(v, "id", wireID(block.id));
                     put(v, "name", text(block.name));
+                    put(v, "nameColor", (int)(stage.preferences.colour("jaras.setlist.blockTextColor", 0x69ed91).getARGB() & 0xffffff));
                     put(v, "color", (int)block.color);
                     put(v, "symbol", block.symbol.value_or(true));
                     if (block.beforeRegionId)
@@ -181,6 +209,8 @@ class Presentation final {
                     blocks.add(v);
                 }
         put(result, "setlistBlocks", blocks);
+        put(result, "previewActive", stage.preview);
+        put(result, "previewPage", stage.previewPage);
         if (timerTarget != stage.target || timerRunning != stage.running ||
             timerStarted != stage.started) {
             timerTarget = stage.target;
@@ -209,6 +239,14 @@ class Presentation final {
         if (wireID(c.project) != wireID(session.project().id))
             return false;
         const auto a = c.action;
+        if (a == "togglePreview") {
+            stage.preview = !stage.preview;
+            return true;
+        }
+        if (a == "selectPreviewPage") {
+            stage.previewPage = (int)c.value;
+            return true;
+        }
         if (a == "timerStart" || a == "timerStop") {
             timerCommand = c.id;
             timerRevision = uuid();
