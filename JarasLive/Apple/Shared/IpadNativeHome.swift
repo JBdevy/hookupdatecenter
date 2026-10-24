@@ -193,26 +193,33 @@ extension UTType {
     @ObservedObject var tabs: NativeProjectTabs
     @State private var closing: UUID?
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
+        GeometryReader { geometry in
+            let count = max(1, tabs.projects.count)
+            let spacing = min(3.0, geometry.size.width / CGFloat(count))
+            let width = max(0, (geometry.size.width - spacing * CGFloat(count - 1)) / CGFloat(count))
+            HStack(spacing: spacing) {
                 ForEach(Array(tabs.projects.enumerated()), id: \.element.remoteProjectTabID) { index, project in
                     HStack(spacing: 0) {
                         Button { tabs.select(index) } label: {
                             Text(project.documents.currentURL?.deletingPathExtension().lastPathComponent ?? project.show.snapshot.project.name)
-                                .font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
-                                .frame(minWidth: 100, maxWidth: 230).padding(.horizontal, 12).frame(height: 38)
+                                .font(.jarasSystem(size: 12, weight: .semibold))
+                                .lineLimit(1).truncationMode(.middle)
+                                .frame(maxWidth: .infinity).frame(height: 38)
                                 .contentShape(Rectangle())
-                        }
+                        }.frame(minWidth: 0, maxWidth: .infinity)
                         Button { closing = project.remoteProjectTabID } label: {
-                            Image(systemName: "xmark").font(.jarasSystem(size: 12)).frame(width: 38, height: 38).contentShape(Rectangle())
+                            Image(systemName: "xmark").font(.jarasSystem(size: 12))
+                                .frame(width: min(32, width * 0.35), height: 38).contentShape(Rectangle())
                         }.accessibilityLabel("Close tab")
-                    }.buttonStyle(.plain)
-                        .foregroundStyle(index == tabs.selected ? JarasTheme.green : JarasTheme.text)
-                        .background(index == tabs.selected ? JarasTheme.panel : JarasTheme.background)
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }.buttonStyle(.plain).frame(width: width)
+                        .foregroundStyle(index == tabs.selected ? Color.white : Color.white.opacity(0.6))
+                        .background(index == tabs.selected ? Color.white.opacity(0.12) : Color.white.opacity(0.04))
+                        .overlay(alignment: .bottom) {
+                            if index == tabs.selected { Rectangle().fill(Color.green).frame(height: 2) }
+                        }
                 }
-            }.padding(4)
-        }.background(JarasTheme.background)
+            }
+        }.frame(height: 38).padding(.horizontal, 6).background(Color.black.opacity(0.2))
             .alert("Close tab", isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } })) {
                 Button("Cancel", role: .cancel) { closing = nil }
                 Button("Save and close") { if let id = closing { closing = nil; Task { await tabs.close(id) } } }
@@ -407,22 +414,60 @@ private final class NativeProjectPickerSelection {
     deinit { for url in scopedURLs { url.stopAccessingSecurityScopedResource() } }
 }
 
+/// UIKit may dismiss Files before invoking its delegate. Keep the result in a
+/// reference object and deliver it once both events have arrived, in either order.
+@MainActor private final class NativeProjectPickerHandoff: ObservableObject {
+    enum Result {
+        case selected(NativeProjectPickerSelection)
+        case cancelled(ProjectDocuments.NativePicker)
+    }
+    private var kind: ProjectDocuments.NativePicker?
+    private var result: Result?
+    private var dismissed = false
+    private var delivered = false
+    func begin(_ kind: ProjectDocuments.NativePicker) {
+        if self.kind == kind && !delivered { return }
+        self.kind = kind; result = nil; dismissed = false; delivered = false
+    }
+    func selected(_ urls: [URL], kind: ProjectDocuments.NativePicker) -> Result? {
+        guard self.kind == kind, result == nil, !delivered else { return nil }
+        // Retain security-scoped access before Files releases its own grant.
+        result = .selected(NativeProjectPickerSelection(urls: urls, kind: kind))
+        return takeIfReady()
+    }
+    func cancelled(_ kind: ProjectDocuments.NativePicker) -> Result? {
+        guard self.kind == kind, result == nil, !delivered else { return nil }
+        result = .cancelled(kind)
+        return takeIfReady()
+    }
+    func didDismiss() -> Result? { dismissed = true; return takeIfReady() }
+    private func takeIfReady() -> Result? {
+        guard dismissed, !delivered, let result else { return nil }
+        delivered = true; self.result = nil
+        return result
+    }
+}
+
 struct NativeProjectPresentation: ViewModifier {
     @ObservedObject var documents: ProjectDocuments
-    @State private var pickerSelection: NativeProjectPickerSelection?
-    @State private var presentedPicker: ProjectDocuments.NativePicker?
+    @StateObject private var pickerHandoff = NativeProjectPickerHandoff()
     func body(content: Content) -> some View {
         content
             .sheet(item: $documents.nativePicker, onDismiss: pickerDismissed) { kind in
                 NativeProjectPicker(kind: kind, picked: { urls in
-                    guard documents.nativePicker == kind, pickerSelection == nil else { return }
-                    pickerSelection = NativeProjectPickerSelection(urls: urls, kind: kind)
+                    let result = pickerHandoff.selected(urls, kind: kind)
                     documents.nativePicker = nil
-                }, cancelled: { if documents.nativePicker == kind { documents.nativePicker = nil } })
+                    deliver(result)
+                }, cancelled: {
+                    let result = pickerHandoff.cancelled(kind)
+                    documents.nativePicker = nil
+                    deliver(result)
+                })
                     // UIKit's Files controller handles its own keyboard and
                     // rename popovers; a second SwiftUI resize can steal focus.
                     .ignoresSafeArea(.keyboard, edges: .bottom)
-                    .onAppear { presentedPicker = kind }
+                    .interactiveDismissDisabled()
+                    .onAppear { pickerHandoff.begin(kind) }
             }
             .alert(item: $documents.nativePackagePrompt) { prompt in
                 Alert(title: Text(LocalizedStringKey(prompt.title)),
@@ -440,12 +485,15 @@ struct NativeProjectPresentation: ViewModifier {
             }
     }
     private func pickerDismissed() {
-        let selection = pickerSelection, kind = presentedPicker
-        pickerSelection = nil; presentedPicker = nil
-        if let selection {
+        deliver(pickerHandoff.didDismiss())
+    }
+    private func deliver(_ result: NativeProjectPickerHandoff.Result?) {
+        switch result {
+        case .selected(let selection):
             documents.receiveNativeFiles(selection.urls, kind: selection.kind)
-        } else if let kind {
+        case .cancelled(let kind):
             documents.cancelNativePicker(kind: kind)
+        case nil: break
         }
     }
 }

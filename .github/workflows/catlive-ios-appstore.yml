@@ -79,6 +79,7 @@ jobs:
           swift test --package-path JarasLive --jobs 2
           bash JarasLive/scripts/test-ipad-transport-layout.sh
           bash JarasLive/scripts/test-native-project-tabs.sh
+          bash JarasLive/scripts/test-native-picker-handoff.sh
           bash JarasLive/scripts/test-control-mappings.sh
           bash JarasLive/scripts/test-daw-remote.sh
 
