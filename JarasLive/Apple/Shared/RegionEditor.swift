@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 struct RegionEditor: View {
     let region: Part
     let initialColor: UInt32
@@ -107,7 +110,13 @@ struct NameColorEditor: View {
         save(trimmed, rgb)
         finish()
     }
-    private func finish() { if let close { close() } else { dismiss() } }
+    private func finish() {
+        #if os(iOS)
+        nameFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
+        if let close { close() } else { dismiss() }
+    }
     private func channel(_ title: String, value: Binding<Double>, color: Color) -> some View {
         HStack {
             Text(title).frame(width: 14)

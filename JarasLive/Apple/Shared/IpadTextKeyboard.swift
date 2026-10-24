@@ -115,13 +115,13 @@ struct IpadKeyboardShift {
     func text(_ text: String) -> String {
         guard mode != .off else { return text }
         let symbols = ["1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
-                       "-": "_", "=": "+", "[": "{", "]": "}", ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?", "\\": "|", "`": "~"]
+                       "-": "_", "=": "+", "[": "{", "]": "}", ";": ":", "'": "\"", ",": "!", ".": "?", "/": "?", "\\": "|", "`": "~"]
         return symbols[text] ?? text.uppercased()
     }
 }
 
-final class IpadTextKeyboardView: UIInputView {
-    private enum Page { case letters, numbers, symbols, accents }
+final class IpadTextKeyboardView: UIInputView, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+    private enum Page { case letters, numbers, symbols, emoji }
     private weak var target: UIView?
     private var input: (any UITextInput)? { target as? any UITextInput }
     private var page = Page.letters
@@ -129,14 +129,15 @@ final class IpadTextKeyboardView: UIInputView {
     private var selectionAnchor: Int?
     private var rows: [UIStackView] = []
     private var characterKeys: [(UIButton, String)] = []
-    private var shiftButton: UIButton?
+    private var shiftButtons: [UIButton] = []
     private var deleteTimer: Timer?
     private var accentHost: UIStackView?
     private var accentSelection: UIButton?
     private let container = UIStackView()
-    private let keyColor = UIColor(white: 0.26, alpha: 1)
+    private let keyColor = UIColor(white: 0.40, alpha: 1)
+    private let specialKeyColor = UIColor(white: 0.27, alpha: 1)
     private let green = UIColor(red: 0.39, green: 0.75, blue: 0.26, alpha: 1)
-    private let keyboardHeight: CGFloat = 222
+    private let keyboardHeight: CGFloat = 198
 
     init(target: UIView) {
         self.target = target
@@ -147,14 +148,14 @@ final class IpadTextKeyboardView: UIInputView {
         super.init(frame: CGRect(x: 0, y: 0, width: 768, height: keyboardHeight), inputViewStyle: .keyboard)
         allowsSelfSizing = true
         autoresizingMask = [.flexibleWidth]
-        backgroundColor = UIColor(white: 0.10, alpha: 1)
+        backgroundColor = UIColor(white: 0.16, alpha: 1)
         accessibilityIdentifier = "catlive-text-keyboard"
-        container.axis = .vertical; container.spacing = 4
+        container.axis = .vertical; container.spacing = 5
         container.translatesAutoresizingMaskIntoConstraints = false
         addSubview(container)
         NSLayoutConstraint.activate([
             container.centerXAnchor.constraint(equalTo: centerXAnchor),
-            container.widthAnchor.constraint(lessThanOrEqualToConstant: 1000),
+            container.widthAnchor.constraint(lessThanOrEqualToConstant: 960),
             container.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 10),
             container.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
             container.topAnchor.constraint(equalTo: topAnchor, constant: 6),
@@ -174,62 +175,68 @@ final class IpadTextKeyboardView: UIInputView {
     deinit { deleteTimer?.invalidate() }
 
     private func rebuild() {
-        stopRepeating(); hideAccents(); rows.removeAll(); characterKeys.removeAll(); shiftButton = nil
+        stopRepeating(); hideAccents(); rows.removeAll(); characterKeys.removeAll(); shiftButtons.removeAll()
         for view in container.arrangedSubviews { container.removeArrangedSubview(view); view.removeFromSuperview() }
-        let tools = row(height: 28)
-        add("Selecionar", id: "select-all", to: tools) { [weak self] in
-            guard let self, let input else { return }
-            input.selectedTextRange = input.textRange(from: input.beginningOfDocument, to: input.endOfDocument)
-        }
-        add("Recortar", id: "cut", to: tools) { [weak self] in self?.cutSelection() }
-        add("Copiar", id: "copy", to: tools) { [weak self] in self?.copySelection() }
-        add("Colar", id: "paste", to: tools) { [weak self] in self?.insert(UIPasteboard.general.string ?? "", applyShift: false) }
+        let tools = row(height: 24)
+        tools.distribution = .fill
         add("↶", id: "undo", to: tools, label: "Desfazer") { [weak self] in self?.target?.undoManager?.undo() }
         add("↷", id: "redo", to: tools, label: "Refazer") { [weak self] in self?.target?.undoManager?.redo() }
-        add("←", id: "left", to: tools, label: "Cursor para esquerda") { [weak self] in self?.moveCursor(-1) }
-        add("→", id: "right", to: tools, label: "Cursor para direita") { [weak self] in self?.moveCursor(1) }
-        add("⇤", id: "home", to: tools, label: "Início do texto") { [weak self] in self?.moveToEnd(false) }
-        add("⇥", id: "end", to: tools, label: "Fim do texto") { [weak self] in self?.moveToEnd(true) }
-        add("Fechar", id: "close", to: tools) { [weak self] in self?.target?.resignFirstResponder() }
-
-        let digits = row(height: 30)
-        for key in Array("1234567890").map(String.init) { character(key, to: digits) }
-        let delete = add("⌫", id: "delete", to: digits, label: "Apagar") { [weak self] in self?.input?.deleteBackward() }
-        let repeatDelete = UILongPressGestureRecognizer(target: self, action: #selector(repeatDelete(_:)))
-        repeatDelete.minimumPressDuration = 0.4; delete.addGestureRecognizer(repeatDelete)
+        add("", id: "paste", to: tools, label: "Colar") { [weak self] in self?.insert(UIPasteboard.general.string ?? "", applyShift: false) }
+        for case let button as UIButton in tools.arrangedSubviews { button.widthAnchor.constraint(equalToConstant: 38).isActive = true }
+        tools.addArrangedSubview(UIView())
 
         let lines: [[String]]
         switch page {
-        case .letters: lines = [Array("qwertyuiop").map(String.init), Array("asdfghjklç").map(String.init), Array("zxcvbnm").map(String.init)]
-        case .numbers: lines = [["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""], ["+", "=", "_", "\\", "[", "]", "%", "*", "#", "'"], [".", ",", "?", "!", "€", "£", "°"]]
-        case .symbols: lines = [["{", "}", "<", ">", "^", "~", "`", "|", "•", "…"], ["§", "±", "×", "÷", "√", "∞", "©", "®", "™", "✓"], ["♭", "♯", "♪", "º", "ª", "¿", "¡"]]
-        case .accents: lines = [Array("áàâãäåéèêë").map(String.init), Array("íìîïóòôõöø").map(String.init), Array("úùûüçñý").map(String.init)]
+        case .letters: lines = [Array("qwertyuiop").map(String.init), Array("asdfghjkl").map(String.init), Array("zxcvbnm,.").map(String.init)]
+        case .numbers: lines = [Array("1234567890").map(String.init), ["@", "#", "$", "&", "*", "(", ")", "'", "\""], ["%", "-", "+", "=", "/", ";", ":", "!", "?"]]
+        case .symbols: lines = [["[", "]", "{", "}", "#", "%", "^", "*", "+", "="], ["_", "\\", "|", "~", "<", ">", "€", "£", "¥"], ["•", "♭", "♯", "♪", "°", "©", "®", "¿", "¡"]]
+        case .emoji: lines = []; addEmojiGrid()
         }
+        var unit: UIButton?
         for (index, keys) in lines.enumerated() {
-            let line = row(height: 34)
-            if index == 2 {
-                shiftButton = add("⇧", id: "shift", to: line, label: "Shift") { [weak self] in
-                    guard let self else { return }; shift.tap(at: ProcessInfo.processInfo.systemUptime); updateShift()
-                }
+            let line = row(height: 36); line.distribution = .fill
+            if index == 1, let unit {
+                let indent = UIView(); line.addArrangedSubview(indent)
+                indent.widthAnchor.constraint(equalTo: unit.widthAnchor, multiplier: 0.4).isActive = true
             }
-            for key in keys { character(key, to: line) }
-            if index == 2 && (page == .letters || page == .accents) { character(".", to: line); character(",", to: line) }
+            if index == 2 {
+                let button = shiftKey(id: "shift", to: line)
+                if let unit { button.widthAnchor.constraint(equalTo: unit.widthAnchor).isActive = true }
+            }
+            for key in keys {
+                let button = character(key, to: line)
+                if let unit { button.widthAnchor.constraint(equalTo: unit.widthAnchor).isActive = true }
+                else { unit = button }
+            }
+            if index == 0 {
+                let delete = add("⌫", id: "delete", to: line, label: "Apagar") { [weak self] in self?.input?.deleteBackward() }
+                if let unit { delete.widthAnchor.constraint(equalTo: unit.widthAnchor).isActive = true }
+                let repeatDelete = UILongPressGestureRecognizer(target: self, action: #selector(repeatDelete(_:)))
+                repeatDelete.minimumPressDuration = 0.4; delete.addGestureRecognizer(repeatDelete)
+            } else if index == 1 {
+                add(target is UITextView ? "retorno" : "concluir", id: "return", to: line) { [weak self] in self?.submit() }
+            } else {
+                let button = shiftKey(id: "shift-right", to: line)
+                if let unit { button.widthAnchor.constraint(equalTo: unit.widthAnchor).isActive = true }
+            }
         }
-        let bottom = row(height: 30)
-        add(page == .letters ? "123" : "ABC", id: "page", to: bottom) { [weak self] in
-            guard let self else { return }; page = page == .letters ? .numbers : .letters; rebuild()
+        let bottom = row(height: 34); bottom.distribution = .fill
+        let changePage: () -> Void = { [weak self] in guard let self else { return }; page = page == .letters ? .numbers : .letters; rebuild() }
+        add(page == .letters ? ".?123" : "ABC", id: "page", to: bottom, action: changePage)
+        add("", id: "emoji", to: bottom, label: "Emoji") { [weak self] in
+            guard let self else { return }; page = page == .emoji ? .letters : .emoji; rebuild()
         }
-        add("#+=", id: "symbols", to: bottom) { [weak self] in self?.page = .symbols; self?.rebuild() }
-        add("áéí", id: "accents", to: bottom, label: "Acentos") { [weak self] in self?.page = .accents; self?.rebuild() }
-        let space = add("Espaço", id: "space", to: bottom) { [weak self] in self?.insert(" ", applyShift: false) }
-        bottom.distribution = .fill
-        let enter = add(target is UITextView ? "Nova linha" : "Concluir", id: "return", to: bottom) { [weak self] in self?.submit() }
-        for view in bottom.arrangedSubviews where view !== space { view.widthAnchor.constraint(equalTo: bottom.widthAnchor, multiplier: 0.14).isActive = true }
-        enter.backgroundColor = green.withAlphaComponent(0.6)
+        let space = add("", id: "space", to: bottom, label: "Espaço") { [weak self] in self?.insert(" ", applyShift: false) }
+        space.backgroundColor = keyColor
+        let drag = UILongPressGestureRecognizer(target: self, action: #selector(spaceTrackpad(_:)))
+        drag.minimumPressDuration = 0.4; space.addGestureRecognizer(drag)
+        add(page == .letters ? ".?123" : "ABC", id: "page-right", to: bottom, action: changePage)
+        add("", id: "close", to: bottom, label: "Fechar teclado") { [weak self] in self?.target?.resignFirstResponder() }
+        for view in bottom.arrangedSubviews where view !== space { view.widthAnchor.constraint(equalTo: bottom.widthAnchor, multiplier: 0.12).isActive = true }
         updateShift()
     }
     private func row(height: CGFloat) -> UIStackView {
-        let row = UIStackView(); row.axis = .horizontal; row.spacing = 4; row.distribution = .fillEqually
+        let row = UIStackView(); row.axis = .horizontal; row.spacing = 5; row.distribution = .fillEqually
         row.heightAnchor.constraint(equalToConstant: height).isActive = true
         container.addArrangedSubview(row); rows.append(row); return row
     }
@@ -237,35 +244,102 @@ final class IpadTextKeyboardView: UIInputView {
                                         action: @escaping () -> Void) -> UIButton {
         let button = UIButton(type: .system)
         button.setTitle(title, for: .normal); button.setTitleColor(.white, for: .normal)
-        if id == "undo" || id == "redo" {
+        let images = ["undo": "arrow.uturn.backward", "redo": "arrow.uturn.forward", "delete": "delete.left", "close": "keyboard.chevron.compact.down", "paste": "doc.on.clipboard", "emoji": "face.smiling"]
+        if let image = images[id] {
             button.setTitle(nil, for: .normal)
-            button.setImage(UIImage(systemName: id == "undo" ? "arrow.uturn.backward" : "arrow.uturn.forward"), for: .normal)
+            button.setImage(UIImage(systemName: image, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17)), for: .normal)
             button.tintColor = .white
         }
-        button.titleLabel?.font = .systemFont(ofSize: row === rows.first ? 13 : 17, weight: .medium)
+        button.titleLabel?.font = .systemFont(ofSize: row === rows.first ? 13 : title.count == 1 ? 22 : 15, weight: .regular)
         button.titleLabel?.adjustsFontSizeToFitWidth = true; button.titleLabel?.minimumScaleFactor = 0.7
-        button.backgroundColor = keyColor; button.layer.cornerRadius = 5
+        button.backgroundColor = row === rows.first ? .clear : specialKeyColor; button.layer.cornerRadius = 6
+        if row !== rows.first {
+            button.layer.shadowColor = UIColor.black.cgColor; button.layer.shadowOpacity = 0.35
+            button.layer.shadowOffset = CGSize(width: 0, height: 1); button.layer.shadowRadius = 0
+        }
         button.accessibilityIdentifier = "cat-key-" + id; button.accessibilityLabel = label ?? title
         button.addAction(UIAction { _ in action() }, for: .touchUpInside)
         row.addArrangedSubview(button); return button
     }
-    private func character(_ text: String, to row: UIStackView) {
+    @discardableResult private func character(_ text: String, to row: UIStackView) -> UIButton {
         let button = add(text, id: text, to: row) { [weak self] in self?.insert(text) }
+        button.backgroundColor = keyColor
         characterKeys.append((button, text))
         if Self.accents[text] != nil {
             let press = UILongPressGestureRecognizer(target: self, action: #selector(accentPress(_:)))
             press.minimumPressDuration = 0.4; button.addGestureRecognizer(press)
         }
+        return button
+    }
+    private func shiftKey(id: String, to row: UIStackView) -> UIButton {
+        if page == .numbers || page == .symbols {
+            return add(page == .numbers ? "#+=" : "123", id: id, to: row) { [weak self] in
+                guard let self else { return }; page = page == .numbers ? .symbols : .numbers; rebuild()
+            }
+        }
+        let button = add("", id: id, to: row, label: "Shift") { [weak self] in
+            guard let self else { return }; shift.tap(at: ProcessInfo.processInfo.systemUptime); updateShift()
+        }
+        shiftButtons.append(button); return button
+    }
+    private var trackpadX: CGFloat?
+    @objc private func spaceTrackpad(_ gesture: UILongPressGestureRecognizer) {
+        let x = gesture.location(in: self).x
+        switch gesture.state {
+        case .began: trackpadX = x
+        case .changed:
+            guard let previous = trackpadX else { return }
+            let steps = Int((x - previous) / 12)
+            if steps != 0 { moveCursor(steps); trackpadX = previous + CGFloat(steps) * 12 }
+        default: trackpadX = nil
+        }
+    }
+    private static let emoji: [String] = {
+        let common = Array("😀😃😄😁😆😅😂🙂🙃😉😊😍🥰😘😎😭😢😡👍👎👏🙌🙏❤️🔥🎵🎶🎤🎹🎸🥁🇧🇷🇺🇸🇵🇹").map(String.init)
+        let scalars = [0x2300...0x27FF, 0x1F300...0x1FAFF].flatMap { $0 }.compactMap(Unicode.Scalar.init)
+            .filter { $0.properties.isEmojiPresentation && !(0x1F3FB...0x1F3FF).contains(Int($0.value)) }.map(String.init)
+        return common + scalars.filter { !common.contains($0) }
+    }()
+    private func addEmojiGrid() {
+        let layout = UICollectionViewFlowLayout(); layout.minimumLineSpacing = 2; layout.minimumInteritemSpacing = 2
+        let grid = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        grid.backgroundColor = .clear; grid.dataSource = self; grid.delegate = self
+        grid.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "emoji")
+        grid.heightAnchor.constraint(equalToConstant: 118).isActive = true
+        container.addArrangedSubview(grid)
+    }
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { Self.emoji.count }
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "emoji", for: indexPath)
+        let label = (cell.contentView.viewWithTag(1) as? UILabel) ?? UILabel(frame: cell.contentView.bounds)
+        if label.superview == nil { label.tag = 1; label.autoresizingMask = [.flexibleWidth, .flexibleHeight]; label.font = .systemFont(ofSize: 27); label.textAlignment = .center; cell.contentView.addSubview(label) }
+        label.text = Self.emoji[indexPath.item]
+        cell.isAccessibilityElement = true; cell.accessibilityTraits = .button
+        cell.accessibilityLabel = label.text; cell.accessibilityIdentifier = "cat-emoji-" + (label.text ?? "")
+        return cell
+    }
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) { insert(Self.emoji[indexPath.item], applyShift: false) }
+    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
+        CGSize(width: max(32, (collectionView.bounds.width - 22) / 12), height: 36)
     }
     private func updateShift() {
-        shiftButton?.setTitle(shift.mode == .locked ? "⇪" : "⇧", for: .normal)
-        shiftButton?.backgroundColor = shift.mode == .off ? keyColor : green
-        shiftButton?.accessibilityValue = shift.mode == .off ? "Desativado" : shift.mode == .once ? "Próxima letra" : "Maiúsculas fixas"
-        for (button, text) in characterKeys { button.setTitle(shift.text(text), for: .normal) }
+        UIView.performWithoutAnimation {
+        for button in shiftButtons {
+            button.setImage(UIImage(systemName: shift.mode == .locked ? "capslock.fill" : shift.mode == .once ? "shift.fill" : "shift",
+                                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 18)), for: .normal)
+            button.backgroundColor = shift.mode == .off ? specialKeyColor : .white
+            button.tintColor = shift.mode == .off ? .white : .black
+            button.accessibilityValue = shift.mode == .off ? "Desativado" : shift.mode == .once ? "Próxima letra" : "Maiúsculas fixas"
+        }
+        for (button, text) in characterKeys {
+            let title = page == .letters ? shift.text(text) : text
+            if button.title(for: .normal) != title { button.setTitle(title, for: .normal); button.layoutIfNeeded() }
+        }
+        }
     }
     private func insert(_ text: String, applyShift: Bool = true) {
         guard !text.isEmpty, let input else { return }
-        input.insertText(applyShift ? shift.text(text) : text)
+        input.insertText(applyShift && page == .letters ? shift.text(text) : text)
         hideAccents()
         selectionAnchor = nil
         if applyShift { shift.consume(); updateShift() }
