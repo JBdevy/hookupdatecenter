@@ -1010,34 +1010,46 @@ struct TrackRecordingSettings: View {
                         ForEach(1...16, id: \.self) { Text(String($0)).tag($0) }
                     }.disabled(recorder.recording || recorder.busy)
                 }
-                if track.recordingMode != .midi {
-                    Picker("Recording signal", selection: Binding(get: { track.recordsOutput }, set: { show.setRecordingStage(track.id, output: $0) })) {
-                        Text("Input").tag(false); Text("Output").tag(true)
-                    }.pickerStyle(.segmented).disabled(track.role.rawValue == "vinhetas" || recorder.recording || recorder.busy)
-                    Picker("Format", selection: Binding(get: { track.recordingFormat ?? "" }, set: {
-                        show.setRecordingFormat(track.id, format: $0.isEmpty ? nil : $0)
-                    })) {
-                        Text(verbatim: "Default - " + MediaProcessingFormat.load("record").recordingDisplayName).tag("")
-                        Text(verbatim: "WAV · 24-bit PCM").tag("wav")
-                        Text(verbatim: "WAV · 32-bit float").tag("wav32")
-                        Text(verbatim: "MP3 · \(MediaProcessingFormat.load("record").bitrate) kbps").tag("mp3")
-                    }.disabled(recorder.recording || recorder.busy)
-                    Picker("Recording level", selection: Binding(get: { track.recordsOutput && track.recordingPostFader != false }, set: { show.setRecordingStage(track.id, postFader: $0) })) {
-                        Text("Pre-fader").tag(false)
-                        Text("Post-fader").tag(true)
-                    }.pickerStyle(.segmented).disabled(!track.recordsOutput || recorder.recording || recorder.busy)
-                    Picker("Recording effects", selection: Binding(get: { track.recordsOutput && track.recordingPostFX != false }, set: { show.setRecordingStage(track.id, postFX: $0) })) {
-                        Text("Pre-FX").tag(false)
-                        Text("Post-FX").tag(true)
-                    }.pickerStyle(.segmented).disabled(!track.recordsOutput || recorder.recording || recorder.busy)
-                    if track.role.rawValue != "vinhetas" {
-                    Picker("Input monitoring", selection: Binding(get: { track.inputMonitoring != false }, set: { show.setInputMonitoring(track.id, enabled: $0) })) {
-                        Text(verbatim: "Monitor On").tag(true)
-                        Text(verbatim: "Monitor Off").tag(false)
-                    }.pickerStyle(.segmented).labelsHidden()
-                    }
+                #if os(macOS)
+                // Keep the popover's size and anchor stable when switching to
+                // MIDI. Audio settings remain visible but unavailable there.
+                let showsAudioSettings = true
+                #else
+                let showsAudioSettings = track.recordingMode != .midi
+                #endif
+                if showsAudioSettings {
+                    Group {
+                        Picker("Recording signal", selection: Binding(get: { track.recordsOutput }, set: { show.setRecordingStage(track.id, output: $0) })) {
+                            Text("Input").tag(false); Text("Output").tag(true)
+                        }.pickerStyle(.segmented).disabled(track.role.rawValue == "vinhetas" || recorder.recording || recorder.busy)
+                        Picker("Format", selection: Binding(get: { track.recordingFormat ?? "" }, set: {
+                            show.setRecordingFormat(track.id, format: $0.isEmpty ? nil : $0)
+                        })) {
+                            Text(verbatim: "Default - " + MediaProcessingFormat.load("record").recordingDisplayName).tag("")
+                            Text(verbatim: "WAV · 24-bit PCM").tag("wav")
+                            Text(verbatim: "WAV · 32-bit float").tag("wav32")
+                            Text(verbatim: "MP3 · \(MediaProcessingFormat.load("record").bitrate) kbps").tag("mp3")
+                        }.disabled(recorder.recording || recorder.busy)
+                        Picker("Recording level", selection: Binding(get: { track.recordsOutput && track.recordingPostFader != false }, set: { show.setRecordingStage(track.id, postFader: $0) })) {
+                            Text("Pre-fader").tag(false)
+                            Text("Post-fader").tag(true)
+                        }.pickerStyle(.segmented).disabled(!track.recordsOutput || recorder.recording || recorder.busy)
+                        Picker("Recording effects", selection: Binding(get: { track.recordsOutput && track.recordingPostFX != false }, set: { show.setRecordingStage(track.id, postFX: $0) })) {
+                            Text("Pre-FX").tag(false)
+                            Text("Post-FX").tag(true)
+                        }.pickerStyle(.segmented).disabled(!track.recordsOutput || recorder.recording || recorder.busy)
+                        if track.role.rawValue != "vinhetas" {
+                            Picker("Input monitoring", selection: Binding(get: { track.inputMonitoring != false }, set: { show.setInputMonitoring(track.id, enabled: $0) })) {
+                                Text(verbatim: "Monitor On").tag(true)
+                                Text(verbatim: "Monitor Off").tag(false)
+                            }.pickerStyle(.segmented).labelsHidden()
+                        }
+                    }.disabled(track.recordingMode == .midi)
                 }
             }.padding(16)
+            #if os(macOS)
+            .frame(minWidth: 360)
+            #endif
 
         }
     }

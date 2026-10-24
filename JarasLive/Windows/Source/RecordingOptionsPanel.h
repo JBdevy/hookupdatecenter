@@ -84,9 +84,8 @@ class RecordingOptionsPanel final : public Component, private Timer {
         g.setFont(theme::font(12.f));
         if (midiChannel.isVisible())
             g.drawText(localization::translate("MIDI channel"), 16, 88, 120, 26, Justification::centredLeft);
-        if (!midi) {
-            g.drawText(localization::translate("Format"), 16, 88 + midiRowHeight(), 66, 26, Justification::centredLeft);
-        }
+        g.setColour(Colours::white.withMultipliedAlpha(midi ? .35f : 1.f));
+        g.drawText(localization::translate("Format"), 16, 88 + midiRowHeight(), 66, 26, Justification::centredLeft);
     }
     void resized() override {
         modes.setBounds(16, 48, getWidth() - 32, 28);
@@ -173,23 +172,24 @@ class RecordingOptionsPanel final : public Component, private Timer {
         midiChannel.setSelectedId(current->midiChannel.value_or(0) + 1, dontSendNotification);
         const bool output=vinhetas||current->recordingOutput.value_or(false);
         modes.allowLast(!vinhetas);
-        signal.select(output?1:0);signal.setEnabled(!vinhetas&&!session.busy&&!session.audio.isRecording());
+        signal.select(output?1:0);
         const int channels = vinhetas?std::max(1,current->recordingChannels.value_or(2)):current->recordingChannels.value_or(2);
+        midi = channels == 0;
         modes.select(channels == 0 ? 2 : channels - 1);
         modes.setEnabled(!session.busy && !session.audio.isRecording());
-        format.setEnabled(!session.busy && !session.audio.isRecording());
-        monitor.setEnabled(!session.busy);
-        fader.setEnabled(output && !session.busy && !session.audio.isRecording());
-        effects.setEnabled(output && !session.busy && !session.audio.isRecording());
+        format.setEnabled(!midi && !session.busy && !session.audio.isRecording());
+        monitor.setEnabled(!midi && !session.busy);
+        signal.setEnabled(!midi && !vinhetas && !session.busy && !session.audio.isRecording());
+        fader.setEnabled(!midi && output && !session.busy && !session.audio.isRecording());
+        effects.setEnabled(!midi && output && !session.busy && !session.audio.isRecording());
         format.setSelectedId(!current->recordingFormat ? 1 : current->recordingFormat == "wav" ? 2 : current->recordingFormat == "wav32" ? 3 : 4, dontSendNotification);
         monitor.select(current->inputMonitoring.value_or(true) ? 0 : 1);
         fader.select(output && current->recordingPostFader.value_or(true) ? 1 : 0);
         effects.select(output && current->recordingPostFX.value_or(true) ? 1 : 0);
-        midi = channels == 0;
-        format.setVisible(!midi);
-        monitor.setVisible(!midi&&!vinhetas);signal.setVisible(!midi);
-        fader.setVisible(!midi); effects.setVisible(!midi);
-        setSize(318, (midi ? 92 : vinhetas ? 256 : 300) + midiRowHeight());
+        // Match the Mac: changing recording mode must not resize/reanchor the
+        // callout. Audio-only options stay visible and disabled in MIDI mode.
+        monitor.setVisible(!vinhetas);
+        setSize(318, (vinhetas ? 256 : 300) + midiRowHeight());
         repaint();
     }
     void timerCallback() override { refresh(); }
