@@ -1195,7 +1195,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
                 g.drawVerticalLine(x, 0, last ? 17.f : (float)getHeight());
                 g.drawHorizontalLine(17, (float)x, (float)indent - 4);
             }
-            const bool emphasized = w.trackSelected(id) && jaras::fixedTrackName(t->role).empty();
+            const bool emphasized = w.trackSelected(id);
             const auto colour = theme::trackSurface(theme::track(*t), emphasized,
                 w.session.song() ? trackTree::silenced(*w.session.song(), *t) : t->mute);
             g.setColour(colour);

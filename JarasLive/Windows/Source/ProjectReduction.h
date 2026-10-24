@@ -41,7 +41,7 @@ inline void retain(jaras::Project &project,const std::set<ID> &ids){
 }
 struct SizeEstimate {
     double frames=0,copiedBytes=0,documentBytes=0;size_t files=0;
-    double bytes(const String &format)const{return (format=="MP3"?frames/48000*40000:frames*8)+files*8192+copiedBytes+documentBytes;}
+    double bytes(const String &format,int bits=32,double rate=48000,int bitrate=320)const{return (format=="MP3"?frames/48000*bitrate*125:frames/48000*rate*2*bits/8)+files*8192+copiedBytes+documentBytes;}
 };
 inline SizeEstimate estimate(const jaras::Project &project,const std::vector<Group> &groups,const File &media){
     SizeEstimate result;auto retained=project;for(auto &song:retained.songs)song.tracks.clear();
@@ -62,7 +62,7 @@ inline SizeEstimate estimate(const jaras::Project &project,const std::vector<Gro
     result.documentBytes=JSON::toString(ProjectCodec::encode(retained)).getNumBytesAsUTF8()+result.files*2048;
     return result;
 }
-inline void write(const jaras::Project &original,const std::vector<Group> &groups,const File &media,const File &target,std::atomic<bool> &cancel,const std::function<void(const Progress &)> &progress,const String &format="WAV",std::optional<int64> availableBytes=std::nullopt) {
+inline void write(const jaras::Project &original,const std::vector<Group> &groups,const File &media,const File &target,std::atomic<bool> &cancel,const std::function<void(const Progress &)> &progress,const String &format="WAV",std::optional<int64> availableBytes=std::nullopt,int bits=32,double rate=48000,int bitrate=320) {
     auto report=[&](double fraction,const String &message){progress({fraction,message});};
     report(0,String::fromUTF8("Preparando redução…"));
     const auto folder=target.getParentDirectory();
@@ -70,9 +70,10 @@ inline void write(const jaras::Project &original,const std::vector<Group> &group
     if(folder.createDirectory().failed())throw std::runtime_error("Não foi possível criar a pasta.");
     bool complete=false;struct Cleanup {File folder;bool &complete;~Cleanup(){if(!complete)folder.deleteRecursively();}}cleanup{folder,complete};
     if(format!="WAV"&&format!="AIFF"&&format!="MP3")throw std::runtime_error("Formato de saída desconhecido.");
+    if((bits!=16&&bits!=24&&bits!=32)||(rate!=44100&&rate!=48000)||(bitrate!=128&&bitrate!=160&&bitrate!=192&&bitrate!=224&&bitrate!=256&&bitrate!=320))throw std::runtime_error("Formato de saída inválido.");
     const auto size=estimate(original,groups,media);const double free=(double)availableBytes.value_or(folder.getBytesFreeOnVolume());
-    if(free>=0&&free<size.bytes(format)+64*1024*1024)
-        throw std::runtime_error(utf8(String::fromUTF8("Espaço insuficiente. Projeto estimado: ")+String(size.bytes(format)/1e9,2)+" GB; "+String::fromUTF8("disponível: ")+String(free/1e9,2)+String::fromUTF8(" GB. Escolha outro formato ou disco.")));
+    if(free>=0&&free<size.bytes(format,bits,rate,bitrate)+64*1024*1024)
+        throw std::runtime_error(utf8(String::fromUTF8("Espaço insuficiente. Projeto estimado: ")+String(size.bytes(format,bits,rate,bitrate)/1e9,2)+" GB; "+String::fromUTF8("disponível: ")+String(free/1e9,2)+String::fromUTF8(" GB. Escolha outro formato ou disco.")));
     auto result=original;result.id=uuid();result.projectSyncID=uuid();result.name=utf8(target.getFileNameWithoutExtension());
     std::set<std::string> names;for(const auto &path:mediaCleanup::references(original))names.insert(utf8(text(path).toLowerCase()));std::set<ID> used,retained;std::vector<std::vector<jaras::Track>> destinations(original.songs.size());
     if(groups.empty())throw std::runtime_error("Crie pelo menos uma pista.");
@@ -87,7 +88,7 @@ inline void write(const jaras::Project &original,const std::vector<Group> &group
         if(sources.size()!=group.sources.size())throw std::runtime_error("Escolha pistas do mesmo arranjo.");
         const auto trackLabel="Pista "+String((int)index+1)+"/"+String((int)groups.size())+": "+group.name;
         report(.9*index/groups.size(),"Preparando "+trackLabel);
-        const auto ranges=sampleAligned(spans(sources,sourceSong));
+        const auto ranges=sampleAligned(spans(sources,sourceSong),rate);
         if(sources.size()==1&&(!sources[0].parentTrackID||ranges.empty())){auto copy=sources[0];copy.name=jaras::fixedTrackName(copy.role).empty()?utf8(group.name):jaras::fixedTrackName(copy.role);destinations[si].push_back(copy);retained.insert(copy.id);report(.9*double(index+1)/groups.size(),"Mantendo "+trackLabel);continue;}
         if(ranges.empty())throw std::runtime_error("A combinação não contém áudio ou MIDI para renderizar.");
         auto needed=group.sources;
@@ -100,7 +101,7 @@ inline void write(const jaras::Project &original,const std::vector<Group> &group
             track.outputs=std::vector<jaras::OutputPatch>{{track.parentTrackID?-2:0,2}};track.patch.reset();track.secondaryPatch.reset();track.routing.reset();track.stereoLinkPartner.reset();track.stereoLinkJSON.reset();track.stereoLinkLeft=false;song.tracks.push_back(track);
         }
         auto renderProject=original;renderProject.masterFXJSON.reset();renderProject.masterAutomationJSON.reset();renderProject.masterVolume=1;renderProject.masterPan=0;renderProject.masterMute=false;renderProject.masterSolo=false;renderProject.masterMono=false;renderProject.masterPhaseInverted=false;
-        ExportRequest request;request.directory=folder.getChildFile("Stems");request.encodings[0].format=format;request.encodings[0].bits=32;request.encodings[0].floatingPoint=true;
+        ExportRequest request;request.directory=folder.getChildFile("Stems");request.encodings[0].format=format;request.encodings[0].bits=bits;request.encodings[0].rate=rate;request.encodings[0].bitrate=bitrate;request.encodings[0].floatingPoint=bits==32;
         for(size_t n=0;n<ranges.size();++n){int suffix=int(n)+1;String name;do{name=File::createLegalFileName(group.name).substring(0,80)+" - "+String(suffix++)+"."+format.toLowerCase();}while(!names.insert(utf8(("Stems/"+name).toLowerCase())).second);ExportJob job;job.name=name;job.start=ranges[n].start;job.end=ranges[n].end;request.jobs.push_back(job);}
         String renderingFile=request.jobs.front().name;
         try{audioExport::render(renderProject,song,media,request,cancel,[&](double value){

@@ -100,8 +100,11 @@ try file!.write(from: buffer); file = nil
 project.songs[0].tracks = [a,b]
 let size = ProjectReduction.estimate([group], project: project) { _ in 0 }
 for outputFormat in AudioExportFormat.allCases {
-    let destination = root.appendingPathComponent("Format-\(outputFormat.rawValue)/Test.jl")
-    try ReducedProjectWriter.write(project: project, groups: [group], media: root, target: destination, instruments: [:], cancellation: AudioExportCancellation(), format: outputFormat) { _ in }
+ for rate in [44100.0,48000.0] {
+ for quality in (outputFormat == .mp3 ? [128,320] : [16,24,32]) {
+    let bits = outputFormat == .mp3 ? 32 : quality, bitrate = outputFormat == .mp3 ? quality : 320
+    let destination = root.appendingPathComponent("Format-\(outputFormat.rawValue)-\(rate)-\(quality)/Test.jl")
+    try ReducedProjectWriter.write(project: project, groups: [group], media: root, target: destination, instruments: [:], cancellation: AudioExportCancellation(), format: outputFormat, bitDepth: bits, sampleRate: rate, bitrate: bitrate) { _ in }
     let output = try ProjectDocumentCodec.decode(Data(contentsOf: destination))
     var actualBytes = Double(try Data(contentsOf: destination).count)
     for clip in output.songs[0].tracks[0].clips {
@@ -109,14 +112,22 @@ for outputFormat in AudioExportFormat.allCases {
         precondition(url.pathExtension == outputFormat.fileExtension)
         actualBytes += Double(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize!)
         let reader = try AVAudioFile(forReading: url)
+        precondition(reader.processingFormat.sampleRate == rate, "Sample rate ignored")
+        if outputFormat != .mp3 {
+            precondition(Int(reader.fileFormat.streamDescription.pointee.mBitsPerChannel) == bits, "Bit depth ignored")
+            precondition((reader.fileFormat.streamDescription.pointee.mFormatFlags & kAudioFormatFlagIsFloat != 0) == (bits == 32), "Incorrect PCM representation")
+        }
         precondition(abs(Double(reader.length) / reader.processingFormat.sampleRate - clip.duration) < 0.1)
         let pcm = AVAudioPCMBuffer(pcmFormat: reader.processingFormat, frameCapacity: 4096)!
         reader.framePosition = 12000; try reader.read(into: pcm)
         let peak = (0..<Int(pcm.frameLength)).map { abs(pcm.floatChannelData![0][$0]) }.max()!
         precondition(abs(peak - 0.15) < 0.01, "Encoding changed the rendered gain")
     }
-    precondition(actualBytes <= size.bytes(for: outputFormat) * 1.05, "Size preview underestimates rendered output")
-    print("REDUCTION_FORMAT_OK", outputFormat.rawValue, "bytes", actualBytes, "estimate", size.bytes(for: outputFormat))
+    precondition(actualBytes <= size.bytes(for: outputFormat, bitDepth: bits, sampleRate: rate, bitrate: bitrate) * 1.05, "Size preview underestimates rendered output")
+    print("REDUCTION_FORMAT_OK", outputFormat.rawValue, rate, quality, "bytes", actualBytes, "estimate", size.bytes(for: outputFormat, bitDepth: bits, sampleRate: rate, bitrate: bitrate))
+}
+
+}
 }
 
 let noSpaceTarget = root.appendingPathComponent("FullDisk/FullDisk.jl")

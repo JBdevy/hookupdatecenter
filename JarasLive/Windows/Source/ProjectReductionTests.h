@@ -36,9 +36,11 @@ template<class Test,class Fixture> void run(const File &directory,Test &&test,Fi
     const auto size=projectReduction::estimate(p,{g},root);
     recordingCaptureTests::require(size.frames==192000&&size.files==2&&size.copiedBytes==0,"Size estimate does not match region outputs");
     recordingCaptureTests::require(size.bytes("WAV")==size.bytes("AIFF")&&size.bytes("WAV")>size.bytes("MP3"),"Format size estimates are incorrect");
-    for(const String encoding:{String("AIFF"),String("MP3")}){
-        const auto formatTarget=root.getChildFile(encoding+"/Test.jl");
-        projectReduction::write(p,{g},root,formatTarget,cancel,[](const projectReduction::Progress &){},encoding);
+    for(const String encoding:{String("WAV"),String("AIFF"),String("MP3")}){
+      for(double rate:{44100.,48000.})for(int quality:(encoding=="MP3"?std::vector<int>{128,320}:std::vector<int>{16,24,32})){
+        const int bits=encoding=="MP3"?32:quality,bitrate=encoding=="MP3"?quality:320;
+        const auto formatTarget=root.getChildFile(encoding+String(rate)+"-"+String(quality)+"/Test.jl");
+        projectReduction::write(p,{g},root,formatTarget,cancel,[](const projectReduction::Progress &){},encoding,std::nullopt,bits,rate,bitrate);
         const auto formatted=ProjectCodec::decode(ProjectCodec::read(formatTarget));
         double bytes=(double)formatTarget.getSize();
         for(const auto &clip:formatted.songs[0].tracks[0].clips){
@@ -46,9 +48,11 @@ template<class Test,class Fixture> void run(const File &directory,Test &&test,Fi
             recordingCaptureTests::require(file.hasFileExtension(encoding.toLowerCase()),"Selected format not applied");
             std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
             recordingCaptureTests::require(reader&&std::abs(reader->lengthInSamples/reader->sampleRate-2)<.1,"Encoded file unreadable or duration incorrect");
-            if(encoding=="AIFF")recordingCaptureTests::require(reader->usesFloatingPointData,"AIFF silently lost float headroom");
+            recordingCaptureTests::require(reader->sampleRate==rate,"Sample rate ignored");
+            if(encoding!="MP3")recordingCaptureTests::require(reader->bitsPerSample==bits&&reader->usesFloatingPointData==(bits==32),"PCM depth or floating point selection ignored");
         }
-        recordingCaptureTests::require(bytes<=size.bytes(encoding)*1.05,"Project preview underestimated encoded files");
+        recordingCaptureTests::require(bytes<=size.bytes(encoding,bits,rate,bitrate)*1.05,"Project preview underestimated encoded files");
+    }
     }
     const auto fullDisk=root.getChildFile("FullDisk/FullDisk.jl");bool noSpace=false,renderStarted=false;
     try{projectReduction::write(p,{g},root,fullDisk,cancel,[&](const projectReduction::Progress &event){if(event.message.contains("Renderizando"))renderStarted=true;},"WAV",0);}

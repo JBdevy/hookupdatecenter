@@ -66,9 +66,10 @@ public enum ProjectReduction {
         public var files = 0
         public var copiedBytes: Double = 0
         public var documentBytes: Double = 0
-        public func bytes(for format: AudioExportFormat) -> Double {
-            // MP3 is CBR 320 kbps. Allow for encoder delay, tags and file headers.
-            let audio = format == .mp3 ? frames / 48000 * 40000 : frames * 8
+        public func bytes(for format: AudioExportFormat, bitDepth: Int = 32, sampleRate: Double = 48000, bitrate: Int = 320) -> Double {
+            // Allow for encoder delay, tags and file headers.
+            let seconds = frames / 48000
+            let audio = format == .mp3 ? seconds * Double(bitrate) * 125 : seconds * sampleRate * 2 * Double(bitDepth) / 8
             return audio + Double(files) * 8192 + copiedBytes + documentBytes
         }
     }

@@ -57,20 +57,27 @@ class ProjectReductionPanel final : public Component, private Timer {
         auto safe=SafePointer<ProjectReductionPanel>(this);
         dialog->enterModalState(true,ModalCallbackFunction::create([safe,dialog,selected](int result){if(!safe||result!=1)return;auto name=dialog->getTextEditorContents("name").trim();if(name.isEmpty())return;projectReduction::Group group;group.name=name;group.sources=selected;safe->groups.push_back(group);safe->refreshing=true;safe->right.deselectAllRows();safe->refreshing=false;safe->left.updateContent();safe->right.repaint();safe->timerCallback();}),true);
     }
-    void run(const File &target,const String &format){
+    void run(const File &target,const ExportEncoding &encoding){
         if(needsSave()||work)return;const auto original=session.project();const auto media=session.document.getParentDirectory();const auto definitions=groups;
         work=std::make_shared<Work>();auto state=work;auto safe=SafePointer<ProjectReductionPanel>(this);ModalSheet::blockDismiss(*this,true);timerCallback();
-        Thread::launch([safe,state,original,definitions,media,target,format]{String error;try{projectReduction::write(original,definitions,media,target,state->cancel,[state](const projectReduction::Progress &p){std::lock_guard<std::mutex> lock(state->mutex);state->progress=p.fraction;state->message=p.message;},format);}catch(const std::exception &e){error=String::fromUTF8(e.what());}
+        Thread::launch([safe,state,original,definitions,media,target,encoding]{String error;try{projectReduction::write(original,definitions,media,target,state->cancel,[state](const projectReduction::Progress &p){std::lock_guard<std::mutex> lock(state->mutex);state->progress=p.fraction;state->message=p.message;},encoding.format,std::nullopt,encoding.bits,encoding.rate,encoding.bitrate);}catch(const std::exception &e){error=String::fromUTF8(e.what());}
             MessageManager::callAsync([safe,error,target]{if(!safe)return;safe->work.reset();ModalSheet::blockDismiss(*safe,false);safe->status.setText(error.isEmpty()?String::fromUTF8("Projeto reduzido salvo: ")+target.getFullPathName():error,dontSendNotification);safe->timerCallback();});
         });
     }
-    void chooseDestination(const String &format){
+    static ExportEncoding readEncoding(AlertWindow &dialog){
+        ExportEncoding result;result.format=dialog.getComboBoxComponent("format")->getText();
+        result.bits=dialog.getComboBoxComponent("bits")->getText().getIntValue();
+        result.rate=dialog.getComboBoxComponent("rate")->getSelectedItemIndex()==0?44100:48000;
+        result.bitrate=dialog.getComboBoxComponent("bitrate")->getText().getIntValue();result.floatingPoint=result.bits==32;
+        return result;
+    }
+    void chooseDestination(const ExportEncoding &encoding){
         auto safe=SafePointer<ProjectReductionPanel>(this);
         chooser=std::make_unique<FileChooser>("Reduzir projeto",session.document.getSiblingFile(session.document.getFileNameWithoutExtension()+" - Reduzido.jl"),"*.jl",true);
-        chooser->launchAsync(FileBrowserComponent::saveMode|FileBrowserComponent::canSelectFiles,[safe,format](const FileChooser &fc){
+        chooser->launchAsync(FileBrowserComponent::saveMode|FileBrowserComponent::canSelectFiles,[safe,encoding](const FileChooser &fc){
             if(!safe||fc.getResult()==File{})return;auto chosen=fc.getResult().withFileExtension("jl"),folder=chosen.getParentDirectory();
             if(folder.getFileName()!=chosen.getFileNameWithoutExtension())folder=folder.getChildFile(chosen.getFileNameWithoutExtension());
-            safe->run(folder.getChildFile(chosen.getFileName()),format);
+            safe->run(folder.getChildFile(chosen.getFileName()),encoding);
         });
     }
     void timerCallback()override{
@@ -95,13 +102,29 @@ public:
         reduce.onClick=[this,safe]{
             const auto size=projectReduction::estimate(session.project(),groups,session.document.getParentDirectory());
             auto *dialog=new AlertWindow("Formato do projeto reduzido",String::fromUTF8("Tamanho aproximado do projeto, incluindo as mídias copiadas.\nO formato vale para os áudios renderizados; pistas individuais mantêm os arquivos originais. MP3 usa compressão com perda."),MessageBoxIconType::NoIcon);
-            StringArray options;for(const String format:{String("WAV"),String("AIFF"),String("MP3")})
-                options.add(format+String::fromUTF8(" — ")+(format=="MP3"?String("320 kbps"):String("32-bit float"))+String::fromUTF8(" · estéreo · 48 kHz — ≈ ")+String(size.bytes(format)/1e9,2)+" GB");
-            dialog->addComboBox("format",options,"Formato");dialog->getComboBoxComponent("format")->setSelectedItemIndex(0);
+            dialog->addComboBox("format",StringArray{"WAV","AIFF","MP3"},"Formato");
+            dialog->addComboBox("bits",StringArray{"16-bit","24-bit","32-bit float"},"Bits");
+            dialog->addComboBox("rate",StringArray{"44.100 Hz","48.000 Hz"},String::fromUTF8("Frequência"));
+            dialog->addComboBox("bitrate",StringArray{"128 kbps","160 kbps","192 kbps","224 kbps","256 kbps","320 kbps"},"Bitrate MP3");
+            dialog->getComboBoxComponent("format")->setSelectedItemIndex(0,dontSendNotification);
+            dialog->getComboBoxComponent("bits")->setSelectedItemIndex(2,dontSendNotification);
+            dialog->getComboBoxComponent("rate")->setSelectedItemIndex(1,dontSendNotification);
+            dialog->getComboBoxComponent("bitrate")->setSelectedItemIndex(5,dontSendNotification);
+            auto update=[dialog,size]{
+                const auto encoding=readEncoding(*dialog);
+                dialog->getComboBoxComponent("bits")->setEnabled(encoding.format!="MP3");
+                dialog->getComboBoxComponent("bitrate")->setEnabled(encoding.format=="MP3");
+                String message=String::fromUTF8("Tamanho estimado do projeto, incluindo mídias copiadas:\n");
+                for(const String format:{String("WAV"),String("AIFF"),String("MP3")})message+=format+String::fromUTF8(": ≈ ")+String(size.bytes(format,encoding.bits,encoding.rate,encoding.bitrate)/1e9,2)+" GB\n";
+                message+=String::fromUTF8("Pistas individuais sem renderização mantêm os arquivos originais. MP3 usa compressão com perda.");
+                dialog->setMessage(message);
+            };
+            for(const String field:{String("format"),String("bits"),String("rate"),String("bitrate")})dialog->getComboBoxComponent(field)->onChange=update;
+            update();
             dialog->addButton("Voltar",0,KeyPress(KeyPress::escapeKey));dialog->addButton("Escolher local...",1,KeyPress(KeyPress::returnKey));
             dialog->enterModalState(true,ModalCallbackFunction::create([safe,dialog](int result){
-                if(!safe||result!=1)return;const String format=StringArray{"WAV","AIFF","MP3"}[dialog->getComboBoxComponent("format")->getSelectedItemIndex()];
-                MessageManager::callAsync([safe,format]{if(!safe)return;safe->chooseDestination(format);});
+                if(!safe||result!=1)return;const auto encoding=readEncoding(*dialog);
+                MessageManager::callAsync([safe,encoding]{if(!safe)return;safe->chooseDestination(encoding);});
             }),true);
         };
         startTimerHz(10);timerCallback();

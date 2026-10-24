@@ -156,28 +156,18 @@ import SwiftUI
     let peakHold = PeakHold()
     @Published private(set) var levels = SIMD2<Double>(repeating: 0)
     var level: Double { max(levels.x, levels.y) }
-    // Instant attack, with no peak hold on the moving bars. The separate
-    // numeric readout retains its maximum until explicitly cleared. Silence,
-    // Stop and elapsed time never reset this separately held number.
-    static let releaseDecibelsPerSecond = 48.0
-    private var envelope = SIMD2<Double>(repeating: 0)
-    func reset() { envelope = .zero; if levels != .zero { levels = .zero } }
+    // Moving bars show the measured peak for the current polling interval.
+    // Do not keep a previous level alive with a synthetic release envelope.
+    // The separate numeric maximum remains available until explicitly reset.
+    func reset() { if levels != .zero { levels = .zero } }
     func update(peak: Double, elapsed: Double) { update(left: peak, right: peak, elapsed: elapsed) }
-    func update(left: Double, right: Double, elapsed: Double) {
+    func update(left: Double, right: Double, elapsed _: Double) {
         peakHold.record(max(left, right))
-        let peaks = SIMD2(left, right)
-        let decay = envelope == .zero ? 0 : pow(10, -Self.releaseDecibelsPerSecond * max(0, elapsed) / 20)
-        var changed = false
-        for channel in 0..<2 {
-            let input = peaks[channel].isFinite ? max(0, peaks[channel]) : 0
-            if input == 0 && envelope[channel] == 0 && levels[channel] == 0 { continue }
-            envelope[channel] = max(input, envelope[channel] * decay)
-            if envelope[channel] < 0.001 { envelope[channel] = 0 }
-            let oldDB = levels[channel] > 0 ? max(-60, 20 * log10(levels[channel])) : -60
-            let newDB = envelope[channel] > 0 ? max(-60, 20 * log10(envelope[channel])) : -60
-            if (envelope[channel] == 0 && levels[channel] != 0) || abs(newDB - oldDB) >= 0.06 { changed = true }
+        func visible(_ value: Double) -> Double {
+            value.isFinite && value >= 0.001 ? value : 0
         }
-        if changed { levels = envelope }
+        let measured = SIMD2(visible(left), visible(right))
+        if levels != measured { levels = measured }
     }
 }
 

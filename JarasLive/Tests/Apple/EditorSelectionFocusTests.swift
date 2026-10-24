@@ -25,6 +25,12 @@ import AppKit
         click(100); precondition(router.selectAll(key)); precondition(grid == 1 && tracks == 1)
         click(900); precondition(router.selectAll(key)); precondition(grid == 1 && tracks == 1 && setlist == 1)
         click(400); precondition(router.selectAll(key)); precondition(grid == 2 && setlist == 1)
+        click(100)
+        tracksArea.removeFromSuperview()
+        let replacement = area(NSRect(x: 0, y: 0, width: 200, height: 600), .tracks) { tracks += 1; return true }
+        precondition(router.activeScope(in: window) == .tracks, "Replacing a SwiftUI host lost the last clicked scope")
+        precondition(router.selectAll(key) && tracks == 2)
+        click(400)
         var steps = 0
         gridArea.moveCursor = { steps += $0; return true }
         let right = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 2,
@@ -45,8 +51,8 @@ import AppKit
         let bar = EditorSelectionAreaView(frame: NSRect(x: 0, y: 0, width: 300, height: 200)); bar.scope = .tracks; bar.selectAll = { tracks += 1; return true }; detached.contentView = bar
         router.handlePointer(NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 100, y: 100), modifierFlags: [], timestamp: 3, windowNumber: detached.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 1)!)
         let detachedKey = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 4, windowNumber: detached.windowNumber, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)!
-        precondition(router.selectAll(detachedKey)); precondition(tracks == 2 && grid == 2 && setlist == 1)
-        withExtendedLifetime([gridArea, tracksArea, setlistArea, bar, window, detached]) {}
+        precondition(router.selectAll(detachedKey)); precondition(tracks == 3 && grid == 2 && setlist == 1)
+        withExtendedLifetime([gridArea, tracksArea, replacement, setlistArea, bar, window, detached]) {}
         print("PASS Command-A follows grid, tracks and setlist focus; preserves text editing; blocks modal input; supports detached mixer")
     }
 }

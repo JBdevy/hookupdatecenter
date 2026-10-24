@@ -30,18 +30,20 @@ import Foundation
                  "after an explicit reset a lower peak starts a new maximum")
     withExtendedLifetime(peakSubscription) {}
     print("PEAK_HOLD_MINUS24_THRESHOLD_HIGHER_ONLY_NO_TIMED_RESET_OK")
-    let decayMeter = TrackMeterLevel()
-    decayMeter.update(left: 1, right: 0.1, elapsed: 0)
-    for _ in 0..<15 { decayMeter.update(left: 0, right: 0, elapsed: 1.0 / 30) }
-    precondition(abs(20 * log10(decayMeter.levels.x) + 24) < 0.001,
-                 "a transient falls 24 dB within half a second without altering its peak")
-    precondition(abs(decayMeter.levels.x / decayMeter.levels.y - 10) < 0.001,
-                 "release preserves independent channel amplitudes")
-    for _ in 0..<30 { decayMeter.update(left: 0, right: 0, elapsed: 1.0 / 30) }
-    precondition(decayMeter.levels == .zero, "silence clears a full-scale transient within 1.5 seconds")
-    decayMeter.update(left: 0.8, right: 0.3, elapsed: 1.0 / 30)
-    precondition(decayMeter.levels == SIMD2(0.8, 0.3), "new peaks still attack immediately")
-    print("METER_FAST_RELEASE_STEREO_SILENCE_AND_INSTANT_ATTACK_OK")
+    let measuredMeter = TrackMeterLevel()
+    for elapsed in [1.0 / 120, 1.0 / 30, 0.5] {
+        measuredMeter.update(left: 1, right: 0.1, elapsed: elapsed)
+        precondition(measuredMeter.levels == SIMD2(1, 0.1))
+        measuredMeter.update(left: 0.01, right: 0.05, elapsed: elapsed)
+        precondition(measuredMeter.levels == SIMD2(0.01, 0.05), "Falling levels follow the new measurement immediately on both channels")
+        measuredMeter.update(left: 0, right: 0, elapsed: elapsed)
+        precondition(measuredMeter.levels == .zero, "Silence cannot leave a synthetic tail")
+    }
+    measuredMeter.update(left: .nan, right: .infinity, elapsed: 0)
+    precondition(measuredMeter.levels == .zero)
+    measuredMeter.update(left: 0.0009, right: 0.001, elapsed: 0)
+    precondition(measuredMeter.levels == SIMD2(0, 0.001), "The visible -60 dB floor stays unchanged")
+    print("METER_MEASURED_STEREO_LEVELS_NO_HOLD_OR_RELEASE_TAIL_OK")
     let level = TrackMeterLevel(), meter = NativeVerticalTrackMeterView(frame: NSRect(x: 5, y: 0, width: 40, height: 80))
     meter.bind(level, showScale: true); document.addSubview(meter)
     window.orderFront(nil)

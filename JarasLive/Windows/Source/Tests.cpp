@@ -966,14 +966,14 @@ int runTests(const File &directory) {
         }
         expect(parent.calls==4,"Wheel reaches parent exactly once");
     });
-    test("Meter release follows 48 dB per second independently of buffer size", [&] {
-        for (int block : {64,128,480,1024}) {
-            float level=1;const double elapsed=double(block)/48000;int count=(int)(.5/elapsed);
-            for(int i=0;i<count;++i)level=meterDisplay::envelope(level,0,elapsed);
-            expect(std::abs(20*std::log10(level)+48*count*elapsed)<.001,"Same release for every buffer size");
-        }
-        expect(meterDisplay::envelope(0,.8f,.01)==.8f,"Immediate attack");
-        expect(meterDisplay::envelope(.001f,0,.1)==0,"Silence threshold");
+    test("Meter bars follow current measurements without peak hold or release tail", [&] {
+        for (float sample : {1.f, .1f, .01f, 0.f, .8f, .05f, 0.f})
+            expect(meterDisplay::measuredLevel(sample)==sample,"Current measurement must replace previous level immediately");
+        expect(meterDisplay::measuredLevel(.0009f)==0,"Silence threshold");
+        expect(meterDisplay::measuredLevel(.001f)==.001f,"Visible -60 dB floor");
+        expect(meterDisplay::measuredLevel(std::numeric_limits<float>::quiet_NaN())==0,"Invalid measurement cannot freeze bars");
+        meterDisplay::PeakHold peak;peak.record(1);peak.record(.01f);
+        expect(peak.amplitude()==1,"Numeric maximum remains independent of moving bars");
     });
     test("Removing EQ resets its parameters without changing other effects", [&] {
         auto value=object();fxui::defaults(value);put(value,"threshold",-47.);put(value,"delayTime",1.7);

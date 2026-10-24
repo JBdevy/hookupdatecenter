@@ -15,6 +15,12 @@ final class PlaylistSelectionNotice {
     static let shared = PlaylistSelectionNotice()
     func present(_ name: String, in window: NSWindow) {}
 }
+enum EditorSelectionArea { enum Scope { case setlist } }
+final class EditorSelectionRouter {
+ static let shared = EditorSelectionRouter()
+ func activate(_ scope: EditorSelectionArea.Scope, in window: NSWindow) {}
+ func activeScope(in window: NSWindow?) -> EditorSelectionArea.Scope? { nil }
+}
 // INSERT_SEARCH_KEYS
 
 func require(_ condition: @autoclosure () -> Bool, _ message: String) {

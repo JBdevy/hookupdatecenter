@@ -1453,7 +1453,7 @@ final class SetlistKeyView: NSView {
     private static weak var deleteOwner: SetlistKeyView?
     static func ownsDelete(_ event: NSEvent) -> Bool {
         guard let owner = deleteOwner else { return false }
-        return event.window === owner.window && owner.acceptsNavigation &&
+        return event.window === owner.window && EditorSelectionRouter.shared.activeScope(in: event.window) == .setlist && owner.acceptsNavigation &&
             !(owner.window?.firstResponder is any TimelineGridKeyboardTarget) &&
             !owner.isHiddenOrHasHiddenAncestor && owner.visibleRect.width > 0
     }
@@ -1461,7 +1461,7 @@ final class SetlistKeyView: NSView {
         guard !RegionShortcutView.envelopeOwnsEditingKey(event) else { return false }
         if RegionShortcutView.handleSelectedObjectsDelete(event) { return true }
         guard [51,117].contains(event.keyCode), event.modifierFlags.intersection([.command,.control,.option,.shift]).isEmpty,
-              let owner = deleteOwner, event.window === owner.window, owner.acceptsNavigation,
+              let owner = deleteOwner, event.window === owner.window, EditorSelectionRouter.shared.activeScope(in: event.window) == .setlist, owner.acceptsNavigation,
               !(owner.window?.firstResponder is any TimelineGridKeyboardTarget),
               !owner.isHiddenOrHasHiddenAncestor, owner.visibleRect.width > 0 else { return false }
         owner.stopRepeating(commit: false)
@@ -1472,8 +1472,10 @@ final class SetlistKeyView: NSView {
     }
     func notePointerEvent(_ event: NSEvent) {
         guard event.window === window else { return }
-        if visibleRect.contains(convert(event.locationInWindow, from: nil)) {
+        let point = convert(event.locationInWindow, from: nil)
+        if bounds.contains(point) && visibleRect.contains(point) {
             if window?.firstResponder is any TimelineGridKeyboardTarget { window?.makeFirstResponder(nil) }
+            if let window { EditorSelectionRouter.shared.activate(.setlist, in: window) }
             Self.deleteOwner = self
         }
         else if Self.deleteOwner === self { Self.deleteOwner = nil }

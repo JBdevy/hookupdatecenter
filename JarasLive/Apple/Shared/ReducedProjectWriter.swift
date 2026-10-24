@@ -8,7 +8,7 @@ struct ProjectReductionProgress: Sendable {
 
 enum ReducedProjectWriter {
     static func write(project: Project, groups: [ProjectReductionTrack], media: URL, target: URL,
-                      instruments: [UUID: [String: OfflineMIDIInstrument]], cancellation: AudioExportCancellation, format: AudioExportFormat = .wav,
+                      instruments: [UUID: [String: OfflineMIDIInstrument]], cancellation: AudioExportCancellation, format: AudioExportFormat = .wav, bitDepth: Int = 32, sampleRate: Double = 48000, bitrate: Int = 320,
                       availableCapacity: (URL) throws -> Double = { folder in
                           let attributes = try FileManager.default.attributesOfFileSystem(forPath: folder.path)
                           return (attributes[.systemFreeSize] as? NSNumber)?.doubleValue ?? -1
@@ -19,6 +19,9 @@ enum ReducedProjectWriter {
         }
         report(0, "Preparando redução…")
         try ProjectReduction.validate(groups, project: project)
+        guard [16,24,32].contains(bitDepth), [44100.0,48000.0].contains(sampleRate), [128,160,192,224,256,320].contains(bitrate) else {
+            throw AudioExportFailure.invalidFormat
+        }
         try ProjectDirectoryPolicy.validate(target)
         try ProjectDirectoryPolicy.prepareNewProjectDirectory(for: target)
         let fm = FileManager.default, folder = target.deletingLastPathComponent()
@@ -29,9 +32,10 @@ enum ReducedProjectWriter {
             let url = media.appendingPathComponent(path)
             return Double((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
+        let estimatedBytes = estimate.bytes(for: format, bitDepth: bitDepth, sampleRate: sampleRate, bitrate: bitrate)
         let free = try availableCapacity(folder)
-        if free >= 0 && free < estimate.bytes(for: format) + 64 * 1024 * 1024 {
-            throw ProjectError.invalid(String(format: "Espaço insuficiente. Projeto estimado: %.2f GB; disponível: %.2f GB. Escolha outro formato ou disco.", estimate.bytes(for: format) / 1e9, free / 1e9))
+        if free >= 0 && free < estimatedBytes + 64 * 1024 * 1024 {
+            throw ProjectError.invalid(String(format: "Espaço insuficiente. Projeto estimado: %.2f GB; disponível: %.2f GB. Escolha outro formato ou disco.", estimatedBytes / 1e9, free / 1e9))
         }
         let stems = folder.appendingPathComponent("Stems", isDirectory: true)
         try fm.createDirectory(at: stems, withIntermediateDirectories: true)
@@ -44,7 +48,7 @@ enum ReducedProjectWriter {
             let sourceSong = project.songs[si], sourceTracks = sourceSong.tracks.filter { group.sources.contains($0.id) }
             let trackLabel = "Pista \(index + 1)/\(groups.count): \(group.name)"
             report(0.9 * Double(index) / Double(groups.count), "Preparando \(trackLabel)")
-            let spans = ProjectReduction.sampleAligned(ProjectReduction.spans(sourceTracks, in: sourceSong))
+            let spans = ProjectReduction.sampleAligned(ProjectReduction.spans(sourceTracks, in: sourceSong), sampleRate: sampleRate)
             if sourceTracks.count == 1 && (sourceTracks[0].parentTrackID == nil || spans.isEmpty) {
                 var copy = sourceTracks[0]
                 copy.name = copy.fixedName ?? group.name
@@ -77,7 +81,7 @@ enum ReducedProjectWriter {
                 return AudioExportJob(id: "\(index)-\(n)", fileName: file, start: span.start, end: span.end)
             }
             var renderingFile = jobs.first?.fileName ?? group.name
-            do { try OfflineAudioExport.run(project: renderProject, song: renderSong, plan: AudioExportPlan(jobs: jobs), mediaDirectory: media, outputDirectory: stems, sampleRate: 48000, encoding: AudioExportEncoding(format: format, bitDepth: 32, floatingPoint: true), cancellation: cancellation, printTrackPolarity: true, midiInstrumentsByTrack: instruments) { value in
+            do { try OfflineAudioExport.run(project: renderProject, song: renderSong, plan: AudioExportPlan(jobs: jobs), mediaDirectory: media, outputDirectory: stems, sampleRate: sampleRate, encoding: AudioExportEncoding(format: format, bitDepth: bitDepth, bitrate: bitrate, sampleRate: sampleRate, floatingPoint: bitDepth == 32), cancellation: cancellation, printTrackPolarity: true, midiInstrumentsByTrack: instruments) { value in
                 // Offline export reports a fraction for the current file, not the whole plan.
                 let jobIndex = jobs.firstIndex(where: { $0.fileName == value.fileName }) ?? 0
                 let job = jobs[jobIndex]

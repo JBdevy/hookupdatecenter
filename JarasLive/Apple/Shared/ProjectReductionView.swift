@@ -13,6 +13,9 @@ import UniformTypeIdentifiers
     @State private var naming = false
     @State private var choosingFormat = false
     @State private var format: AudioExportFormat = .wav
+    @State private var bitDepth = 32
+    @State private var sampleRate = 48000.0
+    @State private var bitrate = 320
     @State private var estimate: ProjectReduction.SizeEstimate?
     @State private var busy = false
     @State private var progress = 0.0
@@ -114,12 +117,27 @@ import UniformTypeIdentifiers
                     HStack {
                         Image(systemName: format == option ? "largecircle.fill.circle" : "circle")
                         Text(verbatim: option.rawValue).bold().frame(width: 55, alignment: .leading)
-                        Text(option == .mp3 ? "320 kbps · estéreo · 48 kHz" : "32-bit float · estéreo · 48 kHz")
+                        Text(verbatim: option == .mp3 ? "\(bitrate) kbps · estéreo" : "\(bitDepth)-bit\(bitDepth == 32 ? " float" : "") · estéreo")
                         Spacer()
-                        if let estimate { Text(verbatim: String(format: "≈ %.2f GB", estimate.bytes(for: option) / 1e9)).monospacedDigit() }
+                        if let estimate { Text(verbatim: String(format: "≈ %.2f GB", estimate.bytes(for: option, bitDepth: bitDepth, sampleRate: sampleRate, bitrate: bitrate) / 1e9)).monospacedDigit() }
                         else { ProgressView().controlSize(.small) }
                     }.padding(12).contentShape(Rectangle())
                 }.buttonStyle(.plain).background(format == option ? JarasTheme.green.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            }
+            HStack(spacing: 20) {
+                if format == .mp3 {
+                    Picker("Bitrate", selection: $bitrate) {
+                        ForEach([128,160,192,224,256,320], id: \.self) { Text("\($0) kbps").tag($0) }
+                    }
+                } else {
+                    Picker("Bits", selection: $bitDepth) {
+                        ForEach([16,24,32], id: \.self) { Text($0 == 32 ? "32-bit float" : "\($0)-bit").tag($0) }
+                    }
+                }
+                Picker("Frequência", selection: $sampleRate) {
+                    Text("44.100 Hz").tag(44100.0)
+                    Text("48.000 Hz").tag(48000.0)
+                }
             }
             Text("O formato vale para os áudios renderizados. Pistas individuais mantidas sem renderização conservam os arquivos originais. MP3 usa compressão com perda.")
                 .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
@@ -177,7 +195,7 @@ import UniformTypeIdentifiers
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let chosen = panel.url else { return }
         choosingFormat = false
-        let selectedFormat = format
+        let selectedFormat = format, selectedBits = bitDepth, selectedRate = sampleRate, selectedBitrate = bitrate
         let target = ProjectDirectoryPolicy.newProjectDestination(for: chosen)
         let project = documents.show.snapshot.project, media = document.deletingLastPathComponent(), definitions = groups
         let instruments = Dictionary(uniqueKeysWithValues: project.songs.flatMap(\.tracks).filter { $0.clips.contains { $0.midi != nil } }.map { ($0.id, ItemReRender.midiInstruments(for: $0, projectDirectory: media)) })
@@ -188,7 +206,7 @@ import UniformTypeIdentifiers
             do {
                 guard !documents.show.needsSave else { throw ProjectError.invalid("Salve o projeto antes de reduzir.") }
                 try await Task.detached(priority: .userInitiated) {
-                    try ReducedProjectWriter.write(project: project, groups: definitions, media: media, target: target, instruments: instruments, cancellation: token, format: selectedFormat) { value in
+                    try ReducedProjectWriter.write(project: project, groups: definitions, media: media, target: target, instruments: instruments, cancellation: token, format: selectedFormat, bitDepth: selectedBits, sampleRate: selectedRate, bitrate: selectedBitrate) { value in
                         DispatchQueue.main.async {
                             if value.fraction >= progress {
                                 progress = value.fraction; progressMessage = value.message

@@ -1418,10 +1418,11 @@ private struct TimelineGridContent: View, Equatable {
         case .tracks: return GridDeleteTarget(items: [], tracks: selectedTracks, song: song, visibility: visibility)
         case .grid: return GridDeleteTarget(items: selectedClips, tracks: [], song: song, visibility: visibility)
         case .setlist: return .none
-        case nil: break
+        case nil: return .none
         }
-        #endif
+        #else
         return GridDeleteTarget(items: selectedClips, tracks: selectedTracks, song: song, visibility: visibility)
+        #endif
     }
     private func deleteSelection() {
         guard !gridInteractionBlocked, let song = show.current else { return }

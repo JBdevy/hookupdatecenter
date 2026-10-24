@@ -2214,6 +2214,12 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
         guard lastEventTime != event.timestamp else { return }
         lastEventTime = event.timestamp
         selectionModifiers = event.modifierFlags
+        // Track selection owns editing keys immediately, even if a field or an
+        // envelope editor was the previous AppKit first responder.
+        if let window = event.window {
+            window.makeFirstResponder(nil)
+            EditorSelectionRouter.shared.activate(.tracks, in: window)
+        }
         defer { selectionModifiers = nil }
         action()
     }
@@ -3736,6 +3742,7 @@ final class EditorSelectionAreaView: NSView {
     static let shared = EditorSelectionRouter()
     private let areas = NSHashTable<EditorSelectionAreaView>.weakObjects()
     private let focus = NSMapTable<NSWindow, EditorSelectionAreaView>.weakToWeakObjects()
+    private let scopes = NSMapTable<NSWindow, NSNumber>.weakToStrongObjects()
     private var monitor: Any?
     func add(_ view: EditorSelectionAreaView) {
         areas.add(view)
@@ -3757,12 +3764,25 @@ final class EditorSelectionAreaView: NSView {
             if let area = candidates.sorted(by: {
                 if $0.scope.rawValue != $1.scope.rawValue { return $0.scope.rawValue > $1.scope.rawValue }
                 return $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height
-            }).first { focus.setObject(area, forKey: window) }
+            }).first { focus.setObject(area, forKey: window); scopes.setObject(NSNumber(value: area.scope.rawValue), forKey: window) }
 
     }
+    func activate(_ scope: EditorSelectionArea.Scope, in window: NSWindow) {
+        scopes.setObject(NSNumber(value: scope.rawValue), forKey: window)
+        if let area = areas.allObjects.first(where: { $0.window === window && $0.scope == scope && !$0.isHiddenOrHasHiddenAncestor }) {
+            focus.setObject(area, forKey: window)
+        }
+    }
+    private func activeArea(in window: NSWindow) -> EditorSelectionAreaView? {
+        guard let raw = scopes.object(forKey: window), let scope = EditorSelectionArea.Scope(rawValue: raw.intValue) else { return nil }
+        if let area = focus.object(forKey: window), area.window === window, area.scope == scope, !area.isHiddenOrHasHiddenAncestor { return area }
+        // SwiftUI recycles hosts. Preserve the last clicked area across that
+        // replacement instead of falling back to stale item selections.
+        return areas.allObjects.first { $0.window === window && $0.scope == scope && !$0.isHiddenOrHasHiddenAncestor }
+    }
     func activeScope(in window: NSWindow?) -> EditorSelectionArea.Scope? {
-        guard let window, let area = focus.object(forKey: window), area.window === window, !area.isHiddenOrHasHiddenAncestor else { return nil }
-        return area.scope
+        guard let window else { return nil }
+        return activeArea(in: window)?.scope
     }
     func moveCursor(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown, event.keyCode == 123 || event.keyCode == 124,
@@ -3771,7 +3791,7 @@ final class EditorSelectionAreaView: NSView {
               window.sheetParent == nil, NSApp.modalWindow == nil, ControlMappings.shared.editing == nil,
               !NativeTimelineInputGate.shared.isBlocked(window),
               !(window.firstResponder is NSTextView), !(window.firstResponder is NSTextField),
-              let area = focus.object(forKey: window), area.scope == .grid,
+              let area = activeArea(in: window), area.scope == .grid,
               area.window === window, !area.isHiddenOrHasHiddenAncestor else { return false }
         return area.moveCursor?(event.keyCode == 123 ? -1 : 1) ?? false
     }
@@ -3783,7 +3803,7 @@ final class EditorSelectionAreaView: NSView {
               NSApp.modalWindow == nil, ControlMappings.shared.editing == nil,
               !NativeTimelineInputGate.shared.isBlocked(window),
               !(window.firstResponder is NSTextView), !(window.firstResponder is NSTextField),
-              let area = focus.object(forKey: window), area.window === window, !area.isHiddenOrHasHiddenAncestor else { return false }
+              let area = activeArea(in: window), area.window === window, !area.isHiddenOrHasHiddenAncestor else { return false }
         if event.isARepeat { return true }
         return area.selectAll?() ?? false
     }
