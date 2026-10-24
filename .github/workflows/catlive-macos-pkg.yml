@@ -11,12 +11,16 @@ on:
         description: 'Executar somente os testes de áudio do macOS (sem publicar)'
         type: boolean
         default: false
+      windows_only:
+        description: 'Validar somente o Windows e gerar instalador de teste (sem publicar)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 concurrency:
-  group: catlive-desktop-${{ inputs.version }}
+  group: catlive-desktop-${{ inputs.version }}-${{ inputs.windows_only && 'windows-validation' || 'release' }}
   cancel-in-progress: false
 
 jobs:
@@ -98,7 +102,7 @@ jobs:
           if-no-files-found: error
 
   macos-pkg:
-    if: ${{ !inputs.audio_only }}
+    if: ${{ !inputs.audio_only && !inputs.windows_only }}
     runs-on: macos-26
     timeout-minutes: 180
     env:
@@ -304,6 +308,7 @@ jobs:
   # Platform builds start together. The document exchange still gates publishing,
   # but waiting for Windows fixtures must not delay the Mac app/notarization.
   macos-compatibility:
+    if: ${{ !inputs.windows_only }}
     needs: windows
     runs-on: macos-26
     timeout-minutes: 20
@@ -366,6 +371,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: ${{ !inputs.audio_only && !inputs.windows_only }}
     needs: [windows, macos-pkg, compatibility]
     runs-on: ubuntu-latest
     steps:
