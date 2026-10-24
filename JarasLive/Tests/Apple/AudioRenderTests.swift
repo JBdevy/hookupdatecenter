@@ -513,12 +513,28 @@ var snapshot = ShowSnapshot(project: project, transport: TransportState(playing:
 let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
 @MainActor func peak() throws -> Float {
     var value: Float = 0
-    for iteration in 0..<24 {
+    var rendered = 0, retries = 0
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    // Count PCM buffers, not attempts: AVAudioEngine may temporarily reject an
+    // offline call while its graph changes. Apple requires retrying that status:
+    // https://developer.apple.com/documentation/avfaudio/performing-offline-audio-processing
+    while rendered < 24 {
         let status = try engine.renderOffline(512, to: output)
-        if status == .success, iteration > 15 {
+        if status == .cannotDoInCurrentContext {
+            retries += 1
+            precondition(ProcessInfo.processInfo.systemUptime < deadline,
+                         "offline graph did not become ready after \(retries) retries")
+            Thread.sleep(forTimeInterval: 0.001)
+            continue
+        }
+        precondition(status == .success && output.frameLength == 512,
+                     "peak measurement requires a complete PCM buffer: status=\(status.rawValue) frames=\(output.frameLength)")
+        if rendered > 15 {
             for i in 0..<Int(output.frameLength) { value = max(value, abs(output.floatChannelData![0][i])) }
         }
+        rendered += 1
     }
+    if retries > 0 { print("OFFLINE_PEAK_RENDER_RETRIES count=\(retries)") }
     return value
 }
 // A seek into existing audio still needs an anti-click ramp. Natural file
@@ -831,7 +847,8 @@ precondition(directLowMaster > 0.09 && directLowMaster < 0.11, "direct output by
 snapshot.project.songs[0].tracks[0].patch = .master
 try renderer.update(snapshot, revision: 8)
 let throughMaster = try peak()
-precondition(throughMaster > 0.009 && throughMaster < 0.011, "master fader affects only tracks routed into master")
+print("MASTER_ROUTING_MEASUREMENT rate=\(outputFormat.sampleRate) direct=\(directLowMaster) master=\(throughMaster) sample=\(engine.manualRenderingSampleTime)")
+precondition(throughMaster > 0.009 && throughMaster < 0.011, "master fader affects only tracks routed into master: \(throughMaster)")
 print("MASTER_BUS_ROUTING_OK")
 renderer.stop()
 // Reverb and delay keep processing with the device warm: Stop must clear their
