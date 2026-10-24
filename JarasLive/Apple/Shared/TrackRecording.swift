@@ -1001,6 +1001,14 @@ struct TrackRecordingSettings: View {
                     Text("Stereo").tag(2)
                     if track.role.rawValue != "vinhetas" { Text("MIDI").tag(0) }
                 }.pickerStyle(.segmented).labelsHidden().disabled(recorder.recording || recorder.busy)
+                if track.role.rawValue != "vinhetas" {
+                    Picker("MIDI channel", selection: Binding(get: { track.midiChannel ?? 0 }, set: {
+                        show.setMIDIChannel(track.id, channel: $0)
+                    })) {
+                        Text("All channels").tag(0)
+                        ForEach(1...16, id: \.self) { Text(String($0)).tag($0) }
+                    }.disabled(recorder.recording || recorder.busy)
+                }
                 if track.recordingMode != .midi {
                     Picker("Recording signal", selection: Binding(get: { track.recordsOutput }, set: { show.setRecordingStage(track.id, output: $0) })) {
                         Text("Input").tag(false); Text("Output").tag(true)
