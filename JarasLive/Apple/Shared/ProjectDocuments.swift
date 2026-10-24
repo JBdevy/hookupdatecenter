@@ -1255,6 +1255,7 @@ struct ProjectBrowserView: View {
     @State private var opening = false
     @State private var recentSearch = ""
     @State private var recentToOpen: URL?
+    @State private var recentStorage: [URL: String] = [:]
     private var filteredRecent: [URL] { documents.recent.filter { RecentProjectEntry.matches($0, query: recentSearch) } }
     @State private var askingForBPM = false
     @State private var recordingSetup = false
@@ -1404,7 +1405,11 @@ struct ProjectBrowserView: View {
                                         Text(url.deletingLastPathComponent().path).font(.jarasCaption2).foregroundStyle(JarasTheme.secondary).lineLimit(1)
                                         #endif
                                     }
-                                    Spacer(); Image(systemName: "chevron.right")
+                                    Spacer()
+                                    Text(recentStorage[url] ?? "…").font(.jarasCaption)
+                                        .foregroundStyle(JarasTheme.secondary).fixedSize()
+                                        .accessibilityLabel(Text("Project size") + Text(": " + (recentStorage[url] ?? "…")))
+                                    Image(systemName: "chevron.right")
                                 }
                                     .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.panel).contentShape(Rectangle())
                             }.buttonStyle(.plain)
@@ -1421,6 +1426,17 @@ struct ProjectBrowserView: View {
                         }
                     }
                 }.frame(maxHeight: 170)
+                    .task(id: documents.recent) {
+                        for url in documents.recent {
+                            let bytes = try? await ProjectOpeningWork.run {
+                                let access = url.startAccessingSecurityScopedResource()
+                                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                                return try RecentProjectStorage.bytes(at: url)
+                            }
+                            guard !Task.isCancelled else { return }
+                            recentStorage[url] = bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "—"
+                        }
+                    }
                 if filteredRecent.isEmpty { Text("No recent projects found.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
                 }
             }

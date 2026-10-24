@@ -1,5 +1,34 @@
 import Foundation
 
+/// Logical size of the saved document and its unique, locally available media.
+/// Metadata only: never decode audio or traverse unrelated sibling projects.
+public enum RecentProjectStorage {
+    public static func bytes(at document: URL) throws -> Int64 {
+        let project = try ProjectDocumentCodec.decode(Data(contentsOf: document))
+        let root = document.deletingLastPathComponent()
+        var files: Set<URL> = [document.resolvingSymlinksInPath().standardizedFileURL]
+        for path in project.mediaPaths {
+            try Task.checkCancellation()
+            let url = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path))
+            files.insert(url.resolvingSymlinksInPath().standardizedFileURL)
+        }
+        var total: Int64 = 0
+        for file in files {
+            try Task.checkCancellation()
+            do {
+                let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                if values.isRegularFile == true { total += Int64(values.fileSize ?? 0) }
+            } catch {
+                let ns = error as NSError
+                // Missing media occupies no local storage. Permission and I/O
+                // failures must not be presented as a misleading zero size.
+                if ns.domain != NSCocoaErrorDomain || ![NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(ns.code) { throw error }
+            }
+        }
+        return total
+    }
+}
+
 public protocol ProjectPersistence: Sendable {
     func load() async throws -> Project?
     func save(_ project: Project) async throws

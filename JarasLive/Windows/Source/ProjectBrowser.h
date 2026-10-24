@@ -39,6 +39,7 @@ struct RecentProjects {
 class ProjectBrowser final : public Component, private ListBoxModel, private Timer {
   public:
     ProjectBrowser();
+    ~ProjectBrowser() override { storageCancelled->store(true); }
     void paint(Graphics &) override;
     void resized() override;
     void refresh();
@@ -91,6 +92,10 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     Label loadingStatus, loadingError;
     juce::Rectangle<int> spinnerBounds;
     StringArray filtered;
+    std::map<String, std::pair<double, String>> storageSizes;
+    std::set<String> storagePending;
+    std::shared_ptr<std::atomic<bool>> storageCancelled = std::make_shared<std::atomic<bool>>(false);
+    void refreshStorage();
     enum Mode { none, creating, adding, opening } mode = none;
     bool projectOpen = false, playbackRunning = false;
     bool loading = false;

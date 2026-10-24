@@ -1,6 +1,7 @@
 #include "Localization.h"
 #include "ProjectBrowser.h"
 #include "InterfaceIcons.h"
+#include "RecentProjectStorage.h"
 namespace catlive {
 void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
     g.setColour(theme::panel.brighter(down ? .12f : over ? .06f : 0.f));
@@ -200,7 +201,34 @@ void ProjectBrowser::refresh() {
         if (search.getText().trim().isEmpty() || path.containsIgnoreCase(search.getText().trim()))
             filtered.add(path);
     recents.updateContent();
+    if (mode == opening) refreshStorage();
     repaint();
+}
+void ProjectBrowser::refreshStorage() {
+    StringArray pending;
+    const auto now = Time::getMillisecondCounterHiRes();
+    for (const auto &path : filtered) {
+        const auto cached = storageSizes.find(path);
+        if (!storagePending.count(path) && (cached == storageSizes.end() || now - cached->second.first > 30000)) {
+            storagePending.insert(path); pending.add(path);
+        }
+    }
+    if (pending.isEmpty()) return;
+    const SafePointer<ProjectBrowser> safe(this);
+    const auto cancelled = storageCancelled;
+    Thread::launch([safe, cancelled, pending] {
+        for (const auto &path : pending) {
+            if (cancelled->load()) return;
+            String size = String::fromUTF8("—");
+            try { size = recentProjectStorageDescription(recentProjectStorageBytes(File(path))); } catch (...) {}
+            MessageManager::callAsync([safe, cancelled, path, size] {
+                if (cancelled->load() || !safe) return;
+                safe->storagePending.erase(path);
+                safe->storageSizes[path] = {Time::getMillisecondCounterHiRes(), size};
+                safe->recents.repaint();
+            });
+        }
+    });
 }
 void ProjectBrowser::paint(Graphics &g) {
     g.fillAll(theme::background);
@@ -275,9 +303,14 @@ void ProjectBrowser::paintListBoxItem(int row, Graphics &g, int width, int heigh
     g.fillRect(0, 0, width, height - 6);
     g.setColour(selected ? Colours::white.darker(.18f) : Colours::white);
     g.setFont(theme::font(14, true));
-    g.drawText(file.getFileNameWithoutExtension(), 10, 6, width - 40, 19,
+    const auto cached = storageSizes.find(filtered[row]);
+    const auto size = cached == storageSizes.end() ? String::fromUTF8("…") : cached->second.second;
+    const int sizeWidth = (int)std::ceil(GlyphArrangement::getStringWidth(theme::font(11), size)) + 12;
+    g.drawText(file.getFileNameWithoutExtension(), 10, 6, std::max(0, width - 40 - sizeWidth), 19,
                Justification::centredLeft);
     g.setColour(theme::secondary);
+    g.setFont(theme::font(11));
+    g.drawText(size, width - 30 - sizeWidth, 6, sizeWidth, 19, Justification::centredRight);
     g.setFont(theme::font(10));
     g.drawText(file.getParentDirectory().getFullPathName(), 10, 26, width - 40, 17,
                Justification::centredLeft);

@@ -2,6 +2,26 @@ import XCTest
 @testable import JarasApplication
 
 final class NativeProjectFolderTests: XCTestCase {
+    func testRecentStorageCountsDocumentAndUniqueMediaWithoutSiblingFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var project = Project.empty(name: "Storage")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        track.clips = ["audio.wav", "audio.wav", "missing.wav"].map {
+            AudioClip(id: UUID(), name: $0, startTime: 0, duration: 1, audioFile: AudioFile(path: $0))
+        }
+        project.songs[0].tracks = [track]
+        let document = root.appendingPathComponent("Storage.jl")
+        let data = try ProjectDocumentCodec.encode(project)
+        try data.write(to: document)
+        try Data(repeating: 0, count: 1200).write(to: root.appendingPathComponent("audio.wav"))
+        try Data(repeating: 0, count: 9000).write(to: root.appendingPathComponent("other-project.wav"))
+        XCTAssertEqual(try RecentProjectStorage.bytes(at: document), Int64(data.count + 1200))
+        try Data(repeating: 0, count: 2000).write(to: root.appendingPathComponent("audio.wav"))
+        XCTAssertEqual(try RecentProjectStorage.bytes(at: document), Int64(data.count + 2000))
+        XCTAssertThrowsError(try RecentProjectStorage.bytes(at: root.appendingPathComponent("absent.jl")))
+    }
     func testProjectCreationUsesNamedFolderAndDoesNotReuseExistingProjectOrMedia() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
