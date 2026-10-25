@@ -29,7 +29,7 @@ import Combine
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         ProjectionWindow.followWorkspaceWindow(panel)
         panel.title = "CatLive · Setlist"
-        panel.minSize = NSSize(width: 320, height: 300)
+        panel.minSize = NSSize(width: 224, height: 300)
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         let view = NSHostingView(rootView: AnyView(content().interfaceScaled()))
@@ -51,7 +51,7 @@ import Combine
         partsVisible = visible
         guard let window else { return }
         let factor = InterfaceScaling.shared.factor
-        window.minSize.width = (visible ? 560 : 320) * factor
+        window.minSize.width = (visible ? 560 : 224) * factor
         guard visible, let content = window.contentView, content.frame.width < 600 * factor else { return }
         window.setContentSize(NSSize(width: 600 * factor, height: content.frame.height))
     }
@@ -75,7 +75,7 @@ import Combine
     func windowDidResize(_ notification: Notification) {
         // InterfaceScaling resizes registered windows when the scale changes.
         // Reapply the active panel's minimum after that resize as well.
-        window?.minSize.width = (partsVisible ? 560 : 320) * InterfaceScaling.shared.factor
+        window?.minSize.width = (partsVisible ? 560 : 224) * InterfaceScaling.shared.factor
     }
 }
 #endif
@@ -166,6 +166,7 @@ struct SongListView: View {
         let song: UUID
         let playlist: UUID?
         let keyboard: Bool
+        let blocksOnly: Bool
     }
     @State private var removal: EntryRemoval?
     @State private var confirmingRemoval = false
@@ -219,8 +220,10 @@ struct SongListView: View {
               let song = show.current else { return }
         let allowed = show.deletableSetlistEntries(ids)
         guard !allowed.isEmpty else { return }
+        let blocks = Set(show.listedBlocks.map(\.id))
         removal = EntryRemoval(ids: allowed, project: show.snapshot.project.id, song: song.id,
-                               playlist: show.selectedRegionPlaylist?.id, keyboard: keyboard)
+                               playlist: show.selectedRegionPlaylist?.id, keyboard: keyboard,
+                               blocksOnly: allowed.isSubset(of: blocks))
         confirmingRemoval = true
     }
     private func selectEntry(_ id: UUID, visible: [SetlistEntry], phase: SetlistSelectionPhase = .release) {
@@ -376,13 +379,27 @@ struct SongListView: View {
                                 SetlistBlockRow(block: block, nameColor: UInt32(blockTextColor.value), showSymbols: defaultBlockSymbol, fontStyle: fontStyle, selected: selectedEntries.contains(block.id))
                                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(selectedEntries.contains(block.id) ? JarasTheme.green : .clear, lineWidth: 1))
                                     .onTapGesture { selectEntry(block.id, visible: visible) }
-                                    .immediateRightClick {
-                                        let blocks = show.listedBlocks.filter { selectedEntries.contains($0.id) }
-                                        if selectedEntries.contains(block.id), blocks.count > 1, blocks.count == selectedEntries.count {
-                                            blockSymbolTargets = Set(blocks.map(\.id))
-                                            multipleSymbolDraft = blocks.allSatisfy(\.showsSymbol)
-                                            editingMultipleSymbols = true
-                                        } else { editingBlockSymbol = block.showsSymbol; editingEntry = EntryEdit(id: block.id, name: block.name, color: block.color, block: true) }
+                                    .contextMenu {
+                                        Button("Edit block") {
+                                            let blocks = show.listedBlocks.filter { selectedEntries.contains($0.id) }
+                                            if selectedEntries.contains(block.id), blocks.count > 1, blocks.count == selectedEntries.count {
+                                                blockSymbolTargets = Set(blocks.map(\.id))
+                                                multipleSymbolDraft = blocks.allSatisfy(\.showsSymbol)
+                                                editingMultipleSymbols = true
+                                            } else { editingBlockSymbol = block.showsSymbol; editingEntry = EntryEdit(id: block.id, name: block.name, color: block.color, block: true) }
+                                        }
+                                        Button("Learn MIDI") {
+                                            if let number = show.setlistBlockNumber(block.id) {
+                                                ControlMappings.shared.beginSetlistBlock(number)
+                                            }
+                                        }
+                                        Divider()
+                                        Button("Delete block", role: .destructive) {
+                                            let blocks = Set(show.listedBlocks.map(\.id))
+                                            let targets: Set<UUID> = selectedEntries.contains(block.id)
+                                                ? selectedEntries.intersection(blocks) : [block.id]
+                                            requestRemoval(targets, keyboard: false)
+                                        }
                                     }
                                     .modifier(PlaylistRegionDrag(show: show, playlist: playlist?.id, entry: block.id, block: true, selection: $selectedEntries, name: block.name, released: { selectEntry(block.id, visible: visible) }))
                                     .id(block.id)
@@ -528,9 +545,9 @@ struct SongListView: View {
                 Text("Please try copying the playlist again.")
             }
         }
-        .alert(Text(verbatim: confirmingRemoval ? JarasLocalization.string(removal?.playlist == nil ? "Delete selected regions from the project?" : "Remove selected items from this playlist?") : ""), isPresented: $confirmingRemoval) {
+        .alert(Text(verbatim: confirmingRemoval ? JarasLocalization.string(removal?.blocksOnly == true ? "Delete selected blocks?" : removal?.playlist == nil ? "Delete selected regions from the project?" : "Remove selected items from this playlist?") : ""), isPresented: $confirmingRemoval) {
             Button("Cancel", role: .cancel) { removal = nil }
-            Button(removal?.playlist == nil ? "Delete" : "Remove from playlist", role: .destructive) {
+            Button(removal?.blocksOnly == true || removal?.playlist == nil ? "Delete" : "Remove from playlist", role: .destructive) {
                 if let removal, removal.project == show.snapshot.project.id, removal.song == show.current?.id,
                    removal.playlist == show.selectedRegionPlaylist?.id, show.deleteSetlistEntries(removal.ids) {
                     selectedEntries.subtract(removal.ids)
@@ -540,7 +557,9 @@ struct SongListView: View {
                 removal = nil
             }
         } message: {
-            if removal?.playlist == nil {
+            if removal?.blocksOnly == true {
+                Text("Only the selected block headers will be removed. Songs and timeline items will be kept.")
+            } else if removal?.playlist == nil {
                 Text("The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder.")
             }
         }

@@ -148,19 +148,35 @@ class Workspace::Setlist final : public Component,
         return true;
     }
     bool deleteSelectedEntries() {
-        auto targets = selectedEntryIDs();
-        for (const auto &entry : entries) if (entry.block || entry.child) targets.erase(entry.id);
-        if (targets.empty()) return true;
-        if (!selectedPlaylist()) { w.deleteRegions(targets, true); return true; }
-        const auto playlist = selectedPlaylist()->id;
-        w.confirm("Remover da playlist", String::fromUTF8("Remover as músicas selecionadas da playlist?"),
-            [self=SafePointer<Setlist>(this),targets,playlist] {
-                if (!self) return;
-                auto state = self->currentState();
-                playlistOccurrences::remove(state, playlist, targets);
-                self->apply(state);
-            });
+        requestEntryRemoval(selectedEntryIDs());
         return true;
+    }
+    int blockNumber(const ID &id) const {
+        int number = 0;
+        for (const auto &entry : entries) if (entry.block) {
+            ++number;
+            if (entry.id == id) return number;
+        }
+        return 0;
+    }
+    void focusBlock(int number) {
+        if (number <= 0 || w.session.busy) return;
+        refresh();
+        int index = 0;
+        bool found = false;
+        for (int row = 0; row < (int)entries.size(); ++row) {
+            const auto entry = entries[(size_t)row];
+            if (entry.block) { if (++index == number) found = true; continue; }
+            if (!found || entry.child) continue;
+            // Identical to clicking this occurrence: select while stopped, queue
+            // during playback. MIDI never adds an implicit Play command.
+            w.session.command(entry.duplicate || w.session.transport().playing ? jaras::CommandKind::queueRegion
+                                                                              : jaras::CommandKind::selectRegion, entry.id);
+            selection = {entry.id}; selectedEntry = entry.id;
+            list.selectRow(row); list.scrollToEnsureRowIsOnscreen(row);
+            w.selectionAreas.activate(*this);
+            return;
+        }
     }
     bool keyPressed(const KeyPress &key) override {
         if (dynamic_cast<TextEditor *>(Component::getCurrentlyFocusedComponent()))
@@ -700,6 +716,45 @@ class Workspace::Setlist final : public Component,
             if (rows[i] >= 0 && rows[i] < (int)entries.size()) result.insert(entries[(size_t)rows[i]].id);
         return result;
     }
+    void requestEntryRemoval(const std::set<ID> &targets) {
+        if (searching || !w.session.song()) return;
+        std::set<ID> blocks, regions;
+        for (const auto &entry : entries) if (targets.count(entry.id) && !entry.child)
+            (entry.block ? blocks : regions).insert(entry.id);
+        if (blocks.empty() && regions.empty()) return;
+        const auto projectID = w.session.project().id, songID = w.session.song()->id;
+        const std::optional<ID> playlist = selectedPlaylist() ? std::optional<ID>(selectedPlaylist()->id) : std::nullopt;
+        const bool blocksOnly = regions.empty();
+        const auto title = localization::translate(blocksOnly ? "Delete selected blocks?" :
+            playlist ? "Remove selected items from this playlist?" : "Delete selected regions from the project?");
+        const auto message = localization::translate(blocksOnly
+            ? "Only the selected block headers will be removed. Songs and timeline items will be kept."
+            : playlist ? "Remove selected items from this playlist?"
+            : "The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder.");
+        w.confirm(title, message, [self=SafePointer<Setlist>(this),projectID,songID,playlist,blocks,regions] {
+            if (!self || self->w.session.project().id != projectID || !self->w.session.song() ||
+                self->w.session.song()->id != songID) return;
+            const std::optional<ID> current = self->selectedPlaylist()
+                ? std::optional<ID>(self->selectedPlaylist()->id) : std::nullopt;
+            if (current != playlist) return;
+            self->w.perform([&] {
+                if (playlist || regions.empty()) {
+                    auto state = self->currentState();
+                    playlistOccurrences::removeBlocks(state, songID, playlist, blocks);
+                    if (playlist) playlistOccurrences::remove(state, *playlist, regions);
+                    self->w.session.configureSetlist(std::move(state));
+                } else {
+                    self->w.session.edit([&](jaras::Project &project) {
+                        if (project.regionSetlist) playlistOccurrences::removeBlocks(*project.regionSetlist, songID, playlist, blocks);
+                        regionEditing::erase(project, songID, regions, true);
+                    });
+                }
+                for (const auto &id : blocks) self->selection.erase(id);
+                for (const auto &id : regions) self->selection.erase(id);
+                if (blocks.count(self->selectedEntry) || regions.count(self->selectedEntry)) self->selectedEntry.clear();
+            });
+        });
+    }
     jaras::RegionSetlist currentState() const {
         return w.session.project().regionSetlist.value_or(jaras::RegionSetlist{});
     }
@@ -945,8 +1000,7 @@ class Workspace::Setlist final : public Component,
         Array<var> ids;
         for (int i = 0; i < rows.size(); ++i) {
             const int row = rows[i];
-            if (row >= 0 && row < (int)entries.size() && !entries[(size_t)row].block &&
-                !entries[(size_t)row].child)
+            if (row >= 0 && row < (int)entries.size() && !entries[(size_t)row].child)
                 ids.add(text(entries[(size_t)row].id));
         }
         if (ids.isEmpty())
@@ -954,14 +1008,21 @@ class Workspace::Setlist final : public Component,
         auto payload = object();
         put(payload, "type", "catlive-playlist-regions");
         put(payload, "ids", ids);
+        put(payload, "project", text(w.session.project().id));
+        put(payload, "song", text(selectedPlaylist()->songId));
+        put(payload, "playlist", text(selectedPlaylist()->id));
         return payload;
     }
     bool isInterestedInDragSource(const SourceDetails &details) override {
-        return !searching && selectedPlaylist() && str(details.description, "type") == "catlive-playlist-regions";
+        const auto *playlist = selectedPlaylist();
+        return !searching && playlist && str(details.description, "type") == "catlive-playlist-regions" &&
+            str(details.description, "project") == text(w.session.project().id) &&
+            str(details.description, "song") == text(playlist->songId) &&
+            str(details.description, "playlist") == text(playlist->id);
     }
     void itemDragEnter(const SourceDetails &details) override { itemDragMove(details); }
-    void updateDropPosition() {
-        const auto local=list.getLocalPoint(nullptr,Desktop::getMousePosition());
+    void updateDropPosition(std::optional<Point<int>> position = std::nullopt) {
+        const auto local=position ? list.getLocalPoint(this,*position) : list.getLocalPoint(nullptr,Desktop::getMousePosition());
         list.getViewport()->autoScroll(local.x,local.y,40,18);
         dropRow=jlimit(0,(int)entries.size(),list.insertionRow(local.y+scrollY()));
         repaint();
@@ -972,9 +1033,9 @@ class Workspace::Setlist final : public Component,
         }
         updateDropPosition();
     }
-    void itemDragMove(const SourceDetails &) override {
+    void itemDragMove(const SourceDetails &details) override {
         if(!isTimerRunning()) startTimerHz(30);
-        updateDropPosition();
+        updateDropPosition(details.localPosition);
     }
     void itemDragExit(const SourceDetails &) override {
         stopTimer();
@@ -983,33 +1044,21 @@ class Workspace::Setlist final : public Component,
     }
     void itemDropped(const SourceDetails &details) override {
         stopTimer();
-        if (searching || !selectedPlaylist())
-            return;
+        if (!isInterestedInDragSource(details)) { dropRow = -1; repaint(); return; }
+        updateDropPosition(details.localPosition);
         const auto payload = listValues(details.description);
         auto state = currentState();
         std::optional<ID> before;
         for (int row = std::max(0, dropRow); row < (int)entries.size(); ++row)
-            if (!entries[(size_t)row].block && !entries[(size_t)row].child &&
+            if (!entries[(size_t)row].child &&
                 !payload.count(entries[(size_t)row].id)) {
                 before = entries[(size_t)row].id;
                 break;
             }
-        for (auto &p : state.playlists)
-            if (state.selectedId == p.id) {
-                std::vector<ID> moving;
-                for (const auto &id : p.regionIds)
-                    if (payload.count(id))
-                        moving.push_back(id);
-                p.regionIds.erase(std::remove_if(p.regionIds.begin(), p.regionIds.end(),
-                                                 [&](const ID &id) { return payload.count(id); }),
-                                  p.regionIds.end());
-                const auto position =
-                    before ? std::find(p.regionIds.begin(), p.regionIds.end(), *before)
-                           : p.regionIds.end();
-                p.regionIds.insert(position, moving.begin(), moving.end());
-            }
+        const auto *playlist = selectedPlaylist();
+        const bool moved = playlistOccurrences::moveEntries(state, playlist->songId, playlist->id, payload, before);
         dropRow = -1;
-        apply(state);
+        if (moved) apply(state);
         repaint();
     }
     static std::set<ID> listValues(const var &payload) {
@@ -1183,7 +1232,27 @@ class Workspace::Setlist final : public Component,
         ModalSheet::open(w,"Config Init",std::make_unique<ConfigInitPanel>(*at,save,close),360,150);
     }
     void contextMenu(Entry entry) {
-        if (entry.block) { editEntry(entry); return; }
+        if (entry.block) {
+            auto targets = selectedEntryIDs();
+            if (!targets.count(entry.id)) targets = {entry.id};
+            for (const auto &row : entries) if (!row.block) targets.erase(row.id);
+            PopupMenu menu;
+            menu.addItem(1, localization::translate("Edit block"));
+            const int number = blockNumber(entry.id);
+            menu.addItem(3, "Learn MIDI", number > 0);
+            menu.addSeparator();
+            menu.addItem(2, localization::translate(targets.size() > 1 ? "Delete blocks" : "Delete block"));
+            menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({Desktop::getMousePosition().x,Desktop::getMousePosition().y,1,1}),
+                [self=SafePointer<Setlist>(this),entry,targets,number](int action) {
+                    if (!self) return;
+                    if (action == 1) self->editEntry(entry);
+                    if (action == 2) self->requestEntryRemoval(targets);
+                    if (action == 3 && number > 0)
+                        ModalSheet::open(self->w, localization::translate("Map control"),
+                            std::make_unique<SetlistBlockMIDIPanel>(self->w.actions, number), 400, 224);
+                });
+            return;
+        }
         auto targets = selectedEntryIDs();
         if (!targets.count(entry.id)) targets = {entry.id};
         for (const auto &row : entries) if (row.block) targets.erase(row.id);

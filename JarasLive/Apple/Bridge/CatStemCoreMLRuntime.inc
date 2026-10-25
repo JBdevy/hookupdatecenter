@@ -59,7 +59,9 @@ class MobileModel {
             destination[index] = base[offset];
         }
     }
-    void estimate() {
+    void estimate(unsigned start = context - rightContext - hop,
+                  unsigned frames = predictedFrames, float *destination = nullptr) {
+        if (!destination) destination = prediction.data();
         std::copy(history.begin(), history.end(), static_cast<float *>(audioInput.dataPointer));
         transform.encode(history.data(), static_cast<float *>(spectrumInput.dataPointer));
         NSError *failure = nil;
@@ -70,23 +72,25 @@ class MobileModel {
         // The network predicts drums,bass,other,vocals,guitar,piano. Other is
         // reconstructed as the mixture residual below, just like the Mac engine.
         static constexpr unsigned sourceOrder[4] = {3, 0, 1, 4};
-        constexpr unsigned start = context - rightContext - hop;
         for (unsigned stem = 0; stem < 4; ++stem) {
             copySource(spectral, sourceOrder[stem], spectrum.data(), @[@1, @6, @4, @2048, @44]);
             copySource(temporal, sourceOrder[stem], timeBranch.data(), @[@1, @6, @2, @44100]);
             transform.decode(spectrum.data(), inverse.data());
             for (unsigned channel = 0; channel < 2; ++channel)
-                for (unsigned frame = 0; frame < predictedFrames; ++frame) {
+                for (unsigned frame = 0; frame < frames; ++frame) {
                     const float value = inverse[channel * context + start + frame] + timeBranch[channel * context + start + frame];
                     if (!std::isfinite(value)) throw std::runtime_error("CatStem returned nonfinite audio.");
-                    prediction[(stem * 2 + channel) * predictedFrames + frame] = value;
+                    destination[(stem * 2 + channel) * frames + frame] = value;
                 }
         }
     }
 public:
-    explicit MobileModel(NSURL *url) {
+    explicit MobileModel(NSURL *url, MLComputeUnits units = NSProcessInfo.processInfo.physicalMemory <= 3ULL * 1024 * 1024 * 1024 ? MLComputeUnitsCPUOnly : MLComputeUnitsAll) {
         MLModelConfiguration *configuration = [MLModelConfiguration new];
-        configuration.computeUnits = MLComputeUnitsAll;
+        // GPU specialization of this graph can exceed the per-process limit
+        // on 2/3 GB iPads before the first prediction. CPU execution uses the
+        // same trained weights without allocating a second GPU working set.
+        configuration.computeUnits = units;
         NSError *failure = nil;
         model = [MLModel modelWithContentsOfURL:url configuration:configuration error:&failure];
         if (!model) throw error(failure, "Could not load the CatStem Core ML model.");
@@ -113,6 +117,15 @@ public:
         hasPreviousTail = false;
     }
     void warmup() { estimate(); reset(); }
+    // File separation uses the complete prediction, rather than discarding
+    // most of each second to satisfy the former live plugin's 8192-frame hop.
+    // Input [2,context], named output [4,2,context], both planar.
+    void predictWindow(const float *pcm, float *output) {
+        std::copy_n(pcm, context * 2, history.data());
+        if (std::all_of(history.begin(), history.end(), [](float v) { return v == 0; }))
+            std::fill_n(output, context * 8, 0);
+        else estimate(0, context, output);
+    }
     // Planar output [5,hop,2], same protocol as the desktop worker.
     void process(const float *pcm, float *output) {
         for (unsigned channel = 0; channel < 2; ++channel) {
@@ -149,6 +162,89 @@ public:
         }
     }
 };
+
+/// Every window predicts all five files together. File duration and sample
+/// placement remain exact, including short items, overlap seams and the tail.
+static void separateCoreMLFile(NSURL *inputURL, NSURL *directory, NSURL *modelURL,
+                              const std::function<bool()> &cancelled,
+                              const std::function<void(double)> &progress) {
+    if (NSThread.isMainThread) throw std::runtime_error("CatStem separation must run on its background worker.");
+    auto check = [&] { if (cancelled()) throw std::runtime_error("Separação cancelada."); };
+    check();
+    NSError *failure = nil;
+    AVAudioFile *input = [[AVAudioFile alloc] initForReading:inputURL commonFormat:AVAudioPCMFormatFloat32 interleaved:NO error:&failure];
+    if (!input) throw std::runtime_error(failure.localizedDescription.UTF8String ?: "Could not read the separation source.");
+    if (input.length <= 0 || input.processingFormat.channelCount != 2 || input.processingFormat.sampleRate != modelRate)
+        throw std::runtime_error("CatStem separation requires nonempty stereo 44100 Hz PCM.");
+    const int64_t frames = input.length;
+    AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:modelRate channels:2];
+    constexpr unsigned window = CatStemMobile::Spectrogram::context;
+    // Demucs file processing uses 25% overlap and triangular blending. Keep
+    // only one window of sums/weights: memory does not grow with song length.
+    constexpr unsigned stride = window * 3 / 4;
+    AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:window];
+    if (!buffer) throw std::runtime_error("Could not allocate separation audio buffers.");
+    MobileModel model(modelURL); check();
+    NSMutableArray<AVAudioFile *> *writers = [NSMutableArray new];
+    for (NSString *name in @[@"Vocal", @"Drum", @"Bass", @"Guitar", @"Other"]) {
+        NSURL *url = [directory URLByAppendingPathComponent:[name stringByAppendingPathExtension:@"wav"]];
+        AVAudioFile *writer = [[AVAudioFile alloc] initForWriting:url settings:@{
+            AVFormatIDKey:@(kAudioFormatLinearPCM), AVSampleRateKey:@(modelRate), AVNumberOfChannelsKey:@2,
+            AVLinearPCMBitDepthKey:@32, AVLinearPCMIsFloatKey:@YES, AVLinearPCMIsBigEndianKey:@NO
+        } commonFormat:AVAudioPCMFormatFloat32 interleaved:NO error:&failure];
+        if (!writer) throw std::runtime_error(failure.localizedDescription.UTF8String ?: "Could not create separated audio.");
+        [writers addObject:writer];
+    }
+    std::vector<float> pcm(window * 2), separated(window * 8), sums(window * 8), weights(window);
+    for (int64_t offset = 0; offset < frames; offset += stride) {
+        @autoreleasepool {
+            check(); std::fill(pcm.begin(), pcm.end(), 0);
+            const unsigned count = unsigned(std::min<int64_t>(window, frames - offset));
+            input.framePosition = offset;
+            if (![input readIntoBuffer:buffer frameCount:count error:&failure] || buffer.frameLength != count)
+                throw std::runtime_error(failure.localizedDescription.UTF8String ?: "The separation source ended unexpectedly.");
+            for (unsigned frame = 0; frame < count; ++frame) for (unsigned channel = 0; channel < 2; ++channel) {
+                const float value = buffer.floatChannelData[channel][frame];
+                if (!std::isfinite(value)) throw std::runtime_error("The separation source contains nonfinite audio.");
+                pcm[channel * window + frame] = value;
+            }
+            model.predictWindow(pcm.data(), separated.data()); check();
+            for (unsigned frame = 0; frame < count; ++frame) {
+                const float weight = float(std::min(frame + 1, window - frame)) / (window / 2);
+                weights[frame] += weight;
+                for (unsigned plane = 0; plane < 8; ++plane)
+                    sums[plane * window + frame] += separated[plane * window + frame] * weight;
+            }
+            const unsigned length = std::min(stride, count);
+            for (unsigned stem = 0; stem < 5; ++stem) {
+                buffer.frameLength = length;
+                for (unsigned channel = 0; channel < 2; ++channel) for (unsigned frame = 0; frame < length; ++frame) {
+                    float value;
+                    if (stem < 4) value = sums[(stem * 2 + channel) * window + frame] / weights[frame];
+                    else {
+                        float named = 0;
+                        for (unsigned source = 0; source < 4; ++source)
+                            named += sums[(source * 2 + channel) * window + frame] / weights[frame];
+                        value = pcm[channel * window + frame] - named;
+                    }
+                    if (!std::isfinite(value)) throw std::runtime_error("CatStem returned nonfinite audio.");
+                    buffer.floatChannelData[channel][frame] = value;
+                }
+                if (![writers[stem] writeFromBuffer:buffer error:&failure])
+                    throw std::runtime_error(failure.localizedDescription.UTF8String ?: "Could not write separated audio.");
+                check();
+            }
+            for (unsigned plane = 0; plane < 8; ++plane) {
+                float *sum = sums.data() + plane * window;
+                std::memmove(sum, sum + stride, (window - stride) * sizeof(float));
+                std::fill(sum + window - stride, sum + window, 0);
+            }
+            std::memmove(weights.data(), weights.data() + stride, (window - stride) * sizeof(float));
+            std::fill(weights.begin() + window - stride, weights.end(), 0);
+            progress(double(std::min<int64_t>(frames, offset + length)) / frames);
+        }
+    }
+}
 
 std::atomic<bool> workerLease{false}, offlineWorkerLease{false};
 struct Runtime {

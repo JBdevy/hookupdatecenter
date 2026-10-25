@@ -1804,3 +1804,13 @@
 "Next section" = "Next section";
 
 "Armed section" = "Armed section";
+
+"Delete block" = "Delete block";
+
+"Delete blocks" = "Delete blocks";
+
+"Delete selected blocks?" = "Delete selected blocks?";
+
+"Only the selected block headers will be removed. Songs and timeline items will be kept." = "Only the selected block items will be removed from the setlist.";
+
+"Block ID %02d" = "Block ID %02d";

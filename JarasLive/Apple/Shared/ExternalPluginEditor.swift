@@ -379,11 +379,7 @@ import Combine
             let language = UserDefaults.standard.string(forKey: "jaras.language") ?? "en"
             // editorArea supplies the frame; the panel below supplies the
             // minimum size. Do not ask SwiftUI to remeasure window limits.
-            if effect == "CatStemSeparation 5" {
-                let host = NSHostingView(rootView: CatStemFXEditor(show: show, track: track, clip: clip).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark).interfaceScaled())
-                if #available(macOS 13, *) { host.sizingOptions = [] }
-                content = host
-            } else if effect.hasPrefix("External:") {
+            if effect.hasPrefix("External:") {
                 let host = NSHostingView(rootView: ExternalPluginEditor(show: show, track: track, effect: effect).environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark).interfaceScaled())
                 if #available(macOS 13, *) { host.sizingOptions = [] }
                 content = host

@@ -15,6 +15,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)gate;
 - (void)stop;
 @property(nonatomic, readonly, nullable) AVAudioTime *renderTime;
+// Control-thread snapshot only; never call from an audio render callback.
+- (NSDictionary<NSString *, id> *)diagnostics;
 // Also used by the PCM harness with the same timestamp/buffer path as RemoteIO.
 - (OSStatus)renderFrames:(UInt32)frames time:(const AudioTimeStamp *)time flags:(AudioUnitRenderActionFlags *)flags buffers:(AudioBufferList *)data;
 @end

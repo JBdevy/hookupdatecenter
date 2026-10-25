@@ -16,7 +16,11 @@ source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 start = source.index('struct MixerResizeHandle:')
 end = source.index('\n#endif', start)
 (folder/'divider.swift').write_text('import SwiftUI\nimport AppKit\n' + source[start:end])
+scroll = Path('Apple/Shared/GridScrollView.swift').read_text()
+start = scroll.index('struct NativeTimelinePinnedInput:')
+end = scroll.index('final class NativeTimelinePinnedView:', start)
+(folder/'scroll.swift').write_text(scroll[:start] + scroll[end:])
 (folder/'main.swift').write_text(Path('Tests/Apple/SidebarResizeScopeTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 Apple/Shared/GridScrollView.swift "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -O -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$test_dir/scroll.swift" "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -3,6 +3,7 @@
 #include "Session.h"
 #include "MediaSource.h"
 #include "ItemRender.h"
+#include "AudioSeparation.h"
 #include "ItemLayout.h"
 #include "Appearance.h"
 #include "TrackTree.h"
@@ -1785,6 +1786,43 @@ void Session::renderItems(std::set<ID> ids,bool glue,int midiChannels,std::funct
             if(error.isEmpty() && completed){std::set<ID> rendered;for(const auto &r:replacements)rendered.insert(r.clip.id);completed(std::move(rendered));}
         });
     });
+}
+void Session::separateAudioItem(ID id,std::function<void(std::set<ID>)> completed) {
+    if(busy||!song())return;
+    if(audio.isRecording())throw std::runtime_error("Conclua a gravação antes de separar áudio.");
+    if(canPlay&&!canPlay())throw std::runtime_error("Valide sua licença para separar áudio.");
+    if(document==File{}||!mediaDirectory.isDirectory())throw std::runtime_error("Salve o projeto antes de separar áudio.");
+    const auto source=project();const auto sourceSong=*song();const auto directory=mediaDirectory;
+    for(const auto &track:sourceSong.tracks)for(const auto &clip:track.clips)if(clip.id==id) {
+        if(!audioSeparation::eligible(track,clip))throw std::runtime_error("Selecione apenas um item de áudio.");
+        exportCancelled=false;busy=true;importProgress=0;message=String::fromUTF8("Preparando a separação de áudio…");notify();
+        auto weak=std::weak_ptr<int>(alive);
+        worker.addJob([this,weak,source,sourceSong,directory,track,clip,completed] {
+            audioSeparation::Result result;String error;
+            try {
+                result=audioSeparation::render(source,sourceSong,track,clip,directory,exportCancelled,[this,weak](double value,String text) {
+                    MessageManager::callAsync([this,weak,value,text]{if(!weak.expired()){importProgress=value;message=text;if(changed)changed();}});
+                });
+                AudioFormatManager formats;registerAudioFormats(formats);
+                for(size_t row=0;row<result.tracks.size();++row) {
+                    std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(result.files[row]));
+                    if(!reader)throw std::runtime_error("Não foi possível ler o áudio separado.");
+                    result.tracks[row].clips[0].waveform=waveform(*reader);
+                }
+            }catch(const std::exception &failure){error=String::fromUTF8(failure.what());}
+            MessageManager::callAsync([this,weak,source,sourceSong,track,clip,result=std::move(result),error,completed]() mutable {
+                auto discard=[&]{for(const auto &file:result.files)file.deleteFile();};
+                if(weak.expired()){discard();return;}busy=false;
+                if(error.isEmpty()&&(project().id!=source.id||!song()||song()->id!=sourceSong.id||exportCancelled.load()||jaras::projectSync::readOnly()))error=String::fromUTF8("Separação cancelada.");
+                if(error.isEmpty())try{edit([&](jaras::Project &project){audioSeparation::commit(project,sourceSong.id,track.id,clip,result.tracks);});}
+                catch(const std::exception &failure){error=String::fromUTF8(failure.what());}
+                if(error.isNotEmpty())discard();
+                importProgress=error.isEmpty()?1:importProgress;message=error.isEmpty()?String::fromUTF8("Separação concluída. O original foi preservado e silenciado."):error;notify();
+                if(error.isEmpty()&&completed){std::set<ID> ids;for(const auto &stem:result.tracks)ids.insert(stem.clips[0].id);completed(std::move(ids));}
+            });
+        });return;
+    }
+    throw std::runtime_error("O item de áudio não está mais disponível.");
 }
 void Session::exportAudio(ExportRequest request) {
     if (busy || !song())

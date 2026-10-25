@@ -1,4 +1,5 @@
 #include "../../Core/Transport/Engine.hpp"
+#include "../../Windows/Source/PlaylistOccurrences.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -115,6 +116,63 @@ static void sync() {
     auto decoded=projectSync::decode(legacy.bytes.data(),legacy.bytes.size());
     expect(!decoded.transport.playlistEntryId && !decoded.transport.queuedPlaylistEntryId && decoded.transport.queuedRegionId=="a","old sync frame decodes physical transport");
 }
+static void blockRemoval() {
+    auto project = fixture();
+    auto &state = *project.regionSetlist;
+    state.playlists.push_back({"other", "Other show", "song", {"a", "b"}});
+    state.blocks = std::vector<SetlistBlock>{
+        {"first", "song", "playlist", "Opening", 0, "a"},
+        {"second", "song", "playlist", "Final", 0, "c"},
+        {"other-block", "song", "other", "Other", 0, "b"},
+        {"global", "song", std::nullopt, "All regions", 0, "b"}};
+    validate(project);
+    Engine engine; engine.loadProject(project); start(engine, "b");
+    engine.execute({CommandKind::queueRegion, "a-copy"});
+    const auto entries = state.playlists[0].regionIds;
+    catlive::playlistOccurrences::removeBlocks(state, "song", "playlist", {"first", "second", "other-block", "global", "a"});
+    expect(state.blocks->size() == 2 && state.blocks->front().id == "other-block" && state.blocks->back().id == "global",
+           "block removal must stay within the selected song and playlist");
+    expect(state.playlists[0].regionIds == entries && state.playlists[0].duplicates->front().id == "a-copy",
+           "block removal must preserve songs and duplicate occurrences");
+    engine.configureRegionSetlist(state);
+    expect(engine.project().songs[0].parts.size() == 3 && engine.transport().playing &&
+           engine.transport().regionId == "b" && engine.transport().queuedPlaylistEntryId == "a-copy",
+           "deleting headers must preserve the physical timeline and playing/queued songs");
+    catlive::playlistOccurrences::removeBlocks(state, "foreign-song", std::nullopt, {"global"});
+    expect(state.blocks->size() == 2, "block deletion must reject a different song");
+    catlive::playlistOccurrences::removeBlocks(state, "song", std::nullopt, {"global"});
+    expect(state.blocks->size() == 1 && state.blocks->front().id == "other-block", "legacy All Regions header can be deleted alone");
+}
+static void blockReordering() {
+    auto project = fixture();
+    auto &state = *project.regionSetlist;
+    state.playlists.push_back({"other", "Other show", "song", {"a", "b"}});
+    state.blocks = std::vector<SetlistBlock>{{"first", "song", "playlist", "Opening", 0, "a"},
+        {"second", "song", "playlist", "Second", 0, "b"},
+        {"foreign", "song", "other", "Other", 0, "b"}};
+    const auto originalSongs = state.playlists[0].regionIds;
+    auto block = [&](const ID &id) -> const SetlistBlock & {
+        return *std::find_if(state.blocks->begin(), state.blocks->end(), [&](const auto &item) { return item.id == id; });
+    };
+    using catlive::playlistOccurrences::moveEntries;
+    expect(moveEntries(state, "song", "playlist", {"first"}, "b"), "a block must move between songs");
+    expect(block("first").beforeRegionId == "b" && state.blocks->front().id == "second" &&
+           state.playlists[0].regionIds == originalSongs, "moving a block alone must not carry its songs");
+    expect(moveEntries(state, "song", "playlist", {"first"}, "second"), "a block must move before another block");
+    expect(state.blocks->front().id == "first" && block("first").beforeRegionId == "b" && block("second").beforeRegionId == "b",
+           "blocks sharing a song anchor must keep their explicit row order");
+    expect(moveEntries(state, "song", "playlist", {"second"}, std::nullopt), "a block must move to the playlist end");
+    expect(!block("second").beforeRegionId && state.playlists[0].regionIds == originalSongs, "tail block must follow the final song");
+    expect(moveEntries(state, "song", "playlist", {"first", "b"}, "a"), "mixed block/song drag must move both selected rows");
+    expect(state.playlists[0].regionIds == std::vector<ID>({"b", "a", "a-copy", "c"}) && block("first").beforeRegionId == "b",
+           "mixed drag must preserve relative row order and duplicate identities");
+    expect(block("foreign").beforeRegionId == "b" && state.playlists[1].regionIds == std::vector<ID>({"a", "b"}),
+           "moving rows must not alter another playlist");
+    expect(!moveEntries(state, "song", "playlist", {"first"}, "b"), "dropping a block in its current slot must be a no-op");
+    expect(!moveEntries(state, "different-song", "playlist", {"first"}, "c"), "drag cannot cross songs");
+    expect(!moveEntries(state, "song", "playlist", {"first"}, "foreign"), "drag cannot target a foreign playlist block");
+    validate(project);
+}
 static void live() {
     Engine e; e.loadProject(fixture(false,true)); start(e,"a"); e.advance(4); e.execute({CommandKind::pause}); e.advance(30);
     expect(!marked(e,"a"),"paused time is not Live played time");
@@ -141,4 +199,4 @@ static void live() {
     Engine fresh; fresh.loadProject(fixture(false,true)); start(fresh,"a"); fresh.advance(7); fresh.execute({CommandKind::stop}); fresh.loadProject(fixture(false,true)); start(fresh,"a"); fresh.advance(4);
     expect(!marked(fresh,"a"),"load resets runtime partial counters");
 }
-int main() { try { validation(); manual(); automatic(); removal(); sync(); live(); std::cout<<"CATLIVE_PLAYLIST_OCCURRENCES_OK\n"; } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; } }
+int main() { try { validation(); manual(); automatic(); removal(); sync(); blockRemoval(); blockReordering(); live(); std::cout<<"CATLIVE_PLAYLIST_OCCURRENCES_OK\n"; } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; } }

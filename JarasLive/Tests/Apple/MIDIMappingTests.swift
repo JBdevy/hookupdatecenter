@@ -27,6 +27,8 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
     func commitFX() {}
     var bpm = 120.0
     var actionsReceived: [DAWAction] = []
+    var focusedBlocks: [Int] = []
+    func focusSetlistBlock(number: Int) -> Bool { focusedBlocks.append(number); return true }
     var current: MappingTestSong? { snapshot.project.songs.first }
     func actionTrack(number: Int?) -> MappingTestTrack? {
         guard let tracks = current?.tracks else { return nil }
@@ -63,8 +65,15 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
     static let shared = VinhetasController()
     var claimedNumber: UInt8?
     var received: [(ControlInput, UInt8)] = []
+    var library = VinhetasLibrary()
+    var persistedLibrary: Data?
+    func update(_ edit: (inout VinhetasLibrary) -> Void) {
+        edit(&library); try! library.validate(); persistedLibrary = try! JSONEncoder().encode(library)
+    }
+    // INSERT_VINHETAS_BLOCK_CONFLICTS
     func receive(input: ControlInput, value: UInt8) -> Bool {
-        received.append((input, value)); return claimedNumber != nil && input.number == claimedNumber
+        received.append((input, value))
+        return (claimedNumber != nil && input.number == claimedNumber) || library.handles(input)
     }
 }
 @MainActor final class KeyboardMIDIMonitor {
@@ -264,6 +273,7 @@ enum ProjectError: Error { case invalid(String) }
         precondition(mappings.transferRequest == nil && mappings.actions.binding(.setlistUp).keyboard == DAWAction.setlistUp.defaultKeyboard)
         mappings.editing = nil
         print("KEYBOARD_MIDI_CONFLICT_CANCEL_CONFIRMED_TRANSFER_FIXED_ARROWS_AND_GLOBAL_PERSISTENCE_OK")
+        if ProcessInfo.processInfo.environment["CATLIVE_MAPPING_TEST_NO_UI"] != "1" {
         _ = NSApplication.shared
         // Exercise the real event handler, including remapped navigation. A held
         // key must execute every repeat; transport toggles must execute only once.
@@ -345,6 +355,7 @@ enum ProjectError: Error { case invalid(String) }
         print("ENVELOPE_DELETE_ESCAPE_KEYS_BEFORE_GLOBAL_MAPPINGS_OK")
         parent.orderOut(nil)
         print("DIALOG_ENTER_ESCAPE_PRIORITY_AND_TRANSPORT_RESTORATION_OK")
+        }
         // Exercise the real CoreMIDI receive thread, not only the injected
         // learner calls above. Actor race checks stay enabled in this harness.
         var virtualClient: MIDIClientRef = 0, virtualSource: MIDIEndpointRef = 0
@@ -391,7 +402,121 @@ enum ProjectError: Error { case invalid(String) }
         precondition(StemAudioPlayback.shared.forwarded == instrumentBefore, "Pad notes must not also play an armed instrument")
         VinhetasController.shared.claimedNumber = nil
         print("VINHETAS_MIDI_NOTE_OFF_CHANNEL_AND_EXCLUSIVE_ROUTING_OK")
-
+        mappings.show = show
+        mappings.beginSetlistBlock(1)
+        precondition(mappings.learningSetlistBlock && mappings.mode == "midi" && mappings.candidate == nil)
+        cc(100, 127); mappings.save()
+        let firstBlockBinding = mappings.mappings.first { $0.globalSetlistBlockNumber == 1 }!
+        precondition(firstBlockBinding.command == "setlistBlock:1" && firstBlockBinding.track == nil)
+        let savedBlocks = try! JSONDecoder().decode([MappedControl].self, from: defaults.data(forKey: "jaras.controlMappings")!)
+        precondition(savedBlocks.contains { $0.id == firstBlockBinding.id && $0.globalSetlistBlockNumber == 1 }, "Global block bindings survive the existing JSON persistence schema")
+        mappings.show = other
+        precondition(mappings.current.contains { $0.id == firstBlockBinding.id }, "A block learned in another project remains active")
+        let actionsBeforeBlock = other.actionsReceived.count
+        cc(100, 0); cc(100, 127); cc(100, 64)
+        precondition(other.focusedBlocks == [1] && other.actionsReceived.count == actionsBeforeBlock, "A mapped block only requests focus, without Play and without repeated activation while held")
+        cc(100, 0); cc(100, 127, channel: 1)
+        precondition(other.focusedBlocks == [1], "The learned MIDI channel remains part of the match")
+        cc(100, 127)
+        precondition(other.focusedBlocks == [1, 1], "Release allows another press to select the current playlist's block again")
+        mappings.beginSetlistBlock(1)
+        precondition(mappings.candidate == firstBlockBinding.input && mappings.hasSetlistBlockMapping, "The editor reopens the same global binding in a different project")
+        cc(101, 127); mappings.editing = nil
+        precondition(mappings.mappings.contains { $0.id == firstBlockBinding.id && $0.input.number == 100 }, "Cancel preserves the original mapping")
+        mappings.beginSetlistBlock(1); cc(101, 0); cc(101, 127); mappings.save()
+        precondition(mappings.mappings.filter { $0.globalSetlistBlockNumber == 1 }.count == 1, "Saving in another project replaces one global mapping instead of creating a project duplicate")
+        mappings.beginSetlistBlock(2); cc(101, 0); cc(101, 127); mappings.save()
+        precondition(mappings.transferRequest != nil && mappings.mappings.contains { $0.globalSetlistBlockNumber == 1 }, "Two block IDs cannot silently share the same MIDI input")
+        mappings.cancelTransfer(); mappings.editing = nil
+        precondition(!mappings.mappings.contains { $0.globalSetlistBlockNumber == 2 }, "Canceling a transfer leaves the second block unmapped")
+        mappings.beginSetlistBlock(2); cc(101, 0); cc(101, 127); mappings.save(); mappings.confirmTransfer()
+        precondition(!mappings.mappings.contains { $0.globalSetlistBlockNumber == 1 } && mappings.mappings.contains { $0.globalSetlistBlockNumber == 2 }, "Confirmed transfer moves the input between global block IDs")
+        mappings.beginSetlistBlock(2); mappings.removeEditingSetlistBlockMapping()
+        let afterRemove = try! JSONDecoder().decode([MappedControl].self, from: defaults.data(forKey: "jaras.controlMappings")!)
+        precondition(mappings.editing == nil && !afterRemove.contains { $0.globalSetlistBlockNumber == 2 }, "Remove mapping persists and closes the block learner")
+        mappings.beginAction(.repeatPlayback, kind: "midi"); cc(104, 127); mappings.save()
+        mappings.beginSetlistBlock(129); cc(104, 0); cc(104, 127); mappings.save()
+        precondition(mappings.transferRequest != nil && mappings.actions.binding(.repeatPlayback).midi?.number == 104, "Block learn respects existing global action conflicts")
+        mappings.confirmTransfer()
+        precondition(mappings.actions.binding(.repeatPlayback).midi == nil && mappings.mappings.contains { $0.globalSetlistBlockNumber == 129 }, "Global block ordinals are not limited to a fixed enum")
+        mappings.beginSetlistBlock(129)
+        mappings.mode = "keyboard"; mappings.candidate = ControlInput(kind: "keyboard", label: "Z", key: 6, modifiers: 0); mappings.save()
+        precondition(mappings.editing != nil && mappings.mappings.first { $0.globalSetlistBlockNumber == 129 }?.input.kind == "midi", "A block Learn MIDI cannot accidentally save a keyboard binding")
+        mappings.removeEditingSetlistBlockMapping()
+        mappings.beginSetlistBlock(0)
+        precondition(mappings.editing == nil && SetlistBlockMIDICommand.number("setlistBlock:0") == nil && SetlistBlockMIDICommand.number("setlistBlock:-1") == nil && SetlistBlockMIDICommand.number("setlistBlock:+1") == nil, "Invalid block IDs cannot enter the global namespace")
+        // A project-specific FX control in a different project must also be
+        // transferred explicitly before making its input globally active.
+        mappings.show = other
+        mappings.beginFX(track: otherTrack, parameter: parameter); cc(106, 127); mappings.save()
+        let foreignFX = mappings.mappings.first { $0.project == other.snapshot.project.id && $0.input.number == 106 }!
+        mappings.show = show
+        mappings.beginSetlistBlock(3); cc(106, 0); cc(106, 127); mappings.save()
+        precondition(mappings.transferRequest != nil && mappings.mappings.contains { $0.id == foreignFX.id }, "Learning a global block detects FX conflicts outside the current project")
+        mappings.confirmTransfer()
+        precondition(!mappings.mappings.contains { $0.id == foreignFX.id } && mappings.current.contains { $0.globalSetlistBlockNumber == 3 })
+        mappings.beginFX(track: track, parameter: parameter); cc(106, 127); mappings.save()
+        precondition(mappings.transferRequest != nil, "A project-specific FX mapping cannot silently shadow a global block")
+        mappings.confirmTransfer()
+        precondition(!mappings.mappings.contains { $0.globalSetlistBlockNumber == 3 }, "Reverse transfer removes the global block mapping")
+        mappings.beginSetlistBlock(4)
+        mappings.receive(endpoint: 100, status: 0x92, number: 108, value: 90); mappings.save()
+        mappings.receive(endpoint: 100, status: 0x82, number: 108, value: 0)
+        mappings.receive(endpoint: 100, status: 0x92, number: 108, value: 90)
+        precondition(show.focusedBlocks.last == 4, "MIDI notes as well as CC can select a numbered block")
+        let beforeZeroVelocity = show.focusedBlocks.count
+        mappings.receive(endpoint: 100, status: 0x92, number: 108, value: 0)
+        precondition(show.focusedBlocks.count == beforeZeroVelocity, "Note On velocity zero releases the binding without selecting another block")
+        mappings.receive(endpoint: 100, status: 0x92, number: 108, value: 90)
+        precondition(show.focusedBlocks.count == beforeZeroVelocity + 1, "A fresh note press works after a velocity-zero release")
+        print("GLOBAL_SETLIST_BLOCK_ORDINAL_MIDI_PERSISTENCE_FOCUS_LATCH_CHANNEL_CANCEL_REMOVE_AND_CROSS_PROJECT_CONFLICTS_OK")
+        // Real Vinhetas channel matching and transfer helpers are compiled into
+        // the stub; only its audio/persistence environment is replaced.
+        let vinhetas = VinhetasController.shared
+        var padInput = ControlInput(kind: "midi", label: "Pad CC", device: 123, channel: 7, status: 0xb0, number: 110)
+        var otherPadInput = padInput; otherPadInput.number = 111
+        var otherDeviceInput = padInput; otherDeviceInput.device = 777
+        vinhetas.update {
+            $0.padMappings[0] = padInput; $0.padMappings[1] = otherPadInput
+            $0.padMappings[3] = otherDeviceInput; $0.presetMappings[2] = padInput
+        }
+        let originalVinhetas = vinhetas.library
+        let originalPersistedVinhetas = vinhetas.persistedLibrary
+        mappings.beginSetlistBlock(10); cc(110, 127); mappings.save()
+        precondition(mappings.transferRequest?.message.contains("Vinhetas · Pad 1") == true && mappings.transferRequest?.message.contains("Vinhetas · Preset 3") == true,
+                     "Block learn reports both pad and preset consumers, including an empty pad and effective Omni channel")
+        precondition(vinhetas.library == originalVinhetas && vinhetas.persistedLibrary == originalPersistedVinhetas)
+        mappings.cancelTransfer(); mappings.editing = nil
+        precondition(vinhetas.library == originalVinhetas && !mappings.mappings.contains { $0.globalSetlistBlockNumber == 10 },
+                     "Cancel must leave both Vinhetas and block bindings unchanged")
+        mappings.beginSetlistBlock(10); cc(110, 0); cc(110, 127); mappings.save(); mappings.confirmTransfer()
+        var expectedVinhetas = originalVinhetas; expectedVinhetas.padMappings[0] = nil; expectedVinhetas.presetMappings[2] = nil
+        precondition(vinhetas.library == expectedVinhetas && (try! JSONDecoder().decode(VinhetasLibrary.self, from: vinhetas.persistedLibrary!)) == expectedVinhetas,
+                     "Confirmed transfer removes and persists only matching pad/preset bindings, preserving other devices, pads and all preset content")
+        let beforeTransferredBlock = show.focusedBlocks.count
+        cc(110, 0); cc(110, 127)
+        precondition(show.focusedBlocks.count == beforeTransferredBlock + 1 && show.focusedBlocks.last == 10,
+                     "After transfer the receive path reaches the block instead of being swallowed by Vinhetas")
+        padInput.status = 0x90; padInput.number = 112
+        vinhetas.update { $0.midiChannel = 3; $0.padMappings[2] = padInput }
+        mappings.beginSetlistBlock(11)
+        mappings.receive(endpoint: 100, status: 0x90, number: 112, value: 100); mappings.save()
+        precondition(mappings.editing == nil && vinhetas.library.padMappings[2] == padInput,
+                     "A block on another effective channel does not remove a Vinhetas binding")
+        mappings.beginSetlistBlock(12)
+        mappings.receive(endpoint: 100, status: 0x92, number: 112, value: 100); mappings.save()
+        precondition(mappings.transferRequest?.message.contains("Vinhetas · Pad 3") == true,
+                     "Vinhetas' selected channel overrides the channel remembered by its learned note")
+        let oldRequest = mappings.transferRequest!
+        mappings.candidate?.number = 113; mappings.confirmTransfer(oldRequest)
+        precondition(vinhetas.library.padMappings[2] == padInput && !mappings.mappings.contains { $0.globalSetlistBlockNumber == 12 },
+                     "A stale confirmation cannot remove a Vinhetas binding after the candidate changes")
+        mappings.candidate = oldRequest.input; mappings.save(); mappings.confirmTransfer()
+        precondition(vinhetas.library.padMappings[2] == nil && mappings.mappings.contains { $0.globalSetlistBlockNumber == 11 })
+        mappings.receive(endpoint: 100, status: 0x82, number: 112, value: 0)
+        mappings.receive(endpoint: 100, status: 0x92, number: 112, value: 100)
+        precondition(show.focusedBlocks.last == 12, "A transferred note selects its block on a fresh press")
+        print("SETLIST_BLOCK_VINHETAS_CC_NOTE_OMNI_CHANNEL_CANCEL_TRANSFER_PERSISTENCE_AND_STALE_CONFIRMATION_OK")
 
     }
 }

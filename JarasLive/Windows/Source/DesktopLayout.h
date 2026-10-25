@@ -1,8 +1,8 @@
 #pragma once
 #include "Common.h"
 namespace catlive {
-// Rounded from the Mac SidebarWidthLimits.setlist (305.63671875 pt).
-inline constexpr int minimumSetlistWidth = 306;
+// Rounded from the Mac SidebarWidthLimits.setlist after its 30% reduction.
+inline constexpr int minimumSetlistWidth = 214;
 inline const Identifier editorWindowLayoutKey { "catlive.editorWindowLayout" };
 // A project/tab owns its content, not the shared desktop window's placement.
 inline void setInterfaceScalePreservingWindow(DocumentWindow *window, float scale) {

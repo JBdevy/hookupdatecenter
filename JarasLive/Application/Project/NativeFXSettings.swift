@@ -253,7 +253,7 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
 }
 
 extension NativeFXSettings {
-    public var effectKeys: [String] { inserted }
+    public var effectKeys: [String] { inserted.filter { kind(of: $0) != Self.stemSeparator } }
     public var allBypassed: Bool { !inserted.isEmpty && inserted.allSatisfy { !isEnabled($0) } }
     public mutating func setAllBypassed(_ bypassed: Bool) {
         for effect in inserted { setEnabled(effect, enabled: !bypassed) }
@@ -263,13 +263,13 @@ extension NativeFXSettings {
     /// persisted insertion order or enabling unsupported item reordering.
     public var clipEffectKeys: [String] {
         let originals = Self.order.dropFirst().filter { inserted.contains($0) }
-        return originals + inserted.filter { !originals.contains($0) }
+        return originals + effectKeys.filter { !originals.contains($0) }
     }
     public func kind(of key: String) -> String { instances?.first { $0.effectKey == key }?.kind ?? key }
     public func settings(for key: String) -> Self { instances?.first { $0.effectKey == key }?.settings ?? self }
     public var instrumentKeys: [String] { inserted.filter { kind(of: $0) == "Instruments" && settings(for: $0).instrumentID != nil } }
     @discardableResult public mutating func appendNative(_ kind: String, instrument: String? = nil, parameters: InstrumentParameters? = nil) -> String {
-        if kind == Self.stemSeparator, inserted.contains(kind) { return kind }
+        if kind == Self.stemSeparator { return kind } // Removed: separation is an offline item action.
         if !inserted.contains(kind) {
             // A new insertion owns fresh parameters, including legacy projects
             // that retained values after removing their original native stage.
@@ -299,7 +299,7 @@ extension NativeFXSettings {
     public func isEnabled(_ effect: String) -> Bool {
         if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }
         if let plugin = externalPlugins?.first(where: { $0.effectKey == effect }) { return !plugin.bypassed }
-        switch effect { case "CatLive Trigger": return triggerEnabled == true; case "Cat Gate": return gateEnabled == true; case Self.stemSeparator: return stemSeparatorEnabled == true && stemMix != nil; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
+        switch effect { case "CatLive Trigger": return triggerEnabled == true; case "Cat Gate": return gateEnabled == true; case Self.stemSeparator: return false; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
     }
     public mutating func setEnabled(_ effect: String, enabled: Bool) {
         if let index = instances?.firstIndex(where: { $0.effectKey == effect }), let kind = instances?[index].kind { instances?[index].settings.setEnabled(kind, enabled: enabled); return }

@@ -37,7 +37,6 @@ struct FXInsertEditor: View {
     #endif
     private var availableEffects: [String] {
         var result = NativeFXSettings.order.filter { $0 != "Instruments" || (clip == nil && track != nil && targets.count == 1) }
-        if targets.count == 1 { result.append(NativeFXSettings.stemSeparator) }
         #if os(macOS)
         result.insert("External", at: 0)
         #endif

@@ -29,7 +29,7 @@ from pathlib import Path
 import sys
 source = Path('Apple/Shared/CatStemSeparation.swift').read_text()
 source = source[:source.index('@MainActor final class CatStemSession')].replace('private enum CatStemRenderer', 'enum CatStemRenderer')
-Path(sys.argv[1], 'separator.swift').write_text(source + '\n#endif\n')
+Path(sys.argv[1], 'separator.swift').write_text(source + '\n')
 PYSEP
  swift_options+=(-parse-as-library)
  extra_sources=(Application/Project/StemSeparation.swift "$build_dir/separator.swift")

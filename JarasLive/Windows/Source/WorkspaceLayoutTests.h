@@ -2,6 +2,7 @@
 #include "Workspace.h"
 #include "FloatingControlTests.h"
 #include "ProjectDeletionPanel.h"
+#include "SetlistRows.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
     static void trackIconWidth(const File &directory) {
@@ -176,14 +177,170 @@ struct WorkspaceLayoutTests {
         using floatingControlTests::require;
         auto project=floatingControlTests::fixture();auto &tracks=project.songs.front().tracks;
         while(tracks.size()<30){auto track=tracks.front();track.id=uuid();track.name="Track "+std::to_string(tracks.size());tracks.push_back(track);}
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Retained grid selection";clip.duration=3;
+        tracks.front().clips.push_back(clip);
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
         Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("track-tail",".json"));w.setSize(1366,900);w.projectOpened(false);
         require(w.tracksContent.getHeight()-w.rowTop((int)tracks.size())==w.trackHeight*2,"Empty track tail differs from Mac's two rows");
+        w.selectMixerTrack(tracks[0].id,ModifierKeys{});
+        w.selectMixerTrack(tracks[1].id,ModifierKeys(ModifierKeys::ctrlModifier));
+        const auto event=[&](Component &target,Point<float> at,int flags=ModifierKeys::leftButtonModifier){
+            return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(flags),1,0,0,0,0,
+                              &target,&target,Time::getCurrentTime(),at,Time::getCurrentTime(),1,false);
+        };
+        const auto selected=w.selectedTracks;
+        const Point<float> blank{20.0f,(float)w.rowTop((int)tracks.size())+10.0f};
+        w.mouseDown(event(w.tracksContent,blank,ModifierKeys::rightButtonModifier));
+        require(w.selectedTracks==selected,"Context click cleared track selection");
+        w.mouseDown(event(w.tracksContent,{20,10}));
+        require(w.selectedTracks==selected,"Blank-tail handler consumed a track row click");
+        w.mouseDown(event(w.addTrack,{5,5}));
+        require(w.selectedTracks==selected,"A mixer control cleared the selected tracks");
+        w.selectedClip=clip.id;w.selectedClips={w.selectedClip};
+        w.mouseDown(event(w.tracksContent,blank));
+        require(w.selectedTracks.empty()&&w.selectedTrack.empty()&&w.trackSelectionAnchor.empty(),
+                "Clicking empty mixer space did not clear tracks and the Shift-selection anchor");
+        require(w.selectionAreas.activeScope()=="tracks"&&w.selectedClip==clip.id,
+                "Empty mixer click changed another panel's selection or lost Delete ownership");
+        const auto count=session.song()->tracks.size();
+        w.keyPressed(KeyPress(KeyPress::deleteKey));
+        require(session.song()->tracks.size()==count,"Delete after deselection removed a stale track");
+        require(session.song()->tracks.front().clips.size()==1,"Delete after a blank mixer click leaked into the grid selection");
         const int offset=w.tracksContent.getHeight()-w.tracksViewport.getViewHeight();
         w.verticalOffset=offset;w.tracksViewport.setViewPosition(0,offset);
         w.addStandardTrackAtEnd();w.rebuild();
         require(session.song()->tracks.size()==31,"Double-click track command did not append a track");
         require(w.verticalOffset==offset&&w.tracksViewport.getViewPositionY()==offset,"Appending a track jumped to the top");
+    }
+    static void setlistBlockDeletion(const File &directory) {
+        using floatingControlTests::require;
+        auto project = floatingControlTests::fixture();
+        auto &song = project.songs.front();
+        jaras::AudioClip clip; clip.id = uuid(); clip.name = "Retained item"; clip.duration = 5;
+        song.tracks.front().clips = {clip};
+        song.markers = std::vector<jaras::TimelineMarker>{{uuid(), "Verse", 2, 0x54ff93}};
+        jaras::RegionSetlist state; const ID playlist = uuid(), other = uuid(), block = uuid(), otherBlock = uuid();
+        state.selectedId = playlist;
+        state.playlists = {{playlist, "Show", song.id, {song.parts[0].id, song.parts[1].id}},
+                           {other, "Other", song.id, {song.parts[1].id}}};
+        state.blocks = std::vector<jaras::SetlistBlock>{{block, song.id, playlist, "Opening", 0x54ff93, song.parts[0].id},
+                                                       {otherBlock, song.id, other, "Other", 0x54ff93, song.parts[1].id}};
+        project.regionSetlist = state;
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session);
+        Workspace w(session, auth, lighting, false, directory.getNonexistentChildFile("setlist-block-delete", ".json"));
+        w.setSize(1366, 900); w.projectOpened(false);
+        auto *panel = uiFeatureTests::find(w, "setlistPanel"); require(panel, "Setlist panel is missing");
+        auto *rows = dynamic_cast<SetlistRows *>(uiFeatureTests::find(w, "setlistRows"));
+        require(rows && rows->getModel() && rows->getModel()->getNumRows() == 3, "Playlist fixture must contain a block and two songs");
+        rows->selectRow(0);
+        const auto payload = rows->getModel()->getDragSourceDescription(rows->getSelectedRows());
+        require(list(get(payload, "ids")).size() == 1 && list(get(payload, "ids"))[0].toString() == text(block),
+                "Block row is excluded from its drag payload");
+        require(rows->createDragPreview().getImage().getHeight() == 28, "Block drag has no correctly sized preview");
+        auto *target = dynamic_cast<DragAndDropTarget *>(panel); require(target, "Setlist drop target is missing");
+        const auto priorDrag = JSON::toString(session.snapshot());
+        const auto end = panel->getLocalPoint(rows, Point<int>(20, rows->rowTop(3) + 6));
+        DragAndDropTarget::SourceDetails drop(payload, rows, end);
+        require(target->isInterestedInDragSource(drop), "Setlist rejects dragging its own block");
+        target->itemDropped(drop);
+        require(!session.project().regionSetlist->blocks->front().beforeRegionId &&
+                session.project().regionSetlist->playlists.front().regionIds == state.playlists.front().regionIds,
+                "Dropping a block at the end moved its songs or failed to move the block");
+        session.undo(); w.rebuild();
+        require(JSON::toString(session.snapshot()) == priorDrag, "Undo did not restore block drag order");
+        w.selectMixerTrack(song.tracks[0].id, ModifierKeys{});
+        w.selectedClip = clip.id; w.selectedClips = {clip.id};
+        rows->selectRow(0); w.selectionAreas.activate(*panel);
+        const auto before = JSON::toString(session.snapshot());
+        const auto songsBefore = JSON::toString(get(session.snapshot(), "songs"));
+        const auto request = [&] {
+            w.keyPressed(KeyPress(KeyPress::deleteKey)); floatingControlTests::pump();
+            auto *alert = dynamic_cast<AlertWindow *>(Component::getCurrentlyModalComponent());
+            require(alert && alert->getName() == localization::translate("Delete selected blocks?"),
+                    "Delete did not target the selected block or showed the region deletion warning");
+            return alert;
+        };
+        request()->exitModalState(0); floatingControlTests::pump();
+        require(JSON::toString(session.snapshot()) == before && rows->getSelectedRows().contains(0), "Cancel removed the block or cleared its selection");
+        request()->exitModalState(1); floatingControlTests::pump();
+        require(session.project().regionSetlist->blocks->size() == 1 &&
+                session.project().regionSetlist->blocks->front().id == otherBlock, "Delete did not remove only the selected block");
+        require(JSON::toString(get(session.snapshot(), "songs")) == songsBefore &&
+                session.project().regionSetlist->playlists.front().regionIds == state.playlists.front().regionIds,
+                "Deleting a block removed songs, audio, markers or a stale track/grid selection");
+        w.keyPressed(KeyPress(KeyPress::spaceKey));
+        require(session.transport().playing, "A deleted block left Play blocked");
+        session.command(jaras::CommandKind::stopAll);
+        session.undo(); w.rebuild();
+        require(JSON::toString(session.snapshot()) == before, "One Undo did not restore the complete block metadata");
+        rows->selectRow(0); w.selectionAreas.activate(*panel);
+        auto *pending = request();
+        auto changed = *session.project().regionSetlist; changed.selectedId = other;
+        session.configureSetlist(changed); pending->exitModalState(1); floatingControlTests::pump();
+        require(session.project().regionSetlist->blocks->size() == 2, "A stale confirmation deleted a block after switching playlists");
+    }
+    static void setlistBlockMIDI(const File &directory) {
+        using floatingControlTests::require;
+        auto project = floatingControlTests::fixture();
+        const auto song = project.songs.front();
+        const ID a = song.parts[0].id, b = song.parts[1].id, playlist = uuid(), other = uuid();
+        const ID first = uuid(), second = uuid(), consecutive = uuid(), tail = uuid();
+        jaras::RegionSetlist state; state.selectedId = playlist;
+        state.playlists = {{playlist,"First playlist",song.id,{a,b}}, {other,"Second playlist",song.id,{b,a}}};
+        // Persisted metadata order and names intentionally disagree with the visible block order.
+        state.blocks = std::vector<jaras::SetlistBlock>{{second,song.id,playlist,"Bloco 01",0x54ff93,b},
+            {first,song.id,playlist,"Renamed 99",0x54ff93,a},
+            {consecutive,song.id,playlist,"Empty consecutive block",0x54ff93,a},
+            {tail,song.id,playlist,"Tail",0x54ff93,std::nullopt},
+            {uuid(),song.id,other,"Different project-style name",0x54ff93,b}};
+        project.regionSetlist = state;
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session);
+        Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("setlist-block-midi-workspace",".json"));
+        w.setSize(1366,900); w.projectOpened(false);
+        auto midi = object(); put(midi,"status",0xb0);put(midi,"number",48);put(midi,"channel",4);
+        require(w.actions.assign("setlistBlock:1","midi",midi),"Could not map the first block");
+        auto trigger = [&] {
+            ActionBindingsTestAccess::receive(w.actions,MidiMessage::controllerEvent(4,48,0));
+            ActionBindingsTestAccess::receive(w.actions,MidiMessage::controllerEvent(4,48,127));
+        };
+        session.command(jaras::CommandKind::selectRegion,b);
+        const auto songData = JSON::toString(get(session.snapshot(),"songs"));
+        trigger();
+        require(session.transport().regionId == a && !session.transport().playing && session.transport().editPosition == 0,
+                "Block MIDI used its name/metadata index instead of the visible ordinal, or started playback");
+        require(w.selectionAreas.activeScope() == "setlist", "Block MIDI did not select the same area as a song click");
+        w.performAction("setlistBlock:3",1,0);
+        require(session.transport().regionId == b && !session.transport().playing,"Third block did not select its first song");
+        w.performAction("setlistBlock:1",1,0);
+        require(session.transport().regionId == a,"Consecutive empty block prevented selecting the first song below");
+        w.performAction("setlistBlock:4",1,0); w.performAction("setlistBlock:1000",1,0);
+        require(session.transport().regionId == a && !session.transport().playing,"Trailing or missing block changed the selection");
+        session.command(jaras::CommandKind::play);
+        w.performAction("setlistBlock:3",1,0);
+        require(session.transport().playing && session.transport().regionId == a && session.transport().queuedRegionId == b,
+                "During playback block MIDI did not use the normal song queue");
+        session.command(jaras::CommandKind::stopAll);
+        auto changed = *session.project().regionSetlist; changed.selectedId = other;
+        session.configureSetlist(changed); w.rebuild(); trigger();
+        require(session.transport().regionId == b && !session.transport().playing,"Global mapping kept a block UUID from the previous playlist");
+        changed = *session.project().regionSetlist; changed.selectedId = playlist;
+        require(playlistOccurrences::moveEntries(changed,song.id,playlist,{first,consecutive},std::nullopt),"Could not reorder block test fixture");
+        session.configureSetlist(changed); w.rebuild(); trigger();
+        require(session.transport().regionId == b && !session.transport().playing,"MIDI ordinal did not follow reordered blocks");
+        require(JSON::toString(get(session.snapshot(),"songs")) == songData,"Learning or triggering a block modified project media");
+        auto otherProject = floatingControlTests::fixture();
+        const auto otherSong = otherProject.songs.front(); const ID otherPlaylist = uuid();
+        jaras::RegionSetlist fresh; fresh.selectedId = otherPlaylist;
+        fresh.playlists = {{otherPlaylist,"Another project",otherSong.id,{otherSong.parts[0].id,otherSong.parts[1].id}}};
+        fresh.blocks = std::vector<jaras::SetlistBlock>{{uuid(),otherSong.id,otherPlaylist,"Fresh block",0x54ff93,otherSong.parts[1].id}};
+        otherProject.regionSetlist = fresh;
+        session.restoreSnapshot(ProjectCodec::encode(otherProject)); w.projectOpened(false); trigger();
+        require(session.transport().regionId == otherSong.parts[1].id && !session.transport().playing,
+                "Global block mapping did not resolve the current project's first block");
     }
     static void textEditor(const File &directory) {
         using floatingControlTests::require;
@@ -276,6 +433,8 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Item context unifies the full selection per track with audio, MIDI, result selection and Undo; LR swap preserves unselected items",[&]{WorkspaceLayoutTests::unifyItems(directory);});
     test("Generated MIDI and text items advance edit cursor without seeking playback",[&]{WorkspaceLayoutTests::generatedItems(directory);});
     test("Empty track tail matches Mac and appending preserves vertical scroll",[&]{WorkspaceLayoutTests::trackTail(directory);});
+    test("Setlist block Delete and drag follow last area, keep songs and media, support cancel and Undo, and reject stale confirmations",[&]{WorkspaceLayoutTests::setlistBlockDeletion(directory);});
+    test("Setlist block MIDI follows the current playlist ordinal and normal song selection or queue",[&]{WorkspaceLayoutTests::setlistBlockMIDI(directory);});
     test("Lyrics and chord editors retain visible projections, drafts and undo",[&]{WorkspaceLayoutTests::textEditor(directory);});
     test("Panel layout survives new workspaces and tab switches without changing projects; navigation and Video toggle stay independent",[&]{WorkspaceLayoutTests::run(directory);});
 }

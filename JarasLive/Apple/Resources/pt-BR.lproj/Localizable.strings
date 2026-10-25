@@ -1838,3 +1838,13 @@
 "Next section" = "Próximo trecho";
 
 "Armed section" = "Trecho engatilhado";
+
+"Delete block" = "Apagar bloco";
+
+"Delete blocks" = "Apagar blocos";
+
+"Delete selected blocks?" = "Apagar os blocos selecionados?";
+
+"Only the selected block headers will be removed. Songs and timeline items will be kept." = "Somente os itens de bloco selecionados serão removidos do setlist.";
+
+"Block ID %02d" = "Bloco ID %02d";

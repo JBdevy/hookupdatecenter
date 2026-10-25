@@ -33,6 +33,11 @@ def main():
         raise RuntimeError('Build this runtime on an Apple Silicon or Intel Mac.')
     lock = ROOT / 'scripts/catstem-requirements.lock'
     manifest = dict(version=2, architectures=["arm64", "x86_64"], requirements=hashlib.sha256(lock.read_bytes()).hexdigest(), model=MODEL_HASH)
+    # The item action uses CPU/MPS Demucs; discard a cached, unused MLX plugin
+    # helper so packages no longer contain its macOS 14-only binaries.
+    for obsolete in ('realtime-arm64', 'realtime-arm64.previous'):
+        if (TARGET / obsolete).is_dir():
+            shutil.rmtree(TARGET / obsolete)
     marker = TARGET / 'runtime.json'
     if marker.exists() and json.loads(marker.read_text()) == manifest:
         print('CatStem runtime already prepared:', TARGET)

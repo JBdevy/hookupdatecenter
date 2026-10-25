@@ -13,6 +13,7 @@ import XCTest
     var regionSelections: [UUID] = []
     var regionCommands: [ShowCommand] = []
     var playing = false
+    var playCommands = 0
     var tempoBatches = 0
     var advancedTime = 0.0
     var timeAtTempoEdit = 0.0
@@ -26,6 +27,7 @@ import XCTest
     }
     func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: TransportState(playing: playing, songId: project.songs.first?.id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))) }
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
+        if command == .play { playCommands += 1 }
         if command == .selectRegion || command == .queueRegion, let target { regionSelections.append(target); regionCommands.append(command) }
         if [.clipGain, .clipNormalization, .clipFadeIn, .clipFadeOut].contains(command), let target {
             if failsGain { throw ProjectError.invalid("Gain command rejected") }
@@ -876,6 +878,37 @@ final class ProjectSaveTests: XCTestCase {
         show.undo(); XCTAssertEqual(show.snapshot.project, before)
     }
 
+    @MainActor func testDeletingOnlySetlistBlocksKeepsSongsMediaAndOtherPlaylists() throws {
+        var project = Project.empty(name: "Block headers")
+        let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 12)
+        project.songs[0].parts = [region]; project.songs[0].duration = 20
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        track.clips = [AudioClip(id: UUID(), name: "Song.wav", startTime: 0, duration: 12,
+                                audioFile: AudioFile(path: "Stems/Song.wav"))]
+        project.songs[0].tracks = [track]
+        project.songs[0].markers = [TimelineMarker(id: UUID(), name: "Verse", position: 4, color: 0x00ff00)]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        XCTAssertTrue(show.createRegionPlaylist(name: "Other", selected: [region.id]))
+        let otherBlock = try XCTUnwrap(show.addSetlistBlock())
+        XCTAssertTrue(show.createRegionPlaylist(name: "Current", selected: [region.id]))
+        let first = try XCTUnwrap(show.addSetlistBlock()), second = try XCTUnwrap(show.addSetlistBlock())
+        let before = show.snapshot.project
+        let edits = executor.projectEditCount
+        var audioRefreshes = 0
+        show.audioUpdate = { _, _ in audioRefreshes += 1 }
+        show.selectSetlistBlock(first)
+        XCTAssertTrue(show.deleteSetlistEntries([first, second, otherBlock]))
+        XCTAssertEqual(show.snapshot.project.songs, before.songs, "headers must not remove audio, regions or markers")
+        XCTAssertEqual(show.regionSetlist.playlists, before.regionSetlist?.playlists)
+        XCTAssertEqual(show.regionSetlist.blocks?.map(\.id), [otherBlock], "a foreign playlist's header must be protected")
+        XCTAssertEqual(executor.projectEditCount, edits)
+        XCTAssertEqual(audioRefreshes, 0, "deleting a header must not interrupt the audio engine")
+        show.send(.play)
+        XCTAssertEqual(executor.playCommands, 1, "a deleted header must not leave a stale selection that blocks Play")
+        show.undo(); XCTAssertEqual(show.snapshot.project, before)
+    }
+
     @MainActor func testBlocksPersistWithoutBecomingSongs() throws {
         var project = Project.empty(name: "Blocks")
         let regions = (0..<3).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0*10), endTime: Double($0*10+5)) }
@@ -1091,6 +1124,114 @@ final class ProjectSaveTests: XCTestCase {
         show.moveSetlistEntries([block, regions[0].id], relativeTo: block, after: true)
         XCTAssertEqual(show.snapshot.project, before)
         try show.snapshot.project.validate()
+    }
+    @MainActor func testBlockItemDragReordersOnlySelectedRowsAcrossSongsAndBlocks() throws {
+        var project = Project.empty(name: "Block item drag")
+        let regions = (0..<3).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0 * 10), endTime: Double($0 * 10 + 5)) }
+        project.songs[0].parts = regions; project.songs[0].duration = 30
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        XCTAssertTrue(show.createRegionPlaylist(name: "Other", selected: regions.map(\.id)))
+        let otherBlock = try XCTUnwrap(show.addSetlistBlock())
+        let otherList = try XCTUnwrap(show.selectedRegionPlaylist)
+        XCTAssertTrue(show.createRegionPlaylist(name: "Current", selected: regions.map(\.id)))
+        let first = try XCTUnwrap(show.addSetlistBlock()), second = try XCTUnwrap(show.addSetlistBlock())
+        let songOrder = regions.map(\.id)
+        var audioRefreshes = 0
+        show.audioUpdate = { _, _ in audioRefreshes += 1 }
+        let edits = executor.projectEditCount
+        XCTAssertEqual(show.setlistEntries.map(\.id), [second, first] + songOrder)
+
+        show.moveSetlistEntries([second], relativeTo: regions[1].id, after: true)
+        XCTAssertEqual(show.setlistEntries.map(\.id), [first, regions[0].id, regions[1].id, second, regions[2].id])
+        show.moveSetlistEntries([second], relativeTo: first, after: true)
+        XCTAssertEqual(show.setlistEntries.map(\.id), [first, second] + songOrder)
+        show.moveSetlistEntries([first], relativeTo: second, after: true)
+        XCTAssertEqual(show.setlistEntries.map(\.id), [second, first] + songOrder, "two blocks sharing one song anchor retain drop order")
+        let beforeTail = show.snapshot.project
+        show.moveSetlistEntries([first], relativeTo: regions[2].id, after: true)
+        XCTAssertEqual(show.setlistEntries.map(\.id), [second] + songOrder + [first])
+        XCTAssertNil(show.listedBlocks.first(where: { $0.id == first })?.beforeRegionId)
+        XCTAssertEqual(executor.projectEditCount, edits)
+        XCTAssertEqual(audioRefreshes, 0, "moving block items is a setlist-only update")
+        show.undo()
+        XCTAssertEqual(show.snapshot.project, beforeTail)
+        let editsAfterUndo = executor.projectEditCount, audioAfterUndo = audioRefreshes
+        show.moveSetlistEntries([first], relativeTo: second, after: false)
+        XCTAssertEqual(show.setlistEntries.map(\.id), [first, second] + songOrder)
+
+        XCTAssertEqual(show.listedRegions.map(\.id), songOrder)
+        XCTAssertEqual(show.snapshot.project.songs, project.songs)
+        XCTAssertEqual(show.regionSetlist.playlists.first(where: { $0.id == otherList.id }), otherList)
+        XCTAssertTrue(show.regionSetlist.blocks?.contains(where: { $0.id == otherBlock && $0.beforeRegionId == regions[0].id }) == true)
+        XCTAssertEqual(executor.projectEditCount, editsAfterUndo)
+        XCTAssertEqual(audioRefreshes, audioAfterUndo)
+        try show.snapshot.project.validate()
+    }
+    @MainActor func testPositionalBlockMIDIIDsFollowVisibleOrderAndIgnoreNames() throws {
+        var project = Project.empty(name: "Block MIDI position")
+        let regions = (0..<4).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0 * 10), endTime: Double($0 * 10 + 5)) }
+        project.songs[0].parts = regions; project.songs[0].duration = 40
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        XCTAssertTrue(show.createRegionPlaylist(name: "Show", selected: regions.map(\.id)))
+        let first = try XCTUnwrap(show.addSetlistBlock()), second = try XCTUnwrap(show.addSetlistBlock())
+        show.moveSetlistEntries([first], relativeTo: regions[1].id, after: false)
+        show.moveSetlistEntries([second], relativeTo: regions[3].id, after: false)
+        XCTAssertEqual(show.setlistBlockNumber(first), 1)
+        XCTAssertEqual(show.setlistBlockNumber(second), 2)
+        XCTAssertNil(show.setlistBlockNumber(regions[0].id))
+        XCTAssertTrue(show.focusSetlistBlock(number: 1))
+        XCTAssertEqual(show.focusedRegion, regions[1].id)
+        XCTAssertEqual(executor.regionSelections.last, regions[1].id)
+        XCTAssertEqual(executor.regionCommands.last, .selectRegion)
+        XCTAssertTrue(show.focusSetlistBlock(number: 2))
+        XCTAssertEqual(show.focusedRegion, regions[3].id)
+        XCTAssertEqual(executor.playCommands, 0)
+
+        show.editSetlistBlock(first, name: "Renamed block", color: 0x123456)
+        XCTAssertEqual(show.setlistBlockNumber(first), 1)
+        show.moveSetlistEntries([second], relativeTo: regions[0].id, after: false)
+        XCTAssertEqual(show.setlistBlockNumber(second), 1)
+        XCTAssertEqual(show.setlistBlockNumber(first), 2)
+        XCTAssertTrue(show.focusSetlistBlock(number: 1))
+        XCTAssertEqual(show.focusedRegion, regions[0].id, "global block ID 1 follows the first visible block after reordering")
+        show.moveSetlistEntries([first], relativeTo: regions[3].id, after: true)
+        let commands = executor.regionSelections.count
+        for missing in [0, -1, 2, 3, Int.max] { XCTAssertFalse(show.focusSetlistBlock(number: missing)) }
+        XCTAssertEqual(executor.regionSelections.count, commands, "a missing or trailing empty block cannot select an unrelated song")
+        XCTAssertEqual(executor.playCommands, 0)
+    }
+    @MainActor func testPositionalBlockMIDIResolvesEachPlaylistAndProjectAndNormalQueueBehavior() throws {
+        for projectNumber in 0..<2 {
+            var project = Project.empty(name: "MIDI project \(projectNumber)")
+            let regions = (0..<3).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0 * 10), endTime: Double($0 * 10 + 5)) }
+            project.songs[0].parts = regions; project.songs[0].duration = 30
+            let executor = SaveTestExecutor()
+            let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+            XCTAssertTrue(show.createRegionPlaylist(name: "First list", selected: regions.map(\.id)))
+            let firstList = try XCTUnwrap(show.selectedRegionPlaylist).id
+            let firstBlock = try XCTUnwrap(show.addSetlistBlock())
+            show.moveSetlistEntries([firstBlock], relativeTo: regions[1].id, after: false)
+            XCTAssertTrue(show.createRegionPlaylist(name: "Second list", selected: regions.reversed().map(\.id)))
+            let secondBlock = try XCTUnwrap(show.addSetlistBlock())
+            XCTAssertNotEqual(firstBlock, secondBlock)
+            XCTAssertNil(show.setlistBlockNumber(firstBlock))
+            XCTAssertEqual(show.setlistBlockNumber(secondBlock), 1)
+            XCTAssertTrue(show.focusSetlistBlock(number: 1))
+            XCTAssertEqual(show.focusedRegion, regions[2].id)
+            show.selectRegionPlaylist(firstList)
+            XCTAssertTrue(show.focusSetlistBlock(number: 1))
+            XCTAssertEqual(show.focusedRegion, regions[1].id)
+            let runningExecutor = SaveTestExecutor(); runningExecutor.playing = true
+            let runningShow = try ShowController(executor: runningExecutor, persistence: SaveTestStore(), initialProject: show.snapshot.project)
+            XCTAssertTrue(runningShow.focusSetlistBlock(number: 1))
+            XCTAssertEqual(runningExecutor.regionCommands.last, .queueRegion)
+            XCTAssertEqual(runningExecutor.regionSelections.last, regions[1].id)
+            XCTAssertEqual(runningExecutor.playCommands, 0)
+            runningExecutor.playing = false; runningShow.send(.stopAll)
+            XCTAssertEqual(executor.playCommands, 0, "the block MIDI action selects/queues but does not start playback")
+        }
     }
     @MainActor func testSetlistChangeDuringSaveRemainsPending() async throws {
         var project = Project.empty(name: "Save block")

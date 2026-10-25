@@ -150,39 +150,9 @@ final class NativeEffectsChain {
         return stemSeparatorNode.map { JarasStemSeparator.status($0) }
     }
     private func configureStemSeparator(_ next: NativeFXSettings) {
-        let inserted = next.inserted.contains(NativeFXSettings.stemSeparator)
-        // Preserve the original audio of old offline-only projects. Their
-        // editor becomes realtime when the user explicitly enables it.
-        guard inserted, next.stemMix != nil else { return }
-        if stemSeparatorNode == nil {
-            let node = JarasStemSeparator.makeNode()
-            stemSeparatorNode = node; engine?.attach(node)
-            JarasStemSeparator.setOfflineRendering(node, enabled: engine?.isInManualRenderingMode == true && engine?.manualRenderingMode == .offline)
-        }
-        guard let node = stemSeparatorNode else { return }
-        if next.isEnabled(NativeFXSettings.stemSeparator), settings?.isEnabled(NativeFXSettings.stemSeparator) != true,
-           JarasStemSeparator.status(node)["state"] as? String == "fault" {
-            stemSeparatorStarted = false
-        }
-        if next.isEnabled(NativeFXSettings.stemSeparator), !stemSeparatorStarted {
-            do {
-                #if os(macOS)
-                let paths = try CatStemRealtimeRuntime.paths()
-                try JarasStemSeparator.start(node, executable: paths.executable, worker: paths.worker, modelCache: paths.models)
-                #else
-                try JarasStemSeparator.start(node, coreMLModel: CatStemRealtimeRuntime.modelURL())
-                #endif
-                stemSeparatorStarted = true; stemSeparatorError = nil
-            } catch { stemSeparatorError = error.localizedDescription }
-        }
-        let sources = next.stemParameters.sources
-        var muted: UInt = 0, soloed: UInt = 0
-        for (index, source) in sources.enumerated() {
-            if source.mute { muted |= 1 << index }
-            if source.solo { soloed |= 1 << index }
-        }
-        JarasStemSeparator.configure(node, enabled: next.isEnabled(NativeFXSettings.stemSeparator),
-            gains: sources.map { NSNumber(value: $0.gain) }, muteMask: muted, soloMask: soloed)
+        // Legacy projects keep their serialized settings, but separation now
+        // generates files from the item menu and never runs in the FX graph.
+        stopStemSeparator()
     }
     /// Only offline export may wait for model warmup. UI/audio control paths
     /// start asynchronously and expose progress through stemSeparatorStatus.
@@ -399,7 +369,7 @@ final class NativeEffectsChain {
             case "Delay": return delay
             case "Reverb": return reverb
             case NativeFXSettings.stemSeparator:
-                return next.inserted.contains(NativeFXSettings.stemSeparator) && next.stemMix != nil ? stemSeparatorNode : nil
+                return nil
             default:
                 #if os(macOS)
                 return next.externalPlugins?.first(where: { $0.effectKey == key }).flatMap { externalNodes[$0.id] }

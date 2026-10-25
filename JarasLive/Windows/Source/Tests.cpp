@@ -1,4 +1,5 @@
 #include "ProjectionSelection.h"
+#include "AudioSeparationTests.h"
 #include "MediaSource.h"
 #include "MarkerRegionConversion.h"
 #include "Workspace.h"
@@ -304,6 +305,7 @@ int runTests(const File &directory) {
     recordingCaptureTests::registerTests(directory, test);
     vinhetasTests::run(directory,test);
     projectReductionTests::run(directory,test,projectFixture);
+    audioSeparationTests::run(test,projectFixture);
     test("Armed input meters work before REC with monitoring off and no master leakage", [&] {
         jaras::Song song; song.id = uuid(); song.duration = 60; song.bpm = 120;
         jaras::Track track; track.id = uuid(); track.role.id = "other"; track.name = "Input 3/4";

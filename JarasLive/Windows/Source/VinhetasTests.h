@@ -2,8 +2,37 @@
 #include "VinhetasAudio.h"
 #include "RecordingCaptureTests.h"
 #include "VinhetasPanel.h"
+#include "ActionBindings.h"
 namespace catlive {
 struct VinhetasPanelProbe {
+    static void blockMIDI(const File &directory) {
+        using recordingCaptureTests::require;
+        const ScopedValueSetter<var> restore(VinhetasPanel::globalState,var{});
+        Appearance preferences(directory.getNonexistentChildFile("block-pads-midi",".json"));
+        VinhetasAudio audio; AudioDeviceManager devices; VinhetasPanel panel(audio,preferences);
+        ActionBindings bindings(preferences,devices);
+        bindings.externalMIDIConflict=[&](const var &input){return panel.setlistBlockMIDIConflict(input);};
+        bindings.transferExternalMIDI=[&](const var &input){return panel.removeSetlistBlockMIDIConflicts(input);};
+        panel.learning=0;panel.learningPreset=false;panel.midi(0xb0,20,127,1);
+        panel.learning=3;panel.learningPreset=true;panel.midi(0xb0,20,127,1);
+        panel.learning=1;panel.learningPreset=false;panel.midi(0xb0,21,127,1);
+        auto input=object();put(input,"status",0xb0);put(input,"number",20);put(input,"channel",7);
+        const auto original=JSON::toString(preferences.value("jaras.vinhetas"));
+        require(panel.setlistBlockMIDIConflict(input).contains("Pad 1") && panel.setlistBlockMIDIConflict(input).contains("Preset 4"),
+                "Omni Vinhetas did not report both pad and preset conflicts across learned channels");
+        require(!bindings.assign("setlistBlock:1","midi",input) && !bindings.midiInput("setlistBlock:1").isObject() &&
+                JSON::toString(preferences.value("jaras.vinhetas"))==original,"Rejected transfer changed the block or Vinhetas mapping");
+        panel.channel=3;panel.save();
+        require(panel.setlistBlockMIDIConflict(input).isEmpty(),"Vinhetas claimed a MIDI channel it does not receive");
+        put(input,"channel",3);
+        require(!bindings.assign("setlistBlock:1","midi",input),"Vinhetas global channel was ignored when detecting conflicts");
+        const auto presetsBefore=JSON::toString(get(preferences.value("jaras.vinhetas"),"presets"));
+        require(bindings.assign("setlistBlock:1","midi",input,true),"Confirmed Vinhetas-to-block transfer failed");
+        require(panel.setlistBlockMIDIConflict(input).isEmpty() && !panel.padMappings[0].isObject() &&
+                !panel.presetMappings[3].isObject() && panel.padMappings[1].isObject(),"Transfer removed the wrong Vinhetas bindings");
+        require(JSON::toString(get(preferences.value("jaras.vinhetas"),"presets"))==presetsBefore &&
+                !panel.midi(0xb0,20,127,3) && panel.midi(0xb0,21,127,3),"Transfer changed pad content or left the block MIDI intercepted");
+    }
     static void run(const File &directory) {
         const ScopedValueSetter<var> restore(VinhetasPanel::globalState,var{});
         Appearance preferences(directory.getNonexistentChildFile("pads-midi",".json"));
@@ -56,6 +85,7 @@ struct VinhetasPanelProbe {
 }
 namespace catlive::vinhetasTests {
 template<class Test> void run(const File &directory, Test &&test) {
+    test("Setlist block MIDI explicitly transfers conflicting Vinhetas pad and preset mappings",[&]{VinhetasPanelProbe::blockMIDI(directory);});
     test("Vinhetas has sixteen shared MIDI mappings, preset learn and note release after preset change",[&]{VinhetasPanelProbe::run(directory);});
     test("Vinhetas reaches its FX track with stopped transport and obeys fader and mute",[&] {
         jaras::Project project;jaras::Song song;song.id=uuid();song.duration=60;song.bpm=120;

@@ -9,11 +9,15 @@
     std::atomic<bool> _enabled;
     std::atomic<uint64_t> _sequence, _host;
     std::atomic<int64_t> _sample;
+    std::atomic<uint64_t> _callbackCount, _failureCount, _lastCallbackHostTime;
+    std::atomic<int32_t> _lastRenderStatus, _lastRenderError;
     double _rate, _ticksPerSecond;
 }
 - (instancetype)initWithEngine:(AVAudioEngine *)engine {
     if ((self = [super init])) {
         _engine = engine;
+        _callbackCount.store(0); _failureCount.store(0); _lastCallbackHostTime.store(0);
+        _lastRenderStatus.store(-999); _lastRenderError.store(noErr);
         mach_timebase_info_data_t base; mach_timebase_info(&base);
         _ticksPerSecond = 1e9 * base.denom / base.numer;
     }
@@ -30,6 +34,29 @@
             return [[AVAudioTime alloc] initWithHostTime:host sampleTime:sample atRate:_rate];
     }
     return nil;
+}
+- (NSDictionary<NSString *, id> *)diagnostics {
+    // Only atomics are written by renderFrames. Querying the hardware and
+    // allocating this dictionary happens exclusively on the control thread.
+    UInt32 running = 0, bytes = sizeof(running);
+    const OSStatus runningStatus = _unit
+        ? AudioUnitGetProperty(_unit, kAudioOutputUnitProperty_IsRunning,
+                               kAudioUnitScope_Global, 0, &running, &bytes)
+        : kAudio_ParamError;
+    return @{
+        @"callbackCount": @(_callbackCount.load(std::memory_order_relaxed)),
+        @"failureCount": @(_failureCount.load(std::memory_order_relaxed)),
+        @"lastStatus": @(_lastRenderStatus.load(std::memory_order_relaxed)),
+        @"lastError": @(_lastRenderError.load(std::memory_order_relaxed)),
+        @"lastCallbackHostTime": @(_lastCallbackHostTime.load(std::memory_order_relaxed)),
+        @"gated": @(!_enabled.load(std::memory_order_acquire)),
+        @"engineRunning": @(_engine.isRunning),
+        @"manualRendering": @(_engine.isInManualRenderingMode),
+        @"manualSampleTime": @(_engine.isInManualRenderingMode ? _engine.manualRenderingSampleTime : 0),
+        @"outputUnitPresent": @(_unit != NULL),
+        @"outputUnitRunning": @(runningStatus == noErr && running != 0),
+        @"outputUnitRunningStatus": @(runningStatus)
+    };
 }
 - (AVAudioFormat *)configureWithSampleRate:(double)rate channels:(AVAudioChannelCount)channels error:(NSError **)error {
     if (!std::isfinite(rate) || rate <= 0 || !channels || channels > 1024) {
@@ -56,6 +83,8 @@
     return format;
 }
 - (OSStatus)renderFrames:(UInt32)frames time:(const AudioTimeStamp *)time flags:(AudioUnitRenderActionFlags *)flags buffers:(AudioBufferList *)data {
+    _callbackCount.fetch_add(1, std::memory_order_relaxed);
+    _lastCallbackHostTime.store(mach_absolute_time(), std::memory_order_relaxed);
     if (!_enabled.load(std::memory_order_acquire)) {
         for (unsigned n = 0; n < data->mNumberBuffers; ++n)
             if (data->mBuffers[n].mData) memset(data->mBuffers[n].mData, 0, data->mBuffers[n].mDataByteSize);
@@ -68,12 +97,15 @@
     jaras::realtimeClock = {host, double(first), _rate, _ticksPerSecond};
     OSStatus failure = noErr;
     const auto status = _render(frames, data, &failure);
+    _lastRenderStatus.store(int32_t(status), std::memory_order_relaxed);
+    _lastRenderError.store(failure, std::memory_order_relaxed);
     jaras::realtimeClock = previous;
     _sequence.fetch_add(1, std::memory_order_acq_rel);
     _sample.store(_engine.manualRenderingSampleTime, std::memory_order_relaxed);
     _host.store(host + uint64_t(frames / _rate * _ticksPerSecond), std::memory_order_relaxed);
     _sequence.fetch_add(1, std::memory_order_release);
     if (status != AVAudioEngineManualRenderingStatusSuccess) {
+        _failureCount.fetch_add(1, std::memory_order_relaxed);
         for (unsigned n = 0; n < data->mNumberBuffers; ++n)
             if (data->mBuffers[n].mData) memset(data->mBuffers[n].mData, 0, data->mBuffers[n].mDataByteSize);
         *flags |= kAudioUnitRenderAction_OutputIsSilence;

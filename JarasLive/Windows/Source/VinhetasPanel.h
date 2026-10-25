@@ -38,6 +38,29 @@ class VinhetasPanel final : public Component, private Timer {
         select(selected);startTimerHz(20);
     }
     ~VinhetasPanel() override { instances.erase(this);audio.learningMIDI=false; }
+    String setlistBlockMIDIConflict(const var &input) const {
+        StringArray names;
+        for (const auto &key : {String("padMappings"), String("presetMappings")}) {
+            const auto mappings = list(get(globalState,Identifier(key)));
+            for (int index=0; index<mappings.size(); ++index)
+                if (matchesBlockMIDI(globalState,mappings[index],input))
+                    names.add("Vinhetas / " + String(key == "padMappings" ? "Pad " : "Preset ") + String(index+1));
+        }
+        return names.joinIntoString(", ");
+    }
+    Result removeSetlistBlockMIDIConflicts(const var &input) {
+        auto updated = globalState.clone();
+        for (const auto &key : {String("padMappings"), String("presetMappings")}) {
+            auto mappings = list(get(updated,Identifier(key)));
+            for (auto &mapping : mappings) if (matchesBlockMIDI(updated,mapping,input)) mapping = var();
+            put(updated,Identifier(key),mappings);
+        }
+        const auto result = appearance.set("jaras.vinhetas",updated);
+        if (result.failed()) return result;
+        globalState = std::move(updated); ++globalRevision;
+        for (auto *panel : instances) { panel->loadState(globalState); panel->refresh(); }
+        return Result::ok();
+    }
     void select(int preset) { selected=jlimit(0,5,preset);refresh();save();preload(); }
     bool midi(int status,int number,int value,int channel) {
         const int normalized=status==0x80?0x90:status;
@@ -81,6 +104,11 @@ class VinhetasPanel final : public Component, private Timer {
     }
     void paint(Graphics &g) override {g.fillAll(theme::panel);if(learning>=0){g.setColour(theme::yellow);g.drawText("Learn MIDI: "+String(learningPreset?"Preset ":"Pad ")+String(learning+1),getLocalBounds().removeFromBottom(16),Justification::centred);}}
   private:
+    static bool matchesBlockMIDI(const var &state, const var &mapping, const var &input) {
+        const int filter = (int)num(state,"midiChannel");
+        return input.isObject() && mapping.isObject() && (filter == 0 || filter == (int)num(input,"channel")) &&
+            num(mapping,"status") == num(input,"status") && num(mapping,"number") == num(input,"number");
+    }
     struct Gate : Button {
         Gate():Button("Gate"){}
         void paintButton(Graphics &g,bool,bool) override {

@@ -9,7 +9,7 @@ enum SidebarWidthLimits {
     #endif
     static let setlistDefault: CGFloat = 335.63671875
     #if os(macOS)
-    static let setlist: CGFloat = setlistDefault - 30
+    static let setlist: CGFloat = (setlistDefault - 30) * 0.70
     #else
     static let setlist: CGFloat = setlistDefault
     #endif

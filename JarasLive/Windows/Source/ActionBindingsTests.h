@@ -1,7 +1,15 @@
 #pragma once
 #include "ActionBindings.h"
+#include "SetlistBlockMIDIPanel.h"
 
 namespace catlive {
+struct ActionBindingsTestAccess {
+    static void receive(ActionBindings &bindings, const MidiMessage &message) {
+        bindings.handleIncomingMidiMessage(nullptr, message);
+        bindings.cancelPendingUpdate();
+        bindings.handleAsyncUpdate();
+    }
+};
 // Register with the actual Windows runTests(directory, test) harness. These use
 // real KeyPress parsing, preferences persistence and ActionBindings dispatch.
 template <typename Register>
@@ -9,6 +17,77 @@ void addActionBindingsTests(const File &directory, Register &&test) {
     const auto require = [](bool okay, const char *message) {
         if (!okay) throw std::runtime_error(message);
     };
+    test("Setlist block MIDI learns candidates, persists globally, transfers conflicts and dispatches once per press", [&, require] {
+        const auto file = directory.getChildFile("setlist-block-midi.json");
+        require(file.replaceWithText("{}"), "Could not create block MIDI preferences fixture");
+        Appearance settings(file); AudioDeviceManager devices; ActionBindings bindings(settings, devices);
+        auto input = [](int status, int number, int channel) {
+            auto value = object(); put(value,"status",status); put(value,"number",number); put(value,"channel",channel); return value;
+        };
+        require(setlistBlockActionNumber("setlistBlock:4097") == 4097 && setlistBlockActionNumber("setlistBlock:1") == 1,
+                "Block actions have an arbitrary slot limit");
+        for (const auto *invalid : {"setlistBlock:0", "setlistBlock:-1", "setlistBlock:01", "setlistBlock:1x", "setlistBlock:2147483648"})
+            require(setlistBlockActionNumber(invalid) == 0 && !bindings.assign(invalid,"midi",input(0x90,20,1)), "Malformed block ordinal accepted");
+        require(!bindings.assign("setlistBlock:1","keyboard","F9"), "Block action accepted a keyboard binding");
+        const auto cc = input(0xb0, 40, 3), note = input(0x90, 61, 2);
+        require(bindings.assign("setlistBlock:1","midi",cc), "Global block CC could not be saved");
+        var candidate;
+        bindings.beginMIDICandidate("setlistBlock:1", [&](var value) { candidate = value; });
+        ActionBindingsTestAccess::receive(bindings, MidiMessage::noteOn(2,61,(uint8)100));
+        require(candidate.isObject() && bindings.inputLabel("setlistBlock:1","midi") == "CC 40 / Ch 3", "Learning persisted before Save");
+        bindings.cancel();
+        require(bindings.inputLabel("setlistBlock:1","midi") == "CC 40 / Ch 3", "Cancel overwrote the old block MIDI mapping");
+        int invocations = 0; String invoked;
+        bindings.invoke = [&](const String &id, float, int track) { ++invocations; invoked = id; require(track == 0,"Block MIDI included a project-specific track"); };
+        auto ccEvent = [&](int value, int channel=3) { ActionBindingsTestAccess::receive(bindings,MidiMessage::controllerEvent(channel,40,value)); };
+        ccEvent(127,2); require(invocations == 0,"MIDI channel filter was ignored");
+        ccEvent(127); ccEvent(90); require(invocations == 1 && invoked == "setlistBlock:1","Held CC retriggered its block");
+        ccEvent(0); require(invocations == 1,"CC release activated the block");
+        ccEvent(1); require(invocations == 2,"CC release did not rearm the block");
+        require(!bindings.assign("play","midi",cc) && !bindings.assign("setlistBlock:2","midi",cc), "Other actions stole a global block binding silently");
+        require(bindings.assign("play","keyboard","F9") && bindings.assign("play","midi",note), "Could not prepare fixed-action conflict");
+        require(!bindings.assign("setlistBlock:4097","midi",note), "Block binding stole an existing action silently");
+        require(bindings.assign("setlistBlock:4097","midi",note,true) && !bindings.midiInput("play").isObject() &&
+                bindings.inputLabel("play","keyboard") == "F9", "Explicit transfer lost another action's keyboard mapping");
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOff(2,61));
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,61,(uint8)100));
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,61,(uint8)90));
+        require(invocations == 3 && invoked == "setlistBlock:4097","NoteOn did not trigger exactly once");
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,61,(uint8)0));
+        require(invocations == 3,"Zero-velocity NoteOn triggered a block");
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,61,(uint8)90));
+        require(invocations == 4,"Note release failed to rearm");
+        bindings.inputEnabled=false;
+        ccEvent(0); ccEvent(127); require(invocations == 4,"Inactive project received MIDI");
+        bindings.resetMIDIState(); bindings.inputEnabled=true; ccEvent(127);
+        require(invocations == 5,"Reactivated project retained a stale held CC");
+        Appearance restored(file); ActionBindings reopened(restored,devices);
+        require(reopened.inputLabel("setlistBlock:4097","midi") == "Note 61 / Ch 2", "Dynamic mapping did not persist");
+        require(reopened.assign("setlistBlock:2","midi",input(0xb0,41,3)), "Second global mapping failed");
+        require(bindings.assign("setlistBlock:3","midi",input(0xb0,42,3)), "Stale instance could not save a new block binding");
+        require(bindings.inputLabel("setlistBlock:2","midi") == "CC 41 / Ch 3", "Saving from another project discarded a global binding");
+        auto button = [&](Component &panel,const String &id) {
+            for (auto *child:panel.getChildren()) if(child->getComponentID()==id) return dynamic_cast<Button*>(child);
+            return (Button*)nullptr;
+        };
+        {
+            SetlistBlockMIDIPanel panel(bindings,1);
+            ActionBindingsTestAccess::receive(bindings,MidiMessage::controllerEvent(4,50,127));
+            require(bindings.inputLabel("setlistBlock:1","midi") == "CC 40 / Ch 3", "Editor saved its candidate without confirmation");
+        }
+        require(bindings.learning.isEmpty() && bindings.inputLabel("setlistBlock:1","midi") == "CC 40 / Ch 3", "Closing editor leaked MIDI learning or discarded the old mapping");
+        {
+            SetlistBlockMIDIPanel panel(bindings,1);
+            ActionBindingsTestAccess::receive(bindings,MidiMessage::controllerEvent(4,50,127));
+            auto *save=button(panel,"setlistBlockMIDISave"); require(save && save->isEnabled(),"Candidate did not enable Save"); save->onClick();
+            require(bindings.inputLabel("setlistBlock:1","midi") == "CC 50 / Ch 4", "Editor Save did not persist the candidate");
+        }
+        {
+            SetlistBlockMIDIPanel panel(bindings,1);
+            auto *remove=button(panel,"setlistBlockMIDIRemove"); require(remove && remove->isVisible(),"Existing block mapping cannot be removed"); remove->onClick();
+            require(bindings.inputLabel("setlistBlock:1","midi").isEmpty(),"Remove left the global block binding active");
+        }
+    });
     test("Panel shortcuts toggle once and preserve customized bindings", [&, require] {
         const auto file = directory.getChildFile("panel-shortcuts.json");
         require(file.replaceWithText("{}"), "Could not create panel preferences fixture");

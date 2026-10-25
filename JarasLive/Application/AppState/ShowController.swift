@@ -188,6 +188,35 @@ public struct ShowTimelinePresentationState: Equatable {
         selectedSetlistBlock = id.flatMap { candidate in listedBlocks.contains { $0.id == candidate } ? candidate : nil }
         if selectedSetlistBlock != nil { regionNavigationTask?.cancel(); regionNavigationTask = nil }
     }
+    /// MIDI block IDs follow the visible block order in the active playlist,
+    /// independently of persisted UUIDs, names or order in the block storage.
+    public func setlistBlockNumber(_ id: UUID) -> Int? {
+        var number = 0
+        for entry in setlistEntries {
+            guard case .block(let block) = entry else { continue }
+            number += 1
+            if block.id == id { return number }
+        }
+        return nil
+    }
+    /// Use ordinary song selection for the first song below the numbered block.
+    /// This prepares a stopped transport and follows the normal queue rule
+    /// while playing; it never sends an additional Play command.
+    @discardableResult public func focusSetlistBlock(number: Int) -> Bool {
+        guard number > 0, canControl(), !finishing else { return false }
+        var ordinal = 0
+        for entry in setlistEntries {
+            switch entry {
+            case .block:
+                ordinal += 1
+            case .region(let region, _) where ordinal >= number:
+                focusRegion(region.id)
+                return true
+            default: break
+            }
+        }
+        return false
+    }
     public private(set) var restoredCursorPosition: Double?
     public private(set) var navigationFocusPosition: Double?
     private var timelineNavigationCache: (revision: UInt64, song: UUID, points: TimelineNavigationPoints)?
@@ -1284,11 +1313,15 @@ public struct ShowTimelinePresentationState: Equatable {
         edited.deleteSetlistEntries(ids, song: song.id, playlist: selectedRegionPlaylist?.id)
         // Removing playlist rows or blocks does not rebuild the audio project.
         if edited.songs == before.songs {
-            guard let state = edited.regionSetlist, state != regionSetlist else { return false }
-            return configureRegionSetlist(state)
+            guard let state = edited.regionSetlist, state != regionSetlist,
+                  configureRegionSetlist(state) else { return false }
+        } else {
+            editProject { $0 = edited }
         }
-        editProject { $0 = edited }
-        if snapshot.project != before, let focusedRegion, playlistRegion(focusedRegion) == nil { self.focusedRegion = nil }
+        if snapshot.project != before {
+            if let selectedSetlistBlock, ids.contains(selectedSetlistBlock) { self.selectedSetlistBlock = nil }
+            if let focusedRegion, playlistRegion(focusedRegion) == nil { self.focusedRegion = nil }
+        }
         return snapshot.project != before
     }
 

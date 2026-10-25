@@ -399,11 +399,7 @@ struct ClipFXChainEditor: View {
                 Divider()
                 Group {
                     if let selected, effects.contains(selected) {
-                        if selected == NativeFXSettings.stemSeparator {
-                            CatStemFXEditor(show: show, track: nil, clip: clip).id(selected)
-                        } else {
-                            FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: selected, close: close).id(selected)
-                        }
+                        FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: selected, close: close).id(selected)
                     } else { Color.clear }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }

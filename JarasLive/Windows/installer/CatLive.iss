@@ -1,5 +1,5 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "1.10"
+  #define AppVersion "1.14"
 #endif
 #ifndef PackageDirectory
   #error PackageDirectory must point to the tested CatLive package.
@@ -31,6 +31,9 @@
 #endif
 #if !FileExists(PackageDirectory + "\StemSeparationRuntime\openvino_backend.py") || !FileExists(PackageDirectory + "\StemSeparationRuntime\htdemucs6-openvino.xml") || !FileExists(PackageDirectory + "\StemSeparationRuntime\htdemucs6-openvino.bin") || !FileExists(PackageDirectory + "\StemSeparationRuntime\htdemucs6-openvino.json") || !FileExists(PackageDirectory + "\StemSeparationRuntime\runtime.json")
   #error The verified CatStem FP32 inference graph and runtime manifest are required.
+#endif
+#if !FileExists(PackageDirectory + "\StemSeparationRuntime\offline_openvino.py") || !FileExists(PackageDirectory + "\StemSeparationRuntime\htdemucs6-offline.xml") || !FileExists(PackageDirectory + "\StemSeparationRuntime\htdemucs6-offline.bin") || !FileExists(PackageDirectory + "\StemSeparationRuntime\htdemucs6-offline.json")
+  #error The verified full-context CatStem offline inference graph is required.
 #endif
 
 [Setup]

@@ -212,23 +212,8 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
             }
             effects.push_back(std::move(e)); return;
         }
-        if(kind==native::stem::effectName) {
-            if(!get(value,"stemMix").isObject())return; // legacy offline-only Mac project
-            auto e=std::make_unique<Effect>();e->kind=kind;e->key=key;
-            e->stemMix.enabled=flag(value,"stemSeparatorEnabled");
-            const auto sources=list(get(get(value,"stemMix"),"sources"));
-            if(sources.size()!=5)throw std::runtime_error("CatStem requer cinco stems.");
-            for(int i=0;i<5;i++) {
-                e->stemMix.gains[(size_t)i]=(float)jlimit(0.,4.,num(sources[i],"gain",1));
-                if(flag(sources[i],"mute"))e->stemMix.muteMask|=1u<<i;
-                if(flag(sources[i],"solo"))e->stemMix.soloMask|=1u<<i;
-            }
-            if(previous)for(const auto &old:previous->effects)
-                if(old->key==key&&old->stem&&old->stem->sampleRate()==unsigned(sampleRate)&&old->stem->isOffline()==offline&&(!e->stemMix.enabled||old->stem->status().state!="fault"))e->stem=old->stem;
-            if(!e->stem)e->stem=std::make_shared<native::stem::Processor>(native::stem::Paths::bundled(),unsigned(sampleRate),offline,prewarm&&e->stemMix.enabled);
-            e->stem->configure(e->stemMix);
-            effects.push_back(std::move(e));return;
-        }
+        // Read older projects without starting the removed realtime separator.
+        if(kind==native::stem::effectName) return;
         String enabledKey = kind == "EQ"           ? "eqEnabled"
                             : kind == "Compressor" ? "compressorEnabled"
                             : kind == "Delay"      ? "delayEnabled"

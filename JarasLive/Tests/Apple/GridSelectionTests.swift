@@ -772,10 +772,19 @@ precondition(menuGrid.itemContextMenu(for: contextVideoID).items.last?.isEnabled
 print("ITEM_CONTEXT_MUTE_UNMUTE_AND_LAST_EXPORT_FILTER_MIXED_SELECTION_OK")
 
 menuGrid.updateSelection([contextAudibleID])
+var separatedItem: UUID?
+menuGrid.canSeparateAudio = { $0 == contextAudibleID }
+menuGrid.separateAudio = { separatedItem = $0 }
 let audioContext = menuGrid.itemContextMenu(for: contextAudibleID)
-precondition(!audioContext.items.contains { $0.action == NSSelectorFromString("separateSelection") }, "CatStem lives inside FX, never in the item context menu")
+precondition(audioContext.items.contains { $0.action == NSSelectorFromString("separateContextAudio") })
+invoke(audioContext, "separateContextAudio")
+precondition(separatedItem == contextAudibleID)
 precondition(audioContext.items.last?.action == NSSelectorFromString("exportSelection"))
-print("CATSTEM_REMOVED_FROM_CONTEXT_AND_EXPORT_REMAINS_LAST_OK")
+menuGrid.updateSelection([contextAudibleID, contextMutedID])
+precondition(!menuGrid.itemContextMenu(for: contextAudibleID).items.contains { $0.action == NSSelectorFromString("separateContextAudio") })
+menuGrid.updateSelection([contextVideoID])
+precondition(!menuGrid.itemContextMenu(for: contextVideoID).items.contains { $0.action == NSSelectorFromString("separateContextAudio") })
+print("SEPARATION_SINGLE_AUDIO_ONLY_CONTEXT_AND_EXPORT_REMAINS_LAST_OK")
 
 let contextMIDI = UUID(), contextMIDIMuted = UUID()
 menuGrid.items += [

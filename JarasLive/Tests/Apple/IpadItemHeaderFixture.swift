@@ -160,6 +160,30 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         pointer.detach(); pointer.removeFromSuperview()
         let resize = IpadItemResizeControl(frame: CGRect(x: 50,y: 200,width: 28,height: 80))
         window!.rootViewController!.view.addSubview(resize)
+        let grip = resize.layer.sublayers!.first!
+        // A clipped hit area must not move the visible item edge. Include a
+        // short item, both viewport edges, offscreen edges and incremental zoom.
+        for viewport in [8.0, 28, 200, 800] {
+            for edge in [-20.0, -1, 0, 1, 8, 14, viewport / 2, viewport - 1, viewport, viewport + 1] {
+                let layout = IpadItemResizeHandleLayout(edge: edge, viewportWidth: viewport)
+                resize.frame = CGRect(x: layout.origin, y: 200, width: layout.width, height: 80)
+                resize.gripX = layout.gripX; resize.showsGrip = layout.showsGrip
+                resize.setNeedsLayout(); resize.layoutIfNeeded()
+                expect(abs(resize.frame.minX + grip.frame.midX - edge) < 0.00001, "Trim grip moved away from the item edge at \(edge)/\(viewport)")
+                expect(resize.frame.minX >= 0 && resize.frame.maxX <= viewport, "Trim touch area escaped the viewport")
+                expect(grip.isHidden == (edge < 0 || edge > viewport), "Offscreen trim edge is painted inside the viewport")
+            }
+        }
+        for step in 0...100 {
+            let scale = 0.5 + Double(step) / 100
+            let edge = 10 * scale
+            let layout = IpadItemResizeHandleLayout(edge: edge, viewportWidth: 800)
+            expect(abs(layout.origin + layout.gripX - edge) < 0.00001, "Zoom moved the trim grip off the edge")
+        }
+        resize.showsGrip = false
+        expect(grip.isHidden, "Fade control still draws the white trim grip")
+        resize.showsGrip = true; resize.gripX = nil
+        resize.frame = CGRect(x: 50,y: 200,width: 28,height: 80)
         var resized: [(Double,Bool,Bool)] = []
         resize.changed = { resized.append(($0,$1,$2)) }; resize.interactionID = UUID()
         let resizePan = ResizePan()

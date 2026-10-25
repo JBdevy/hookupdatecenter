@@ -277,6 +277,7 @@ export function buildTimelineItemMenu(context = {}) {
       item(context, 'item.reRender', 'Re-render', 'reRender', {itemIds: selectedIds}),
       item(context, 'item.unify', 'Unify items', 'unify', {itemIds: unifyIds}),
       item(context, 'item.tuner', 'Tuner', 'tuner', {itemIds: ids(entry => entry.audioExportable && !entry.midiEditable)}),
+      ...(selectedIds.length === 1 && clicked.editable && clicked.audioExportable && !clicked.midiEditable && !clicked.isProjectionMedia ? [item(context, 'item.separateAudio', 'Separation audio', 'separateAudio', {itemId: clicked.id})] : []),
       item(context, 'item.normalize', 'Normalize…', 'normalize', {itemIds: selectedIds}));
     if (clicked.editable) {
       entries.push(separator());

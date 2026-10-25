@@ -3,6 +3,7 @@ import AVFoundation
 import Combine
 #if os(macOS)
 import AppKit
+#endif
 
 struct CatStemRequest {
     let project: Project
@@ -39,13 +40,18 @@ private enum CatStemRenderer {
         try checkCancellation()
         progress(0, "Preparando o áudio…")
         var source = request.song
-        var time = source.projectTime; time.timebase = .free; source.timeSettings = time
-        source.markers?.removeAll { $0.isTempo }
         for index in source.parts.indices { source.parts[index].pitchSemitones = 0 }
         for index in source.tracks.indices {
             source.tracks[index].fx = nil; source.tracks[index].volume = 1; source.tracks[index].pan = 0
             source.tracks[index].mute = false; source.tracks[index].solo = false
-            for item in source.tracks[index].clips.indices { source.tracks[index].clips[item].muted = false }
+            source.tracks[index].automation = nil; source.tracks[index].phaseInverted = false
+            for item in source.tracks[index].clips.indices {
+                source.tracks[index].clips[item].muted = false
+                if var fx = source.tracks[index].clips[item].fx {
+                    fx.inserted.removeAll { $0 == NativeFXSettings.stemSeparator }
+                    fx.stemSeparatorEnabled = false; fx.stemMix = nil; source.tracks[index].clips[item].fx = fx
+                }
+            }
         }
         let job = AudioExportJob(id: request.clip.id.uuidString, fileName: "input.wav", start: request.clip.startTime,
                                  end: request.clip.startTime + request.clip.duration, track: request.track.id, clip: request.clip.id)
@@ -55,6 +61,7 @@ private enum CatStemRenderer {
             progress($0.fraction * 0.08, "Preparando o áudio…")
         }
         try checkCancellation()
+        #if os(macOS)
         let log = folder.appendingPathComponent("worker.log")
         fm.createFile(atPath: log.path, contents: nil)
         let output = try FileHandle(forWritingTo: log)
@@ -90,6 +97,21 @@ private enum CatStemRenderer {
             let detail = (try? String(contentsOf: folder.appendingPathComponent("error.txt"), encoding: .utf8)) ?? "O motor de separação encerrou inesperadamente."
             throw ProjectError.invalid(String(detail.prefix(600)))
         }
+        #else
+        let separationStarted = ProcessInfo.processInfo.systemUptime
+        try JarasStemSeparator.separateAudio(folder.appendingPathComponent("input.wav"),
+            outputDirectory: folder, coreMLModel: CatStemRealtimeRuntime.modelURL(),
+            cancellation: { cancellation.cancelled }, progress: { fraction in
+                var message = "Separando os instrumentos…"
+                let elapsed = ProcessInfo.processInfo.systemUptime - separationStarted
+                if fraction > 0, fraction < 1, elapsed >= 3 {
+                    let remaining = Int(min(604800, max(0, elapsed / fraction * (1 - fraction))).rounded())
+                    message += String(format: "\nRestante estimado: %d min %02d s", remaining / 60, remaining % 60)
+                }
+                progress(0.08 + min(1, max(0, fraction)) * 0.82, message)
+            })
+        try checkCancellation()
+        #endif
         var tracks: [Track] = []
         for (index, stem) in CatStem.allCases.enumerated() {
             try checkCancellation()
@@ -101,15 +123,21 @@ private enum CatStemRenderer {
                 throw ProjectError.invalid("O áudio separado tem duração ou formato incorreto.")
             }
             let overview = try StemProjectImporter.audioOverview(url, duration: request.clip.duration)
-            let destination = stemDirectory.appendingPathComponent(names.allocate((request.clip.name as NSString).deletingPathExtension + " - " + stem.rawValue + ".wav"))
+            let outputName = AudioSeparation.outputName(stem, original: request.clip.name)
+            let destination = stemDirectory.appendingPathComponent(names.allocate(outputName + ".wav"))
             try fm.moveItem(at: url, to: destination); published.append(destination)
-            var clip = AudioClip(id: UUID(), name: request.clip.name + " · " + stem.rawValue,
+            var clip = AudioClip(id: UUID(), name: outputName,
                                  startTime: request.clip.startTime, duration: request.clip.duration,
                                  waveform: overview.waveform, audioFile: AudioFile(path: "Stems/" + destination.lastPathComponent))
-            clip.waveformChannels = overview.channels
-            var track = Track(id: UUID(), name: stem.rawValue + " · " + request.clip.name, role: stem.role, color: stem.color)
+            clip.waveformChannels = overview.channels; clip.regionOwnerID = request.clip.regionOwnerID
+            clip.renderedTempo = true
+            var track = Track(id: UUID(), name: outputName, role: stem.role, color: stem.color)
             track.clips = [clip]; track.parentTrackID = request.track.parentTrackID
             track.volume = request.track.volume; track.pan = request.track.pan; track.fx = request.track.fx
+            if var fx = track.fx {
+                fx.inserted.removeAll { $0 == NativeFXSettings.stemSeparator }
+                fx.stemSeparatorEnabled = false; fx.stemMix = nil; track.fx = fx
+            }
             track.mute = request.track.mute; track.solo = request.track.solo
             track.patch = request.track.patch; track.secondaryPatch = request.track.secondaryPatch; track.outputs = request.track.outputs
             track.phaseInverted = request.track.phaseInverted
@@ -128,22 +156,57 @@ private enum CatStemRenderer {
     @Published var status = ""
     @Published var error = ""
     private var cancellation = AudioExportCancellation()
-    func cancel() { cancellation.cancel(); if running { status = "Cancelando…" } }
+    // Cancellation releases UI admission immediately. The immutable render
+    // snapshot can finish cleanup without retaining transport/input ownership.
+    private var releaseBusy: (() -> Void)?
+    func cancel() {
+        cancellation.cancel()
+        releaseBusy?(); releaseBusy = nil
+        if running { status = "Cancelando…" }
+    }
+    func start(item: UUID, show: ShowController, documents: ProjectDocuments) {
+        guard !running else { return }
+        error = ""; status = ""; progress = 0
+        guard show.canControl(), !documents.busy else { error = "Conclua a operação atual antes de separar áudio."; return }
+        guard let directory = documents.currentURL?.deletingLastPathComponent() else { error = "Salve o projeto antes de separar áudio."; return }
+        guard let song = show.current, let track = song.tracks.first(where: { $0.clips.contains { $0.id == item } }),
+              track.kind == .standard, let clip = track.clips.first(where: { $0.id == item }),
+              AudioSeparation.accepts(clip, on: track) else { error = "Selecione apenas um item de áudio."; return }
+        start(CatStemRequest(project: show.snapshot.project, song: song, track: track, clip: clip, directory: directory), show: show, documents: documents)
+    }
     func start(_ request: CatStemRequest, show: ShowController, documents: ProjectDocuments) {
         guard !running, !documents.busy else { return }
         guard let resource = Bundle.main.resourceURL else { return }
         let runtime = resource.appendingPathComponent("StemSeparationRuntime")
         let worker = resource.appendingPathComponent("StemSeparation/separate.py")
+        #if os(macOS)
         guard FileManager.default.isExecutableFile(atPath: CatStemRenderer.interpreter(in: runtime).path),
               FileManager.default.fileExists(atPath: runtime.appendingPathComponent("5c90dfd2-34c22ccb.th").path) else {
             error = "O motor CatStemSeparation 5 não está incluído nesta instalação."; return
         }
+        #else
+        do { _ = try CatStemRealtimeRuntime.modelURL() }
+        catch { self.error = error.localizedDescription; return }
+        #endif
+        let required = request.clip.duration * 44100 * 2 * 4 * 6 + 16_777_216
+        if let available = AudioDestinationSpace.availableBytes(at: request.directory), Double(available) < required {
+            error = String(format: "Espaço insuficiente: a separação precisa de aproximadamente %.2f GB livres.", required / 1_000_000_000); return
+        }
         guard AudioDestinationSpace.confirm(at: request.directory.appendingPathComponent("Stems")) else { return }
-        running = true; documents.busy = true; error = ""; progress = 0
+        running = true; documents.presentsOwnProgress = true; documents.status = ""
+        documents.busy = true; error = ""; progress = 0
+        releaseBusy = { [weak documents] in
+            documents?.busy = false
+            documents?.presentsOwnProgress = false
+        }
         cancellation = AudioExportCancellation()
         let token = cancellation
         Task {
-            defer { running = false; documents.busy = false }
+            defer {
+                running = false
+                // Do not release a different operation admitted after Cancel.
+                releaseBusy?(); releaseBusy = nil
+            }
             do {
                 let (files, tracks) = try await Task.detached(priority: .utility) {
                     try CatStemRenderer.run(request, runtime: runtime, worker: worker, cancellation: token) { fraction, text in
@@ -168,173 +231,19 @@ private enum CatStemRenderer {
     }
 }
 
-#endif
-
-/// The processor belongs to the track/item FX chain, independent of this window.
-/// Closing the editor never stops the worker or removes the saved stem mix.
-struct CatStemFXEditor: View {
-    let show: ShowController
-    let track: UUID?
-    var clip: UUID? = nil
-    @State private var settings = NativeFXSettings()
-    @State private var project: UUID?
-    @State private var status = ""
-    @State private var failed = false
-    @State private var available = false
-    @State private var changed = false
-    private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
-    private var current: NativeFXSettings { clip.map { show.clipFXSettings($0) } ?? show.fxSettings(track) }
-    private var title: String {
-        if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—" }
-        return track.flatMap { FXModelLookup.track($0, in: show.snapshot.project)?.name } ?? "Master"
-    }
-    private func refreshStatus() {
-        guard available else { return }
-        guard settings.isEnabled(NativeFXSettings.stemSeparator) else { status = "Bypass"; failed = false; return }
-        guard let report = StemAudioPlayback.shared.effects(for: clip ?? track)?.stemSeparatorStatus else {
-            status = "Preparando CatStem…"; failed = false; return
-        }
-        let state = report["state"] as? String ?? "loading"
-        failed = state == "error" || state == "fault" || state == "unavailable"
-        if failed { status = report["error"] as? String ?? "Não foi possível iniciar o processamento." }
-        else if state == "ready" || state == "running" { status = "Tempo real · 5 stems" }
-        else { status = "Preparando CatStem…" }
-    }
-    private func update(_ value: NativeFXSettings, commit: Bool) {
-        guard project == show.snapshot.project.id else { return }
-        settings = value
-        if let clip { show.updateClipFX(clip, effect: NativeFXSettings.stemSeparator, settings: value) }
-        else { show.updateFX(track, effect: NativeFXSettings.stemSeparator, settings: value) }
-        changed = true
-        if commit { show.commitFX(); changed = false }
-        refreshStatus()
-    }
-    private func source(_ index: Int) -> Binding<NativeStemMix.Source> {
-        Binding(get: { settings.stemParameters.sources[index] }, set: { value in
-            var next = current
-            next.stemParameters.sources[index] = value
-            update(next, commit: false)
-        })
-    }
+struct CatStemProgressView: View {
+    @ObservedObject var session: CatStemSession
+    let close: () -> Void
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: "waveform").font(.jarasTitle2).foregroundStyle(JarasTheme.green)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(verbatim: "CatStemSeparation 5").font(.jarasSystem(size: 19, weight: .semibold))
-                    Text(verbatim: title).font(.jarasCaption).foregroundStyle(JarasTheme.secondary).lineLimit(1)
-                }
-                Spacer()
-                Toggle("Enabled", isOn: Binding(get: { settings.isEnabled(NativeFXSettings.stemSeparator) }, set: { enabled in
-                    var next = current; next.setEnabled(NativeFXSettings.stemSeparator, enabled: enabled)
-                    update(next, commit: true)
-                })).toggleStyle(.switch).labelsHidden().tint(JarasTheme.green).disabled(!available)
-            }.padding(.bottom, 4)
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(Array(CatStem.allCases.enumerated()), id: \.element) { index, stem in
-                    CatStemRealtimeRow(stem: stem, source: source(index)) {
-                        if changed { show.commitFX(); changed = false }
-                    }
-                }
-            }.disabled(!available || !settings.isEnabled(NativeFXSettings.stemSeparator))
-            Text(verbatim: status).font(.jarasCaption).foregroundStyle(failed ? Color.red : JarasTheme.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }.padding(20)
-        #if os(macOS)
-        .frame(width: 560)
-        #else
-        .frame(maxWidth: .infinity)
-        #endif
-        .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
-            .onAppear {
-                project = show.snapshot.project.id; settings = current
-                do {
-                    #if os(macOS)
-                    _ = try CatStemRealtimeRuntime.paths()
-                    #else
-                    _ = try CatStemRealtimeRuntime.modelURL()
-                    #endif
-                    available = true; refreshStatus()
-                }
-                catch { available = false; failed = true; status = error.localizedDescription }
-            }
-            .onReceive(timer) { _ in settings = current; refreshStatus() }
-            .onDisappear { if changed && project == show.snapshot.project.id { show.commitFX() } }
-    }
-}
-
-private struct CatStemButtonStyle: ButtonStyle {
-    var activeColor: Color?
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.jarasSystem(size: 10, weight: .bold)).frame(width: 25, height: 19)
-            .foregroundStyle(activeColor == nil ? JarasTheme.text : .black)
-            .background(activeColor ?? JarasTheme.line)
-            .clipShape(RoundedRectangle(cornerRadius: 3)).opacity(configuration.isPressed ? 0.7 : 1)
-    }
-}
-
-private struct CatStemRealtimeRow: View {
-    let stem: CatStem
-    @Binding var source: NativeStemMix.Source
-    let commit: () -> Void
-    private var gain: Double { source.gain }
-    private var level: Double { gain <= 0 ? 0 : min(1, max(0, (20 * log10(gain) + 60) / 72)) }
-    private var tint: Color { Color(red: Double((stem.color >> 16) & 255) / 255, green: Double((stem.color >> 8) & 255) / 255, blue: Double(stem.color & 255) / 255) }
-    private var readout: String { gain <= 0 ? "−∞ dB" : String(format: "%+.1f dB", 20 * log10(gain)) }
-    private var gainSlider: some View {
-        GeometryReader { geometry in
-            let travel: CGFloat = max(1, geometry.size.height - 22)
-            let position = travel * CGFloat(1 - level)
-            ZStack(alignment: .top) {
-                RoundedRectangle(cornerRadius: 3).fill(Color.black.opacity(0.5))
-                    .frame(width: 6, height: travel + 12).offset(y: 5)
-                RoundedRectangle(cornerRadius: 3).fill(tint.opacity(0.75))
-                    .frame(width: 6, height: travel * CGFloat(level) + 6).offset(y: position + 11)
-                RoundedRectangle(cornerRadius: 4).fill(tint).frame(width: 36, height: 22)
-                    .overlay(Rectangle().fill(Color.black.opacity(0.7)).frame(width: 28, height: 2))
-                    .offset(y: position)
-            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .contentShape(Rectangle())
-                #if os(iOS)
-                .overlay(FXTouchDrag(began: { point in
-                    let fraction = Double(min(1, max(0, 1 - (point.y - 11) / travel)))
-                    source.gain = fraction <= 0 ? 0 : min(4, pow(10, (fraction * 72 - 60) / 20))
-                }, changed: { point, _ in
-                    let fraction = Double(min(1, max(0, 1 - (point.y - 11) / travel)))
-                    source.gain = fraction <= 0 ? 0 : min(4, pow(10, (fraction * 72 - 60) / 20))
-                }, ended: commit, reset: { source.gain = 1; commit() }))
-                #else
-                .gesture(DragGesture(minimumDistance: 0).onChanged { event in
-                    let fraction = Double(min(1, max(0, 1 - (event.location.y - 11) / travel)))
-                    source.gain = fraction <= 0 ? 0 : min(4, pow(10, (fraction * 72 - 60) / 20))
-                }.onEnded { _ in commit() })
-                .onTapGesture(count: 2) { source.gain = 1; commit() }
-                #endif
-                .accessibilityElement().accessibilityLabel(stem.rawValue)
-                .accessibilityValue(readout)
-                .accessibilityAdjustableAction { direction in
-                    let db = gain <= 0 ? -60 : 20 * log10(gain)
-                    source.gain = pow(10, min(12, max(-60, db + (direction == .increment ? 1 : -1))) / 20)
-                    commit()
-                }
-        }.frame(height: 240)
-    }
-    var body: some View {
-        VStack(spacing: 12) {
-            Text(verbatim: stem.rawValue).font(.jarasSystem(size: 13, weight: .semibold))
-                .foregroundStyle(tint).lineLimit(1).minimumScaleFactor(0.8)
-            HStack(spacing: 7) {
-                Button("M") { source.mute.toggle(); commit() }
-                    .buttonStyle(CatStemButtonStyle(activeColor: source.mute ? .red : nil))
-                    .accessibilityLabel("Mute " + stem.rawValue)
-                Button("S") { source.solo.toggle(); commit() }
-                    .buttonStyle(CatStemButtonStyle(activeColor: source.solo ? JarasTheme.yellow : nil))
-                    .accessibilityLabel("Solo " + stem.rawValue)
-            }
-            gainSlider
-            Text(verbatim: readout).font(.jarasSystem(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(JarasTheme.text).lineLimit(1).minimumScaleFactor(0.8)
-        }.padding(.horizontal, 8).padding(.vertical, 14).frame(maxWidth: .infinity)
-            .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 7))
+        VStack(spacing: 16) {
+            Text(verbatim: "Separation audio").font(.jarasHeadline)
+            Text(verbatim: session.status).fixedSize(horizontal: false, vertical: true)
+            if !session.error.isEmpty { Text(verbatim: session.error).foregroundStyle(.red) }
+            if session.running {
+                ProgressView(value: session.progress)
+                Button("Cancel") { session.cancel(); close() }.keyboardShortcut(.cancelAction)
+            } else { Button("Close", action: close).keyboardShortcut(.defaultAction) }
+        }.padding(24).frame(width: 400).interactiveDismissDisabled(session.running)
+            .onDisappear { if session.running { session.cancel() } }
     }
 }

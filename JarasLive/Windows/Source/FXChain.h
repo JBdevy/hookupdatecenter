@@ -22,7 +22,7 @@ inline bool enabled(const var &value, const String &key) {
     for (const auto &plugin : list(get(value, "externalPlugins")))
         if (key == "External:" + str(plugin, "id")) return !flag(plugin, "bypassed");
     if (key == "Instruments") return str(value, "instrumentID").isNotEmpty() && !flag(value, "instrumentBypassed");
-    if (key == "CatStemSeparation 5" && !get(value, "stemMix").isObject()) return false;
+    if (key == "CatStemSeparation 5") return false;
     const auto property = enabledKey(key);
     return property.isNotEmpty() && flag(value, Identifier(property));
 }

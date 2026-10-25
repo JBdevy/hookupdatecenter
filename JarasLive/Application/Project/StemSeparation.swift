@@ -1,6 +1,6 @@
 import Foundation
 
-/// Fixed output order for the internal CatStemSeparation 5 mixer.
+/// Fixed order of the five offline audio-separation outputs.
 public enum CatStem: String, CaseIterable, Codable, Sendable {
     case vocal = "Vocal", drum = "Drum", bass = "Bass", guitar = "Guitar", other = "Other"
     public var role: TrackRole {
@@ -12,18 +12,32 @@ public enum CatStem: String, CaseIterable, Codable, Sendable {
         case .bass: return 0x8E70CA; case .guitar: return 0x45BA91; case .other: return 0xAAA0C7 }
     }
 }
+public enum AudioSeparation {
+    public static let audioExtensions: Set<String> = ["wav", "wave", "aif", "aiff", "aifc", "mp3", "m4a", "aac", "flac", "ogg", "oga", "opus", "caf", "alac", "wma"]
+    public static func accepts(_ clip: AudioClip, on track: Track) -> Bool {
+        guard track.kind == .standard, clip.midi == nil, clip.text == nil, clip.timecode == nil, clip.duration > 0,
+              !clip.isProjectionMedia, !clip.isImage, let file = clip.audioFile ?? track.audioFile else { return false }
+        return audioExtensions.contains((file.path as NSString).pathExtension.lowercased())
+    }
+    public static func outputName(_ stem: CatStem, original: String) -> String {
+        let trimmed = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = audioExtensions.contains((trimmed as NSString).pathExtension.lowercased())
+            ? (trimmed as NSString).deletingPathExtension : trimmed
+        return stem.rawValue + " - " + (base.isEmpty ? "Item" : base)
+    }
+}
 public extension Project {
     /// Commit all outputs and source muting as one undoable edit. Never attach
     /// stale results after a project/item edit, or partially insert a separation.
     mutating func insertSeparatedStems(_ tracks: [Track], song songID: UUID,
                                       sourceTrack: UUID, original: AudioClip) throws {
         guard tracks.count == CatStem.allCases.count, Set(tracks.map(\.id)).count == tracks.count,
-              tracks.allSatisfy({ $0.kind == .standard && $0.clips.count == 1 }),
+              tracks.allSatisfy({ $0.kind == .standard && $0.clips.count == 1 && $0.clips[0].startTime == original.startTime && $0.clips[0].duration == original.duration }),
               let song = songs.firstIndex(where: { $0.id == songID }),
               let channel = songs[song].tracks.firstIndex(where: { $0.id == sourceTrack }),
               let item = songs[song].tracks[channel].clips.firstIndex(where: { $0.id == original.id }),
               songs[song].tracks[channel].clips[item] == original else {
-            throw ProjectError.invalid("The source item changed. Open CatStemSeparation 5 again.")
+            throw ProjectError.invalid("The source item changed. Run Separation audio again.")
         }
         var candidate = self
         candidate.songs[song].tracks[channel].clips[item].muted = true

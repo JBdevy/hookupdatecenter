@@ -312,6 +312,10 @@ enum PortableProjectImportPrompt: String, Identifiable {
     @Published var busy = false {
         didSet { if !busy { closeNotice = "" } }
     }
+    // Some operations render their own progress/cancel panel in the workspace.
+    // Keep busy admission, without covering or disabling that panel at the root.
+    @Published var presentsOwnProgress = false
+    var showsBlockingProgress: Bool { busy && !presentsOwnProgress }
     @Published var closeNotice = ""
     @Published var status = ""
     @Published var error = ""

@@ -79,6 +79,7 @@ class Session final : private Timer {
     void exportMix(const File &, int bits = 24);
     void exportAudio(ExportRequest);
     void renderItems(std::set<ID>, bool glue = false, int midiChannels = 0, std::function<void(std::set<ID>)> completed = {});
+    void separateAudioItem(ID, std::function<void(std::set<ID>)> completed = {});
     void detectRegionBPM(std::set<ID>);
     bool isDetectingBPM() const { return bpmCancellation != nullptr; }
     void cancelBPMDetection();

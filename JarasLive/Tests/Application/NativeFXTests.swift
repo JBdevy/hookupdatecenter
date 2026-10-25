@@ -59,10 +59,10 @@ final class NativeFXTests: XCTestCase {
         XCTAssertEqual(fx.threshold, NativeFXSettings().threshold)
     }
 
-    func testStemRealtimeMixPersistenceAndIndependentEdits() throws {
+    func testLegacyStemMixPersistenceAndIndependentEdits() throws {
         let key = NativeFXSettings.stemSeparator
         var fx = NativeFXSettings()
-        fx.appendNative(key)
+        fx.inserted = [key]; fx.stemSeparatorEnabled = true; fx.stemMix = NativeStemMix()
         var draft = fx
         draft.stemParameters.sources[0].solo = true
         draft.stemParameters.sources[0].gain = 0.5
@@ -78,21 +78,23 @@ final class NativeFXTests: XCTestCase {
         legacy.inserted = [key]; legacy.stemSeparatorEnabled = true
         XCTAssertFalse(legacy.isEnabled(key), "Offline projects must not automatically acquire processing latency")
         legacy.setEnabled(key, enabled: true)
-        XCTAssertTrue(legacy.isEnabled(key))
+        XCTAssertFalse(legacy.isEnabled(key), "Legacy settings cannot reactivate the removed realtime stage")
         legacy.stemParameters.sources.removeLast()
         XCTAssertThrowsError(try legacy.validate())
         legacy.stemParameters = NativeStemMix()
         legacy.stemParameters.sources[0].gain = .nan
         XCTAssertThrowsError(try legacy.validate())
     }
-    func testStemSeparatorIsExplicitRemovableAndPersisted() throws {
+    func testRemovedStemSeparatorCannotBeInsertedAndLegacySettingsRemainReadable() throws {
         var fx = NativeFXSettings()
         let key = NativeFXSettings.stemSeparator
         XCTAssertFalse(fx.inserted.contains(key)); XCTAssertFalse(fx.isEnabled(key))
         XCTAssertEqual(fx.appendNative(key), key)
+        XCTAssertTrue(fx.inserted.isEmpty)
+        fx.inserted = [key]; fx.stemSeparatorEnabled = true; fx.stemMix = NativeStemMix()
         try fx.validate(); try fx.validateForClip()
-        XCTAssertTrue(fx.isEnabled(key))
-        XCTAssertEqual(fx.appendNative(key), key)
+        XCTAssertFalse(fx.isEnabled(key))
+        XCTAssertTrue(fx.effectKeys.isEmpty && fx.clipEffectKeys.isEmpty)
         XCTAssertEqual(fx.inserted, [key])
         let saved = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(fx))
         XCTAssertEqual(saved, fx)

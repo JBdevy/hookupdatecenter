@@ -74,7 +74,8 @@ namespace catlive {
                 const int index=selected[i];
                 if(index<0 || index>=(int)rows.size())continue;
                 SparseSet<int> single;single.addRange({index,index+1});
-                // Blocks and unified child rows are not part of the drag payload.
+                // Only entries accepted by the source belong in the preview;
+                // unified child rows remain protected from playlist reordering.
                 if(model->getDragSourceDescription(single).isVoid())continue;
                 ++total;
                 if(draggedRows.size()<5) {

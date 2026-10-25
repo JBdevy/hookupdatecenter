@@ -667,6 +667,11 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
                         if (t.fxJSON)
                             settings = JSON::parse(text(*t.fxJSON));
                     }
+        // Hide the removed processor in legacy projects without mutating the
+        // project while merely opening its effects manager.
+        auto visible = list(get(settings, "inserted"));
+        for(int i=visible.size();--i>=0;)if(visible[i].toString()=="CatStemSeparation 5")visible.remove(i);
+        if(settings.isObject())put(settings,"inserted",visible);
     }
     String key() const {
         auto values = list(get(settings, "inserted"));

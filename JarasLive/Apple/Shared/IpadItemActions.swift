@@ -52,6 +52,8 @@ import UniformTypeIdentifiers
     @State private var exporting = false
     @State private var locatingFile = false
     @StateObject private var processing = IpadItemProcessingSession()
+    @StateObject private var separation = CatStemSession()
+    @State private var separating = false
     private var entries: [(Track, AudioClip)] {
         guard show.snapshot.project.id == projectID, show.current?.id == songID else { return [] }
         let ids = targets.contains(item) ? targets : [item]
@@ -78,7 +80,7 @@ import UniformTypeIdentifiers
               let directory = documents.currentURL?.deletingLastPathComponent() else { return nil }
         return URL(fileURLWithPath: file.path, relativeTo: directory).standardizedFileURL
     }
-    private var childOpen: Bool { normalize || editingText || fx || exporting || processing.running }
+    private var childOpen: Bool { normalize || editingText || fx || exporting || processing.running || separating }
     private var actionList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
@@ -101,6 +103,9 @@ import UniformTypeIdentifiers
                     }
                     if !audio.isEmpty {
                         tuner
+                        if entries.count == 1, AudioSeparation.accepts(clip, on: track) {
+                            action("Separation audio", symbol: "waveform.path") { beginSeparation() }
+                        }
                         action("Normalize…", symbol: "waveform") { normalize = true }
                         action("Re-render", symbol: "arrow.triangle.2.circlepath") {
                             processing.start(show: show, documents: documents, ids: audioIDs, operation: .render)
@@ -144,6 +149,7 @@ import UniformTypeIdentifiers
             case "fx": fx = true
             case "text": editingText = true
             case "file": locatingFile = true
+            case "separate": beginSeparation()
             case "render": processing.start(show: show, documents: documents, ids: audioIDs, operation: .render)
             case "midiMono": processing.start(show: show, documents: documents, ids: midiIDs, operation: .midi(channels: 1))
             case "midiStereo": processing.start(show: show, documents: documents, ids: midiIDs, operation: .midi(channels: 2))
@@ -162,7 +168,7 @@ import UniformTypeIdentifiers
         .onChange(of: processing.finished) { if $0 { close() } }
         .onChange(of: show.snapshot.project.id) { if $0 != projectID { processing.cancel(); close() } }
         .onChange(of: show.current?.id) { if $0 != songID { processing.cancel(); close() } }
-        .onDisappear { processing.cancel() }
+        .onDisappear { processing.cancel(); separation.cancel() }
     }
     private func channelTitle(_ mode: Int) -> String {
         switch mode { case 4: return "Swap - LR"; case 1: return "Convert Mono - L"; case 2: return "Convert Mono - R"; case 3: return "Convert Mono L-R"; default: return "Convert Stereo" }
@@ -180,8 +186,18 @@ import UniformTypeIdentifiers
             }
         }.padding(10).background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 7))
     }
+    private func beginSeparation() {
+        separating = true; separation.start(item: item, show: show, documents: documents)
+    }
     @ViewBuilder private var childEditor: some View {
-        if initialAction == "tuner" {
+        if separating {
+            IpadCompactModal {
+                CatStemProgressView(session: separation) {
+                    separating = false
+                    if initialAction == "separate" { close() }
+                }
+            }
+        } else if initialAction == "tuner" {
             IpadCompactModal { VStack { tuner; Button("Close", action: close) }.padding(18).frame(width: 320) }
         } else if !processing.error.isEmpty {
             IpadCompactModal {

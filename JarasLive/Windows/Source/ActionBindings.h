@@ -1,6 +1,20 @@
 #pragma once
 #include "Appearance.h"
+#include "Localization.h"
 namespace catlive {
+// These IDs describe a position among the current playlist's blocks, never a
+// project UUID or a block name. The saved MIDI binding therefore works globally.
+inline int setlistBlockActionNumber(const String &action) {
+    if (!action.startsWith("setlistBlock:")) return 0;
+    const auto suffix = action.substring(13);
+    const auto number = suffix.getLargeIntValue();
+    return number > 0 && number <= std::numeric_limits<int>::max() && suffix == String(number)
+        ? (int)number : 0;
+}
+inline String setlistBlockAction(int number) { return "setlistBlock:" + String(number); }
+inline String setlistBlockActionTitle(int number) {
+    return String::formatted(localization::translate("Block ID %02d").toRawUTF8(), number);
+}
 inline const jaras::Track *actionTrack(const jaras::Song &song, const ID &selected, int number) {
     auto standard = [](const auto &track) {
         return jaras::fixedTrackName(track.role).empty() && track.role.id != "group";
@@ -137,6 +151,8 @@ class ActionBindings final : public ChangeBroadcaster,
     }
     std::function<void(const String &, float, int)> invoke;
     std::function<bool(int,int,int,int)> rawMIDI;
+    std::function<String(const var &)> externalMIDIConflict;
+    std::function<Result(const var &)> transferExternalMIDI;
     String learning, learningKind, error;
     bool hasCustomInput(const ActionDefinition &definition, const String &kind) const {
         if ((kind == "keyboard" && (definition.fixedKeyboard() || definition.continuous)) ||
@@ -198,17 +214,49 @@ class ActionBindings final : public ChangeBroadcaster,
                String((int)num(midi, "number")) + " / Ch " + String((int)num(midi, "channel"));
     }
     String inputLabel(const String &id, const String &kind) const {
+        if (setlistBlockActionNumber(id) > 0 && kind == "midi") {
+            return midiLabel(midiInput(id));
+        }
         for (const auto &definition : actionDefinitions())
             if (id == definition.id) return inputLabel(definition, kind);
         return {};
     }
+    var midiInput(const String &id) const {
+        return get(get(settings.value("catlive.actions", object()), Identifier(id)), "midi");
+    }
+    static String midiLabel(const var &midi) {
+        return !midi.isObject() ? String() : String((int)num(midi, "status") == 0xb0 ? "CC " : "Note ") +
+            String((int)num(midi, "number")) + " / Ch " + String((int)num(midi, "channel"));
+    }
+    String midiConflict(const String &id, const var &input) const {
+        StringArray conflicts;
+        const auto saved = settings.value("catlive.actions", object());
+        if (const auto *values = saved.getDynamicObject()) for (const auto &entry : values->getProperties()) {
+            const auto other = entry.name.toString();
+            if (id == other || !sameMIDI(get(entry.value, "midi"), input)) continue;
+            if (const int number = setlistBlockActionNumber(other); number > 0) { conflicts.add(setlistBlockActionTitle(number)); continue; }
+            for (const auto &definition : actionDefinitions()) if (other == definition.id)
+                conflicts.add(localization::translate(String::fromUTF8(definition.title)));
+        }
+        if (setlistBlockActionNumber(id) > 0 && externalMIDIConflict)
+            if (const auto conflict = externalMIDIConflict(input); conflict.isNotEmpty()) conflicts.add(conflict);
+        return conflicts.joinIntoString(", ");
+    }
+    void resetMIDIState() { heldMIDI.clear(); }
     void begin(const String &action, const String &kind) {
+        settings.reload();
+        midiCandidate = {};
         learning = action;
         learningKind = kind;
         error.clear();
         sendChangeMessage();
     }
+    void beginMIDICandidate(const String &action, std::function<void(var)> captured) {
+        begin(action, "midi");
+        midiCandidate = std::move(captured);
+    }
     void cancel() {
+        midiCandidate = {};
         learning.clear();
         learningKind.clear();
         sendChangeMessage();
@@ -243,15 +291,22 @@ class ActionBindings final : public ChangeBroadcaster,
                 return true;
         return false;
     }
-    bool assign(const String &id, const String &kind, var input) {
+    bool assign(const String &id, const String &kind, var input, bool replaceMIDIConflicts = false) {
+        settings.reload();
+        const bool block = setlistBlockActionNumber(id) > 0;
+        replaceMIDIConflicts = replaceMIDIConflicts && block && kind == "midi";
         const auto definition = std::find_if(actionDefinitions().begin(), actionDefinitions().end(),
                                              [&](const auto &entry) { return id == entry.id; });
-        if (definition == actionDefinitions().end() ||
+        if ((block && (kind != "midi" || (!input.isVoid() && (!input.isObject() ||
+                 ((int)num(input,"status") != 0x90 && (int)num(input,"status") != 0xb0) ||
+                 num(input,"number",-1) < 0 || num(input,"number") > 127 ||
+                 num(input,"channel") < 1 || num(input,"channel") > 16)))) ||
+            (!block && (definition == actionDefinitions().end() ||
             (kind == "keyboard" && (definition->continuous || definition->fixedKeyboard())) ||
             (kind == "midi" &&
              (!definition->supportsMIDI() ||
               (definition->continuous && input.isObject() && (int)num(input, "status") != 0xb0))) ||
-            (kind != "keyboard" && kind != "midi")) {
+            (kind != "keyboard" && kind != "midi")))) {
             error = String::fromUTF8("Este tipo de controle não pode ser atribuído à ação.");
             sendChangeMessage();
             return false;
@@ -285,20 +340,49 @@ class ActionBindings final : public ChangeBroadcaster,
             const bool same = kind == "keyboard" && existing.isString() && input.isString()
                 ? normalizedActionKey(KeyPress::createFromDescription(existing.toString())) ==
                     normalizedActionKey(KeyPress::createFromDescription(input.toString()))
-                : JSON::toString(existing) == JSON::toString(input);
+                : kind == "midi" ? sameMIDI(existing, input) : JSON::toString(existing) == JSON::toString(input);
             if (!input.isVoid() && input.toString().isNotEmpty() && same) {
+                if (replaceMIDIConflicts) continue;
                 error = String::fromUTF8("Já está atribuído a ") + definition.title;
                 sendChangeMessage();
                 return false;
             }
         }
-        auto values = settings.value("catlive.actions", object()).clone();
+        if (kind == "midi" && input.isObject()) {
+            const auto saved = settings.value("catlive.actions", object());
+            if (const auto *values = saved.getDynamicObject()) for (const auto &entry : values->getProperties()) {
+                const auto other = entry.name.toString();
+                const int number = setlistBlockActionNumber(other);
+                if (other != id && number > 0 && sameMIDI(get(entry.value, "midi"), input) && !replaceMIDIConflicts) {
+                    error = String::fromUTF8("Já está atribuído a ") + setlistBlockActionTitle(number);
+                    sendChangeMessage();
+                    return false;
+                }
+            }
+        }
+        const auto externalConflict = block && kind == "midi" && input.isObject() && externalMIDIConflict
+            ? externalMIDIConflict(input) : String();
+        if (externalConflict.isNotEmpty() && (!replaceMIDIConflicts || !transferExternalMIDI)) {
+            error = String::fromUTF8("Já está atribuído a ") + externalConflict;
+            sendChangeMessage(); return false;
+        }
+        const auto previous = settings.value("catlive.actions", object()).clone();
+        auto values = previous.clone();
+        if (replaceMIDIConflicts) if (auto *saved = values.getDynamicObject())
+            for (const auto &property : saved->getProperties()) if (property.name.toString() != id && sameMIDI(get(property.value,"midi"),input)) {
+                auto entry = property.value.clone(); put(entry,"midi",{}); saved->setProperty(property.name, std::move(entry));
+            }
         auto entry = get(values, Identifier(id), object()).clone();
-        put(entry, Identifier(kind), std::move(input));
+        put(entry, Identifier(kind), input);
         put(values, Identifier(id), entry);
         auto result = settings.set("catlive.actions", values);
+        if (result.wasOk() && externalConflict.isNotEmpty() && replaceMIDIConflicts) {
+            result = transferExternalMIDI(input);
+            if (result.failed()) settings.set("catlive.actions", previous);
+        }
         error = result.getErrorMessage();
         if (result.wasOk()) {
+            midiCandidate = {};
             learning.clear();
             learningKind.clear();
         }
@@ -317,6 +401,7 @@ class ActionBindings final : public ChangeBroadcaster,
     }
 
   private:
+    friend struct ActionBindingsTestAccess;
     Appearance &settings;
     AudioDeviceManager &devices;
     struct Input {
@@ -325,6 +410,12 @@ class ActionBindings final : public ChangeBroadcaster,
     AbstractFifo queue{256};
     CriticalSection producers;
     std::array<Input, 256> pending;
+    std::set<int> heldMIDI;
+    std::function<void(var)> midiCandidate;
+    static bool sameMIDI(const var &a, const var &b) {
+        return a.isObject() && b.isObject() && num(a,"status") == num(b,"status") &&
+            num(a,"number") == num(b,"number") && num(a,"channel") == num(b,"channel");
+    }
     void handleIncomingMidiMessage(MidiInput *, const MidiMessage &message) override {
         if (!inputEnabled.load(std::memory_order_relaxed)) return;
         if (!message.isNoteOnOrOff() && !message.isController())
@@ -348,9 +439,25 @@ class ActionBindings final : public ChangeBroadcaster,
             const auto input = pending[(size_t)start];
             queue.finishedRead(1);
             if (!inputEnabled.load(std::memory_order_relaxed)) continue;
+            const bool release = input.status == 0x80 || input.value == 0;
+            const int pressedKey = ((input.status == 0x80 ? 0x90 : input.status) << 16) | (input.channel << 8) | input.number;
+            const bool wasHeld = heldMIDI.count(pressedKey) != 0;
+            if (release) heldMIDI.erase(pressedKey); else heldMIDI.insert(pressedKey);
+            const auto saved = settings.value("catlive.actions", object());
+            String blockAction;
+            if (const auto *values = saved.getDynamicObject()) for (const auto &entry : values->getProperties()) {
+                const auto id = entry.name.toString();
+                if (setlistBlockActionNumber(id) <= 0) continue;
+                const auto midi = get(entry.value, "midi");
+                if (midi.isObject() && (int)num(midi,"status") == (input.status == 0x80 ? 0x90 : input.status) &&
+                    (int)num(midi,"number") == input.number && (int)num(midi,"channel") == input.channel) {
+                    if (!release) blockAction = id;
+                }
+            }
             if (learning.isEmpty() && rawMIDI && rawMIDI(input.status,input.number,input.value,input.channel)) continue;
             if (input.status == 0x80 || (input.status == 0x90 && input.value == 0)) continue;
             if (learningKind == "midi" && learning.isNotEmpty()) {
+                if (setlistBlockActionNumber(learning) > 0 && release) continue;
                 auto def = std::find_if(actionDefinitions().begin(), actionDefinitions().end(),
                                         [&](const auto &d) { return learning == d.id; });
                 if (def != actionDefinitions().end() && def->continuous && input.status != 0xb0) {
@@ -362,7 +469,17 @@ class ActionBindings final : public ChangeBroadcaster,
                 put(value, "status", input.status);
                 put(value, "number", input.number);
                 put(value, "channel", input.channel);
-                assign(learning, "midi", value);
+                if (midiCandidate) {
+                    const auto capture = midiCandidate;
+                    capture(value);
+                    continue;
+                }
+                const auto learned = learning;
+                assign(learned, "midi", value);
+                continue;
+            }
+            if (blockAction.isNotEmpty()) {
+                if (!wasHeld && invoke) invoke(blockAction, input.value / 127.f, 0);
                 continue;
             }
             for (const auto &definition : actionDefinitions()) {

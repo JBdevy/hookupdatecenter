@@ -60,6 +60,32 @@ struct TimelineMagnetIcon: Shape {
         return p.applying(CGAffineTransform(scaleX: rect.width / 24, y: rect.height / 24))
     }
 }
+#if os(macOS)
+/// Only the blank tail below the mixer rows owns this surface. Clear on mouse
+/// down so Delete cannot act on the old selection while a double-click waits.
+private struct TimelineEmptyMixerInput: NSViewRepresentable {
+    let clearSelection: () -> Void
+    let addTrack: () -> Void
+    func makeNSView(context: Context) -> TimelineEmptyMixerView { TimelineEmptyMixerView() }
+    func updateNSView(_ view: TimelineEmptyMixerView, context: Context) {
+        view.clearSelection = clearSelection; view.addTrack = addTrack
+    }
+}
+private final class TimelineEmptyMixerView: NSView {
+    var clearSelection: (() -> Void)?
+    var addTrack: (() -> Void)?
+    override var acceptsFirstResponder: Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        guard !event.modifierFlags.contains(.control), let window,
+              window.attachedSheet == nil, !NativeTimelineInputGate.shared.isBlocked(window),
+              ControlMappings.shared.editing == nil else { return }
+        window.makeFirstResponder(self)
+        EditorSelectionRouter.shared.activate(.tracks, in: window)
+        clearSelection?()
+        if event.clickCount == 2 { addTrack?() }
+    }
+}
+#endif
 private let markerLaneHeight: CGFloat = 16
 private let tempoLaneHeight = markerLaneHeight
 private let barLaneHeight = markerLaneHeight
@@ -163,6 +189,8 @@ private struct TimelineGridContent: View, Equatable {
     @State private var reRenderTitle = "Re-render"
     @StateObject private var reRenderProgress = ItemReRenderProgress()
     @State private var showingReRender = false
+    @StateObject private var separation = CatStemSession()
+    @State private var showingSeparation = false
     @State private var resizingItem: UUID?
     @State private var resizedItemStart = 0.0
     @State private var resizedItemEnd = 0.0
@@ -314,10 +342,16 @@ private struct TimelineGridContent: View, Equatable {
                                 #endif
                                 }.frame(width: mountedLabelWidth, height: contentHeight).clipped().background(JarasTheme.mixer)
                                     .overlay(alignment: .bottomLeading) {
+                                        #if os(macOS)
+                                        TimelineEmptyMixerInput(clearSelection: clearTrackSelection, addTrack: addStandardTrackAtEnd)
+                                            .frame(width: mountedLabelWidth, height: max(0, contentHeight - rulerHeight - rows.totalHeight))
+                                        #else
                                         Color.clear
                                             .frame(width: mountedLabelWidth, height: max(0, contentHeight - rulerHeight - rows.totalHeight))
                                             .contentShape(Rectangle())
                                             .onTapGesture(count: 2) { addStandardTrackAtEnd() }
+                                            .onTapGesture { clearTrackSelection() }
+                                        #endif
                                     }
                                 }.equatable().frame(width: labelWidth, alignment: .leading).clipped().allowsHitTesting(labelWidth > 0)
                                     #if os(macOS)
@@ -699,6 +733,16 @@ private struct TimelineGridContent: View, Equatable {
             selectedClips.formIntersection(tracks.flatMap(\.clips).map(\.id))
             selectedClip = selectedClip.flatMap { selectedClips.contains($0) ? $0 : nil } ?? selectedClips.first
         }
+        .sheet(isPresented: $showingSeparation, onDismiss: {
+            #if os(macOS)
+            DispatchQueue.main.async {
+                guard let window = NSApp.keyWindow, window.attachedSheet == nil else { return }
+                window.makeFirstResponder(nil)
+            }
+            #endif
+        }) {
+            CatStemProgressView(session: separation) { showingSeparation = false }
+        }
         .sheet(isPresented: $showingReRender) {
             ItemReRenderProgressView(progress: reRenderProgress, title: reRenderTitle,
                                      cancel: glueCancellation.map { cancellation in { cancellation.cancel() } }) { showingReRender = false }
@@ -1011,6 +1055,14 @@ private struct TimelineGridContent: View, Equatable {
             selectedTracks = [id]
         }, pointerDown: { EditorSelectionRouter.shared.handlePointer($0) })
         input.marqueeBegan = { show.pauseTimelineFollow() }
+        input.separateAudio = { id in
+            showingSeparation = true; separation.start(item: id, show: show, documents: documents)
+        }
+        input.canSeparateAudio = { id in
+            guard let track = originalSong.tracks.first(where: { $0.clips.contains { $0.id == id } }),
+                  track.kind == .standard, let clip = track.clips.first(where: { $0.id == id }) else { return false }
+            return AudioSeparation.accepts(clip, on: track)
+        }
         input.fileLocation = { id in
             guard let directory = documents.currentURL?.deletingLastPathComponent(),
                   let clip = originalSong.tracks.flatMap(\.clips).first(where: { $0.id == id }),
@@ -1466,6 +1518,10 @@ private struct TimelineGridContent: View, Equatable {
     }
     #endif
 
+    private func clearTrackSelection() {
+        selectedTrack = nil; selectedTracks.removeAll()
+        show.setMixerTrackSelection([], anchor: nil)
+    }
     private func selectTrack(_ id: UUID, in song: Song) {
         guard song.tracks.contains(where: { $0.id == id && $0.kind == .standard }) else { return }
         #if os(macOS)

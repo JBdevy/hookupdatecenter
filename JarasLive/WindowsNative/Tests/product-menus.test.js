@@ -16,7 +16,7 @@ function recorder(names) {
   }]))};
 }
 const trackCommands = 'patch fx envelopeSettings editTrack createMIDI soundDesigner group ungroup removeFromGroup link unlink removeTracks';
-const gridCommands = 'setMuted freezeMIDI unify openFX createRegion reRender normalize tuner exportAudio convertAudio';
+const gridCommands = 'setMuted freezeMIDI unify openFX createRegion reRender separateAudio normalize tuner exportAudio convertAudio';
 const audio = (id, options = {}) => ({id, editable: true, audioExportable: true,
   midiEditable: false, contextActions: true, muted: false, hasFX: false, ...options});
 const midi = (id, options = {}) => audio(id, {midiEditable: true, audioExportable: false, ...options});
@@ -343,4 +343,12 @@ test('region duplicate menu requires one row in a named playlist and passes occu
   assert.deepEqual(menus.buildSetlistSongMenu({...context, playlistId: null}), []);
   assert.deepEqual(menus.buildSetlistSongMenu({...context, selectedIds: ['copy','original']}), []);
   assert.deepEqual(menus.buildSetlistSongMenu({...context, region: {id:'copy',parentRegionID:'parent'}}), []);
+});
+
+ test('audio separation is offered for one audio item and sends only that ID', () => {
+  const r = recorder(gridCommands), a = audio('source');
+  const single = menus.buildTimelineItemMenu({item:a, items:[a], selectedIds:['source'], actions:r.actions});
+  action(single, 'item.separateAudio'); assert.deepEqual(r.calls.at(-1).payload, {itemId:'source'});
+  const many = menus.buildTimelineItemMenu({item:a, items:[a,audio('other')], selectedIds:['source','other'], actions:r.actions});
+  assert.equal(many.some(e => e.id === 'item.separateAudio'), false);
 });

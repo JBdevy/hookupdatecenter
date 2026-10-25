@@ -612,6 +612,8 @@ struct GridSelectionInput: NSViewRepresentable {
     var selectRow: (CGFloat) -> Void = { _ in }
     var pointerDown: (NSEvent) -> Void = { _ in }
     var marqueeBegan: () -> Void = {}
+    var separateAudio: ((UUID) -> Void)? = nil
+    var canSeparateAudio: ((UUID) -> Bool)? = nil
     var fileLocation: ((UUID) -> URL?)? = nil
     var itemGuide: CGRect? = nil
     func projected(pixelsPerSecond: CGFloat, itemGuide: CGRect?) -> Self {
@@ -637,7 +639,7 @@ struct GridSelectionInput: NSViewRepresentable {
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
-        view.fileLocation = fileLocation
+        view.fileLocation = fileLocation; view.separateAudio = separateAudio; view.canSeparateAudio = canSeparateAudio
         view.marqueeBegan = marqueeBegan
         view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
@@ -1336,6 +1338,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         }
         self.anchor = nil; selectionRect = nil; needsDisplay = true
     }
+    var separateAudio: ((UUID) -> Void)?
+    var canSeparateAudio: ((UUID) -> Bool)?
     var fileLocation: ((UUID) -> URL?)?
     @objc private func revealContextFile() {
         guard selected.count == 1, let contextItem, let url = fileLocation?(contextItem) else { return }
@@ -1372,6 +1376,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 glue.target = self; menu.addItem(glue)
                 let tuner = NSMenuItem(title: "Tuner", action: #selector(tuneSelection), keyEquivalent: "")
                 tuner.target = self; menu.addItem(tuner)
+                if selected.count == 1, canSeparateAudio?(contextItem) == true {
+                    let separation = NSMenuItem(title: "Separation audio", action: #selector(separateContextAudio), keyEquivalent: "")
+                    separation.target = self; menu.addItem(separation)
+                }
                 let normalize = NSMenuItem(title: JarasLocalization.string("Normalize…"), action: #selector(normalizeSelection), keyEquivalent: "")
                 normalize.target = self; menu.addItem(normalize)
                 if self.item(id: contextItem)?.editable == true {
@@ -1396,6 +1404,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         menu.addItem(export)
         menu.autoenablesItems = false
         return menu
+    }
+    @objc private func separateContextAudio() {
+        guard selected.count == 1, let contextItem, canSeparateAudio?(contextItem) == true else { return }
+        separateAudio?(contextItem)
     }
     @objc private func editContextMIDI() { if let contextItem { editMIDI?(contextItem) } }
     @objc private func openContextFX() { if let contextItem { fx?(contextItem, false) } }

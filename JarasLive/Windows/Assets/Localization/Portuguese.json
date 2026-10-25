@@ -308,6 +308,7 @@
   "Keyboard": "Teclado",
   "Low Shelf": "Low Shelf",
   "Map control": "Mapear controle",
+  "Press a MIDI note or controller button.": "Pressione uma nota MIDI ou um botão do controlador.",
   "Menu": "Menu",
   "Modulation": "Modulation",
   "New playlist": "Nova playlist",
@@ -1349,5 +1350,10 @@
   "Cannot queue a duplicate of the song that is playing.": "Não é possível enfileirar uma cópia da música que está tocando.",
   "Block text color": "Cor do texto dos blocos",
   "Track group": "Grupo de pistas",
-  "The current project will be replaced by %@.": "O projeto atual será substituído por %@."
+  "The current project will be replaced by %@.": "O projeto atual será substituído por %@.",
+  "Delete block": "Apagar bloco",
+  "Delete blocks": "Apagar blocos",
+  "Delete selected blocks?": "Apagar os blocos selecionados?",
+  "Only the selected block headers will be removed. Songs and timeline items will be kept.": "Somente os itens de bloco selecionados serão removidos do setlist.",
+  "Block ID %02d": "Bloco ID %02d"
 }

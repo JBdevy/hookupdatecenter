@@ -1,0 +1,220 @@
+Offline audio separation — implementation and references
+
+Product behavior
+- Available only for a single supported audio item; never video, MIDI or text.
+- Original stays in place, preserved and muted. Five tracks are inserted below
+  its track in the same folder, without rearranging existing tracks.
+- File, item and track labels use Vocal/Drum/Bass/Guitar/Other - original name.
+- macOS uses the existing pinned PyTorch 2.2.2 / Demucs 4.0.1 runtime; CPU on
+  Intel, CPU or MPS on Apple Silicon. No MLX/macOS 14-only realtime helper.
+- Windows uses the same bundled checkpoint with optional FP32 OpenVINO
+  acceleration and a PyTorch CPU fallback; iPad uses Core ML.
+- Separation happens before playback. Resulting WAVs have the selected item's
+  position and duration and play without extra model-processing latency.
+- Realtime CatStemSeparation is removed from FX menus and legacy inserts are
+  bypassed without starting a worker. Serialized settings stay readable.
+
+References inspected on 2026-10-24 (architecture reference, no extra dependency)
+1. https://github.com/facebookresearch/demucs
+   https://github.com/facebookresearch/demucs/blob/main/docs/mac.md
+   Original model, CPU inference, source ordering and macOS instructions.
+2. https://github.com/CarlGao4/Demucs-Gui
+   Separate Intel/ARM Mac distributions; CPU support and platform-specific
+   acceleration. An offline GUI benchmark is not evidence of realtime latency.
+3. https://github.com/Neutone/neutone_sdk
+   Streaming buffer/SRC boundaries, declared delay compensation and profiling.
+   Current HTDemucs download appears in their non-realtime Gen section.
+4. https://github.com/sevagh/demucs.cpp
+   Portable C++17, six-source inference and Eigen. Its README explicitly favors
+   low memory at the expense of Torch speed; replacing the current inference
+   runtime with it is not justified as a realtime performance improvement.
+5. https://github.com/ssmall256/demucs-mlx
+   Existing optimized Apple Silicon path; cannot supply Intel compatibility.
+6. https://github.com/pytorch/pytorch/blob/v2.2.2/docs/source/notes/mps.rst
+   This pinned release documents MPS from macOS 12.3, but the compatibility
+   worker deliberately uses CPU so macOS 12.0 and Intel do not depend on MPS.
+
+Validation
+  swift test --jobs 2 --filter StemSeparationTests
+  bash scripts/test-grid-selection.sh
+  CATLIVE_TEST_SEPARATOR=1 CATLIVE_EXPORT_TEST_SOURCE=Tests/Apple/CatStemRenderTests.swift \
+    CATLIVE_TEST_RESOURCES=<prepared runtime parent> bash scripts/test-offline-export.sh
+  CATSTEM_TEST_MODEL=<compiled model> bash scripts/test-catstem-coreml-worker.sh
+  Windows self-tests: CATLIVE_TEST_FILTER=Audio separation, CatLive --self-test
+
+The development Mac is Apple M1. Cross-compiling Intel and checking deployment
+headers is not a physical execution test on Intel/macOS 12 or 13.
+
+Local feedback validation, 2026-10-24
+- Physical iPad6,12 (2 GB, iOS 16.7.16): both original failures are Jetsam
+  per-process-limit reports, each at 92,800 16-KiB pages (~1.42 GiB).
+  Models now select CPU-only compute on devices with <=3 GiB physical RAM.
+  Same checkpoint/tensor contract. That alone does not establish parity with
+  desktop file separation: the context and precision differ (audit below).
+  Explicit CPU inference regression checks finite output, nonzero estimates,
+  and unity reconstruction. The updated app completed the user's approximately
+  225-second file on that physical iPad. No independently verified start/end
+  timing is recorded here; the reported duration was approximately 13 minutes.
+- Windows i5-1235U, pinned Torch CPU, identical 8-second fixture and model:
+  warm four-thread pass 13.094 s; warm eight-thread pass 10.672 s.
+  Maximum sample difference 7.45e-8. Windows now uses up to eight workers,
+  reserving two logical processors; macOS thread policy is unchanged.
+  Progress includes completed-chunk-based estimated time remaining.
+- Core ML compute selection reference:
+  https://developer.apple.com/documentation/coreml/mlcomputeunits
+
+Offline iPad window scheduling, 2026-10-24
+- File separation no longer reuses the live plugin's 8,192-frame output hop.
+  It consumes all 44,100 predicted frames with a 33,075-frame stride and
+  25% triangular overlap/add, following Demucs file-window blending:
+  https://github.com/facebookresearch/demucs/blob/main/demucs/apply.py
+  This changes window context/blending, not the checkpoint or precision.
+- Working storage is bounded to one window of predictions, sums and weights;
+  Other remains the original mixture minus the four blended named stems.
+  CPU-only selection remains enabled on <=3-GiB devices.
+- Mac CPU comparison, same 8-second fixture/model, two passes per worker:
+  previous 3.43155 / 2.79957 s, 44 predictions;
+  new 0.752523 / 0.757423 s, 11 predictions (~3.7x warm speedup).
+  These are Mac CPU measurements, not a claim of physical iPad throughput.
+- Real-model regression passes short files, exact stride boundaries, multiple
+  windows, an independent full-timeline overlap/add reference for each named
+  source, exact duration/unity, and cancellation after the first output chunk.
+  Native progress now includes an estimate based on completed audio/time.
+- The physical iPad completed separation after this revision was installed.
+  The Mac microbenchmark above must not be substituted for iPad throughput.
+- Windows follow-up: bypassing Torch 2.2.2 native attention fast path did not
+  materially improve warm performance (11.234 s native vs 11.063 s functional
+  attention on the same 8-second fixture; max difference 7.45e-8). Production
+  attention dispatch was left unchanged rather than adding an ineffective patch.
+- Windows follow-up thread comparison: warm 8 threads 11.125 s, 10 threads
+  11.282 s on the same 8-second fixture (max difference 8.94e-8). Retained
+  eight-thread policy; no validated Windows speed improvement from this pass.
+
+Windows full-context FP32 acceleration validation, 2026-10-24
+- Physical Windows i5-1235U / Intel UHD, 8 GB RAM; bundled PyTorch 2.2.2 and
+  OpenVINO 2025.4. Preserves the original 343,980-frame (7.8-second) context,
+  full attention, normalization, 25% overlap/add and short-tail processing.
+  No FP16 inference path was accepted for production.
+- Same 9-second fixture through the production model wrapper, excluding model
+  compilation: GPU eager 9.516 s versus OpenVINO 5.594 s; CPU eager 10.547 s
+  versus OpenVINO 6.796 s. Across all six model sources, GPU maximum absolute
+  error <=1.865e-6 / relative RMS error <=9.80e-5; CPU <=9.366e-6 / <=1.143e-4.
+- Full real-file worker run: 224.966530612 seconds of audio processed in
+  112.453 seconds with OpenVINO GPU. All five float WAV outputs were finite,
+  retained exactly 9,921,024 frames at 44.1 kHz, and summed to the original
+  within 2.384e-7 maximum sample error. This worker timing excludes the app's
+  input export, project insertion and UI work; it is not a general speed claim.
+- Acceleration failure falls back to the original CPU worker after releasing
+  the failed model. Focused tests cover unavailable/corrupt acceleration,
+  runtime inference failure, CPU fallback and output duration/reconstruction.
+
+iPad/desktop output comparison, 2026-10-24
+- The currently shipped Core ML graph has a fixed 44,100-frame (1-second)
+  context and FP16 weights/compute with float32 I/O. Desktop uses the original
+  343,980-frame (7.8-second) context and FP32 inference. The iPad file worker
+  also omits outer whole-file mean/std normalization and right-pads its final
+  window, whereas Demucs TensorChunk padding centers the short window and can
+  include preceding samples. These pipelines are not numerically equivalent.
+- Controlled fixture: stereo Dirty Loops excerpt, source seconds 45 through 57,
+  44.1 kHz, no clipping. The production iPad Core ML kernel and shipped model
+  ran CPU-only on the development Mac. The reference was the pinned desktop
+  PyTorch worker with two CPU threads, full context and 25% overlap/add.
+  These are not measurements of files produced on the physical iPad.
+- Relative RMS difference against the desktop reference, in source order
+  Vocal / Drum / Bass / Guitar / Other:
+    shipped iPad pipeline: 18.745% / 17.860% / 20.065% / 174.491% / 45.419%;
+    PyTorch with only context shortened to 1 second:
+                          18.890% / 17.794% / 19.916% / 174.142% / 45.371%.
+  The context reduction accounts for most of the difference in this fixture.
+- With context/padding/normalization matched to the iPad, Core ML versus FP32
+  PyTorch relative RMS differences were 0.508% / 0.528% / 0.593% / 1.900% /
+  1.272%. Changing only tail padding gave 2.031% / 1.913% / 2.047% / 0.267% /
+  2.361%; changing only outer normalization gave <=0.015% for this fixture.
+- These are numerical differences relative to a chosen reference, NOT a
+  percentage loss of separation quality. Quiet reference sources can have
+  large relative errors. There are no isolated ground-truth stems here to
+  measure perceptual separation quality. Exact mixture reconstruction
+  (maximum error 5.96e-8) does not prove that individual stems are equivalent.
+
+Full-context iPad memory feasibility
+- Increasing the context requires a newly exported graph and matching FFT/
+  worker shapes. It cannot be enabled by changing only the window scheduler.
+- Spectral attention has 352 tokens at 1 second and 2,688 at 7.8 seconds.
+  For eight heads, one dense attention score/probability tensor grows from
+  1.89 to 110.25 MiB in FP16 (3.78 to 220.50 MiB in FP32). Several tensors,
+  decoder skip activations, model storage and the host app may coexist.
+  These calculated tensor sizes are not a measured peak resident footprint.
+- The physical 2-GB iPad's observed ~1.42-GiB per-process limit makes full
+  context a memory risk, not a proven impossibility. The isolated development
+  Mac experiment below is promising but does not establish iPad peak memory.
+- Exact attention split into 128-query tiles against all 2,688 keys would
+  require 5.25 MiB per FP16 score tile (10.50 MiB FP32), retaining full
+  context. This requires checking compiler scheduling and peak memory; the
+  compiler may retain or execute several tiles together. Merely using 2- or
+  4-second windows is a different context, not desktop equivalence.
+
+Isolated full-context Core ML prototype, 2026-10-24 (not bundled)
+- Exported the original 7.8-second graph with Core ML Tools 9.0, iOS 16 target,
+  FP16 weights/compute and float32 I/O. Context is 343,980 frames; spectral
+  input has 336 time bins. Kept desktop whole-file normalization, centered
+  tail padding and 25% overlap/add. All artifacts are outside the repositories;
+  the installed model and production contracts were not changed.
+- Same 12-second real excerpt as above, CPU-only on the development M1 Mac:
+  relative RMS difference versus desktop FP32 in source order Vocal / Drum /
+  Bass / Guitar / Other was 0.548% / 0.497% / 0.513% / 3.154% / 1.052%, with
+  correlation >=0.99960 for every source. This is much closer numerically than
+  the shipped one-second graph, but is not bit-identical or a perceptual score.
+- Standalone Objective-C inference process, excluding Torch/conversion:
+  three predictions took 0.459 / 0.457 / 0.554 s; model load took 0.651 s.
+  Maximum resident set size was 398,098,432 bytes (~380 MiB); macOS reported
+  peak memory footprint 276,939,688 bytes (~264 MiB). Post-prediction samples
+  alone would miss transient allocations, so the process peak is recorded.
+- This measures macOS Core ML's CPU compiler/runtime, not the older iPad's
+  runtime, CPU or full app memory. No FP32 re-export was required or attempted
+  in this experiment. Temporary artifacts consumed <1 GiB.
+
+Physical iPad full-context feasibility, 2026-10-24
+- A separate development-signed CoreMLProbe app ran the same 7.8-second FP16
+  graph with CPU-only compute on iPad6,12, iOS 16.7.16, 2 GB. It contained only
+  a simple status view, the model and precomputed inputs; no CatLive project or
+  waveform caches. Memory was sampled every 20 ms with logs flushed to disk.
+- The process was killed DURING MODEL LOAD, before its first prediction.
+  JetsamEvent-2026-10-24-233713.ips identifies CoreMLProbe PID 9568 as the
+  frontmost process with reason per-process-limit, lifetimeMax/rpages 92,800,
+  page size 16,384 bytes: 1,520,435,200 bytes (1,450 MiB / ~1.42 GiB).
+  The final persisted sample before termination reported physical footprint
+  1,071,400,856 bytes. No source outputs or inference duration were produced.
+- The optional 256-MiB host-memory reservation was NOT enabled; the baseline
+  already exceeded the device limit. The experiment therefore does not support
+  shipping this unmodified full-context graph on the user's iPad. macOS peak
+  memory cannot be used to predict this older Core ML runtime's load cost.
+- The isolated probe was removed afterward and the existing CatLive brought
+  back to the foreground without replacement or restart. Further exact-context
+  graph/memory changes require a new isolated measurement before integration.
+- Follow-up exact attention prototype: split queries into blocks of 128 while
+  retaining all keys, original weights and 7.8-second context. On the Mac, all
+  spectral and temporal output tensors were byte-identical to the dense FP16
+  graph for all three real-fixture windows. FP32 source comparison before
+  conversion also passed (maximum absolute error 3.46e-6, relative RMS 2.32e-6).
+  The MIL graph retained 160 tiled softmax operations instead of 10 dense ones.
+- This query-tiled graph also hit the physical iPad's per-process memory limit
+  DURING MODEL LOAD, before inference and without the optional memory reserve.
+  JetsamEvent-2026-10-24-234313.ips identifies CoreMLProbe PID 9589 with the same
+  92,800-page / ~1.42-GiB limit. Thus that graph change alone did not fix the
+  older Core ML runtime's load-time memory use; no physical output exists to
+  compare. The isolated probe was again removed and CatLive restored unchanged.
+
+Legacy Core ML format experiment, 2026-10-24 (not bundled)
+- The same full-context query-tiled trace converted to the NeuralNetwork
+  backend targeting iOS 14, with FP32 weights and zero custom operations.
+  On the development Mac, the 12-second fixture's named outputs matched the
+  desktop reference within 7.91e-5 relative RMS / 6.01e-5 maximum absolute.
+- CPU-only inference took 4.52 / 4.99 / 5.30 seconds per window. Model loading
+  alone reached 3.23 GiB footprint; the process reached 3.49 GiB footprint and
+  2.32 GiB resident memory. These are Mac measurements, not physical iPad
+  measurements. This alternative was rejected without installing it on iPad.
+- The production one-second model remains unchanged. Matching desktop context
+  on the tested low-memory iPad needs a different loading strategy, such as
+  separately compiled encoder/transformer/decoder stages, with new numerical,
+  physical-memory and timing validation. Merely shortening the context cannot
+  be described as preserving the desktop separation result.

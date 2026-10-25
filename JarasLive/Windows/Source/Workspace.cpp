@@ -1,4 +1,6 @@
 #include "TrackInstrumentPicker.h"
+#include "AudioSeparation.h"
+#include "AudioSeparationPanel.h"
 #include "ProjectReductionPanel.h"
 #include "MeterDisplay.h"
 #include "SpecialTrackControls.h"
@@ -47,6 +49,7 @@
 #include "GridMediaClipboard.h"
 #include "ExportPanel.h"
 #include "ModalSheet.h"
+#include "SetlistBlockMIDIPanel.h"
 #include "ResolumePanel.h"
 #include "TextItemPanel.h"
 #include "ClipEditing.h"
@@ -3182,6 +3185,8 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     vinhetasPanel = std::make_unique<VinhetasPanel>(session.audio.vinhetas, appearance);
     dockContent.addChildComponent(*vinhetasPanel);
     actions.rawMIDI = [this](int status,int number,int value,int channel) { return projectReady&&!loginPanel&&!browserVisible&&vinhetasPanel->midi(status,number,value,channel); };
+    actions.externalMIDIConflict = [this](const var &input) { return vinhetasPanel->setlistBlockMIDIConflict(input); };
+    actions.transferExternalMIDI = [this](const var &input) { return vinhetasPanel->removeSetlistBlockMIDIConflicts(input); };
     vinhetasPanel->createTrack = [this] { perform([&] {
         if (!session.song()) return;
         session.edit([&](jaras::Project &project) {
@@ -3803,6 +3808,7 @@ void Workspace::activateProjectTab() {
     layoutActive = true;
     restoreWorkspaceLayout();
     session.audio.liveInputEnabled = true;
+    actions.resetMIDIState();
     actions.inputEnabled = true;
     remoteHost->presentation = [this](int panel) -> var {
         if (!projectReady || loginPanel) return var();
@@ -5214,6 +5220,19 @@ void Workspace::addStandardTrackAtEnd() {
     });
 }
 void Workspace::mouseDown(const MouseEvent &event) {
+    if (event.eventComponent == &tracksContent && event.mods.isLeftButtonDown() &&
+        !event.mods.isPopupMenu() && session.song() &&
+        event.getEventRelativeTo(&tracksContent).y >= rowTop((int)session.song()->tracks.size())) {
+        // An empty mixer click still owns Delete/Select All, but has no track
+        // target. Do not fall back to a selection retained in another panel.
+        selectionAreas.activate(tracksViewport);
+        trackSelectionFromFooter = false;
+        selectedTracks.clear(); selectedTrack.clear(); trackSelectionAnchor.clear();
+        if (isShowing()) grabKeyboardFocus();
+        updateState();
+        for (auto *row : rows) row->repaint();
+        timeline->invalidate(); repaint();
+    }
     if (event.eventComponent == this && event.mods.isPopupMenu() && !browserVisible && juce::Rectangle<int>(40,40,230,70).contains(event.getPosition()))
         showMasterMenu(event.getScreenPosition());
 }
@@ -5251,7 +5270,7 @@ void Workspace::prompt(const String &title, const String &label, const String &i
 void Workspace::confirmTrackDeletion(const std::set<ID> &ids, std::function<void()> remove) {
     if (!tracksContainItems(session.project(), ids)) { remove(); return; }
     ModalSheet::open(*this, localization::translate("Delete selected tracks and their items?"),
-        std::make_unique<TrackDeletionConfirmationPanel>(std::move(remove)), 320, 190);
+        std::make_unique<TrackDeletionConfirmationPanel>(std::move(remove)), 384, 150);
 }
 void Workspace::confirm(const String &title, const String &message, std::function<void()> done) {
     AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon, title, message, "Continuar",
@@ -6192,12 +6211,13 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
     bool textItem = false, audioItem = false, midiItem = false, muted = false;
     bool projection = false, hasFX = false;
     ID ownerID;
-    bool fileItem = false;
+    bool fileItem = false, separable = false;
     if (const auto *song = session.song())
         for (const auto &track : song->tracks)
             for (const auto &clip : track.clips)
                 if (clip.id == id) {
                     ownerID = track.id;
+                    separable = audioSeparation::eligible(track,clip);
                     fileItem = clip.audioFile.has_value() && !clip.midi;
                     textItem = clip.text && !clip.audioFile;
                     audioItem = jaras::fixedTrackName(track.role).empty();
@@ -6213,7 +6233,9 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
         menu.addItem(2,muted?"Desmutar itens":"Mutar itens");menu.addItem(31,"Converter Mono");menu.addItem(32,String::fromUTF8("Converter Estéreo"));menu.addItem(14,"Unificar itens");if(hasFX)menu.addItem(15,"FX");
     } else {
         if(audioItem || projection) {
-            menu.addItem(9,String::fromUTF8("Criar região do item"));menu.addItem(13,"Re-render");menu.addItem(14,"Unificar itens");menu.addItem(10,"Tuner");menu.addItem(11,String::fromUTF8("Normalizar…"));
+            menu.addItem(9,String::fromUTF8("Criar região do item"));menu.addItem(13,"Re-render");menu.addItem(14,"Unificar itens");menu.addItem(10,"Tuner");
+            if(separable&&(!clipSelected(id)||selectedClips.size()<=1))menu.addItem(16,"Separation audio");
+            menu.addItem(11,String::fromUTF8("Normalizar…"));
             if(audioItem){menu.addSeparator();menu.addItem(24,"Inverter - LR");menu.addItem(21,"Converter Mono - L");menu.addItem(22,"Converter Mono - R");menu.addItem(23,"Converter Mono L-R");menu.addItem(20,String::fromUTF8("Converter Estéreo"));}
         }
         if(audioItem){menu.addSeparator();menu.addItem(2,muted?"Desmutar itens":"Mutar itens");}
@@ -6250,6 +6272,15 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                             safe->selectedClip=safe->selectedClips.empty()?ID{}:*safe->selectedClips.begin();
                             safe->updateState();
                         });
+                    return;
+                }
+                if(action==16){
+                    if(w.session.project().id!=projectID||!w.session.song()||w.session.song()->id!=songID)return;
+                    w.session.separateAudioItem(id,[safe,projectID,songID](std::set<ID> ids){
+                        if(!safe||safe->session.project().id!=projectID||!safe->session.song()||safe->session.song()->id!=songID)return;
+                        safe->selectedClips=std::move(ids);safe->selectedClip=safe->selectedClips.empty()?ID{}:*safe->selectedClips.begin();safe->updateState();
+                    });
+                    if(w.session.busy)ModalSheet::open(w,"Separation audio",std::make_unique<AudioSeparationPanel>(w.session),440,204);
                     return;
                 }
                 if(action==15){w.openItemFX(id);return;}
@@ -7132,7 +7163,7 @@ void Workspace::toggleRightParts() {
 }
 void Workspace::layoutDetachedSetlist() {
     if (!setlistWindow) return;
-    const int minimumWidth=partsRightVisible?620:336;
+    const int minimumWidth=partsRightVisible?620:235;
     setlistWindow->setResizeLimits(minimumWidth,300,2400,1800);
     if(setlistWindow->getWidth()<minimumWidth)setlistWindow->setSize(minimumWidth,setlistWindow->getHeight());
     if (auto *panel=setlistWindow->getContentComponent()) panel->resized();

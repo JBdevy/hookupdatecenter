@@ -16,6 +16,38 @@ final class StemSeparationTests: XCTestCase {
         }
         return (project, clip, tracks)
     }
+    func testAudioEligibilityAndOutputNames() {
+        var (_, clip, _) = fixture()
+        let track = Track(id: UUID(), name: "Track", role: .other)
+        for ext in ["WAV", "wave", "aiff", "mp3", "m4a", "flac", "caf"] {
+            clip.audioFile = AudioFile(path: "Stems/source." + ext)
+            XCTAssertTrue(AudioSeparation.accepts(clip, on: track))
+        }
+        for ext in ["mov", "mp4", "avi", "m4v", "png", "mid", "txt"] {
+            clip.audioFile = AudioFile(path: "Stems/source." + ext)
+            XCTAssertFalse(AudioSeparation.accepts(clip, on: track))
+        }
+        XCTAssertEqual(AudioSeparation.outputName(.drum, original: "My song.MP3"), "Drum - My song")
+        XCTAssertEqual(AudioSeparation.outputName(.vocal, original: "My song.v2"), "Vocal - My song.v2")
+        XCTAssertEqual(AudioSeparation.outputName(.other, original: ""), "Other - Item")
+    }
+    func testTracksAppearBelowSourceAndBeforeExistingSibling() throws {
+        var (project, clip, tracks) = fixture()
+        let source = project.songs[0].tracks[0]
+        let sibling = Track(id: UUID(), name: "Existing", role: .other)
+        project.songs[0].tracks.append(sibling)
+        try project.insertSeparatedStems(tracks, song: project.songs[0].id, sourceTrack: source.id, original: clip)
+        XCTAssertEqual(project.songs[0].tracks.map(\.id), [source.id] + tracks.map(\.id) + [sibling.id])
+    }
+    func testRemovedRealtimeStageIsHiddenAndCannotRunInLegacyProject() {
+        var fx = NativeFXSettings()
+        fx.inserted = ["EQ", NativeFXSettings.stemSeparator, "Cat Gate"]
+        fx.stemSeparatorEnabled = true
+        XCTAssertEqual(fx.effectKeys, ["EQ", "Cat Gate"])
+        XCTAssertEqual(fx.clipEffectKeys, ["EQ", "Cat Gate"])
+        XCTAssertFalse(fx.isEnabled(NativeFXSettings.stemSeparator))
+        XCTAssertTrue(fx.inserted.contains(NativeFXSettings.stemSeparator), "Retain legacy serialized state")
+    }
     func testSeparationCommitsFiveAlignedTracksAndPreservesOriginalWithSingleUndo() throws {
         var (project, clip, tracks) = fixture()
         let original = project

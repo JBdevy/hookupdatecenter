@@ -6,6 +6,16 @@ import AVFoundation
 import AppKit
 #endif
 
+/// The ordinal belongs to the current playlist, not a saved project or block UUID.
+enum SetlistBlockMIDICommand {
+    static let prefix = "setlistBlock:"
+    static func number(_ command: String) -> Int? {
+        guard command.hasPrefix(prefix), let number = Int(command.dropFirst(prefix.count)),
+              number > 0, command == prefix + String(number) else { return nil }
+        return number
+    }
+}
+
 struct MappedControl: Codable, Identifiable {
     var id = UUID()
     var project: UUID
@@ -13,6 +23,10 @@ struct MappedControl: Codable, Identifiable {
     var command: String
     var input: ControlInput
     var fxParameter: FXParameterMapping? = nil
+    var globalSetlistBlockNumber: Int? {
+        guard track == nil, fxParameter == nil else { return nil }
+        return SetlistBlockMIDICommand.number(command)
+    }
 }
 struct MappingEdit: Identifiable {
     let id = UUID()
@@ -61,7 +75,7 @@ struct MappingTransferRequest: Identifiable {
         if let data = UserDefaults.standard.data(forKey: "jaras.controlMappings"), let stored = try? JSONDecoder().decode([MappedControl].self, from: data) { mappings = stored }
         if let data = UserDefaults.standard.data(forKey: "jaras.actions"), let stored = try? JSONDecoder().decode([DAWActionBinding].self, from: data) { actions = DAWActionBindings(stored: stored) }
     }
-    var current: [MappedControl] { mappings.filter { $0.project == show?.snapshot.project.id } }
+    var current: [MappedControl] { mappings.filter { $0.globalSetlistBlockNumber != nil || $0.project == show?.snapshot.project.id } }
     func bind(_ show: ShowController, session: UUID? = nil) {
         self.show = show; bindingSession = session
         migrateActionMappings()
@@ -143,6 +157,9 @@ struct MappingTransferRequest: Identifiable {
         }
     }
     func title(track: UUID?, command: String) -> String {
+        if let number = SetlistBlockMIDICommand.number(command) {
+            return String(format: JarasLocalization.string("Block ID %02d"), number)
+        }
         if command == "tempoUp" { return "BPM +" }
         if command == "tempoDown" { return "BPM −" }
         let name = track.flatMap { id in show?.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == id })?.name } ?? JarasLocalization.string(track == nil ? "Master" : "Track unavailable")
@@ -160,6 +177,25 @@ struct MappingTransferRequest: Identifiable {
         let binding = actions.binding(action)
         candidate = kind == "keyboard" ? binding.keyboard : binding.midi
         editing = MappingEdit(track: nil, command: action.rawValue, action: action)
+    }
+    func beginSetlistBlock(_ number: Int) {
+        guard number > 0, show != nil else { return }
+        let command = SetlistBlockMIDICommand.prefix + String(number)
+        mode = "midi"; error = ""
+        candidate = mappings.first { $0.globalSetlistBlockNumber == number }?.input
+        editing = MappingEdit(track: nil, command: command)
+    }
+    var learningSetlistBlock: Bool {
+        editing.flatMap { SetlistBlockMIDICommand.number($0.command) } != nil
+    }
+    var hasSetlistBlockMapping: Bool {
+        guard let number = editing.flatMap({ SetlistBlockMIDICommand.number($0.command) }) else { return false }
+        return mappings.contains { $0.globalSetlistBlockNumber == number }
+    }
+    func removeEditingSetlistBlockMapping() {
+        guard let number = editing.flatMap({ SetlistBlockMIDICommand.number($0.command) }) else { return }
+        mappings.removeAll { $0.globalSetlistBlockNumber == number }
+        persist(); candidate = nil; error = ""; editing = nil
     }
     func setActionTrack(_ action: DAWAction, number: Int?) {
         actions.setTrack(number, action: action); persistActions()
@@ -191,6 +227,7 @@ struct MappingTransferRequest: Identifiable {
         return JarasLocalization.string(action.title) + (label.map { " (" + $0 + ")" } ?? "")
     }
     func begin(track: UUID?, command: String) {
+        if let number = SetlistBlockMIDICommand.number(command) { beginSetlistBlock(number); return }
         if let action = DAWAction.quickMapping(command: command, master: track == nil) {
             guard let show else { return }
             migrateActionMappings()
@@ -211,8 +248,12 @@ struct MappingTransferRequest: Identifiable {
     func save(replacingConflicts: Bool = false) {
         guard let editing, let candidate, let show, candidate.kind == mode else { return }
         if learningContinuous && (candidate.kind != "midi" || candidate.status != 0xb0) { return }
+        if learningSetlistBlock && (candidate.kind != "midi" || (candidate.status != 0x90 && candidate.status != 0xb0)) { return }
         let actionConflicts = actions.entries.filter { $0.action != editing.action && $0.matches(candidate) }
-        let controlConflicts = current.filter { entry in
+        let vinhetasConflicts = learningSetlistBlock ? VinhetasController.shared.setlistBlockConflicts(candidate) : []
+        // A global block shortcut must also resolve collisions with FX controls
+        // saved in another project, where it will remain active after switching.
+        let controlConflicts = (learningSetlistBlock ? mappings : current).filter { entry in
             entry.input.matches(candidate) && (editing.action != nil || entry.track != editing.track || entry.command != editing.command ||
                 (entry.fxParameter?.sameControl(as: editing.fxParameter) ?? (editing.fxParameter == nil)) == false)
         }
@@ -225,13 +266,14 @@ struct MappingTransferRequest: Identifiable {
         if mode == "keyboard", actionConflicts.contains(where: { $0.action.fixedKeyboard }) {
             error = JarasLocalization.string("The arrow keys are fixed to setlist navigation."); return
         }
-        if !replacingConflicts && (!actionConflicts.isEmpty || !controlConflicts.isEmpty) {
+        if !replacingConflicts && (!actionConflicts.isEmpty || !controlConflicts.isEmpty || !vinhetasConflicts.isEmpty) {
             let titles = actionConflicts.map { JarasLocalization.string($0.action.title) } + controlConflicts.map {
                 $0.fxParameter.map { $0.parameter.effect + " · " + JarasLocalization.string($0.parameter.name) } ?? title(track: $0.track, command: $0.command)
             }
-            error = titles.joined(separator: ", ") + " — " + JarasLocalization.string("This control is already mapped.")
+            let conflictTitles = titles + vinhetasConflicts
+            error = conflictTitles.joined(separator: ", ") + " — " + JarasLocalization.string("This control is already mapped.")
             transferRequest = MappingTransferRequest(editID: editing.id, input: candidate, kind: mode,
-                message: String(format: JarasLocalization.string("%@ is already mapped to %@. Remove it from that function and use it for %@?"), candidate.label, titles.joined(separator: ", "), editTitle(editing)))
+                message: String(format: JarasLocalization.string("%@ is already mapped to %@. Remove it from that function and use it for %@?"), candidate.label, conflictTitles.joined(separator: ", "), editTitle(editing)))
             return
         }
         var nextActions = actions
@@ -245,9 +287,10 @@ struct MappingTransferRequest: Identifiable {
         let conflictingIDs = Set(controlConflicts.map(\.id))
         var nextControls = mappings.filter { !conflictingIDs.contains($0.id) }
         if editing.action == nil {
-            nextControls.removeAll { $0.project == show.snapshot.project.id && $0.track == editing.track && $0.command == editing.command && ($0.fxParameter?.sameControl(as: editing.fxParameter) ?? (editing.fxParameter == nil)) }
+            nextControls.removeAll { (learningSetlistBlock || $0.project == show.snapshot.project.id) && $0.track == editing.track && $0.command == editing.command && ($0.fxParameter?.sameControl(as: editing.fxParameter) ?? (editing.fxParameter == nil)) }
             nextControls.append(MappedControl(project: show.snapshot.project.id, track: editing.track, command: editing.command, input: candidate, fxParameter: editing.fxParameter))
         }
+        if !vinhetasConflicts.isEmpty { VinhetasController.shared.removeSetlistBlockConflicts(candidate) }
         actions = nextActions; mappings = nextControls
         persistActions(); persist(); error = ""; transferRequest = nil; self.editing = nil
     }
@@ -285,6 +328,7 @@ struct MappingTransferRequest: Identifiable {
     private func execute(_ input: ControlInput) {
         guard let show else { return }
         if let entry = current.first(where: { $0.input.matches(input) }) {
+            if let number = entry.globalSetlistBlockNumber { _ = show.focusSetlistBlock(number: number); return }
             if entry.command == "tempoUp" || entry.command == "tempoDown" { show.adjustTempo(entry.command == "tempoUp" ? 1 : -1); return }
             if let action = ShowCommand(rawValue: entry.command), [.mute, .solo].contains(action) { show.send(action, target: entry.track) }
             return
@@ -464,7 +508,7 @@ struct ControlMappingEditor: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Map control").font(.jarasHeadline)
                 Text(mappings.editTitle(edit))
-                if !mappings.learningContinuous && (edit.action == nil || edit.chooseInputKind) {
+                if !mappings.learningSetlistBlock && !mappings.learningContinuous && (edit.action == nil || edit.chooseInputKind) {
                 Picker("Input", selection: $mappings.mode) { Text("Keyboard").tag("keyboard"); Text("MIDI").tag("midi") }.pickerStyle(.segmented)
                     .onChange(of: mappings.mode) { kind in
                         if let action = edit.action {
@@ -480,6 +524,9 @@ struct ControlMappingEditor: View {
                     Button("Use Enter") { mappings.candidate = ControlInput(kind: "keyboard", label: "Enter", key: 36, modifiers: 0) }
                 }
                 if !mappings.error.isEmpty { Text(LocalizedStringKey(mappings.error)).foregroundStyle(.red).font(.jarasCaption) }
+                if mappings.hasSetlistBlockMapping {
+                    Button("Remove mapping", role: .destructive) { mappings.removeEditingSetlistBlockMapping() }
+                }
                 HStack { Button("Cancel") { mappings.editing = nil }; Spacer(); Button("Save") { mappings.save() }.disabled(mappings.candidate == nil) }
             }.padding(22).frame(width: 360).background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 10)).shadow(radius: 16)
                 .background {

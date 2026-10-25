@@ -960,9 +960,19 @@ private struct RemoteSidebarRail<Content: View>: View {
         let playlist: Bool
         var name: String
         var color: UInt32
+        var block = false
+    }
+    private struct NativeSetlistRemoval {
+        let project: UUID
+        let song: UUID
+        let playlist: UUID?
+        let ids: Set<UUID>
+        let blocksOnly: Bool
     }
     @State private var editingEntry: EntryEditor?
+    @State private var editingBlockSymbol = true
     @State private var removal: DAWRemoteCommand?
+    @State private var nativeSetlistRemoval: NativeSetlistRemoval?
     @State private var confirmingRemoval = false
     @State private var duplicateQueueWarning = false
     @State private var selectedSetlistEntries: Set<UUID> = []
@@ -1200,11 +1210,14 @@ private struct RemoteSidebarRail<Content: View>: View {
         .onChange(of: state.project) { _ in creatingPlaylist = false }
         .overlay {
             if let entry = editingEntry { IpadCompactModal {
-                NameColorEditor(title: entry.playlist ? "Rename playlist" : "Edit song", initialName: entry.name,
+                NameColorEditor(title: entry.block ? "Edit block" : entry.playlist ? "Rename playlist" : "Edit song", initialName: entry.name,
                     initialColor: entry.color, save: { name, color in
-                    send(.init(project: state.project, song: state.song, action: entry.playlist ? .renamePlaylist : .editRegion,
-                        target: entry.id, value: Double(color), text: name))
-                }, close: { editingEntry = nil })
+                    if entry.block { localShow?.editSetlistBlock(entry.id, name: name, color: color, symbol: editingBlockSymbol) }
+                    else {
+                        send(.init(project: state.project, song: state.song, action: entry.playlist ? .renamePlaylist : .editRegion,
+                            target: entry.id, value: Double(color), text: name))
+                    }
+                }, close: { editingEntry = nil }, symbol: entry.block ? $editingBlockSymbol : nil)
 
             } }
         }
@@ -1231,11 +1244,23 @@ private struct RemoteSidebarRail<Content: View>: View {
         .alert("CatLive", isPresented: $duplicateQueueWarning) {
             Button("OK", role: .cancel) { }
         } message: { Text("Cannot queue a duplicate of the song that is playing.") }
+        .overlay { if local { NativeSetlistControlMappingOverlay() } }
+        .overlay { if !local && !observer { RemoteSetlistBlockMappingOverlay() } }
         .alert("Delete", isPresented: $confirmingRemoval) {
-            Button("Cancel", role: .cancel) { removal = nil }
-            Button("Delete", role: .destructive) { if let removal { send(removal) }; removal = nil }
-        } message: { Text(removal?.action == .deletePlaylist ? "Delete playlist?" : removal?.playlist == nil ? "Delete region and its contents?" : "Remove from playlist?") }
-        .onChange(of: state.project) { _ in editingEntry = nil; removal = nil; confirmingRemoval = false }
+            Button("Cancel", role: .cancel) { removal = nil; nativeSetlistRemoval = nil }
+            Button("Delete", role: .destructive) {
+                if nativeSetlistRemoval != nil { confirmNativeSetlistRemoval() }
+                else if let removal { send(removal) }
+                removal = nil
+            }
+        } message: {
+            if nativeSetlistRemoval?.blocksOnly == true {
+                Text("Delete selected blocks?") + Text("\n\n") + Text("Only the selected block headers will be removed. Songs and timeline items will be kept.")
+            } else {
+                Text(removal?.action == .deletePlaylist ? "Delete playlist?" : (nativeSetlistRemoval?.playlist ?? removal?.playlist) == nil ? "Delete region and its contents?" : "Remove from playlist?")
+            }
+        }
+        .onChange(of: state.project) { _ in editingEntry = nil; removal = nil; nativeSetlistRemoval = nil; confirmingRemoval = false }
         .onChange(of: controlsEnabled) { enabled in
             if !enabled {
                 navigationOpen = false; projectsOpen = false; playlistPickerOpen = false
@@ -1271,7 +1296,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private var workspaceState: some View {
         workspaceContent
-        .onChange(of: state.selectedPlaylist) { _ in selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil }
+        .onChange(of: state.selectedPlaylist) { _ in selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; nativeSetlistRemoval = nil; confirmingRemoval = false; localShow?.selectSetlistBlock(nil) }
         .onChange(of: state.project) { _ in selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; trackScrolling.pointerReset = UUID(); deletingTracks = nil; splittingItems = nil; nativeMarker = nil; nativeNormalization = false; tempoStepPending = false; pitchStepPending = false }
         .onAppear {
             if !local && !observer { RemoteMIDIActions.shared.start() }
@@ -1284,7 +1309,10 @@ private struct RemoteSidebarRail<Content: View>: View {
         }
         .onDisappear { if !local { RemoteMIDIActions.shared.stop() } }
         .onReceive(RemoteMIDIActions.shared.$event.dropFirst().compactMap { $0 }) { event in
-            if !local && !observer { performRemoteMIDI(event.action) }
+            if !local && !observer {
+                if let number = event.blockNumber { performRemoteBlockMIDI(number) }
+                else if let action = event.action { performRemoteMIDI(action) }
+            }
         }
         .onReceive(localShow?.$setlistNavigationRequest.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { request in
             guard local, let request, let localShow, let song = localShow.current else { return }
@@ -1296,6 +1324,8 @@ private struct RemoteSidebarRail<Content: View>: View {
             if !entries.isEmpty {
                 trackScrolling.selectionScope = .setlist
                 localShow.stepRegion(request.direction, entries: entries)
+                selectedSetlistEntries = localShow.focusedRegion.map { [$0] } ?? []
+                setlistSelectionAnchor = localShow.focusedRegion
             }
         }
         .onChange(of: state.bpm) { _ in tempoStepPending = false }
@@ -1438,6 +1468,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 show.send(.escape)
                 trackScrolling.itemSelection.replace([]); selectedTracks = []
                 show.setMixerTrackSelection([], anchor: nil)
+                selectedSetlistEntries = []; setlistSelectionAnchor = nil; show.selectSetlistBlock(nil)
             }
             return true
         }
@@ -1453,7 +1484,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         return false
     }
     private func deleteNativeSelection() {
-        guard let show = localShow, let song = show.current else { return }
+        guard let show = localShow, show.current != nil else { return }
         switch trackScrolling.selectionScope {
         case .grid:
             show.deleteItems(trackScrolling.itemSelection.items.intersection(visibleTracks.flatMap(\.clips).map(\.id)))
@@ -1461,8 +1492,28 @@ private struct RemoteSidebarRail<Content: View>: View {
         case .tracks:
             requestNativeTrackDeletion(selectedTracks)
         case .setlist:
-            if let id = show.focusedRegion { requestRemoval(.deleteRegion, id: id, playlist: state.selectedPlaylist) }
+            requestNativeSetlistRemoval(selectedSetlistEntries)
         }
+    }
+    private func requestNativeSetlistRemoval(_ selection: Set<UUID>) {
+        guard local, let show = localShow, let song = show.current,
+              show.snapshot.project.id == state.project, song.id == state.song else { return }
+        let ids = show.deletableSetlistEntries(selection)
+        guard !ids.isEmpty else { return }
+        trackScrolling.selectionScope = .setlist
+        nativeSetlistRemoval = .init(project: state.project, song: song.id, playlist: show.selectedRegionPlaylist?.id,
+            ids: ids, blocksOnly: ids.isSubset(of: Set(show.listedBlocks.map(\.id))))
+        removal = nil; confirmingRemoval = true
+    }
+    private func confirmNativeSetlistRemoval() {
+        defer { nativeSetlistRemoval = nil; confirmingRemoval = false }
+        guard let request = nativeSetlistRemoval, let show = localShow,
+              show.snapshot.project.id == request.project, show.current?.id == request.song,
+              show.selectedRegionPlaylist?.id == request.playlist else { return }
+        guard show.deleteSetlistEntries(request.ids) else { return }
+        selectedSetlistEntries.subtract(request.ids)
+        if let anchor = setlistSelectionAnchor, request.ids.contains(anchor) { setlistSelectionAnchor = nil }
+        show.selectSetlistBlock(selectedSetlistEntries.count == 1 ? selectedSetlistEntries.first : nil)
     }
     private func requestNativeTrackDeletion(_ selection: Set<UUID>) {
         guard let show = localShow, let song = show.current else { return }
@@ -2469,6 +2520,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             } else { masterStrip.padding(.trailing, trackIconWidth).background(RemoteSurface.panel) }
             HStack(spacing: 1) {
                 RemoteTrackScrollRail(controller: trackScrolling).frame(width: 28)
+                GeometryReader { viewport in
                 ScrollView(.vertical) {
                     LazyVStack(spacing: 1) {
                         ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { number, track in
@@ -2499,7 +2551,23 @@ private struct RemoteSidebarRail<Content: View>: View {
                     #if os(iOS)
                     .background(RemoteTrackScrollProbe(controller: trackScrolling))
                     #endif
+                    .frame(minHeight: local ? viewport.size.height : 0, alignment: .top)
+                    .overlay(alignment: .bottom) {
+                        if local {
+                            // The hit target starts after the final visible row;
+                            // taps on row backgrounds and controls keep selecting
+                            // or editing that row instead of clearing selection.
+                            let rowsHeight = visibleTracks.reduce(0.0) {
+                                $0 + DAWRemoteItemLayout.rowHeight($1, scale: trackScrolling.heightScale) + 1
+                            } - (visibleTracks.isEmpty ? 0 : 1)
+                            Color.clear.frame(height: max(0, viewport.size.height - CGFloat(rowsHeight)))
+                                .contentShape(Rectangle())
+                                .onTapGesture { clearTrackSelection() }
+                                .accessibilityIdentifier("trackMixer.emptyArea")
+                        }
+                    }
                 }.background(RemoteSurface.background)
+                }
             }
         }
     }
@@ -2543,6 +2611,11 @@ private struct RemoteSidebarRail<Content: View>: View {
             duplicate: guarded(standard && track?.role.rawValue != "vinhetas" ? { localShow?.duplicateTracks(ids) } : nil),
             remove: guarded({ requestNativeTrackDeletion(ids) }), count: ids.count)
     }
+    private func clearTrackSelection() {
+        trackScrolling.selectionScope = .tracks
+        selectedTracks.removeAll()
+        localShow?.setMixerTrackSelection([], anchor: nil)
+    }
     private func toggleTrackSelection(_ id: UUID) {
         trackScrolling.selectionScope = .tracks
         if hardwareModifiers.contains(.shift), let anchor = localShow?.selectedTrackForActions,
@@ -2556,7 +2629,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         localShow?.setMixerTrackSelection(selectedTracks, anchor: id)
     }
     private func performRemoteMIDI(_ command: RemoteMIDIAction) {
-        guard !local, !observer, !settingsOpen || RemoteMIDIActions.shared.learning == nil else { return }
+        guard !local, !observer, !RemoteMIDIActions.shared.isLearning else { return }
         switch command {
         case .play: action(.play)
         case .stop: action(.stop)
@@ -2594,15 +2667,47 @@ private struct RemoteSidebarRail<Content: View>: View {
             remoteMIDIPartID = ids[next]; action(.queueSection, target: ids[next])
         }
     }
+    private func remoteSetlistBlockNumber(_ id: UUID) -> Int? {
+        guard state.selectedPlaylist != nil else { return nil }
+        let entries = setlistRowsCache.entries(in: state, expanded: [], query: "")
+        var number = 0
+        for entry in entries {
+            if case .block(let block) = entry {
+                number += 1
+                if block.id == id { return number }
+            }
+        }
+        return nil
+    }
+    private func performRemoteBlockMIDI(_ number: Int) {
+        guard !local, !observer, controlsEnabled, !RemoteMIDIActions.shared.isLearning,
+              state.selectedPlaylist != nil, number > 0 else { return }
+        // Search and expanded drawers must not renumber the playlist's blocks.
+        // Resolve against the latest host snapshot, never a learned UUID.
+        let entries = setlistRowsCache.entries(in: state, expanded: [], query: "")
+        var ordinal = 0
+        for entry in entries {
+            switch entry {
+            case .block: ordinal += 1
+            case .region(let row):
+                if ordinal >= number {
+                    remoteMIDISetlistID = row.region.id
+                    selectSetlistEntry(row.region.id)
+                    return
+                }
+            }
+        }
+    }
     private func selectionTargets(_ clicked: UUID) -> [UUID] {
         let ids = selectedTracks.contains(clicked) ? selectedTracks : [clicked]
         return state.tracks.filter { ids.contains($0.id) }.map(\.id)
     }
     private func selectSetlistEntry(_ id: UUID) {
         trackScrolling.selectionScope = .setlist
+        let isBlock = local && (state.setlistBlocks?.contains { $0.id == id } == true)
         if local, hardwareModifiers.contains(.shift), let anchor = setlistSelectionAnchor {
-            let ids = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search).compactMap { entry -> UUID? in
-                if case .region(let row) = entry { return row.region.id }; return nil
+            let ids = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search).map { entry -> UUID in
+                switch entry { case .region(let row): return row.region.id; case .block(let block): return block.id }
             }
             if let first = ids.firstIndex(of: anchor), let last = ids.firstIndex(of: id) {
                 selectedSetlistEntries = Set(ids[min(first, last)...max(first, last)])
@@ -2612,8 +2717,25 @@ private struct RemoteSidebarRail<Content: View>: View {
             setlistSelectionAnchor = id
         } else {
             selectedSetlistEntries = [id]; setlistSelectionAnchor = id
-            action(.selectRegion, target: id)
+            if !isBlock { action(.selectRegion, target: id) }
         }
+        if local { localShow?.selectSetlistBlock(selectedSetlistEntries.count == 1 ? selectedSetlistEntries.first : nil) }
+    }
+    private func prepareNativeSetlistDrag(_ id: UUID) -> Bool {
+        draggingSetlistEntries = []
+        guard local, let show = localShow, let playlist = state.selectedPlaylist,
+              show.snapshot.project.id == state.project, show.current?.id == state.song,
+              show.selectedRegionPlaylist?.id == playlist else { return false }
+        let available = Set(show.setlistEntries.map(\.id))
+        guard available.contains(id) else { return false }
+        trackScrolling.selectionScope = .setlist
+        // A selected row keeps the complete batch when the drag begins. A block
+        // is one playlist entry; the songs below it are not implicitly selected.
+        if selectedSetlistEntries.contains(id) { selectedSetlistEntries.formIntersection(available) }
+        else { selectedSetlistEntries = [id]; setlistSelectionAnchor = id }
+        draggingSetlistEntries = selectedSetlistEntries
+        show.selectSetlistBlock(selectedSetlistEntries.count == 1 ? selectedSetlistEntries.first : nil)
+        return true
     }
     private var setlist: some View {
         let played = Set(state.playedLiveRegionIDs ?? [])
@@ -2688,11 +2810,11 @@ private struct RemoteSidebarRail<Content: View>: View {
                         } else {
                             ForEach(setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search)) { entry in
                                 switch entry {
-                                case .block(let block): RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0).equatable()
+                                case .block(let block): setlistBlockRow(block)
                                 case .region(let row):
                                 let region = row.region
                                 Button { selectSetlistEntry(region.id) } label: {
-                                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: selectedSetlistEntries.contains(region.id) || region.id == state.focusedRegion,
+                                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: selectedSetlistEntries.contains(region.id) || (selectedSetlistEntries.isEmpty && region.id == state.focusedRegion),
                                         active: state.playing && region.id == state.setlistCurrentEntryId, queued: state.playing && region.id == (state.setlistQueuedEntryId),
                                         color: remoteColor(region.color), nameColor: remoteColor(region.nameColor ?? (row.child ? 0xffeb3b : 0xffffff)),
                                         duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.setlistCurrentEntryId ? state.position : region.start)))),
@@ -2700,9 +2822,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                         queueProgress: min(1, max(0, ((state.playbackEnd ?? state.position) - state.position) / max(0.001, (state.playbackEnd ?? state.position) - (state.queueStartedAt ?? state.position)))))
                                 }.buttonStyle(RemoteFullAreaButtonStyle())
                                     .onDrag {
-                                        guard local, state.selectedPlaylist != nil else { return NSItemProvider() }
-                                        if !selectedSetlistEntries.contains(region.id) { selectedSetlistEntries = [region.id] }
-                                        draggingSetlistEntries = selectedSetlistEntries
+                                        guard prepareNativeSetlistDrag(region.id) else { return NSItemProvider() }
                                         return NSItemProvider(object: ("catlive-setlist:" + region.id.uuidString) as NSString)
                                     }
                                     .background {
@@ -2747,13 +2867,61 @@ private struct RemoteSidebarRail<Content: View>: View {
             if UIDevice.current.userInterfaceIdiom != .phone { setlistControls }
         }.padding([.top, .leading, .trailing], 10).background(RemoteSurface.background)
     }
+    @ViewBuilder private func setlistBlockRow(_ block: DAWRemoteState.SetlistBlock) -> some View {
+        if local {
+            Button { selectSetlistEntry(block.id) } label: {
+                RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0,
+                    selected: selectedSetlistEntries.contains(block.id)).equatable()
+            }.buttonStyle(RemoteFullAreaButtonStyle())
+                .onDrag {
+                    guard prepareNativeSetlistDrag(block.id) else { return NSItemProvider() }
+                    return NSItemProvider(object: ("catlive-setlist:" + block.id.uuidString) as NSString)
+                }
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.onAppear { setlistRowHeights[block.id] = geometry.size.height }
+                            .onChange(of: geometry.size.height) { setlistRowHeights[block.id] = $0 }
+                    }
+                }
+                .onDrop(of: [UTType.text], delegate: IpadSetlistDrop(show: localShow, target: block.id,
+                    project: state.project, playlist: state.selectedPlaylist, height: setlistRowHeights[block.id] ?? 38, moving: $draggingSetlistEntries))
+                .contextMenu {
+                    let targets = selectedSetlistEntries.contains(block.id)
+                        ? selectedSetlistEntries.intersection(Set(state.setlistBlocks?.map(\.id) ?? [])) : [block.id]
+                    Button("Edit block") {
+                        editingBlockSymbol = block.symbol
+                        editingEntry = .init(id: block.id, playlist: false, name: block.name, color: block.color, block: true)
+                    }.onAppear {
+                        trackScrolling.selectionScope = .setlist
+                        if !selectedSetlistEntries.contains(block.id) { selectSetlistEntry(block.id) }
+                    }
+                    if let number = localShow?.setlistBlockNumber(block.id) {
+                        Button("Learn MIDI") { ControlMappings.shared.beginSetlistBlock(number) }
+                    }
+                    Button(targets.count > 1 ? "Delete blocks" : "Delete block", role: .destructive) {
+                        requestNativeSetlistRemoval(targets)
+                    }
+                }.id(block.id)
+        } else if !observer {
+            RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0).equatable()
+                .contextMenu {
+                    if let number = remoteSetlistBlockNumber(block.id) {
+                        Button("Learn MIDI") { RemoteMIDIActions.shared.beginBlock(number) }
+                    }
+                }
+        } else {
+            RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0).equatable()
+        }
+    }
     private func editPlaylist(_ id: UUID) {
         guard let entry = state.playlists?.first(where: { $0.id == id }) else { return }
         playlistPickerOpen = false
         editingEntry = .init(id: id, playlist: true, name: entry.name, color: 0)
     }
     private func requestRemoval(_ type: DAWRemoteCommand.Action, id: UUID, playlist: UUID? = nil) {
+        if local, type == .deleteRegion { requestNativeSetlistRemoval([id]); return }
         playlistPickerOpen = false
+        nativeSetlistRemoval = nil
         removal = .init(project: state.project, song: state.song, action: type, target: id, playlist: playlist)
         confirmingRemoval = true
     }
@@ -2785,12 +2953,30 @@ private struct RemoteSidebarRail<Content: View>: View {
 
 }
 
+/// Observe the learner independently: incoming MIDI must not redraw the grid.
+private struct NativeSetlistControlMappingOverlay: View {
+    @ObservedObject private var mappings = ControlMappings.shared
+    var body: some View {
+        if mappings.editing != nil {
+            ZStack {
+                Color.black.opacity(0.58).ignoresSafeArea().contentShape(Rectangle())
+                    .onTapGesture { mappings.editing = nil }
+                ControlMappingEditor()
+                    .buttonStyle(IpadDialogButtonStyle())
+                    .foregroundStyle(JarasTheme.text).tint(JarasTheme.green)
+                    .preferredColorScheme(.dark)
+            }.accessibilityAddTraits(.isModal)
+        }
+    }
+}
+
 /// Playlist block headers keep their saved color, symbol and order; Observer
 /// uses the same display without acquiring any playback controls.
 private struct RemoteSetlistBlockLabel: View, Equatable {
     let block: DAWRemoteState.SetlistBlock
     let fontStyle: Int
     var scale = 1.0
+    var selected = false
     var body: some View {
         HStack(spacing: 8) {
             if block.symbol {
@@ -2805,9 +2991,9 @@ private struct RemoteSetlistBlockLabel: View, Equatable {
                 .foregroundStyle(remoteColor(block.nameColor ?? 0x69ed91)).lineLimit(2)
         }.padding(.horizontal, 10).padding(.vertical, 5 * scale)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(remoteColor(block.color).opacity(0.15))
+            .background(selected ? JarasTheme.green.opacity(0.22) : remoteColor(block.color).opacity(0.15))
             .clipShape(RoundedRectangle(cornerRadius: 4))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(remoteColor(block.color).opacity(0.5)))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(selected ? JarasTheme.green : remoteColor(block.color).opacity(0.5), lineWidth: selected ? 2 : 1))
             .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
     }
 }
@@ -2895,9 +3081,18 @@ private struct RemoteMIDIBinding: Codable, Equatable {
 }
 @MainActor private final class RemoteMIDIActions: ObservableObject {
     static let shared = RemoteMIDIActions()
-    struct Event { let id = UUID(); let action: RemoteMIDIAction }
+    struct Event { let id = UUID(); var action: RemoteMIDIAction? = nil; var blockNumber: Int? = nil }
+    struct Transfer: Identifiable {
+        let id = UUID()
+        let target: String
+        let input: RemoteMIDIBinding
+        let message: String
+    }
     @Published private(set) var bindings: [String: RemoteMIDIBinding] = [:]
     @Published var learning: RemoteMIDIAction?
+    @Published private(set) var learningBlock: Int?
+    @Published private(set) var candidate: RemoteMIDIBinding?
+    @Published private(set) var transfer: Transfer?
     @Published private(set) var event: Event?
     @Published private(set) var error = ""
     private var client: MIDIClientRef = 0
@@ -2909,6 +3104,55 @@ private struct RemoteMIDIBinding: Codable, Equatable {
            let value = try? JSONDecoder().decode([String: RemoteMIDIBinding].self, from: data) { bindings = value }
     }
     func clear(_ action: RemoteMIDIAction) { bindings.removeValue(forKey: action.rawValue); persist() }
+    var isLearning: Bool { learning != nil || learningBlock != nil || transfer != nil }
+    private func blockKey(_ number: Int) -> String { "setlistBlock:\(number)" }
+    private func blockNumber(_ key: String) -> Int? {
+        let prefix = "setlistBlock:"
+        guard key.hasPrefix(prefix), let number = Int(key.dropFirst(prefix.count)), number > 0,
+              key == blockKey(number) else { return nil }
+        return number
+    }
+    func title(_ key: String) -> String {
+        if let number = blockNumber(key) { return String(format: JarasLocalization.string("Block ID %02d"), number) }
+        return JarasLocalization.string(RemoteMIDIAction(rawValue: key)?.title ?? key)
+    }
+    func beginAction(_ action: RemoteMIDIAction) {
+        cancelLearning(); learning = action
+    }
+    func beginBlock(_ number: Int) {
+        guard number > 0 else { return }
+        cancelLearning(); learningBlock = number; candidate = bindings[blockKey(number)]
+    }
+    func cancelLearning() {
+        learning = nil; learningBlock = nil; candidate = nil; transfer = nil; error = ""
+    }
+    func cancelTransfer() { transfer = nil; error = "" }
+    var hasBlockMapping: Bool { learningBlock.map { bindings[blockKey($0)] != nil } ?? false }
+    func removeBlockMapping() {
+        guard let number = learningBlock else { return }
+        bindings.removeValue(forKey: blockKey(number)); persist(); cancelLearning()
+    }
+    func saveBlock() {
+        guard let number = learningBlock, let candidate, [0x90, 0xb0].contains(candidate.status) else { return }
+        save(candidate, to: blockKey(number))
+    }
+    private func save(_ input: RemoteMIDIBinding, to key: String, replacing: Bool = false) {
+        let conflicts = bindings.filter { $0.key != key && $0.value.matches(input) }.map(\.key).sorted()
+        if !conflicts.isEmpty && !replacing {
+            let names = conflicts.map(title).joined(separator: ", ")
+            transfer = Transfer(target: key, input: input,
+                message: String(format: JarasLocalization.string("%@ is already mapped to %@. Remove it from that function and use it for %@?"), input.label, names, title(key)))
+            return
+        }
+        bindings = bindings.filter { $0.key == key || !$0.value.matches(input) }
+        bindings[key] = input; persist(); cancelLearning()
+    }
+    func confirmTransfer(_ selected: Transfer? = nil) {
+        guard let pending = transfer, let request = selected ?? transfer, request.id == pending.id,
+              request.target == learning?.rawValue || request.target == learningBlock.map(blockKey),
+              learningBlock == nil || candidate?.matches(request.input) == true else { return }
+        save(request.input, to: request.target, replacing: true)
+    }
     private func persist() { if let data = try? JSONEncoder().encode(bindings) { UserDefaults.standard.set(data, forKey: "catlive.remote.midiActions") } }
     func start() {
         guard client == 0 else { return }
@@ -2938,7 +3182,7 @@ private struct RemoteMIDIBinding: Codable, Equatable {
     }
     func stop() {
         for source in sources.keys { MIDIPortDisconnectSource(port, source) }
-        sources.removeAll(); pressed.removeAll(); learning = nil; event = nil
+        sources.removeAll(); pressed.removeAll(); cancelLearning(); event = nil
         if port != 0 { MIDIPortDispose(port); port = 0 }
         if client != 0 { MIDIClientDispose(client); client = 0 }
     }
@@ -2962,12 +3206,15 @@ private struct RemoteMIDIBinding: Codable, Equatable {
         let channel = status & 15, normalized: UInt8 = kind == 0x80 ? 0x90 : kind
         let key = "\(source.0):\(channel):\(normalized):\(number)"
         if kind == 0x80 || (kind != 0xc0 && value == 0) { pressed.remove(key); return }
+        guard transfer == nil else { return }
+        if learningBlock != nil && kind == 0xc0 { return }
         guard kind == 0xc0 || pressed.insert(key).inserted else { return }
         let input = RemoteMIDIBinding(device: source.0, channel: channel, status: normalized, number: number,
             label: "\(source.1) · CH \(channel + 1) · \(kind == 0xb0 ? "CC" : kind == 0xc0 ? "PC" : "Note") \(number)")
-        if let learning {
-            bindings = bindings.filter { !$0.value.matches(input) }; bindings[learning.rawValue] = input
-            self.learning = nil; persist(); return
+        if learningBlock != nil { candidate = input; error = ""; return }
+        if let learning { save(input, to: learning.rawValue); return }
+        if let entry = bindings.first(where: { blockNumber($0.key) != nil && $0.value.matches(input) }), let number = blockNumber(entry.key) {
+            event = Event(blockNumber: number); return
         }
         if let action = RemoteMIDIAction.allCases.first(where: { bindings[$0.rawValue]?.matches(input) == true }) { event = Event(action: action) }
     }
@@ -2984,14 +3231,59 @@ private struct RemoteMIDIActionsView: View {
                         Text(LocalizedStringKey(action.title)).font(.jarasSubheadline)
                         Text(verbatim: midi.bindings[action.rawValue]?.label ?? "—").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                         HStack {
-                            Button(midi.learning == action ? "Cancel" : "Learn MIDI") { midi.learning = midi.learning == action ? nil : action }
+                            Button(midi.learning == action ? "Cancel" : "Learn MIDI") {
+                                if midi.learning == action { midi.cancelLearning() } else { midi.beginAction(action) }
+                            }
                             Spacer()
                             Button("Clear") { midi.clear(action) }.disabled(midi.bindings[action.rawValue] == nil)
                         }.buttonStyle(.bordered)
                     }.padding(10).background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 6))
                 }
             }.padding(.vertical, 8)
-        }.onDisappear { midi.learning = nil }
+        }.onDisappear { if midi.learning != nil { midi.cancelLearning() } }
+            .alert("This control is already mapped.", isPresented: Binding(get: { midi.transfer != nil }, set: { _ in }), presenting: midi.transfer) { request in
+                Button("Cancel", role: .cancel) { midi.cancelTransfer() }
+                Button("Transfer mapping") { midi.confirmTransfer(request) }
+            } message: { request in Text(verbatim: request.message) }
+    }
+}
+
+private struct RemoteSetlistBlockMappingOverlay: View {
+    @ObservedObject private var midi = RemoteMIDIActions.shared
+    var body: some View {
+        if let number = midi.learningBlock {
+            GeometryReader { geometry in
+                ZStack {
+                    Color.black.opacity(0.58).ignoresSafeArea().contentShape(Rectangle())
+                        .onTapGesture { midi.cancelLearning() }
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Map control").font(.jarasHeadline)
+                        Text(verbatim: midi.title("setlistBlock:\(number)"))
+                        Text("Press a MIDI note or controller button.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                        Text(verbatim: midi.candidate?.label ?? "—")
+                            .font(.jarasSystem(.body, design: .monospaced))
+                            .frame(maxWidth: .infinity, minHeight: 36)
+                            .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 6))
+                        if midi.hasBlockMapping {
+                            Button("Remove mapping", role: .destructive) { midi.removeBlockMapping() }
+                        }
+                        HStack {
+                            Button("Cancel") { midi.cancelLearning() }.keyboardShortcut(.cancelAction)
+                            Spacer()
+                            Button("Save") { midi.saveBlock() }.disabled(midi.candidate == nil).keyboardShortcut(.defaultAction)
+                        }
+                    }.padding(22).frame(width: min(360, max(1, geometry.size.width - 32)))
+                        .background { RemoteSurface.panel.clipShape(RoundedRectangle(cornerRadius: 12)) }
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.24)))
+                        .buttonStyle(IpadDialogButtonStyle()).foregroundStyle(JarasTheme.text)
+                        .tint(JarasTheme.green).shadow(radius: 16)
+                }.frame(width: geometry.size.width, height: geometry.size.height)
+            }.accessibilityAddTraits(.isModal)
+                .alert("This control is already mapped.", isPresented: Binding(get: { midi.transfer != nil }, set: { _ in }), presenting: midi.transfer) { request in
+                    Button("Cancel", role: .cancel) { midi.cancelTransfer() }
+                    Button("Transfer mapping") { midi.confirmTransfer(request) }
+                } message: { request in Text(verbatim: request.message) }
+        }
     }
 }
 
@@ -4062,7 +4354,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                         let displayedFade = fadePreview?.id == item.id && fadePreview?.fadeIn == fadeIn ? fadePreview!.value : duration
                         let edge = item.startTime + (fadeIn ? displayedFade : item.duration - displayedFade)
                         if edge >= start && edge <= end {
-                            IpadItemResizeHandle(left: fadeIn, interactionID: interactionID, changed: { delta, finished, cancelled in
+                            IpadItemResizeHandle(left: fadeIn, interactionID: interactionID, showsGrip: false, changed: { delta, finished, cancelled in
                                 let value = cancelled ? duration : min(item.duration, max(0, duration + (fadeIn ? delta : -delta) * span / max(1, width)))
                                 fadePreview = finished || cancelled ? nil : (item.id, fadeIn, value)
                                 itemFade?(item.id, fadeIn, value, finished || cancelled)
@@ -4079,11 +4371,12 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                 let laneHeight = itemGeometry.height(clip.id)
                 ForEach([true, false], id: \.self) { left in
                     let edge = left ? clip.start : clip.start + clip.duration
+                    let handle = IpadItemResizeHandleLayout(edge: (edge - start) / span * width, viewportWidth: width)
                     if (edge >= start && edge <= end) || resizing?.original.id == clip.id {
-                        IpadItemResizeHandle(left: left, interactionID: interactionID, changed: { delta, finished, cancelled in
+                        IpadItemResizeHandle(left: left, interactionID: interactionID, gripX: handle.gripX, showsGrip: handle.showsGrip, changed: { delta, finished, cancelled in
                             resize(clip.id, left: left, translation: delta, finished: finished, cancelled: cancelled)
-                        }).id(clip.id).frame(width: 28, height: max(0, laneHeight - GridSelectionItem.headerHeight - 2))
-                            .offset(x: min(width - 28, max(0, (edge - start) / span * width - 14)),
+                        }).id(clip.id).frame(width: handle.width, height: max(0, laneHeight - GridSelectionItem.headerHeight - 2))
+                            .offset(x: handle.origin,
                                     y: itemGeometry.offset(clip.id, fallbackLane: clip.lane ?? 0) + GridSelectionItem.headerHeight + 1)
                     }
                 }
@@ -4811,10 +5104,27 @@ private struct IpadTrackMenuSurface: UIViewRepresentable {
         var actions: [IpadTrackMenuAction] = []
         override init(frame: CGRect) {
             super.init(frame: frame)
-            backgroundColor = .clear; isAccessibilityElement = false
+            backgroundColor = .clear; isOpaque = false; isAccessibilityElement = false
             addInteraction(UIContextMenuInteraction(delegate: self))
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        private func menuPreview() -> UITargetedPreview {
+            // This is only an invisible hit surface over part of the row.
+            // UIKit's default lifted preview gives that transparent rectangle
+            // an opaque backdrop/shadow, obscuring half of the coloured track.
+            let parameters = UIPreviewParameters()
+            parameters.backgroundColor = .clear
+            parameters.shadowPath = UIBezierPath()
+            return UITargetedPreview(view: self, parameters: parameters)
+        }
+        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                    previewForHighlightingMenuWithConfiguration configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
+            menuPreview()
+        }
+        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                    previewForDismissingMenuWithConfiguration configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
+            menuPreview()
+        }
         func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
                                     configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
             guard point(inside: location, with: nil), !actions.isEmpty else { return nil }

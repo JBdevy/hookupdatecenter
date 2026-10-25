@@ -209,6 +209,9 @@ struct TimecodePlaybackSpan {
     private let auxiliarySelectedHardware: Bool
     private let engine: AVAudioEngine
     private var mobileOutput: JarasMobileAudioOutput?
+    #if os(iOS)
+    private var mobileTrackGraphNeedsRestart = false
+    #endif
     private var licenseAllowed = true
     private var usesSelectedHardware: Bool {
         #if os(iOS)
@@ -320,7 +323,10 @@ struct TimecodePlaybackSpan {
         let records: [[String: Any]] = keys.compactMap { key in
             guard let voice = voices[key] else { return nil }
             let node = voice.player.lastRenderTime
-            let player = node.flatMap { voice.player.playerTime(forNodeTime: $0) }
+            // iOS can publish a placeholder render timestamp while a new
+            // source is warming. AVAudioPlayerNode raises an Objective-C
+            // exception if diagnostics asks it to convert an invalid sample time.
+            let player = node.flatMap { $0.isSampleTimeValid ? voice.player.playerTime(forNodeTime: $0) : nil }
             return ["phase": phase, "host": now, "head": key.head, "item": voice.clip.id.uuidString,
                     "name": voice.clip.name, "track": voice.track.uuidString,
                     "clipStart": voice.clip.startTime, "offset": voice.clip.sourceOffset,
@@ -877,6 +883,7 @@ struct TimecodePlaybackSpan {
     }
     private func sourcePositionAtRenderClock(_ voice: Voice, protectingOnsetFor leadTime: Double = 0) -> Double? {
         guard let onset = voice.scheduledOnset, let node = voice.player.lastRenderTime,
+              node.isSampleTimeValid,
               let clock = voice.player.playerTime(forNodeTime: node) else { return nil }
         let first: AVAudioFramePosition
         if onset.isSampleTimeValid { first = onset.sampleTime }
@@ -1026,6 +1033,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.processedMix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend); engine.detach(bus.controls); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
         }
         trackBuses.removeAll(); groupConnections.removeAll(); retiredTrackEffects.removeAll()
+        #if os(iOS)
+        mobileTrackGraphNeedsRestart = false
+        #endif
         if let metronome { engine.detach(metronome.node); engine.detach(metronomeRoute) }; metronome = nil; metronomeSoundRevision = nil; metronomeTiming = []
         if masterConfigured {
             #if os(macOS)
@@ -1079,6 +1089,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     }
     private func trackBus(for id: UUID) -> TrackBus {
         if let bus = trackBuses[id] { return bus }
+        #if os(iOS)
+        // RemoteIO can keep pulling the old manual render graph after tracks
+        // are attached to a running iOS engine. Its output clock advances, but
+        // the new source paths never render. Reallocate only at a silent stop.
+        if realtime, mobileOutput != nil, engine.isRunning { mobileTrackGraphNeedsRestart = true }
+        #endif
         let bus = TrackBus()
         engine.attach(bus.silence); engine.attach(bus.mix); engine.attach(bus.processedMix); engine.attach(bus.masterSend); engine.attach(bus.groupSend)
         engine.attach(bus.controls); engine.attach(bus.internalSend)
@@ -1373,6 +1389,21 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         startMeterClock()
     }
+    #if os(iOS)
+    private func prepareChangedMobileTrackGraph() throws {
+        guard mobileTrackGraphNeedsRestart, let mobileOutput, outputAllowed,
+              !transportWasRunning, voices.isEmpty, padPlayers.isEmpty,
+              inputMonitors.isEmpty, !instrumentRenderPending else { return }
+        // prepare() and pause/start retain the stale topology on iOS 16.
+        // Stop hardware pulls before releasing the render resources; retain
+        // all tracks, processors and decoded onsets for the next Play.
+        mobileOutput.stop()
+        engine.stop()
+        voiceClockAnchors.removeAll()
+        try startEngineIfNeeded()
+        mobileTrackGraphNeedsRestart = false
+    }
+    #endif
     private func startMeterClock() {
         guard realtime else { return }
         #if os(iOS)
@@ -1785,7 +1816,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         voice.player.scheduleBuffer(silence, at: nil, options: .loops)
         voice.player.play()
-        if let node = voice.player.lastRenderTime, node.isSampleTimeValid || node.isHostTimeValid, let player = voice.player.playerTime(forNodeTime: node) {
+        if let node = voice.player.lastRenderTime, node.isSampleTimeValid, let player = voice.player.playerTime(forNodeTime: node) {
             voiceClockAnchors[ObjectIdentifier(voice.player)] = (node, player)
         }
     }
@@ -3350,6 +3381,9 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 (clip.id, Float(((clip.pitchSemitones ?? 0) + (clip.frozenMIDI == true || clip.renderedTiming == true ? 0 : Double(song.pitch(for: track, region: song.pitchRegion(at: fragmentStarts[clip.id] ?? clip.startTime))))) * 100))
             })
         }
+        #if os(iOS)
+        try prepareChangedMobileTrackGraph()
+        #endif
         if running {
             cancelVoicePreparation()
             if !transportWasRunning {
@@ -3665,7 +3699,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 }
                 if realtime, let hostTime = playbackTime {
                     let key = ObjectIdentifier(voice.player)
-                    if let node = voice.player.lastRenderTime, node.isSampleTimeValid || node.isHostTimeValid,
+                    if let node = voice.player.lastRenderTime, node.isSampleTimeValid,
                        let player = voice.player.playerTime(forNodeTime: node) { voiceClockAnchors[key] = (node, player) }
                     if let anchor = voiceClockAnchors[key], let sample = nodeSampleTime(host: hostTime.hostTime, anchor: anchor.node) {
                         playbackTime = AVAudioTime(sampleTime: anchor.player.sampleTime + sample - anchor.node.sampleTime, atRate: anchor.player.sampleRate)

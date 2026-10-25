@@ -135,6 +135,25 @@ import AVFoundation
     func down(_ pad: Int) { dispatch(triggers.mouseDown(pad: pad, library: library)) }
     func up(_ pad: Int) { dispatch(triggers.mouseUp(pad: pad)) }
     func finished(_ id: UUID) { triggers.finished(id); voices[id] = nil; voiceEngines[id] = nil }
+    /// A block shortcut must not be saved behind a pad/preset that consumes it.
+    /// Match the effective Vinhetas channel, just like its MIDI receive path.
+    func setlistBlockConflicts(_ input: ControlInput) -> [String] {
+        guard input.kind == "midi" else { return [] }
+        let pads = library.padMappings.indices.filter { library.matches(library.padMappings[$0], input: input) }
+        let presets = library.presetMappings.indices.filter { library.matches(library.presetMappings[$0], input: input) }
+        return pads.map { "Vinhetas · Pad \($0 + 1)" } + presets.map { "Vinhetas · Preset \($0 + 1)" }
+    }
+    func removeSetlistBlockConflicts(_ input: ControlInput) {
+        guard !setlistBlockConflicts(input).isEmpty else { return }
+        update { library in
+            for index in library.padMappings.indices where library.matches(library.padMappings[index], input: input) {
+                library.padMappings[index] = nil
+            }
+            for index in library.presetMappings.indices where library.matches(library.presetMappings[index], input: input) {
+                library.presetMappings[index] = nil
+            }
+        }
+    }
     func receive(input: ControlInput, value: UInt8) -> Bool {
         guard show != nil, audio != nil, let status = input.status, [0x80, 0x90, 0xb0].contains(status & 0xf0) else { return false }
         if library.acceptsChannel(input), let pad = learningPad, value > 0, status & 0xf0 != 0x80 {

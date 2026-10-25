@@ -253,6 +253,7 @@
   "Keyboard": "Keyboard",
   "Low Shelf": "Low Shelf",
   "Map control": "Map control",
+  "Press a MIDI note or controller button.": "Press a MIDI note or controller button.",
   "Menu": "Menu",
   "Modulation": "Modulation",
   "New playlist": "New playlist",
@@ -1349,5 +1350,10 @@
   "Cannot queue a duplicate of the song that is playing.": "Cannot queue a duplicate of the song that is playing.",
   "Block text color": "Block text color",
   "Track group": "Track group",
-  "The current project will be replaced by %@.": "The current project will be replaced by %@."
+  "The current project will be replaced by %@.": "The current project will be replaced by %@.",
+  "Delete block": "Delete block",
+  "Delete blocks": "Delete blocks",
+  "Delete selected blocks?": "Delete selected blocks?",
+  "Only the selected block headers will be removed. Songs and timeline items will be kept.": "Only the selected block items will be removed from the setlist.",
+  "Block ID %02d": "Block ID %02d"
 }

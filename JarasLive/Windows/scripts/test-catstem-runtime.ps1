@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory)][string]$Executable,
-    [Parameter(Mandatory)][string]$ProcessTestExecutable,
+    [string]$ProcessTestExecutable,
     [Parameter(Mandatory)][string]$RuntimeDirectory,
     [Parameter(Mandatory)][string]$ResultsDirectory,
     [string]$SourceDirectory
@@ -8,7 +8,6 @@
 $ErrorActionPreference='Stop'
 if([string]::IsNullOrWhiteSpace($SourceDirectory)) {$SourceDirectory=Split-Path -Parent $PSScriptRoot}
 $Executable=(Resolve-Path -LiteralPath $Executable).Path
-$ProcessTestExecutable=(Resolve-Path -LiteralPath $ProcessTestExecutable).Path
 $RuntimeDirectory=(Resolve-Path -LiteralPath $RuntimeDirectory).Path
 $SourceDirectory=(Resolve-Path -LiteralPath $SourceDirectory).Path
 $ResultsDirectory=[IO.Path]::GetFullPath($ResultsDirectory)
@@ -21,9 +20,12 @@ New-Item -ItemType Directory -Force -Path $ResultsDirectory | Out-Null
 $isolated=Join-Path $ResultsDirectory ('isolated-'+[Guid]::NewGuid().ToString('N'))
 $testRuntime=Join-Path $isolated 'StemSeparationRuntime'
 $pythonLink=Join-Path $testRuntime 'python'
-$fixtureWorker=Join-Path $SourceDirectory '../WindowsNative/Tests/StemIdentityWorker.py'
+$offlineTest=Join-Path $SourceDirectory '../WindowsNative/StemSeparation/test_offline.py'
+$offlineParityTest=Join-Path $SourceDirectory '../WindowsNative/StemSeparation/test_offline_openvino.py'
+$offlineFallbackTest=Join-Path $SourceDirectory '../WindowsNative/StemSeparation/test_worker_fallback.py'
 $graphResults=Join-Path $ResultsDirectory 'graph'
 $previousIdentity=[Environment]::GetEnvironmentVariable('CATLIVE_STEM_IDENTITY_TEST','Process')
+$previousFilter=[Environment]::GetEnvironmentVariable('CATLIVE_TEST_FILTER','Process')
 $guard=@{}
 
 function Copy-TestFile([string]$Source,[string]$Destination) {
@@ -97,52 +99,57 @@ function Invoke-CatStemTest([string]$Program,[string[]]$Arguments,[string]$Name,
 }
 
 try {
-    foreach($relative in @('stream_windows.py','stream.py','openvino_backend.py','runtime.json',
+    foreach($relative in @('stream_windows.py','stream.py','openvino_backend.py','offline_openvino.py','separate.py','runtime.json',
                            '5c90dfd2-34c22ccb.th','python/python.exe',
-                           'htdemucs6-openvino.xml','htdemucs6-openvino.bin','htdemucs6-openvino.json')) {
+                           'htdemucs6-openvino.xml','htdemucs6-openvino.bin','htdemucs6-openvino.json',
+                           'htdemucs6-offline.xml','htdemucs6-offline.bin','htdemucs6-offline.json')) {
         $path=Join-Path $RuntimeDirectory $relative
         if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw "Runtime CatStem incompleto: $path"}
         $guard[$path]=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
     }
     $guard[$Executable]=(Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash
-    $identity=Get-Content -LiteralPath $fixtureWorker -Raw
-    if(-not $identity.Contains('Deterministic CST1 fixture')){throw 'Worker de identidade CatStem inválido.'}
-
     Copy-TestApplication $applicationDirectory $isolated
     New-Item -ItemType Directory -Force -Path $testRuntime | Out-Null
-    # The isolated worker imports only the shared protocol's standard-library
-    # code. It neither loads the model nor needs an audio device or a GPU.
+    # Runtime/model are read-only test inputs, separate from all generated media.
     New-Item -ItemType Junction -Path $pythonLink -Target (Join-Path $RuntimeDirectory 'python') | Out-Null
     Copy-TestFile (Join-Path $RuntimeDirectory '5c90dfd2-34c22ccb.th') (Join-Path $testRuntime '5c90dfd2-34c22ccb.th')
-    Copy-Item -LiteralPath (Join-Path $RuntimeDirectory 'stream.py') -Destination (Join-Path $testRuntime 'stream.py')
-    Copy-Item -LiteralPath $fixtureWorker -Destination (Join-Path $testRuntime 'stream_windows.py')
+    foreach($relative in @('offline_openvino.py','openvino_backend.py',
+                           'htdemucs6-offline.xml','htdemucs6-offline.bin','htdemucs6-offline.json')) {
+        Copy-TestFile (Join-Path $RuntimeDirectory $relative) (Join-Path $testRuntime $relative)
+    }
+    Copy-Item -LiteralPath (Join-Path $RuntimeDirectory 'separate.py') -Destination (Join-Path $testRuntime 'separate.py')
     $python=Join-Path $pythonLink 'python.exe'
-    $worker=Join-Path $testRuntime 'stream_windows.py'
+    $worker=Join-Path $testRuntime 'separate.py'
     $model=Join-Path $testRuntime '5c90dfd2-34c22ccb.th'
-
-    Write-Host 'CatStem: validando IPC persistente em 44100, 48000, 96000 e 192000 Hz...'
-    Invoke-CatStemTest $ProcessTestExecutable @($python,$worker,$model) 'ipc' 600
-    $ipc=Get-Content -LiteralPath (Join-Path $ResultsDirectory 'ipc.stdout.log') -Raw
-    foreach($rate in @(44100,48000,96000,192000)) {
-        if(-not $ipc.Contains("passed at $rate Hz")){throw "O teste IPC não confirmou $rate Hz."}
+    Write-Host 'CatStem: validando liberação do acelerador antes do fallback...'
+    Invoke-CatStemTest $python @('-I','-B',$offlineFallbackTest,'--worker',$worker) 'offline-fallback-lifecycle' 60
+    Write-Host 'CatStem: validando cinco arquivos offline com a aceleração automática real...'
+    Invoke-CatStemTest $python @('-I','-B',$offlineTest,'--worker',$worker,'--model',$model,'--output',(Join-Path $ResultsDirectory 'audio')) 'offline' 900
+    $offline=Get-Content -LiteralPath (Join-Path $ResultsDirectory 'offline.stdout.log') -Raw
+    if(-not $offline.Contains('OFFLINE_FIVE_STEMS_EXACT_DURATION_UNITY_OK')){throw 'A separação offline não confirmou os cinco arquivos.'}
+    Write-Host 'CatStem: validando o fallback explícito pelo processador...'
+    Invoke-CatStemTest $python @('-I','-B',$offlineTest,'--worker',$worker,'--model',$model,'--device','cpu','--output',(Join-Path $ResultsDirectory 'audio-cpu-fallback')) 'offline-cpu-fallback' 900
+    $fallback=Get-Content -LiteralPath (Join-Path $ResultsDirectory 'offline-cpu-fallback.stdout.log') -Raw
+    if(-not $fallback.Contains('OFFLINE_FIVE_STEMS_EXACT_DURATION_UNITY_OK')){throw 'O fallback offline não confirmou os cinco arquivos.'}
+    Write-Host 'CatStem: comparando todas as fontes, sobreposições e fim do áudio com o modelo original...'
+    Invoke-CatStemTest $python @('-I','-B',$offlineParityTest,'--runtime',$testRuntime,'--device','CPU') 'offline-full-context-parity' 900
+    $parity=Get-Content -LiteralPath (Join-Path $ResultsDirectory 'offline-full-context-parity.stdout.log') -Raw
+    if(-not $parity.Contains('OFFLINE_FULL_CONTEXT_ALL_SOURCES_OVERLAP_AND_TAIL_OK')){throw 'A aceleração offline não confirmou a equivalência das fontes.'}
+    # Realtime insertion is removed. Validate atomic insertion below the source,
+    # plus dry playback of legacy settings; never enable the old graph fixture.
+    [Environment]::SetEnvironmentVariable('CATLIVE_STEM_IDENTITY_TEST','','Process')
+    foreach($filter in @('Audio separation','Legacy offline-only')) {
+        [Environment]::SetEnvironmentVariable('CATLIVE_TEST_FILTER',$filter,'Process')
+        $graphResults=Join-Path $ResultsDirectory ($filter -replace ' ','-')
+        if(Test-Path -LiteralPath $graphResults){Remove-Item -LiteralPath $graphResults -Recurse -Force}
+        Invoke-CatStemTest (Join-Path $isolated (Split-Path -Leaf $Executable)) @('--self-test',$graphResults) 'graph' 180
+        $report=Get-Content -LiteralPath (Join-Path $graphResults 'results.json') -Raw | ConvertFrom-Json
+        if(-not $report.success -or $report.failed -or @($report.passed).Count -lt 1){throw "A validação $filter falhou: $graphResults"}
     }
-
-    Write-Host 'CatStem: validando o grafo de áudio, PDC e exportação com worker isolado...'
-    [Environment]::SetEnvironmentVariable('CATLIVE_STEM_IDENTITY_TEST','1','Process')
-    # A new report directory prevents a previous successful run from hiding a
-    # crash that exits without producing its own results.json.
-    if(Test-Path -LiteralPath $graphResults){Remove-Item -LiteralPath $graphResults -Recurse -Force}
-    Invoke-CatStemTest (Join-Path $isolated (Split-Path -Leaf $Executable)) @('--self-test',$graphResults) 'graph' 900
-    $report=Get-Content -LiteralPath (Join-Path $graphResults 'results.json') -Raw | ConvertFrom-Json
-    $stemPasses=@($report.passed | Where-Object {$_ -like 'CatStem *'})
-    if(-not $report.success -or $report.failed -or $stemPasses.Count -lt 2 -or
-       $report.passed -notcontains 'CatStem graph fixture is isolated from the production model worker' -or
-       @($report.skipped | Where-Object {$_ -like 'CatStem graph*'}).Count -ne 0) {
-        throw "O grafo CatStem falhou ou foi ignorado. Veja $graphResults/results.json."
-    }
-    Write-Host "CatStem IPC e $($stemPasses.Count) verificações do grafo passaram: $ResultsDirectory"
+    Write-Host "CatStem offline e inserção das pistas passaram: $ResultsDirectory"
 } finally {
     [Environment]::SetEnvironmentVariable('CATLIVE_STEM_IDENTITY_TEST',$previousIdentity,'Process')
+    [Environment]::SetEnvironmentVariable('CATLIVE_TEST_FILTER',$previousFilter,'Process')
     # Remove the junction itself before recursive cleanup, including on errors.
     # The Python directory in the production package is never traversed here.
     try {

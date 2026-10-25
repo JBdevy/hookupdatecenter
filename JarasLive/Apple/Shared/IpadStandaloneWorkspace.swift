@@ -263,6 +263,9 @@ import Combine
             actions.append(command("Open file location", { open("file") }))
             actions.append(command("Normalize…", { open("normalize") }))
             actions.append(command("Re-render", { open("render") }))
+            if ids.count == 1, AudioSeparation.accepts(clip, on: track) {
+                actions.append(command("Separation audio", { open("separate") }))
+            }
             actions.append(command("Tuner", { open("tuner") }))
             for (mode, title) in [(4, "Swap - LR"), (1, "Convert Mono - L"), (2, "Convert Mono - R"), (3, "Convert Mono L-R"), (0, "Convert Stereo")] {
                 actions.append(command(title, { _ = show.convertItems(ids, mode: mode) }))
@@ -446,11 +449,7 @@ import Combine
                 Divider()
                 ScrollView {
                     if let selected, effects.contains(selected) {
-                        if settings.kind(of: selected) == NativeFXSettings.stemSeparator {
-                            CatStemFXEditor(show: show, track: track, clip: clip).id(selected)
-                        } else {
-                            FXEditor(show: show, track: track, clip: clip, clipChainEditor: true, effect: selected, close: close).id(selected)
-                        }
+                        FXEditor(show: show, track: track, clip: clip, clipChainEditor: true, effect: selected, close: close).id(selected)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }.padding(14)
@@ -963,15 +962,32 @@ struct IpadItemResizePreview {
     let secondsPerPoint: Double
 }
 /// A control excludes resizing from the grid pan/pinch and item-menu recognizers.
+/// Keep the touch area on screen without moving the drawn edge into the item.
+struct IpadItemResizeHandleLayout {
+    let width: CGFloat
+    let origin: CGFloat
+    let gripX: CGFloat
+    let showsGrip: Bool
+    init(edge: CGFloat, viewportWidth: CGFloat) {
+        width = min(28, max(0, viewportWidth))
+        origin = min(max(0, viewportWidth - width), max(0, edge - width / 2))
+        gripX = edge - origin
+        showsGrip = edge >= 0 && edge <= viewportWidth && viewportWidth > 0
+    }
+}
 struct IpadItemResizeHandle: UIViewRepresentable {
     let left: Bool
     let interactionID: UUID
+    var gripX: CGFloat? = nil
+    var showsGrip = true
     let changed: (Double, Bool, Bool) -> Void
     @Environment(\.isEnabled) private var enabled
     func makeUIView(context: Context) -> IpadItemResizeControl { IpadItemResizeControl() }
     func updateUIView(_ view: IpadItemResizeControl, context: Context) {
         // Cancel with the previous callback before changing project/item context.
         view.interactionID = interactionID
+        view.gripX = gripX
+        view.showsGrip = showsGrip
         view.changed = changed
         view.isEnabled = enabled
         view.accessibilityLabel = JarasLocalization.string(left ? "Item start" : "Item end")
@@ -980,6 +996,8 @@ struct IpadItemResizeHandle: UIViewRepresentable {
 }
 final class IpadItemResizeControl: UIControl, UIGestureRecognizerDelegate {
     var changed: ((Double, Bool, Bool) -> Void)?
+    var gripX: CGFloat? { didSet { if oldValue != gripX { setNeedsLayout() } } }
+    var showsGrip = true { didSet { grip.isHidden = !showsGrip } }
     var interactionID: UUID? {
         didSet { if oldValue != interactionID { cancelResize() } }
     }
@@ -1019,7 +1037,7 @@ final class IpadItemResizeControl: UIControl, UIGestureRecognizerDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        grip.frame = CGRect(x: bounds.midX - 2, y: 3, width: 4, height: max(0, bounds.height - 6))
+        grip.frame = CGRect(x: (gripX ?? bounds.midX) - 2, y: 3, width: 4, height: max(0, bounds.height - 6))
         CATransaction.commit()
     }
     @objc private func dragged(_ gesture: UIPanGestureRecognizer) {

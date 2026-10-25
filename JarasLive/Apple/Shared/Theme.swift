@@ -146,37 +146,25 @@ struct JarasBlink: ViewModifier {
     #else
     @State private var bright = true
     #endif
-    private var blinkInterval: Double {
-        #if os(iOS)
-        return max(0.10, min(0.25, interval * 0.6))
-        #else
-        return interval
-        #endif
-    }
-    private var dimOpacity: Double {
-        #if os(iOS)
-        return min(0.06, lowOpacity)
-        #else
-        return lowOpacity
-        #endif
-    }
     @ViewBuilder func body(content: Content) -> some View {
         #if os(macOS)
         if active {
             NativeJarasBlink(content: AnyView(content.environment(\.self, environment)), active: true,
-                interval: blinkInterval, lowOpacity: dimOpacity)
+                interval: interval, lowOpacity: lowOpacity)
                 // These controls have an explicit or natural size. The native
                 // host must keep it while flashing, rather than absorb spare
                 // stack space and move its neighboring controls.
                 .fixedSize(horizontal: true, vertical: true)
         } else { content }
         #else
-        content.opacity(!active || bright ? 1 : dimOpacity)
+        // Native iPad and Remote use the same bright/dim phases as the Mac.
+        // Do not rescale the interval or darken the requested low opacity.
+        content.opacity(!active || bright ? 1 : lowOpacity)
             .task(id: active) {
                 bright = true
                 guard active else { return }
                 while !Task.isCancelled {
-                    do { try await Task.sleep(nanoseconds: UInt64(max(0.05, blinkInterval) * 1_000_000_000)) }
+                    do { try await Task.sleep(nanoseconds: UInt64(max(0.05, interval) * 1_000_000_000)) }
                     catch { return }
                     guard !Task.isCancelled else { return }
                     bright.toggle()

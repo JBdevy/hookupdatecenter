@@ -15,9 +15,12 @@ PYTHON_URL = 'https://github.com/astral-sh/python-build-standalone/releases/down
 PYTHON_SHA = '405744f427e40139bf11dd81c342e6dcb253e82a6a6e1ac3b984f31bcf6aae64'
 MODEL_NAME = '5c90dfd2-34c22ccb.th'
 MODEL_SHA = '34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd'
-IR_FILES = ('htdemucs6-openvino.xml', 'htdemucs6-openvino.bin', 'htdemucs6-openvino.json')
+STREAM_IR_FILES = ('htdemucs6-openvino.xml', 'htdemucs6-openvino.bin', 'htdemucs6-openvino.json')
+OFFLINE_IR_FILES = ('htdemucs6-offline.xml', 'htdemucs6-offline.bin', 'htdemucs6-offline.json')
+IR_FILES = STREAM_IR_FILES + OFFLINE_IR_FILES
 IR_FORMAT_VERSION = 2
-WORKERS = ('stream.py', 'stream_windows.py', 'openvino_backend.py')
+OFFLINE_IR_FORMAT_VERSION = 1
+WORKERS = ('stream.py', 'stream_windows.py', 'openvino_backend.py', 'separate.py', 'offline_openvino.py')
 
 
 def digest(path):
@@ -36,7 +39,8 @@ def runtime_identity(lock):
     return {'pythonSHA256': PYTHON_SHA, 'modelSHA256': MODEL_SHA,
             'requirementsSHA256': digest(lock), 'backend': 'openvino-htdemucs6-split-fp32',
             'fallbackBackend': 'torch-htdemucs6', 'architecture': 'windows-x64',
-            'protocol': 'CST1', 'runtimeVersion': 4, 'sampleRate': 44100,
+            'protocol': 'CST1', 'runtimeVersion': 6, 'sampleRate': 44100,
+            'offlineBackend': 'openvino-htdemucs6-full-context-fp32', 'offlineContextFrames': 343980,
             'contextFrames': 44100, 'rightContextFrames': 3072,
             'hopFrames': 8192, 'latencyFrames': 66150,
             'outputNames': ['Vocal', 'Drum', 'Bass', 'Guitar', 'Other']}
@@ -60,9 +64,10 @@ for line in pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
 
 
 def verify_ir(target):
-    subprocess.run([str(target / 'python/python.exe'), '-I', '-B',
-                    str(target / 'openvino_backend.py'), '--model', str(target / MODEL_NAME),
-                    '--output', str(target), '--verify'], check=True, stdout=subprocess.DEVNULL)
+    for converter in ('openvino_backend.py', 'offline_openvino.py'):
+        subprocess.run([str(target / 'python/python.exe'), '-I', '-B',
+                        str(target / converter), '--model', str(target / MODEL_NAME),
+                        '--output', str(target), '--verify'], check=True, stdout=subprocess.DEVNULL)
 
 
 def verify_runtime(target, lock):
@@ -91,11 +96,12 @@ def refresh_runtime(target, root, lock):
     scripts = root / 'WindowsNative/StemSeparation'
     shutil.copy2(root / 'Apple/Resources/StemSeparation/stream.py', target / 'stream.py')
     for name in WORKERS[1:]:
-        shutil.copy2(scripts / name, target / name)
-    ir_current = all((target / name).is_file() for name in IR_FILES)
+        origin = root / 'Apple/Resources/StemSeparation/separate.py' if name == 'separate.py' else scripts / name
+        shutil.copy2(origin, target / name)
+    ir_current = all((target / name).is_file() for name in STREAM_IR_FILES)
     if ir_current:
         try:
-            ir_current = json.loads((target / IR_FILES[2]).read_text(encoding='utf-8')).get('formatVersion') == IR_FORMAT_VERSION
+            ir_current = json.loads((target / STREAM_IR_FILES[2]).read_text(encoding='utf-8')).get('formatVersion') == IR_FORMAT_VERSION
         except (OSError, ValueError):
             ir_current = False
     if not ir_current:
@@ -103,6 +109,18 @@ def refresh_runtime(target, root, lock):
         # eager checkpoint. Deployment never needs a model download or converter.
         subprocess.run([str(target / 'python/python.exe'), '-I', '-B',
                         str(target / 'openvino_backend.py'), '--model', str(target / MODEL_NAME),
+                        '--output', str(target)], check=True)
+    offline_current = all((target / name).is_file() for name in OFFLINE_IR_FILES)
+    if offline_current:
+        try:
+            offline_current = json.loads((target / OFFLINE_IR_FILES[2]).read_text(encoding='utf-8')).get('formatVersion') == OFFLINE_IR_FORMAT_VERSION
+        except (OSError, ValueError):
+            offline_current = False
+    if not offline_current:
+        # A cached live-plugin graph has only one second of context. File
+        # separation keeps the checkpoint's 7.8 seconds and 25% overlap.
+        subprocess.run([str(target / 'python/python.exe'), '-I', '-B',
+                        str(target / 'offline_openvino.py'), '--model', str(target / MODEL_NAME),
                         '--output', str(target)], check=True)
     verify_ir(target)
     licenses = target / 'Licenses'
@@ -123,7 +141,8 @@ def refresh_runtime(target, root, lock):
         'https://github.com/facebookresearch/demucs\n'
         'Weights: 5c90dfd2-34c22ccb.th; SHA256 ' + MODEL_SHA + '\n'
         'Same six-source checkpoint as the Mac; outputs Vocal, Drum, Bass, Guitar, Other (other+piano).\n'
-        'Windows uses 8192-frame hops and 66150-frame latency (1.5 seconds) at 44100 Hz. Mac latency is unchanged.\n'
+        'Separation is performed offline from the audio item menu; resulting files play without model-processing latency.\n'
+        'Offline OpenVINO graph retains 343980-frame model context, FP32 weights and original overlap/add.\n'
         'OpenVINO 2025.4.0, Intel, Apache License 2.0; https://github.com/openvinotoolkit/openvino\n'
         'OpenVINO telemetry is opted out in the CatLive backend.\n'
         'PyTorch 2.2.2 CPU, BSD; https://github.com/pytorch/pytorch\n'

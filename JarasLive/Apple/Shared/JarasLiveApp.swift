@@ -211,9 +211,9 @@ struct RootView: View {
             #endif
         }
         #if os(iOS)
-        .disabled(documents.busy)
+        .disabled(documents.showsBlockingProgress)
         .overlay {
-            if documents.busy {
+            if documents.showsBlockingProgress {
                 ZStack {
                     Color.black.opacity(0.45).ignoresSafeArea()
                     VStack(spacing: 16) {
@@ -782,7 +782,11 @@ private struct ClosingLogoView: View {
                 FXWindows.shared.closeAll()
                 capture.closeProject()
                 DesktopProjectTabs.shared.stopAll()
-                try await documents.rememberProjectMedia()
+                // The ownership inventory supports optional media cleanup; it
+                // must not block closing a project whose save already succeeded.
+                // Keep explicit cleanup strict when the inventory is unreadable.
+                do { try await documents.rememberProjectMedia() }
+                catch { NSLog("CatLive: could not update media inventory while closing: %@", error.localizedDescription) }
                 closingLogo.advance(1)
                 await Task.yield()
                 closingLogo.finish(restore: false)

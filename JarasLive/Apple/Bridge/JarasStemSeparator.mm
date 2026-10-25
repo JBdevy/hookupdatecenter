@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <fcntl.h>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <poll.h>
@@ -461,6 +462,26 @@ struct Runtime {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{runtime->run(model);});return YES;
 }
 #endif
++ (BOOL)separateAudio:(NSURL *)input outputDirectory:(NSURL *)outputDirectory coreMLModel:(NSURL *)model cancellation:(BOOL (^)(void))cancellation progress:(void (^)(double))progress error:(NSError **)error {
+#if TARGET_OS_IOS
+    @autoreleasepool {
+        try {
+            CatStemRealtime::separateCoreMLFile(input, outputDirectory, model,
+                [cancellation] { return cancellation && cancellation(); },
+                [progress](double fraction) { if (progress) progress(fraction); });
+            return YES;
+        } catch (const std::exception &failure) {
+            if (error) *error = [NSError errorWithDomain:@"CatStemSeparation" code:5
+                userInfo:@{NSLocalizedDescriptionKey:@(failure.what())}];
+            return NO;
+        }
+    }
+#else
+    if (error) *error = [NSError errorWithDomain:@"CatStemSeparation" code:5
+        userInfo:@{NSLocalizedDescriptionKey:@"Use the bundled offline CatStem worker on macOS."}];
+    return NO;
+#endif
+}
 + (void)configure:(AVAudioUnitEffect *)node enabled:(BOOL)enabled gains:(NSArray<NSNumber *> *)gains muteMask:(NSUInteger)muteMask soloMask:(NSUInteger)soloMask {
     auto &state=*((JarasStemAudioUnit *)node.AUAudioUnit)->state;
     for(unsigned s=0;s<5;s++){double value=s<gains.count?gains[s].doubleValue:1;state.gains[s].store(float(std::isfinite(value)?std::clamp(value,0.0,4.0):0));}
