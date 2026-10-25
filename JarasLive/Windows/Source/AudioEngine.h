@@ -94,6 +94,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     int timecodePreferred(const std::optional<ID>& region) const { return timecodeProgram.preferred(region); }
     void previewMIDIItem(const jaras::Song &,const jaras::AudioClip &);
     void refreshItemTiming(const jaras::Song &, const jaras::AudioClip &);
+    bool refreshItemPresence(const jaras::Song &);
     void setItemControls(const jaras::AudioClip &);
     void setMixer(const jaras::Project &, const jaras::Song &);
     void setOffline(bool enabled);
@@ -176,6 +177,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::set<String> activeMediaPaths() const {
         std::set<String> paths;
         for (const auto &voice : voices) if (voice->source)
+            paths.insert(unicodeCase(voice->source->file.getFullPathName(), false));
+        for (const auto &voice : removedItemVoices) if (voice->source)
             paths.insert(unicodeCase(voice->source->file.getFullPathName(), false));
         for (const auto &source : retiredSources) if (source)
             paths.insert(unicodeCase(source->file.getFullPathName(), false));
@@ -362,7 +365,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::unique_ptr<LatencyPlan> latencyPlan;
     std::unique_ptr<LatencyPlan> makeLatencyPlan(const ID *replacement=nullptr,const NativeFX *prepared=nullptr,
                                                 std::optional<bool> midiTakeActive={},bool admitReady=false,
-                                                bool releaseRemoved=false)const;
+                                                bool releaseRemoved=false, const std::vector<Voice *> *itemVoices=nullptr)const;
     bool offlineMode=false;
     uint64 stemLatencyFingerprint=0;
     std::atomic<bool> presentationTailing{false};
@@ -403,6 +406,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     float metronomeGainA = 1, metronomeGainB = 1;
     std::vector<jaras::OutputPatch> masterOutputs{{1, 2}};
     std::vector<std::unique_ptr<Voice>> voices;
+    // Deleted items retain their existing readers/FX for immediate Undo. A full
+    // project/graph replacement retires this cache with its owning engine.
+    std::vector<std::unique_ptr<Voice>> removedItemVoices;
+    std::set<ID> preparedItemIDs;
     std::array<int, 128> outputMapping{};
     std::atomic<double> rate{48000}, position{0}, subPosition{0};
     std::atomic<bool> playing{false}, subPlaying{false};

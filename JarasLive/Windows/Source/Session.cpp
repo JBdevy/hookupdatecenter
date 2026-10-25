@@ -1628,11 +1628,13 @@ void Session::undo() {
     if (value.effects) redoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) redoHistory.emplace_back(markerHistory(value.markers->song));
     else if (value.itemTiming) redoHistory.emplace_back(itemTimingHistory(value.itemTiming->clip.id));
+    else if (value.items) redoHistory.emplace_back(itemHistory(*value.items));
     else redoHistory.emplace_back(snapshot());
     undoHistory.pop_back();
     if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);
     else if (value.itemTiming) applyItemTiming(*value.itemTiming, false);
+    else if (value.items) applyItemHistory(*value.items, false);
     else restoreSnapshot(value.project);
 }
 void Session::redo() {
@@ -1645,11 +1647,13 @@ void Session::redo() {
     if (value.effects) undoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) undoHistory.emplace_back(markerHistory(value.markers->song));
     else if (value.itemTiming) undoHistory.emplace_back(itemTimingHistory(value.itemTiming->clip.id));
+    else if (value.items) undoHistory.emplace_back(itemHistory(*value.items));
     else undoHistory.emplace_back(snapshot());
     redoHistory.pop_back();
     if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);
     else if (value.itemTiming) applyItemTiming(*value.itemTiming, false);
+    else if (value.items) applyItemHistory(*value.items, false);
     else restoreSnapshot(value.project);
 }
 void Session::importAudio(const Array<File> &files, double at) { importMedia(files,at,{},MediaDropLayout::separateTracks,0); }
@@ -1895,14 +1899,63 @@ void Session::removeTracks(const std::set<ID> &ids) {
             for (const auto &id : ids) trackTree::remove(s, id);
     });
 }
-void Session::removeClip(ID id) {
-    edit([&](jaras::Project &p) {
-        for (auto &s : p.songs)
-            for (auto &t : s.tracks)
-                t.clips.erase(std::remove_if(t.clips.begin(), t.clips.end(),
-                                             [&](auto &c) { return c.id == id; }),
-                              t.clips.end());
-    });
+Session::ItemHistory Session::itemHistory(const ItemHistory &targets) const {
+    ItemHistory result;
+    for (const auto &song : project().songs) for (const auto &track : song.tracks) {
+        const auto target = targets.tracks.find(track.id);
+        if (target == targets.tracks.end()) continue;
+        auto clips = track.clips;
+        std::set<ID> retained;
+        for (const auto &clip : target->second) retained.insert(clip.id);
+        // Capture only plugins belonging to items being removed. Their Undo
+        // remains complete even if a later structural edit retires the cache.
+        for (auto &clip : clips) if (!retained.count(clip.id) && clip.fxJSON) {
+            auto settings = JSON::parse(text(*clip.fxJSON));
+            audio.captureExternalEffects(clip.id, settings);
+            clip.fxJSON = utf8(JSON::toString(settings, true, 17));
+        }
+        result.tracks.emplace(track.id, std::move(clips));
+    }
+    return result;
+}
+void Session::applyItemHistory(const ItemHistory &state, bool recordHistory) {
+    syncClock();
+    auto before = recordHistory ? itemHistory(state) : ItemHistory{};
+    auto updated = project();
+    for (auto &song : updated.songs) for (auto &track : song.tracks)
+        if (const auto found = state.tracks.find(track.id); found != state.tracks.end()) track.clips = found->second;
+    if (timelineGrid::changesLockedGeometry(project(), updated))
+        throw std::runtime_error("Desbloqueie o cadeado para apagar ou restaurar itens.");
+    auto next = core;
+    next.applyProjectEdit(updated);
+    // Preserve media ownership, including files referenced only by this Undo.
+    const auto owned = mediaCleanup::references(project());
+    observedMedia.insert(owned.begin(), owned.end());
+    bool refreshed = false;
+    if (!graphCancellation && song() && next.currentSong() && preparedSong == song()->id)
+        refreshed = audio.refreshItemPresence(*next.currentSong());
+    core.applyProjectEdit(std::move(updated));
+    if (!refreshed) prepare();
+    if (recordHistory) {
+        undoHistory.emplace_back(std::move(before));
+        if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
+        redoHistory.clear();
+    }
+    dirty = true;
+    notify();
+}
+void Session::removeClip(ID id) { removeClips({id}); }
+void Session::removeClips(const std::set<ID> &ids) {
+    if (jaras::projectSync::readOnly() || busy || ids.empty()) return;
+    if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de apagar itens.");
+    ItemHistory next;
+    for (const auto &song : project().songs) for (const auto &track : song.tracks) {
+        if (std::none_of(track.clips.begin(), track.clips.end(), [&](const auto &clip) { return ids.count(clip.id); })) continue;
+        auto clips = track.clips;
+        clips.erase(std::remove_if(clips.begin(), clips.end(), [&](const auto &clip) { return ids.count(clip.id); }), clips.end());
+        next.tracks.emplace(track.id, std::move(clips));
+    }
+    if (!next.tracks.empty()) applyItemHistory(next, true);
 }
 void Session::addMarker(String name, double position, bool section) {
     auto id = song() ? song()->id : ID{};

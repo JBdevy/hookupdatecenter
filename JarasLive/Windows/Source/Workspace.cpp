@@ -5098,11 +5098,7 @@ bool Workspace::keyPressed(const KeyPress &key) {
         if (selectionAreas.activeScope() != "tracks" && (!selectedClip.empty() || !selectedClips.empty()))
             perform([&] {
                 const auto ids = selectedClips.empty() ? std::set<ID>{selectedClip} : selectedClips;
-                session.edit([&](auto &project) {
-                    for (auto &song : project.songs) for (auto &track : song.tracks)
-                        track.clips.erase(std::remove_if(track.clips.begin(), track.clips.end(),
-                            [&](const auto &clip) { return ids.count(clip.id) != 0; }), track.clips.end());
-                });
+                session.removeClips(ids);
                 clearItemSelection();
             });
         else if (selectionAreas.activeScope() == "tracks" && (!selectedTrack.empty() || !selectedTracks.empty())) {

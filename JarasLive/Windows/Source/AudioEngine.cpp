@@ -40,6 +40,7 @@ AudioEngine::~AudioEngine() {
     stopRecording();
     closeDevice();
     voices.clear();
+    removedItemVoices.clear();
 }
 void AudioEngine::startRecording(const File &file, int channels, int bits) {
     if (recording.load())
@@ -225,6 +226,67 @@ void AudioEngine::previewMIDIItem(const jaras::Song &song,const jaras::AudioClip
         if(preparedLatency){latencyPlan.swap(preparedLatency);publishLatency();}
         return;
     }
+}
+bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
+    if (song.tracks.size() != buses.size()) return false;
+    std::map<ID, const jaras::AudioClip *> wanted;
+    for (size_t i = 0; i < buses.size(); ++i) {
+        if (buses[i]->id != song.tracks[i].id) return false;
+        for (const auto &clip : song.tracks[i].clips) {
+            // Missing media and visual-only items legitimately have no voice.
+            // Only an item absent from this graph's original model needs preparation.
+            if (!preparedItemIDs.count(clip.id)) return false;
+            wanted.emplace(clip.id, &clip);
+        }
+    }
+    std::map<ID, Voice *> available;
+    for (const auto &voice : voices) available.emplace(voice->clipID, voice.get());
+    for (const auto &voice : removedItemVoices) available.emplace(voice->clipID, voice.get());
+    std::vector<Voice *> active;
+    active.reserve(wanted.size());
+    for (const auto &track : song.tracks) for (const auto &clip : track.clips)
+        if (const auto found = available.find(clip.id); found != available.end()) active.push_back(found->second);
+    auto nextLatency = makeLatencyPlan(nullptr, nullptr, {}, false, false, &active);
+    std::vector<std::pair<size_t, SharedMIDIUpdate>> midi;
+    std::map<size_t, std::vector<ClickProgram::Section>> clicks;
+    std::optional<jaras::TimecodeProgram> timecode;
+    bool timecodeMuted = false;
+    for (size_t i = 0; i < buses.size(); ++i) {
+        const auto &track = song.tracks[i];
+        bool changedMIDI = false;
+        for (const auto &voice : voices) if (voice->bus == i && voice->midiItem && !wanted.count(voice->clipID)) changedMIDI = true;
+        for (const auto &voice : removedItemVoices) if (voice->bus == i && voice->midiItem && wanted.count(voice->clipID)) changedMIDI = true;
+        if (changedMIDI) midi.emplace_back(i, SharedMIDIUpdate(playbackNotes(track, &song, true, true)));
+        if (buses[i]->click) { ClickProgram program; program.prepare(song, &track); clicks.emplace(i, std::move(program.sections)); }
+        if (buses[i]->timecode) { timecode.emplace(song, track); timecodeMuted = track.mute; }
+    }
+    std::vector<std::unique_ptr<Voice>> next, retired;
+    next.reserve(active.size()); retired.reserve(voices.size() + removedItemVoices.size());
+    std::map<ID, std::unique_ptr<Voice> *> owners;
+    for (auto &voice : voices) owners.emplace(voice->clipID, &voice);
+    for (auto &voice : removedItemVoices) owners.emplace(voice->clipID, &voice);
+    std::vector<std::unique_ptr<Voice> *> ordered;
+    ordered.reserve(active.size());
+    for (auto *voice : active) ordered.push_back(owners.at(voice->clipID));
+    // No file access, plugin construction or destruction while publishing.
+    {
+        const ScopedLock lock(devices.getAudioCallbackLock());
+        applyUpdates(); // queued item controls still refer to the old indices
+        for (auto &voice : voices) if (!wanted.count(voice->clipID) && voice->midiItem)
+            for (int head = 0; head < 2; ++head) mixMIDIVoice(*voice, head, head ? current.subPosition : current.position, nullptr, 0, 0, 1, false);
+        for (auto *owner : ordered) next.push_back(std::move(*owner));
+        for (auto &voice : voices) if (voice) retired.push_back(std::move(voice));
+        for (auto &voice : removedItemVoices) if (voice) retired.push_back(std::move(voice));
+        voices.swap(next); removedItemVoices.swap(retired);
+        for (auto &entry : midi) replaceSharedMIDI(entry.first, entry.second);
+        for (auto &entry : clicks) buses[entry.first]->click->sections.swap(entry.second);
+        if (timecode) std::swap(timecodeProgram, *timecode);
+        installLatencyPlan(nextLatency, current.playing || current.subPlaying);
+        stemLatencyFingerprint = stemFingerprint();
+        duration = song.duration;
+    }
+    if (timecode) timecodeMIDI.updateProgram(timecodeProgram, song.duration, timecodeMuted);
+    return true;
 }
 void AudioEngine::refreshItemTiming(const jaras::Song &song, const jaras::AudioClip &clip) {
     const auto owner = std::find_if(song.tracks.begin(), song.tracks.end(), [&](const auto &track) {
@@ -459,7 +521,9 @@ void AudioEngine::configureMetronome(const var &settings) {
 }
 std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID *replacement,const NativeFX *prepared,
                                                                     std::optional<bool> midiTakeActive,bool admitReady,
-                                                                    bool releaseRemoved)const {
+                                                                    bool releaseRemoved,const std::vector<Voice *> *itemVoices)const {
+    std::vector<Voice *> active;
+    if (!itemVoices) { active.reserve(voices.size()); for (const auto &voice : voices) active.push_back(voice.get()); itemVoices = &active; }
     auto result=std::make_unique<LatencyPlan>();result->buses.resize(buses.size());
     auto latency=[&](const ID &id,const NativeFX &fx){
         const auto &chain=replacement&&*replacement==id?*prepared:fx;
@@ -470,7 +534,7 @@ std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID 
                             ? *midiTakeActive : voice.ownsMIDI();
         return voice.midiItem&&!owns ? 0u : latency(voice.clipID,voice.fx[0]);
     };
-    for(const auto &voice:voices)if(!voice->frozen)result->buses[voice->bus].own=std::max(result->buses[voice->bus].own,voiceLatency(*voice));
+    for(const auto *voice:*itemVoices)if(!voice->frozen)result->buses[voice->bus].own=std::max(result->buses[voice->bus].own,voiceLatency(*voice));
     for(size_t i=0;i<buses.size();i++)result->buses[i].input=result->buses[i].own;
     for(int index:busOrder) {
         const auto &bus=*buses[size_t(index)];auto &channel=result->buses[size_t(index)];
@@ -508,7 +572,7 @@ std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID 
             const auto &a=latencyPlan->buses[i],&b=result->buses[i];
             equal&=a.own==b.own&&a.input==b.input&&a.output==b.output;
         }
-        for(const auto &voice:voices)if(!voice->frozen) {
+        for(const auto *voice:*itemVoices)if(!voice->frozen) {
             auto found=latencyPlan->clips.find(voice->clipID);
             equal&=found!=latencyPlan->clips.end()&&found->second[0].latency()==result->buses[voice->bus].own-voiceLatency(*voice);
         }
@@ -530,7 +594,7 @@ std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID 
             for(auto &route:channel.routes)route.delay[h]=native::StereoDelay(result->buses[size_t(route.target)].input-channel.output);
         }
     }
-    for(const auto &voice:voices)if(!voice->frozen) {
+    for(const auto *voice:*itemVoices)if(!voice->frozen) {
         const auto own=voiceLatency(*voice);
         const auto delay=result->buses[voice->bus].own-own;
         result->clips.emplace(voice->clipID,std::array<native::StereoDelay,2>{native::StereoDelay(delay),native::StereoDelay(delay)});
@@ -772,7 +836,10 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             previousProcessors.emplace(voice->clipID, std::move(voice->clipAudio));
     }
     voices.clear();
+    removedItemVoices.clear();
     latencyPlan.reset();
+    preparedItemIDs.clear();
+    for (const auto &track : song.tracks) for (const auto &clip : track.clips) preparedItemIDs.insert(clip.id);
     instrumentDirectory = directory;
     masterMIDI.reset();
     std::map<ID,float> heldPeaks;
@@ -1206,7 +1273,7 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback
         if (oldPad == buses.end() || newPad == prepared.buses.end() || (*oldPad)->id != (*newPad)->id) {
             vinhetas.setOutputAvailable(false); vinhetas.discard();
         }
-        voices.swap(prepared.voices);buses.swap(prepared.buses);busOrder.swap(prepared.busOrder);
+        voices.swap(prepared.voices);removedItemVoices.swap(prepared.removedItemVoices);preparedItemIDs.swap(prepared.preparedItemIDs);buses.swap(prepared.buses);busOrder.swap(prepared.busOrder);
         vinhetas.setOutputAvailable(std::any_of(buses.begin(), buses.end(), [](const auto &bus) { return bus->vinhetasBus; }));
         readerContext.swap(prepared.readerContext);latencyPlan.swap(prepared.latencyPlan);
         masterFX.swap(prepared.masterFX);masterMIDI.swap(prepared.masterMIDI);

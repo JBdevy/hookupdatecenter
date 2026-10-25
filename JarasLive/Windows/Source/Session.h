@@ -108,6 +108,7 @@ class Session final : private Timer {
     void setRegionPitch(const ID &, int, std::vector<ID>, std::vector<ID>);
     void setMeter(int beats, int unit);
     void removeClip(ID);
+    void removeClips(const std::set<ID> &);
     void addMarker(String, double, bool section = false);
     void addRegion(String, double, double);
     void reorderTrack(ID, ID);
@@ -125,6 +126,9 @@ class Session final : private Timer {
     void focusTimelineRegion(double position, bool force = false);
     void focusSetlistRegion(std::optional<ID>, bool force = false);
     struct MarkerHistory { ID song; std::optional<std::vector<jaras::TimelineMarker>> markers; };
+    struct ItemHistory { std::map<ID, std::vector<jaras::AudioClip>> tracks; };
+    ItemHistory itemHistory(const ItemHistory &) const;
+    void applyItemHistory(const ItemHistory &, bool recordHistory);
     struct ItemTimingHistory { ID song; jaras::AudioClip clip; double songDuration; };
     ItemTimingHistory itemTimingHistory(const ID &) const;
     void applyItemTiming(const ItemTimingHistory &, bool recordHistory);
@@ -136,10 +140,12 @@ class Session final : private Timer {
         std::optional<MarkerHistory> markers;
         std::optional<std::map<ID, var>> effects;
         std::optional<ItemTimingHistory> itemTiming;
+        std::optional<ItemHistory> items;
         HistoryEntry(var value) : project(std::move(value)) {}
         HistoryEntry(MarkerHistory value) : markers(std::move(value)) {}
         HistoryEntry(std::map<ID, var> value) : effects(std::move(value)) {}
         HistoryEntry(ItemTimingHistory value) : itemTiming(std::move(value)) {}
+        HistoryEntry(ItemHistory value) : items(std::move(value)) {}
     };
     std::vector<HistoryEntry> undoHistory, redoHistory;
     std::map<ID, var> currentEffects(const std::map<ID, var> &) const;
