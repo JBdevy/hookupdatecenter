@@ -5045,6 +5045,15 @@ int runTests(const File &directory) {
         expect(presentation.apply(remote::Command::decode(request)) &&
                    std::abs(session.song()->tracks[0].volume - .42) < .00001,
                "Remote track control failed");
+        put(request, "target", var());
+        put(request, "action", "pan");
+        put(request, "value", -.5);
+        expect(presentation.apply(remote::Command::decode(request)) &&
+                   std::abs(session.project().masterPan + .5) < .00001 &&
+                   std::abs((double)get(presentation.snapshot(0), "masterPan") + .5) < .00001,
+               "Remote master pan must apply and return its confirmed value");
+        put(request, "target", remote::wireID(session.song()->tracks[0].id));
+        put(request, "action", "volume");
         put(request, "project", text(uuid()));
         put(request, "value", .9);
         expect(!presentation.apply(remote::Command::decode(request)) &&

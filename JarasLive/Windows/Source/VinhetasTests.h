@@ -78,6 +78,21 @@ struct VinhetasPanelProbe {
         recordingCaptureTests::require(!pad.isLit(),"Pad remained highlighted after its sample ended");
         pad.mouseDown(down);pad.mouseUp(up);level(.025f);panel.panic.onClick();level(0);
         recordingCaptureTests::require(!pad.isLit(),"Panic did not clear the sounding highlight");
+        panel.select(0);panel.remoteGate(0,0,true);
+        const auto remoteA=uuid();recordingCaptureTests::require(panel.remoteDown(remoteA,0,0),"Remote Gate press rejected");level(.025f);
+        panel.remoteUp(uuid());level(.025f);
+        panel.select(1);panel.remoteUp(remoteA);level(0);
+        recordingCaptureTests::require(!panel.remoteDown(uuid(),0,0),"Stale Remote bank fired a different preset");
+        panel.select(0);panel.remoteGate(0,0,false);panel.remoteVolume(0,0,.5);
+        const auto remoteB=uuid(),remoteC=uuid();panel.remoteDown(remoteB,0,0);panel.remoteDown(remoteC,0,0);level(.025f);
+        panel.remoteUp(remoteB);panel.remoteUp(remoteC);level(.025f);
+        panel.remoteGate(0,0,true);level(0);
+        panel.remoteDown(uuid(),0,0);level(.0125f);panel.remotePanic();level(0);
+        const auto remoteState=panel.remoteSnapshot(true);
+        recordingCaptureTests::require(list(get(remoteState,"presets")).size()==6 && list(get(get(remoteState,"presets")[0],"pads")).size()==16,
+            "Remote lost bank or pad presentation data");
+        recordingCaptureTests::require(!JSON::toString(remoteState).contains("audioFile") && !JSON::toString(remoteState).contains("Mappings"),
+            "Remote leaked sample paths or MIDI mappings");
         const auto stored=preferences.value("jaras.vinhetas");const auto mappings=get(stored,"padMappings");
         recordingCaptureTests::require(mappings.isArray()&&mappings.size()==16,"Pad mappings were duplicated per preset");
     }

@@ -1,6 +1,7 @@
 #pragma once
 #include "Appearance.h"
 #include "VinhetasAudio.h"
+#include <deque>
 namespace catlive {
 class VinhetasPanel final : public Component, private Timer {
     friend struct VinhetasPanelProbe;
@@ -61,6 +62,48 @@ class VinhetasPanel final : public Component, private Timer {
         for (auto *panel : instances) { panel->loadState(globalState); panel->refresh(); }
         return Result::ok();
     }
+    var remoteSnapshot(bool available) const {
+        auto result = object(); put(result, "selectedPreset", selected); put(result, "available", available);
+        Array<var> banks;
+        for (int p=0; p<6; ++p) {
+            auto bank = object(); const auto &preset=presets[(size_t)p];
+            put(bank,"name",preset.name); put(bank,"color",(int)preset.colour); Array<var> values;
+            for (int n=0; n<16; ++n) {
+                const auto &pad=preset.pads[(size_t)n]; auto value=object();
+                put(value,"name",pad.name);put(value,"color",(int)pad.colour);put(value,"volume",(double)pad.volume);
+                put(value,"gate",pad.gate);put(value,"loaded",pad.sample!=nullptr);put(value,"active",audio.active(p,n));values.add(value);
+            }
+            put(bank,"pads",values);banks.add(bank);
+        }
+        put(result,"presets",banks);Array<var> received;
+        for(const auto &id:remotePresses)received.add(Uuid(text(id)).toDashedString().toUpperCase());
+        put(result,"receivedPresses",received);return result;
+    }
+    bool remoteDown(const ID &id, int preset, int pad) {
+        if(preset<0||preset>=6||pad<0||pad>=16)return false;
+        if(std::find(remotePresses.begin(),remotePresses.end(),id)!=remotePresses.end())return false;
+        remotePresses.push_back(id);if(remotePresses.size()>256)remotePresses.pop_front();
+        if (preset!=selected || remoteHeld.size()>=128 || remoteHeld.count(id)) return false;
+        const auto voice=start(pad);if(!voice)return false;
+        if(current(pad).gate)remoteHeld[id]=voice;
+        repaint();return true;
+    }
+    void remoteUp(const ID &id) {
+        auto held=remoteHeld.find(id);if(held==remoteHeld.end())return;
+        audio.enqueue({VinhetasAudio::Kind::stop,held->second});remoteHeld.erase(held);repaint();
+    }
+    void remoteVolume(int preset,int pad,double volume) {
+        if(preset<0||preset>=6||pad<0||pad>=16||!std::isfinite(volume)||volume<0||volume>2)return;
+        presets[(size_t)preset].pads[(size_t)pad].volume=(float)volume;
+        audio.enqueue({VinhetasAudio::Kind::volume,0,preset,pad,(float)volume});save();refresh();
+    }
+    void remoteGate(int preset,int pad,bool enabled) {
+        if(preset<0||preset>=6||pad<0||pad>=16)return;
+        auto &data=presets[(size_t)preset].pads[(size_t)pad];
+        if(enabled&&!data.gate)audio.enqueue({VinhetasAudio::Kind::stopPad,0,preset,pad});
+        data.gate=enabled;save();refresh();
+    }
+    void remotePanic() { if(panic.onClick)panic.onClick();remoteHeld.clear(); }
     void select(int preset) { selected=jlimit(0,5,preset);refresh();save();preload(); }
     bool midi(int status,int number,int value,int channel) {
         const int normalized=status==0x80?0x90:status;
@@ -166,6 +209,8 @@ class VinhetasPanel final : public Component, private Timer {
     std::set<String> loading;
     std::set<int> pressedCC;
     std::map<int,std::vector<uint64_t>> heldNotes;
+    std::map<ID,uint64_t> remoteHeld;
+    std::deque<ID> remotePresses;
     int learning=-1;bool learningPreset=false;
     File mediaFolder() const {return File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/Vinhetas");}
     void loadState(const var &stored) {

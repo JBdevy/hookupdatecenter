@@ -421,6 +421,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     private var stateAccessGeneration = UUID()
     var stateProvider: (() -> DAWRemoteState?)?
     var commandHandler: ((DAWRemoteCommand) -> Void)?
+    private var heldVinhetas: [UUID: DAWRemoteCommand] = [:]
     /// Returns only after the active project has accepted/rejected this notice.
     var noticeSendHandler: ((DAWRemoteCommand) -> Bool)?
     private struct PendingNotice {
@@ -629,6 +630,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         startHost()
     }
     func stop() {
+        releaseVinhetas()
         #if os(macOS)
         if role == .host && parentHost == nil { MainActor.assumeIsolated { ProjectSyncController.shared.setEnabled(false) } }
         #endif
@@ -900,6 +902,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         }
         channel.onClose = { [weak self, weak channel] in
             guard let self, let channel, self.channel === channel else { return }
+            self.releaseVinhetas()
             self.failPendingNotices(.disconnected)
             let wasConnected = self.connected
             let resume = self.role == .client && self.enabled && (self.reconnecting || (wasConnected && self.remoteState != nil))
@@ -1022,7 +1025,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
                 guard command.project == imageProject else { return }
                 requestedPanel = Int(command.value); return
             }
-            commandHandler?(command)
+            dispatchRemoteCommand(command)
         case .state(let state):
             guard role == .client, accessMode != nil else { return }
             if state.sequence > receivedStateSequence {
@@ -1053,6 +1056,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             receiveImage(asset, from: source)
         case .accessRequest(let request):
             guard role == .host else { return }
+            releaseVinhetas()
             let result = accessPolicy.authorize(request)
             if let mode = result.mode, accessPolicy.requiresPIN(for: mode) { _ = (parentHost ?? self).storePIN(request.pin, mode: mode) }
             accessMode = result.mode; requestedPanel = 0
@@ -1081,6 +1085,21 @@ final class DAWRemoteSession: NSObject, ObservableObject {
                 resumeAccess = nil; pendingAccess = nil
                 remoteState = nil; setImageProject(nil)
             }
+        }
+    }
+    private func dispatchRemoteCommand(_ command: DAWRemoteCommand) {
+        if command.action == .vinhetasDown, let id = command.target {
+            guard heldVinhetas[id] == nil, heldVinhetas.count < 128 else { return }
+            heldVinhetas[id] = command
+        } else if command.action == .vinhetasUp, let id = command.target {
+            guard heldVinhetas.removeValue(forKey: id) != nil else { return }
+        }
+        commandHandler?(command)
+    }
+    private func releaseVinhetas() {
+        let held = heldVinhetas; heldVinhetas.removeAll()
+        for (id, original) in held {
+            commandHandler?(.init(project: original.project, song: original.song, action: .vinhetasUp, target: id))
         }
     }
     private func refreshHostPresence() {
@@ -1124,6 +1143,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         noticesRequiresPIN = accessPolicy.requiresPIN(for: .notices)
         for session in [self] + Array(clients.values) where session.channelReady {
             if session.accessMode == mode {
+                session.releaseVinhetas()
                 session.accessMode = nil; session.requestedPanel = 0
                 session.stateAccessGeneration = UUID()
                 session.waitingForState = nil; session.sendingState = false
@@ -1162,6 +1182,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         // Walking every clip here repeats that work on the UI thread at 10 Hz.
         guard var state = stateProviderForSession?(self) ?? stateProvider?() else { return }
         if accessMode == .observer || accessMode == .notices {
+            state.vinhetas = nil
             state.tracks = []; state.playlists = nil; state.projects = nil; state.projectTabs = nil; state.gridTempo = nil
         }
         if accessMode == .notices {

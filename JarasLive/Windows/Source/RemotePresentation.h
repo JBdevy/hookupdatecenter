@@ -178,6 +178,7 @@ class Presentation final {
         if (t.loop.end)
             put(result, "loopEnd", *t.loop.end);
         put(result, "masterVolume", p.masterVolume);
+        put(result, "masterPan", p.masterPan);
         put(result, "masterMute", p.masterMute);
         put(result, "masterSolo", p.masterSolo);
         put(result, "masterMono", p.masterMono);

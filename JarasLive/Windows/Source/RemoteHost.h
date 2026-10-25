@@ -45,6 +45,7 @@ class Host final : private Timer {
         stopTimer();
         discovery.stop();
         transport.stop();
+        for(auto &entry:clients)releaseVinhetas(entry.second);
         clients.clear();
         port = 0;
         advertising = false;
@@ -82,6 +83,7 @@ class Host final : private Timer {
         for (auto &entry : clients) {
             auto &client = entry.second;
             if (client.mode == (notices ? "notices" : "director")) {
+                releaseVinhetas(client);
                 client.mode.clear();
                 client.ack.reset();
                 client.panel = 0;
@@ -94,6 +96,7 @@ class Host final : private Timer {
     void update() {
         for (const auto &event : transport.events()) {
             if (event.type == Transport::Event::disconnected) {
+                if(auto found=clients.find(event.client);found!=clients.end())releaseVinhetas(found->second);
                 clients.erase(event.client);
                 continue;
             }
@@ -110,6 +113,7 @@ class Host final : private Timer {
             auto &client = found->second;
             try {
                 if (event.kind == 5) {
+                    releaseVinhetas(client);
                     const auto mode = event.body["mode"], value = event.body["pin"];
                     require(
                         mode.isString() && value.isString() &&
@@ -154,7 +158,14 @@ class Host final : private Timer {
                     } else {
                         bool accepted = false;
                         try {
-                            accepted = perform && perform(command);
+                            if(command.action=="vinhetasDown"){
+                                if(client.heldVinhetas.size()>=128||client.heldVinhetas.count(command.target))continue;
+                                accepted=perform&&perform(command);
+                                if(accepted)client.heldVinhetas.emplace(command.target,command);
+                            } else if(command.action=="vinhetasUp"){
+                                if(client.heldVinhetas.erase(command.target)==0)continue;
+                                accepted=perform&&perform(command);
+                            } else accepted = perform && perform(command);
                         } catch (const std::exception &) {
                         }
                         if (command.action == "noticeSend" && command.receipt.value_or(false)) {
@@ -192,7 +203,7 @@ class Host final : private Timer {
                     continue;
                 auto value = at->second.clone();
                 if (client.mode != "director") {
-                    put(value, "projectTabs", var()); put(value, "projects", var());
+                    put(value, "projectTabs", var()); put(value, "projects", var()); put(value,"vinhetas",var());
                 }
                 const auto current = ++sequence;
                 put(value, "sequence", (int64)current);
@@ -211,10 +222,15 @@ class Host final : private Timer {
   private:
     struct Client {
         String name, mode;
+        std::map<ID,Command> heldVinhetas;
         std::optional<uint64> ack;
         double sentAt = 0;
         int panel = 0, failures = 0;
     };
+    void releaseVinhetas(Client &client) {
+        auto held=std::move(client.heldVinhetas);client.heldVinhetas.clear();
+        for(auto &entry:held){auto command=entry.second;command.action="vinhetasUp";command.pad=-1;command.preset=-1;command.value=0;if(perform)perform(command);}
+    }
     Appearance &preferences;
     String hostName;
     Transport transport;

@@ -28,6 +28,7 @@ struct Command {
     String action, message;
     ID id, project, song, target, playlist;
     double value = 0;
+    int pad = -1, preset = -1;
     std::optional<bool> enabled, receipt;
     static Command decode(const var &v) {
         require(v.isObject() && validID(v["id"]) && validID(v["project"]) &&
@@ -50,6 +51,16 @@ struct Command {
         c.value = (double)value;
         require(std::isfinite(c.value));
         const auto a = c.action;
+        const bool padAction = a == "vinhetasDown" || a == "vinhetasVolume" || a == "vinhetasGate";
+        for (auto entry : {std::pair<const char *, int *>{"pad", &c.pad}, {"preset", &c.preset}}) {
+            auto field = get(v, Identifier(entry.first));
+            if (!field.isVoid() && !field.isUndefined()) {
+                require(padAction && (field.isInt() || field.isInt64()) && (int)field >= 0 &&
+                        (int)field < (String(entry.first) == "pad" ? 16 : 6));
+                *entry.second = (int)field;
+            }
+        }
+        require(!padAction || (c.pad >= 0 && c.preset >= 0));
         const auto t = v["text"];
         if (!t.isVoid() && !t.isUndefined()) {
             require(t.isString() && t.toString().length() <= 500 &&
@@ -68,7 +79,7 @@ struct Command {
                 *entry.second = (bool)field;
             }
         }
-        require(!c.enabled || a == "noticeDestination");
+        require(!c.enabled || a == "noticeDestination" || a == "vinhetasGate");
         require(!c.receipt || a == "noticeSend");
         const bool target = !c.target.empty(), zero = c.value == 0,
                    integral = std::floor(c.value) == c.value;
@@ -76,7 +87,17 @@ struct Command {
             return c.value >= low && c.value <= high;
         };
         bool valid = false;
-        if (a == "editRegion")
+        if (a == "vinhetasDown" || a == "vinhetasUp")
+            valid = target && zero && !c.enabled.has_value();
+        else if (a == "vinhetasVolume")
+            valid = !target && range(0, 2) && !c.enabled.has_value();
+        else if (a == "vinhetasGate")
+            valid = !target && zero && c.enabled.has_value();
+        else if (a == "vinhetasPreset")
+            valid = !target && range(0, 5) && integral;
+        else if (a == "vinhetasPanic")
+            valid = !target && zero;
+        else if (a == "editRegion")
             valid = target && c.message.trim().isNotEmpty() && range(0, 16777215) && integral;
         else if (a == "duplicateRegion")
             valid = target && zero && !c.playlist.empty();
@@ -106,7 +127,7 @@ struct Command {
         else if (a == "volume")
             valid = range(0, 4);
         else if (a == "pan")
-            valid = target && range(-1, 1);
+            valid = range(-1, 1);
         else if (a == "tempo")
             valid = range(20, 400);
         else if (a == "pitch")

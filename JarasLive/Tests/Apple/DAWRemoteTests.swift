@@ -1277,3 +1277,100 @@ require(!DAWRemoteAccessRules.allows(selectTab, mode: .observer) && !DAWRemoteAc
 require(!DAWRemoteCommand(project: project, action: .selectProjectTab).valid, "Tab selection needs a target")
 require(!DAWRemoteCommand(project: project, action: .selectProjectTab, target: remoteTabIDs[0], value: 1).valid, "Tab selection does not accept an index or transport value")
 print("REMOTE_PROJECT_TABS_PROTOCOL_AND_ACCESS_OK")
+
+// Six banks are presentation data; no host paths or MIDI mapping crosses the wire.
+var vinhetasFixture = fixture
+let remotePad = DAWRemoteVinhetas.Pad(name: "Pad", color: 0x123456, volume: 0.5, gate: true, loaded: true, active: false)
+vinhetasFixture.vinhetas = .init(selectedPreset: 2, available: true,
+    presets: (0..<6).map { .init(name: "Preset \($0 + 1)", color: 0x654321, pads: Array(repeating: remotePad, count: 16)) })
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(vinhetasFixture)) {
+    require(decoded.vinhetas == vinhetasFixture.vinhetas, "Six banks and sixteen pads roundtrip exactly")
+} else { fatalError("Vinhetas state") }
+var invalidPads = vinhetasFixture
+invalidPads.vinhetas!.presets[0].pads.removeLast()
+require(!invalidPads.valid, "Incomplete bank is rejected before UI indexing")
+invalidPads = vinhetasFixture; invalidPads.vinhetas!.presets[0].pads[0].volume = .nan
+require(!invalidPads.valid, "Nonfinite pad volume is rejected")
+let pressID = UUID()
+let remotePress = DAWRemoteCommand(project: project, song: song, action: .vinhetasDown, target: pressID, pad: 15, preset: 5)
+for command in [remotePress,
+    DAWRemoteCommand(project: project, action: .vinhetasUp, target: pressID),
+    DAWRemoteCommand(project: project, action: .vinhetasPreset, value: 5),
+    DAWRemoteCommand(project: project, action: .vinhetasVolume, value: 0.5, pad: 0, preset: 0),
+    DAWRemoteCommand(project: project, action: .vinhetasGate, enabled: true, pad: 0, preset: 0),
+    DAWRemoteCommand(project: project, action: .vinhetasPanic)] {
+    require(command.valid && DAWRemoteAccessRules.allows(command, mode: .director), "Director may control Vinhetas")
+    require(!DAWRemoteAccessRules.allows(command, mode: .observer) && !DAWRemoteAccessRules.allows(command, mode: .notices), "Read-only modes cannot trigger or stop audio")
+    if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(command)) {
+        require(decoded.action == command.action && decoded.target == command.target && decoded.pad == command.pad && decoded.preset == command.preset && decoded.enabled == command.enabled, "Typed Vinhetas controls roundtrip")
+    } else { fatalError("Vinhetas command") }
+}
+for pad in [-1, 16] {
+    require(!DAWRemoteCommand(project: project, action: .vinhetasDown, target: pressID, pad: pad, preset: 0).valid, "Out-of-range pad rejected")
+}
+require(!DAWRemoteCommand(project: project, action: .vinhetasDown, target: pressID, pad: 0).valid, "Press requires bank context")
+require(!DAWRemoteCommand(project: project, action: .play, pad: 0, preset: 0).valid, "Pad metadata cannot attach to unrelated actions")
+require(!DAWRemoteCommand(project: project, action: .vinhetasGate, pad: 0, preset: 0).valid, "Gate requires explicit state")
+
+let padHost = DAWRemoteSession(role: .host, name: "Vinhetas host")
+let padClient = DAWRemoteSession(role: .client, name: "Vinhetas remote")
+let padEndpoint = try padHost.testListen()
+padHost.stateProvider = { vinhetasFixture }
+var padActions: [DAWRemoteCommand] = []
+padHost.commandHandler = { padActions.append($0) }
+padClient.testConnect(padEndpoint)
+waitFor("Vinhetas encrypted state available") { padClient.remoteState?.vinhetas != nil }
+padClient.send(remotePress); padClient.send(remotePress)
+waitFor("Press accepted once") { padActions.count == 1 }
+require(padActions[0].target == pressID, "Host preserves per-press identity")
+padClient.stop()
+waitFor("Disconnect releases only this connection's held pad") { padActions.count == 2 }
+require(padActions[1].action == .vinhetasUp && padActions[1].target == pressID, "Disconnect synthesizes release, not global Panic")
+padHost.stop()
+print("REMOTE_VINHETAS_STATE_COMMANDS_PERMISSIONS_AND_DISCONNECT_RELEASE_OK")
+
+var padFeedback = DAWRemoteVinhetasFeedback()
+let feedbackID = UUID()
+var feedbackState = vinhetasFixture.vinhetas!
+padFeedback.down(id: feedbackID, preset: 0, pad: 0, gate: false)
+require(padFeedback.lit(preset: 0, pad: 0), "Remote lights before the first host response")
+padFeedback.up(preset: 0, pad: 0); padFeedback.receive(feedbackState)
+require(padFeedback.lit(preset: 0, pad: 0), "A stale stopped snapshot cannot blank a new one-shot")
+feedbackState.receivedPresses = [feedbackID]; padFeedback.receive(feedbackState)
+require(!padFeedback.lit(preset: 0, pad: 0), "A short completed sample clears after the host acknowledges its trigger")
+feedbackState.presets[0].pads[0].active = true; padFeedback.receive(feedbackState)
+require(!padFeedback.lit(preset: 0, pad: 0), "Host activation alone does not light a Remote pad")
+padFeedback.down(id: UUID(), preset: 0, pad: 0, gate: true)
+require(padFeedback.lit(preset: 0, pad: 0), "Gate lights locally on press")
+padFeedback.up(preset: 0, pad: 0)
+require(!padFeedback.lit(preset: 0, pad: 0), "Gate release darkens immediately despite stale active host state")
+print("REMOTE_VINHETAS_LOCAL_LIGHTING_STALE_STATE_AND_SHORT_SAMPLE_COMPLETION_OK")
+
+let longFeedbackID = UUID()
+padFeedback.down(id: longFeedbackID, preset: 0, pad: 0, gate: false)
+feedbackState.receivedPresses = [longFeedbackID];feedbackState.presets[0].pads[0].active = true
+padFeedback.receive(feedbackState)
+feedbackState.receivedPresses = [];feedbackState.presets[0].pads[0].active = false
+padFeedback.receive(feedbackState)
+require(!padFeedback.lit(preset: 0, pad: 0), "A long sample still clears after its receipt leaves the bounded history")
+print("REMOTE_VINHETAS_LONG_SAMPLE_COMPLETION_AFTER_RECEIPT_HISTORY_EXPIRES_OK")
+
+// Master and track pans share the same bounded command; a missing target is the Master.
+for target in [Optional<UUID>.none, Optional(trackID)] {
+    for pan in [-1.0, 0, 0.75, 1] {
+        let command = DAWRemoteCommand(project: project, action: .pan, target: target, value: pan)
+        require(command.valid && DAWRemoteAccessRules.allows(command, mode: .director), "Master/track pan accepted for director")
+        require(!DAWRemoteAccessRules.allows(command, mode: .observer), "Pan denied for observer")
+    }
+    require(!DAWRemoteCommand(project: project, action: .pan, target: target, value: 1.01).valid, "Pan rejects out of range")
+}
+var panFixture = fixture
+panFixture.masterPan = -0.5
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(panFixture)) {
+    require(decoded.masterPan == -0.5, "Master pan survives snapshot encoding")
+} else { fatalError("Master pan snapshot missing") }
+for invalid in [-1.01, 1.01, Double.infinity, Double.nan] {
+    panFixture.masterPan = invalid
+    require(!panFixture.valid, "Master pan rejects invalid snapshot values")
+}
+print("REMOTE_MASTER_PAN_BOUNDS_AND_STATE_OK")

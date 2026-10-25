@@ -3813,6 +3813,11 @@ void Workspace::activateProjectTab() {
     remoteHost->presentation = [this](int panel) -> var {
         if (!projectReady || loginPanel) return var();
         auto state = remotePresentation->snapshot(panel);
+        if (vinhetasPanel) {
+            const auto *song=session.song();
+            const bool available=song&&std::any_of(song->tracks.begin(),song->tracks.end(),[](const auto &track){return track.role.id=="vinhetas";});
+            put(state,"vinhetas",vinhetasPanel->remoteSnapshot(available));
+        }
         if (remoteProjectTabs) put(state, "projectTabs", remoteProjectTabs());
         const auto now = Time::getMillisecondCounterHiRes();
         if (remoteRecentReadAt == 0 || now - remoteRecentReadAt >= 1000) {
@@ -3829,7 +3834,19 @@ void Workspace::activateProjectTab() {
         return state;
     };
     remoteHost->perform = [safe = SafePointer<Workspace>(this)](const remote::Command &command) {
-        if (!safe || !safe->projectReady || safe->loginPanel || safe->browserVisible) return false;
+        if (!safe) return false;
+        if(command.action=="vinhetasUp"&&safe->vinhetasPanel){safe->vinhetasPanel->remoteUp(command.target);return true;}
+        if (!safe->projectReady || safe->loginPanel || safe->browserVisible) return false;
+        if(command.action.startsWith("vinhetas")){
+            if(!safe->vinhetasPanel||remote::wireID(command.project)!=remote::wireID(safe->session.project().id))return false;
+            auto &panel=*safe->vinhetasPanel;
+            if(command.action=="vinhetasDown")return panel.remoteDown(command.target,command.preset,command.pad);
+            if(command.action=="vinhetasPreset"){panel.select((int)command.value);return true;}
+            if(command.action=="vinhetasVolume"){panel.remoteVolume(command.preset,command.pad,command.value);return true;}
+            if(command.action=="vinhetasGate"){panel.remoteGate(command.preset,command.pad,*command.enabled);return true;}
+            if(command.action=="vinhetasPanic"){panel.remotePanic();return true;}
+            return false;
+        }
         if (command.action == "selectProjectTab") {
             if (!safe->selectRemoteProjectTab || remote::wireID(command.project) != remote::wireID(safe->session.project().id)) return false;
             // Activate after the current Remote callback returns: activation replaces

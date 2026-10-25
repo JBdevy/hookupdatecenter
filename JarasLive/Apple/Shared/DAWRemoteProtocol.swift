@@ -131,6 +131,7 @@ struct DAWRemoteCommand: Codable {
         case requestImage
         case timerStart, timerStop
         case togglePreview, selectPreviewPage
+        case vinhetasDown, vinhetasUp, vinhetasPreset, vinhetasVolume, vinhetasGate, vinhetasPanic
         case editRegion, deleteRegion, duplicateRegion, renamePlaylist, duplicatePlaylist, deletePlaylist
     }
     var id = UUID()
@@ -144,15 +145,27 @@ struct DAWRemoteCommand: Codable {
     /// Opt in so hosts never send an unknown packet kind to older clients.
     var noticeReceiptRequested: Bool? = nil
     var playlist: UUID? = nil
+    var pad: Int? = nil
+    var preset: Int? = nil
     var valid: Bool {
         guard value.isFinite else { return false }
         if let text {
             guard [.noticeSend, .noticeSaveTemplate, .editRegion, .renamePlaylist].contains(action), text.count <= 500, text.utf8.count <= 4000 else { return false }
         }
         if playlist != nil && ![.deleteRegion, .duplicateRegion].contains(action) { return false }
-        if enabled != nil && action != .noticeDestination { return false }
+        let padActions: Set<Action> = [.vinhetasDown, .vinhetasVolume, .vinhetasGate]
+        if padActions.contains(action) {
+            guard let pad, (0..<16).contains(pad), let preset, (0..<6).contains(preset) else { return false }
+        } else if pad != nil || preset != nil { return false }
+        if enabled != nil && action != .noticeDestination && action != .vinhetasGate { return false }
         if noticeReceiptRequested != nil && action != .noticeSend { return false }
         switch action {
+        case .vinhetasDown: return target != nil && value == 0 && enabled == nil
+        case .vinhetasUp: return target != nil && value == 0
+        case .vinhetasPreset: return target == nil && (0..<6).contains(value) && value.rounded() == value
+        case .vinhetasVolume: return target == nil && (0...2).contains(value)
+        case .vinhetasGate: return target == nil && value == 0 && enabled != nil
+        case .vinhetasPanic: return target == nil && value == 0
         case .editRegion: return target != nil && text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false && (0...16777215).contains(value) && value.rounded() == value
         case .renamePlaylist: return target != nil && value == 0 && text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         case .duplicateRegion: return target != nil && playlist != nil && value == 0
@@ -174,7 +187,7 @@ struct DAWRemoteCommand: Codable {
         case .clipGain: return target != nil && (0...pow(10, 24.0 / 20)).contains(value)
         case .clipMute, .queueSection: return target != nil && value == 0
         case .volume: return (0...4).contains(value)
-        case .pan: return (-1...1).contains(value) && target != nil
+        case .pan: return (-1...1).contains(value)
         case .tempo: return (20...400).contains(value)
         case .pitch: return (-12...12).contains(value) && value.rounded() == value && target != nil
         case .seek: return (0...604800).contains(value)
@@ -327,6 +340,7 @@ struct DAWRemoteState: Codable, Equatable {
     var setlistLiveEnabled: Bool? = nil
     var playedLiveRegionIDs: [UUID]? = nil
     var masterPeakDB: Double? = nil
+    var masterPan: Double? = nil
     var pitchRegion: UUID? = nil
     var pitchSemitones: Int? = nil
     var setlistFontStyle: Int? = nil
@@ -377,6 +391,7 @@ struct DAWRemoteState: Codable, Equatable {
     /// Missing fields identify a host without Preview control support.
     var previewActive: Bool? = nil
     var previewPage: Int? = nil
+    var vinhetas: DAWRemoteVinhetas? = nil
     /// Original unified songs keep their active child; only aliases replace the displayed row ID.
     var setlistCurrentEntryId: UUID? {
         if let id = currentPlaylistEntryId, regions.contains(where: { $0.id == id && $0.sourceRegionId != nil }) { return id }
@@ -386,6 +401,7 @@ struct DAWRemoteState: Codable, Equatable {
     static func validPeak(_ value: Double?) -> Bool { value.map { $0.isFinite && $0 >= -24 } ?? true }
     var valid: Bool {
         position.isFinite && duration.isFinite && bpm.isFinite && masterVolume.isFinite && Self.validPeak(masterPeakDB) &&
+        (masterPan == nil || (masterPan!.isFinite && (-1...1).contains(masterPan!))) &&
         (loopStart == nil || (loopStart!.isFinite && loopStart! >= 0)) &&
         (loopEnd == nil || (loopEnd!.isFinite && loopEnd! >= (loopStart ?? 0))) &&
         (editPosition == nil || (editPosition!.isFinite && editPosition! >= 0)) &&
@@ -394,7 +410,7 @@ struct DAWRemoteState: Codable, Equatable {
         (gridTempo ?? []).count <= 32768 && (gridTempo ?? []).allSatisfy(\.valid) &&
         (footerLoopBeatPhase == nil || [0, 1, 3].contains(footerLoopBeatPhase!)) &&
         (gridDivisions == nil || [0, 2, 4, 8].contains(gridDivisions!)) &&
-        (previewPage == nil || (0...5).contains(previewPage!)) &&
+        (previewPage == nil || (0...5).contains(previewPage!)) && (vinhetas?.valid ?? true) &&
         (playedLiveRegionIDs ?? []).count <= 8192 &&
         Set(playedLiveRegionIDs ?? []).count == (playedLiveRegionIDs ?? []).count &&
         (setlistBlocks ?? []).count <= 8192 && (setlistBlocks ?? []).allSatisfy(\.valid) &&
@@ -603,7 +619,7 @@ enum DAWRemoteScrollRange {
 /// always derives its result from the original pair, so reversing also restores
 /// a neighboring panel that the drag temporarily pushed out of view.
 enum DAWRemotePhonePanel: CaseIterable {
-    case grid, mixer, setlist, teleprompter1, teleprompter2, notices, sections
+    case grid, mixer, setlist, teleprompter1, teleprompter2, notices, sections, vinhetas
     func selecting(_ panel: Self) -> Self { panel == self ? .grid : panel }
     func togglingFooterParts() -> Self { self == .sections ? .setlist : .sections }
     var subscription: Int {
@@ -859,5 +875,58 @@ struct DAWRemoteSectionCue: Equatable {
         let remaining = boundary - position
         guard remaining.isFinite, remaining > 0, remaining <= leadTime else { return nil }
         return .init(marker: target.id, name: target.name, seconds: Int(ceil(remaining)), armed: armed)
+    }
+}
+
+/// Presentation only: audio paths and MIDI mappings stay on the host.
+struct DAWRemoteVinhetas: Codable, Equatable {
+    struct Pad: Codable, Equatable {
+        var name: String
+        var color: UInt32
+        var volume: Double
+        var gate: Bool
+        var loaded: Bool
+        var active: Bool
+        var valid: Bool { name.utf8.count <= 4096 && color <= 0xffffff && volume.isFinite && (0...2).contains(volume) }
+    }
+    struct Preset: Codable, Equatable {
+        var name: String
+        var color: UInt32
+        var pads: [Pad]
+        var valid: Bool { name.utf8.count <= 4096 && color <= 0xffffff && pads.count == 16 && pads.allSatisfy(\.valid) }
+    }
+    var selectedPreset: Int
+    var available: Bool
+    var presets: [Preset]
+    var receivedPresses: [UUID]? = nil
+    var valid: Bool { (0..<6).contains(selectedPreset) && presets.count == 6 && presets.allSatisfy(\.valid) &&
+        (receivedPresses ?? []).count <= 256 && Set(receivedPresses ?? []).count == (receivedPresses ?? []).count }
+}
+/// Pads light immediately on the client. Host snapshots may end an acknowledged
+/// local trigger, but an older false snapshot can never undo a fresh press.
+struct DAWRemoteVinhetasFeedback {
+    private struct Key: Hashable { let preset: Int; let pad: Int }
+    private struct Press { let id: UUID; let gate: Bool; var held: Bool; var sounding: Bool; var confirmed = false }
+    private var presses: [Key: Press] = [:]
+    mutating func down(id: UUID, preset: Int, pad: Int, gate: Bool) {
+        presses[Key(preset: preset, pad: pad)] = Press(id: id, gate: gate, held: gate, sounding: !gate)
+    }
+    mutating func up(preset: Int, pad: Int) {
+        let key = Key(preset: preset, pad: pad)
+        if presses[key]?.gate == true { presses[key]?.held = false; presses[key]?.sounding = false }
+    }
+    mutating func stop(preset: Int, pad: Int) { presses[Key(preset: preset, pad: pad)] = nil }
+    mutating func reset() { presses.removeAll() }
+    func lit(preset: Int, pad: Int) -> Bool {
+        let press = presses[Key(preset: preset, pad: pad)]
+        return press?.held == true || press?.sounding == true
+    }
+    mutating func receive(_ state: DAWRemoteVinhetas) {
+        let acknowledged = Set(state.receivedPresses ?? [])
+        for (key, stored) in presses {
+            var press = stored
+            press.confirmed = press.confirmed || acknowledged.contains(press.id)
+            presses[key] = press.confirmed && !press.held && !state.presets[key.preset].pads[key.pad].active ? nil : press
+        }
     }
 }

@@ -96,6 +96,7 @@ public struct VinhetasTriggers {
     }
     public enum Event: Equatable { case start(Voice), stop(UUID), select(Int) }
     private var mouseVoices: [Int: UUID] = [:]
+    private var remoteVoices: [UUID: Voice] = [:]
     private var noteVoices: [String: [UUID]] = [:]
     private var pressedCC: Set<String> = []
     public init() {}
@@ -106,6 +107,17 @@ public struct VinhetasTriggers {
         let voice = Voice(id: UUID(), preset: preset, pad: pad)
         if library.presets[preset].pads[pad].gate { mouseVoices[pad] = voice.id }
         return [.start(voice)]
+    }
+    public mutating func remoteDown(id: UUID, preset: Int, pad: Int, library: VinhetasLibrary) -> [Event] {
+        guard (0..<6).contains(preset), (0..<16).contains(pad), preset == library.selectedPreset,
+              remoteVoices[id] == nil, remoteVoices.count < 128,
+              library.presets[preset].pads[pad].audioFile != nil else { return [] }
+        let voice = Voice(id: id, preset: preset, pad: pad)
+        if library.presets[preset].pads[pad].gate { remoteVoices[id] = voice }
+        return [.start(voice)]
+    }
+    public mutating func remoteUp(id: UUID) -> [Event] {
+        remoteVoices.removeValue(forKey: id).map { [.stop($0.id)] } ?? []
     }
     public mutating func mouseUp(pad: Int) -> [Event] {
         mouseVoices.removeValue(forKey: pad).map { [.stop($0)] } ?? []
@@ -132,6 +144,7 @@ public struct VinhetasTriggers {
     }
     public mutating func finished(_ id: UUID) {
         mouseVoices = mouseVoices.filter { $0.value != id }
+        remoteVoices[id] = nil
         for key in Array(noteVoices.keys) {
             noteVoices[key]?.removeAll { $0 == id }
             if noteVoices[key]?.isEmpty == true { noteVoices[key] = nil }

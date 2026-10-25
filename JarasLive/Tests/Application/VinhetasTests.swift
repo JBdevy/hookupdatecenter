@@ -59,4 +59,30 @@ final class VinhetasTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(VinhetasLibrary.self, from: JSONSerialization.data(withJSONObject: legacy)).midiChannel)
     }
 
+    func testRemoteGateRetainsVoiceAcrossPresetsAndNeverStopsMouseVoice() {
+        var library = VinhetasLibrary(), triggers = VinhetasTriggers()
+        library.presets[0].pads[0].audioFile = "one.wav"
+        library.presets[0].pads[0].gate = true
+        let remoteID = UUID()
+        guard case .start(let remote) = triggers.remoteDown(id: remoteID, preset: 0, pad: 0, library: library).first else { return XCTFail() }
+        XCTAssertEqual(remote.id, remoteID)
+        guard case .start(let mouse) = triggers.mouseDown(pad: 0, library: library).first else { return XCTFail() }
+        XCTAssertTrue(triggers.remoteDown(id: remoteID, preset: 0, pad: 0, library: library).isEmpty)
+        library.select(1)
+        XCTAssertEqual(triggers.remoteUp(id: remoteID), [.stop(remote.id)])
+        XCTAssertTrue(triggers.remoteUp(id: remoteID).isEmpty)
+        XCTAssertEqual(triggers.mouseUp(pad: 0), [.stop(mouse.id)])
+        XCTAssertTrue(triggers.remoteDown(id: UUID(), preset: 0, pad: 0, library: library).isEmpty)
+    }
+    func testRemoteOneShotsOverlapAndIgnoreReleaseWithGateOff() {
+        var library = VinhetasLibrary(), triggers = VinhetasTriggers()
+        library.presets[0].pads[0].audioFile = "one.wav"
+        let first = UUID(), second = UUID()
+        XCTAssertEqual(triggers.remoteDown(id: first, preset: 0, pad: 0, library: library).count, 1)
+        XCTAssertEqual(triggers.remoteDown(id: second, preset: 0, pad: 0, library: library).count, 1)
+        XCTAssertTrue(triggers.remoteUp(id: first).isEmpty)
+        XCTAssertTrue(triggers.remoteUp(id: second).isEmpty)
+        XCTAssertTrue(triggers.remoteDown(id: UUID(), preset: 0, pad: 16, library: library).isEmpty)
+    }
+
 }

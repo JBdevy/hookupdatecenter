@@ -18,6 +18,7 @@ import AVFoundation
     var stopVoice: ((UUID) -> Void)?
     var changeVolume: ((Int, Int, Double) -> Void)?
     private var triggers = VinhetasTriggers()
+    private var remotePresses: [UUID] = []
     private weak var show: ShowController?
     private weak var audio: StemAudioPlayback?
     private var buffers: [String: AVAudioPCMBuffer] = [:]
@@ -131,6 +132,38 @@ import AVFoundation
     }
     func panic() {
         for id in Array(voices.keys) { stopVoice?(id); finished(id) }
+    }
+    var remoteState: DAWRemoteVinhetas {
+        .init(selectedPreset: library.selectedPreset,
+            available: show?.current?.tracks.contains { $0.role.rawValue == "vinhetas" } == true,
+            presets: library.presets.enumerated().map { p, preset in
+                .init(name: preset.name, color: preset.color, pads: preset.pads.enumerated().map { n, pad in
+                    .init(name: pad.name, color: pad.color, volume: min(2, pad.volume), gate: pad.gate,
+                        loaded: pad.audioFile.map { buffers[$0] != nil } ?? false,
+                        active: voices.values.contains { $0.preset == p && $0.pad == n })
+                })
+            }, receivedPresses: remotePresses)
+    }
+    func applyRemote(_ command: DAWRemoteCommand) {
+        guard command.valid else { return }
+        switch command.action {
+        case .vinhetasDown:
+            guard remoteState.available, let id = command.target, voices[id] == nil,
+                  let p = command.preset, let n = command.pad else { return }
+            guard !remotePresses.contains(id) else { return }
+            remotePresses.append(id)
+            if remotePresses.count > 256 { remotePresses.removeFirst(remotePresses.count - 256) }
+            dispatch(triggers.remoteDown(id: id, preset: p, pad: n, library: library))
+        case .vinhetasUp:
+            if let id = command.target { dispatch(triggers.remoteUp(id: id)) }
+        case .vinhetasPreset: select(Int(command.value))
+        case .vinhetasVolume:
+            if let p = command.preset, let n = command.pad { volume(preset: p, pad: n, value: command.value) }
+        case .vinhetasGate:
+            if let p = command.preset, let n = command.pad, let enabled = command.enabled { gate(preset: p, pad: n, enabled: enabled) }
+        case .vinhetasPanic: panic()
+        default: break
+        }
     }
     func down(_ pad: Int) { dispatch(triggers.mouseDown(pad: pad, library: library)) }
     func up(_ pad: Int) { dispatch(triggers.mouseUp(pad: pad)) }
@@ -396,35 +429,24 @@ private struct VinhetasPadSurface: NSViewRepresentable {
 #endif
 
 #if os(iOS)
-private struct VinhetasFader: UIViewRepresentable {
+private struct VinhetasFader: View {
     @Binding var value: Double
-    func makeUIView(context: Context) -> Fader {
-        let slider = Fader(); slider.minimumValue = 0; slider.maximumValue = 2
-        slider.minimumTrackTintColor = .gray; slider.maximumTrackTintColor = .gray
-        slider.thumbTintColor = UIColor(white: 0.85, alpha: 1)
-        slider.addTarget(slider, action: #selector(Fader.changed), for: .valueChanged)
-        slider.isContinuous = true; slider.accessibilityLabel = "Volume do pad"
-        return slider
-    }
-    func updateUIView(_ view: Fader, context: Context) {
-        view.value = Float(value); view.commit = { value = Double($0) }
-    }
-    final class Fader: UISlider {
-        var commit: ((Float) -> Void)?
-        @objc func changed() { commit?(value) }
-        override func point(inside point: CGPoint, with event: UIEvent?) -> Bool { bounds.insetBy(dx: 0, dy: -6).contains(point) }
+    var body: some View {
+        RemoteNativeSlider(value: value, range: 0...2, height: 20, resetValue: 1) { value = $0 }
+            .accessibilityLabel("Volume do pad")
     }
 }
-private struct VinhetasPadSurface: UIViewRepresentable {
+struct VinhetasPadSurface: UIViewRepresentable {
     let name: String; let color: UInt32; let active: Bool
     let down: () -> Void; let up: () -> Void
     let touchMenusEnabled: Bool
+    var contextMenusEnabled = true
     let edit: () -> Void; let insert: () -> Void; let learn: () -> Void
     func makeUIView(context: Context) -> Pad { Pad() }
     func updateUIView(_ view: Pad, context: Context) {
         view.name = name; view.color = UIColor(Color(hex: color)); view.active = active
         view.down = down; view.up = up; view.accessibilityLabel = name
-        view.touchMenusEnabled = touchMenusEnabled
+        view.touchMenusEnabled = touchMenusEnabled; view.contextMenusEnabled = contextMenusEnabled
         view.edit = edit; view.insert = insert; view.learn = learn
         view.accessibilityValue = active ? "Tocando" : "Parado"; view.setNeedsDisplay()
     }
@@ -432,7 +454,7 @@ private struct VinhetasPadSurface: UIViewRepresentable {
     final class Pad: UIView, UIContextMenuInteractionDelegate {
         var name = "", color = UIColor.gray, active = false, pressed = false
         var down: (() -> Void)?, up: (() -> Void)?
-        var touchMenusEnabled = false, secondaryMenu = false
+        var touchMenusEnabled = false, secondaryMenu = false, contextMenusEnabled = true
         var edit: (() -> Void)?, insert: (() -> Void)?, learn: (() -> Void)?
         override init(frame: CGRect) {
             super.init(frame: frame); isOpaque = false; isAccessibilityElement = true; accessibilityTraits = .button
@@ -449,7 +471,7 @@ private struct VinhetasPadSurface: UIViewRepresentable {
         }
         func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
                                     configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
-            guard touchMenusEnabled || secondaryMenu else { return nil }
+            guard contextMenusEnabled && (touchMenusEnabled || secondaryMenu) else { return nil }
             return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
                 UIMenu(children: [
                     UIAction(title: JarasLocalization.string("Edit")) { [weak self] _ in self?.edit?() },
@@ -501,6 +523,7 @@ struct IpadVinhetasPanel: View {
 struct IpadVinhetasFloatingPanel: View {
     let touchMenusEnabled: Bool
     let createTrack: () -> Void
+    var remoteContent: AnyView? = nil
     let dock: () -> Void
     let close: () -> Void
     @AppStorage("jaras.ipad.vinhetas.x") private var savedX = 24.0
@@ -528,7 +551,8 @@ struct IpadVinhetasFloatingPanel: View {
                             savedY = min(max(0, savedY + value.translation.height), max(0, geometry.size.height - height))
                         })
                 Divider()
-                IpadVinhetasPanel(touchMenusEnabled: touchMenusEnabled, createTrack: createTrack)
+                if let remoteContent { remoteContent }
+                else { IpadVinhetasPanel(touchMenusEnabled: touchMenusEnabled, createTrack: createTrack) }
                 HStack {
                     Spacer()
                     Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 12))
