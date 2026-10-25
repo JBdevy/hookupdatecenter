@@ -3504,7 +3504,7 @@ int runTests(const File &directory) {
         }
     });
     test("Failed batch FX restores live audio and preserves the existing redo transaction", [&] {
-        // Reject malformed settings before a model worker is started.
+        // Reject malformed plugin state before a module is loaded.
         Session session;
         session.inspection=true;session.mediaDirectory=directory.getChildFile("Audio");
         auto project=projectFixture();
@@ -3521,15 +3521,20 @@ int runTests(const File &directory) {
         session.dirty=false;session.command(jaras::CommandKind::play);
         AudioBuffer<float> output(2,480);session.audio.render(output.getArrayOfWritePointers(),2,480);
         const double cursor=session.audio.state().position;
-        auto malformed=fxschema::defaults(),mix=object();
-        put(malformed,"inserted",Array<var>{"CatStemSeparation 5"});put(malformed,"stemSeparatorEnabled",true);
-        put(mix,"sources",Array<var>{object()});put(malformed,"stemMix",mix);
+        auto malformed=fxschema::defaults(),plugin=object();
+        put(plugin,"id","rollback-invalid-state");put(plugin,"name","Invalid state fixture");
+        // An existing file reaches state decoding, which must fail before any
+        // module is loaded. This fixture requires no installed VST3 or model.
+        put(plugin,"path",session.mediaDirectory.getChildFile("signal.wav").getFullPathName());
+        put(plugin,"classID",String::repeatedString("A",32));put(plugin,"componentState","%invalid-base64%");
+        put(malformed,"inserted",Array<var>{"External:rollback-invalid-state"});
+        put(malformed,"externalPlugins",Array<var>{plugin});
         put(compressor,"makeup",6);
         // The first ordered destination installs successfully; NativeFX rejects
-        // the second chain's malformed source count before any model is spawned.
+        // the second chain's invalid saved state before loading any module.
         bool failed=false;
         try {session.configureEffects({{first.id,compressor},{second.id,malformed}});}
-        catch(const std::exception &error){failed=String::fromUTF8(error.what()).contains("cinco stems");}
+        catch(const std::exception &error){failed=String::fromUTF8(error.what()).contains("VST3");}
         expect(failed,"Second FX destination did not exercise the preparation failure");
         expect(!session.canUndo()&&session.canRedo()&&!session.dirty,"Failed batch changed history or saved-project dirty state");
         expect(!session.song()->tracks[0].fxJSON&&!session.song()->tracks[1].fxJSON,"Failed batch changed project FX settings");

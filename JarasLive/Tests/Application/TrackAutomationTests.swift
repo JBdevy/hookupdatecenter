@@ -65,13 +65,13 @@ final class TrackAutomationTests: XCTestCase {
         envelope.id = UUID(); automation.envelopes.append(envelope)
         XCTAssertThrowsError(try automation.validate())
     }
-    func testEveryNativeParameterProducesValidSettingsIncludingRepeatedEffectsAndCatStem() throws {
+    func testEveryAvailableNativeParameterProducesValidSettingsIncludingRepeatedEffects() throws {
         var fx = NativeFXSettings()
         for name in NativeFXSettings.order { if name != "Bypass" { _ = fx.appendNative(name) } }
         _ = fx.appendNative("Compressor"); _ = fx.appendNative(NativeFXSettings.stemSeparator)
         let parameters = NativeFXParameter.automationParameters(in: fx)
         XCTAssertGreaterThan(parameters.count, 40)
-        XCTAssertEqual(parameters.filter { $0.key == .stemGain }.count, 5)
+        XCTAssertEqual(parameters.filter { $0.key == .stemGain }.count, 0, "Offline separation must not expose realtime plugin automation")
         XCTAssertEqual(Set(parameters.map { AutomationTarget(.nativeFX, native: $0).key }).count, parameters.count)
         for parameter in parameters {
             for fraction in [0.0, 0.27, 0.73, 1.0] {

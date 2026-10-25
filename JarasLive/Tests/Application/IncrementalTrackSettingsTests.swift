@@ -1036,10 +1036,12 @@ extension IncrementalTrackSettingsTests {
     }
     @MainActor func testAllNativeMasterEffectsExceptInstruments() throws {
         let (controller, _) = try show(fixture())
-        for kind in ["EQ", "Compressor", "Limiter", "Pitch", "Delay", "Reverb", NativeFXSettings.stemSeparator] {
+        for kind in ["EQ", "Compressor", "Limiter", "Pitch", "Delay", "Reverb", "CatLive Trigger", "Cat Gate"] {
             XCTAssertNotNil(controller.insertFX(nil, effect: kind), kind)
             XCTAssertTrue(controller.fxSettings(nil).inserted.contains(kind))
         }
+        XCTAssertNil(controller.insertFX(nil, effect: NativeFXSettings.stemSeparator))
+        XCTAssertFalse(controller.fxSettings(nil).inserted.contains(NativeFXSettings.stemSeparator))
         XCTAssertNil(controller.insertFX(nil, effect: "Instruments"))
         XCTAssertFalse(controller.fxSettings(nil).inserted.contains("Instruments"))
     }

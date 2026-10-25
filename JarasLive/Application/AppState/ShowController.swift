@@ -1932,7 +1932,7 @@ public struct ShowTimelinePresentationState: Equatable {
         }
     }
     @discardableResult public func insertClipFX(_ clip: UUID, effect: String) -> String? {
-        guard NativeFXSettings.order.dropFirst().contains(effect) || effect == NativeFXSettings.stemSeparator else { return nil }
+        guard NativeFXSettings.order.dropFirst().contains(effect) else { return nil }
         var value = clipFXSettings(clip)
         let key = value.appendNative(effect)
         do { value = try FXPresetStore.shared.applyingDefault(to: value, effect: key) }
@@ -2193,7 +2193,7 @@ public struct ShowTimelinePresentationState: Equatable {
         } catch { hasUnsavedChanges = true; throw error }
     }
     @discardableResult public func insertFX(_ track: UUID?, effect: String) -> String? {
-        guard (NativeFXSettings.order.contains(effect) || effect == NativeFXSettings.stemSeparator),
+        guard NativeFXSettings.order.contains(effect),
               track != nil || effect != "Instruments" else { return nil }
         var value = fxSettings(track)
         let key = value.appendNative(effect)
@@ -2205,7 +2205,7 @@ public struct ShowTimelinePresentationState: Equatable {
     /// One insertion gesture creates one history entry, regardless of track count.
     @discardableResult public func insertFX(_ targets: [UUID?], effect: String) -> [UUID?: String] {
         guard canControl(), !finishing,
-              NativeFXSettings.order.contains(effect) || effect == NativeFXSettings.stemSeparator,
+              NativeFXSettings.order.contains(effect),
               effect != "Instruments" else { return [:] }
         var inserted: [UUID?: String] = [:]
         for target in targets where inserted[target] == nil {

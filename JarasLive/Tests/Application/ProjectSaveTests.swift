@@ -292,9 +292,11 @@ final class ProjectSaveTests: XCTestCase {
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
         defer { show.send(.stopAll) }
         let transport = show.snapshot.transport
-        for kind in ["EQ", "Delay", NativeFXSettings.stemSeparator] {
+        XCTAssertNil(show.insertClipFX(clip.id, effect: NativeFXSettings.stemSeparator))
+        XCTAssertFalse(show.hasUnsavedChanges)
+        for kind in ["EQ", "Delay", "CatLive Trigger", "Cat Gate"] {
             let effect = try XCTUnwrap(show.insertClipFX(clip.id, effect: kind))
-            let repeated = kind == NativeFXSettings.stemSeparator ? effect : try XCTUnwrap(show.insertClipFX(clip.id, effect: kind))
+            let repeated = try XCTUnwrap(show.insertClipFX(clip.id, effect: kind))
             for key in Set([effect, repeated]) {
                 let stale = show.clipFXSettings(clip.id).settings(for: key)
                 show.removeClipFX(clip.id, effect: key)
