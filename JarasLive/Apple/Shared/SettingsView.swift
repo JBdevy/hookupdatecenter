@@ -186,7 +186,7 @@ struct SettingsView: View {
             Text(device.id == auth.installation.id ? "Você sairá da conta neste computador. O áudio será interrompido e a licença ficará disponível." : "Remover \(device.deviceName) e liberar sua licença para outro computador?")
         }
         .overlay {
-            if mappings.editing != nil {
+            if mappings.editing != nil && mappings.editing?.presentedInline != true {
                 ZStack { Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { mappings.editing = nil }; ControlMappingEditor() }
             }
         }

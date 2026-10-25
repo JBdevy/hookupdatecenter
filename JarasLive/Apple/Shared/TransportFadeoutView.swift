@@ -12,6 +12,9 @@ struct TransportFadeoutSettings: View {
         show.configureTransportFadeout(enabled: enabled ?? fadeout.enabled, duration: duration ?? fadeout.duration, tracks: tracks ?? fadeout.trackIDs)
     }
     var body: some View {
+        #if os(macOS)
+        desktopSettings
+        #else
         ZStack {
             VStack(alignment: .leading, spacing: 16) {
                 Toggle("Fadeout", isOn: Binding(get: { fadeout.enabled }, set: { update(enabled: $0) }))
@@ -64,15 +67,135 @@ struct TransportFadeoutSettings: View {
                 .disabled(mappings.editing != nil || fadeout.run != nil)
             if mappings.editing?.action == .transportFadeout { ControlMappingEditor() }
         }.onDisappear { if mappings.editing?.action == .transportFadeout { mappings.editing = nil } }
+        #endif
     }
+    #if os(macOS)
+    private var learning: Bool { mappings.editing?.action == .transportFadeout && mappings.editing?.presentedInline == true }
+    private var mappedInput: ControlInput? {
+        let binding = mappings.actions.binding(.transportFadeout)
+        return mappingKind == "midi" ? binding.midi : binding.keyboard
+    }
+    private func cancelLearning() {
+        guard learning else { return }
+        mappings.cancelTransfer()
+        mappings.editing = nil
+        mappings.error = ""
+    }
+    private func learn() {
+        if learning { cancelLearning() }
+        else {
+            mappings.beginAction(.transportFadeout, kind: mappingKind)
+            mappings.editing?.presentedInline = true
+            mappings.candidate = nil
+        }
+    }
+    private var feedback: String {
+        if fadeout.active { return "Wait for Fadeout to finish before changing these options." }
+        if !mappings.error.isEmpty { return mappings.error }
+        if learning { return "Esc cancels. Existing shortcuts are preserved." }
+        return mappingKind == "midi"
+            ? "Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings."
+            : "Choose an unused shortcut. Space and standard shortcuts cannot control Fadeout."
+    }
+    private var desktopSettings: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(verbatim: "Fadeout").font(.jarasSystem(size: 13, weight: .semibold))
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel("Close").keyboardShortcut(.cancelAction)
+            }.padding(.horizontal, 16).frame(height: 44)
+                .overlay(alignment: .bottom) { JarasTheme.line.frame(height: 1) }
+            VStack(alignment: .leading, spacing: 0) {
+                Toggle("Enable Fadeout", isOn: Binding(get: { fadeout.enabled }, set: { update(enabled: $0) }))
+                    .toggleStyle(.checkbox).frame(height: 28)
+                HStack {
+                    Text("Duration")
+                    Spacer()
+                    Picker("Duration", selection: Binding(get: { Int(fadeout.duration) }, set: { update(duration: Double($0)) })) {
+                        ForEach(1...5, id: \.self) { Text(verbatim: "\($0) s").tag($0) }
+                    }.labelsHidden().frame(width: 94)
+                }.frame(height: 26).padding(.top, 13)
+                Text("Tracks included").frame(height: 24).padding(.top, 13)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(show.fadeoutTracks) { track in
+                            Toggle(isOn: Binding(get: { fadeout.trackIDs.contains(track.id) }, set: { included in
+                                var ids = fadeout.trackIDs
+                                if included { ids.insert(track.id) } else { ids.remove(track.id) }
+                                update(tracks: ids)
+                            })) {
+                                Text(verbatim: track.name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                            }.toggleStyle(.checkbox).frame(height: 30)
+                        }
+                    }.padding(.horizontal, 8).padding(.vertical, 4)
+                    if show.fadeoutTracks.isEmpty {
+                        Text("No audio tracks in this project.").foregroundStyle(JarasTheme.secondary).padding(10)
+                    }
+                }.frame(height: 192).background(JarasTheme.display)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.line, lineWidth: 1))
+                    .padding(.top, 2)
+                HStack(spacing: 0) {
+                    inputTab("Key", kind: "keyboard")
+                    inputTab("MIDI", kind: "midi")
+                }.frame(height: 28).padding(.top, 14)
+                HStack(spacing: 8) {
+                    Text(LocalizedStringKey(mappingKind == "midi" ? "MIDI" : "Key")).frame(width: 60, alignment: .leading)
+                    Button(action: learn) {
+                        Text(verbatim: learning ? JarasLocalization.string(mappingKind == "midi" ? "Press a MIDI control…" : "Press a key…")
+                             : mappedInput?.label ?? JarasLocalization.string(mappingKind == "midi" ? "Map MIDI" : "Set shortcut"))
+                            .lineLimit(1).frame(maxWidth: .infinity, minHeight: 28)
+                            .background(JarasTheme.trackButton).cornerRadius(6).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                    Button {
+                        cancelLearning()
+                        mappings.removeActionInput(.transportFadeout, kind: mappingKind)
+                        mappings.error = ""
+                    } label: {
+                        Text("Remove binding").frame(width: 76, height: 28)
+                            .background(JarasTheme.trackButton).cornerRadius(6).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(!learning && mappedInput == nil)
+                }.frame(height: 28).padding(.top, 12)
+                Text(LocalizedStringKey(feedback))
+                    .font(.jarasSystem(size: 11))
+                    .foregroundStyle(mappings.error.isEmpty || fadeout.active ? JarasTheme.secondary : .red)
+                    .frame(maxWidth: .infinity, minHeight: 46, maxHeight: 46, alignment: .topLeading)
+                    .padding(.top, 6)
+            }.font(.jarasSystem(size: 12)).disabled(fadeout.active)
+                .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 6)
+                .frame(width: 440, height: 452)
+        }.background(JarasTheme.background).foregroundStyle(JarasTheme.text).tint(JarasTheme.green)
+            .onChange(of: mappingKind) { _ in cancelLearning(); mappings.error = "" }
+            .onChange(of: mappings.candidate) { candidate in
+                guard learning, !fadeout.active, candidate != nil else { return }
+                mappings.save()
+            }
+            .onChange(of: fadeout.active) { active in if active { cancelLearning() } }
+            .onDisappear { cancelLearning() }
+            .alert("This control is already mapped.", isPresented: Binding(get: { learning && mappings.transferRequest != nil }, set: { if !$0 { mappings.cancelTransfer() } }), presenting: mappings.transferRequest) { request in
+                Button("Cancel", role: .cancel) { mappings.cancelTransfer() }
+                Button("Transfer mapping") { mappings.confirmTransfer(request) }.keyboardShortcut(.defaultAction)
+            } message: { request in Text(verbatim: request.message) }
+    }
+    private func inputTab(_ title: LocalizedStringKey, kind: String) -> some View {
+        Button { mappingKind = kind } label: {
+            Text(title).frame(maxWidth: .infinity, minHeight: 28)
+                .foregroundStyle(mappingKind == kind ? JarasTheme.green : JarasTheme.text)
+                .background(mappingKind == kind ? JarasTheme.green.opacity(0.18) : JarasTheme.trackButton)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+    }
+    #endif
 }
 
 #if os(macOS)
 import AppKit
 
 /// Nonactivating child panels leave keyboard shortcuts with the main window.
-/// Countdown and warning occupy different edges, so a Sub Play warning never
-/// conceals the time remaining or intercepts the repeat-to-cancel action.
+/// The countdown stays centered and warnings remain at the top, leaving the
+/// time remaining visible and the repeat-to-cancel action available.
 struct TransportFadeoutPresenter: NSViewRepresentable {
     let show: ShowController
     func makeNSView(context: Context) -> FadeoutPresentationAnchor {
@@ -141,7 +264,10 @@ final class FadeoutPresentationAnchor: NSView {
     private func positionPanels() {
         guard let window else { return }
         let frame = window.contentLayoutRect.offsetBy(dx: window.frame.minX, dy: window.frame.minY)
-        progress?.setFrameOrigin(NSPoint(x: max(frame.minX + 12, frame.maxX - 246), y: frame.minY + 18))
+        if let progress {
+            progress.setFrameOrigin(NSPoint(x: frame.midX - progress.frame.width / 2,
+                                            y: frame.midY - progress.frame.height / 2))
+        }
         warning?.setFrameOrigin(NSPoint(x: frame.midX - 200, y: frame.maxY - 78))
     }
     private func closePanels() {

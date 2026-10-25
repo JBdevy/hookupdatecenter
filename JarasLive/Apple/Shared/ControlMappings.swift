@@ -37,6 +37,7 @@ struct MappingEdit: Identifiable {
     var chooseInputKind = false
     var replacesTrackTarget = false
     var trackNumber: Int? = nil
+    var presentedInline = false
 }
 struct MappingTransferRequest: Identifiable {
     let id = UUID()

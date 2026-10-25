@@ -43,7 +43,7 @@ class TransportFadeoutOverlay final : public Component {
         const int margin = 12;
         const int width = std::max(0, std::min(280, getWidth() - margin * 2));
         const int height = std::max(0, std::min(110, getHeight() * 35 / 100));
-        countdownBounds = {std::max(0, getWidth() - margin - width), std::max(0, getHeight() - margin - height), width, height};
+        countdownBounds = {std::max(0, (getWidth() - width) / 2), std::max(0, (getHeight() - height) / 2), width, height};
         const int warningWidth = std::max(0, std::min(380, getWidth() - margin * 2));
         const int warningHeight = std::max(0, std::min(70, countdownBounds.getY() - margin * 2));
         warningBounds = {std::max(0, (getWidth() - warningWidth) / 2), margin, warningWidth, warningHeight};

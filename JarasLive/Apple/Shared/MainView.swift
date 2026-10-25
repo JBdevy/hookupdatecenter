@@ -538,7 +538,7 @@ struct MainView: View {
                 #else
                 let settingsOpen = false
                 #endif
-                if mappings.editing != nil && mappings.editing?.fxParameter == nil && panel == nil && !settingsOpen {
+                if mappings.editing != nil && mappings.editing?.presentedInline != true && mappings.editing?.fxParameter == nil && panel == nil && !settingsOpen {
                     ZStack { Color.black.opacity(0.25).contentShape(Rectangle()).onTapGesture { mappings.editing = nil }; ControlMappingEditor() }
                 }
             }

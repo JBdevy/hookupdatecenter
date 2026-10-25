@@ -150,7 +150,11 @@ struct TransportView: View {
                             Image(systemName: transport.playing ? "stop.fill" : "play.fill").frame(width: 12)
                         }
                     }.buttonStyle(TransportButtonStyle(color: JarasTheme.transportPlay, active: transport.playing, fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height)).jarasHelp(ControlMappings.shared.shortcutHelp(.playStop))
+                        #if os(macOS)
+                        .immediateRightClick { showingFadeout = true }
+                        #else
                         .contextMenu { Button("Fadeout…") { showingFadeout = true } }
+                        #endif
                     Button { show.send(.pause) } label: { Image(systemName: "pause.fill") }
                         .buttonStyle(TransportButtonStyle(fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height))
                         .accessibilityLabel("Pause").jarasHelp("Pause").disabled(!transport.playing)

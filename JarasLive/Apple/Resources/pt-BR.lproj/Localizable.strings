@@ -1848,3 +1848,15 @@
 "Only the selected block headers will be removed. Songs and timeline items will be kept." = "Somente os itens de bloco selecionados serão removidos do setlist.";
 
 "Block ID %02d" = "Bloco ID %02d";
+
+"Enable Fadeout" = "Ativar Fadeout";
+"Tracks included" = "Pistas incluídas";
+"Key" = "Tecla";
+"Set shortcut" = "Definir atalho";
+"Press a key…" = "Pressione uma tecla…";
+"Press a MIDI control…" = "Acione o controle MIDI…";
+"Remove binding" = "Remover";
+"Wait for Fadeout to finish before changing these options." = "Aguarde o Fadeout terminar para alterar estas opções.";
+"No audio tracks in this project." = "Nenhuma pista de áudio neste projeto.";
+"Esc cancels. Existing shortcuts are preserved." = "Esc cancela. Atalhos existentes são preservados.";
+"Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings." = "Clique em Mapear MIDI e acione uma nota ou botão CC. A entrada MIDI deve estar ativa em Configurações.";
