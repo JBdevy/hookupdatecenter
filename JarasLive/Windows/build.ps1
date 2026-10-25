@@ -73,6 +73,10 @@ $stemVersion=(Get-FileHash -LiteralPath $stemLock -Algorithm SHA256).Hash.Substr
 $stemRuntime=Join-Path $BuildDirectory ("catstem-runtime-"+$stemVersion)
 $pythonCommand=Get-Command python -ErrorAction SilentlyContinue
 if(-not $pythonCommand){throw 'Python 3.11+ é necessário para preparar o pacote CatStem durante o build.'}
+if(-not $SkipTests) {
+    & $pythonCommand.Source (Join-Path $sourceDirectory '../WindowsNative/StemSeparation/test_runtime_dependencies.py')
+    if($LASTEXITCODE){throw 'Falha na validação das dependências nativas do separador.'}
+}
 & $pythonCommand.Source $stemPreparation --output $stemRuntime
 if($LASTEXITCODE){throw 'Falha ao preparar o CatStem. O pacote não foi gerado.'}
 $stemPackage=Join-Path $packageDirectory 'StemSeparationRuntime'

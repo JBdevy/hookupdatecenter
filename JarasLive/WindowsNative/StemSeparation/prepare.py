@@ -3,10 +3,12 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import shutil
 import subprocess
+import struct
 import tarfile
 import tempfile
 import urllib.request
@@ -21,6 +23,75 @@ IR_FILES = STREAM_IR_FILES + OFFLINE_IR_FILES
 IR_FORMAT_VERSION = 2
 OFFLINE_IR_FORMAT_VERSION = 1
 WORKERS = ('stream.py', 'stream_windows.py', 'openvino_backend.py', 'separate.py', 'offline_openvino.py')
+# Official, redistributable MSVC release DLLs. TorchAudio needs VCOMP140 even
+# when PyTorch itself loads successfully using its bundled Intel OpenMP DLL.
+VC_RUNTIME_FILES = ('concrt140.dll', 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
+                    'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll',
+                    'vcruntime140.dll', 'vcruntime140_1.dll', 'vcomp140.dll')
+NATIVE_FILES = tuple('python/' + name for name in VC_RUNTIME_FILES)
+
+
+def verify_x64_dll(path):
+    with Path(path).open('rb') as source:
+        header = source.read(64)
+        if len(header) != 64 or header[:2] != b'MZ':
+            raise RuntimeError('Invalid Windows runtime DLL: ' + str(path))
+        source.seek(struct.unpack_from('<I', header, 60)[0])
+        pe = source.read(6)
+        if len(pe) != 6 or pe[:4] != b'PE\0\0' or struct.unpack_from('<H', pe, 4)[0] != 0x8664:
+            raise RuntimeError('The CatStem runtime requires x64 DLLs: ' + str(path))
+
+
+def visual_cpp_roots():
+    roots = []
+    if os.environ.get('VCToolsRedistDir'):
+        roots.append(Path(os.environ['VCToolsRedistDir']))
+    if os.environ.get('VSINSTALLDIR'):
+        roots.append(Path(os.environ['VSINSTALLDIR']) / 'VC/Redist/MSVC')
+    vswhere = Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'Microsoft Visual Studio/Installer/vswhere.exe'
+    if vswhere.is_file():
+        studio = subprocess.run([str(vswhere), '-latest', '-products', '*', '-requires',
+                                 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                                 '-property', 'installationPath'], check=True, capture_output=True, text=True).stdout.strip()
+        if studio:
+            roots.append(Path(studio) / 'VC/Redist/MSVC')
+    return roots
+
+
+def visual_cpp_sources(roots):
+    # Do not copy from System32/PATH: development machines can hide a missing
+    # redistributable, and the source may have the wrong architecture/version.
+    for root in roots:
+        root = Path(root)
+        if not root.is_dir():
+            continue
+        versions = [root] + sorted((p for p in root.iterdir() if p.is_dir()), reverse=True)
+        for version in versions:
+            for crt in sorted(version.glob('x64/Microsoft.VC*.CRT'), reverse=True):
+                openmp = crt.with_name(crt.name[:-4] + '.OpenMP')
+                files = {name: (openmp if name == 'vcomp140.dll' else crt) / name for name in VC_RUNTIME_FILES}
+                if all(path.is_file() for path in files.values()):
+                    for path in files.values():
+                        verify_x64_dll(path)
+                    return files
+    raise RuntimeError('Install the Visual Studio x64 CRT and OpenMP redistributable build files before packaging CatStem.')
+
+
+def bundle_visual_cpp_runtime(target, roots=None):
+    files = visual_cpp_sources(visual_cpp_roots() if roots is None else roots)
+    directory = Path(target) / 'python'
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, source in files.items():
+        shutil.copy2(source, directory / name)
+
+
+def verify_native_runtime(target):
+    for relative in NATIVE_FILES:
+        path = Path(target) / relative
+        if not path.is_file():
+            raise RuntimeError('Missing bundled Windows dependency: ' + relative)
+        verify_x64_dll(path)
+
 
 
 def digest(path):
@@ -39,7 +110,8 @@ def runtime_identity(lock):
     return {'pythonSHA256': PYTHON_SHA, 'modelSHA256': MODEL_SHA,
             'requirementsSHA256': digest(lock), 'backend': 'openvino-htdemucs6-split-fp32',
             'fallbackBackend': 'torch-htdemucs6', 'architecture': 'windows-x64',
-            'protocol': 'CST1', 'runtimeVersion': 6, 'sampleRate': 44100,
+            'protocol': 'CST1', 'runtimeVersion': 7, 'sampleRate': 44100,
+            'nativeRuntime': 'msvc14-x64-app-local',
             'offlineBackend': 'openvino-htdemucs6-full-context-fp32', 'offlineContextFrames': 343980,
             'contextFrames': 44100, 'rightContextFrames': 3072,
             'hopFrames': 8192, 'latencyFrames': 66150,
@@ -48,6 +120,7 @@ def runtime_identity(lock):
 
 def verify_dependencies(target, lock):
     """Check the actual isolated interpreter; a cached JSON alone is insufficient."""
+    verify_native_runtime(target)
     python = target / 'python/python.exe'
     if not python.is_file() or digest(target / MODEL_NAME) != MODEL_SHA:
         raise RuntimeError('The CatStem interpreter or pinned checkpoint is missing/invalid.')
@@ -60,7 +133,28 @@ for line in pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
     actual = metadata.version(name)
     if actual != expected: raise RuntimeError(f'{name}: expected {expected}, got {actual}')
 '''
-    subprocess.run([str(python), '-I', '-B', '-c', script, str(lock)], check=True)
+    script += '''
+# Import the real native extensions, rather than accepting dist-info metadata.
+import ctypes, torch, torchaudio, soundfile
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+kernel.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+kernel.GetModuleHandleW.restype = ctypes.c_void_p
+kernel.GetModuleFileNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32]
+for name in ('msvcp140.dll', 'vcomp140.dll'):
+    handle = kernel.GetModuleHandleW(name)
+    filename = ctypes.create_unicode_buffer(32768)
+    if not handle or not kernel.GetModuleFileNameW(handle, filename, len(filename)):
+        raise RuntimeError('The native audio dependency did not load: ' + name)
+    if pathlib.Path(filename.value).resolve().parent != pathlib.Path(sys.executable).resolve().parent:
+        raise RuntimeError('CatStem loaded a dependency outside its package: ' + name)
+print('CATSTEM_NATIVE_AUDIO_IMPORTS_AND_APP_LOCAL_MSVC_OPENMP_OK')
+'''
+    environment = os.environ.copy()
+    windows = Path(environment.get('SystemRoot', r'C:\Windows'))
+    environment['PATH'] = os.pathsep.join((str(python.parent), str(windows / 'System32'), str(windows)))
+    for name in ('PYTHONHOME', 'PYTHONPATH'):
+        environment.pop(name, None)
+    subprocess.run([str(python), '-I', '-B', '-c', script, str(lock)], check=True, env=environment)
 
 
 def verify_ir(target):
@@ -75,7 +169,7 @@ def verify_runtime(target, lock):
     manifest = json.loads((target / 'runtime.json').read_text(encoding='utf-8'))
     if any(manifest.get(key) != value for key, value in runtime_identity(lock).items()):
         raise RuntimeError('The cached CatStem runtime uses an incompatible pinned configuration.')
-    for name in WORKERS + IR_FILES:
+    for name in WORKERS + IR_FILES + NATIVE_FILES:
         if digest(target / name) != manifest.get('filesSHA256', {}).get(name):
             raise RuntimeError('CatStem runtime file SHA256 mismatch: ' + name)
     licenses = target / 'Licenses'
@@ -92,6 +186,7 @@ def verify_runtime(target, lock):
 def refresh_runtime(target, root, lock):
     """Refresh code/notices and verified IR after dependencies have been prepared."""
     target, root, lock = Path(target), Path(root), Path(lock)
+    bundle_visual_cpp_runtime(target)
     verify_dependencies(target, lock)
     scripts = root / 'WindowsNative/StemSeparation'
     shutil.copy2(root / 'Apple/Resources/StemSeparation/stream.py', target / 'stream.py')
@@ -147,9 +242,11 @@ def refresh_runtime(target, root, lock):
         'OpenVINO telemetry is opted out in the CatLive backend.\n'
         'PyTorch 2.2.2 CPU, BSD; https://github.com/pytorch/pytorch\n'
         'Python 3.11.12, PSF; additional Python distribution licenses remain under python/.\n'
+        'Microsoft Visual C++ Runtime (x64 CRT and OpenMP), Microsoft Corporation; distributed from the Visual Studio redistributable files beside the isolated interpreter.\n'
+        'https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files\n'
         'All dependency versions are pinned in requirements.lock; redistribution notices are retained here and in python/Lib/site-packages.\n', encoding='utf-8')
     manifest = runtime_identity(lock)
-    manifest['filesSHA256'] = {name: digest(target / name) for name in WORKERS + IR_FILES}
+    manifest['filesSHA256'] = {name: digest(target / name) for name in WORKERS + IR_FILES + NATIVE_FILES}
     (target / 'runtime.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     return verify_runtime(target, lock)
 

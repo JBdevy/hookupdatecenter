@@ -36,6 +36,10 @@
   #error The verified full-context CatStem offline inference graph is required.
 #endif
 
+#if !FileExists(PackageDirectory + "\StemSeparationRuntime\python\vcomp140.dll") || !FileExists(PackageDirectory + "\StemSeparationRuntime\python\msvcp140.dll") || !FileExists(PackageDirectory + "\StemSeparationRuntime\python\vcruntime140.dll") || !FileExists(PackageDirectory + "\StemSeparationRuntime\python\vcruntime140_1.dll")
+  #error The app-local x64 Microsoft CRT and OpenMP runtime DLLs are required for audio separation.
+#endif
+
 [Setup]
 AppId={{67D3087D-1528-496B-B48A-1371A0FDD915}
 AppName=CatLive

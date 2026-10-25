@@ -100,7 +100,7 @@ function Invoke-CatStemTest([string]$Program,[string[]]$Arguments,[string]$Name,
 
 try {
     foreach($relative in @('stream_windows.py','stream.py','openvino_backend.py','offline_openvino.py','separate.py','runtime.json',
-                           '5c90dfd2-34c22ccb.th','python/python.exe',
+                           '5c90dfd2-34c22ccb.th','python/python.exe','python/vcomp140.dll','python/msvcp140.dll',
                            'htdemucs6-openvino.xml','htdemucs6-openvino.bin','htdemucs6-openvino.json',
                            'htdemucs6-offline.xml','htdemucs6-offline.bin','htdemucs6-offline.json')) {
         $path=Join-Path $RuntimeDirectory $relative
