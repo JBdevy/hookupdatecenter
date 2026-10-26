@@ -447,13 +447,18 @@ var ProjectCodec::read(const File &file) {
     decode(value);
     return value;
 }
-void ProjectCodec::write(const File &file, const var &input) {
+bool ProjectCodec::isMacMetadata(const File &file) {
+    if (!file.getFileName().startsWith("._")) return false;
+    FileInputStream input(file);
+    return input.openedOk() && input.readIntBigEndian() == 0x00051607;
+}
+void ProjectCodec::write(const File &file, const var &input, bool savingCurrentDocument) {
     const auto value = canonicalIDs(input);
     decode(value);
     auto folder = file.getParentDirectory();
     require(folder.createDirectory().wasOk(), "Could not create project folder.");
     for (auto &other : folder.findChildFiles(File::findFiles, false, "*.jl"))
-        require(other == file, "Choose a separate folder for each CatLive project.");
+        require(other == file || isMacMetadata(other) || (savingCurrentDocument && file.existsAsFile()), "Choose a separate folder for each CatLive project.");
     auto bytes = seal(JSON::toString(value, true, 17));
     TemporaryFile tmp(file);
     {
@@ -691,6 +696,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 optionalText(rm, "tempoTimebase", m.tempoTimebase);
                 optionalNum(rm, "section", m.section);
                 optionalNum(rm, "loopSection", m.loopSection);
+                optionalText(rm, "automaticSectionTargetID", m.automaticSectionTargetID);
                 optionalText(rm, "unifiedRegionID", m.unifiedRegionID);
                 optionalText(rm, "sourceRegionID", m.sourceRegionID);
                 optionalText(rm, "regionOwnerID", m.regionOwnerID);
@@ -1037,6 +1043,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 emit(rm, "tempoBPM", m.tempoBPM);
                 emit(rm, "section", m.section);
                 emit(rm, "loopSection", m.loopSection);
+                emit(rm, "automaticSectionTargetID", m.automaticSectionTargetID);
                 markers.add(rm);
             }
             put(raw, "markers", markers);

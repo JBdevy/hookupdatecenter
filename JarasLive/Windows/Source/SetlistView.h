@@ -26,6 +26,7 @@ class Workspace::Setlist final : public Component,
         list.setComponentID("setlistRows");
         list.setModel(this);
         list.heightForRow = [this](int row) { return row >= 0 && row < (int)entries.size() && entries[(size_t)row].block ? 28 : 38; };
+        list.dragNameForRow = [this](int row) { return row >= 0 && row < (int)entries.size() ? entries[(size_t)row].name : String{}; };
         list.setColour(ListBox::backgroundColourId, theme::background);
         list.setMultipleSelectionEnabled(true);
         list.setOutlineThickness(0);
@@ -344,7 +345,7 @@ class Workspace::Setlist final : public Component,
                     return part.parentRegionID == entry.id && selectedIDs.count(part.id);
                 });
             if (selected) {
-                list.selectRow(row, true, false);
+                list.selectRow(row, false, false);
                 if (reveal) list.scrollToEnsureRowIsOnscreen(row);
             }
         }
@@ -744,7 +745,7 @@ class Workspace::Setlist final : public Component,
                     if (playlist) playlistOccurrences::remove(state, *playlist, regions);
                     self->w.session.configureSetlist(std::move(state));
                 } else {
-                    self->w.session.edit([&](jaras::Project &project) {
+                    self->w.session.editTimeline([&](jaras::Project &project) {
                         if (project.regionSetlist) playlistOccurrences::removeBlocks(*project.regionSetlist, songID, playlist, blocks);
                         regionEditing::erase(project, songID, regions, true);
                     });

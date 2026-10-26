@@ -392,8 +392,10 @@ struct StartupView: View {
                     }
                     .foregroundStyle(LinearGradient(colors: [Color(hex: 0x72FFB3), Color(hex: 0x00CF64)],
                                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+                    #if os(macOS)
                     Text(verbatim: "Version " + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
                         .font(.jarasSystem(size: 12)).foregroundStyle(JarasTheme.secondary).padding(.top, 8)
+                    #endif
                     Spacer(minLength: 24)
                     Group {
                         if let progress {

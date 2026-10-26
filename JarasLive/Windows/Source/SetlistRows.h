@@ -44,8 +44,8 @@ namespace catlive {
                     if(!description.isVoid()) {
                         const auto *display=Desktop::getInstance().getDisplays().getDisplayForRect(getScreenBounds());
                         const double scale=Component::getApproximateScaleFactorForComponent(&list)*(display?display->scale:1.0);
-                        const Point<int> offset{-e.getMouseDownX(),-e.getMouseDownY()};
-                        container->startDragging(description,&list,list.createDragPreview(scale),false,&offset,&e.source);
+                        const Point<int> offset{-jlimit(80,300,getWidth())/2,-17};
+                        container->startDragging(description,&list,list.createDragPreview(scale,index),false,&offset,&e.source);
                     }
                 }
             }
@@ -55,6 +55,7 @@ namespace catlive {
         void changed(int row) { content.repaint();if(model)model->selectedRowsChanged(row); }
       public:
         std::function<int(int)> heightForRow;
+        std::function<String(int)> dragNameForRow;
         SetlistRows() { addAndMakeVisible(viewport);viewport.setViewedComponent(&content,false); }
         ~SetlistRows() override {viewport.setViewedComponent(nullptr,false);}
         void setModel(ListBoxModel *value){model=value;}
@@ -66,41 +67,32 @@ namespace catlive {
         Viewport *getViewport(){return &viewport;}
         const Viewport *getViewport() const{return &viewport;}
         SparseSet<int> getSelectedRows() const{return selected;}
-        ScaledImage createDragPreview(double scale=1.0) {
+        ScaledImage createDragPreview(double scale=1.0, int sourceRow=-1) {
             if(!model)return {};
-            std::vector<Row*> draggedRows;
-            int height=0,total=0;
-            for(int i=0;i<selected.size();++i) {
-                const int index=selected[i];
-                if(index<0 || index>=(int)rows.size())continue;
+            auto draggable=[&](int index) {
+                if(index<0 || index>=(int)rows.size() || !selected.contains(index))return false;
                 SparseSet<int> single;single.addRange({index,index+1});
-                // Only entries accepted by the source belong in the preview;
-                // unified child rows remain protected from playlist reordering.
-                if(model->getDragSourceDescription(single).isVoid())continue;
-                ++total;
-                if(draggedRows.size()<5) {
-                    draggedRows.push_back(rows[(size_t)index].get());
-                    height+=draggedRows.back()->getHeight();
-                }
+                return !model->getDragSourceDescription(single).isVoid();
+            };
+            if(!draggable(sourceRow)) {
+                sourceRow=-1;
+                for(int i=0;i<selected.size();++i)
+                    if(draggable(selected[i])) {sourceRow=selected[i];break;}
             }
-            if(draggedRows.empty())return {};
-            const int more=total-(int)draggedRows.size();
-            if(more>0)height+=24;
-            const int width=std::max(1,draggedRows.front()->getWidth());
+            if(sourceRow<0)return {};
+            // Match the Mac's single title strip, even for a multi-selection.
+            // Keeping the preview separate from the row painting leaves the
+            // destination and insertion line visible beneath the pointer.
+            constexpr int height=34;
+            const int width=jlimit(80,300,rows[(size_t)sourceRow]->getWidth());
             scale=std::max(1.0,scale);
             Image preview(Image::ARGB,(int)std::ceil(width*scale),(int)std::ceil(height*scale),true);
             Graphics g(preview);g.addTransform(AffineTransform::scale((float)scale));
-            int y=0;
-            for(auto *row:draggedRows) {
-                auto snapshot=row->createComponentSnapshot(row->getLocalBounds(),true,(float)scale);
-                g.drawImage(snapshot,juce::Rectangle<float>(0,(float)y,(float)width,(float)row->getHeight()));
-                y+=row->getHeight();
-            }
-            if(more>0) {
-                g.setColour(theme::background);g.fillRoundedRectangle(0,(float)y,(float)width,24,4);
-                g.setColour(Colours::white);g.setFont(theme::semiboldFont(12));
-                g.drawText("+"+String(more),0,y,width,24,Justification::centred);
-            }
+            g.setColour(Colour(0xff111111).withAlpha(.9f));
+            g.fillRoundedRectangle(0,0,(float)width,(float)height,4);
+            g.setColour(Colours::white);g.setFont(theme::semiboldFont(12));
+            g.drawText(dragNameForRow ? dragNameForRow(sourceRow) : String{},
+                       8,0,width-16,height,Justification::centredLeft,true);
             return ScaledImage(preview,scale);
         }
         int rowTop(int index) const {int y=0;for(int i=0;i<index&&i<(int)rows.size();++i)y+=heightForRow?heightForRow(i):38;return y;}

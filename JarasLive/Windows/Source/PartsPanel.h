@@ -1,6 +1,7 @@
 #pragma once
 #include "Session.h"
 #include "PartsPresentation.h"
+#include "AutomaticSectionPanel.h"
 #include "Localization.h"
 namespace catlive {
 
@@ -244,6 +245,15 @@ class PartsPanel final : public Component, private Timer {
                     }
                 };
             }
+            void mouseDown(const MouseEvent& event) override {
+                if(event.mods.isPopupMenu()) {
+                    if(!start) ModalSheet::open(*panel.getTopLevelComponent(), String::fromUTF8("Engatilhamento automático"),
+                        std::make_unique<AutomaticSectionPanel>(panel.session,id,panel.error),660,420);
+                    return;
+                }
+                Button::mouseDown(event);
+            }
+            void mouseUp(const MouseEvent& event) override { if(!event.mods.isPopupMenu()) Button::mouseUp(event); }
             String label;
             bool start = false, active = false, queued = false, selected = false;
             double progress = 0;
@@ -270,16 +280,6 @@ class PartsPanel final : public Component, private Timer {
                 g.setFont(start ? theme::semiboldFont(16) : theme::semiboldFont(12));
                 g.drawFittedText((queued ? String::fromUTF8("↰ ") : String()) + label,
                                  getLocalBounds().reduced(3, 0), Justification::centred, 2, .35f);
-            }
-            void mouseDown(const MouseEvent &event) override {
-                if (event.mods.isPopupMenu()) {
-                    try {
-                        panel.session.command(jaras::CommandKind::cancelSection);
-                    } catch (const std::exception &e) {
-                        panel.error(String::fromUTF8(e.what()));
-                    }
-                } else
-                    Button::mouseDown(event);
             }
 
           private:

@@ -468,6 +468,7 @@ jaras::Project ProjectCodec::decode(const json &input) {
                 optionalText(rm, "tempoTimebase", m.tempoTimebase);
                 optionalNum(rm, "section", m.section);
                 optionalNum(rm, "loopSection", m.loopSection);
+                optionalText(rm, "automaticSectionTargetID", m.automaticSectionTargetID);
                 optionalText(rm, "unifiedRegionID", m.unifiedRegionID);
                 optionalText(rm, "sourceRegionID", m.sourceRegionID);
                 optionalText(rm, "regionOwnerID", m.regionOwnerID);
@@ -774,6 +775,7 @@ json ProjectCodec::encode(const jaras::Project &p, json input) {
                 emit(rm, "tempoBPM", m.tempoBPM);
                 emit(rm, "section", m.section);
                 emit(rm, "loopSection", m.loopSection);
+                emit(rm, "automaticSectionTargetID", m.automaticSectionTargetID);
                 markers.push_back(rm);
             }
             put(raw, "markers", markers);

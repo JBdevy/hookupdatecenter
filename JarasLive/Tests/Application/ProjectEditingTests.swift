@@ -2,6 +2,109 @@ import XCTest
 @testable import JarasApplication
 
 final class ProjectEditingTests: XCTestCase {
+    func testSplitKeepsLoopPhaseAndPrintedSourceRates() throws {
+        for printed in [false, true] {
+            var project = Project.empty(name: "Loop split")
+            var song = project.songs[0]; song.duration = 10
+            song.markers = [TimelineMarker(id: UUID(), name: "Tempo", position: 0, color: 0,
+                tempoBPM: 240, tempoTimebase: .relative, tempoReferenceBPM: 120)]
+            var clip = AudioClip(id: UUID(), name: "Loop", startTime: 0, duration: 10, sourceOffset: 3,
+                waveform: [0.1, 0.2, 0.3], audioFile: AudioFile(path: "loop.wav"),
+                playbackRate: 1.5, loopStart: 2, loopLength: 5)
+            clip.renderedTempo = printed ? true : nil
+            var track = Track(id: UUID(), name: "Track", role: .other); track.clips = [clip]
+            song.tracks = [track]; project.songs[0] = song
+            project.splitItems([clip.id], at: 4)
+            let split = project.songs[0].tracks[0].clips
+            let consumed = 4 * (printed ? 1.5 : 3)
+            XCTAssertEqual(split[1].sourceOffset, clip.sourceOffset + consumed, accuracy: 0.000001)
+            XCTAssertEqual(split[0].waveform, clip.waveform)
+            XCTAssertEqual(split[1].waveform, clip.waveform)
+            func wrapped(_ value: Double) -> Double { 2 + (value - 2).truncatingRemainder(dividingBy: 5) }
+            let left = project.songs[0].tempoAudioSegments(split[0]).last!
+            let right = project.songs[0].tempoAudioSegments(split[1]).first!
+            XCTAssertEqual(wrapped(left.sourceOffset + left.duration * left.audioRate), wrapped(right.sourceOffset), accuracy: 0.000001)
+            XCTAssertEqual(right.audioRate, printed ? 1.5 : 3)
+            try project.validate()
+        }
+    }
+
+    func testSplitUsesEffectiveTempoSourcePositionForAudioVideoAndMIDI() throws {
+        for kind in 0..<3 {
+            var project = Project.empty(name: "Tempo split")
+            var song = project.songs[0]; song.duration = 10
+            let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 10)
+            song.parts = [region]
+            song.markers = [
+                TimelineMarker(id: UUID(), name: "Fast", position: 0, color: 0, regionOwnerID: region.id,
+                    tempoBPM: 240, tempoTimebase: .relative, tempoReferenceBPM: 120),
+                TimelineMarker(id: UUID(), name: "Normal", position: 4, color: 0, regionOwnerID: region.id,
+                    tempoBPM: 120, tempoTimebase: .relative, tempoReferenceBPM: 120)]
+            var clip = AudioClip(id: UUID(), name: "Source", startTime: 0, duration: 10, sourceOffset: 3,
+                waveform: (1...14).map { Double($0) / 20 }, audioFile: AudioFile(path: kind == 1 ? "movie.mov" : "source.wav"),
+                regionOwnerID: region.id)
+            if kind == 2 { clip.audioFile = nil; clip.midi = MIDIItem(notes: [], sourceBPM: 120) }
+            var track = Track(id: UUID(), name: "Track", role: .other); track.clips = [clip]
+            song.tracks = [track]; project.songs[0] = song
+            let original = project
+            var history = ProjectEditHistory(project)
+            project.splitItems([clip.id], at: 6)
+            let split = project.songs[0].tracks[0].clips
+            XCTAssertEqual(split.count, 2)
+            XCTAssertEqual(split[1].sourceOffset, 13, accuracy: 0.000001, "Four seconds at 2x plus two seconds at 1x consume ten source seconds")
+            XCTAssertEqual(split[0].waveform.count, 10, "Waveform trimming follows the consumed source, not timeline duration")
+            XCTAssertEqual(split.flatMap(\.waveform), clip.waveform)
+            let segments = split.flatMap { project.songs[0].tempoAudioSegments($0) }
+            for (left, right) in zip(segments, segments.dropFirst()) {
+                XCTAssertEqual(left.sourceOffset + left.duration * left.audioRate, right.sourceOffset, accuracy: 0.000001)
+                XCTAssertEqual(left.startTime + left.duration, right.startTime, accuracy: 0.000001)
+            }
+            XCTAssertEqual(segments.last!.sourceOffset + segments.last!.duration * segments.last!.audioRate, 17, accuracy: 0.000001)
+            history.record(project)
+            XCTAssertEqual(history.undo(), original)
+            XCTAssertEqual(history.redo(), project)
+            try project.validate()
+        }
+    }
+
+    func testSplitPreservesOuterFadesWithoutFadingAtInternalCut() throws {
+        var project = fixture()
+        var clip = project.songs[0].tracks[0].clips[0]
+        clip.fadeIn = 1; clip.fadeOut = 2
+        clip.fadeInCurve = 0.25; clip.fadeInSCurve = 0.5
+        clip.fadeOutCurve = -0.25; clip.fadeOutSCurve = 0.75
+        project.songs[0].tracks[0].clips = [clip]
+        project.splitItems([clip.id], at: 40)
+        let halves = project.songs[0].tracks[0].clips
+        XCTAssertEqual(halves[0].fadeIn, clip.fadeIn)
+        XCTAssertEqual(halves[0].fadeInCurve, clip.fadeInCurve)
+        XCTAssertEqual(halves[1].fadeOut, clip.fadeOut)
+        XCTAssertEqual(halves[1].fadeOutCurve, clip.fadeOutCurve)
+        XCTAssertNil(halves[0].fadeOut); XCTAssertNil(halves[1].fadeIn)
+        XCTAssertNil(halves[0].fadeOutCurve); XCTAssertNil(halves[1].fadeInCurve)
+        XCTAssertEqual(halves[0].fadeGain(at: 40 - 0.000001), 1)
+        XCTAssertEqual(halves[1].fadeGain(at: 40 + 0.000001), 1)
+        XCTAssertEqual(halves[0].fadeGain(at: 30), 0)
+        XCTAssertEqual(halves[1].fadeGain(at: 50), 0)
+        try project.validate()
+    }
+
+    func testSplitEverySelectedItemAtOneCursorPreservingUnselectedItems() throws {
+        var project = fixture()
+        let original = project.songs[0].tracks[0].clips[0]
+        var second = original; second.id = UUID()
+        var untouched = original; untouched.id = UUID()
+        project.songs[0].tracks[0].clips = [original, untouched]
+        var track = project.songs[0].tracks[0]; track.id = UUID(); track.clips = [second]
+        project.songs[0].tracks.append(track)
+        project.splitItems([original.id, second.id], at: 35)
+        let selected = project.songs[0].tracks.flatMap(\.clips).filter { $0.id == original.id || $0.id == second.id }
+        XCTAssertEqual(selected.count, 2)
+        XCTAssertTrue(selected.allSatisfy { $0.startTime + $0.duration == 35 })
+        XCTAssertEqual(project.songs[0].tracks.flatMap(\.clips).filter { $0.startTime == 35 }.count, 2)
+        XCTAssertEqual(project.songs[0].tracks[0].clips.first { $0.id == untouched.id }, untouched)
+    }
+
     func testRoundedImportedRegionOnsetUsesSameOwnershipInPreviewAndPersistence() throws {
         var project = Project.empty(name: "Rounded region")
         let region = Part(id: UUID(), name: "Song", startTime: 11958.400000432, endTime: 12174.900000432)

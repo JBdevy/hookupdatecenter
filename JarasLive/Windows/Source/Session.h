@@ -28,7 +28,7 @@ class Session final : private Timer {
     uint64 setlistFocusRevision = 0;
     String message;
     uint64 revision = 0;
-    std::function<void()> changed, tick, selectionChanged;
+    std::function<void()> changed, tick, selectionChanged, mixerChanged;
     std::function<void(String)> transportFadeoutWarning;
     std::function<void(String)> audioOutputWarning;
     void toggleTransportFadeout(bool enabled, const std::set<ID> &tracks, double seconds);
@@ -49,6 +49,9 @@ class Session final : private Timer {
                    std::function<void()> beforeCommit, std::function<void(String)> completed,
                    std::function<void(StringArray)> missingMedia = {});
     void save(const File &);
+    void saveAsync(const File &, std::function<void(String)> completed = {});
+    bool isSaving() const { return activeSave != nullptr; }
+    void waitForSave(std::function<void(String)> completed);
     void renameProject(String);
     void cleanTimelineMedia(std::function<void(String)> completed);
     jaras::projectSync::Frame projectSyncFrame() { syncClock(); return core.projectSyncFrame(); }
@@ -58,6 +61,9 @@ class Session final : private Timer {
     void selectTimeRange(double from, double to);
     void clearTimeRange();
     void configureSetlist(jaras::RegionSetlist);
+    void editTimeline(const std::function<void(jaras::Project &)> &, bool allowTimingEdit = false);
+    void moveMarker(const ID &, double);
+    std::function<void()> setlistChanged;
     ID duplicatePlaylistRegion(const ID &playlist, const ID &entry);
     double tempoBPM() const;
     void setTempo(double bpm);
@@ -97,7 +103,16 @@ class Session final : private Timer {
     void mixerCommand(jaras::CommandKind, const ID &, const std::set<ID> &, double value = 0);
     void beginMixerGesture(jaras::CommandKind kind, ID source) {
         mixerGestureSource = std::move(source); mixerGestureProject = project().id; mixerGestureKind = kind;
-        mixerGestureTracks = song() ? song()->tracks : std::vector<jaras::Track>{};
+        mixerGestureTracks.clear();
+        if(const auto* current=song()) {
+            mixerGestureTracks.reserve(current->tracks.size());
+            for(const auto& track:current->tracks) {
+                jaras::Track state;state.id=track.id;state.role=track.role;
+                state.volume=track.volume;state.pan=track.pan;state.mute=track.mute;state.solo=track.solo;
+                state.phaseInverted=track.phaseInverted;state.stereoLinkPartner=track.stereoLinkPartner;
+                mixerGestureTracks.push_back(std::move(state));
+            }
+        }
     }
     void endMixerGesture() { mixerGestureSource.clear(); mixerGestureTracks.clear(); }
     void setRecordingSelection(const ID &, const std::set<ID> &targets = {});
@@ -110,6 +125,7 @@ class Session final : private Timer {
     void setMeter(int beats, int unit);
     void removeClip(ID);
     void removeClips(const std::set<ID> &);
+    void splitClips(const std::set<ID> &, double);
     void addMarker(String, double, bool section = false);
     void addRegion(String, double, double);
     void reorderTrack(ID, ID);
@@ -118,6 +134,7 @@ class Session final : private Timer {
     var snapshot() const;
     void restoreSnapshot(const var &);
     void notify();
+    void notifyMixer();
     bool preparingLiveAudio() const { return graphCancellation != nullptr; }
 
   private:
@@ -126,10 +143,12 @@ class Session final : private Timer {
     std::optional<TimeSelection> timeSelection;
     void focusTimelineRegion(double position, bool force = false);
     void focusSetlistRegion(std::optional<ID>, bool force = false);
+    struct TimelineHistory { jaras::Project project; bool tempo = false; };
+    void applyTimelineHistory(const TimelineHistory &, bool recordHistory);
     struct MarkerHistory { ID song; std::optional<std::vector<jaras::TimelineMarker>> markers; };
     struct ItemHistory { std::map<ID, std::vector<jaras::AudioClip>> tracks; };
     ItemHistory itemHistory(const ItemHistory &) const;
-    void applyItemHistory(const ItemHistory &, bool recordHistory);
+    void applyItemHistory(const ItemHistory &, bool recordHistory, const std::map<ID, ID> &splitSources = {});
     struct ItemTimingHistory { ID song; jaras::AudioClip clip; double songDuration; };
     ItemTimingHistory itemTimingHistory(const ID &) const;
     void applyItemTiming(const ItemTimingHistory &, bool recordHistory);
@@ -142,13 +161,19 @@ class Session final : private Timer {
     };
     TrackHierarchyHistory trackHierarchyHistory(const ID &) const;
     void applyTrackHierarchy(const TrackHierarchyHistory &, bool recordHistory);
+    struct SetlistHistory { std::optional<jaras::RegionSetlist> state; };
+    void applySetlistHistory(const SetlistHistory &, bool recordHistory);
     struct HistoryEntry {
         var project;
+        std::optional<TimelineHistory> timeline;
+        std::optional<SetlistHistory> setlist;
         std::optional<MarkerHistory> markers;
         std::optional<std::map<ID, var>> effects;
         std::optional<ItemTimingHistory> itemTiming;
         std::optional<ItemHistory> items;
         std::optional<TrackHierarchyHistory> hierarchy;
+        HistoryEntry(TimelineHistory value) : timeline(std::move(value)) {}
+        HistoryEntry(SetlistHistory value) : setlist(std::move(value)) {}
         HistoryEntry(var value) : project(std::move(value)) {}
         HistoryEntry(MarkerHistory value) : markers(std::move(value)) {}
         HistoryEntry(std::map<ID, var> value) : effects(std::move(value)) {}
@@ -164,6 +189,12 @@ class Session final : private Timer {
     double fadeoutDuration = 3;
     std::set<ID> fadeoutTracks;
     void warnTransportFadeout(String);
+    struct ProjectSave;
+    std::shared_ptr<ProjectSave> captureSave(const File &);
+    static void writeSave(ProjectSave &);
+    bool controlAllowedDuringSave(jaras::CommandKind) const;
+    std::shared_ptr<ProjectSave> activeSave;
+    ThreadPool saveWorker{1};
     ThreadPool worker{1};
     ThreadPool bpmWorker{1};
     std::shared_ptr<std::atomic<bool>> bpmCancellation;

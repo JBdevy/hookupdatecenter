@@ -1147,6 +1147,20 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
                                [this](const auto &t) { return t.parentTrackID == id; });
         return false;
     }
+    void refreshMixer() {
+        if(const auto* t=track()) {
+            const ScopedValueSetter<bool> guard(updating,true);
+            volume.setValue(w.session.trackDisplayVolume(id,t->volume),dontSendNotification);
+            volume.setEnabled(!w.session.trackFaderLocked(id));
+            pan.setValue(t->pan,dontSendNotification);
+            mute.setToggleState(t->mute,dontSendNotification);
+            solo.setToggleState(t->solo,dontSendNotification);
+            phase.setToggleState(t->phaseInverted.value_or(false),dontSendNotification);
+            phase.setTooltip(t->phaseInverted.value_or(false)?"Fase invertida - Restaurar fase":"Inverter fase");
+            if(special)special->refresh();
+            repaint();
+        }
+    }
     void refresh() {
         if (auto *t = track()) {
             updating = true;
@@ -1501,6 +1515,14 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         canvas.repaint();
         heads.repaint();
     }
+    void refreshMixer() {
+        // Mixer state changes colours, never geometry/envelopes/markers.
+        const auto revision=w.session.revision;
+        if(regionLayoutRevision+1==revision)regionLayoutRevision=revision;
+        if(markerRevision+1==revision)markerRevision=revision;
+        if(lanesRevision+1==revision)lanesRevision=revision;
+        canvas.repaint();heads.repaint();
+    }
     void refreshWaveforms() {
         if (const auto *song = w.session.song())
             for (auto &item : w.session.recordingItems) {
@@ -1765,12 +1787,15 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     WaveformCache waveforms;
     uint64 waveformRevision = 0;
     struct MarkerFlag {ID id;double position=0,next=std::numeric_limits<double>::infinity(),regionEnd=std::numeric_limits<double>::infinity();String label;float width=0;unsigned colour=0;bool tempo=false,section=false,linked=false;};
+    std::optional<std::pair<ID,double>> markerPreview;
+    void previewMarker(std::optional<std::pair<ID,double>> value) { markerPreview=std::move(value); markerRevision=~uint64(0); invalidate(); }
     uint64 markerRevision=~uint64(0);
     std::vector<MarkerFlag> markerFlags;
     void refreshMarkers(const jaras::Song &song) {
         if(markerRevision==w.session.revision) return;
         markerFlags.clear();markerRevision=w.session.revision;
-        if(song.markers) for(const auto &m:*song.markers) {
+        if(song.markers) for(auto m:*song.markers) {
+            if(markerPreview && markerPreview->first==m.id) m.position=markerPreview->second;
             MarkerFlag flag;flag.id=m.id;flag.position=m.position;flag.colour=m.color;flag.tempo=bool(m.tempoBPM);
             flag.section=!flag.tempo && m.section.value_or(false);flag.linked=bool(m.sourceRegionID || m.unifiedRegionID);
             flag.label=timelineRegionLabels::marker(song,m);
@@ -2181,7 +2206,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 }
                 g.restoreState();
             }
-            if (song->markers) for (const auto &marker : *song->markers) {
+            if (song->markers) for (auto marker : *song->markers) {
+                if(t.markerPreview && t.markerPreview->first==marker.id) marker.position=t.markerPreview->second;
                 const float x = lineX(marker.position), top = (float)t.regionHeight() + (marker.tempoBPM ? 32.f : 16.f);
                 if (x < 0 || x > getWidth()) continue;
                 auto colour = Colour(0xff000000 | (marker.tempoBPM ? 0x999999 : marker.color));
@@ -2272,7 +2298,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
         void mouseDown(const MouseEvent &e) override {
             collapseSelectionOnRelease.clear(); clearSelectionOnRelease=false;
-            t.setRegionPreview(std::nullopt);
+            t.setRegionPreview(std::nullopt); t.previewMarker(std::nullopt);
             t.stopGesture();
             startTime = t.timeAt(e.position.x);
             startPosition = e.position;
@@ -2308,7 +2334,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         if (!juce::Rectangle<float>(t.xAt(flag.position),(float)t.regionHeight()+(flag.tempo?17.f:1.f),std::max(8.f,width),14).contains(e.position)) continue;
                         if (e.mods.isPopupMenu()) { ++t.w.contextCount; t.w.showMarkerMenu(flag.id, e.getScreenPosition()); }
                         else if (e.mods.isAltDown()) t.w.perform([&] {
-                            t.w.session.edit([&](auto &p) {auto edit=t.w.session.core;edit.deleteManualMarker(flag.id);p=edit.project();}, true, flag.tempo);
+                            t.w.session.editTimeline([&](auto &p) {auto edit=t.w.session.core;edit.deleteManualMarker(flag.id);p=edit.project();}, flag.tempo);
                         });
                         else { dragMarker=flag.id; originalStart=flag.position; }
                         return;
@@ -2408,7 +2434,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             if (rightSelection) { updateAreaSelection(e); return; }
             if (timelineGrid::movementLocked(t.w.session.project()) &&
                 (!dragClip.empty() || !dragRegion.empty() || !dragMarker.empty())) {
-                t.setRegionPreview(std::nullopt);
+                t.setRegionPreview(std::nullopt); t.previewMarker(std::nullopt);
                 dragPreview = false; resizedClipPreview.reset(); movingClipPreview.reset();
                 setMouseCursor(MouseCursor::NormalCursor); repaint(); return;
             }
@@ -2420,6 +2446,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         previewStart=bounds.first; previewEnd=bounds.second;
                         t.setRegionPreview(previewRegionEdit(*t.w.session.song(),dragRegion,previewStart,previewEnd,regionEdge!=0));
                     }
+                    if (!dragMarker.empty()) { previewStart=markerEditPosition(e); t.previewMarker(std::make_pair(dragMarker,previewStart)); }
                     dragPreview=true; setMouseCursor(regionEdge?regionResizeCursor():MouseCursor(MouseCursor::DraggingHandCursor)); repaint();
                 }
                 return;
@@ -2486,7 +2513,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             }
             if (timelineGrid::movementLocked(t.w.session.project()) &&
                 (!dragClip.empty() || !dragRegion.empty() || !dragMarker.empty())) {
-                t.setRegionPreview(std::nullopt);
+                t.setRegionPreview(std::nullopt); t.previewMarker(std::nullopt);
                 if (e.getDistanceFromDragStart() < 3) t.w.perform([&] {
                     if (!dragRegion.empty()) t.w.session.command(t.w.session.transport().playing ? jaras::CommandKind::queueRegion : jaras::CommandKind::selectRegion, dragRegion);
                     else if (!dragMarker.empty()) t.w.session.command(jaras::CommandKind::editSeek, {}, originalStart);
@@ -2498,18 +2525,13 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             if (!dragRegion.empty() || !dragMarker.empty()) {
                 const auto region=dragRegion, marker=dragMarker;
                 if (e.getDistanceFromDragStart() >= 3) t.w.perform([&] {
-                    const double delta=(e.position.x-startPosition.x)/t.w.pixelsPerSecond;
+                    if (!marker.empty()) { t.w.session.moveMarker(marker,markerEditPosition(e)); return; }
                     const auto bounds=regionEditBounds(e);
                     t.w.session.edit([&](auto &p) {
                         auto edit=t.w.session.core;
                         if (!region.empty()) {
                             if (regionEdge) edit.resizeRegion(region,bounds.first,bounds.second);
                             else edit.moveRegion(region,bounds.first);
-                        } else if (edit.currentSong() && edit.currentSong()->markers) {
-                            for (const auto &m:*edit.currentSong()->markers) if (m.id==marker) {
-                                const auto next=m;
-                                edit.setMarker(next.id,next.name,std::max(0.,next.position+delta),next.color,next.tempoBPM,next.tempoBeats,next.tempoUnit,next.tempoTimebase,next.section,next.loopSection);break;
-                            }
                         }
                         p=edit.project();
                     });
@@ -2518,7 +2540,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     if (!region.empty()) t.w.session.command(t.w.session.transport().playing?jaras::CommandKind::queueRegion:jaras::CommandKind::selectRegion,region);
                     else t.w.session.command(jaras::CommandKind::editSeek,{},originalStart);
                 });
-                t.setRegionPreview(std::nullopt);
+                t.setRegionPreview(std::nullopt); t.previewMarker(std::nullopt);
+                t.previewMarker(std::nullopt);
                 dragRegion.clear();dragMarker.clear();dragPreview=false;setMouseCursor(MouseCursor::NormalCursor);t.invalidate();return;
             }
             if (controlClip) {
@@ -2618,7 +2641,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             t.mouseWheelMove(e, d);
         }
         void cancelDrag() {
-            t.setRegionPreview(std::nullopt);
+            t.setRegionPreview(std::nullopt); t.previewMarker(std::nullopt);
             rulerPan=false;rulerPanDragged=false;
             timeRangeGesture=false;timeRangeDragged=false;timeRangeResize=0;timeRangeBefore.reset();
             stopTimer(); rightSelection = false; selectionBox.reset(); selectionBase.clear(); selectionPending = false; selectionIndex.clear();
@@ -2661,6 +2684,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         ID hoverRegion;
         int hoverRegionEdge=0;
         std::optional<RegionMarkerRepulsion> regionRepulsion;
+        double markerEditPosition(const MouseEvent &e) const {
+            const double at=std::max(0.,originalStart+(e.position.x-startPosition.x)/t.w.pixelsPerSecond);
+            const auto *song=t.w.session.song();
+            return song?timelineGrid::snap(at,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(e.mods),false,nullptr,false,nullptr,nullptr,&dragMarker):at;
+        }
         std::pair<double,double> regionEditBounds(const MouseEvent &e) const {
             const double delta=(e.position.x-startPosition.x)/t.w.pixelsPerSecond;
             if(!regionEdge) {
@@ -3654,6 +3682,19 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         rebuild();
         updateState();
     };
+    session.mixerChanged = [this] {
+        // Retain cached item layouts while repainting all affected group/solo
+        // colours immediately. A toggle must not reconstruct the whole project.
+        if(itemLayoutRevision+1==session.revision)itemLayoutRevision=session.revision;
+        if(itemTitleRevision+1==session.revision)itemTitleRevision=session.revision;
+        tempoControl->retainTempoAfterMixerChange();
+        for(auto* row:rows)row->refreshMixer();
+        if(footerMixerVisible)footerMixer->refreshVisible();
+        for(const auto& entry:floatingWindows)
+            if(auto* mixer=dynamic_cast<MixerPanel*>(entry.second->getContentComponent()))mixer->refreshVisible();
+        timeline->refreshMixer();caption->repaint();updateState();
+    };
+    session.setlistChanged = [this] { setlist->refresh(); caption->repaint(); updateState(); };
     session.selectionChanged = [this] {
         setlist->refresh();
         timeline->revealEditPosition();
@@ -3957,6 +3998,8 @@ Workspace::~Workspace() {
     floatingWindows.clear();
     setlistWindow.reset();
     session.changed = {};
+    session.mixerChanged = {};
+    session.setlistChanged = {};
     session.selectionChanged = {};
     session.tick = {};
     session.transportFadeoutWarning = {};
@@ -4819,7 +4862,8 @@ void Workspace::updateState() {
     controls["metronome"]->setToggleState(session.audio.metronomeEnabled.load(),
                                           dontSendNotification);
     controls["record"]->setColour(TextButton::buttonOnColourId, theme::transportRed);
-    controls["save"]->setButtonText(session.dirty ? "Salvar" : "Salvo");
+    controls["save"]->setButtonText(session.isSaving() ? "Salvando..." : session.dirty ? "Salvar" : "Salvo");
+    controls["save"]->setEnabled(!session.isSaving());
     controls["save"]->getProperties().set("leadingIcon", session.dirty ? "save" : "check");
     controls["save"]->setColour(TextButton::buttonColourId,
                                 session.dirty ? theme::green.withAlpha(.16f) : theme::panel);
@@ -5689,13 +5733,29 @@ void Workspace::chooseOpen() {
         launch();
 }
 void Workspace::chooseSave(bool saveAs, std::function<void()> saved) {
+    auto finish = [safe = SafePointer<Workspace>(this), saved](String error) {
+        if (!safe) return;
+        if (error.isNotEmpty()) { safe->showError(error); return; }
+        RecentProjects::remember(safe->session.document);
+        if (saved) {
+            // Close/export callbacks need the latest edit, not just the first
+            // snapshot when the user kept editing during a regular Save.
+            if (safe->session.dirty) safe->chooseSave(false, saved);
+            else saved();
+        }
+    };
     if (!saveAs && session.document != File()) {
-        perform([&] {
-            session.save(session.document);
-            RecentProjects::remember(session.document);
-            if (saved)
-                saved();
-        });
+        perform([&] { session.saveAsync(session.document, finish); });
+        return;
+    }
+    if (session.isSaving()) {
+        if (saveAs) {
+            session.waitForSave([safe = SafePointer<Workspace>(this), project = session.project().id, saved](String error) {
+                if (!safe || safe->session.project().id != project) return;
+                if (error.isNotEmpty()) { safe->showError(error); return; }
+                safe->chooseSave(true, saved);
+            });
+        } else session.waitForSave(finish);
         return;
     }
     auto suggested =
@@ -5707,15 +5767,9 @@ void Workspace::chooseSave(bool saveAs, std::function<void()> saved) {
     chooser->launchAsync(
         FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
             FileBrowserComponent::warnAboutOverwriting,
-        [safe = Component::SafePointer<Workspace>(this), saved](const FileChooser &fc) {
-            if (!safe || fc.getResult() == File())
-                return;
-            safe->perform([&] {
-                safe->session.save(fc.getResult());
-                RecentProjects::remember(safe->session.document);
-                if (saved)
-                    saved();
-            });
+        [safe = Component::SafePointer<Workspace>(this), finish](const FileChooser &fc) {
+            if (!safe || fc.getResult() == File()) return;
+            safe->perform([&] { safe->session.saveAsync(fc.getResult(), finish); });
         });
 }
 void Workspace::chooseImport() {
@@ -6034,7 +6088,7 @@ void Workspace::deleteRegions(std::set<ID> ids, bool withContents) {
     confirm(String::fromUTF8("Excluir região"), withContents ? String::fromUTF8("Excluir as músicas selecionadas, seus itens e marcadores? Os arquivos de mídia permanecem na pasta do projeto.") : String::fromUTF8("Excluir esta região?"),
         [safe=SafePointer<Workspace>(this),ids,withContents,songID] {
         if (!safe || !safe->session.song() || safe->session.song()->id!=songID) return;
-        safe->perform([&] { safe->session.edit([&](jaras::Project &project) {
+        safe->perform([&] { safe->session.editTimeline([&](jaras::Project &project) {
             regionEditing::erase(project, songID, ids, withContents);
         }); });
     });
@@ -6407,6 +6461,10 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                             safe->selectedClip=safe->selectedClips.empty()?ID{}:*safe->selectedClips.begin();
                             safe->updateState();
                         });
+                    if(w.session.busy) {
+                        const auto title=String::fromUTF8(action==14 ? "Unificar itens" : "Renderizar itens");
+                        ModalSheet::open(w,title,std::make_unique<AudioSeparationPanel>(w.session,title),440,204);
+                    }
                     return;
                 }
                 if(action==16){
@@ -6834,6 +6892,14 @@ void Workspace::openTimer(bool settings) {
 }
 void Workspace::requestClose(std::function<void()> done, bool application) {
     if(jaras::projectSync::readOnly()) return;
+    if (session.isSaving()) {
+        session.waitForSave([safe = SafePointer<Workspace>(this), done, application](String error) {
+            if (!safe) return;
+            if (error.isNotEmpty()) safe->showError(error);
+            else safe->requestClose(done, application);
+        });
+        return;
+    }
     if (isCurrentlyBlockedByAnotherModalComponent()) {
         ModalComponentManager::getInstance()->bringModalComponentsToFront();
         return;
@@ -6859,16 +6925,7 @@ void Workspace::requestClose(std::function<void()> done, bool application) {
                         return;
                     if (action == 2)
                         done();
-                    if (action == 1) {
-                        if (safe->session.document == File()) {
-                            safe->chooseSave(false, done);
-                            return;
-                        }
-                        safe->perform([&] {
-                            safe->session.save(safe->session.document);
-                            done();
-                        });
-                    }
+                    if (action == 1) safe->chooseSave(false, done);
                 });
         return;
     }

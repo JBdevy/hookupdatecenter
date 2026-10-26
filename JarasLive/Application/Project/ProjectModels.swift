@@ -194,6 +194,7 @@ public struct TimelineMarker: Codable, Identifiable, Equatable, Sendable {
     public var tempoReferenceBPM: Double? = nil
     public var section: Bool? = nil
     public var loopSection: Bool? = nil
+    public var automaticSectionTargetID: UUID? = nil
     public var isLoopSection: Bool { isSection && loopSection == true }
     public var markerEditorName: String { (isLoopSection ? "*" : isSection ? "$" : "") + name }
     public mutating func applySectionPrefix() {
@@ -762,6 +763,7 @@ public struct TransportState: Codable, Equatable, Sendable {
     public var subPlaybackStartRegionId: UUID? = nil
     public var multiLoopsBypassed: Bool? = nil
     public var queuedSectionMarkerId: UUID?
+    public var automaticSectionTriggerId: UUID? = nil
     public var sectionQueueStartedAt: Double?
     public var sectionJumpSerial: UInt64?
     public var multiLoop: MultiLoopPlayback?

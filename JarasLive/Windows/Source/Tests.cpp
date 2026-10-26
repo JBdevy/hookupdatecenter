@@ -1,3 +1,6 @@
+#include "SplitPlaybackTests.h"
+#include "MixerFeedbackTests.h"
+#include "SaveAsyncTests.h"
 #include "ProjectionSelection.h"
 #include "AudioSeparationTests.h"
 #include "MediaSource.h"
@@ -407,6 +410,9 @@ int runTests(const File &directory) {
     gridMediaClipboardTests::registerTests(test);
     floatingControlTests::registerTests(directory,test);
     projectOpenTests::registerTests(directory,test);
+    saveAsyncTests::registerTests(directory,test);
+    test("Mixer changes update colours without rebuilding the arrangement", [&] { mixerFeedbackTests::controlsWithoutArrangementRebuild(); });
+    test("Split offsets follow relative tempo and preserve outer fades", [&] { splitPlaybackTests::splitAtRelativeTempo(); });
     navigationParityTests::registerTests(directory,test);
     projectBrowserLoadingTests::registerTests(directory,test);
     bpmDetectionTests::registerTests(directory,test);
@@ -568,6 +574,18 @@ int runTests(const File &directory) {
         expect(!iconPresentation.snapshot(0)["tracks"][0].hasProperty("instrumentIcon"),"Remote retained a removed icon");
         expect(!ProjectCodec::decode(session.snapshot()).songs[0].tracks[0].instrumentIcon,"Removed icon survived serialization");
         expect(ProjectCodec::decode(saved).songs[0].tracks[0].instrumentIcon=="backs","Saved icon was changed by clear");
+        const auto markerName=session.song()->markers->front().name;
+        session.editTimeline([](auto &value){value.songs[0].markers->front().name="Timeline edit";});
+        session.setTrackInstrumentIcon({id},"cowbell");
+        session.undo();
+        expect(session.song()->markers->front().name==markerName && session.song()->tracks[0].instrumentIcon=="cowbell",
+               "Typed timeline Undo reverted project icon metadata");
+        session.setTrackInstrumentIcon({id},"flute"); session.redo();
+        expect(session.song()->markers->front().name=="Timeline edit" && session.song()->tracks[0].instrumentIcon=="flute",
+               "Typed timeline Redo reverted project icon metadata");
+        session.setTrackInstrumentIcon({id},{}); session.undo();
+        expect(session.song()->markers->front().name==markerName && !session.song()->tracks[0].instrumentIcon,
+               "Typed timeline Undo restored an icon that the user removed");
     });
     test("Track icon catalog renders all Mac identities at compact and expanded sizes", [&] {
         expect(trackIcons::catalog().size()==37,"Catalog differs from Mac");
@@ -1115,6 +1133,64 @@ int runTests(const File &directory) {
         expect(writer->writeFromAudioSampleBuffer(samples,0,48000),"Cannot write deletion audio fixture");
         return folder;
     };
+    test("Selected item split is atomic and retains readers through Undo and Redo", [&] {
+        Session session;session.inspection=true;session.mediaDirectory=itemDeletionAudio();
+        auto project=projectFixture();auto &song=project.songs[0];song.duration=2;song.tracks.clear();song.parts.clear();song.markers.reset();
+        project.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+        std::set<ID> ids;
+        for(int i=0;i<3;++i){jaras::Track t;t.id=uuid();t.name="Track";jaras::AudioClip c;c.id=uuid();c.name="Audio";c.duration=1;c.fadeIn=.005;c.fadeOut=.005;c.audioFile=jaras::AudioFile{"signal.wav",{}};t.clips={c};song.tracks.push_back(t);if(i<2)ids.insert(c.id);}
+        project.savedCursor=jaras::SavedProjectCursor{song.id,0};session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        const auto* graph=session.audio.preparationDiagnostics.getDynamicObject();
+        session.command(jaras::CommandKind::play);
+        session.splitClips(ids,.5);
+        expect(session.song()->tracks[0].clips.size()==2&&session.song()->tracks[1].clips.size()==2&&session.song()->tracks[2].clips.size()==1,"Split did not apply to exactly the selected items");
+        expect(!session.preparingLiveAudio()&&session.audio.preparationDiagnostics.getDynamicObject()==graph,"Split rebuilt the full audio graph");
+        AudioBuffer<float> output(2,480);
+        for(int i=0;i<75;++i){session.audio.render(output.getArrayOfWritePointers(),2,480);if(i>0)for(int n=0;n<480;++n)expect(std::abs(output.getSample(0,n)-.3f)<.004f,"Split introduced silence or overlapping halves");}
+        session.undo();expect(session.song()->tracks[0].clips.size()==1&&session.song()->tracks[1].clips.size()==1,"Undo did not restore the whole split transaction");
+        expect(session.song()->tracks[0].clips[0].duration==1,"Undo lost original duration");
+        session.redo();expect(session.song()->tracks[0].clips.size()==2&&session.song()->tracks[1].clips.size()==2,"Redo lost selected halves");
+        expect(!session.preparingLiveAudio()&&session.audio.preparationDiagnostics.getDynamicObject()==graph,"Split Undo/Redo rebuilt the graph");
+        session.command(jaras::CommandKind::stopAll);
+    });
+    test("Timeline deletion keeps readers and restores marker region and contents with Undo", [&] {
+        Session session;session.inspection=true;session.mediaDirectory=itemDeletionAudio();
+        auto project=projectFixture();auto &song=project.songs[0];song.duration=2;song.tracks.clear();song.parts.clear();song.markers.reset();
+        project.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+        jaras::Track track;track.id=uuid();track.name="Audio";jaras::AudioClip clip;clip.id=uuid();clip.name="Signal";clip.duration=1;clip.audioFile=jaras::AudioFile{"signal.wav",{}};track.clips={clip};song.tracks={track};
+        const ID region=uuid(),marker=uuid(),songID=song.id;song.parts={{region,"Music",0,1}};
+        jaras::TimelineMarker cue{marker,"Cue",.5,0x51ef93};song.markers=std::vector<jaras::TimelineMarker>{cue};
+        project.savedCursor=jaras::SavedProjectCursor{song.id,0};session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        const auto *graph=session.audio.preparationDiagnostics.getDynamicObject();
+        session.editTimeline([&](auto &p){auto core=session.core;core.deleteManualMarker(marker);p=core.project();});
+        expect(session.song()->markers->empty(),"Marker survived deletion");session.undo();expect(session.song()->markers->size()==1,"Marker Undo failed");
+        session.editTimeline([&](auto &p){regionEditing::erase(p,songID,{region},false);});
+        expect(session.song()->parts.empty()&&session.song()->tracks[0].clips.size()==1,"Region-only deletion removed audio");session.undo();
+        session.editTimeline([&](auto &p){regionEditing::erase(p,songID,{region},true);});
+        expect(session.song()->tracks[0].clips.empty(),"Region contents were not removed");session.undo();
+        expect(session.song()->parts.size()==1&&session.song()->tracks[0].clips.size()==1,"Region contents Undo failed");
+        expect(!session.preparingLiveAudio()&&session.audio.preparationDiagnostics.getDynamicObject()==graph,"Timeline deletion recreated readers or plugins");
+        session.command(jaras::CommandKind::play);AudioBuffer<float> output(2,480);session.audio.render(output.getArrayOfWritePointers(),2,480);
+        expect(std::abs(output.getSample(0,100)-.1f)<.004f,"Restored region has no audio");session.command(jaras::CommandKind::stopAll);
+    });
+    test("Streaming split glue Undo preserves both halves", [&] { splitPlaybackTests::glueUndoRealtime(directory); });
+    test("Split glue Undo restores audible audio on both sides of the cut", [&] {
+        Session session;session.inspection=true;session.mediaDirectory=itemDeletionAudio();
+        session.document=session.mediaDirectory.getChildFile("cut-glue.jl");
+        auto project=projectFixture();auto &song=project.songs[0];song.duration=2;song.tracks.clear();song.parts.clear();song.markers.reset();
+        project.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+        jaras::Track track;track.id=uuid();track.name="Audio";jaras::AudioClip clip;clip.id=uuid();clip.name="Signal";clip.duration=1;clip.audioFile=jaras::AudioFile{"signal.wav",{}};track.clips={clip};song.tracks={track};
+        project.savedCursor=jaras::SavedProjectCursor{song.id,0};session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        session.splitClips({clip.id},.5);std::set<ID> halves;for(const auto &c:session.song()->tracks[0].clips)halves.insert(c.id);
+        session.renderItems(halves,true);
+        const double deadline=Time::getMillisecondCounterHiRes()+20000;
+        while(session.busy&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        expect(!session.busy&&session.song()->tracks[0].clips.size()==1,"Glue did not finish");
+        session.undo();expect(session.song()->tracks[0].clips.size()==2,"Glue Undo did not restore both halves");
+        session.command(jaras::CommandKind::play);AudioBuffer<float> output(2,480);
+        for(int block=0;block<90;++block){session.audio.render(output.getArrayOfWritePointers(),2,480);for(int sample=0;sample<480;++sample)expect(std::abs(output.getSample(0,sample)-.1f)<.004f,"Glue Undo left a restored half silent");}
+        session.command(jaras::CommandKind::stopAll);
+    });
     test("Item deletion and Undo preserve live readers, FX graph and playback clocks", [&] {
         Session session; session.inspection=true; session.mediaDirectory=itemDeletionAudio();
         auto project=projectFixture(); auto &song=project.songs[0];
@@ -1367,6 +1443,23 @@ int runTests(const File &directory) {
         session.command(jaras::CommandKind::stopAll);session.undo();
         expect(tempoEditing::bpm(*session.song(),10)==120,"Undo restores tempo");
         expect(!tempoEditing::needsRender(*session.song(), &session.song()->parts[0]),"Restored reference tempo clears highlighting");
+    });
+    test("Unified stopped tempo changes only the child song under the edit cursor", [&] {
+        auto p=projectFixture();auto &song=p.songs[0];song.tracks.clear();song.timeSettings=jaras::ProjectTimeSettings{};
+        song.parts={{uuid(),"First",0,10},{uuid(),"Second",10,30},{uuid(),"Unified",0,30}};
+        const auto group=song.parts[2].id;song.parts[0].parentRegionID=group;song.parts[1].parentRegionID=group;
+        auto a=tempoEditing::boundary(song,0),b=tempoEditing::boundary(song,10);
+        a.tempoBPM=120;a.tempoReferenceBPM=120;a.regionOwnerID=song.parts[0].id;
+        b.tempoBPM=144;b.tempoReferenceBPM=144;b.regionOwnerID=song.parts[1].id;
+        const auto aid=a.id,bid=b.id;song.markers=std::vector<jaras::TimelineMarker>{a,b};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(p));session.audio.setOffline(true);
+        session.command(jaras::CommandKind::selectRegion,group);session.command(jaras::CommandKind::editSeek,{},5);
+        session.setTempo(125);
+        auto bpm=[&](const ID &id){for(const auto &m:*session.song()->markers)if(m.id==id)return m.tempoBPM.value_or(0);return 0.;};
+        expect(bpm(aid)==125&&bpm(bid)==144,"Editing first child changed another song BPM");
+        session.command(jaras::CommandKind::editSeek,{},15);session.setTempo(150);
+        expect(bpm(aid)==125&&bpm(bid)==150,"Editing second child changed the first song BPM");
+        session.undo();expect(bpm(aid)==125&&bpm(bid)==144,"Tempo Undo changed another song");
     });
     test("Repeated tempo edits preserve overlapping next song without adding markers", [&] {
         auto p=projectFixture();auto &song=p.songs[0];song.timeSettings=jaras::ProjectTimeSettings{};
@@ -2172,6 +2265,17 @@ int runTests(const File &directory) {
         expect(song.tracks[0].clips[0].audioFile->path==media&&song.tracks[0].clips[0].startTime==10,"Region operations never move or replace audio");
         jaras::validate(project);
     });
+    test("Automatic section destination survives project codec and clearing", [&] {
+        auto project=projectFixture();auto& song=project.songs.front();
+        jaras::TimelineMarker source{uuid(),"Source",10,0};source.section=true;source.automaticSectionTargetID=uuid();
+        song.markers=std::vector<jaras::TimelineMarker>{source};
+        auto encoded=ProjectCodec::encode(project);
+        auto decoded=ProjectCodec::decode(encoded);
+        expect(decoded.songs.front().markers->front().automaticSectionTargetID==source.automaticSectionTargetID,"Automatic destination lost on reload");
+        decoded.songs.front().markers->front().automaticSectionTargetID.reset();
+        auto cleared=ProjectCodec::decode(ProjectCodec::encode(decoded,encoded));
+        expect(!cleared.songs.front().markers->front().automaticSectionTargetID,"Cleared destination survived in saved metadata");
+    });
     test("Disunifying an opened project survives save, reopen, undo and redo without stale parent IDs", [&] {
         auto project = projectFixture(); auto &song = project.songs.front();
         song.tracks.clear(); song.parts[1].startTime = 19; song.parts[1].endTime = 30;
@@ -2697,10 +2801,14 @@ int runTests(const File &directory) {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
         const auto root=directory.getNonexistentChildFile("project-folder-policy",{},false);
         const auto first=root.getChildFile("One.jl"), second=root.getChildFile("Two.jl");
+        const auto sidecar=root.getChildFile("._One.jl");sidecar.getParentDirectory().createDirectory();
+        {FileOutputStream out(sidecar);out.writeIntBigEndian(0x00051607);out.writeIntBigEndian(0x00020000);}
         session.save(first); const auto before=first.loadFileAsString();
         bool rejected=false;try{session.save(second);}catch(const std::exception &e){rejected=String::fromUTF8(e.what()).contains("pasta separada");}
         expect(rejected&&!second.existsAsFile()&&first.loadFileAsString()==before&&session.document==first,"Reject second document before writing or changing active path");
         session.save(first);expect(first.existsAsFile(),"Ordinary Save still works");
+        const auto legacyCopy=root.getChildFile("Legacy copy.jl");expect(first.copyFileTo(legacyCopy),"Could not create legacy shared folder fixture");
+        session.save(first);expect(legacyCopy.loadFileAsString()==before,"Saving current project overwrote its neighbor");
         const auto separate=root.getChildFile("Separate/Two.jl");session.save(separate);expect(separate.existsAsFile(),"Save As in a separate folder works");
     });
     test("Native DSP delay timing, compressor gain and live piano rendering", [&] {

@@ -319,8 +319,17 @@ extension NativeTimelineHeaderView {
     precondition(header.markerForTest(tempo.id) === tempoView, "active drag stays mounted across zoom, structural refresh and offscreen pan")
     tempoView.mouseDragged(with: dragEvent(.leftMouseDragged, delta: 18.75))
     tempoView.mouseUp(with: dragEvent(.leftMouseUp, delta: 20.25))
-    precondition(moved.count == 1 && moved[0].position == 36.025 && header.previewForTest == nil,
-        "captured marker and scale preserve original drag semantics, with one commit on release")
+    precondition(moved.count == 1 && moved[0].position == 36.025 && header.previewForTest?.position == 36.025,
+        "release retains the final preview until the project acknowledges the move")
+    header.configure(configuration())
+    precondition(header.previewForTest?.position == 36.025,
+        "a stale project refresh must not bounce the marker back")
+    if let index = song.markers?.firstIndex(where: { $0.id == tempo.id }) {
+        song.markers?[index] = moved[0]
+    }
+    header.configure(configuration())
+    precondition(header.previewForTest == nil,
+        "the acknowledged project position replaces the retained preview")
     header.project(scale: 10, viewport: viewport, layoutWidth: 100_000, displayScale: 2)
     let nextTempo = header.markerForTest(tempo.id)!
     nextTempo.mouseDown(with: event(.leftMouseDown, view: nextTempo))

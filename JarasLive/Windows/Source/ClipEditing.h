@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "ClipTempo.h"
 namespace catlive::clipEditing {
 inline bool projection(const jaras::AudioClip &clip) {
     return clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
@@ -8,24 +9,34 @@ inline bool singleLane(const jaras::Track &track) {
     return jaras::isTeleprompterRole(track.role) || track.role.id == "chords" ||
            track.role.id == "video";
 }
-inline void split(jaras::Song &song, const ID &selected, double at) {
+inline void splitSelected(jaras::Song &song, const std::set<ID> &selected, double at, std::map<ID, ID> *sources = nullptr) {
     if (!std::isfinite(at))
         return;
     for (auto &track : song.tracks) {
         std::vector<jaras::AudioClip> added;
         for (auto &clip : track.clips) {
-            if ((!selected.empty() && clip.id != selected) || at <= clip.startTime + .001 ||
+            if ((!selected.empty() && !selected.count(clip.id)) || at <= clip.startTime + .001 ||
                 at >= clip.startTime + clip.duration - .001 ||
                 ((track.role.id == "timecode" || track.role.id == "generatedClick") &&
                  !projection(clip)))
                 continue;
             auto right = clip;
             right.id = uuid();
+            if (sources) sources->emplace(right.id, clip.id);
             const double length = at - clip.startTime, fraction = length / clip.duration;
             right.startTime = at;
             right.duration -= length;
-            if (!clip.text || clip.audioFile || clip.loopLength)
-                right.sourceOffset += length * clip.playbackRate;
+            if (!clip.text || clip.audioFile || clip.loopLength) {
+                // The source clock includes every relative-tempo segment before
+                // the cut. Multiplying by the item's base rate repeats/skips
+                // audio as soon as a marker has changed its actual speed.
+                right.sourceOffset = ClipTempo(clip, &song).sourceAt(at);
+                if (const double loop = clip.loopLength.value_or(0); loop > 0) {
+                    const double origin = clip.loopStart.value_or(0);
+                    if (right.sourceOffset >= origin)
+                        right.sourceOffset = origin + std::fmod(right.sourceOffset - origin, loop);
+                }
+            }
             if (!clip.loopLength) {
                 auto divide = [fraction](std::vector<double> &left, std::vector<double> &right) {
                     const auto cut =
@@ -37,11 +48,16 @@ inline void split(jaras::Song &song, const ID &selected, double at) {
                 for (size_t i = 0; i < clip.waveformChannels.size(); ++i)
                     divide(clip.waveformChannels[i], right.waveformChannels[i]);
             }
+            // Keep the original outer fades; the newly cut seam has no fade.
+            clip.fadeOut = 0; right.fadeIn = 0;
             clip.duration = length;
             added.push_back(std::move(right));
         }
         track.clips.insert(track.clips.end(), added.begin(), added.end());
     }
+}
+inline void split(jaras::Song &song, const ID &selected, double at) {
+    splitSelected(song, selected.empty() ? std::set<ID>{} : std::set<ID>{selected}, at);
 }
 inline void requireSpace(const jaras::Track &track, const jaras::AudioClip &clip, double start,
                          double end) {

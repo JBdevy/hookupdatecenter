@@ -1,6 +1,50 @@
 import XCTest
 @testable import JarasApplication
 final class TempoMarkerTests: XCTestCase {
+    func testPrintedItemsFollowLaterTempoEditsAndRestoreTheirSourceSpan() throws {
+        for printedKind in 0..<3 {
+            var song = Project.empty(name: "Printed tempo").songs[0]
+            let owner = Part(id: UUID(), name: "Rendered song", startTime: 0, endTime: 12)
+            let next = Part(id: UUID(), name: "Next song", startTime: 10, endTime: 25)
+            song.parts = [owner, next]; song.duration = 25
+            song.markers = [
+                TimelineMarker(id: UUID(), name: "Tempo", position: 0, color: 0,
+                    regionOwnerID: owner.id, tempoBPM: 120, tempoTimebase: .relative, tempoReferenceBPM: 100),
+                TimelineMarker(id: UUID(), name: "Tempo", position: 10, color: 0,
+                    regionOwnerID: next.id, tempoBPM: 90, tempoTimebase: .relative, tempoReferenceBPM: 90)]
+            var printed = AudioClip(id: UUID(), name: "Printed", startTime: 0, duration: 12,
+                                    audioFile: AudioFile(path: "printed.wav"), playbackRate: 1, regionOwnerID: owner.id)
+            if printedKind == 0 { printed.renderedTempo = true }
+            if printedKind == 1 { printed.renderedTiming = true }
+            if printedKind == 2 { printed.frozenMIDI = true }
+            var other = AudioClip(id: UUID(), name: "Other", startTime: 10, duration: 15,
+                                  audioFile: AudioFile(path: "other.wav"), playbackRate: 1, regionOwnerID: next.id)
+            other.renderedTempo = true
+            var track = Track(id: UUID(), name: "Audio", role: .other); track.clips = [printed, other]
+            song.tracks = [track]
+            XCTAssertEqual(song.tempoAudioSegments(printed).first?.audioRate, 1, "The already printed BPM must not be applied twice")
+            for delta in [30.0, -30.0] {
+                let before = song
+                for marker in song.regionTempoChange(delta, region: song.parts[0]) {
+                    if let index = song.markers!.firstIndex(where: { $0.id == marker.id }) { song.markers![index] = marker }
+                    else { song.markers!.append(marker) }
+                }
+                TempoEditMap(before: before, after: song).apply(to: &song)
+                let clip = song.tracks[0].clips[0]
+                XCTAssertEqual(clip.duration * clip.audioRate, 12, accuracy: 0.000001, "No source audio may be cut off by a tempo edit")
+                XCTAssertEqual(clip.audioRate, delta > 0 ? 1.25 : 1, accuracy: 0.000001)
+                XCTAssertEqual(clip.tempoBasePlaybackRate, 1)
+                XCTAssertEqual(song.tempoAudioSegments(clip).first?.audioRate ?? 0, clip.audioRate, accuracy: 0.000001)
+                var programs = AudioTempoPrograms(song: song)
+                XCTAssertEqual(programs.fragments(for: clip), song.tempoAudioSegments(clip))
+                XCTAssertEqual(song.hasUnrenderedTempo(in: song.parts[0]), delta > 0)
+                XCTAssertEqual(song.tracks[0].clips[1].audioRate, 1, "A following song keeps its own speed")
+                XCTAssertNil(song.tracks[0].clips[1].tempoBasePlaybackRate)
+                song = try JSONDecoder().decode(Song.self, from: JSONEncoder().encode(song))
+            }
+            XCTAssertEqual(song.tracks[0].clips[0].duration, 12, accuracy: 0.000001)
+        }
+    }
     func testUnifiedTempoRoundTripKeepsRestoreBoundaryOutsideOwnedAudio() {
         var song = resizeSong()
         let parent = UUID()

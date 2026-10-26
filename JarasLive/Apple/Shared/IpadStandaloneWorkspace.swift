@@ -12,6 +12,7 @@ import Combine
     let timer = RemoteLocalTimer()
     @Published private(set) var state: DAWRemoteState?
     @Published private(set) var projectRevision: UInt64 = 0
+    @Published private(set) var stopsAtRegionEnd = false
     @Published private(set) var timelineFocus: IpadTimelineFocus?
     private var subscriptions = Set<AnyCancellable>()
     private var refreshPending = false
@@ -85,6 +86,9 @@ import Combine
         }
         if let show {
             if projectRevision != show.projectRevision { projectRevision = show.projectRevision }
+            // STOP is a native-only control, absent from the Remote projection.
+            // Publish it even when that projection and the project revision are unchanged.
+            if stopsAtRegionEnd != show.regionSetlist.stopsAtRegionEnd { stopsAtRegionEnd = show.regionSetlist.stopsAtRegionEnd }
             // Publish the request by value: the workspace deliberately does not
             // observe ShowController on every transport tick. Focus must still
             // reach the grid even when the projected remote state is unchanged.
@@ -208,7 +212,7 @@ import Combine
                     addTrackText: { editingTextItem = show.addTextItem(track: $0) }, addTrackMedia: { documents.chooseNativeTrackMedia($0) },
                     createPlaylist: { show.createRegionPlaylist(name: $0, selected: $1) },
                     addBlock: { show.addSetlistBlock(namePrefix: JarasLocalization.string("Bloco")) },
-                    toggleRegionStop: { show.toggleRegionStop() }, stopsAtRegionEnd: show.regionSetlist.stopsAtRegionEnd,
+                    toggleRegionStop: { show.toggleRegionStop() }, stopsAtRegionEnd: local.stopsAtRegionEnd,
                     exportProject: { exportingProject = true },
                     groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, openSettings: { settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
             } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }

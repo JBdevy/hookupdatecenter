@@ -52,6 +52,32 @@ inline void click(SetlistRows &rows,int row) {
         Time::getCurrentTime(),1,false));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Setlist drawer preserves browsing position and metadata reorder avoids workspace rebuild",[&] {
+        const auto project=fixture(); const auto &parts=project.songs[0].parts;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);
+        Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("setlist-browse",".json"));workspace.setSize(1366,768);
+        auto *rows=dynamic_cast<SetlistRows *>(uiFeatureTests::find(workspace,"setlistRows"));require(rows,"Setlist rows missing");
+        click(*rows,0); rows->getViewport()->setViewPosition(0,rows->rowTop(17));
+        const int before=rows->getViewport()->getViewPositionY();
+        auto *drawer=dynamic_cast<Button *>(uiFeatureTests::find(workspace,"setlist-drawer-"+text(parts[26].id)));
+        require(drawer && drawer->onClick,"Drawer missing");drawer->onClick();
+        require(rows->getViewport()->getViewPositionY()==before,"Opening another drawer revealed the selected row");
+        drawer->onClick(); require(rows->getViewport()->getViewPositionY()==before,"Closing drawer revealed selected row");
+        int rebuilds=0,updates=0;auto changed=session.changed, setlistChanged=session.setlistChanged;
+        session.changed=[&]{++rebuilds;if(changed)changed();};session.setlistChanged=[&]{++updates;if(setlistChanged)setlistChanged();};
+        auto state=*session.project().regionSetlist;auto original=state.playlists[0].regionIds;
+        state.playlists[0].regionIds.insert(state.playlists[0].regionIds.begin(),parts[0].id);
+        session.configureSetlist(state);require(rebuilds==0 && updates==1,"Playlist edit rebuilt the workspace");
+        session.undo();require(session.project().regionSetlist->playlists[0].regionIds==original,"Playlist undo lost original ordering");
+        session.redo();require(session.project().regionSetlist->playlists[0].regionIds==state.playlists[0].regionIds,"Playlist redo lost new ordering");
+        require(rebuilds==0 && updates==3,"Playlist undo/redo rebuilt the workspace");
+        for(double scale:{.05,.3,1.,3.,10.,20.}) {
+            const auto ticks=timelineGrid::ticks(*session.song(),0,100,scale);
+            for(const auto &tick:ticks) if(!tick.primary) require(std::abs(timelineGrid::snap(tick.time+.001,*session.song(),scale,false,false)-tick.time)<.00001,"Secondary grid line rejected snapping");
+        }
+    });
     test("Remote section cues preserve Parts timing and armed destination for observers", [&] {
         auto project=fixture();project.regionSetlist.reset();auto &song=project.songs[0];song.parts={{uuid(),"Playing",0,20}};
         const auto region=song.parts[0].id,next=uuid(),target=uuid();
@@ -129,33 +155,41 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         require(flag(presentation.snapshot(0),"tempoNeedsRender"),"A later rate change must invalidate the cached indicator");
     });
 
-    test("Setlist drag preview contains only draggable selected rows at display resolution",[&] {
+    test("Setlist drag preview is one compact title strip at display resolution",[&] {
         struct Model final : ListBoxModel {
+            int paints=0;
             int getNumRows() override {return 9;}
-            void paintListBoxItem(int row,Graphics &g,int,int,bool) override {
-                g.fillAll(row==0?Colours::red:row==2?Colours::blue:Colours::green);
+            void paintListBoxItem(int,Graphics &g,int,int,bool) override {
+                ++paints;g.fillAll(Colours::red);
             }
             var getDragSourceDescription(const SparseSet<int> &selection) override {
                 return selection.contains(1)?var{}:var("song");
             }
         } model;
-        SetlistRows rows;rows.setModel(&model);rows.setSize(300,100);rows.updateContent();
+        SetlistRows rows;rows.setModel(&model);rows.setSize(500,100);rows.updateContent();
+        int namedRow=-1;
+        rows.dragNameForRow=[&](int row){namedRow=row;return "Song "+String(row);};
         rows.selectRow(0,false,true);
         auto single=rows.createDragPreview(2).getImage();
-        const auto *firstRow=rows.getViewport()->getViewedComponent()->getChildComponent(0);
-        require(single.getHeight()==76 && single.getWidth()==firstRow->getWidth()*2 && single.getPixelAt(20,20)==Colours::red,
-                ("Single-song preview: "+String(single.getWidth())+"x"+String(single.getHeight())+" row="+String(firstRow->getWidth())+" color="+single.getPixelAt(20,20).toString()).toRawUTF8());
+        const auto background=single.getPixelAt(20,4);
+        require(single.getHeight()==68 && single.getWidth()==600 && namedRow==0 &&
+                    background.getRed()<32 && background.getAlpha()>200 && model.paints==0,
+                "Preview must be a dark 300x34 strip, rendered at display resolution without copying the row");
         rows.selectRow(1,false,false);rows.selectRow(2,false,false);
-        auto multiple=rows.createDragPreview(2).getImage();
-        require(multiple.getHeight()==152 && multiple.getPixelAt(20,20)==Colours::red && multiple.getPixelAt(20,100)==Colours::blue,
-                "Drag preview included an excluded row or gaps between selected songs");
+        auto multiple=rows.createDragPreview(2,2).getImage();
+        require(multiple.getHeight()==68 && multiple.getWidth()==600 && namedRow==2,
+                "A multi-song drag must show only the pressed song's title, not stack selected rows");
         rows.getViewport()->setViewPosition(0,200);
-        auto scrolled=rows.createDragPreview(2).getImage();
-        require(scrolled.getHeight()==152 && scrolled.getPixelAt(20,20)==Colours::red && scrolled.getPixelAt(20,100)==Colours::blue,
-                "Scrolling clipped selected rows in the drag preview");
+        auto scrolled=rows.createDragPreview(2,2).getImage();
+        require(scrolled.getHeight()==68 && namedRow==2,
+                "Scrolling must not clip or change the drag title strip");
         rows.selectRangeOfRows(0,8);
-        require(rows.createDragPreview(2).getImage().getHeight()==(5*38+24)*2,
-                "Large selections must use a compact preview and remaining-count footer");
+        require(rows.createDragPreview(2,5).getImage().getHeight()==68 && namedRow==5 &&
+                    rows.getSelectedRows().size()==9,
+                "Large selections must keep one title strip while preserving all selected entries");
+        rows.selectRow(1,false,true);
+        require(rows.createDragPreview().getImage().isNull(),
+                "Protected unified child rows must not acquire a drag preview");
         rows.setModel(nullptr);
     });
     test("Setlist group drag retains selected songs until release and a plain click collapses on mouse-up",[&] {

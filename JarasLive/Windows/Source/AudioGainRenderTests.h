@@ -106,10 +106,59 @@ inline void monitorOff(const File& directory) {
                         "Monitor Off must silence the return without disabling capture input");
     }
 }
+inline void hardPanSilence(const File& directory) {
+    const auto report=directory.getChildFile("pan-endpoints.csv");
+    require(report.replaceWithText("input_channels,stage,reverb,automation,pan,silent_peak,audible_peak\n"),"Could not create pan endpoint measurements");
+    // Feed distinct stereo PCM (or a duplicated mono input) through two parent
+    // groups. Test the real render graph, including a stereo effect before the
+    // pan stage, rather than checking the gain formula in isolation.
+    for(int inputChannels:{1,2})for(int stage=0;stage<4;++stage)
+        for(bool effect:{false,true})for(bool automated:{false,true})for(double position:{-1.,1.}) {
+            jaras::Project project;project.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+            auto song=inputSong();auto& leaf=song.tracks.front();
+            leaf.inputPatch=jaras::OutputPatch{1,inputChannels};
+            jaras::Track inner,outer;inner.id=uuid();outer.id=uuid();inner.role.id="other";outer.role.id="other";
+            leaf.parentTrackID=inner.id;inner.parentTrackID=outer.id;
+            leaf.outputs=std::vector<jaras::OutputPatch>{{-2,2}};inner.outputs=std::vector<jaras::OutputPatch>{{-2,2}};
+            outer.outputs=std::vector<jaras::OutputPatch>{{0,2}};
+            const auto leafID=leaf.id;song.tracks.push_back(inner);song.tracks.push_back(outer);
+            if(automated) {
+                auto envelope=automation::envelope("pan",position>0?1.:0.);
+                put(envelope,"points",Array<var>{point(0,position>0?1.:0.)});
+                auto settings=object();put(settings,"mode","read");put(settings,"envelopes",Array<var>{envelope});
+                auto& destination=stage==3?project.masterAutomationJSON:song.tracks[size_t(stage)].automationJSON;
+                destination=utf8(JSON::toString(settings,true));
+            } else if(stage==3)project.masterPan=position;
+            else song.tracks[size_t(stage)].pan=position;
+            var masterFX;
+            if(effect) {
+                auto settings=object();put(settings,"inserted",Array<var>{"Reverb"});
+                put(settings,"reverbEnabled",true);put(settings,"reverbMix",80.);
+                put(settings,"reverbDecay",2.);put(settings,"reverbRoom",1.);
+                if(stage==3){masterFX=settings;project.masterFXJSON=utf8(JSON::toString(settings,true));}
+                else song.tracks[size_t(stage)].fxJSON=utf8(JSON::toString(settings,true));
+            }
+            auto engine=std::make_unique<AudioEngine>();engine->prepareOffline(48000);engine->instrumentAllowed=true;
+            engine->prepareSong(song,directory,masterFX,&project);engine->setMixer(project,song);engine->armTrack(leafID,true);
+            AudioBuffer<float> input(2,127),output(2,127);fill(input);
+            const int silent=position>0?0:1,audible=1-silent;
+            float audiblePeak=0,silentPeak=0;
+            for(int block=0;block<32;++block) {
+                engine->render(output.getArrayOfWritePointers(),2,127,input.getArrayOfReadPointers(),inputChannels);
+                silentPeak=std::max(silentPeak,output.getMagnitude(silent,0,127));
+                require(silentPeak==0.f,
+                    "Hard pan leaked PCM: stage="+String(stage)+" input="+String(inputChannels)+" fx="+String(int(effect))+" automation="+String(int(automated))+" pan="+String(position));
+                audiblePeak=std::max(audiblePeak,output.getMagnitude(audible,0,127));
+            }
+            require(audiblePeak>.001f,"Hard-pan silence test did not route an audible source");
+            report.appendText(String(inputChannels)+","+String(stage)+","+String(int(effect))+","+String(int(automated))+","+String(position)+","+String(silentPeak,9)+","+String(audiblePeak,9)+"\n");
+        }
+}
 template <typename Register>
 void registerTests(const File& directory, Register&& test) {
     test("Loopback input uses the track Monitor Off switch while keeping armed meters", [&] { monitorOff(directory); });
     test("Static track and master gains preserve stereo PCM phase mute pan and mono", [&] { staticGain(directory); });
     test("Master evaluates sample automation consistently across stereo channels", [&] { automatedMaster(directory); });
+    test("Hard pan silences the opposite channel exactly for mono stereo nested groups and Master", [&] { hardPanSilence(directory); });
 }
 } // namespace catlive::audioGainRenderTests

@@ -198,6 +198,7 @@ private final class NativeSectionProgressView: NSView {
 
 /// Transport updates stay in this small panel, independently of the grid canvas.
 struct SmoothSeekPanel: View {
+    @State private var automaticSection: TimelineMarker?
     #if os(macOS)
     let show: ShowController
     @StateObject private var updates: SectionPanelObserver
@@ -240,6 +241,10 @@ struct SmoothSeekPanel: View {
                 bank(region: secondary ? queued : current, secondary: secondary)
             }
         }.background(JarasTheme.panel)
+        .sheet(item: $automaticSection) { marker in
+            AutomaticSectionEditor(show: show, source: marker.id, close: { automaticSection = nil })
+                .frame(width: 660, height: 470)
+        }
     }
     private func bank(region: Part?, secondary: Bool) -> some View {
         let markers = region.flatMap { part in show.current?.sectionMarkers(in: part) } ?? []
@@ -259,7 +264,7 @@ struct SmoothSeekPanel: View {
             }, livePlayback: { [weak show] in
                 guard let show else { return (0, ProcessInfo.processInfo.systemUptime) }
                 return (show.snapshot.transport.position, show.timelinePlaybackSampleTime)
-            })
+            }, editAutomatic: { id in automaticSection = show.current?.markers?.first { $0.id == id } })
     }
 }
 
@@ -283,6 +288,7 @@ struct SmoothSeekBankView: View {
     var regionStart: Double = 0
     var livePosition: (() -> (position: Double, time: Double))? = nil
     var livePlayback: (() -> (position: Double, time: Double))? = nil
+    var editAutomatic: ((UUID) -> Void)? = nil
     #if os(macOS)
     @State private var scrollController = SidebarScrollController()
     #endif
@@ -363,6 +369,15 @@ struct SmoothSeekBankView: View {
                 RoundedRectangle(cornerRadius: 5).stroke(selected ? JarasTheme.green : isStart ? Color.blue : JarasTheme.line, lineWidth: selected || isStart ? 1.5 : 0.5)
             }.contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(isStart ? JarasLocalization.string("Section start") : marker.name.uppercased()).accessibilityValue(queued ? "Queued" : active ? "Playing" : "")
+        #if os(macOS)
+        .immediateRightClick { if !isStart { editAutomatic?(marker.id) } }
+        #else
+        .overlay {
+            if !isStart, let editAutomatic {
+                IpadTapHoldTouchSurface(tap: { select(marker.id) }, hold: { editAutomatic(marker.id) })
+            }
+        }
+        #endif
     }
 }
 
@@ -596,3 +611,81 @@ private struct DetachedPartsContent: View {
     }
 }
 #endif
+
+/// The source marker owns one optional destination; opening or cancelling never edits the project.
+struct AutomaticSectionEditor: View {
+    let show: ShowController
+    let source: UUID
+    let close: () -> Void
+    @State private var selectedRegion: UUID?
+    @State private var selectedTarget: UUID?
+    private let projectID: UUID
+    init(show: ShowController, source: UUID, close: @escaping () -> Void) {
+        self.show = show; self.source = source; self.close = close
+        projectID = show.snapshot.project.id
+        let song = show.current
+        let marker = song?.markers?.first { $0.id == source }
+        _selectedRegion = State(initialValue: song?.parts.first(where: { part in
+            song?.sectionMarkers(in: part).contains(where: { $0.id == source }) == true &&
+            song?.parts.contains(where: { $0.parentRegionID == part.id }) != true
+        })?.id)
+        _selectedTarget = State(initialValue: marker?.automaticSectionTargetID == source ? nil : marker?.automaticSectionTargetID)
+    }
+    private var regions: [Part] {
+        guard let song = show.current else { return [] }
+        return song.parts.filter { part in !song.parts.contains { $0.parentRegionID == part.id } }
+            .sorted { $0.startTime < $1.startTime }
+    }
+    private var markers: [TimelineMarker] {
+        guard let song = show.current, let region = regions.first(where: { $0.id == selectedRegion }) else { return [] }
+        return song.sectionMarkers(in: region)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Engatilhamento automático").font(.jarasTitle2.bold())
+            Text("Escolha o trecho de destino. O aviso começa 5 segundos antes do marcador.")
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            HStack(alignment: .top, spacing: 12) {
+                ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(regions) { region in
+                            Button { selectedRegion = region.id } label: {
+                                Text(verbatim: region.displayName).frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10).background(selectedRegion == region.id ? Color.blue.opacity(0.4) : Color.clear)
+                            }.buttonStyle(.plain).id(region.id)
+                        }
+                    }
+                }.onAppear {
+                    if let selectedRegion { DispatchQueue.main.async { proxy.scrollTo(selectedRegion, anchor: .center) } }
+                }
+                }.frame(maxWidth: .infinity)
+                Divider()
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(markers) { marker in
+                            Button { selectedTarget = selectedTarget == marker.id ? nil : marker.id } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: selectedTarget == marker.id ? "checkmark.square.fill" : "square")
+                                        .foregroundStyle(JarasTheme.green)
+                                    Text(verbatim: marker.name).frame(maxWidth: .infinity, alignment: .leading)
+                                }.padding(10)
+                            }.buttonStyle(.plain)
+                                .disabled(marker.id == source)
+                                .opacity(marker.id == source ? 0.35 : 1)
+                        }
+                        if markers.isEmpty { Text("Esta música não tem trechos.").foregroundStyle(JarasTheme.secondary).padding(10) }
+                    }
+                }.frame(maxWidth: .infinity)
+            }.frame(maxHeight: .infinity)
+            HStack {
+                Button("Cancelar", action: close).keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Aplicar") {
+                    if show.snapshot.project.id == projectID { show.setAutomaticSectionTarget(source: source, target: selectedTarget) }
+                    close()
+                }.keyboardShortcut(.defaultAction)
+            }.buttonStyle(StageButtonStyle(color: JarasTheme.accent))
+        }.padding(20).foregroundStyle(JarasTheme.text).background(JarasTheme.panel)
+    }
+}

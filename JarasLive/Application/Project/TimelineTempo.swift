@@ -96,7 +96,7 @@ public enum TimelineTempo {
             let step = bar / Double(beats) * Double(unit) / Double(divisions ?? unit)
             return step * pow(2, max(0, ceil(log2(minimumGridSpacing / max(0.001, step * pixelsPerSecond)))))
         }
-        return bar * Double(barStride(bar: bar, pixelsPerSecond: pixelsPerSecond))
+        return bar * Double(barStride(bar: bar, pixelsPerSecond: pixelsPerSecond)) / 2
     }
     public static func snap(_ time: Double, bar: Double, beats: Int, pixelsPerSecond: Double, divisions: Int? = nil, unit: Int = 4) -> Double {
         let step = gridStep(bar: bar, beats: beats, pixelsPerSecond: pixelsPerSecond, divisions: divisions, unit: unit)
@@ -645,8 +645,17 @@ struct TempoEditMap {
             for item in song.tracks[track].clips.indices {
                 let clip = song.tracks[track].clips[item]
                 let start = clipStarts[clip.id] ?? position(clip.startTime), end = position(clip.startTime + clip.duration)
+                let duration = clipDurations[clip.id] ?? (end - start)
+                // A printed source already contains the former tempo map. Keep
+                // that map bypassed, but follow later tempo edits by preserving
+                // the source span while its timeline duration changes.
+                if (clip.renderedTempo == true || clip.renderedTiming == true || clip.frozenMIDI == true),
+                   duration > 0, clip.duration > 0, abs(duration - clip.duration) > 0.000000001 {
+                    song.tracks[track].clips[item].tempoBasePlaybackRate = clip.tempoBasePlaybackRate ?? clip.audioRate
+                    song.tracks[track].clips[item].playbackRate = clip.audioRate * clip.duration / duration
+                }
                 song.tracks[track].clips[item].startTime = start
-                song.tracks[track].clips[item].duration = clipDurations[clip.id] ?? (end - start)
+                song.tracks[track].clips[item].duration = duration
             }
         }
         for i in song.parts.indices {

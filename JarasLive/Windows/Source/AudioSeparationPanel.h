@@ -4,12 +4,12 @@
 namespace catlive {
 class AudioSeparationPanel final : public Component, private Timer {
   public:
-    explicit AudioSeparationPanel(Session &owner) : session(owner), progress(displayedProgress) {
+    explicit AudioSeparationPanel(Session &owner, String title = "Separation audio") : session(owner), progress(displayedProgress) {
         getProperties().set("selfContainedSheet",true);
         getProperties().set("sheetCornerRadius",16.0);
         setComponentID("audioSeparationProgress");setWantsKeyboardFocus(true);
         for(auto *component : std::initializer_list<Component*>{&heading,&status,&progress,&percentage,&cancel})addAndMakeVisible(*component);
-        heading.setText("Separation audio",dontSendNotification);heading.setFont(theme::semiboldFont(18));
+        heading.setText(title,dontSendNotification);heading.setFont(theme::semiboldFont(18));
         heading.setColour(Label::textColourId,Colours::white);
         heading.setJustificationType(Justification::centred);
         status.setFont(theme::font(13));status.setColour(Label::textColourId,theme::secondary);

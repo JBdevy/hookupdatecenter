@@ -18,6 +18,10 @@ parts = [between('/// The closed header owns no SwiftUI zoom graph.', '@MainActo
  between('private enum TimelineHeaderViewport', 'private struct TimelineStaticHeaderIdentity'),
  between('private final class MarkerTargetLabelWidths', 'private struct MarkerEditTargets'),
  between('private final class TimelineResolvedName', 'private struct RegionBoundaryOverlay')]
+item_source = Path('Apple/Shared/GridSelectionInput.swift').read_text()
+item_constants = item_source[item_source.index('struct GridSelectionItem {'):item_source.index('    let id: UUID', item_source.index('struct GridSelectionItem {'))]
+parts.append(item_constants + '}')
+parts.append(between('enum TimelineSnapPreference {', 'struct TimelineMagnetIcon'))
 conversion = Path('Application/Project/ProjectEditing.swift').read_text()
 parts.append(conversion[conversion.index('public struct MarkerRegionConversion {'):conversion.index('public extension Project {')])
 # Instrument the extracted fixture only; production carries no test counters.

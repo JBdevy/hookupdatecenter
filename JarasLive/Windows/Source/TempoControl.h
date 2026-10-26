@@ -43,6 +43,9 @@ class TempoControl final : public Component {
         unit.setName("Beat unit");
         refresh();
     }
+    void retainTempoAfterMixerChange() {
+        if(tempoRevision+1==session.revision)tempoRevision=session.revision;
+    }
     void refresh() {
         const auto value = session.tempoBPM();
         bpm.setButtonText(String::formatted("%g", value));

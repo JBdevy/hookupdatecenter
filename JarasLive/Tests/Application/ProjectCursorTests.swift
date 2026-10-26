@@ -64,6 +64,27 @@ import XCTest
 }
 
 final class ProjectCursorTests: XCTestCase {
+    @MainActor func testUnifiedSelectionTempoEditsOnlySongUnderEditCursor() throws {
+        var project = Project.empty(name: "Unified tempo")
+        let group = Part(id: UUID(), name: "Unified", startTime: 0, endTime: 60)
+        var a = Part(id: UUID(), name: "First", startTime: 0, endTime: 25); a.parentRegionID = group.id
+        var b = Part(id: UUID(), name: "Second", startTime: 20, endTime: 45); b.parentRegionID = group.id
+        var c = Part(id: UUID(), name: "Third", startTime: 40, endTime: 60); c.parentRegionID = group.id
+        project.songs[0].parts = [a, b, c, group]; project.songs[0].duration = 60
+        project.songs[0].markers = [(a, 120.0), (b, 146.0), (c, 164.0)].map { part, bpm in
+            TimelineMarker(id: UUID(), name: "TEMPO", position: part.startTime, color: 0,
+                regionOwnerID: part.id, tempoBPM: bpm, tempoTimebase: .free, tempoReferenceBPM: bpm)
+        }
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.focusRegion(group.id)
+        show.send(.editSeek, value: 23)
+        XCTAssertEqual(show.tempoControlBPM, 146)
+        show.adjustTempo(1)
+        XCTAssertEqual(show.current?.markers?.first { $0.regionOwnerID == a.id }?.tempoBPM, 120)
+        XCTAssertEqual(show.current?.markers?.first { $0.regionOwnerID == b.id }?.tempoBPM, 147)
+        XCTAssertEqual(show.current?.markers?.first { $0.regionOwnerID == c.id }?.tempoBPM, 164)
+    }
     @MainActor func testAutomaticSubplaySecondsAndBarsPersistAndSwitchUnits() throws {
         var project = Project.demo()
         project.songs[0].parts = [Part(id: UUID(), name: "Next song", startTime: 0, endTime: 60)]
@@ -393,7 +414,59 @@ final class ProjectCursorTests: XCTestCase {
         marker.name = "Chorus"; show.setMarker(marker)
         XCTAssertEqual(show.current?.markers?.first?.name, "Chorus")
         XCTAssertTrue(show.canCreateMarker(at: 11))
-        XCTAssertTrue(show.canCreateMarker(at: 10, tempo: true), "tempo lane and normal markers can coincide")
+        XCTAssertFalse(show.canCreateMarker(at: 10, tempo: true), "tempo and normal markers cannot share a position")
+    }
+    @MainActor func testEveryMarkerKindBlocksCreationAtItsPosition() throws {
+        let kinds = [
+            TimelineMarker(id: UUID(), name: "Cue", position: 10, color: 0),
+            TimelineMarker(id: UUID(), name: "$Verse", position: 10, color: 0),
+            TimelineMarker(id: UUID(), name: "*Loop", position: 10, color: 0),
+            TimelineMarker(id: UUID(), name: "TEMPO", position: 10, color: 0,
+                           tempoBPM: 120, tempoBeats: 4, tempoUnit: 4)
+        ]
+        for var existing in kinds {
+            existing.applySectionPrefix()
+            for candidate in kinds {
+                var project = Project.empty(name: "Occupied marker position")
+                project.songs[0].parts = [Part(id: UUID(), name: "Song", startTime: 0, endTime: 60)]
+                project.songs[0].markers = [existing]
+                let executor = CursorExecutor()
+                let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+                let before = show.current?.markers
+                let engineBefore = executor.project.songs[0].markers
+                XCTAssertFalse(show.canCreateMarker(at: 10, tempo: candidate.isTempo))
+                // Recheck at commit too: the form may have opened before the
+                // position became occupied, with minor floating-point drift.
+                var duplicate = candidate
+                duplicate.id = UUID(); duplicate.position += 0.0000005
+                show.setMarker(duplicate)
+                XCTAssertEqual(show.current?.markers, before)
+                XCTAssertEqual(executor.project.songs[0].markers, engineBefore)
+                XCTAssertFalse(show.hasUnsavedChanges)
+                XCTAssertEqual(show.modalNotice, "A marker already exists at this position.")
+                XCTAssertTrue(show.canCreateMarker(at: 11, tempo: candidate.isTempo))
+            }
+        }
+    }
+    @MainActor func testCreatingTempoDoesNotGenerateAnotherMarkerAtOccupiedOrigin() throws {
+        for name in ["Start", "$Verse", "*Loop"] {
+            var project = Project.empty(name: "Occupied origin")
+            project.songs[0].parts = [Part(id: UUID(), name: "Song", startTime: 0, endTime: 60)]
+            var origin = TimelineMarker(id: UUID(), name: name, position: 0, color: 0)
+            origin.applySectionPrefix()
+            project.songs[0].markers = [origin]
+            let executor = CursorExecutor()
+            let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+            let tempo = TimelineMarker(id: UUID(), name: "TEMPO", position: 10, color: 0,
+                                       tempoBPM: 120, tempoBeats: 4, tempoUnit: 4)
+            show.setMarker(tempo)
+            let markers = try XCTUnwrap(show.current?.markers)
+            XCTAssertEqual(markers.count, 2)
+            XCTAssertEqual(markers.filter { abs($0.position) < 0.000001 }.map(\.id), [origin.id])
+            XCTAssertTrue(markers.contains { $0.id == tempo.id })
+            XCTAssertEqual(executor.project.songs[0].markers?.count, 2)
+            XCTAssertTrue(show.hasUnsavedChanges)
+        }
     }
     @MainActor func testTempoButtonsEditMarkerUnderGreenCursorAndPreserveOtherTiming() throws {
         var project = Project.empty(name: "Tempo buttons")

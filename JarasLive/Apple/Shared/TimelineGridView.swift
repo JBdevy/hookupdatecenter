@@ -2643,6 +2643,7 @@ private final class NativeTimelineHeaderText: NSObject {
         if value?.movementLocked == true || configuration?.song.id != value?.song.id || !(value?.song.markers ?? []).contains(where: { $0.id == preview?.id }) {
             preview = nil
         }
+        if let preview, (value?.song.markers ?? []).contains(where: { $0.id == preview.id && abs($0.position - preview.position) < 0.0000001 }) { self.preview = nil }
         let nextIDs = Set((value?.song.markers ?? []).map(\.id))
         for id in Array(markerInputs.keys) where !nextIDs.contains(id) {
             if hoveredMarkerID == id { clearMarkerPointer() }
@@ -2838,7 +2839,7 @@ private final class NativeTimelineHeaderText: NSObject {
             var moved = marker
             moved.position = value.song.markerDragPosition(marker, to: max(0, marker.position + Double(delta) / scale),
                 pixelsPerSecond: scale, free: !TimelineSnapPreference.enabled || NSEvent.modifierFlags.contains(.shift))
-            if ended { value.move(moved); self.preview = nil }
+            if ended { self.preview = moved; value.move(moved) }
             else { self.preview = moved }
             self.prepareMarkers(); self.reproject()
         } : nil
@@ -6750,12 +6751,15 @@ private struct TimelineDraggableMarkerLayer: View {
                     var moved = marker
                     let position = max(0, marker.position + Double(delta) / scale)
                     moved.position = song.markerDragPosition(marker, to: position, pixelsPerSecond: scale, free: !TimelineSnapPreference.enabled || NSEvent.modifierFlags.contains(.shift))
-                    if ended { move(moved); preview = nil }
+                    if ended { preview = moved; move(moved) }
                     else { preview = moved }
                 })
                 .frame(maxWidth: .infinity, alignment: .leading).frame(height: markerLaneHeight)
             }
         }.onChange(of: song.id) { _ in preview = nil }
+        .onChange(of: song.markers) { markers in
+            if let preview, !(markers ?? []).contains(where: { $0.id == preview.id && abs($0.position - preview.position) >= 0.0000001 }) { self.preview = nil }
+        }
     }
 }
 

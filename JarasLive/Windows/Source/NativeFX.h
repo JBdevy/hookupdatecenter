@@ -37,6 +37,7 @@ public:
                  const Dispatcher &pluginDispatcher = {}, const File &mediaDirectory = {});
     void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN());
     bool hasExternal() const;
+    bool empty() const noexcept { return effects.empty(); }
     std::shared_ptr<analysis::Capture> eqAnalysis(const String &key) const;
     void applyAutomation(const AutomationProgram &, double time);
     unsigned latencyFrames() const;

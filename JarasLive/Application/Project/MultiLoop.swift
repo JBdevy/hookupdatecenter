@@ -146,6 +146,12 @@ public extension Song {
     /// real seek boundary even when no additional section marker exists.
     func nextSectionTrigger(for transport: TransportState) -> Double? {
         guard transport.playing, let region = sectionPlaybackRegion(for: transport) else { return nil }
+        if transport.queuedSectionMarkerId != nil, let id = transport.automaticSectionTriggerId {
+            guard let marker = markers?.first(where: { $0.id == id && $0.isSection }),
+                  marker.position > transport.position + 1e-9,
+                  marker.position <= (transport.ignoreNextEnd ?? region.endTime) else { return nil }
+            return marker.position
+        }
         var trigger = transport.ignoreNextEnd ?? region.endTime
         guard trigger > transport.position + 1e-9 else { return nil }
         for marker in markers ?? [] where marker.isSection && !marker.isTempo {

@@ -67,6 +67,9 @@ public:
     std::optional<double> nextSectionTrigger() const;
 private:
     void advanceWithoutLiveTracking(double elapsed);
+    std::vector<ID> automaticSectionHandled_;
+    double automaticSectionLastPosition_ = -1;
+    std::optional<ID> automaticSectionSong_;
     void recordLivePlayback(const TransportState& before, double elapsed);
     void normalizeLiveMarks();
     std::vector<std::pair<ID, double>> liveElapsedByRegion_;

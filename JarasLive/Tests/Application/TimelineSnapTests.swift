@@ -2,6 +2,17 @@ import XCTest
 @testable import JarasApplication
 
 final class TimelineSnapTests: XCTestCase {
+    func testDistantGridSnapsToSecondaryLinesWithoutZooming() {
+        var song = Project.empty(name: "Secondary grid").songs[0]
+        song.bpm = 120; song.duration = 10000; song.parts = []; song.markers = []
+        for scale in [0.05, 0.3, 1, 3, 10, 20] {
+            let major = 2 * Double(TimelineTempo.barStride(bar: 2, pixelsPerSecond: scale))
+            let secondary = major * 2.5
+            for offset in [-0.1, 0.1] {
+                XCTAssertEqual(TimelineTempo.snap(secondary + offset, song: song, pixelsPerSecond: scale), secondary, accuracy: 0.000001)
+            }
+        }
+    }
     func testFreeCursorPositionIgnoresGridAndEveryMagneticAnchor() {
         for scale in [0.16, 1, 100, 10_000] {
             for position in [30.18, 39.29, 42.13, 123.456789] {
@@ -17,7 +28,7 @@ final class TimelineSnapTests: XCTestCase {
     func testGridStaysReadableAndSnapMatchesVisibleLinesAcrossZoom() {
         for scale in [0.05, 0.3, 1, 3, 10, 20, 40, 100, 500] {
             let step = TimelineTempo.gridStep(bar: 2, beats: 4, pixelsPerSecond: scale)
-            XCTAssertGreaterThanOrEqual(step * scale, 16)
+            XCTAssertGreaterThanOrEqual(step * scale, 8)
             let major = 2 * Double(TimelineTempo.barStride(bar: 2, pixelsPerSecond: scale))
             XCTAssertGreaterThanOrEqual(major * scale, 16)
             let snapped = TimelineTempo.snap(123.456, bar: 2, beats: 4, pixelsPerSecond: scale)

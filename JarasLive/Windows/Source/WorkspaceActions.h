@@ -161,13 +161,9 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         else
             showTeleprompter();
     } else if (action == "splitItems") {
-        const auto songID = song->id, chosen = selectedClip;
-        const auto at = session.transport().editPosition;
-        session.edit([&](jaras::Project &p) {
-            for (auto &s : p.songs)
-                if (s.id == songID)
-                    clipEditing::split(s, chosen, at);
-        });
+        auto selection = selectedClips;
+        if (selection.empty() && !selectedClip.empty()) selection.insert(selectedClip);
+        session.splitClips(selection, session.transport().editPosition);
     } else if (action == "normalizeItems") {
         if (selectedClip.empty())
             return;

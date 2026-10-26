@@ -79,14 +79,15 @@ template<class A> void archive(A &a, Frame &f, std::uint64_t version = 3) {
     if (version >= 3) { a(t.playlistEntryId); a(t.queuedPlaylistEntryId); }
 }
 inline std::vector<unsigned char> encode(Frame value) {
-    Writer w; std::uint64_t version=3; w(version); archive(w,value);
+    Writer w; std::uint64_t version=value.transport.automaticSectionTriggerId ? 4 : 3; w(version); archive(w,value,version);
+    if(version>=4) w(value.transport.automaticSectionTriggerId);
     if(w.bytes.size()>131072) throw std::invalid_argument("Project Sync frame too large"); return w.bytes;
 }
 inline Frame decode(const void *data,size_t size) {
     if(size>131072) throw std::invalid_argument("Project Sync frame too large");
     Reader r{(const unsigned char*)data,size}; std::uint64_t version; r(version);
-    if(version!=2 && version!=3) throw std::invalid_argument("Unsupported Project Sync version");
-    Frame f; archive(r,f,version); if(r.offset!=size) throw std::invalid_argument("Trailing Project Sync data"); return f;
+    if(version!=2 && version!=3 && version!=4) throw std::invalid_argument("Unsupported Project Sync version");
+    Frame f; archive(r,f,version); if(version>=4) r(f.transport.automaticSectionTriggerId); if(r.offset!=size) throw std::invalid_argument("Trailing Project Sync data"); return f;
 }
 inline bool sameID(const ID &a,const ID &b) {
     auto normalized=[](const ID &v) { ID r; for(unsigned char c:v) if(c!='-') r.push_back(char(std::toupper(c))); return r; };

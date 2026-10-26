@@ -183,7 +183,7 @@ class Presentation final {
         put(result, "masterSolo", p.masterSolo);
         put(result, "masterMono", p.masterMono);
         put(result, "pendingSave", session.dirty);
-        put(result, "saving", session.busy);
+        put(result, "saving", session.busy || session.isSaving());
         put(result, "message", String());
         put(result, "multiLoopsBypassed", t.multiLoopsBypassed);
         put(result, "setlistLiveEnabled", setlist.liveEnabled.value_or(false));
@@ -342,7 +342,7 @@ class Presentation final {
         if (a=="deleteRegion") {
             if(region==song->parts.end() || (selected && selected->isDuplicate(occurrence))) return false;
             const auto sourceID=region->id,songID=song->id;
-            session.edit([&](auto &project){regionEditing::erase(project,songID,{sourceID},true);});return true;
+            session.editTimeline([&](auto &project){regionEditing::erase(project,songID,{sourceID},true);});return true;
         }
         if (a == "save") {
             if (save)

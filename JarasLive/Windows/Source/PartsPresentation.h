@@ -26,6 +26,12 @@ inline std::optional<double> trigger(const jaras::Song &song, const jaras::Part 
     // its countdown target merely because the audible cursor trails the core.
     const double position = state.queuedSectionMarkerId
         ? std::max(state.position, state.sectionQueueStartedAt) : state.position;
+    if (state.queuedSectionMarkerId && state.automaticSectionTriggerId) {
+        if (song.markers) for (const auto &marker : *song.markers)
+            if (marker.id == *state.automaticSectionTriggerId && marker.section.value_or(false) &&
+                marker.position > position + 1e-9 && marker.position <= end(part,state)) return marker.position;
+        return {};
+    }
     double next = end(part, state);
     if (next <= position + 1e-9) return {};
     if (song.markers) for (const auto &marker : *song.markers) {

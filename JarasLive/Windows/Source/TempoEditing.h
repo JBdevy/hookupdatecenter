@@ -11,7 +11,15 @@ inline const jaras::TimelineMarker *active(const jaras::Song &song, double posit
 }
 inline const jaras::Part *region(const jaras::Song &song, const jaras::TransportState &state) {
     if (!state.playing) {
-        for (const auto &part : song.parts) if (state.regionId == part.id) return &part;
+        for (const auto &part : song.parts) if (state.regionId == part.id) {
+            const jaras::Part *child = nullptr, *first = nullptr;
+            for (const auto &candidate : song.parts) if (candidate.parentRegionID == part.id) {
+                if (!first || candidate.startTime < first->startTime) first = &candidate;
+                if (candidate.startTime <= state.editPosition && state.editPosition < candidate.endTime &&
+                    (!child || candidate.startTime > child->startTime)) child = &candidate;
+            }
+            return child ? child : first ? first : &part;
+        }
         return nullptr;
     }
     const jaras::Part *result = nullptr;

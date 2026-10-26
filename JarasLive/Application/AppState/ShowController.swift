@@ -1433,7 +1433,11 @@ public struct ShowTimelinePresentationState: Equatable {
     private var tempoControlRegion: Part? {
         guard let song = current else { return nil }
         if snapshot.transport.playing { return song.sectionRegion(at: snapshot.transport.position) }
-        return song.parts.first { $0.id == (focusedRegion.map(playlistRegionSourceID) ?? snapshot.transport.regionId) }
+        guard let selected = song.parts.first(where: { $0.id == (focusedRegion.map(playlistRegionSourceID) ?? snapshot.transport.regionId) }) else { return nil }
+        let children = song.parts.filter { $0.parentRegionID == selected.id }.sorted { $0.startTime < $1.startTime }
+        guard !children.isEmpty else { return selected }
+        let position = snapshot.transport.editPosition ?? snapshot.transport.position
+        return children.last { $0.startTime <= position && position < $0.endTime } ?? children.first
     }
     private var tempoControlPosition: Double {
         let position = snapshot.transport.playing ? snapshot.transport.position : snapshot.transport.editPosition ?? snapshot.transport.position
@@ -3090,11 +3094,21 @@ public struct ShowTimelinePresentationState: Equatable {
             return current?.parts.first(where: { $0.id == region })?.multiLoops == loops
         } catch { message = error.localizedDescription; return false }
     }
-    @discardableResult public func canCreateMarker(at position: Double, tempo: Bool = false) -> Bool {
-        guard current?.markers?.contains(where: { $0.isTempo == tempo && abs($0.position - position) < 0.000001 }) != true else {
+    @discardableResult public func canCreateMarker(at position: Double, tempo _: Bool = false) -> Bool {
+        // All marker kinds share the same timeline position, including tempo cues.
+        guard current?.markers?.contains(where: { abs($0.position - position) < 0.000001 }) != true else {
             modalNotice = "A marker already exists at this position."; return false
         }
         return true
+    }
+    public func setAutomaticSectionTarget(source: UUID, target: UUID?) {
+        guard let song = current, song.markers?.contains(where: { $0.id == source && $0.isSection }) == true else { return }
+        if let target, target == source || song.markers?.contains(where: { $0.id == target && $0.isSection }) != true { return }
+        editProject { project in
+            guard let s = project.songs.firstIndex(where: { $0.id == song.id }),
+                  let m = project.songs[s].markers?.firstIndex(where: { $0.id == source }) else { return }
+            project.songs[s].markers?[m].automaticSectionTargetID = target
+        }
     }
     public func setMarker(_ marker: TimelineMarker) {
         guard canControl(), !finishing, let song = snapshot.project.songs.firstIndex(where: { $0.id == snapshot.transport.songId }) else { return }
@@ -3134,7 +3148,8 @@ public struct ShowTimelinePresentationState: Equatable {
                 let map = TempoEditMap(before: beforeTempoEdit, after: snapshot.project.songs[song])
                 map.apply(to: &snapshot.project.songs[song]); map.apply(to: &snapshot.transport)
             }
-            if value.isTempo, let initial = snapshot.project.songs[song].initialTempoMarkerIfNeeded {
+            if value.isTempo, let initial = snapshot.project.songs[song].initialTempoMarkerIfNeeded,
+               snapshot.project.songs[song].markers?.contains(where: { abs($0.position - initial.position) < 0.000001 }) != true {
                 try executor.setTempoMarkers([initial])
                 snapshot.project.songs[song].markers!.insert(initial, at: 0)
             }

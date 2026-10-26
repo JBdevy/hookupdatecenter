@@ -21,6 +21,39 @@ inline jaras::TimelineMarker typed(const jaras::Song &song, const String &name, 
     return markerEditing::prepare(song, marker);
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Automatic section editor reveals its source song without changing the project", [&] {
+        jaras::Project p;p.id=uuid();p.name="Long song list";jaras::Song song;song.id=uuid();song.name="Arrangement";song.duration=700;
+        for(int i=0;i<60;++i)song.parts.push_back({uuid(),"Song "+std::to_string(i),double(i*10),double(i*10+10)});
+        auto marker=typed(song,"$Cue",595);song.markers=std::vector<jaras::TimelineMarker>{marker};p.songs={song};
+        Session session;session.inspection=true;session.restoreSnapshot(ProjectCodec::encode(p));
+        const auto before=JSON::toString(session.snapshot());String failure;
+        AutomaticSectionPanel editor(session,marker.id,[&](String s){failure=s;});editor.setSize(660,420);
+        auto* left=dynamic_cast<ListBox*>(editor.getChildComponent(0));
+        require(left && left->getViewport()->getViewPositionY()>0,"Source song was left outside the visible list");
+        require(failure.isEmpty() && JSON::toString(session.snapshot())==before,"Opening the editor changed the project");
+    });
+
+    test("Automatic section arms once and manual cancellation or replacement wins", [&] {
+        jaras::Project p;p.id=uuid();p.name="Auto sections";
+        jaras::Song song;song.id=uuid();song.name="Arrangement";song.duration=80;
+        song.parts={{uuid(),"First",0,40},{uuid(),"Second",40,80}};
+        auto source=typed(song,"$Source",10),target=typed(song,"$Target",50),other=typed(song,"$Other",60);
+        source.automaticSectionTargetID=target.id;song.markers=std::vector<jaras::TimelineMarker>{source,target,other};p.songs={song};
+        jaras::Engine core;core.loadProject(p);core.execute({jaras::CommandKind::play});core.advance(5.1);
+        require(core.transport().queuedSectionMarkerId==target.id,"Automatic destination was not queued at warning time");
+        core.execute({jaras::CommandKind::cancelSection});core.advance(5);
+        require(!core.transport().queuedSectionMarkerId && std::abs(core.transport().position-10.1)<1e-7,"Automatic queue ignored cancellation");
+        core.execute({jaras::CommandKind::seek,{},0});core.advance(5.1);
+        core.execute({jaras::CommandKind::queueSection,other.id});core.advance(5);
+        require(std::abs(core.transport().position-60.1)<1e-7,"Automatic queue overrode manual replacement");
+        auto earlier=typed(song,"$Earlier",8);p.songs.front().markers->push_back(earlier);
+        jaras::Engine close;close.loadProject(p);close.execute({jaras::CommandKind::play});close.advance(5.1);
+        require(close.nextSectionTrigger()==10 && partsPresentation::trigger(*close.currentSong(),close.currentSong()->parts.front(),close.transport())==10,
+                "Close markers changed the automatic jump or remote warning boundary");
+        close.advance(3);require(std::abs(close.transport().position-8.1)<1e-7,"Jump happened at the preceding marker");
+        close.advance(2);require(std::abs(close.transport().position-50.1)<1e-7,"Configured jump boundary was missed");
+    });
+
     test("REAPER special tracks normalize names, solo and folders like the Mac importer", [&] {
         auto result = read(directory,
             "<TRACK {GROUP}\nNAME \"Audio Group\"\nISBUS 1 1\n>\n"

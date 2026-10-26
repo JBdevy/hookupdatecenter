@@ -281,7 +281,7 @@ struct WorkspaceLayoutTests {
         const auto payload = rows->getModel()->getDragSourceDescription(rows->getSelectedRows());
         require(list(get(payload, "ids")).size() == 1 && list(get(payload, "ids"))[0].toString() == text(block),
                 "Block row is excluded from its drag payload");
-        require(rows->createDragPreview().getImage().getHeight() == 28, "Block drag has no correctly sized preview");
+        require(rows->createDragPreview().getImage().getHeight() == 34, "Block drag must use the same compact title strip as songs");
         auto *target = dynamic_cast<DragAndDropTarget *>(panel); require(target, "Setlist drop target is missing");
         const auto priorDrag = JSON::toString(session.snapshot());
         const auto end = panel->getLocalPoint(rows, Point<int>(20, rows->rowTop(3) + 6));

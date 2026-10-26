@@ -400,6 +400,7 @@ public extension Project {
     mutating func splitItems(_ ids: Set<UUID>, at position: Double) {
         guard position.isFinite else { return }
         for song in songs.indices {
+            var tempoPrograms = AudioTempoPrograms(song: songs[song])
             for track in songs[song].tracks.indices where songs[song].tracks[track].kind != .timecode {
                 let textTrack = songs[song].tracks[track].kind.isText
                 songs[song].tracks[track].clips = songs[song].tracks[track].clips.flatMap { clip -> [AudioClip] in
@@ -408,8 +409,18 @@ public extension Project {
                     left.duration = position - clip.startTime
                     right.id = UUID(); right.startTime = position; right.duration = clip.duration - left.duration
                     if textTrack && !clip.isProjectionMedia && clip.loopLength == nil { return [left, right] }
-                    right.sourceOffset += left.duration * clip.audioRate
-                    let fraction = left.duration / clip.duration
+                    let followsTempo = !textTrack || clip.isProjectionMedia
+                    let fragments = followsTempo ? tempoPrograms.fragments(for: clip) : [clip]
+                    let consumedSource = fragments.reduce(0.0) { result, fragment in
+                        result + max(0, min(position, fragment.startTime + fragment.duration) - fragment.startTime) * fragment.audioRate
+                    }
+                    let sourceLength = fragments.reduce(0.0) { $0 + $1.duration * $1.audioRate }
+                    right.sourceOffset += consumedSource
+                    // A split creates an uninterrupted internal edge. Keep the
+                    // original outer fades without copying them onto that edge.
+                    left.fadeOut = nil; left.fadeOutCurve = nil; left.fadeOutSCurve = nil
+                    right.fadeIn = nil; right.fadeInCurve = nil; right.fadeInSCurve = nil
+                    let fraction = sourceLength > 0 ? consumedSource / sourceLength : left.duration / clip.duration
                     func pieces(_ peaks: [Double]) -> ([Double], [Double]) {
                         let cut = min(peaks.count, max(0, Int((Double(peaks.count) * fraction).rounded())))
                         return (Array(peaks.prefix(cut)), Array(peaks.dropFirst(cut)))

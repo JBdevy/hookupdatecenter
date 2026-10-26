@@ -172,9 +172,19 @@ public:
     void apply(Song& song) const {
         if(!changesTime()) return;
         for(auto& track:song.tracks) for(auto& clip:track.clips) {
+            const double previousDuration=clip.duration;
             const double start=position(clip.startTime),end=position(clip.startTime+clip.duration);
             const auto onset=clipStarts.find(clip.id);clip.startTime=onset==clipStarts.end()?start:onset->second;
             const auto duration=clipDurations.find(clip.id);clip.duration=duration==clipDurations.end()?end-start:duration->second;
+            // Printed audio already contains its old tempo map. Apply only this
+            // edit's relative change; replaying the marker/reference ratio would
+            // stretch the baked audio twice, while ignoring it truncates the tail.
+            if((clip.renderedTempo.value_or(false) || clip.renderedTiming.value_or(false) ||
+                clip.frozenMIDI.value_or(false)) && previousDuration>0 && clip.duration>0 &&
+                std::abs(previousDuration-clip.duration)>1e-12) {
+                if(!clip.tempoBasePlaybackRate) clip.tempoBasePlaybackRate=clip.playbackRate;
+                clip.playbackRate*=previousDuration/clip.duration;
+            }
         }
         for(auto& part:song.parts) {
             part.startTime=position(part.startTime);const auto duration=regionDurations.find(part.id);

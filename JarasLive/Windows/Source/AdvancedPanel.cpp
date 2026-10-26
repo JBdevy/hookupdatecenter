@@ -242,7 +242,7 @@ void AdvancedPanel::select(int index) {
                     ModalCallbackFunction::create([safe,kind,projectID,songID](int result) {
                         if(safe)safe->grabKeyboardFocus();
                         if(!safe || result!=1 || safe->session.project().id!=projectID || !safe->session.song() || safe->session.song()->id!=songID)return;
-                        try {safe->session.edit([&](auto &project){timelineBulk::erase(project,songID,kind);},true,kind==timelineBulk::Kind::tempo);}
+                        try {safe->session.editTimeline([&](auto &project){timelineBulk::erase(project,songID,kind);},kind==timelineBulk::Kind::tempo);}
                         catch(const std::exception &e){if(safe->error)safe->error(String::fromUTF8(e.what()));}
                     }));
             };

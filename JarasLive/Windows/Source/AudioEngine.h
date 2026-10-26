@@ -95,6 +95,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void previewMIDIItem(const jaras::Song &,const jaras::AudioClip &);
     void refreshItemTiming(const jaras::Song &, const jaras::AudioClip &);
     bool refreshItemPresence(const jaras::Song &);
+    bool cacheSplitItems(const jaras::Song &, const std::map<ID, ID> &);
     void setItemControls(const jaras::AudioClip &);
     void setMixer(const jaras::Project &, const jaras::Song &);
     bool refreshTrackRouting(const jaras::Song &);

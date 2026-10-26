@@ -1032,6 +1032,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var splittingItems: (project: UUID, song: UUID, ids: Set<UUID>, position: Double)?
     @State private var nativeNormalization = false
     @State private var nativeMarker: TimelineMarker?
+    @State private var automaticSectionSource: UUID?
     @State private var configInitRegion: UUID?
     @State private var autoSettings = false
     @State private var unifyingRegion: UUID?
@@ -1236,7 +1237,11 @@ private struct RemoteSidebarRail<Content: View>: View {
             } }
         }
         .overlay {
-            if let id = configInitRegion, let show = localShow {
+            if let source = automaticSectionSource, let show = localShow {
+                IpadCompactModal(preferredSize: CGSize(width: 700, height: 500)) {
+                    AutomaticSectionEditor(show: show, source: source, close: { automaticSectionSource = nil })
+                }
+            } else if let id = configInitRegion, let show = localShow {
                 IpadCompactModal { IpadRegionInitEditor(show: show, id: id, close: { configInitRegion = nil }) }
             } else if autoSettings, let show = localShow {
                 IpadCompactModal { IpadAutoQueueEditor(show: show, close: { autoSettings = false }) }
@@ -2240,7 +2245,8 @@ private struct RemoteSidebarRail<Content: View>: View {
             showsPosition: !secondary || state.subPlaying, positionRunning: secondary ? state.subPlaying : state.playing, queued: playback?.queuedMarker,
             trigger: playback?.nextTrigger, queueStartedAt: playback?.queueStartedAt, playbackPosition: state.position, playbackRunning: state.playing,
             select: { action(.queueSection, target: $0) }, verticalList: verticalSections,
-            regionID: region?.id, regionStart: region?.start ?? 0)
+            regionID: region?.id, regionStart: region?.start ?? 0,
+            editAutomatic: local ? { automaticSectionSource = $0 } : nil)
     }
     private var footer: some View {
         let displays = state.songDisplays
@@ -2825,11 +2831,14 @@ private struct RemoteSidebarRail<Content: View>: View {
                 if let toggleRegionStop {
                     Button(action: toggleRegionStop) {
                         Text(verbatim: "STOP").font(.jarasSystem(size: 9, weight: .bold))
-                            .foregroundStyle(stopsAtRegionEnd ? Color.red : JarasTheme.green)
+                            .foregroundStyle(stopsAtRegionEnd ? JarasTheme.green : Color.red)
                             .frame(width: local ? 40 : 38, height: local ? 30 : 26)
-                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(stopsAtRegionEnd ? Color.red : JarasTheme.green))
-                    }.buttonStyle(RemoteFullAreaButtonStyle()).accessibilityLabel("STOP")
-                        .accessibilityValue(stopsAtRegionEnd ? "On" : "Off")
+                            .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 4))
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(stopsAtRegionEnd ? JarasTheme.green : Color.red))
+                    }.buttonStyle(RemoteFullAreaButtonStyle())
+                        .modifier(JarasBlink(active: stopsAtRegionEnd, interval: 0.55))
+                        .accessibilityLabel("Region stop").accessibilityValue(stopsAtRegionEnd ? "On" : "Off")
+                        .jarasHelp("Stop automatically at the end of each region")
                 }
             }
             ScrollViewReader { scroll in
@@ -2892,10 +2901,6 @@ private struct RemoteSidebarRail<Content: View>: View {
                     }
                 }.onChange(of: state.focusedRegion) { id in
                     if let id { scroll.scrollTo(id, anchor: .center) }
-                }.onChange(of: expandedRegions) { expanded in
-                    if let parent = drawerRegion?.id, expanded.contains(parent) {
-                        withAnimation(.easeOut(duration: 0.16)) { scroll.scrollTo(parent, anchor: .top) }
-                    }
                 }
             }
             if UIDevice.current.userInterfaceIdiom != .phone { setlistControls }
@@ -3950,7 +3955,12 @@ private struct RemoteNativeTimeline: View {
                 }
             }
         }.frame(height: 16).clipped().contentShape(Rectangle())
-            .contextMenu { if local { Button("Tempo marker") { createMarker(tempo: true) } } }
+            .contextMenu {
+                if local {
+                    Button("Create marker") { createMarker() }
+                    Button("Tempo marker") { createMarker(tempo: true) }
+                }
+            }
             .onTapGesture { pauseFollowing(); selectedRegionID = nil }.accessibilityLabel("BPM / Compasso")
     }
     private func regionDestination(_ id: UUID, original: Double, translation: Double, width: Double) -> Double {
@@ -4050,8 +4060,7 @@ private struct RemoteNativeTimeline: View {
         }.frame(height: RemoteNativeGridMetrics.markerHeight(local: local)).clipped().contentShape(Rectangle())
             .contextMenu {
                 if local {
-                    Button("Editar marcador") { createMarker() }
-                    Button("Section marker") { createMarker(section: true) }
+                    Button("Create marker") { createMarker() }
                     Button("Tempo marker") { createMarker(tempo: true) }
                 }
             }
@@ -4065,14 +4074,14 @@ private struct RemoteNativeTimeline: View {
                 Button("Delete", role: .destructive) { localShow?.deleteManualMarker(marker.id) }
             }.accessibilityLabel(marker.name)
     }
-    private func createMarker(section: Bool = false, tempo: Bool = false) {
+    private func createMarker(tempo: Bool = false) {
         guard let show = localShow, let song = show.current else { return }
         let time = show.snapshot.transport.editPosition ?? position
-        guard show.canCreateMarker(at: time, tempo: tempo), !section || show.canCreateSectionMarker(at: time) else { return }
+        guard show.canCreateMarker(at: time, tempo: tempo) else { return }
         let settings = song.tempoSection(at: time)
         openMarkerEditor?(TimelineMarker(id: UUID(), name: tempo ? "TEMPO" : "", position: time, color: 0x51ef93,
             tempoBPM: tempo ? settings.bpm : nil, tempoBeats: tempo ? settings.beats : nil,
-            tempoUnit: tempo ? settings.unit : nil, tempoTimebase: tempo ? .global : nil, section: section ? true : nil))
+            tempoUnit: tempo ? settings.unit : nil, tempoTimebase: tempo ? .global : nil))
     }
     private func cursor(width: CGFloat) -> some View {
         ZStack(alignment: .leading) {

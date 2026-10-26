@@ -218,6 +218,7 @@ void AudioEngine::previewMIDIItem(const jaras::Song &song,const jaras::AudioClip
             voice->start=clip.startTime;voice->duration=clip.duration;
             voice->offset=clip.sourceOffset;voice->speed=clip.playbackRate;
             voice->playbackStart=jaras::playbackItemStart(song,clip);
+            voice->fadeIn=clip.fadeIn.value_or(0); voice->fadeOut=clip.fadeOut.value_or(0);
             for(auto &expected:voice->midiExpected)expected=-2;
         }
         for(size_t index=0;index<buses.size();++index)if(updateShared&&buses[index]->id==track.id){
@@ -226,6 +227,41 @@ void AudioEngine::previewMIDIItem(const jaras::Song &song,const jaras::AudioClip
         if(preparedLatency){latencyPlan.swap(preparedLatency);publishLatency();}
         return;
     }
+}
+bool AudioEngine::cacheSplitItems(const jaras::Song &song, const std::map<ID, ID> &sources) {
+    if (sources.empty()) return true;
+    std::vector<std::unique_ptr<Voice>> added;
+    std::set<ID> newIDs = preparedItemIDs;
+    for (const auto &track : song.tracks) for (const auto &clip : track.clips) {
+        const auto sourceID = sources.find(clip.id);
+        if (sourceID == sources.end()) continue;
+        const Voice *original = nullptr;
+        for (const auto &voice : voices) if (voice->clipID == sourceID->second) { original = voice.get(); break; }
+        if (!original) {
+            if (!preparedItemIDs.count(sourceID->second)) return false;
+            newIDs.insert(clip.id); continue; // visual-only or missing media
+        }
+        if (original->midiItem || original->clipAudio || !original->fx[0].empty() || !original->fx[1].empty() || ClipAudio::needed(song, track, clip)) return false;
+        auto voice = std::make_unique<Voice>();
+        voice->track=track.id; voice->clipID=clip.id; voice->source=original->source; voice->bus=original->bus;
+        voice->start=clip.startTime; voice->duration=clip.duration; voice->offset=clip.sourceOffset; voice->speed=clip.playbackRate;
+        voice->playbackStart=jaras::playbackItemStart(song,clip);
+        voice->clipGain=original->clipGain; voice->clipPan=original->clipPan; voice->channelMode=original->channelMode;
+        voice->fadeIn=clip.fadeIn.value_or(0); voice->fadeOut=clip.fadeOut.value_or(0); voice->fadeInShape=original->fadeInShape; voice->fadeOutShape=original->fadeOutShape;
+        voice->volume=original->volume; voice->pan=original->pan; voice->mute=original->mute; voice->solo=original->solo;
+        voice->itemMuted=original->itemMuted; voice->fxBypassed=original->fxBypassed; voice->frozen=original->frozen;
+        voice->firstOutput=original->firstOutput; voice->outputChannels=original->outputChannels;
+        voice->automation.prepare(clip.automationJSON ? JSON::parse(text(*clip.automationJSON)) : var(),true);
+        for(int h=0;h<2;++h){voice->processed[h].setSize(2,4096);voice->fx[h].prepare({},rate.load());}
+        newIDs.insert(clip.id); added.push_back(std::move(voice));
+    }
+    // Cache until refreshItemPresence publishes all halves atomically.
+    removedItemVoices.reserve(removedItemVoices.size()+added.size());
+    { const ScopedLock lock(devices.getAudioCallbackLock());
+      for(auto& voice:added) removedItemVoices.push_back(std::move(voice));
+      preparedItemIDs.swap(newIDs);
+    }
+    return true;
 }
 bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
     if (song.tracks.size() != buses.size()) return false;
@@ -248,6 +284,10 @@ bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
     std::map<ID, Voice *> available;
     for (const auto &voice : voices) available.emplace(voice->clipID, voice.get());
     for (const auto &voice : removedItemVoices) available.emplace(voice->clipID, voice.get());
+    for (const auto &entry : wanted) if (const auto found=available.find(entry.first);found!=available.end()) {
+        const auto &v=*found->second; const auto &c=*entry.second;
+        if ((v.midiItem || v.clipAudio) && (v.start!=c.startTime || v.duration!=c.duration || v.offset!=c.sourceOffset || v.speed!=c.playbackRate)) return false;
+    }
     std::vector<Voice *> active;
     active.reserve(wanted.size());
     for (const auto &track : song.tracks) for (const auto &clip : track.clips)
@@ -284,6 +324,12 @@ bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
         for (auto &voice : voices) if (voice) retired.push_back(std::move(voice));
         for (auto &voice : removedItemVoices) if (voice) retired.push_back(std::move(voice));
         voices.swap(next); removedItemVoices.swap(retired);
+        for (auto &voice : voices) if (const auto found=wanted.find(voice->clipID);found!=wanted.end()) {
+            const auto &clip=*found->second;
+            voice->start=clip.startTime; voice->duration=clip.duration; voice->offset=clip.sourceOffset; voice->speed=clip.playbackRate;
+            voice->playbackStart=jaras::playbackItemStart(song,clip);
+            voice->fadeIn=clip.fadeIn.value_or(0); voice->fadeOut=clip.fadeOut.value_or(0);
+        }
         for (auto &entry : midi) replaceSharedMIDI(entry.first, entry.second);
         for (auto &entry : clicks) buses[entry.first]->click->sections.swap(entry.second);
         if (timecode) std::swap(timecodeProgram, *timecode);
@@ -1360,10 +1406,27 @@ std::vector<AudioEngine::TransportRead> AudioEngine::transportReads(const State 
     for(int head=0;head<2;++head) {
         if(head==0?!state.playing:!state.subPlaying)continue;
         const double cursor=head==0?state.position:state.subPosition;
+        std::map<const Source*,std::vector<const Voice*>> activeSources;
+        for(const auto &voice:voices)
+            if(voice->source && state.scope[head].allows(voice->playbackStart) &&
+               voice->start<=cursor && voice->start+voice->duration>cursor)
+                activeSources[voice->source.get()].push_back(voice.get());
         for(const auto &voice:voices) {
             if(!voice->source || !state.scope[head].allows(voice->playbackStart))continue;
             const auto add=[&](double at,bool loop) {
                 if(voice->start>at+(loop?0:2) || voice->start+voice->duration<=at)return;
+                // Continuous cut halves share the same physical source clock.
+                // Their forward read-ahead is already covered by the active half;
+                // reserving the future half would replace PCM needed at Play.
+                // Different trims/offsets and processed mappings still prefetch.
+                if(!loop && voice->start>at && !voice->clipAudio) {
+                    const auto active=activeSources.find(voice->source.get());
+                    if(active!=activeSources.end() && std::any_of(active->second.begin(),active->second.end(),[&](const Voice* previous) {
+                        return !previous->clipAudio && std::abs(previous->speed-voice->speed)<1e-9 &&
+                            std::abs(previous->offset+(voice->start-previous->start)*previous->speed-voice->offset)
+                                <.25/voice->source->readers[head]->sampleRate;
+                    }))return;
+                }
                 auto &reader=*voice->source->readers[head];
                 const double local=std::max(0.,at-voice->start);
                 auto range=voice->clipAudio?voice->clipAudio->readAheadRange(local,loop?.75:.15)

@@ -39,7 +39,7 @@ inline std::vector<double> clickBeats(const jaras::Song &song,const jaras::Audio
 }
 // Match TimelineTempo.snap: visible divisions plus region/marker/cursor anchors.
 inline double snap(double time, const jaras::Song &song, double scale, bool free,
-                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false, const std::set<ID> *excludedItems = nullptr, const ID *excludedRegion = nullptr) {
+                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false, const std::set<ID> *excludedItems = nullptr, const ID *excludedRegion = nullptr, const ID *excludedMarker = nullptr) {
     if (!std::isfinite(time) || !std::isfinite(scale) || scale <= 0) return 0;
     const double position=std::max(0.,time);
     if (free || !std::isfinite(scale) || scale<=0) return position;
@@ -57,13 +57,13 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
     if(divisions>0 && bar>0) {
         if(includeHiddenDivisions) step=bar/active.beats*active.unit/divisions;
         else if(bar*scale>=64) {step=bar/active.beats*active.unit/divisions;step*=std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,step*scale)))));}
-        else step=bar*std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,bar*scale)))));
+        else step=bar*std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,bar*scale)))))/2;
     }
     double nearest=0,distance=position;
     auto consider=[&](double anchor) {if(!std::isfinite(anchor)||anchor<0)return;const auto d=std::abs(anchor-position);if(d<distance||(d==distance&&anchor<nearest)){nearest=anchor;distance=d;}};
     if(step>0)consider(std::min(active.end,active.start+std::round((position-active.start)/step)*step));
     for(const auto &part:song.parts) if(!excludedRegion || part.id!=*excludedRegion){consider(part.startTime);consider(part.endTime);}
-    if(song.markers)for(const auto &marker:*song.markers)consider(marker.position);
+    if(song.markers)for(const auto &marker:*song.markers)if(!excludedMarker || marker.id!=*excludedMarker)consider(marker.position);
     if(includeItemEdges) for(const auto &track:song.tracks) for(const auto &clip:track.clips) if(!excludedItems||!excludedItems->count(clip.id)) {
         consider(clip.startTime);consider(clip.startTime+clip.duration);
     }
