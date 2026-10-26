@@ -58,12 +58,17 @@ struct WorkspaceSetlistPresentationTests {
                     workspace.getLocalBounds().contains(list->getBounds()) && !list->getBounds().intersects(grid),
                     "Docked Setlist overlaps or clips the timeline");
             if (side==Placement::left) {
-                require(list->getX()==32 && list->getRight()==workspace.tracksViewport.getX() &&
-                        workspace.tracksViewport.getRight()==grid.getX() && !workspace.partsLeftVisible,
+                require(list->getX()==32 && list->getRight()==workspace.setlistDivider.getX() &&
+                        workspace.setlistDivider.getWidth()==14 &&
+                        workspace.setlistDivider.getRight()==workspace.tracksViewport.getX() &&
+                        workspace.tracksViewport.getRight()==workspace.mixerDivider.getX() &&
+                        workspace.mixerDivider.getWidth()==20 && workspace.mixerDivider.getRight()==grid.getX() &&
+                        !workspace.partsLeftVisible,
                         "Left Setlist is not before the track mixer or did not close left Parts");
             } else {
-                require(workspace.tracksViewport.getX()==32 && list->getX()==grid.getRight(),
-                        "Right Setlist changed the track mixer origin or left a gap after the grid");
+                require(workspace.tracksViewport.getX()==32 && grid.getRight()==workspace.setlistDivider.getX() &&
+                        workspace.setlistDivider.getWidth()==14 && list->getX()==workspace.setlistDivider.getRight(),
+                        "Right Setlist changed the mixer origin or lost its reserved 14 px divider margin");
             }
             if (workspace.partsRightVisible)
                 require(right->isVisible() && right->getRight()==workspace.getWidth() &&
