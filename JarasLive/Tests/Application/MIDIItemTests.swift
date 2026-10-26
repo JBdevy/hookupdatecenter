@@ -340,3 +340,37 @@ extension MIDIItemTests {
         XCTAssertEqual(left.resized(start: 10, end: 12).midiPlaybackNotes(), original.midiPlaybackNotes())
     }
 }
+
+extension MIDIItemTests {
+    func testMIDIExportRoundTripRetainsTrimRateChannelsAndMutedNotes() throws {
+        var clip = AudioClip(id: UUID(), name: "Teclado ç", startTime: 30, duration: 1.5,
+            midi: MIDIItem(notes: [MIDINote(start: 0, length: 4, pitch: 60, velocity: 80, channel: 3),
+                                   MIDINote(start: 4, length: 4, pitch: 64, velocity: 100, channel: 16)]))
+        clip.sourceOffset = 1; clip.playbackRate = 2; clip.muted = true; clip.gain = 0
+        let file = try StandardMIDIFileImport.read(MIDIItemExport.data(for: clip))
+        let notes = file.tracks.flatMap(\.notes)
+        XCTAssertEqual(notes.count, 2)
+        XCTAssertEqual(notes.map(\.channel), [3, 16])
+        XCTAssertEqual(notes.map(\.velocity), [80, 100])
+        XCTAssertEqual(file.seconds(atBeat: notes[0].start), 0, accuracy: 0.001)
+        XCTAssertEqual(file.seconds(atBeat: notes[0].end), 0.5, accuracy: 0.001)
+        XCTAssertEqual(file.seconds(atBeat: notes[1].start), 0.5, accuracy: 0.001)
+        XCTAssertEqual(file.seconds(atBeat: notes[1].end), 1.5, accuracy: 0.001)
+    }
+    func testMIDIExportRepeatsAndEmptyItemAreReadable() throws {
+        var clip = AudioClip(id: UUID(), name: "Loop", startTime: 10, duration: 3,
+            midi: MIDIItem(notes: [MIDINote(start: 0, length: 1, pitch: 60)]))
+        clip.loopLength = 1
+        let file = try StandardMIDIFileImport.read(MIDIItemExport.data(for: clip))
+        XCTAssertEqual(file.tracks.flatMap(\.notes).count, 3)
+        clip.midi?.notes = []
+        XCTAssertNoThrow(try StandardMIDIFileImport.read(MIDIItemExport.data(for: clip)))
+    }
+    func testRecordingNamesStartWithPlainTrackNameAndSkipUsedNames() {
+        var names = RecordingNames(directory: nil, clips: [AudioClip(id: UUID(), name: "Piano - 001", startTime: 0, duration: 1)])
+        XCTAssertEqual(names.allocate(track: "Piano"), "Piano")
+        XCTAssertEqual(names.allocate(track: "Piano"), "Piano - 002")
+        XCTAssertEqual(names.allocate(track: "PIANO"), "PIANO - 003")
+        XCTAssertEqual(names.allocate(track: "Baixo"), "Baixo")
+    }
+}

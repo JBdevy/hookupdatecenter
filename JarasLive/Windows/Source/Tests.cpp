@@ -608,7 +608,7 @@ int runTests(const File &directory) {
         String warning;
         session.transportFadeoutWarning = [&](String value) { warning = value; };
         session.toggleTransportFadeout(true, {id}, 1);
-        expect(!session.transportFadeoutActive() && warning.isNotEmpty(), "Stopped transport accepted Fadeout");
+        expect(!session.transportFadeoutActive() && warning.isEmpty(), "Stopped transport must ignore Fadeout without showing a warning");
         session.command(jaras::CommandKind::play);
         session.toggleTransportFadeout(false, {id}, 1);
         expect(!session.transportFadeoutActive(), "Disabled Fadeout started");

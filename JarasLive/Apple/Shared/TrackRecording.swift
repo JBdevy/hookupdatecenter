@@ -314,6 +314,20 @@ private final class CaptureWriter: @unchecked Sendable {
             self.reconcileArming()
         }
     }
+    var recordingDisplayPosition: Double? {
+        guard recording, let show else { return nil }
+        let transport = show.timelinePlaybackTransport
+        let song = show.current
+        let region = song?.parts.first { $0.id == transport.regionId }
+        let boundary = region?.parentRegionID.flatMap { id in song?.parts.first { $0.id == id } }?.endTime ?? region?.endTime
+        #if os(macOS)
+        let elapsed = max(0, ProcessInfo.processInfo.systemUptime - show.timelinePlaybackSampleTime)
+        #else
+        let elapsed = 0.0
+        #endif
+        return TimelinePlaybackPresentation(transport: transport, elapsed: elapsed,
+            songDuration: song?.duration ?? 0, mainBoundary: boundary).mainPosition
+    }
     @Published private(set) var recording = false
     @Published private(set) var busy = false
     @Published var error = ""
@@ -322,7 +336,11 @@ private final class CaptureWriter: @unchecked Sendable {
     private var inputEngineRunning: Bool { mobileInput.running }
     #else
     private let captureEngine = AVAudioEngine()
-    private var inputEngineRunning: Bool { captureEngine.isRunning }
+    private var systemCapture: AnyObject?
+    private var inputEngineRunning: Bool {
+        if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback { return capture.running }
+        return captureEngine.isRunning
+    }
     #endif
     private func captureFormat() throws -> AVAudioFormat {
         #if os(iOS)
@@ -331,6 +349,7 @@ private final class CaptureWriter: @unchecked Sendable {
         }
         return format
         #else
+        if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback, let format = capture.format { return format }
         return captureEngine.inputNode.outputFormat(forBus: 0)
         #endif
     }
@@ -355,7 +374,7 @@ private final class CaptureWriter: @unchecked Sendable {
             armed.contains(track.id) && (track.fx?.instrumentKeys.isEmpty == false ||
                 (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false))
         }.map(\.id)))
-        let desired = inputChannels > 0 && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized ? tracks.filter {
+        let desired = inputChannels > 0 && (AudioDeviceSettings.shared.usesSystemLoopback || AVCaptureDevice.authorizationStatus(for: .audio) == .authorized) ? tracks.filter {
             armed.contains($0.id) && $0.role.rawValue != "vinhetas" && $0.recordingMode != .midi && $0.kind == .standard
         }.map { MonitorConfig(track: $0.id, patch: $0.inputPatch ?? defaultInputPatch, channels: $0.recordingChannels ?? 2) } : []
         guard desired != monitorConfig || desired.contains(where: { !playback.hasInputMonitor($0.track) }) else { return }
@@ -399,6 +418,14 @@ private final class CaptureWriter: @unchecked Sendable {
             do { try mobileInput.start() } catch { self.error = error.localizedDescription }
         }
         #else
+        if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback {
+            let ring = captureRing, rings = monitorRings
+            do { try capture.setCapture { buffer in
+                ring?.push(buffer)
+                for monitor in rings { monitor.push(buffer) }
+            } } catch { self.error = error.localizedDescription }
+            return
+        }
         let input = captureEngine.inputNode
         if tapInstalled { input.removeTap(onBus: 0); tapInstalled = false }
         guard let ring = captureRing else { return }
@@ -431,9 +458,15 @@ private final class CaptureWriter: @unchecked Sendable {
     private func configureInput(allowCaptureSetup: Bool = false) throws {
         #if os(macOS)
         let audio = AudioDeviceSettings.shared
-        guard let device = audio.inputDevice, device.hardwareID != 0 else {
+        guard let device = try audio.resolveInputDevice(), device.hardwareID != 0 else {
             releaseInput(); configuredInput = 0
             throw ProjectError.invalid(JarasLocalization.string("Choose an audio input device in Settings."))
+        }
+        if #available(macOS 14.2, *), audio.usesSystemLoopback, let capture = audio.loopback as? MacSystemLoopback {
+            if configuredInput != device.hardwareID || systemCapture !== capture {
+                releaseInput(); systemCapture = capture; configuredInput = device.hardwareID
+            }
+            return
         }
         var selected = device.hardwareID
         let canConfigure = (!recording && !busy) || (allowCaptureSetup && writer == nil)
@@ -492,6 +525,8 @@ private final class CaptureWriter: @unchecked Sendable {
               expectedDevice == nil || expectedDevice == device.hardwareID else {
             throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
         }
+        if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback,
+           audio.usesSystemLoopback, capture.device == device.hardwareID { return }
         guard let unit = captureEngine.inputNode.audioUnit,
               try actualInputDevice(unit) == device.hardwareID else {
             throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
@@ -508,6 +543,7 @@ private final class CaptureWriter: @unchecked Sendable {
         #if os(iOS)
         try mobileInput.start()
         #else
+        if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback { try capture.start(); return }
         if !captureEngine.isRunning { captureEngine.prepare(); try captureEngine.start() }
         #endif
     }
@@ -547,7 +583,7 @@ private final class CaptureWriter: @unchecked Sendable {
                     !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
             }.map(\.id)))
         }
-        let authorization = AVCaptureDevice.authorizationStatus(for: .audio)
+        let authorization: AVAuthorizationStatus = AudioDeviceSettings.shared.usesSystemLoopback ? .authorized : AVCaptureDevice.authorizationStatus(for: .audio)
         let effective = authorization == .authorized || inputChannels == 0 ? wanted : wanted.subtracting(microphoneTracks)
         if armed != effective { armed = effective; updateArmedTargets() }
         refreshMonitoring()
@@ -765,7 +801,7 @@ private final class CaptureWriter: @unchecked Sendable {
     private func startInputAudioCapture(tracks: [Track]) async throws {
         guard let show, let directory, !tracks.isEmpty else { return }
         let requestedProject = project, wasRecording = recording
-        let permission = AVCaptureDevice.authorizationStatus(for: .audio)
+        let permission: AVAuthorizationStatus = AudioDeviceSettings.shared.usesSystemLoopback ? .authorized : AVCaptureDevice.authorizationStatus(for: .audio)
         let allowed = permission == .authorized ? true : permission == .notDetermined ? await AVCaptureDevice.requestAccess(for: .audio) : false
         guard allowed else { throw ProjectError.invalid("Allow microphone access in System Settings to record audio.") }
         guard inputChannels > 0 else { throw ProjectError.invalid("Choose an audio input device in Settings.") }
@@ -910,6 +946,7 @@ private final class CaptureWriter: @unchecked Sendable {
     }
     private var pendingWriterFinishes = 0
     private func finishCleanup() {
+        (projectAudio ?? StemAudioPlayback.shared).recordingDidFinish()
         activeTargets = [:]; pendingTakes = []
         previewSession = UUID(); LiveRecordingPreview.shared.takes = [:]; RecordingLaneLayout.shared.clear()
         busy = false; reconcileArming(); releaseInputIfIdle()
@@ -935,6 +972,10 @@ private final class CaptureWriter: @unchecked Sendable {
         #if os(iOS)
         mobileInput.stop()
         #else
+        if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback {
+            capture.stop(); try? capture.setCapture(nil)
+        }
+        systemCapture = nil
         captureEngine.stop()
         #endif
         finishInputRelease()

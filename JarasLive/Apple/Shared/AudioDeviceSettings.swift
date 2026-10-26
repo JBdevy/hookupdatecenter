@@ -63,7 +63,48 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     @Published private(set) var inputDevices: [OutputDevice] = []
     @Published private(set) var inputUID = UserDefaults.standard.string(forKey: "catlive.audioInputUID") ?? ""
     var inputDeviceChanged: (() -> Void)?
-    var inputDevice: OutputDevice? { inputDevices.first { $0.id == inputUID } }
+    var usesSystemLoopback: Bool {
+        #if os(macOS)
+        if #available(macOS 14.2, *) { return inputUID == Self.loopbackUID }
+        #endif
+        return false
+    }
+    #if os(macOS)
+    static let loopbackUID = "catlive.system-loopback"
+    private(set) var loopback: AnyObject?
+    private var loopbackHardwareID: AudioDeviceID {
+        if #available(macOS 14.2, *) { return (loopback as? MacSystemLoopback)?.device ?? 0 }
+        return 0
+    }
+    func resolveInputDevice() throws -> OutputDevice? {
+        if #available(macOS 14.2, *), usesSystemLoopback {
+            let capture = (loopback as? MacSystemLoopback) ?? MacSystemLoopback()
+            let id = try capture.prepare()
+            loopback = capture
+            let entry = OutputDevice(id: Self.loopbackUID, name: "Loopback — áudio do Mac", channels: 2, hardwareID: id)
+            if let index = inputDevices.firstIndex(where: { $0.id == Self.loopbackUID }), inputDevices[index] != entry {
+                // Preparing an armed input can happen while a view is updating.
+                // The catalog notification publishes the hardware change later.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.loopbackHardwareID == id,
+                          let current = self.inputDevices.firstIndex(where: { $0.id == Self.loopbackUID }),
+                          self.inputDevices[current] != entry else { return }
+                    self.inputDevices[current] = entry
+                }
+            }
+            configuredInputHardwareID = id
+            return entry
+        }
+        return inputDevice
+    }
+    #endif
+    var inputDevice: OutputDevice? {
+        var value = inputDevices.first { $0.id == inputUID }
+        #if os(macOS)
+        if usesSystemLoopback { value?.hardwareID = loopbackHardwareID }
+        #endif
+        return value
+    }
     @Published private(set) var devices: [OutputDevice] = []
     @Published private(set) var selectedUID = UserDefaults.standard.string(forKey: "jaras.audioOutputUID") ?? ""
     @Published private(set) var channels = 0
@@ -203,6 +244,12 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
             guard count > 0, !name.isEmpty, !uid.isEmpty, isSelectableAudioDevice(id, uid: uid) else { return nil }
             return OutputDevice(id: uid, name: name, channels: count, hardwareID: id)
         }
+        // Private capture hardware is represented by one stable user selection.
+        devices.removeAll { $0.hardwareID == loopbackHardwareID }
+        inputDevices.removeAll { $0.hardwareID == loopbackHardwareID }
+        if #available(macOS 14.2, *) {
+            inputDevices.append(OutputDevice(id: Self.loopbackUID, name: "Loopback — áudio do Mac", channels: 2, hardwareID: loopbackHardwareID))
+        }
         // A catalog notification must not restart an armed recording input.
         let newInputHardwareID = inputDevice?.hardwareID
         if newInputHardwareID != configuredInputHardwareID {
@@ -274,6 +321,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         refresh(); refreshSampleRate(); refreshBuffer()
         #endif
         inputDeviceChanged?()
+        #if os(macOS)
+        if !usesSystemLoopback { loopback = nil }
+        #endif
         #if os(iOS)
         if localSessionEnabled { deviceChanged?() }
         #endif
@@ -607,3 +657,99 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     }
     #endif
 }
+
+#if os(macOS)
+@available(macOS 14.2, *)
+final class MacSystemLoopback {
+    private(set) var device: AudioDeviceID = 0
+    private var tap: AudioObjectID = 0
+    private var io: AudioDeviceIOProcID?
+    private(set) var running = false
+    private(set) var format: AVAudioFormat?
+    private var nativeFormat = AudioStreamBasicDescription()
+    func prepare() throws -> AudioDeviceID {
+        if device != 0 { return device }
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        description.name = "CatLive System Audio"
+        description.uuid = UUID()
+        description.isPrivate = true
+        description.muteBehavior = .unmuted
+        var created: AudioObjectID = 0
+        let status = AudioHardwareCreateProcessTap(description, &created)
+        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        tap = created
+        let specification: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "CatLive Loopback",
+            kAudioAggregateDeviceUIDKey: "catlive.loopback." + UUID().uuidString,
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceTapAutoStartKey: false,
+            kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: description.uuid.uuidString, kAudioSubTapDriftCompensationKey: true]]
+        ]
+        var aggregate: AudioDeviceID = 0
+        let result = AudioHardwareCreateAggregateDevice(specification as CFDictionary, &aggregate)
+        guard result == noErr else { close(); throw NSError(domain: NSOSStatusErrorDomain, code: Int(result)) }
+        device = aggregate
+        var address = AudioObjectPropertyAddress(mSelector: kAudioTapPropertyFormat, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        let read = AudioObjectGetPropertyData(tap, &address, 0, nil, &size, &nativeFormat)
+        guard read == noErr, nativeFormat.mFormatID == kAudioFormatLinearPCM,
+              nativeFormat.mFormatFlags & kAudioFormatFlagIsFloat != 0, nativeFormat.mBitsPerChannel == 32,
+              nativeFormat.mSampleRate > 0, nativeFormat.mChannelsPerFrame > 0,
+              let output = AVAudioFormat(standardFormatWithSampleRate: nativeFormat.mSampleRate, channels: nativeFormat.mChannelsPerFrame) else {
+            close(); throw NSError(domain: NSOSStatusErrorDomain, code: Int(read == noErr ? kAudioHardwareUnsupportedOperationError : read))
+        }
+        format = output
+        return aggregate
+    }
+    func setCapture(_ capture: ((AVAudioPCMBuffer) -> Void)?) throws {
+        let resume = running
+        stop()
+        if let io { AudioDeviceDestroyIOProcID(device, io); self.io = nil }
+        guard let capture, let format,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096) else { return }
+        let channels = Int(format.channelCount)
+        let result = AudioDeviceCreateIOProcIDWithBlock(&io, device, nil) { _, input, _, _, _ in
+            let source = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+            guard let first = source.first, first.mNumberChannels > 0, first.mData != nil else { return }
+            let count = min(4096, Int(first.mDataByteSize) / (MemoryLayout<Float>.size * Int(first.mNumberChannels)))
+            guard count > 0, let output = buffer.floatChannelData else { return }
+            buffer.frameLength = AVAudioFrameCount(count)
+            var channel = 0
+            for entry in source {
+                guard let data = entry.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                let stride = Int(entry.mNumberChannels)
+                let frames = min(count, Int(entry.mDataByteSize) / max(1, stride * MemoryLayout<Float>.size))
+                for c in 0..<stride where channel < channels {
+                    for i in 0..<frames { output[channel][i] = data[i * stride + c] }
+                    for i in frames..<count { output[channel][i] = 0 }
+                    channel += 1
+                }
+            }
+            for c in channel..<channels { output[c].update(repeating: 0, count: count) }
+            capture(buffer)
+        }
+        guard result == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(result)) }
+        if resume { try start() }
+    }
+    func start() throws {
+        guard !running else { return }
+        guard let io else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(kAudioHardwareNotRunningError)) }
+        let status = AudioDeviceStart(device, io)
+        guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        running = true
+    }
+    func stop() {
+        if running, let io { AudioDeviceStop(device, io) }
+        running = false
+    }
+    func close() {
+        stop()
+        if let io { AudioDeviceDestroyIOProcID(device, io); self.io = nil }
+        format = nil
+        if device != 0 { AudioHardwareDestroyAggregateDevice(device); device = 0 }
+        if tap != 0 { AudioHardwareDestroyProcessTap(tap); tap = 0 }
+    }
+    deinit { close() }
+}
+
+#endif

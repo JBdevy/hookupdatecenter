@@ -48,6 +48,9 @@ import UniformTypeIdentifiers
     }
     @State private var normalize = false
     @State private var editingText = false
+    @State private var editingName = false
+    @State private var exportingMIDI = false
+    @State private var midiDocument: MIDIItemDocument?
     @State private var fx = false
     @State private var exporting = false
     @State private var locatingFile = false
@@ -80,13 +83,17 @@ import UniformTypeIdentifiers
               let directory = documents.currentURL?.deletingLastPathComponent() else { return nil }
         return URL(fileURLWithPath: file.path, relativeTo: directory).standardizedFileURL
     }
-    private var childOpen: Bool { normalize || editingText || fx || exporting || processing.running || separating }
+    private var childOpen: Bool { normalize || editingText || editingName || exportingMIDI || fx || exporting || processing.running || separating }
     private var actionList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 IpadModalHeader(title: context?.1.name ?? "—", close: close)
                 if entries.count > 1 { Text("\(entries.count) items").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
                 if let (track, clip) = context {
+                    if entries.count == 1, clip.midi != nil || (clip.audioFile ?? track.audioFile) != nil {
+                        action("Editar nome", symbol: "pencil") { editingName = true }
+                    }
+                    if entries.count == 1, clip.midi != nil { action("Exportar MIDI", symbol: "square.and.arrow.up") { exportMIDI() } }
                     if fileURL != nil { action("Open file location", symbol: "folder") { locatingFile = true } }
                     if track.kind.isText && !clip.isProjectionMedia { action("Edit", symbol: "text.alignleft") { editingText = true } }
                     if track.kind == .standard || clip.isProjectionMedia {
@@ -148,6 +155,8 @@ import UniformTypeIdentifiers
             case "normalize": normalize = true
             case "fx": fx = true
             case "text": editingText = true
+            case "name": editingName = true
+            case "exportMIDI": exportMIDI()
             case "file": locatingFile = true
             case "separate": beginSeparation()
             case "render": processing.start(show: show, documents: documents, ids: audioIDs, operation: .render)
@@ -161,6 +170,11 @@ import UniformTypeIdentifiers
         .onChange(of: locatingFile) { if !$0 && initialAction == "file" { close() } }
         .onChange(of: normalize) { if !$0 && initialAction == "normalize" { close() } }
         .onChange(of: fx) { if !$0 && initialAction == "fx" { close() } }
+        .fileExporter(isPresented: $exportingMIDI, document: midiDocument, contentType: MIDIItemDocument.readableContentTypes[0], defaultFilename: context?.1.name ?? "Item") { result in
+            if case .failure(let error) = result { show.message = error.localizedDescription }
+            midiDocument = nil; if initialAction == "exportMIDI" { close() }
+        }
+        .onChange(of: editingName) { if !$0 && initialAction == "name" { close() } }
         .onChange(of: editingText) { if !$0 && initialAction == "text" { close() } }
         .onChange(of: processing.running) { running in
             if !running, processing.error.isEmpty, ["render", "glue", "midiMono", "midiStereo"].contains(initialAction ?? "") { close() }
@@ -169,6 +183,11 @@ import UniformTypeIdentifiers
         .onChange(of: show.snapshot.project.id) { if $0 != projectID { processing.cancel(); close() } }
         .onChange(of: show.current?.id) { if $0 != songID { processing.cancel(); close() } }
         .onDisappear { processing.cancel(); separation.cancel() }
+    }
+    private func exportMIDI() {
+        guard entries.count == 1, let clip = context?.1 else { return }
+        do { midiDocument = try MIDIItemDocument(clip: clip); exportingMIDI = true }
+        catch { show.message = error.localizedDescription; close() }
     }
     private func channelTitle(_ mode: Int) -> String {
         switch mode { case 4: return "Swap - LR"; case 1: return "Convert Mono - L"; case 2: return "Convert Mono - R"; case 3: return "Convert Mono L-R"; default: return "Convert Stereo" }
@@ -211,6 +230,10 @@ import UniformTypeIdentifiers
                     ProgressView(value: processing.fraction)
                     Button("Cancel") { processing.cancel() }
                 }.padding(24).frame(width: 380)
+            }
+        } else if editingName, let clip = context?.1 {
+            IpadCompactModal {
+                ItemNameEditor(name: clip.name, apply: { show.renameItem(item, name: $0) }, close: { editingName = false })
             }
         } else if editingText {
             IpadCompactModal {

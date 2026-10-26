@@ -755,9 +755,9 @@ void Session::warnTransportFadeout(String warning) {
 void Session::toggleTransportFadeout(bool enabled, const std::set<ID> &tracks, double seconds) {
     if (jaras::projectSync::readOnly()) return;
     if (fadeoutRequested) { cancelTransportFadeout(); return; }
+    if (!transport().playing) return;
     if (!enabled) { warnTransportFadeout("Ative Fadeout no clique direito do Play."); return; }
     if (transport().subPlay.playing) { warnTransportFadeout("Pare o Subplay antes de iniciar o Fadeout."); return; }
-    if (!transport().playing) { warnTransportFadeout(String::fromUTF8("O Fadeout funciona com o transporte em reprodução.")); return; }
     if (busy || !song()) return;
     if (!std::isfinite(seconds) || seconds < 1 || seconds > 5) {
         warnTransportFadeout(String::fromUTF8("Escolha uma duração de 1 a 5 segundos.")); return;
@@ -1045,11 +1045,12 @@ void Session::toggleRecording() {
                 for (const auto &item : previews) if (item.track == take.track) {
                     clip.id = item.clip.id;
                     clip.recordingLane = item.clip.recordingLane;
+                    clip.name = item.clip.name;
                     break;
                 }
                 clip.startTime = start;
                 clip.duration = take.duration;
-                clip.name = utf8(take.file == File() ? String("MIDI take")
+                if (clip.name.empty()) clip.name = utf8(take.file == File() ? String("MIDI take")
                                                      : take.file.getFileNameWithoutExtension());
                 if (take.midi) clip.midi = std::move(take.midi);
                 else {
@@ -1110,6 +1111,18 @@ void Session::toggleRecording() {
     const int bitrate = (int)settings.value("jaras.media.record.bitrate", 320);
     std::vector<TrackCapture::Target> targets;
     std::vector<RecordingItem> previews;
+    StringArray recordingNames;
+    for (const auto &s : project().songs) for (const auto &t : s.tracks) for (const auto &clip : t.clips)
+        recordingNames.addIfNotAlreadyThere(text(clip.name), true);
+    for (const auto &file : mediaDirectory.getChildFile("Stems").findChildFiles(File::findFiles, true))
+        recordingNames.addIfNotAlreadyThere(file.getFileNameWithoutExtension(), true);
+    const auto allocateName = [&](String track) {
+        track = File::createLegalFileName(track.trim()); if (track.isEmpty()) track = "Track";
+        auto name = track;
+        for (int index = 1; recordingNames.contains(name, true); ++index)
+            name = track + " - " + String(index).paddedLeft('0', 3);
+        recordingNames.add(name); return name;
+    };
     for (const auto &track : song()->tracks)
         if (recordingArmed(track.id) && jaras::fixedTrackName(track.role).empty()) {
             TrackCapture::Target target;
@@ -1126,12 +1139,9 @@ void Session::toggleRecording() {
                 throw std::runtime_error(
                     utf8(localization::translate("Choose the input in the Patch of track %s.").replace("%s", text(track.name))));
             const auto encoding = recordingEncoding::resolve(track.recordingFormat, advancedFormat, bits, bitrate);
+            const auto takeName = allocateName(text(track.name));
             if (!target.midi)
-                target.file = mediaDirectory.getChildFile("Stems")
-                                  .getNonexistentChildFile(
-                                      File::createLegalFileName(text(track.name)) + "-" +
-                                          Time::getCurrentTime().formatted("%Y%m%d-%H%M%S") + "-" +
-                                          text(uuid()).substring(0, 8), text(encoding.extension));
+                target.file = mediaDirectory.getChildFile("Stems").getChildFile(takeName + text(encoding.extension));
             target.bits = encoding.bits;
             target.floatingPoint = encoding.floatingPoint;
             target.bitrate = encoding.bitrate;
@@ -1147,7 +1157,7 @@ void Session::toggleRecording() {
             RecordingItem item;
             item.track = track.id;
             item.clip.id = uuid();
-            item.clip.name = utf8(target.midi ? String("MIDI take") : target.file.getFileNameWithoutExtension());
+            item.clip.name = utf8(takeName);
             item.clip.startTime = recordingStart;
             // Reserve a lane for the whole remaining recording, without adding
             // placeholder clips to the audio graph or reallocating it each frame.

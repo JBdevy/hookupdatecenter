@@ -43,7 +43,12 @@ for rate in [44100.0,48000.0] {
     more.frameLength=512
     for channel in 0..<2 { more.floatChannelData![channel].update(repeating:0.4,count:512) }
     try live.append(more)
-    let after=waitFor { live.geometry(start:65536,step:1,span:512) }
+    let retained=live.geometry(start:65536,step:1,span:512)
+    precondition(retained != nil, "Growing waveform must retain its last drawing while refreshing")
+    let after=waitFor { () -> TimelineAudioWaveform.Geometry? in
+        guard let next=live.geometry(start:65536,step:1,span:512), next.end>before.end else { return nil }
+        return next
+    }
     precondition(after.end>before.end && after.paths != before.paths,"Growing tail must invalidate only its partial geometry")
     print("LIVE_AND_FINISHED_SIGNED_STEREO_WAVEFORMS_MATCH rate=\(rate)")
 }

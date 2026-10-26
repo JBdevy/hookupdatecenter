@@ -23,6 +23,8 @@ endif()
 # Isolate the presentation fix from the user's shared JUCE checkout/cache.
 include(cmake/Direct2DFramePacing.cmake)
 catlive_prepare_juce("${CATLIVE_JUCE_SOURCE}" CATLIVE_PATCHED_JUCE)
+include(cmake/WASAPILoopback.cmake)
+catlive_prepare_loopback("${CATLIVE_JUCE_SOURCE}" "${CATLIVE_PATCHED_JUCE}")
 add_subdirectory("${CATLIVE_PATCHED_JUCE}" "${CMAKE_BINARY_DIR}/juce-framepaced")
 add_library(CatLiveCore STATIC "${CATLIVEROOT}/Core/Project/Models.cpp"
     "${CATLIVEROOT}/Core/Transport/Engine.cpp" "${CATLIVEROOT}/Core/Import/TrackTaxonomy.cpp")
@@ -208,3 +210,10 @@ add_executable(CatStemProcessTests "${CATLIVEROOT}/WindowsNative/Tests/StemSepar
     "${CATLIVEROOT}/WindowsNative/Source/StemSeparator.cpp")
 target_compile_definitions(CatStemProcessTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_compile_options(CatStemProcessTests PRIVATE /utf-8)
+
+# Real WASAPI hardware validation; deliberately opt-in (CI has no render endpoint).
+add_executable(LoopbackDeviceTests EXCLUDE_FROM_ALL Tests/LoopbackDeviceTests.cpp)
+target_link_libraries(LoopbackDeviceTests PRIVATE juce::juce_audio_devices juce::juce_audio_formats winmm)
+target_compile_definitions(LoopbackDeviceTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+    JUCE_WASAPI=1 JUCE_ASIO=0 JUCE_MODAL_LOOPS_PERMITTED=1 NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(LoopbackDeviceTests PRIVATE /utf-8 /bigobj)

@@ -17,7 +17,10 @@ function(catlive_prepare_juce source output)
          PATTERN "juce_Direct2DHwndContext_windows.cpp" EXCLUDE
          PATTERN "juce_Direct2DImageContext_windows.cpp" EXCLUDE
          PATTERN "juce_Direct2DGraphicsContext_windows.cpp" EXCLUDE
-         PATTERN "juce_Direct2DGraphicsContextImpl_windows.cpp" EXCLUDE)
+         PATTERN "juce_Direct2DGraphicsContextImpl_windows.cpp" EXCLUDE
+         PATTERN "juce_audio_devices.h" EXCLUDE
+         PATTERN "juce_AudioDeviceManager.cpp" EXCLUDE
+         PATTERN "juce_WASAPI_windows.cpp" EXCLUDE)
     # Keep the existing unused event wrapper unchanged to minimise the backport.
     string(REPLACE "chain2->SetMaximumFrameLatency (1);"
         "chain2->SetMaximumFrameLatency (1);\n        frameReady.reset (chain2->GetFrameLatencyWaitableObject());"

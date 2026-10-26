@@ -70,8 +70,27 @@ static OSStatus verifyOutputMap(AudioUnit unit, AudioUnitPropertyID property, Au
 }
 @end
 
+@interface PlayerStartFixture : NSObject
+@property BOOL fail;
+- (void)play;
+@end
+@implementation PlayerStartFixture
+- (void)play {
+    if (self.fail) @throw [NSException exceptionWithName:@"com.apple.coreaudio.avfaudio"
+        reason:@"player did not see an IO cycle." userInfo:nil];
+}
+@end
+
 int main() {
     @autoreleasepool {
+        PlayerStartFixture *player = [PlayerStartFixture new];
+        NSError *playerError = nil;
+        assert([JarasAudioOutputConnection startPlayer:(AVAudioPlayerNode *)player error:&playerError]);
+        assert(!playerError);
+        player.fail = YES;
+        assert(![JarasAudioOutputConnection startPlayer:(AVAudioPlayerNode *)player error:&playerError]);
+        assert([playerError.localizedDescription containsString:@"IO cycle"]);
+        puts("PLAYER_START_EXCEPTION_CONVERTED_TO_RECOVERABLE_ERROR_OK");
         for (UInt32 channels : {1u, 2u, 6u, 8u, 10u, 18u}) {
             expectedChannels = channels;
             assert(jaras::configureDiscreteOutputMap(reinterpret_cast<AudioUnit>(1), channels, verifyOutputMap) == noErr);

@@ -241,3 +241,41 @@ public struct MIDIRecordingTake: Sendable {
             recordingLane: lane, midi: MIDIItem(notes: notes, sourceBPM: sourceBPM), regionOwnerID: regionOwnerID)
     }
 }
+
+/// Standard MIDI File, format 0. Export only the visible trim/repetitions,
+/// starting at zero, without discarding notes because the item is muted.
+public enum MIDIItemExport {
+    public static func data(for clip: AudioClip) throws -> Data {
+        guard let midi = clip.midi else { throw ProjectError.invalid("Expected a MIDI item") }
+        try midi.validate()
+        let ticksPerSecond = 960 * midi.sourceBPM / 60
+        struct Event { let tick: Int; let priority: Int; let bytes: [UInt8] }
+        var events: [Event] = []
+        let tempo = Int((60_000_000 / midi.sourceBPM).rounded())
+        events.append(Event(tick: 0, priority: -2, bytes: [0xff, 0x51, 3, UInt8((tempo >> 16) & 255), UInt8((tempo >> 8) & 255), UInt8(tempo & 255)]))
+        func variable(_ value: Int) throws -> [UInt8] {
+            guard (0...0x0fffffff).contains(value) else { throw ProjectError.invalid("MIDI item exceeds the supported file length") }
+            var remaining = value, bytes = [UInt8(value & 127)]
+            while remaining > 127 { remaining >>= 7; bytes.insert(UInt8(remaining & 127) | 128, at: 0) }
+            return bytes
+        }
+        let name = Array(clip.name.utf8)
+        events.append(Event(tick: 0, priority: -1, bytes: [0xff, 3] + (try variable(name.count)) + name))
+        for note in clip.midiDisplayNotes() {
+            let start = max(0, Int(((note.start - clip.startTime) * ticksPerSecond).rounded()))
+            let end = max(start + 1, Int(((note.end - clip.startTime) * ticksPerSecond).rounded()))
+            let channel = UInt8(note.channel - 1), pitch = UInt8(min(127, max(0, note.pitch + Int((clip.pitchSemitones ?? 0).rounded()))))
+            events.append(Event(tick: start, priority: 1, bytes: [0x90 | channel, pitch, UInt8(note.velocity)]))
+            events.append(Event(tick: end, priority: 0, bytes: [0x80 | channel, pitch, 0]))
+        }
+        let end = max(events.map(\.tick).max() ?? 0, Int((clip.duration * ticksPerSecond).rounded()))
+        events.append(Event(tick: end, priority: 2, bytes: [0xff, 0x2f, 0]))
+        events.sort { $0.tick == $1.tick ? $0.priority < $1.priority : $0.tick < $1.tick }
+        var track = Data(), previous = 0
+        for event in events { track.append(contentsOf: try variable(event.tick - previous)); track.append(contentsOf: event.bytes); previous = event.tick }
+        var result = Data([0x4d,0x54,0x68,0x64,0,0,0,6,0,0,0,1,3,0xc0,0x4d,0x54,0x72,0x6b])
+        let count = UInt32(track.count)
+        result.append(contentsOf: [UInt8((count >> 24) & 255),UInt8((count >> 16) & 255),UInt8((count >> 8) & 255),UInt8(count & 255)])
+        result.append(track); return result
+    }
+}

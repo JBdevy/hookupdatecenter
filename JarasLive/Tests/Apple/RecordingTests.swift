@@ -224,6 +224,7 @@ precondition(outputDone.wait(timeout: .now()+5) == .success)
 print("RECORDING_OUTPUT_MODE_INDEPENDENT_OF_INPUT_PATCH_OK")
 
 var names = RecordingNames(directory: directory, clips: [AudioClip(id: UUID(), name: "Piano - 001", startTime: 0, duration: 1)])
+precondition(names.allocate(track: "Piano") == "Piano")
 precondition(names.allocate(track: "Piano") == "Piano - 002")
 precondition(names.allocate(track: "Piano") == "Piano - 003")
 precondition(names.allocate(track: "PIANO") == "PIANO - 004")

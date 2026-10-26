@@ -433,6 +433,12 @@ struct TimecodePlaybackSpan {
     }
     private var subPlayPromotion: UInt64 = 0
     private var transportWasRunning = false
+    private var recordingGraphNeedsRestart = false
+    func recordingDidFinish() {
+        #if os(macOS)
+        recordingGraphNeedsRestart = true
+        #endif
+    }
     // Keep the prepared audio graph clock running throughout the device session.
     // A disarmed instrument may still be sustaining a note, so its graph stays
     // awake until an explicit Stop releases MIDI notes.
@@ -1807,7 +1813,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         let age = AVAudioTime.seconds(forHostTime: reference.hostTime - source.hostTime)
         return age > max(0.1, max(0, latency) + 0.05)
     }
-    private func warmPlayer(_ voice: Voice) {
+    private func warmPlayer(_ voice: Voice) throws {
+        try startEngineIfNeeded()
         JarasVoiceGain.setRenderEnabled(voice.gain, enabled: true)
         guard let silence = AVAudioPCMBuffer(pcmFormat: voice.file.processingFormat, frameCapacity: 256) else { return }
         silence.frameLength = 256
@@ -1815,7 +1822,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
         }
         voice.player.scheduleBuffer(silence, at: nil, options: .loops)
-        voice.player.play()
+        try JarasAudioOutputConnection.start(voice.player)
         if let node = voice.player.lastRenderTime, node.isSampleTimeValid, let player = voice.player.playerTime(forNodeTime: node) {
             voiceClockAnchors[ObjectIdentifier(voice.player)] = (node, player)
         }
@@ -3384,6 +3391,17 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         #if os(iOS)
         try prepareChangedMobileTrackGraph()
         #endif
+        #if os(macOS)
+        if running, !transportWasRunning, recordingGraphNeedsRestart,
+           padPlayers.isEmpty, recordingTaps.isEmpty {
+            // Recording can add the first player branch to an input-only live
+            // graph. Reallocate its render resources once before the next Play.
+            engine.stop()
+            voiceClockAnchors.removeAll()
+            try startEngineIfNeeded()
+            recordingGraphNeedsRestart = false
+        }
+        #endif
         if running {
             cancelVoicePreparation()
             if !transportWasRunning {
@@ -3617,7 +3635,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 configureStretch(voice.stretch, clock: voice.rateClock, rate: Float(clip.audioRate), pitch: voice.pitch)
                 if realtime && !player.isPlaying {
                     if !engine.isRunning { try startEngineIfNeeded() }
-                    warmPlayer(voice)
+                    try warmPlayer(voice)
                 }
                 // Set only this new item's levels before its scheduled start.
                 // Reapplying every track/FX after scheduling could consume the
@@ -3650,7 +3668,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                     fresh.player.pan = old.player.pan
                     let gain = old.clip.gain ?? 1
                     JarasVoiceGain.setDecibels(fresh.gain, decibels: old.clip.muted == true || gain <= 0 ? -96 : min(24, max(-96, 20 * log10(max(0.0000001, gain)))))
-                    warmPlayer(fresh)
+                    try warmPlayer(fresh)
                     setVoice(fresh, for: key)
                     scheduled[index] = (key, fresh, first, count, delay)
                 }

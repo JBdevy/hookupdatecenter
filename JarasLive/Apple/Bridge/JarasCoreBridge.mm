@@ -556,6 +556,9 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
 - (BOOL)setClipFXBypass:(NSString *)clip bypassed:(BOOL)bypassed error:(NSError **)error {
     try { _engine->setClipFXBypass(str(clip), bypassed); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }
+- (BOOL)setClipName:(NSString *)clip name:(NSString *)value error:(NSError **)error {
+    try { _engine->setClipName(str(clip), str(value)); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
+}
 - (BOOL)setClipText:(NSString *)clip text:(NSString *)value error:(NSError **)error {
     try { _engine->setClipText(str(clip), readClipText(value)); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }

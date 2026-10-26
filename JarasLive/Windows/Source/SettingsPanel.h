@@ -479,7 +479,8 @@ class SettingsPanel final : public Component, private Timer {
         auto inputNames = type->getDeviceNames(true), outputNames = type->getDeviceNames(false);
         inputNames.insert(0, "None");
         outputNames.insert(0, "None");
-        label(String::fromUTF8("Dispositivo de áudio — Entrada"), 172, 26, true);
+        const bool loopback = manager.getCurrentAudioDeviceType() == "Windows Audio (Loopback)";
+        label(String::fromUTF8(loopback ? "Capturar áudio da saída do Windows" : "Dispositivo de áudio — Entrada"), 172, 26, true);
         choice("Entrada", inputNames,
                setup.inputDeviceName.isEmpty() ? 1 : inputNames.indexOf(setup.inputDeviceName) + 1,
                290, 210, 290,
@@ -541,7 +542,10 @@ class SettingsPanel final : public Component, private Timer {
             });
             bufferChoice.setEnabled(!audioConfigurationLocked());
             bufferChoice.setComponentID("audioBufferSize");
-            if (manager.getCurrentAudioDeviceType() == "Windows Audio")
+            if (loopback)
+                label(String::fromUTF8("Loopback: selecione nas entradas a saída usada pelos outros aplicativos.\nUse Monitor Off na pista para gravar sem devolver o sinal à saída."),
+                      620, 56, false, theme::secondary);
+            else if (manager.getCurrentAudioDeviceType() == "Windows Audio")
                 label(String::fromUTF8("Modo compartilhado: o Windows define o buffer.\nPara outras opções, selecione baixa latência, modo exclusivo ou ASIO em Driver."),
                       620, 56, false, theme::secondary);
             if (device->hasControlPanel())

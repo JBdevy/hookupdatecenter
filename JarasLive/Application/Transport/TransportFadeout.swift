@@ -81,7 +81,7 @@ extension ShowController {
     public func triggerTransportFadeout() {
         if transportFadeout.active { cancelTransportFadeout(); return }
         guard transportFadeoutCanStart, transportFadeout.enabled else { return }
-        guard snapshot.transport.playing else { transportFadeout.warn("Fadeout requires playback."); return }
+        guard snapshot.transport.playing else { return }
         guard !snapshot.transport.subPlay.playing else { transportFadeout.warn("Stop Sub Play before starting Fadeout."); return }
         guard let song = current else { return }
         let volumes = Dictionary(uniqueKeysWithValues: fadeoutTracks.filter { transportFadeout.trackIDs.contains($0.id) }.map { ($0.id, $0.volume) })

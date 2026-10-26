@@ -1,10 +1,34 @@
 #pragma once
 #include "Workspace.h"
+#include "MIDIItemExport.h"
 #include "FloatingControlTests.h"
 #include "ProjectDeletionPanel.h"
 #include "SetlistRows.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void liveRecordingWaveform(const File &directory) {
+        using floatingControlTests::require;
+        auto project=floatingControlTests::fixture();
+        auto &track=project.songs.front().tracks.front();track.clips.clear();track.heightScale=.1;track.color=0x555555;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Session::RecordingItem item;item.track=track.id;item.clip.id=uuid();item.clip.name="Live";item.clip.startTime=0;item.clip.duration=100;item.clip.recordingLane=0;
+        item.preview=std::make_shared<RecordingPreview>(48000,2);item.preview->frames=48000;
+        session.recordingItems.push_back(item);++session.revision;
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getChildFile("recording-preview.json"));
+        w.setSize(1600,900);w.projectOpened(false);w.partsLeftVisible=false;w.partsRightVisible=false;w.setlistVisible=false;
+        w.pixelsPerSecond=240;w.rebuild();
+        auto silent=w.createComponentSnapshot(w.getLocalBounds());
+        AudioBuffer<float> samples(2,48000);for(int c=0;c<2;++c)for(int i=0;i<48000;++i)samples.setSample(c,i,(c?-.6f:.8f));
+        item.preview->append(samples.getArrayOfReadPointers(),48000);item.preview->drain();
+        // Invalidate the cached canvas without rebuilding or stopping capture.
+        std::function<void(Component &)> invalidate=[&](Component &c){c.repaint();for(auto *child:c.getChildren())invalidate(*child);};
+        invalidate(w);
+        auto recorded=w.createComponentSnapshot(w.getLocalBounds());
+        int changed=0;for(int y=0;y<silent.getHeight();++y)for(int x=0;x<silent.getWidth();++x)
+            if(silent.getPixelAt(x,y)!=recorded.getPixelAt(x,y))++changed;
+        require(changed>50,"Compact live item has no visible waveform before Stop");
+    }
     static void dividerMargins(const File &directory) {
         using floatingControlTests::require;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
@@ -447,6 +471,20 @@ struct WorkspaceLayoutTests {
 };
 namespace workspaceLayoutTests {
 template<class Test> void registerTests(const File &directory,Test &test) {
+    test("Recording live waveform is visible in compact tracks before Stop",[&]{WorkspaceLayoutTests::liveRecordingWaveform(directory);});
+    test("MIDI item export preserves trimmed notes and channels while muted",[&]{
+        using floatingControlTests::require;
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Keys";clip.startTime=10;clip.duration=1.5;clip.sourceOffset=1;clip.playbackRate=2;clip.muted=true;clip.gain=0;
+        clip.midi.emplace();clip.midi->sourceBPM=120;
+        jaras::MIDINote a;a.id=uuid();a.start=0;a.length=4;a.pitch=60;a.velocity=80;a.channel=3;
+        auto b=a;b.id=uuid();b.start=4;b.pitch=64;b.channel=16;b.velocity=100;clip.midi->notes={a,b};
+        auto file=directory.getNonexistentChildFile("export-item",".mid");exportMIDIItem(clip,file);
+        FileInputStream input(file);MidiFile parsed;require(parsed.readFrom(input),"Unreadable MIDI file");parsed.convertTimestampTicksToSeconds();
+        std::vector<MidiMessage> notes;for(int t=0;t<parsed.getNumTracks();++t)for(int i=0;i<parsed.getTrack(t)->getNumEvents();++i){auto m=parsed.getTrack(t)->getEventPointer(i)->message;if(m.isNoteOn()||m.isNoteOff())notes.push_back(m);}
+        require(notes.size()==4,"MIDI notes were lost");require(notes[0].getChannel()==3&&notes[2].getChannel()==16,"MIDI channels changed");
+        require(std::abs(notes.front().getTimeStamp())<.001&&std::abs(notes.back().getTimeStamp()-1.5)<.001,"MIDI trim or rate changed");
+        file.deleteFile();
+    });
     test("Workspace divider margins match Mac without shrinking track controls",[&]{WorkspaceLayoutTests::dividerMargins(directory);});
     test("Track icon column extends the mixer without moving group or child controls; hiding and removal restore width",[&]{WorkspaceLayoutTests::trackIconWidth(directory);});
     test("Deleting another recent project during playback preserves the current dirty project and audio clock",[&]{WorkspaceLayoutTests::deleteRecentWhilePlaying(directory);});

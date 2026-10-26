@@ -254,6 +254,9 @@ import Combine
             IpadItemMenuCommand(title: JarasLocalization.string(title), action: action)
         }
         var actions: [IpadItemMenuCommand] = []
+        if ids.count == 1, clip.midi != nil || (clip.audioFile ?? track.audioFile) != nil {
+            actions.append(command("Editar nome", { open("name") }))
+        }
         if track.kind.isText { actions.append(command("Edit", { open("text") })) }
         actions.append(command("FX", { open("fx") }))
         actions.append(command(clip.muted == true ? "Unmute items" : "Mute items", { show.setItemsMix(ids, muted: clip.muted != true) }))
@@ -272,6 +275,7 @@ import Combine
             }
         }
         if clip.midi != nil {
+            if ids.count == 1 { actions.append(command("Exportar MIDI", { open("exportMIDI") })) }
             actions.append(command("Convert Mono", { open("midiMono") }))
             actions.append(command("Convert Stereo", { open("midiStereo") }))
         }

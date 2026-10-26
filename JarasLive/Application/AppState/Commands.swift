@@ -19,6 +19,7 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
     func setFX(_ track: UUID?, settings: NativeFXSettings) throws
     func setClipFX(_ clip: UUID, settings: NativeFXSettings) throws
     func setClipFXBypass(_ clip: UUID, bypassed: Bool) throws
+    func setClipName(_ clip: UUID, name: String) throws
     func setClipText(_ clip: UUID, text: String) throws
     func setMIDIInput(_ track: UUID, slot: Int) throws
     func setMIDIChannel(_ track: UUID, channel: Int) throws
@@ -84,6 +85,7 @@ public extension CommandExecutor {
     func setFX(_ track: UUID?, settings: NativeFXSettings) throws { throw BackendFailure.notConfigured }
     func setClipFX(_ clip: UUID, settings: NativeFXSettings) throws { throw BackendFailure.notConfigured }
     func setClipFXBypass(_ clip: UUID, bypassed: Bool) throws { throw BackendFailure.notConfigured }
+    func setClipName(_ clip: UUID, name: String) throws { throw BackendFailure.notConfigured }
     func setClipText(_ clip: UUID, text: String) throws { throw BackendFailure.notConfigured }
     func setMIDIInput(_ track: UUID, slot: Int) throws { throw BackendFailure.notConfigured }
     func setMIDIChannel(_ track: UUID, channel: Int) throws { throw BackendFailure.notConfigured }

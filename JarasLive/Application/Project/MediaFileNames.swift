@@ -41,9 +41,9 @@ struct RecordingNames {
         var name = track.components(separatedBy: CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/:\\"))).joined(separator: "-").trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty || name == "." || name == ".." { name = "Track" }
         while name.utf8.count > 200 { name.removeLast() }
-        var index = 1
+        var index = 0
         while true {
-            let value = name + String(format: " - %03d", index)
+            let value = index == 0 ? name : name + String(format: " - %03d", index)
             if used.insert(value.lowercased()).inserted { return value }
             index += 1
         }

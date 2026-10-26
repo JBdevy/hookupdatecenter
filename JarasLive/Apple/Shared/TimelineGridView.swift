@@ -197,6 +197,10 @@ private struct TimelineGridContent: View, Equatable {
     @State private var itemWaveformPreview = ItemWaveformPreview()
     @State private var insertionPreview = GridInsertionPreview()
     @State private var itemExport: ItemAudioExportRequest?
+    @State private var renamingItem: AudioClip?
+    @State private var midiDocument: MIDIItemDocument?
+    @State private var midiExportName = "Item"
+    @State private var exportingMIDI = false
     @State private var regionExport: RegionAudioExportRequest?
     @State private var normalizingItems = Set<UUID>()
     @State private var showingNormalize = false
@@ -752,6 +756,13 @@ private struct TimelineGridContent: View, Equatable {
                             regionSelection: request.regions)
         }
         .sheet(item: $itemExport) { ItemAudioExportView(request: $0) }
+        .sheet(item: $renamingItem) { clip in
+            ItemNameEditor(name: clip.name, apply: { show.renameItem(clip.id, name: $0) }, close: { renamingItem = nil })
+        }
+        .fileExporter(isPresented: $exportingMIDI, document: midiDocument, contentType: MIDIItemDocument.readableContentTypes[0], defaultFilename: midiExportName) { result in
+            if case .failure(let error) = result { show.message = error.localizedDescription }
+            midiDocument = nil
+        }
         .sheet(isPresented: $showingItemTuner) { ItemTunerEditor(show: show, items: tuningItems) }
         .sheet(isPresented: $showingNormalize) { ItemNormalizationEditor(show: show, documents: documents, items: normalizingItems) }
         .alert(Text(verbatim: JarasLocalization.string(pendingTimebase?.relative == true ? "Enable relative timebase?" : "Disable relative timebase?")), isPresented: $confirmingTimebase) {
@@ -1054,6 +1065,12 @@ private struct TimelineGridContent: View, Equatable {
             selectedTrack = id
             selectedTracks = [id]
         }, pointerDown: { EditorSelectionRouter.shared.handlePointer($0) })
+        input.renameItem = { id in renamingItem = show.current?.tracks.flatMap(\.clips).first { $0.id == id } }
+        input.exportMIDI = { id in
+            guard let clip = show.current?.tracks.flatMap(\.clips).first(where: { $0.id == id }) else { return }
+            do { midiDocument = try MIDIItemDocument(clip: clip); midiExportName = clip.name; exportingMIDI = true }
+            catch { show.message = error.localizedDescription }
+        }
         input.marqueeBegan = { show.pauseTimelineFollow() }
         input.separateAudio = { id in
             showingSeparation = true; separation.start(item: id, show: show, documents: documents)
@@ -3287,6 +3304,7 @@ private final class NativeTimelineBaseMountView: NSView {
     private var scrollObservers: [NSObjectProtocol] = []
     private weak var zoomState: TimelineZoomState?
     private var zoomSubscription: AnyCancellable?
+    private var recordingSubscription: AnyCancellable?
     private var configuration: NativeTimelineBaseConfiguration?
     private var style: NativeTimelineBaseStyle?
     private var zoom = TimelineViewportPreferences.zoom
@@ -3310,6 +3328,27 @@ private final class NativeTimelineBaseMountView: NSView {
         selectionPin.host = selection; selectionPin.addSubview(selection)
         needlePin.hostHandlesInput = true
         needlePin.host = needles; needlePin.addSubview(needles)
+        recordingSubscription = LiveRecordingPreview.shared.$takes.sink { [weak self] takes in
+            self?.updateRecordingHeaders(takes)
+        }
+    }
+    private func updateRecordingHeaders(_ takes: [UUID: RecordingPreviewTake]) {
+        guard let value = configuration else { selection.recordingHeaders = []; return }
+        let tracks = value.header.song.tracks
+        let position = TrackRecording.shared.recordingDisplayPosition
+        selection.recordingHeaders = takes.compactMap { id, take in
+            guard let reservation = RecordingLaneLayout.shared.items[id],
+                  let index = tracks.firstIndex(where: { $0.id == reservation.track }) else { return nil }
+            let count = RecordingLaneLayout.shared.count(for: reservation.track, existing: TrackLanes(track: tracks[index]).count)
+            let laneHeight = value.rows.audioHeights[index] / CGFloat(count)
+            let duration = min(take.duration, position.map { max(0, $0 - take.start) } ?? take.duration)
+            guard duration > 0 else { return nil }
+            let rect = CGRect(x: take.start * pixelsPerSecond,
+                y: value.rulerHeight + value.rows.offsets[index] + CGFloat(reservation.clip.recordingLane ?? 0) * laneHeight + 3,
+                width: duration * pixelsPerSecond, height: laneHeight - 6)
+            return GridSelectionItem(id: id, rect: rect, editable: false, resizable: false,
+                movable: false, contextActions: false, name: reservation.clip.name)
+        }
     }
     func makeMount(_ kind: NativeTimelineBaseMountView.Kind) -> NativeTimelineBaseMountView {
         let mount = NativeTimelineBaseMountView()
@@ -3457,6 +3496,7 @@ private final class NativeTimelineBaseMountView: NSView {
             guard let self, self.backgroundMount?.window == nil, self.rulerMount?.window == nil, self.foregroundMount?.window == nil else { return }
             self.zoomSubscription = nil; self.zoomState = nil
             self.configuration = nil; self.style = nil
+            self.selection.recordingHeaders = []
             self.rulerMount?.headerInteraction = nil
             self.documentSize.hostedProjectionDidLayout = nil
             (self.horizontal?.superview as? GridNativeScrollView)?.prepareHostedHorizontalScroll = nil
@@ -3523,6 +3563,7 @@ private final class NativeTimelineBaseMountView: NSView {
         defer { updating = false }
         if self.zoom != zoom { preparedHorizontalOffset = nil }
         self.zoom = zoom; pixelsPerSecond = zoom * 10
+        updateRecordingHeaders(LiveRecordingPreview.shared.takes)
         let width = value.extent * pixelsPerSecond
         let nativeBounds = horizontal?.bounds ?? CGRect(origin: .zero, size: value.viewportSize)
         var left = max(0, preparedHorizontalOffset ?? nativeBounds.minX)

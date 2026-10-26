@@ -1,4 +1,6 @@
 #include "TrackInstrumentPicker.h"
+#include "ItemNamePanel.h"
+#include "MIDIItemExport.h"
 #include "AudioSeparation.h"
 #include "AudioSeparationPanel.h"
 #include "ProjectReductionPanel.h"
@@ -329,16 +331,24 @@ void MacLook::drawLinearSlider(Graphics &g, int x, int y, int w, int h, float po
         return;
     }
     if (slider.getComponentID().endsWith("Pan")) {
-        g.setColour(Colours::white.withAlpha(.3f));
-        g.fillRoundedRectangle((float)x, 5, (float)w, 4, 2);
-        g.setColour(Colours::white.withAlpha(.9f));
-        g.fillEllipse(pos - 4, 3, 8, 8);
-        g.setFont(theme::semiboldFont(8));
+        // Use the same rectangular cap and centre mark as the volume fader.
+        // Reserve the bottom ten points for the pan readout.
+        constexpr float middle = 7.f;
+        g.setColour(Colours::white.withAlpha(.22f));
+        g.fillRoundedRectangle((float)x, middle - 1.5f, (float)w, 3, 1.5f);
+        g.setColour(Colours::white.withAlpha(.45f));
+        g.fillRect(slider.getWidth() * .5f - .5f, middle - 5, 1.f, 10.f);
+        g.setColour(Colour::greyLevel(.88f));
+        g.fillRoundedRectangle(pos - 5, middle - 7, 10, 14, 2);
+        g.setColour(Colour(0xff999999));
+        g.drawVerticalLine((int)pos, middle - 5, middle + 5);
+        g.setColour(Colours::white);
+        g.setFont(theme::font(8));
         const double pan = slider.getValue();
         g.drawText(std::abs(pan) < .005
                        ? String("Center")
-                       : String((int)std::round(std::abs(pan) * 100)) + (pan < 0 ? " L" : " R"),
-                   0, 12, slider.getWidth(), 12, Justification::centred);
+                       : String((int)std::round(std::abs(pan) * 100)) + (pan < 0 ? "% L" : "% R"),
+                   0, 14, slider.getWidth(), 10, Justification::centred);
         return;
     }
     g.setColour(Colour(0xff505050));
@@ -367,6 +377,8 @@ void MacLook::drawLinearSlider(Graphics &g, int x, int y, int w, int h, float po
 }
 Slider::SliderLayout MacLook::getSliderLayout(Slider &slider) {
     auto layout = LookAndFeel_V4::getSliderLayout(slider);
+    if (slider.getComponentID().endsWith("Pan") && slider.isHorizontal())
+        layout.sliderBounds = juce::Rectangle<int>(5, 0, std::max(1, slider.getWidth() - 10), 14);
     if (slider.getComponentID().endsWith("Volume"))
         layout.sliderBounds = slider.getLocalBounds().withTrimmedLeft(42).withTrimmedRight(8);
     return layout;
@@ -1615,6 +1627,14 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         put(v, "horizontal", horizontal.getCurrentRangeStart());
         put(v, "horizontalScrollbarVisible", horizontal.isVisible());
         put(v, "waveforms", waveforms.diagnostics());
+        Array<var> recording;
+        for(const auto &item:w.session.recordingItems) {
+            auto take=object();put(take,"name",text(item.clip.name));put(take,"frames",item.preview->frames.load());
+            put(take,"peaks",(int)item.preview->history.size());
+            float peak=0;for(const auto &bin:item.preview->history)for(int c=0;c<item.preview->channels;++c)peak=std::max(peak,std::max(std::abs(bin.low[c]),std::abs(bin.high[c])));
+            put(take,"amplitude",peak);recording.add(take);
+        }
+        put(v,"recording",recording);
         put(v, "paintMilliseconds", paintMilliseconds);
         put(v, "maxPaintMilliseconds", maxPaintMilliseconds);
         put(v, "paintCount", (int64)paintCount);
@@ -2106,28 +2126,33 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     Path outline; outline.addRoundedRectangle(rect, 3.f);
                     g.reduceClipRegion(outline);
                     g.setColour(theme::track(track)); g.fillRect(rect);
-                    g.setColour(Colours::darkred); g.fillRect(rect.withHeight(17));
-                    const auto body = rect.withTrimmedTop(18).withTrimmedBottom(2);
+                    // Compact recording lanes still need room for their waveform.
+                    const float titleHeight = std::min(17.f, rect.getHeight() * .35f);
+                    g.setColour(Colours::darkred); g.fillRect(rect.withHeight(titleHeight));
+                    const auto body = rect.withTrimmedTop(titleHeight + 1).withTrimmedBottom(1);
                     if (body.getHeight() > 0) {
                         g.reduceClipRegion(body.getSmallestIntegerContainer());
                         const float laneHeight = body.getHeight()/preview.channels;
                         const double firstFrame = std::max(0., (t.timeAt(0)-item.clip.startTime)*preview.rate);
                         auto begin = std::lower_bound(preview.history.begin(), preview.history.end(), firstFrame,
                             [](const RecordingPreview::Peak &peak, double frame) { return peak.end < frame; });
-                        g.setColour(Colour::greyLevel(.52f));
+                        const auto colour = theme::track(track);
+                        const float luminance = .2126f*colour.getFloatRed()+.7152f*colour.getFloatGreen()+.0722f*colour.getFloatBlue();
+                        g.setColour(Colour::greyLevel(luminance > .68f ? .3f : .92f));
                         for (int channel = 0; channel < preview.channels; ++channel) {
                             Path peaks;
-                            int column = -1; float low = 0, high = 0;
+                            int column = -1; float low = 0, high = 0, endColumn = 0;
                             const float middle = body.getY()+laneHeight*(channel+.5f), amplitude = WaveformRenderer::fullScale(laneHeight);
                             auto emit = [&] {
                                 if (column >= 0) peaks.addRectangle((float)column, middle-high*amplitude,
-                                    1.f, std::max(1.f, (high-low)*amplitude));
+                                    std::max(1.f, endColumn-column), std::max(1.f, (high-low)*amplitude));
                             };
                             for (auto peak = begin; peak != preview.history.end(); ++peak) {
                                 const float x = t.xAt(item.clip.startTime + peak->start/preview.rate);
                                 if (x > getWidth()) break;
                                 const int next = std::max(0, (int)std::floor(x));
                                 if (next != column) { emit(); column=next; low=high=0; }
+                                endColumn=std::min((float)getWidth(),t.xAt(item.clip.startTime + peak->end/preview.rate));
                                 low=std::min(low, peak->low[(size_t)channel]);
                                 high=std::max(high, peak->high[(size_t)channel]);
                             }
@@ -2136,7 +2161,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     }
                     g.restoreState();
                     g.setColour(Colours::white); g.setFont(theme::semiboldFont(9));
-                    g.drawText(text(item.clip.name), rect.withHeight(17).reduced(4,0), Justification::centredLeft, true);
+                    const auto visibleTitle = rect.withHeight(titleHeight).getIntersection(
+                        juce::Rectangle<float>(0, rect.getY(), (float)getWidth(), titleHeight));
+                    g.drawText(text(item.clip.name), visibleTitle.reduced(4,0), Justification::centredLeft, true);
                 }
             }
             g.restoreState();
@@ -6309,10 +6336,14 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
                     projection = track.role.id == "video" && clip.audioFile.has_value();
                     hasFX = clip.fxJSON && !list(get(JSON::parse(text(*clip.fxJSON)), "inserted")).isEmpty();
                 }
+    if ((fileItem || midiItem) && (!clipSelected(id) || selectedClips.size() <= 1)) {
+        menu.addItem(41, "Editar nome"); menu.addSeparator();
+    }
     if (fileItem && (!clipSelected(id) || selectedClips.size() <= 1)) {
         menu.addItem(40, localization::translate("Open file location")); menu.addSeparator();
     }
     if (midiItem) {
+        menu.addItem(42, "Exportar MIDI", !clipSelected(id) || selectedClips.size() <= 1);
         menu.addItem(2,muted?"Desmutar itens":"Mutar itens");menu.addItem(31,"Converter Mono");menu.addItem(32,String::fromUTF8("Converter Estéreo"));menu.addItem(14,"Unificar itens");if(hasFX)menu.addItem(15,"FX");
     } else {
         if(audioItem || projection) {
@@ -6336,6 +6367,27 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                 return;
             safe->perform([&] {
                 auto &w = *safe;
+                if (action == 41 || action == 42) {
+                    if(targets.size()!=1 || w.session.project().id!=projectID || !w.session.song() || w.session.song()->id!=songID)return;
+                    for(const auto &track:w.session.song()->tracks)for(const auto &clip:track.clips)if(clip.id==id) {
+                        if(action==41) {
+                            auto close=[safe]{if(safe)ModalSheet::dismiss(*safe);};
+                            ModalSheet::open(w,"Editar nome",std::make_unique<ItemNamePanel>(text(clip.name),
+                                [safe,id,projectID,songID,close](String name){
+                                    if(!safe||safe->session.project().id!=projectID||!safe->session.song()||safe->session.song()->id!=songID)return;
+                                    safe->perform([&]{safe->session.edit([&](jaras::Project &p){
+                                        for(auto &s:p.songs)if(s.id==songID)for(auto &t:s.tracks)for(auto &c:t.clips)if(c.id==id)c.name=utf8(name);
+                                    },false);close();});
+                                },close),380,112);
+                        } else if(clip.midi) {
+                            w.chooser=std::make_unique<FileChooser>("Exportar MIDI",File::getSpecialLocation(File::userDocumentsDirectory).getChildFile(File::createLegalFileName(text(clip.name))+".mid"),"*.mid",true);
+                            w.chooser->launchAsync(FileBrowserComponent::saveMode|FileBrowserComponent::canSelectFiles|FileBrowserComponent::warnAboutOverwriting,
+                                [safe,clip](const FileChooser &fc){if(safe && fc.getResult()!=File())safe->perform([&]{exportMIDIItem(clip,fc.getResult().withFileExtension("mid"));});});
+                        }
+                        return;
+                    }
+                    return;
+                }
                 if (action == 40) {
                     if (w.session.project().id != projectID || !w.session.song() || w.session.song()->id != songID) return;
                     for (const auto &track : w.session.song()->tracks) for (const auto &clip : track.clips)

@@ -129,3 +129,36 @@ private final class TextItemNotepadView: NSTextView {
     }
 }
 #endif
+
+struct ItemNameEditor: View {
+    let apply: (String) -> Bool
+    let close: () -> Void
+    @State private var name: String
+    @FocusState private var focused: Bool
+    init(name: String, apply: @escaping (String) -> Bool, close: @escaping () -> Void) {
+        self.apply = apply; self.close = close; _name = State(initialValue: name)
+    }
+    private func confirm() { if apply(name) { close() } }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Editar nome").font(.jarasHeadline)
+            TextField("Nome do item", text: $name).focused($focused).onSubmit(confirm)
+            HStack {
+                Button("Cancel", action: close).keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save", action: confirm).keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }.buttonStyle(.bordered)
+        }.padding(24).frame(width: 380).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            .onAppear { focused = true }
+    }
+}
+
+import UniformTypeIdentifiers
+struct MIDIItemDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [UTType(filenameExtension: "mid") ?? .data] }
+    let data: Data
+    init(clip: AudioClip) throws { data = try MIDIItemExport.data(for: clip) }
+    init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
+}

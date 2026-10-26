@@ -18,6 +18,14 @@
 #include "JarasMobileAudioIO.inc"
 
 @implementation JarasAudioOutputConnection
++ (BOOL)startPlayer:(AVAudioPlayerNode *)player error:(NSError **)error {
+    @try { [player play]; return YES; }
+    @catch (NSException *exception) {
+        if (error) *error = [NSError errorWithDomain:@"CatLive.AudioPlayer" code:1
+            userInfo:@{NSLocalizedDescriptionKey: exception.reason ?: @"Unable to start audio playback"}];
+        return NO;
+    }
+}
 + (AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error {
     // A HAL route change can report 0 Hz / 0 channels while the selected
     // device is still settling. Do not manufacture a rate or borrow another

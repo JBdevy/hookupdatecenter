@@ -36,6 +36,7 @@ public:
     void setFX(const ID& track, std::string json);
     void setClipFX(const ID& clip, std::string json);
     void setClipFXBypass(const ID& clip, bool bypassed);
+    void setClipName(const ID& clip, std::string name);
     void setClipText(const ID& clip, std::string text);
     void setMIDIInput(const ID& track, int slot);
     void setMIDIChannel(const ID& track, int channel);

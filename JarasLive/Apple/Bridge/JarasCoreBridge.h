@@ -20,6 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)setFX:(NSString *)track data:(NSData *)data error:(NSError **)error;
 - (BOOL)setClipFX:(NSString *)clip data:(NSData *)data error:(NSError **)error;
 - (BOOL)setClipFXBypass:(NSString *)clip bypassed:(BOOL)bypassed error:(NSError **)error;
+- (BOOL)setClipName:(NSString *)clip name:(NSString *)name error:(NSError **)error;
 - (BOOL)setClipText:(NSString *)clip text:(NSString *)text error:(NSError **)error;
 - (BOOL)setTimecode:(NSString *)track data:(NSData *)data error:(NSError **)error;
 - (BOOL)setMIDIInput:(NSString *)track slot:(int)slot error:(NSError **)error;

@@ -684,6 +684,15 @@ void Engine::setClipFXBypass(const ID& id, bool bypassed) {
     }
     throw std::invalid_argument("Unknown FX item");
 }
+void Engine::setClipName(const ID& id, std::string name) {
+    projectSync::requireWritable();
+    if (name.empty()) throw std::invalid_argument("Item name cannot be empty");
+    for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips) if (clip.id == id) {
+        if (!clip.audioFile && !track.audioFile && !clip.midi) throw std::invalid_argument("Expected an audio, video or MIDI item");
+        clip.name = std::move(name); return;
+    }
+    throw std::invalid_argument("Unknown item");
+}
 void Engine::setClipText(const ID& id, std::string text) {
     projectSync::requireWritable();
     validateClipText(text);

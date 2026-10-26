@@ -804,7 +804,7 @@ struct TrackMixerRow: View, Equatable {
                         TrackFXButton(show: show, track: track.id, settings: track.fx ?? NativeFXSettings()).jarasHelp("Insert effect")
                     }
                     TrackRecordButton(show: show, track: track).buttonStyle(CompactTrackButtonStyle())
-                    TrackPanFader(show: show, track: track.id, pan: track.pan, compact: compactHeight).frame(width: 42, height: compactHeight ? 21 : 24)
+                    TrackPanFader(show: show, track: track.id, pan: track.pan, compact: compactHeight).frame(width: 42, height: compactHeight ? 22 : 24)
                     Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }.modifier(MappingRightClick(track: track.id, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
                     Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }.modifier(MappingRightClick(track: track.id, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                     } else if track.kind == .click {
@@ -1381,7 +1381,7 @@ private struct TrackPanFader: View {
                     if editingSession == session { dragValue = value; dragging = false; editingSession = nil }
                     show.sendMixerControl(.pan, target: track, value: value)
                 }
-            }).frame(height: 13)
+            }).frame(height: 14)
                 .accessibilityLabel("Pan").accessibilityValue(valueLabel)
                 .jarasHelp("Pan · Double-click to center")
             #else
@@ -1745,7 +1745,7 @@ private final class DirectVolumeSliderView: NSView {
             NSBezierPath(roundedRect: NSRect(x: bounds.midX - 11, y: y - 6, width: 22, height: 12), xRadius: 2, yRadius: 2).fill()
             NSColor.darkGray.setFill(); NSRect(x: bounds.midX - 8, y: y - 0.5, width: 16, height: 1).fill(); return
         }
-        let radius: CGFloat = mini ? 4 : 8
+        let radius: CGFloat = mini ? 5 : 8
         let railHeight: CGFloat = mini ? 3 : 6
         let rail = NSRect(x: radius, y: bounds.midY - railHeight / 2, width: max(1, bounds.width - radius * 2), height: railHeight)
         (linkedTrack != nil && !mini ? NSColor(JarasTheme.yellow) : NSColor.white.withAlphaComponent(0.22)).setFill()
@@ -1758,7 +1758,9 @@ private final class DirectVolumeSliderView: NSView {
         }
         (linkedTrack != nil && !mini ? NSColor(JarasTheme.green) : NSColor(white: 0.88, alpha: 1)).setFill()
         if mini {
-            NSBezierPath(roundedRect: NSRect(x: x - radius, y: bounds.midY - radius, width: radius * 2, height: radius * 2), xRadius: radius - 1, yRadius: radius - 1).fill()
+            NSBezierPath(roundedRect: NSRect(x: x - 5, y: bounds.midY - 7, width: 10, height: 14), xRadius: 2, yRadius: 2).fill()
+            NSColor(white: 0.6, alpha: 1).setFill()
+            NSRect(x: x - 0.5, y: bounds.midY - 5, width: 1, height: 10).fill()
         } else {
             NSBezierPath(roundedRect: NSRect(x: x - 6, y: bounds.midY - 9, width: 12, height: 18), xRadius: 2, yRadius: 2).fill()
             NSColor.darkGray.setFill(); NSRect(x: x - 0.5, y: bounds.midY - 6, width: 1, height: 12).fill()
@@ -1833,7 +1835,7 @@ private final class DirectVolumeSliderView: NSView {
     }
     private func move(to event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let knobWidth: CGFloat = mini ? 8 : 16
+        let knobWidth: CGFloat = mini ? 10 : 16
         let inset = knobWidth / 2
         if rotary {
             doubleValue = min(maxValue, max(minValue, rotaryValue + Double(rotaryOrigin.y - point.y + point.x - rotaryOrigin.x) * (maxValue - minValue) / 160))

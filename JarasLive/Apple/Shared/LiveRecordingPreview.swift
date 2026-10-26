@@ -65,7 +65,11 @@ struct RecordingGridOverlay: View {
                 guard let reservation = RecordingLaneLayout.shared.items[id], let index = tracks.firstIndex(where: { $0.id == reservation.track }) else { continue }
                 let count = RecordingLaneLayout.shared.count(for: reservation.track, existing: TrackLanes(track: tracks[index]).count)
                 let laneHeight = heights[index] / CGFloat(count)
-                let rect = CGRect(x: take.start*scale,y: rulerHeight+offsets[index]+CGFloat(reservation.clip.recordingLane ?? 0)*laneHeight+3,width: max(3,take.duration*scale),height: laneHeight-6)
+                // Capture buffers can lead the audible transport. Only the drawing
+                // is bounded by the same presentation clock as the playhead.
+                let duration = min(take.duration, TrackRecording.shared.recordingDisplayPosition.map { max(0, $0 - take.start) } ?? take.duration)
+                guard duration > 0 else { continue }
+                let rect = CGRect(x: take.start*scale,y: rulerHeight+offsets[index]+CGFloat(reservation.clip.recordingLane ?? 0)*laneHeight+3,width: duration*scale,height: laneHeight-6)
                 guard rect.intersects(visibleRect) else { continue }
                 let shape = Path(roundedRect: rect, cornerRadius: 3)
                 let color = JarasTheme.track(tracks[index], emphasized: false)
@@ -75,10 +79,12 @@ struct RecordingGridOverlay: View {
                 ink.clip(to: shape)
                 let headerHeight: CGFloat = rect.height <= 26 ? rect.height : GridSelectionItem.headerHeight
                 ink.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: headerHeight)), with: .color(.black.opacity(0.16)))
+                #if !os(macOS)
                 if rect.width > 8 {
                     let title = Text(verbatim: reservation.clip.name).font(.jarasSystem(size: 9, weight: .bold)).foregroundColor(.white)
                     ink.draw(title, in: CGRect(x: max(rect.minX, visibleRect.minX) + 4, y: rect.minY + 1, width: max(0, min(rect.maxX, visibleRect.maxX) - max(rect.minX, visibleRect.minX) - 8), height: headerHeight))
                 }
+                #endif
                 guard rect.height > 26 else { continue }
                 guard let waveform = take.waveform else { continue }
                 let bodyTop = rect.minY + GridSelectionItem.bodyInset
@@ -129,6 +135,8 @@ final class LiveRecordedWaveform: @unchecked Sendable {
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "live.catlive.recording.waveform", qos: .userInitiated)
     private let cache = NSCache<NSString, TimelineAudioWaveform.Geometry>()
+    // Retain the most recent tail while a longer version is prepared.
+    private let latest = NSCache<NSString, TimelineAudioWaveform.Geometry>()
     private var pending = Set<String>()
     private var frames: Int64 = 0
     private var peaks: [[SIMD2<Int16>]]
@@ -146,6 +154,7 @@ final class LiveRecordedWaveform: @unchecked Sendable {
         // the spool automatically, without accumulating temporary recordings.
         Darwin.unlink(url.path)
         cache.totalCostLimit = 16 * 1024 * 1024
+        latest.totalCostLimit = 16 * 1024 * 1024
     }
     deinit { Darwin.close(descriptor) }
     func append(_ buffer: AVAudioPCMBuffer) throws {
@@ -185,10 +194,12 @@ final class LiveRecordedWaveform: @unchecked Sendable {
     func geometry(start: Int64, step: Int, span: Int) -> TimelineAudioWaveform.Geometry? {
         lock.lock(); let available = min(Int64(span + 1), frames - start); lock.unlock()
         guard available > 0 else { return nil }
+        let baseKey = "\(start):\(step):\(span)" as NSString
         let key = "\(start):\(step):\(span):\(available)"
+        let previous = latest.object(forKey: baseKey)
         if let existing = cache.object(forKey: key as NSString) { return existing }
         lock.lock()
-        guard pending.count < 64, pending.insert(key).inserted else { lock.unlock(); return nil }
+        guard pending.count < 64, pending.insert(key).inserted else { lock.unlock(); return previous }
         lock.unlock()
         queue.async { [self] in
             defer { lock.lock(); pending.remove(key); lock.unlock() }
@@ -237,8 +248,9 @@ final class LiveRecordedWaveform: @unchecked Sendable {
             }
             let geometry = TimelineAudioWaveform.Geometry(vertices: vertices)
             cache.setObject(geometry, forKey: key as NSString, cost: geometry.cost)
+            latest.setObject(geometry, forKey: baseKey, cost: geometry.cost)
             Task { @MainActor in LiveRecordingPreview.shared.objectWillChange.send() }
         }
-        return nil
+        return previous
     }
 }

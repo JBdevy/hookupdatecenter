@@ -2498,6 +2498,23 @@ public struct ShowTimelinePresentationState: Equatable {
             return clip.id
         } catch { message = error.localizedDescription; return nil }
     }
+    @discardableResult public func renameItem(_ id: UUID, name: String) -> Bool {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canControl(), !finishing, !name.isEmpty else { return false }
+        for song in snapshot.project.songs.indices {
+            for track in snapshot.project.songs[song].tracks.indices {
+                guard let item = snapshot.project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == id }) else { continue }
+                guard snapshot.project.songs[song].tracks[track].clips[item].name != name else { return true }
+                do {
+                    try executor.setClipName(id, name: name)
+                    snapshot.project.songs[song].tracks[track].clips[item].name = name
+                    markChanged(refreshAudio: false); onProjectEdited()
+                    return true
+                } catch { message = error.localizedDescription; return false }
+            }
+        }
+        return false
+    }
     @discardableResult public func updateTextItem(_ id: UUID, text: String) -> Bool {
         guard canControl(), !finishing else { return false }
         for song in snapshot.project.songs.indices {
