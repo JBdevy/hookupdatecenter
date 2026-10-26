@@ -9,7 +9,8 @@ void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
     g.setColour(Colours::white.withAlpha(isEnabled() ? 1.f : .45f));
     auto font = theme::mediumFont(12);
     g.setFont(font);
-    const float textWidth = GlyphArrangement::getStringWidth(font, getName());
+    const auto title = localization::translate(getButtonText());
+    const float textWidth = GlyphArrangement::getStringWidth(font, title);
     float x = (getWidth() - textWidth - 24) * .5f, y = (getHeight() - 16) * .5f;
     Path path;
     if (icon == recording) {
@@ -49,7 +50,7 @@ void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
         for (int i = 0; i < 4; ++i)
             path.addRectangle(x + 7, y + 3 + i * 2.5f, 2, 1);
     g.strokePath(path, PathStrokeType(1.2f, PathStrokeType::curved, PathStrokeType::rounded));
-    g.drawText(getName(), juce::Rectangle<float>(x + 24, 0, textWidth + 2, (float)getHeight()),
+    g.drawText(title, juce::Rectangle<float>(x + 24, 0, textWidth + 2, (float)getHeight()),
                Justification::centredLeft);
 }
 ProjectBrowser::ProjectBrowser() {
@@ -125,7 +126,7 @@ ProjectBrowser::ProjectBrowser() {
         if (resume)
             resume();
     };
-    search.setTextToShowWhenEmpty("Buscar projetos recentes", theme::secondary);
+    search.setTextToShowWhenEmpty(localization::translate("Buscar projetos recentes"), theme::secondary);
     search.setFont(theme::font(12));
     search.setBorder(BorderSize<int>(9));
     search.setColour(TextEditor::outlineColourId, Colours::transparentBlack);
@@ -153,7 +154,7 @@ void ProjectBrowser::beginLoading(const File &file) {
     cancelLoadingAction = {};
     mode = opening;
     loadingError.setText({}, dontSendNotification);
-    loadingStatus.setText(String::fromUTF8("Carregando projeto…"), dontSendNotification);
+    loadingStatus.setText(localization::translate(String::fromUTF8("Carregando projeto…")), dontSendNotification);
     // Preserve the recent list and its selected row throughout preparation.
     // A file chosen through Browse can still show progress without being added
     // to Recents until it has opened successfully.
@@ -174,7 +175,7 @@ void ProjectBrowser::setLoadingCancellation(std::function<void()> action) {
     resized();
 }
 void ProjectBrowser::updateLoading(const String &status) {
-    if (loading) loadingStatus.setText(status, dontSendNotification);
+    if (loading) loadingStatus.setText(localization::translate(status), dontSendNotification);
 }
 void ProjectBrowser::finishLoading(const String &error) {
     loading = false;
@@ -196,6 +197,10 @@ void ProjectBrowser::updateEnabled() {
     recents.setEnabled(!loading);
 }
 void ProjectBrowser::refresh() {
+    for (auto *button : {&create, &add, &recent, &empty, &stems, &reaper, &logic, &recording, &package, &back})
+        button->setButtonText(localization::translate(button->getName()));
+    browseButton.setButtonText(localization::translate(String::fromUTF8("Browse…")));
+    search.setTextToShowWhenEmpty(localization::translate("Search recent projects"), theme::secondary);
     filtered.clear();
     for (auto &path : RecentProjects::read())
         if (search.getText().trim().isEmpty() || path.containsIgnoreCase(search.getText().trim()))
@@ -238,9 +243,9 @@ void ProjectBrowser::paint(Graphics &g) {
     if (mode == opening) {
         g.setFont(theme::font(11));
         g.setColour(theme::secondary);
-        g.drawText("Projetos recentes", 24, 114, getWidth() - 150, 24, Justification::centredLeft);
+        g.drawText(localization::translate("Projetos recentes"), 24, 114, getWidth() - 150, 24, Justification::centredLeft);
         if (filtered.isEmpty())
-            g.drawText("Nenhum projeto recente encontrado.", 24, 202, getWidth() - 48, 24,
+            g.drawText(localization::translate("Nenhum projeto recente encontrado."), 24, 202, getWidth() - 48, 24,
                        Justification::centredLeft);
     }
     if (loading)

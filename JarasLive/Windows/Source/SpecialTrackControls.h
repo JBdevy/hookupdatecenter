@@ -1,9 +1,10 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 namespace catlive {
 class SpecialTrackControls final : public Component {
     Session &session;ID id;std::function<void(ID,String)> action;
-    TextButton insert{"Insert"},media{String::fromUTF8("Adicionar mídia")},addText{String::fromUTF8("Adicionar texto")},settings,mtc{"MTC"},ltc{"LTC"};
+    TextButton insert{"Insert"},media{localization::translate(String::fromUTF8("Adicionar mídia"))},addText{localization::translate(String::fromUTF8("Adicionar texto"))},settings,mtc{"MTC"},ltc{"LTC"};
     const jaras::Track *track() const {if(auto *s=session.song())for(const auto &t:s->tracks)if(t.id==id)return &t;return nullptr;}
   public:
     SpecialTrackControls(Session &s,ID target,std::function<void(ID,String)> callback):session(s),id(std::move(target)),action(std::move(callback)) {

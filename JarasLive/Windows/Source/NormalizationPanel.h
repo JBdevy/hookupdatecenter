@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Normalization.h"
 #include "Session.h"
 #include "Appearance.h"
@@ -40,8 +41,8 @@ class NormalizationPanel final : public Component {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::font(13));
-        g.drawText("Modo", 22, 18, 60, 26, Justification::centredLeft);
-        g.drawText("Alvo", 22, 62, 60, 26, Justification::centredLeft);
+        g.drawText(localization::translate("Modo"), 22, 18, 60, 26, Justification::centredLeft);
+        g.drawText(localization::translate("Alvo"), 22, 62, 60, 26, Justification::centredLeft);
         g.drawText(mode.getSelectedId() == 1   ? "LUFS"
                    : mode.getSelectedId() == 4 ? "dBTP"
                                                : "dB",
@@ -60,7 +61,7 @@ class NormalizationPanel final : public Component {
     ID id;
     ComboBox mode;
     TextEditor level;
-    TextButton cancel{"Cancelar"}, applyButton{"Normalizar"};
+    TextButton cancel{localization::translate("Cancelar")}, applyButton{localization::translate("Normalizar")};
     String status;
     bool failed = false, busy = false;
     ThreadPool worker{1};

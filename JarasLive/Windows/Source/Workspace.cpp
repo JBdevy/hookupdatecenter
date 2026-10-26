@@ -1,3 +1,4 @@
+#include "Localization.h"
 #include "TrackInstrumentPicker.h"
 #include "ItemNamePanel.h"
 #include "MIDIItemExport.h"
@@ -419,9 +420,9 @@ class Panel : public Component {
     explicit Panel(String name, String description = {}) {
         addAndMakeVisible(title);
         addAndMakeVisible(subtitle);
-        title.setText(name, dontSendNotification);
+        title.setText(localization::translate(name), dontSendNotification);
         title.setFont(theme::font(20, true));
-        subtitle.setText(description, dontSendNotification);
+        subtitle.setText(localization::translate(description), dontSendNotification);
         subtitle.setFont(theme::font(11));
         subtitle.setColour(Label::textColourId, theme::secondary);
     }
@@ -434,7 +435,7 @@ class Panel : public Component {
         auto *l = new Label();
         owned.add(l);
         addAndMakeVisible(l);
-        l->setText(name, dontSendNotification);
+        l->setText(localization::translate(name), dontSendNotification);
         l->setFont(theme::font(11));
         l->setBounds(x, y, width, 22);
         return *l;
@@ -450,7 +451,7 @@ class Panel : public Component {
     }
     TextButton &button(String value, int x, int y, int width, std::function<void()> action,
                        Colour colour = theme::panel) {
-        auto *b = new QuietButton(value);
+        auto *b = new QuietButton(localization::translate(value));
         owned.add(b);
         addAndMakeVisible(b);
         b->setBounds(x, y, width, 30);
@@ -501,7 +502,7 @@ class MAPanel final : public Panel, private TableListBoxModel {
         table.getHeader().addColumn("TC", 5, 65);
         table.getHeader().addColumn("Cues", 6, 55);
         table.getHeader().setStretchToFitActive(true);
-        selectAll = &button("Selecionar tudo", 24, 156, 125, [this] {
+        selectAll = &button(localization::translate("Selecionar tudo"), 24, 156, 125, [this] {
             for (auto &r : lighting.regions)
                 lighting.selected.insert(r.id);
             table.repaint();
@@ -522,7 +523,7 @@ class MAPanel final : public Panel, private TableListBoxModel {
         advancedComponents.add(&copy);
         copy.setBounds(594, 222, 150, 28);
         auto devices = MidiOutput::getAvailableDevices();
-        midi.addItem(String::fromUTF8("Nenhuma saída MIDI"), 1);
+        midi.addItem(localization::translate(String::fromUTF8("Nenhuma saída MIDI")), 1);
         int id = 2;
         for (auto &d : devices) {
             midi.addItem(d.name, id);
@@ -751,15 +752,15 @@ class LoginPanel final : public Panel {
         });
         trial = &button(String::fromUTF8("Trial teste · 7 dias"), 226, 261, 184,
                         [this, offersTrial] { if (offersTrial) auth.trial(auth.deviceName); else ModalSheet::dismiss(*this); });
-        if (!offersTrial) trial->setButtonText("Fechar");
+        if (!offersTrial) trial->setButtonText(localization::translate("Fechar"));
         manage = &button("Gerenciar dispositivos", 30, 443, 380, [this] { devices(); });
         deviceName = &editor({}, 30, 325, 380, 30);
         deviceName->setComponentID("loginDeviceName");
-        deviceName->setTextToShowWhenEmpty("Ex.: PC do palco", theme::secondary);
+        deviceName->setTextToShowWhenEmpty(localization::translate("Ex.: PC do palco"), theme::secondary);
         deviceName->setFont(theme::font(13));
         deviceName->onTextChange = [this] { update(); };
         deviceName->onReturnKey = [this] { login->triggerClick(); };
-        back = &button("Voltar", 30, 463, 80, [this] {
+        back = &button(localization::translate("Voltar"), 30, 463, 80, [this] {
             submitted = false; auth.cancelDeviceNaming(); cpf->clear(); update();
         });
         for (auto *b : {stage, trial, login}) {
@@ -809,8 +810,8 @@ class LoginPanel final : public Panel {
         if (auth.requiresDeviceName) {
             stage->setVisible(false); trial->setVisible(false); email->setVisible(false);
             cpf->setVisible(false); manage->setVisible(false);
-            title.setText("Nome deste dispositivo", dontSendNotification);
-            subtitle.setText(String::fromUTF8("Escolha um nome para identificar este PC na sua conta e na lista de conexão do iPad ou celular."), dontSendNotification);
+            title.setText(localization::translate("Nome deste dispositivo"), dontSendNotification);
+            subtitle.setText(localization::translate(String::fromUTF8("Escolha um nome para identificar este PC na sua conta e na lista de conexão do iPad ou celular.")), dontSendNotification);
             subtitle.setBounds(30, 255, getWidth() - 60, 52);
             deviceName->setBounds(30, 325, getWidth() - 60, 30);
             login->setBounds(30, 383, 180, 42);
@@ -836,8 +837,8 @@ class LoginPanel final : public Panel {
         manage->setEnabled(!auth.busy && credentials);
         trial->setEnabled(!auth.busy);
         stage->setEnabled(!auth.busy);
-        login->setButtonText(auth.busy ? String::fromUTF8("Aguarde…") : naming ? "Salvar e continuar" : "Entrar");
-        message.setText(auth.busy ? String::fromUTF8("Validando acesso…") : auth.message,
+        login->setButtonText(auth.busy ? localization::translate(String::fromUTF8("Aguarde…")) : naming ? localization::translate("Salvar e continuar") : localization::translate("Entrar"));
+        message.setText(auth.busy ? localization::translate(String::fromUTF8("Validando acesso…")) : auth.message,
                         dontSendNotification);
         if (namingChanged) {
             if (layoutChanged) layoutChanged();
@@ -1599,22 +1600,35 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         stopGesture();
         applyCursorZoom(scale);
     }
+    void updateZoomRange() {
+        canvas.invalidateSelectionLayout();
+        const auto *song = displaySong();
+        horizontal.setRangeLimits(0, std::max((double)canvas.getWidth(),
+            (song ? song->duration : 120) * w.pixelsPerSecond + 120), dontSendNotification);
+        horizontal.setCurrentRange(horizontal.getCurrentRangeStart(), canvas.getWidth(), dontSendNotification);
+    }
+    void repaintZoom() {
+        // Horizontal scale never changes track heights or automation row bounds.
+        // Avoid rebuilding vertical ranges and walking the track tree per frame.
+        for (auto *lane : lanes) if (lane->isVisible()) lane->repaint();
+        canvas.repaint(); heads.repaint();
+    }
     void applyCursorZoom(double scale) {
         const double cursor = gestureZoomPosition.value_or(timelineZoomPosition(w.session.presentationTransport()));
         w.pixelsPerSecond = jlimit(timelineGrid::minimumZoom, timelineGrid::maximumZoom, scale);
         w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
-        updateRanges();
+        updateZoomRange();
         horizontal.setCurrentRangeStart(timelineCenteredZoomOffset(cursor, w.pixelsPerSecond,
-            horizontal.getMaximumRangeLimit(), canvas.getWidth()), sendNotificationSync);
-        invalidate();
+            horizontal.getMaximumRangeLimit(), canvas.getWidth()), dontSendNotification);
+        repaintZoom();
     }
     void applyZoom(double scale, float anchor) {
         auto old = timeAt(anchor);
         w.pixelsPerSecond = jlimit(timelineGrid::minimumZoom, timelineGrid::maximumZoom, scale);
         w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
-        updateRanges();
-        horizontal.setCurrentRangeStart(old * w.pixelsPerSecond - anchor);
-        invalidate();
+        updateZoomRange();
+        horizontal.setCurrentRangeStart(old * w.pixelsPerSecond - anchor, dontSendNotification);
+        repaintZoom();
     }
     void fit() {
         stopGesture();
@@ -1746,9 +1760,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         gestureTarget = pan
             ? jlimit(0., std::max(0., horizontal.getMaximumRangeLimit() - horizontal.getCurrentRangeSize()), gestureTarget + delta)
             : jlimit(std::log(timelineGrid::minimumZoom), std::log(timelineGrid::maximumZoom), gestureTarget + delta);
+        gestureOrigin = pan ? horizontal.getCurrentRangeStart() : std::log(w.pixelsPerSecond);
         lastGestureInput = now;
-        if (!isTimerRunning()) { lastGestureFrame = now - 16; startTimerHz(60); }
-        timerCallback();
+        if (!isTimerRunning()) { startTimerHz(60); timerCallback(); }
     }
 
   private:
@@ -1768,19 +1782,19 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
     } playbackFrames{*this};
     int gestureMode = 0, gestureDirection = 0;
-    double gestureTarget = 0, lastGestureInput = 0, lastGestureFrame = 0;
+    double gestureTarget = 0, gestureOrigin = 0, lastGestureInput = 0;
     std::optional<double> gestureZoomPosition;
 
     void stopGesture() { stopTimer(); gestureMode = 0; gestureDirection = 0; gestureZoomPosition.reset(); }
     void timerCallback() override {
         if (!gestureMode) return;
         const auto now = Time::getMillisecondCounterHiRes();
-        const double dt = jlimit(0., .1, (now - lastGestureFrame) / 1000.);
-        lastGestureFrame = now;
-        const double current = gestureMode == 1 ? std::log(w.pixelsPerSecond) : horizontal.getCurrentRangeStart();
-        const double distance = gestureTarget - current;
-        const bool settled = std::abs(distance) < (gestureMode == 1 ? .0005 : .2);
-        const double next = settled ? gestureTarget : current + distance * (1 - std::exp(-dt / .065));
+        // A finite ease-out reaches one exact transform. An exponential tail
+        // kept moving thin grid lines by fractions of a pixel after the wheel stopped.
+        const double progress = jlimit(0., 1., (now - lastGestureInput) / 130.);
+        const bool settled = progress >= 1.;
+        const double eased = 1. - std::pow(1. - progress, 3.);
+        const double next = settled ? gestureTarget : gestureOrigin + (gestureTarget - gestureOrigin) * eased;
         if (gestureMode == 1) applyCursorZoom(std::exp(next));
         else horizontal.setCurrentRangeStart(next);
         if (settled) stopGesture();
@@ -3361,11 +3375,11 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
                   std::make_unique<MetronomePanel>(appearance, session.audio), 400, 356);
     };
     button("resolume", "Resolume", [this] { openResolume(); });
-    button("export", "Exportar", [this] { chooseExport(); });
+    button("export", localization::translate("Exportar"), [this] { chooseExport(); });
     button("settings", String::fromUTF8("⚙"), [this] {
         openSettings();
     }).setTooltip(String::fromUTF8("Configurações · Ctrl+, "));
-    button("audio", String::fromUTF8("Áudio"), [this] {
+    button("audio", localization::translate(String::fromUTF8("Áudio")), [this] {
         openAudioSettings();
     }).setTooltip("Dispositivo, taxa de amostragem, buffer e roteamento ASIO / WASAPI");
     auto &audioStatus = button("audioStatus", "", [this] { openAudioSettings(); });
@@ -3418,7 +3432,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     static_cast<QuietButton &>(*controls["setlist"]).context = [this](Point<int> point) { setlistMenu(point); };
     button("masterMute", "M", [this] { session.command(jaras::CommandKind::mute); });
     button("masterSolo", "S", [this] { session.command(jaras::CommandKind::solo); });
-    button("masterMono", String::fromUTF8("Estéreo"),
+    button("masterMono", localization::translate(String::fromUTF8("Estéreo")),
            [this] { session.command(jaras::CommandKind::masterMono); });
     button("masterFX", "FX", [this] { openFX(); });
     fxchain::bind(static_cast<QuietButton &>(*controls["masterFX"]), session, {},
@@ -3470,7 +3484,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         else { vinhetasVisible=!vinhetasVisible;resized(); }
     });
     static_cast<QuietButton &>(*controls["railVinhetas"]).context=[this](Point<int>){
-        PopupMenu menu;menu.addItem(1,vinhetasDetached?"Indexar":"Desindexar");
+        PopupMenu menu;menu.addItem(1,vinhetasDetached?localization::translate("Indexar"):localization::translate("Desindexar"));
         auto safe=Component::SafePointer<Workspace>(this);
         menu.showMenuAsync(PopupMenu::Options().withTargetComponent(controls["railVinhetas"]),[safe](int result){if(safe&&result==1)safe->toggleVinhetasDock();});
     };
@@ -3493,11 +3507,11 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     button("railTeleprompt", "T", [this] { showTeleprompter(); }).setTooltip("TP 1 - Teleprompter 1");
     button("tp1", "TP-1", [this] { showTeleprompter(1); }, Colour(0xffc44848));
     button("tp2", "TP-2", [this] { showTeleprompter(2); }, Colour(0xffc44848));
-    button("notices", "Recados", [this] { openNotices(); }, Colour(0xff897934));
+    button("notices", localization::translate("Recados"), [this] { openNotices(); }, Colour(0xff897934));
     for(int i=0;i<2;++i) {
         teleprompterHTTP[(size_t)i]=std::make_unique<TeleprompterHTTP>();
         static_cast<QuietButton &>(*controls[i?"tp2":"tp1"]).context=[safe=SafePointer<Workspace>(this),i](Point<int> point){
-            PopupMenu menu;menu.addItem(1,String::fromUTF8("Configurações"));menu.addItem(2,"TP Remoto");
+            PopupMenu menu;menu.addItem(1,localization::translate(String::fromUTF8("Configurações")));menu.addItem(2,localization::translate("TP Remoto"));
             menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x,point.y,1,1}),[safe,i](int choice){
                 if(!safe)return;if(choice==1)safe->openStageConfig(i+1);if(choice==2)safe->openTPRemote(i+1);
             });
@@ -3526,7 +3540,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     button("railSettings", String::fromUTF8("⚙"), [this] {
         openSettings();
     }).setTooltip(String::fromUTF8("Configurações"));
-    button("railHelp", "?", [this] { showShortcuts(); }).setTooltip("Atalhos");
+    button("railHelp", "?", [this] { showShortcuts(); }).setTooltip(localization::translate("Atalhos"));
     for (auto id : {"menu", "mixer", "railMixer", "railKeyboard", "railParts", "railVinhetas", "settings",
                     "loop", "pause"})
         controls[id]->getProperties().set("icon", id);
@@ -4859,7 +4873,7 @@ void Workspace::updateState() {
     controls["metronome"]->setToggleState(session.audio.metronomeEnabled.load(),
                                           dontSendNotification);
     controls["record"]->setColour(TextButton::buttonOnColourId, theme::transportRed);
-    controls["save"]->setButtonText(session.isSaving() ? "Salvando..." : session.dirty ? "Salvar" : "Salvo");
+    controls["save"]->setButtonText(session.isSaving() ? "Salvando..." : session.dirty ? localization::translate("Salvar") : localization::translate("Salvo"));
     controls["save"]->setEnabled(!session.isSaving());
     controls["save"]->getProperties().set("leadingIcon", session.dirty ? "save" : "check");
     controls["save"]->setColour(TextButton::buttonColourId,
@@ -5070,6 +5084,7 @@ void Workspace::changeListenerCallback(ChangeBroadcaster *) {
             localization::panel(*panel); panel->repaint();
         }
     }
+    projectBrowser->refresh();
     partsLeft->refresh(); partsSidebar->refresh();
     updateState();
     timeline->invalidate();
@@ -5390,13 +5405,13 @@ void Workspace::confirm(const String &title, const String &message, std::functio
                                          cancelled();
                                  }));
 }
-void Workspace::confirmProjectReplacement(const String &name, std::function<void()> action, std::function<void()> cancelled) {
+void Workspace::confirmProjectReplacement(const String &name, std::function<void()> action, std::function<void()> cancelled, bool confirmedRemotely) {
     auto proceed = [safe = SafePointer<Workspace>(this), action] {
         if (!safe) return;
         // Match macOS: save the outgoing document before replacing it.
         if (safe->projectReady && (safe->session.dirty || safe->session.isSaving())) {
             if (safe->session.document == File()) { safe->chooseSave(false, action); return; }
-            auto finish = safe->beginProjectLoading(safe->session.document, String::fromUTF8("Salvando projeto atual…"));
+            auto finish = safe->beginProjectLoading(safe->session.document, localization::translate(String::fromUTF8("Salvando…")));
             try { safe->session.saveAsync(safe->session.document, [safe, finish, action](String error) {
                 finish(error);
                 if (!safe || error.isNotEmpty()) return;
@@ -5405,7 +5420,7 @@ void Workspace::confirmProjectReplacement(const String &name, std::function<void
             }); } catch (const std::exception &e) { finish(String::fromUTF8(e.what())); }
         } else action();
     };
-    if (!projectReady) { proceed(); return; }
+    if (!projectReady || confirmedRemotely) { proceed(); return; }
     ModalSheet::open(*this, localization::translate("Open another project?"),
         std::make_unique<ProjectOpenConfirmationPanel>(name, proceed, cancelled), 460, 232);
 }
@@ -5651,9 +5666,9 @@ void Workspace::openProject(const File &file, std::function<void()> loaded, bool
         }
     };
     if (!confirmed && projectReady && file != session.document) {
-        host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::waiting, "Confirm opening the project on the PC. The current project has unsaved changes.");
+        if (remoteRequest.empty()) host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::waiting, "Confirm opening the project on the PC. The current project has unsaved changes.");
         confirmProjectReplacement(file.getFileNameWithoutExtension(), action,
-            [host, remoteRequest] { host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::cancelled); });
+            [host, remoteRequest] { host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::cancelled); }, !remoteRequest.empty());
     } else
         action();
 }
@@ -5682,7 +5697,7 @@ void Workspace::createProject(bool withStems, int recordingChannels, bool inNewT
                               .getChildFile("CatLive");
             folder.createDirectory();
             safe->chooser = std::make_unique<FileChooser>(
-                "Create Project", folder.getChildFile(legal + ".jl"), "*.jl", true);
+                localization::translate("Create Project"), folder.getChildFile(legal + ".jl"), "*.jl", true);
             safe->chooser->launchAsync(
                 FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
                     FileBrowserComponent::warnAboutOverwriting,
@@ -5703,7 +5718,7 @@ void Workspace::createProject(bool withStems, int recordingChannels, bool inNewT
                     auto create = [safe, target, name, recordingChannels, withStems, inNewTab] {
                         if (!safe || safe->session.busy || safe->session.audio.isRecording()) return;
                         if (target.existsAsFile()) { safe->showError("A project already exists at this location. Choose another name."); return; }
-                        auto finish = safe->beginProjectLoading(target, String::fromUTF8("Criando projeto…"));
+                        auto finish = safe->beginProjectLoading(target, localization::translate(String::fromUTF8("Copying audio and saving project…")));
                         safe->session.busy = true;
                         // Write the new document off the message thread; keep the
                         // outgoing session intact until normal asynchronous loading succeeds.
@@ -5757,7 +5772,7 @@ void Workspace::chooseOpen() {
     auto launch = [safe = Component::SafePointer<Workspace>(this)] {
         if (!safe)
             return;
-        safe->chooser = std::make_unique<FileChooser>("Abrir projeto CatLive",
+        safe->chooser = std::make_unique<FileChooser>(localization::translate("Open Project"),
                                                       safe->session.document, "*.jl;*.bkjl;*.ziplive;*.zip", true);
         safe->chooser->launchAsync(FileBrowserComponent::openMode |
                                        FileBrowserComponent::canSelectFiles,
@@ -5800,7 +5815,7 @@ void Workspace::chooseSave(bool saveAs, std::function<void()> saved) {
         File::getSpecialLocation(File::userDocumentsDirectory)
             .getChildFile("CatLive/" + File::createLegalFileName(text(session.project().name)) +
                           "/" + File::createLegalFileName(text(session.project().name)) + ".jl");
-    chooser = std::make_unique<FileChooser>("Salvar projeto CatLive em uma pasta exclusiva",
+    chooser = std::make_unique<FileChooser>(localization::translate("Save Project"),
                                             suggested, "*.jl", true);
     chooser->launchAsync(
         FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
@@ -6088,10 +6103,10 @@ void Workspace::showRegionMenu(ID id, Point<int> point) {
     if (!session.song()) return;
     const bool unified = regionEditing::hasChildren(*session.song(),id);
     PopupMenu menu;
-    menu.addItem(1, "Editar"); menu.addItem(2, String::fromUTF8("Detectar BPM…"));
-    if (regionEditing::overlapping(*session.song(),id).size()>1) menu.addItem(3,"Unificar");
-    if (unified) menu.addItem(4,"Desunificar");
-    menu.addItem(5,String::fromUTF8("Exportar áudio")); menu.addItem(6,String::fromUTF8("Excluir região"));
+    menu.addItem(1, localization::translate("Editar")); menu.addItem(2, localization::translate(String::fromUTF8("Detectar BPM…")));
+    if (regionEditing::overlapping(*session.song(),id).size()>1) menu.addItem(3,localization::translate("Unificar"));
+    if (unified) menu.addItem(4,localization::translate("Desunificar"));
+    menu.addItem(5,localization::translate(String::fromUTF8("Exportar áudio"))); menu.addItem(6,localization::translate(String::fromUTF8("Excluir região")));
     menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x,point.y,1,1}),[safe=SafePointer<Workspace>(this),id](int action){
         if(!safe||!safe->session.song())return;
         if(action==1)safe->editRegion(id);
@@ -6156,7 +6171,7 @@ void Workspace::showMarkerMenu(ID id, Point<int> point) {
     if(found==song->markers->end())return;
     if(!markerRegions::outsideRegions(*found,*song)){editMarker(id,found->position);return;}
     const auto projectID=session.project().id,songID=song->id;
-    PopupMenu menu;menu.addItem(1,"Editar");menu.addItem(2,String::fromUTF8("Converter para região"));
+    PopupMenu menu;menu.addItem(1,localization::translate("Editar"));menu.addItem(2,String::fromUTF8("Converter para região"));
     menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x,point.y,1,1}),[safe=SafePointer<Workspace>(this),id,projectID,songID](int choice){
         if(!safe || safe->session.project().id!=projectID || !safe->session.song() || safe->session.song()->id!=songID)return;
         const auto *song=safe->session.song();
@@ -6171,7 +6186,7 @@ void Workspace::showMarkerMenu(ID id, Point<int> point) {
 void Workspace::editMarker(ID id, double position, bool section) {
     if (!session.song()) return;
     if(section && !markerEditing::canCreateSection(*session.song(),position)) {
-        showError(String::fromUTF8("Marcadores de trecho só podem ser criados dentro de uma música."));
+        showError(localization::translate(String::fromUTF8("Marcadores de trecho só podem ser criados dentro de uma música.")));
         return;
     }
     jaras::TimelineMarker marker; marker.id = id.empty() ? uuid() : id;
@@ -6218,7 +6233,7 @@ void Workspace::editTempoMarker(ID id, double position) {
 PopupMenu Workspace::masterMenu(bool barMixer) const {
     PopupMenu menu;
     menu.addItem(1,"Patch"); menu.addItem(2,"FX"); menu.addItem(3,"Env");
-    menu.addItem(4,String::fromUTF8("Editar pista"));
+    menu.addItem(4,localization::translate(String::fromUTF8("Editar pista")));
     if(barMixer) {
         menu.addSeparator();
         menu.addItem(5,String::fromUTF8((bool)appearance.value("catlive.barMixer.masterRight",false)
@@ -6342,7 +6357,7 @@ void Workspace::specialTrackAction(ID id,const String &action) {
     }
     if(action=="media") {
         const ID project=session.project().id;
-        chooser=std::make_unique<FileChooser>(String::fromUTF8("Adicionar mídia"),File{},"*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.webm;*.png;*.jpg;*.jpeg;*.bmp");
+        chooser=std::make_unique<FileChooser>(localization::translate(String::fromUTF8("Adicionar mídia")),File{},"*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.webm;*.png;*.jpg;*.jpeg;*.bmp");
         chooser->launchAsync(FileBrowserComponent::openMode|FileBrowserComponent::canSelectFiles,[safe=SafePointer<Workspace>(this),id,project](const FileChooser &picker){
             if(!safe||safe->session.project().id!=project)return;const auto file=picker.getResult();if(!file.existsAsFile())return;
             safe->perform([&]{safe->session.importMedia({file},safe->session.transport().editPosition,id,MediaDropLayout::sameTrack,0);});
@@ -6362,15 +6377,15 @@ void Workspace::showTrackMenu(ID id, Point<int> point) {
     PopupMenu menu;
     if (standard || track.role.id=="timecode" || track.role.id=="video" || track.role.id=="generatedClick") menu.addItem(1,"Patch");
     if (track.role.id=="generatedClick") menu.addItem(2,"Sound Designer");
-    if (standard) { menu.addItem(3,"FX"); if(track.role.id!="vinhetas")menu.addItem(4,"Criar item MIDI"); if(groupable)menu.addItem(5,String::fromUTF8("Criar grupo")); }
-    if (trackTree::end(*song,at)>at+1) menu.addItem(6,"Desagrupar");
-    if (track.parentTrackID) menu.addItem(7,"Remover do grupo");
-    if (standard && trackEditing::linkable(*song,targets)) menu.addItem(8,"Vincular pistas");
-    if (track.stereoLinkPartner) menu.addItem(9,String::fromUTF8("Desvincular pistas"));
-    menu.addItem(10,String::fromUTF8("Editar pista"));
+    if (standard) { menu.addItem(3,"FX"); if(track.role.id!="vinhetas")menu.addItem(4,"Criar item MIDI"); if(groupable)menu.addItem(5,localization::translate(String::fromUTF8("Criar grupo"))); }
+    if (trackTree::end(*song,at)>at+1) menu.addItem(6,localization::translate("Ungroup"));
+    if (track.parentTrackID) menu.addItem(7,localization::translate("Remover do grupo"));
+    if (standard && trackEditing::linkable(*song,targets)) menu.addItem(8,localization::translate("Link tracks"));
+    if (track.stereoLinkPartner) menu.addItem(9,localization::translate("Unlink tracks"));
+    menu.addItem(10,localization::translate(String::fromUTF8("Editar pista")));
     menu.addItem(13,String::fromUTF8("Ícone da pista"));
-    if (standard && track.role.id!="vinhetas") menu.addItem(12, targets.size() > 1 ? "Duplicar pistas" : "Duplicar pista");
-    menu.addSeparator(); menu.addItem(11,targets.size()>1 ? "Excluir pistas" : "Excluir pista");
+    if (standard && track.role.id!="vinhetas") menu.addItem(12, targets.size() > 1 ? localization::translate("Duplicar pistas") : localization::translate("Duplicar pista"));
+    menu.addSeparator(); menu.addItem(11,targets.size()>1 ? localization::translate("Delete tracks") : localization::translate("Delete track"));
     const auto project = session.project().id, songID = song->id;
     menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x,point.y,1,1}),
         [safe=SafePointer<Workspace>(this),id,targets,project,songID](int choice) {
@@ -6436,16 +6451,16 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
     }
     if (midiItem) {
         menu.addItem(42, "Exportar MIDI", !clipSelected(id) || selectedClips.size() <= 1);
-        menu.addItem(2,muted?"Desmutar itens":"Mutar itens");menu.addItem(31,"Converter Mono");menu.addItem(32,String::fromUTF8("Converter Estéreo"));menu.addItem(14,"Unificar itens");if(hasFX)menu.addItem(15,"FX");
+        menu.addItem(2,muted?localization::translate("Desmutar itens"):localization::translate("Mutar itens"));menu.addItem(31,localization::translate("Converter Mono"));menu.addItem(32,localization::translate(String::fromUTF8("Converter Estéreo")));menu.addItem(14,localization::translate("Unificar itens"));if(hasFX)menu.addItem(15,"FX");
     } else {
         if(audioItem || projection) {
-            menu.addItem(9,String::fromUTF8("Criar região do item"));menu.addItem(13,"Re-render");menu.addItem(14,"Unificar itens");menu.addItem(10,"Tuner");
+            menu.addItem(9,localization::translate(String::fromUTF8("Criar região do item")));menu.addItem(13,"Re-render");menu.addItem(14,localization::translate("Unificar itens"));menu.addItem(10,"Tuner");
             if(separable&&(!clipSelected(id)||selectedClips.size()<=1))menu.addItem(16,"Separation audio");
-            menu.addItem(11,String::fromUTF8("Normalizar…"));
-            if(audioItem){menu.addSeparator();menu.addItem(24,"Inverter - LR");menu.addItem(21,"Converter Mono - L");menu.addItem(22,"Converter Mono - R");menu.addItem(23,"Converter Mono L-R");menu.addItem(20,String::fromUTF8("Converter Estéreo"));}
+            menu.addItem(11,localization::translate(String::fromUTF8("Normalizar…")));
+            if(audioItem){menu.addSeparator();menu.addItem(24,localization::translate("Inverter - LR"));menu.addItem(21,localization::translate("Converter Mono - L"));menu.addItem(22,localization::translate("Converter Mono - R"));menu.addItem(23,localization::translate("Converter Mono L-R"));menu.addItem(20,localization::translate(String::fromUTF8("Converter Estéreo")));}
         }
-        if(audioItem){menu.addSeparator();menu.addItem(2,muted?"Desmutar itens":"Mutar itens");}
-        menu.addSeparator();menu.addItem(12,"Exportar",audioItem && !textItem);
+        if(audioItem){menu.addSeparator();menu.addItem(2,muted?localization::translate("Desmutar itens"):localization::translate("Mutar itens"));}
+        menu.addSeparator();menu.addItem(12,localization::translate("Exportar"),audioItem && !textItem);
     }
     menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x, point.y, 1, 1}),
                        clipMenuAction(id, ownerID));

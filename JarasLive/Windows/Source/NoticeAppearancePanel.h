@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "StageState.h"
 namespace catlive {
 class NoticeAppearancePanel final : public Component {
@@ -117,7 +118,7 @@ class NoticeAppearancePanel final : public Component {
 
       private:
         ColourSelector selector;
-        TextButton apply{"Aplicar"};
+        TextButton apply{localization::translate("Aplicar")};
     };
 };
 } // namespace catlive

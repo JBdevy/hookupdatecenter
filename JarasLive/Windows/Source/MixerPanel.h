@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "TrackInstrumentIcons.h"
 #include "GainFader.h"
@@ -512,7 +513,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         }
         void showEffectMenu(String key) {
             const auto settings = fxchain::settings(mixer.session,id);
-            PopupMenu menu; menu.addItem(1,"Bypass",true,!fxchain::enabled(settings,key)); menu.addItem(2,"Remover");
+            PopupMenu menu; menu.addItem(1,"Bypass",true,!fxchain::enabled(settings,key)); menu.addItem(2,localization::translate("Remover"));
             menu.showMenuAsync(PopupMenu::Options().withTargetComponent(this),[safe=Component::SafePointer<Strip>(this),key](int result) {
                 if (!safe || result==0) return;
                 safe->changeEffect(key,result==2);

@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "ModalSheet.h"
 namespace catlive {
 class RecordingProjectStep final : public Component {
@@ -35,7 +36,7 @@ class RecordingProjectStep final : public Component {
     }
   private:
     TextEditor count;
-    TextButton minus{"-"}, plus{"+"}, next{"Continuar"}, cancel{"Cancelar"};
+    TextButton minus{"-"}, plus{"+"}, next{localization::translate("Continuar")}, cancel{localization::translate("Cancelar")};
     std::function<void(int)> completed;
     void adjust(int delta) { count.setText(String(jlimit(1, 128, count.getText().getIntValue()+delta))); }
     void submit() {

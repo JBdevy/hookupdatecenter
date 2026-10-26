@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "RemoteHost.h"
 namespace catlive {
 class RemotePanel final : public Component, private Timer {
@@ -14,7 +15,7 @@ class RemotePanel final : public Component, private Timer {
                                            theme::secondary);
             pins[i].setFont(theme::font(13));
             addAndMakeVisible(save[i]);
-            save[i].setButtonText(i == 0 ? "Salvar senha" : "Salvar senha de Recados");
+            save[i].setButtonText(i == 0 ? "Salvar senha" : localization::translate("Salvar senha de Recados"));
             save[i].getProperties().set("fontSize", 13.f);
             save[i].getProperties().set("flat", true);
             save[i].onClick = [this, i] {
@@ -101,8 +102,8 @@ class RemotePanel final : public Component, private Timer {
               238, 36, 12, theme::secondary);
         if (saved[0])
             label(String::fromUTF8("Configuração salva."), 310, 16, 11, theme::green);
-        label("Senha do modo Recados", 338, 24, 14, Colours::white, true);
-        label("Acesso apenas aos recados. Deixe vazio para entrar sem senha.", 404, 34, 12,
+        label(localization::translate("Senha do modo Recados"), 338, 24, 14, Colours::white, true);
+        label(localization::translate("Acesso apenas aos recados. Deixe vazio para entrar sem senha."), 404, 34, 12,
               theme::secondary);
         if (saved[1])
             label(String::fromUTF8("Configuração salva."), 474, 16, 11, theme::green);
@@ -129,7 +130,7 @@ class RemotePanel final : public Component, private Timer {
     std::vector<remote::SyncDiscovery::Peer> available;
     void timerCallback() override { refresh(); }
     void refresh() {
-        toggleButton.setButtonText(host.enabled() ? "Desativar Remote" : "Ativar Remote");
+        toggleButton.setButtonText(host.enabled() ? localization::translate("Desativar Remote") : "Ativar Remote");
         const auto nextCables=host.sync.adapters();
         bool cableChange=nextCables.size()!=cables.size();
         if(!cableChange)for(size_t i=0;i<cables.size();++i)if(nextCables[i]!=cables[i] || nextCables[i].connected!=cables[i].connected || nextCables[i].name!=cables[i].name)cableChange=true;

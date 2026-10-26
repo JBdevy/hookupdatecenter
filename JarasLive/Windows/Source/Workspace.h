@@ -121,7 +121,7 @@ class Workspace final : public Component,
     void showImportNoticePreview();
     void showError(const String &, const String &title = "CatLive");
     void showProjectBrowser();
-    void confirmProjectReplacement(const String &, std::function<void()>, std::function<void()> cancelled = {});
+    void confirmProjectReplacement(const String &, std::function<void()>, std::function<void()> cancelled = {}, bool confirmedRemotely = false);
     std::function<void(String)> beginProjectLoading(const File &, const String &);
     void projectOpened(bool fitTimeline = true);
     bool isLoginShowing() const { return loginPanel != nullptr; }

@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -76,7 +77,7 @@ class MediaCleanupPanel final : public Component, private Timer {
 
   private:
     Session &session;
-    TextButton cancel{"Cancelar"}, remove{"Excluir"};
+    TextButton cancel{localization::translate("Cancelar")}, remove{localization::translate("Excluir")};
     bool working = false;
     String failure;
     double readyAt = Time::getMillisecondCounterHiRes() + 3000;
@@ -88,7 +89,7 @@ class MediaCleanupPanel final : public Component, private Timer {
     void timerCallback() override {
         const int seconds =
             std::max(0, (int)std::ceil((readyAt - Time::getMillisecondCounterHiRes()) / 1000));
-        remove.setButtonText(seconds > 0 ? "Excluir em " + String(seconds) + "s" : "Excluir");
+        remove.setButtonText(seconds > 0 ? "Excluir em " + String(seconds) + "s" : localization::translate("Excluir"));
         remove.setEnabled(available() && seconds == 0);
         if (working)
             repaint();

@@ -56,6 +56,8 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         command(jaras::CommandKind::toggleLoop);
     else if (action == "toggleMultiLoopBypass")
         command(jaras::CommandKind::toggleMultiLoopBypass);
+    else if (action == "cancelSection")
+        command(jaras::CommandKind::cancelSection);
     else if (action == "ignoreNext")
         command(jaras::CommandKind::ignoreNext);
     else if (action == "tempoDown" || action == "tempoUp") {

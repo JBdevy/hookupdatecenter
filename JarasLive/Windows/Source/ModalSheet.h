@@ -146,7 +146,7 @@ class ModalSheet final : public Component {
                 g.fillRoundedRectangle(getLocalBounds().toFloat(), 5);
                 g.setColour(Colours::white);
                 g.setFont(theme::font(12));
-                g.drawText("Fechar", getLocalBounds(), Justification::centred);
+                g.drawText(localization::translate("Fechar"), getLocalBounds(), Justification::centred);
                 return;
             }
             g.setColour(over ? Colours::white : theme::secondary);

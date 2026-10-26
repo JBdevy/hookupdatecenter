@@ -249,7 +249,7 @@ class Workspace::Setlist final : public Component,
         const auto selectedIDs = selection;
         auto state = currentState();
         playlistMenu.clear(dontSendNotification);
-        playlistMenu.addItem(String::fromUTF8("Todas as regiões"), 1);
+        playlistMenu.addItem(localization::translate(String::fromUTF8("Todas as regiões")), 1);
         bypass.setActive(w.session.transport().multiLoopsBypassed);
         int selected = 1;
         for (size_t i = 0; i < state.playlists.size(); ++i) {
@@ -636,7 +636,7 @@ class Workspace::Setlist final : public Component,
     QuietButton addPlaylist{"+"}, searchButton{String::fromUTF8("⌕")},
         live{"Live"}, parts{"Parts"};
     RegionStopButton stop;
-    QuietButton blocks{"Blocos"};
+    QuietButton blocks{localization::translate("Blocos")};
     BypassButton bypass;
     QuietButton automatic{"AUTO"};
     struct SearchEditor final : TextEditor {
@@ -975,8 +975,8 @@ class Workspace::Setlist final : public Component,
         SystemClipboard::copyTextToClipboard(setlistShareText(*song,currentState(),id));
     }
     void playlistOptions(std::optional<ID> selected, bool row, Component *choices = nullptr, Point<int> position = {}) {
-        PopupMenu menu; menu.addItem(1,"Copiar para compartilhar",w.session.song()!=nullptr);
-        if(row && selected) {menu.addSeparator();menu.addItem(2,String::fromUTF8("Adicionar regiões"));menu.addItem(3,"Editar");menu.addItem(4,"Clonar playlist");menu.addItem(5,"Excluir playlist");}
+        PopupMenu menu; menu.addItem(1,localization::translate("Copiar para compartilhar"),w.session.song()!=nullptr);
+        if(row && selected) {menu.addSeparator();menu.addItem(2,localization::translate(String::fromUTF8("Adicionar regiões")));menu.addItem(3,localization::translate("Editar"));menu.addItem(4,localization::translate("Clonar playlist"));menu.addItem(5,localization::translate("Delete playlist"));}
         const auto project=w.session.project().id;
         auto options = PopupMenu::Options().withTargetComponent(choices ? choices : &playlistMenu);
         if(choices) options = options.withTargetScreenArea({position.x,position.y,1,1});
@@ -996,7 +996,7 @@ class Workspace::Setlist final : public Component,
                     auto copy=p;copy.id=uuid();const auto remapped=playlistOccurrences::reidentifyCopies(copy,[]{return uuid();});copy.name += " (cópia)";
                     if(state.blocks){auto blocks=*state.blocks;for(auto block:blocks)if(block.playlistId==selected){block.id=uuid();block.playlistId=copy.id;if(block.beforeRegionId)if(auto at=remapped.find(*block.beforeRegionId);at!=remapped.end())block.beforeRegionId=at->second;state.blocks->push_back(block);}}
                     state.selectedId=copy.id;state.playlists.push_back(copy);self->apply(state);break;}}
-                if(action==5)self->w.confirm("Excluir playlist",String::fromUTF8("Excluir esta playlist? As músicas continuam no projeto."),[self,selected,project]{
+                if(action==5)self->w.confirm(localization::translate("Delete playlist"),String::fromUTF8("Excluir esta playlist? As músicas continuam no projeto."),[self,selected,project]{
                     if(!self || self->w.session.project().id!=project)return;auto state=self->currentState();
                     state.playlists.erase(std::remove_if(state.playlists.begin(),state.playlists.end(),[&](const auto &p){return p.id==selected;}),state.playlists.end());
                     if(state.blocks)state.blocks->erase(std::remove_if(state.blocks->begin(),state.blocks->end(),[&](const auto &b){return b.playlistId==selected;}),state.blocks->end());
@@ -1267,15 +1267,15 @@ class Workspace::Setlist final : public Component,
         if (!targets.count(entry.id)) targets = {entry.id};
         for (const auto &row : entries) if (row.block) targets.erase(row.id);
         PopupMenu menu;
-        menu.addItem(4, String::fromUTF8("Editar música"));
-        menu.addItem(2, String::fromUTF8("Detectar BPM…"));
+        menu.addItem(4, localization::translate(String::fromUTF8("Editar música")));
+        menu.addItem(2, localization::translate(String::fromUTF8("Detectar BPM…")));
         if (targets.size() == 1 && !entry.hasChildren) menu.addItem(1, "Multiloops");
         const auto playlist = selectedPlaylist() ? selectedPlaylist()->id : ID{};
         if (!playlist.empty() && targets.size()==1 && !entry.child && !searching)
             menu.addItem(7, localization::translate("Duplicate region"));
         menu.addItem(6,"Config Init");
-        menu.addItem(3, String::fromUTF8("Exportar áudio"));
-        if (!entry.child) menu.addItem(5, selectedPlaylist() ? "Remover da playlist" : String::fromUTF8("Excluir região"));
+        menu.addItem(3, localization::translate(String::fromUTF8("Exportar áudio")));
+        if (!entry.child) menu.addItem(5, selectedPlaylist() ? localization::translate("Remover da playlist") : localization::translate(String::fromUTF8("Excluir região")));
         std::set<ID> sources;
         for (const auto &id : targets) sources.insert(selectedPlaylist() ? selectedPlaylist()->resolvedRegionId(id) : id);
         menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({Desktop::getMousePosition().x,Desktop::getMousePosition().y,1,1}),

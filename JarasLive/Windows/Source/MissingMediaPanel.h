@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "ModalSheet.h"
 #include "ProjectMediaRecovery.h"
 namespace catlive {
@@ -50,7 +51,7 @@ class MissingMediaPanel final : public Component {
     StringArray paths, errors;
     std::function<void(bool)> completion;
     TextEditor details;
-    TextButton cancel{String::fromUTF8("Cancelar")}, open{String::fromUTF8("Abrir mesmo assim")},
+    TextButton cancel{localization::translate(String::fromUTF8("Cancelar"))}, open{String::fromUTF8("Abrir mesmo assim")},
                search{String::fromUTF8("Procurar")};
     std::unique_ptr<FileChooser> chooser;
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);

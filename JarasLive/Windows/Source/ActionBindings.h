@@ -79,6 +79,7 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"partsUp", "Parts Up", 4, ""},
         {"partsDown", "Parts Down", 4, ""},
         {"toggleParts", "Parts show/hide", 4, ""},
+        {"cancelSection", "Cancel queued section", 4, ""},
         {"setlistUp", "Setlist Up", 4, "cursor up"},
         {"setlistDown", "Setlist Down", 4, "cursor down"},
         {"toggleAuto", "Setlist Auto on/off", 4, ""},
@@ -487,7 +488,8 @@ class ActionBindings final : public ChangeBroadcaster,
                 if (midi.isObject() && (int)num(midi, "status") == input.status &&
                     (int)num(midi, "number") == input.number &&
                     (int)num(midi, "channel") == input.channel) {
-                    if (invoke && (definition.continuous || input.value > 0))
+                    if (invoke && (definition.continuous || input.value > 0) &&
+                        (definition.id != "cancelSection" || !wasHeld))
                         invoke(definition.id, input.value / 127.f, (int)num(b, "track"));
                     break;
                 }

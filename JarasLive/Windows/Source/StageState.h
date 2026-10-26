@@ -206,7 +206,7 @@ class StageTimerControl final : public Component, private Timer {
     StageState &state;
     std::function<void()> settings;
     TextEditor digits[3];
-    QuietButton start{"Iniciar"};
+    QuietButton start{localization::translate("Iniciar")};
     void timerCallback() override {
         auto parts = StringArray::fromTokens(
             state.timeText().removeCharacters(String::fromUTF8("−")), ":", {});

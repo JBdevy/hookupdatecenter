@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "StageState.h"
 #include "ModalSheet.h"
 
@@ -98,7 +99,7 @@ class StageTimerSettings final : public Component, private Timer {
     StageState &state;
     Field fields[3];
     QuietButton keys[12];
-    QuietButton start{"Iniciar"}, automatic{"INIT AUTO"}, close{"Fechar"};
+    QuietButton start{localization::translate("Iniciar")}, automatic{"INIT AUTO"}, close{localization::translate("Fechar")};
     int field = 0, caret = 0;
     void edit(int key) {
         if (state.running) return;
@@ -127,7 +128,7 @@ class StageTimerSettings final : public Component, private Timer {
             fields[i].repaint();
         }
         for (auto &key : keys) key.setEnabled(!state.running);
-        start.setButtonText(state.running ? "Parar" : "Iniciar");
+        start.setButtonText(state.running ? localization::translate("Parar") : localization::translate("Iniciar"));
         start.setColour(TextButton::buttonColourId, state.running ? Colours::red : theme::green);
         start.setColour(TextButton::textColourOffId, state.running ? Colours::white : Colours::black);
         automatic.setColour(TextButton::textColourOffId, state.autoStart ? theme::green : theme::secondary);

@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 #include "PortablePackage.h"
@@ -10,7 +11,7 @@ class PortableExportPanel final : public Component, private Timer {
     };
     Session &session;
     std::function<void(std::function<void()>)> save;
-    TextButton close{"Fechar"}, saveButton{"Salvar"}, exportButton{"Exportar para CatLive iPadOS"},
+    TextButton close{localization::translate("Fechar")}, saveButton{localization::translate("Salvar")}, exportButton{localization::translate("Exportar para CatLive iPadOS")},
         reveal{"Mostrar na pasta"};
     std::unique_ptr<FileChooser> chooser;
     std::shared_ptr<Work> work;
@@ -36,7 +37,7 @@ class PortableExportPanel final : public Component, private Timer {
         error = {};
         exported = {};
         ModalSheet::blockDismiss(*this, true);
-        close.setButtonText("Cancelar");
+        close.setButtonText(localization::translate("Cancelar"));
         timerCallback();
         const auto safe = SafePointer<PortableExportPanel>(this);
         auto state = work;
@@ -60,7 +61,7 @@ class PortableExportPanel final : public Component, private Timer {
                 if (failure.isEmpty())
                     safe->exported = destination;
                 ModalSheet::blockDismiss(*safe, false);
-                safe->close.setButtonText("Fechar");
+                safe->close.setButtonText(localization::translate("Fechar"));
                 safe->timerCallback();
             });
         });
@@ -121,7 +122,7 @@ class PortableExportPanel final : public Component, private Timer {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::font(18, true));
-        g.drawText("Exportar para CatLive iPadOS", 24, 22, getWidth() - 48, 24, Justification::centredLeft);
+        g.drawText(localization::translate("Exportar para CatLive iPadOS"), 24, 22, getWidth() - 48, 24, Justification::centredLeft);
         g.setColour(theme::secondary);
         g.setFont(theme::font(13));
         g.drawFittedText(

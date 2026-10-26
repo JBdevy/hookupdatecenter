@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Common.h"
 
 namespace catlive {
@@ -84,8 +85,8 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     Action recording{"REC Multitrack", Action::recording};
     Action package{"Add .ziplive", Action::archive};
     Action back{"Voltar ao projeto", Action::back};
-    TextButton browseButton{String::fromUTF8("Procurar…")};
-    TextButton cancelLoading{"Cancelar"};
+    TextButton browseButton{localization::translate(String::fromUTF8("Procurar…"))};
+    TextButton cancelLoading{localization::translate("Cancelar")};
     std::function<void()> cancelLoadingAction;
     TextEditor search;
     ListBox recents;

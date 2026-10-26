@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "ResolumeComposition.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -17,9 +18,9 @@ class ResolumePanel final : public Component {
         }
         osc.setInputRestrictions(5, "0123456789");
         web.setInputRestrictions(5, "0123456789");
-        markers.setButtonText(String::fromUTF8("Incluir marcadores no mapa do Resolume"));
+        markers.setButtonText(localization::translate(String::fromUTF8("Incluir marcadores no mapa do Resolume")));
         markers.setToggleState(lighting.includeMarkers, dontSendNotification);
-        follow.setButtonText("Acompanhar o transporte do CatLive");
+        follow.setButtonText(localization::translate("Acompanhar o transporte do CatLive"));
         follow.setToggleState(lighting.resolumeEnabled, dontSendNotification);
         for (auto *button :
              std::initializer_list<Button *>{&markers, &follow, &map, &create, &apply}) {
@@ -48,7 +49,7 @@ class ResolumePanel final : public Component {
         g.fillAll(theme::background);
         g.setFont(theme::font(13));
         g.setColour(Colours::white);
-        g.drawText(String::fromUTF8("Endereço"), 24, 18, 64, 26, Justification::centredLeft);
+        g.drawText(localization::translate(String::fromUTF8("Endereço")), 24, 18, 64, 26, Justification::centredLeft);
         g.drawText("OSC", 267, 18, 34, 26, Justification::centredLeft);
         g.drawText("Webserver", 381, 18, 77, 26, Justification::centredLeft);
         g.setColour(theme::secondary);
@@ -97,7 +98,7 @@ class ResolumePanel final : public Component {
     std::function<void(String)> error;
     TextEditor host, osc, web;
     ToggleButton markers, follow;
-    TextButton map{"Criar / atualizar mapa"},
+    TextButton map{localization::translate("Criar / atualizar mapa")},
         create{String::fromUTF8("Criar projeto do Resolume…")}, apply{"Aplicar"};
     Label status;
     std::unique_ptr<FileChooser> chooser;

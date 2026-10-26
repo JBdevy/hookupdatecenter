@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -21,7 +22,7 @@ class AudioSeparationPanel final : public Component, private Timer {
         progress.setColour(ProgressBar::backgroundColourId,Colour(0xff121212));
         cancel.setComponentID("cancelAudioSeparation");
         cancel.onClick=[this]{
-            if(session.busy){cancelling=true;session.cancelExport();cancel.setEnabled(false);status.setText(String::fromUTF8("Cancelando…"),dontSendNotification);}
+            if(session.busy){cancelling=true;session.cancelExport();cancel.setEnabled(false);status.setText(localization::translate(String::fromUTF8("Cancelando…")),dontSendNotification);}
             else ModalSheet::dismiss(*this);
         };
         startTimerHz(15);refresh();
@@ -38,7 +39,7 @@ class AudioSeparationPanel final : public Component, private Timer {
     }
   private:
     Session &session;double displayedProgress=0;ProgressBar progress;Label heading,status,percentage;
-    TextButton cancel{String::fromUTF8("Cancelar")};bool cancelling=false;
+    TextButton cancel{localization::translate(String::fromUTF8("Cancelar"))};bool cancelling=false;
     void refresh(){
         ModalSheet::blockDismiss(*this,session.busy);
         displayedProgress=jlimit(0.,1.,session.importProgress);
@@ -48,7 +49,7 @@ class AudioSeparationPanel final : public Component, private Timer {
         if(!session.busy){
             stopTimer();cancel.setEnabled(true);
             if(cancelling||session.importProgress>=1){ModalSheet::dismiss(*this);return;}
-            cancel.setButtonText(String::fromUTF8("Fechar"));
+            cancel.setButtonText(localization::translate(String::fromUTF8("Fechar")));
             status.setText(session.message,dontSendNotification);status.setColour(Label::textColourId,Colours::red);
         }
     }

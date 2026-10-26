@@ -1,9 +1,10 @@
 #pragma once
+#include "Localization.h"
 #include "Common.h"
 namespace catlive {
 class ItemNamePanel final : public Component {
     TextEditor name;
-    TextButton cancel{"Cancelar"}, save{"Salvar"};
+    TextButton cancel{localization::translate("Cancelar")}, save{localization::translate("Salvar")};
     std::function<void(String)> commit;
     std::function<void()> close;
     void confirm() { const auto value=name.getText().trim(); if(value.isNotEmpty())commit(value); }

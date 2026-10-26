@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 
 namespace catlive {
@@ -8,7 +9,7 @@ class TransportFadeoutOverlay final : public Component {
         : session(value), cancelFade(std::move(cancel)) {
         setComponentID("transportFadeoutOverlay");
         setInterceptsMouseClicks(false, true); setWantsKeyboardFocus(false);
-        addAndMakeVisible(cancelButton); cancelButton.setButtonText("Cancelar");
+        addAndMakeVisible(cancelButton); cancelButton.setButtonText(localization::translate("Cancelar"));
         cancelButton.setComponentID("transportFadeoutCancel");
         cancelButton.setWantsKeyboardFocus(false); cancelButton.setMouseClickGrabsKeyboardFocus(false);
         cancelButton.getProperties().set("flat", true); cancelButton.getProperties().set("fontSize", 12.f);

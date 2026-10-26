@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -60,7 +61,7 @@ class TextItemPanel final : public Component {
             return TextEditor::keyPressed(key);
         }
     } editor;
-    TextButton cancel{"Cancelar"}, confirm{"Aplicar"};
+    TextButton cancel{localization::translate("Cancelar")}, confirm{localization::translate("Aplicar")};
     std::function<void(String)> commit;
     void apply() { commit(editor.getText()); }
 };

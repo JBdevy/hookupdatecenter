@@ -75,7 +75,7 @@ class AutomationPanel final : public Component {
                    294, 68, 200, 28, Justification::centredLeft);
         g.setColour(theme::secondary);
         g.setFont(theme::font(12));
-        g.drawFittedText(String::fromUTF8("Edite os pontos do envelope no grid, abaixo da pista."),
+        g.drawFittedText(localization::translate(String::fromUTF8("Edite os pontos do envelope no grid, abaixo da pista.")),
                          280, getHeight() - 70, getWidth() - 300, 24, Justification::centred, 1);
         g.setFont(theme::font(10));
         g.drawFittedText(
@@ -99,7 +99,7 @@ class AutomationPanel final : public Component {
     Session &session;
     ID id;
     std::function<void(String)> error;
-    ToggleButton enabled{String::fromUTF8("Automação ativada")}, active{"Ativado"},
+    ToggleButton enabled{localization::translate(String::fromUTF8("Automação ativada"))}, active{localization::translate("Ativado")},
         visible{String::fromUTF8("Visível")}, armed{"Armar"};
     ComboBox mode;
     TextEditor search;

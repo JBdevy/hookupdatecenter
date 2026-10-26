@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "TrackInstrumentIcons.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -28,7 +29,7 @@ class TrackInstrumentPicker final : public Component {
     Viewport viewport;
     Component grid;
     OwnedArray<Choice> choices;
-    QuietButton cancel{"Cancelar"},apply{"Salvar"};
+    QuietButton cancel{localization::translate("Cancelar")},apply{localization::translate("Salvar")};
 public:
     TrackInstrumentPicker(String name,std::optional<std::string> initial,std::function<void(std::optional<std::string>)> action)
         :trackName(std::move(name)),value(std::move(initial)),save(std::move(action)) {

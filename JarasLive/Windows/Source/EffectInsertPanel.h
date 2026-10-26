@@ -11,9 +11,9 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
           dismiss(std::move(close)), list("Instrument catalog", this), allowsInstruments(allowInstruments) {
         setComponentID("effectInsertPanel");
         addAndMakeVisible(effect); effect.setComponentID("effectKind");
-        effect.addItem("Externo (VST3)", 8);
+        effect.addItem(localization::translate("Externo (VST3)"), 8);
         effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"}, 1);
-        if (allowInstruments) effect.addItem(String::fromUTF8("Instrumentos"), 7);
+        if (allowInstruments) effect.addItem(localization::translate(String::fromUTF8("Instrumentos")), 7);
         (void)allowStemSeparator; // Separation is an offline item action.
         effect.addItem("CatLive Trigger", 10);
         effect.addItem("Cat Gate", 11);
@@ -82,10 +82,10 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(14));
-        g.drawText("Inserir efeito", 28, catalog() ? 22 : 48, getWidth() - 56, 24,
+        g.drawText(localization::translate("Inserir efeito"), 28, catalog() ? 22 : 48, getWidth() - 56, 24,
                    Justification::centredLeft);
         g.setFont(theme::font(13));
-        g.drawText("Efeito", 28, catalog() ? 56 : 82, 44, 26, Justification::centredLeft);
+        g.drawText(localization::translate("Efeito"), 28, catalog() ? 56 : 82, 44, 26, Justification::centredLeft);
     }
     void resized() override {
         effect.setBounds(72, catalog() ? 56 : 82, 230, 26);
@@ -135,7 +135,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
     OwnedArray<TextButton> categories;
     ListBox list;
     Label status;
-    TextButton cancel{"Cancelar"}, confirm{"Aplicar"};
+    TextButton cancel{localization::translate("Cancelar")}, confirm{localization::translate("Aplicar")};
     class BrowserWindow final : public DocumentWindow {
       public:
         explicit BrowserWindow(std::function<void()> close) : DocumentWindow("Externo (VST3)", theme::panel, DocumentWindow::closeButton), dismiss(std::move(close)) { setUsingNativeTitleBar(false); setResizable(true,true); setResizeLimits(620,390,1400,1000); setComponentID("externalPluginBrowserWindow"); }

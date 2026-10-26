@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Common.h"
 namespace catlive {
 // Scanning runs in a replaceable helper process; plugin code never runs on the UI thread.
@@ -212,8 +213,8 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
         typeFilter.setComponentID("pluginTypeFilter"); vendorFilter.setComponentID("pluginVendorFilter");
         typeFilter.setTooltip("Tipo"); vendorFilter.setTooltip("Empresa");
         typeFilter.onChange=[this] { refresh(); }; vendorFilter.onChange=[this] { refresh(); };
-        addAndMakeVisible(typeLabel); typeLabel.setText("Tipo",dontSendNotification);
-        addAndMakeVisible(vendorLabel); vendorLabel.setText("Empresa",dontSendNotification);
+        addAndMakeVisible(typeLabel); typeLabel.setText(localization::translate("Tipo"),dontSendNotification);
+        addAndMakeVisible(vendorLabel); vendorLabel.setText(localization::translate("Empresa"),dontSendNotification);
         addAndMakeVisible(search); search.setFont(theme::font(13)); search.setTextToShowWhenEmpty("Buscar plugins",theme::secondary); search.setPopupMenuEnabled(false);
         search.onTextChange = [this] { refresh(); };
         addAndMakeVisible(list); list.setComponentID("externalPluginList"); list.setRowHeight(64); list.setColour(ListBox::backgroundColourId,theme::panel); list.setOutlineThickness(0);
@@ -240,7 +241,7 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
     }
   private:
     std::function<void(var)> picked; std::function<void()> dismiss;
-    TextEditor search; ComboBox typeFilter,vendorFilter; Label typeLabel,vendorLabel; ListBox list; TextButton scan{"Escanear plugins"},retry{String::fromUTF8("Tentar falhas")},cancel{"Fechar"}; Label message;
+    TextEditor search; ComboBox typeFilter,vendorFilter; Label typeLabel,vendorLabel; ListBox list; TextButton scan{localization::translate("Escanear plugins")},retry{String::fromUTF8("Tentar falhas")},cancel{localization::translate("Fechar")}; Label message;
     ProgressBar progress{VST3Catalog::shared().scanProgress}; Label current;
     Array<var> matches; String selected; uint64 revision = ~uint64(0);
     bool instrumentsAllowed = true;
@@ -268,7 +269,7 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
         for (auto plugin : catalog.plugins) if(pluginMatches(plugin,query,type,vendor,instrumentsAllowed)) matches.add(plugin);
         list.updateContent(); list.repaint();
         message.setText(catalog.scanning ? catalog.status : String(matches.size()) + " plugins",dontSendNotification);
-        scan.setButtonText(catalog.scanning?"Cancelar escaneamento":"Escanear plugins"); revision=catalog.revision;
+        scan.setButtonText(catalog.scanning?localization::translate("Cancelar escaneamento"):localization::translate("Escanear plugins")); revision=catalog.revision;
         retry.setVisible(!catalog.scanning && catalog.hasFailedPlugins());
         const bool layoutChanged=progress.isVisible()!=catalog.scanning;
         progress.setVisible(catalog.scanning); current.setVisible(catalog.scanning);

@@ -476,14 +476,14 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             b->setColour(TextButton::buttonColourId, Colour(0xff4d4d4d));
         }
         add.setButtonText("Add");
-        remove.setButtonText("Excluir");
-        removeEffect.setButtonText("Remover efeito");
+        remove.setButtonText(localization::translate("Excluir"));
+        removeEffect.setButtonText(localization::translate("Remover efeito"));
         add.setComponentID("addEffect");
         remove.setComponentID("removeEffect");
         add.onClick = [this] { addMenu(); };
         remove.onClick = [this] { erase(); };
         removeEffect.onClick = [this] { erase(); };
-        enabled.setButtonText("Ativado");
+        enabled.setButtonText(localization::translate("Ativado"));
         addAndMakeVisible(enabled);
         enabled.onClick = [this] {
             auto s = current();
@@ -738,7 +738,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         }
         if(e.mods.isPopupMenu()) {
             if(e.mods.isAltDown()){erase();return;}
-            PopupMenu menu;menu.addItem(1,"Remover");
+            PopupMenu menu;menu.addItem(1,localization::translate("Remover"));
             menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&chain),[safe=SafePointer<EffectsPanel>(this)](int choice){if(safe && choice==1)safe->erase();});
         }
     }

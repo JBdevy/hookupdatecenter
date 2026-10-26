@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "ActionsPage.h"
 #include "Auth.h"
 #include "Lighting.h"
@@ -118,7 +119,7 @@ class SettingsPanel final : public Component, private Timer {
         if (selected != 6 || !accountLogin) return;
         accountLogin->setEnabled(!auth.busy && !locked());
         accountLogout->setEnabled(!auth.busy && !locked() && auth.loginData.isObject());
-        accountLogout->setButtonText(auth.busy ? String::fromUTF8("Aguarde…") : "Sair e liberar dispositivo");
+        accountLogout->setButtonText(auth.busy ? localization::translate(String::fromUTF8("Aguarde…")) : localization::translate("Sair e liberar dispositivo"));
         accountTitle->setText(auth.title, dontSendNotification);
         accountEmail->setText(str(get(auth.loginData, "account"), "email"), dontSendNotification);
         accountEmail->setVisible(auth.loginData.isObject() && str(get(auth.loginData, "entitlement"), "planId") != "trial");
@@ -374,7 +375,7 @@ class SettingsPanel final : public Component, private Timer {
                        auto result = preferences.set("jaras.startup.sound", id == 2);
                        if (result.failed()) error(result.getErrorMessage());
                    });
-            label("Idioma", 66, 26, true);
+            label(localization::translate("Idioma"), 66, 26, true);
             for (int language = 0; language < 2; ++language) {
                 auto &b = button(language == 0 ? "English" : String::fromUTF8("Português"),
                                  24 + language * 88, 106, 88, [this, language] {
@@ -424,7 +425,7 @@ class SettingsPanel final : public Component, private Timer {
             signin.setComponentID("settingsLogin");
             signin.setEnabled(!auth.busy && !locked());
             auto &logout =
-                button("Sair e liberar dispositivo", 24, 304, 210, [this] { auth.logout(); });
+                button(localization::translate("Sair e liberar dispositivo"), 24, 304, 210, [this] { auth.logout(); });
             accountLogout = &logout; logout.setComponentID("settingsLogout");
             logout.getProperties().set("fontSize", 13.f);
             logout.getProperties().set("cornerRadius", 6.f);
@@ -520,7 +521,7 @@ class SettingsPanel final : public Component, private Timer {
                 if (std::abs(rates[i] - device->getCurrentSampleRate()) < 1)
                     chosen = i + 1;
             }
-            label("Taxa de amostragem", 374, 26, true);
+            label(localization::translate("Taxa de amostragem"), 374, 26, true);
             auto &rateChoice = choice("Taxa de amostragem", choices, chosen, 24, 412, 160, [this, rates](int id) {
                 if (id > 0 && id <= rates.size())
                     applyAudio([rates, id](auto &s) { s.sampleRate = rates[id - 1]; });
@@ -535,7 +536,7 @@ class SettingsPanel final : public Component, private Timer {
                 if (sizes[i] == device->getCurrentBufferSizeSamples())
                     chosen = i + 1;
             }
-            label("Tamanho do buffer", 456, 26, true);
+            label(localization::translate("Tamanho do buffer"), 456, 26, true);
             auto &bufferChoice = choice("Tamanho do buffer", choices, chosen, 24, 494, 180, [this, sizes](int id) {
                 if (id > 0 && id <= sizes.size())
                     applyAudio([sizes, id](auto &s) { s.bufferSize = sizes[id - 1]; });
@@ -557,7 +558,7 @@ class SettingsPanel final : public Component, private Timer {
         }
         label(String::fromUTF8("Buffers menores reduzem a latência e usam mais CPU."), 534, 26,
               false, theme::secondary);
-        button("Atualizar dispositivos", 24, 574, 190, [this] {
+        button(localization::translate("Atualizar dispositivos"), 24, 574, 190, [this] {
             if (auto *current = session.audio.devices.getCurrentDeviceTypeObject()) current->scanForDevices();
             refreshLater();
         });
@@ -566,9 +567,9 @@ class SettingsPanel final : public Component, private Timer {
     void midiPage() {
         const auto inputs = MidiInput::getAvailableDevices(),
                    outputs = MidiOutput::getAvailableDevices();
-        label("Entradas MIDI", 66, 26, true);
+        label(localization::translate("Entradas MIDI"), 66, 26, true);
         if (inputs.isEmpty())
-            label("Nenhuma entrada MIDI", 104, 26, false, theme::secondary);
+            label(localization::translate("Nenhuma entrada MIDI"), 104, 26, false, theme::secondary);
         StringArray choices{"Nenhum"};
         for (const auto &device : inputs)
             choices.add(device.name);
@@ -620,7 +621,7 @@ class SettingsPanel final : public Component, private Timer {
                });
         if (outputs.isEmpty())
             label(String::fromUTF8("Nenhuma saída MIDI"), 442, 26, false, theme::secondary);
-        button("Atualizar dispositivos", 24, 490, 190, [this] { refreshLater(); });
+        button(localization::translate("Atualizar dispositivos"), 24, 490, 190, [this] { refreshLater(); });
         contentHeight = 550;
     }
 };

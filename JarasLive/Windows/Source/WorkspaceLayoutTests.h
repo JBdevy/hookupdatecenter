@@ -33,6 +33,14 @@ struct WorkspaceLayoutTests {
         require(applied&&!session.dirty,"Replacement ran before saving or never continued");
         Session reopened;reopened.inspection=true;reopened.audio.prepareOffline(48000);reopened.audio.setOffline(true);reopened.load(file);
         require(reopened.project().name=="Preserved edit","Replacement discarded unsaved edits");
+        floatingControlTests::pump();
+        session.edit([](jaras::Project &p){p.name="Remote preserved edit";},false);applied=false;
+        w.confirmProjectReplacement("Remote next",[&]{applied=true;},{},true);
+        require(find()==nullptr,"Remote confirmation was repeated on the desktop");
+        const auto remoteDeadline=Time::getMillisecondCounterHiRes()+15000;
+        while(!applied&&Time::getMillisecondCounterHiRes()<remoteDeadline)floatingControlTests::pump();
+        require(applied&&!session.dirty,"Remote replacement did not save before continuing");
+        reopened.load(file);require(reopened.project().name=="Remote preserved edit","Remote replacement lost edits");
     }
     static void liveRecordingWaveform(const File &directory) {
         using floatingControlTests::require;

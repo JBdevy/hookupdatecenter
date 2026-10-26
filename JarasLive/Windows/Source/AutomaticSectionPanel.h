@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -68,6 +69,6 @@ class AutomaticSectionPanel final : public Component {
     bool revealed=false;
     Session& session;ID source,project;std::function<void(String)> error;
     std::optional<ID> region,target;std::vector<ID> regions,markers;
-    Column leftModel,rightModel;ListBox left,right;TextButton cancel{"Cancelar"},apply{"Aplicar"};
+    Column leftModel,rightModel;ListBox left,right;TextButton cancel{localization::translate("Cancelar")},apply{localization::translate("Aplicar")};
 };
 }

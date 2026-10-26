@@ -1,3 +1,4 @@
+#include "Localization.h"
 #include "AdvancedPanel.h"
 #include "MediaCleanupPanel.h"
 #include "ModalSheet.h"
@@ -142,7 +143,7 @@ void AdvancedPanel::select(int index) {
     contentHeight = 300;
     if (index == 0) {
         label("BPM:", 18, 58, 42);
-        label("Compasso", 136, 58, 78);
+        label(localization::translate("Compasso"), 136, 58, 78);
         label("/", 246, 58, 14);
         auto edit = [this](String name, String initial, int x, int width) {
             auto *e = new TextEditor();
@@ -164,7 +165,7 @@ void AdvancedPanel::select(int index) {
         unit = edit("Unidade", String(song ? song->beatUnit : 4), 260, 34);
         const auto settings = song ? song->timeSettings.value_or(jaras::ProjectTimeSettings{})
                                    : jaras::ProjectTimeSettings{};
-        label("Projeto timebase", 18, 104, 230);
+        label(localization::translate("Projeto timebase"), 18, 104, 230);
         timebase = &choice("Projeto timebase", {"Grid Livre", "Grid Relativo"},
                            settings.timebase == jaras::ProjectTimebase::relative ? 2 : 1, 306, 105,
                            160, [](int) {});
@@ -252,7 +253,7 @@ void AdvancedPanel::select(int index) {
         const String prefix = String("jaras.media.") + (index == 2 ? "record." : "rerender.");
         const auto format = appearance.value(prefix + "format", "WAV").toString();
         const bool mp3 = index == 2 && format == "MP3";
-        label("Formato", 18, 58, 88);
+        label(localization::translate("Formato"), 18, 58, 88);
         choice("Formato", index == 2 ? StringArray{"WAV", "AIFF", "MP3"} : StringArray{"WAV", "AIFF"},
                mp3 ? 3 : format == "AIFF" ? 2 : 1, 114, 59, 110,
                [this, prefix, index](int id) {
@@ -299,11 +300,11 @@ void AdvancedPanel::select(int index) {
         toggle("Preto e branco", "jaras.video.grayscale", false, 136);
         toggle(String::fromUTF8("Sem áudio"), "jaras.video.noAudio", true, 172);
     } else if (index == 5) {
-        label("Modo ID do Setlist", 174, 58, 130);
+        label(localization::translate("Modo ID do Setlist"), 174, 58, 130);
         choice("Setlist ID mode", {"ID da playlist", String::fromUTF8("ID da região")},
                appearance.regionIDs() ? 2 : 1, 308, 59, 126,
                [this](int id) { save("jaras.setlist.idMode", id == 2 ? "region" : "playlist"); });
-        label("Fonte do Setlist", 180, 100, 120);
+        label(localization::translate("Fonte do Setlist"), 180, 100, 120);
         choice("Setlist font",
                {String::fromUTF8("Padrão"), "Negrito", String::fromUTF8("Negrito itálico")},
                appearance.fontStyle() + 1, 300, 101, 134,

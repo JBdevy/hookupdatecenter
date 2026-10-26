@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "StageState.h"
 #include "ModalSheet.h"
 #include "NoticeAppearancePanel.h"
@@ -60,7 +61,7 @@ class NoticePanel final : public Component, private Timer {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::font(13));
-        g.drawText("Recado", 16, 92, 76, 26, Justification::centredRight);
+        g.drawText(localization::translate("Recado"), 16, 92, 76, 26, Justification::centredRight);
     }
     bool keyPressed(const KeyPress &key) override {
         if (retryEditorShortcut(key))
@@ -105,7 +106,7 @@ class NoticePanel final : public Component, private Timer {
             return TextEditor::keyPressed(key);
         }
     } editor;
-    TextButton send{"Enviar"}, withdraw{"Retirar"}, pin{"Fixar"}, save{"Salvar"},
+    TextButton send{localization::translate("Enviar")}, withdraw{localization::translate("Retirar")}, pin{localization::translate("Fixar")}, save{localization::translate("Salvar")},
         image{"Add imagem"}, removeImage{"Remover imagem"};
     OwnedArray<TextButton> slots;
     Label remaining, count;
@@ -139,7 +140,7 @@ class NoticePanel final : public Component, private Timer {
     void chooseImage() {
         if (slot < 0)
             return;
-        chooser = std::make_unique<FileChooser>("Imagem", File(), "*.png;*.jpg;*.jpeg;*.bmp", true);
+        chooser = std::make_unique<FileChooser>(localization::translate("Imagem"), File(), "*.png;*.jpg;*.jpeg;*.bmp", true);
         chooser->launchAsync(
             FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
             [safe = SafePointer<NoticePanel>(this), index = slot](const FileChooser &fc) {
@@ -262,7 +263,7 @@ class StageConfigPanel final : public Component {
     int index = 1, contentHeight = 0;
     std::function<void()> configureTimer;
     OwnedArray<TextButton> tabs;
-    TextButton night{"NOITE"}, day{"DIA"}, timer{String::fromUTF8("Configurações do cronômetro")},
+    TextButton night{localization::translate("NOITE")}, day{localization::translate("DIA")}, timer{localization::translate(String::fromUTF8("Configurações do cronômetro"))},
         close{"Fechar"}, headerClose{"Fechar"};
     Viewport viewport;
     class SectionContent final : public Component {
@@ -401,7 +402,7 @@ class StageConfigPanel final : public Component {
                 apply.setBounds(getWidth() - 94, getHeight() - 32, 84, 26);
             }
             ColourSelector selector;
-            TextButton apply{"Aplicar"};
+            TextButton apply{localization::translate("Aplicar")};
             std::function<void(Colour)> commit;
         };
         StageConfigPanel &parent;

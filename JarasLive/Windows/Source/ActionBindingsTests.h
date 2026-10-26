@@ -17,6 +17,21 @@ void addActionBindingsTests(const File &directory, Register &&test) {
     const auto require = [](bool okay, const char *message) {
         if (!okay) throw std::runtime_error(message);
     };
+    test("Cancel queued section MIDI persists and dispatches once per press", [&, require] {
+        auto file=directory.getNonexistentChildFile("cancel-section-midi", ".json");
+        Appearance settings(file);AudioDeviceManager devices;ActionBindings bindings(settings,devices);
+        auto input=object();put(input,"status",0xb0);put(input,"number",79);put(input,"channel",2);
+        require(bindings.assign("cancelSection","midi",input),"Cancel section is missing from Actions");
+        int count=0;bindings.invoke=[&](const String &id,float,int){require(id=="cancelSection","Cancel mapping dispatched another command");++count;};
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::controllerEvent(2,79,127));
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::controllerEvent(2,79,90));
+        require(count==1,"Held cancel MIDI repeated");
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::controllerEvent(2,79,0));
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::controllerEvent(2,79,127));
+        require(count==2,"Release did not rearm cancel");
+        Appearance restored(file);ActionBindings reopened(restored,devices);
+        require(reopened.midiInput("cancelSection").isObject(),"Cancel section MIDI was not saved");
+    });
     test("Setlist block MIDI learns candidates, persists globally, transfers conflicts and dispatches once per press", [&, require] {
         const auto file = directory.getChildFile("setlist-block-midi.json");
         require(file.replaceWithText("{}"), "Could not create block MIDI preferences fixture");

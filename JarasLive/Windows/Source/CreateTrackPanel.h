@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -40,9 +41,9 @@ class CreateTrackPanel final : public Component {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::font(13));
-        g.drawText("Tipo", 28, 16, 36, 26, Justification::centredLeft);
+        g.drawText(localization::translate("Tipo"), 28, 16, 36, 26, Justification::centredLeft);
         if (type.getSelectedId() == 1)
-            g.drawText("Quantidade", 190, 100, 82, 26, Justification::centredLeft);
+            g.drawText(localization::translate("Quantidade"), 190, 100, 82, 26, Justification::centredLeft);
         g.setColour(unavailable ? theme::yellow : theme::secondary);
         g.setFont(theme::font(11));
         g.drawFittedText(message, 28, 140, getWidth() - 56, 44, Justification::centredLeft, 3);
@@ -68,7 +69,7 @@ class CreateTrackPanel final : public Component {
     std::function<void(String)> error;
     ComboBox type;
     TextEditor name, count;
-    TextButton cancel{"Cancelar"}, confirm{"Criar"};
+    TextButton cancel{localization::translate("Cancelar")}, confirm{localization::translate("Criar")};
     int inputChannels = 0;
     bool unavailable = false;
     String message;

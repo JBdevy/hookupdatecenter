@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 namespace catlive {
 class TunerControl final : public Component, private Timer {
@@ -156,7 +157,7 @@ class PitchTargetsPanel final : public Component {
     Viewport view;
     Component content;
     OwnedArray<ToggleButton> checks;
-    TextButton tracksTab{"Pistas"}, groupsTab{"Grupos"}, all{"Selecionar todas"},
+    TextButton tracksTab{localization::translate("Pistas")}, groupsTab{localization::translate("Grupos")}, all{"Selecionar todas"},
         cancel{"Cancelar"}, apply{"Aplicar"};
     static std::set<ID> asSet(const std::vector<ID> &values) {
         return {values.begin(), values.end()};

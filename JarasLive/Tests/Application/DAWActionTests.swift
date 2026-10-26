@@ -2,6 +2,20 @@ import XCTest
 @testable import JarasApplication
 
 final class DAWActionTests: XCTestCase {
+    func testCancelQueuedSectionHasIndependentPersistentMIDIMapping() throws {
+        let action = DAWAction.cancelSection
+        XCTAssertTrue(action.supportsMIDI)
+        XCTAssertFalse(action.needsTrack)
+        XCTAssertNil(action.defaultKeyboard)
+        XCTAssertEqual(action.category, .setlist)
+        var bindings = DAWActionBindings()
+        let midi = ControlInput(kind: "midi", label: "Cancel section", device: 2, channel: 1, status: 0xb0, number: 79)
+        XCTAssertTrue(bindings.setInput(midi, action: action, kind: "midi"))
+        let saved = try JSONEncoder().encode(bindings.entries)
+        let restored = DAWActionBindings(stored: try JSONDecoder().decode([DAWActionBinding].self, from: saved))
+        XCTAssertEqual(restored.matching(midi), .cancelSection)
+    }
+
     func testProjectTabsNavigateInBothDirectionsWithoutDefaultShortcuts() throws {
         XCTAssertNil(ProjectTabNavigation.destination(current: 0, count: 1, direction: 1))
         XCTAssertNil(ProjectTabNavigation.destination(current: -1, count: 3, direction: 1))

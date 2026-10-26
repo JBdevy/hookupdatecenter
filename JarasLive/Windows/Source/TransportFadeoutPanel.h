@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "Appearance.h"
 #include "ActionBindings.h"
@@ -31,7 +32,7 @@ class TransportFadeoutPanel final : public Component, private Timer, private Cha
         setWantsKeyboardFocus(true);
         for (auto *component : std::initializer_list<Component *>{&enabled, &duration, &viewport,
                  &shortcut, &removeShortcut, &keyboardTab, &midiTab, &feedback}) addAndMakeVisible(component);
-        enabled.setButtonText("Ativar Fadeout"); enabled.setComponentID("transportFadeoutEnabled");
+        enabled.setButtonText(localization::translate("Ativar Fadeout")); enabled.setComponentID("transportFadeoutEnabled");
         enabled.onClick = [this] { if (!locked()) save("jaras.transportFadeout.enabled", enabled.getToggleState()); };
         duration.setComponentID("transportFadeoutDuration");
         for (int seconds = 1; seconds <= 5; ++seconds) duration.addItem(String(seconds) + " s", seconds);
@@ -86,15 +87,15 @@ class TransportFadeoutPanel final : public Component, private Timer, private Cha
     void paint(Graphics &g) override {
         g.fillAll(theme::background);
         g.setFont(theme::font(12)); g.setColour(Colours::white);
-        g.drawText(String::fromUTF8("Duração"), 18, 55, 100, 26, Justification::centredLeft);
-        g.drawText(String::fromUTF8("Pistas incluídas"), 18, 94, getWidth() - 36, 24, Justification::centredLeft);
+        g.drawText(localization::translate(String::fromUTF8("Duração")), 18, 55, 100, 26, Justification::centredLeft);
+        g.drawText(localization::translate(String::fromUTF8("Pistas incluídas")), 18, 94, getWidth() - 36, 24, Justification::centredLeft);
         g.setColour(theme::display); g.fillRoundedRectangle(viewport.getBounds().toFloat(), 6);
         g.setColour(theme::line); g.drawRoundedRectangle(viewport.getBounds().toFloat().reduced(.5f), 6, 1);
         g.setColour(Colours::white);
-        g.drawText(inputKind == "midi" ? "MIDI" : "Tecla", 18, shortcut.getY(), 68, shortcut.getHeight(), Justification::centredLeft);
+        g.drawText(inputKind == "midi" ? "MIDI" : localization::translate("Tecla"), 18, shortcut.getY(), 68, shortcut.getHeight(), Justification::centredLeft);
         if (trackButtons.isEmpty()) {
             g.setColour(theme::secondary); g.setFont(theme::font(12));
-            g.drawText(String::fromUTF8("Nenhuma pista de áudio neste projeto."), viewport.getBounds().reduced(10), Justification::centred);
+            g.drawText(localization::translate(String::fromUTF8("Nenhuma pista de áudio neste projeto.")), viewport.getBounds().reduced(10), Justification::centred);
         }
     }
     void resized() override {
@@ -117,7 +118,7 @@ class TransportFadeoutPanel final : public Component, private Timer, private Cha
     Viewport viewport; Component trackRows;
     OwnedArray<ToggleButton> trackButtons;
     std::vector<ID> trackIDs;
-    TextButton shortcut, removeShortcut{"Remover"}, keyboardTab{"Tecla"}, midiTab{"MIDI"};
+    TextButton shortcut, removeShortcut{localization::translate("Remover")}, keyboardTab{localization::translate("Tecla")}, midiTab{"MIDI"};
     Label feedback;
     String localError, inputKind = "keyboard";
     ID builtProject, builtSong;
@@ -172,10 +173,10 @@ class TransportFadeoutPanel final : public Component, private Timer, private Cha
             trackButtons[i]->setEnabled(!active);
         }
         const auto label = actions.inputLabel("transportFadeout", inputKind);
-        shortcut.setButtonText(listening() ? String::fromUTF8(inputKind == "midi" ? "Acione o controle MIDI…" : "Pressione uma tecla…") : label.isEmpty() ? (inputKind == "midi" ? "Mapear MIDI" : "Definir atalho") : label);
+        shortcut.setButtonText(listening() ? String::fromUTF8(inputKind == "midi" ? "Acione o controle MIDI…" : "Pressione uma tecla…") : label.isEmpty() ? (inputKind == "midi" ? localization::translate("Mapear MIDI") : "Definir atalho") : label);
         shortcut.setEnabled(!active); removeShortcut.setEnabled(!active && (listening() || label.isNotEmpty())); keyboardTab.setEnabled(!active);midiTab.setEnabled(!active);
         keyboardTab.setToggleState(inputKind == "keyboard",dontSendNotification);midiTab.setToggleState(inputKind == "midi",dontSendNotification);
-        feedback.setText(active ? String::fromUTF8("Aguarde o Fadeout terminar para alterar estas opções.")
+        feedback.setText(active ? localization::translate(String::fromUTF8("Aguarde o Fadeout terminar para alterar estas opções."))
                          : localError.isNotEmpty() ? localError
                          : listening() ? String::fromUTF8("Esc cancela. Atalhos existentes são preservados.")
                          : inputKind == "midi" ? String::fromUTF8("Clique em Mapear MIDI e acione uma nota ou botão CC. A entrada MIDI deve estar ativa em Configurações.")

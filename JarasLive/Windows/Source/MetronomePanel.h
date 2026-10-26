@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Appearance.h"
 #include "AudioEngine.h"
 #include "ModalSheet.h"
@@ -34,8 +35,8 @@ class MetronomePanel final:public Component {
     }
     void paint(Graphics &g)override{
         g.fillAll(theme::background);g.setColour(Colours::white);g.setFont(theme::font(13));
-        for(auto row:std::initializer_list<std::pair<String,int>>{{"Som de click",20},{"Modo de click",64},{String::fromUTF8("Saída"),108},{"Click A",190},{"Click B",234}})g.drawText(row.first,20,row.second,112,28,Justification::centredLeft);
-        g.setFont(theme::font(11));g.setColour(theme::secondary);g.drawText(String::fromUTF8("A: primeiro tempo · B: demais tempos"),20,280,getWidth()-40,24,Justification::centredLeft);
+        for(auto row:std::initializer_list<std::pair<String,int>>{{"Som de click",20},{"Modo de click",64},{localization::translate(String::fromUTF8("Saída")),108},{"Click A",190},{"Click B",234}})g.drawText(localization::translate(row.first),20,row.second,112,28,Justification::centredLeft);
+        g.setFont(theme::font(11));g.setColour(theme::secondary);g.drawText(localization::translate(String::fromUTF8("A: primeiro tempo · B: demais tempos")),20,280,getWidth()-40,24,Justification::centredLeft);
     }
     void resized()override{
         sound.setBounds(136,20,getWidth()-156,28);output.setBounds(136,108,getWidth()-156,28);
@@ -47,7 +48,7 @@ class MetronomePanel final:public Component {
     }
   private:
     Appearance &preferences;AudioEngine &engine;var settings;ComboBox sound,output;OwnedArray<TextButton>modes;ParameterSlider gainA,gainB;
-    TextButton close{"Fechar"},fileA{"Importar A"},fileB{"Importar B"};Label status;std::vector<jaras::OutputPatch>patches;std::unique_ptr<FileChooser>chooser;
+    TextButton close{localization::translate("Fechar")},fileA{"Importar A"},fileB{"Importar B"};Label status;std::vector<jaras::OutputPatch>patches;std::unique_ptr<FileChooser>chooser;
     void change(String key,var value){
         auto next=settings.clone();put(next,Identifier(key),value);
         try{engine.configureMetronome(next);auto result=preferences.set("jaras.metronome."+key,value);if(result.failed())throw std::runtime_error(utf8(result.getErrorMessage()));settings=next;status.setText({},dontSendNotification);}

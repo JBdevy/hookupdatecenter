@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -28,7 +29,7 @@ class ClickSoundDesigner final : public Component {
     }
   private:
     Session &session; ID track; String sound; bool busy=false;
-    TextButton choose{String::fromUTF8("Escolher arquivo…")},reset{String::fromUTF8("Usar padrão")},close{"Fechar"};
+    TextButton choose{String::fromUTF8("Escolher arquivo…")},reset{String::fromUTF8("Usar padrão")},close{localization::translate("Fechar")};
     Label error;std::unique_ptr<FileChooser> chooser;
     static ThreadPool &worker(){static ThreadPool pool(1);return pool;}
     void refresh(){

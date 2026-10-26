@@ -6,7 +6,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     case selectTrack, muteTrack, soloTrack, volumeTrack, panTrack
     case muteMaster, soloMaster, volumeMaster
     case tempoDown, tempoUp, tapTempo, playStop, play, stop, pause, repeatPlayback, subPlayStop, subPlay, addTrack
-    case tunerDown, tunerUp, partsUp, partsDown, toggleParts
+    case tunerDown, tunerUp, partsUp, partsDown, toggleParts, cancelSection
     case setlistUp, setlistDown, toggleAuto, splitItems, ignoreNext
     case projectStart, projectEnd, nextRegion, previousRegion, nextTimelinePoint, previousTimelinePoint
     case toggleVideo, toggleTeleprompter, normalizeItems, createTempoMarker
@@ -42,6 +42,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .partsUp: return "Parts Up"
         case .partsDown: return "Parts Down"
         case .toggleParts: return "Parts show/hide"
+        case .cancelSection: return "Cancel queued section"
         case .playStop: return "Play/Stop"
         case .pause: return "Pause"
         case .repeatPlayback: return "Repeat"
@@ -72,7 +73,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         let command: UInt = 1 << 20, shift: UInt = 1 << 17, option: UInt = 1 << 19
         let key: UInt16, modifiers: UInt, label: String
         switch self {
-        case .previousProjectTab, .nextProjectTab, .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts: return nil
+        case .previousProjectTab, .nextProjectTab, .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts, .cancelSection: return nil
         case .muteTrack: (key, modifiers, label) = (46, 0, "M")
         case .soloTrack: (key, modifiers, label) = (1, shift, "⇧S")
         case .tempoDown: (key, modifiers, label) = (27, 0, "−")
@@ -258,7 +259,7 @@ extension DAWAction {
         case .volumeMaster, .volumeTrack, .panTrack: return .volume
         case .muteMaster, .muteTrack: return .mute
         case .soloMaster, .soloTrack: return .solo
-        case .setlistUp, .setlistDown, .toggleAuto, .ignoreNext, .toggleSetlist, .toggleMultiLoopBypass, .partsUp, .partsDown, .toggleParts: return .setlist
+        case .setlistUp, .setlistDown, .toggleAuto, .ignoreNext, .toggleSetlist, .toggleMultiLoopBypass, .partsUp, .partsDown, .toggleParts, .cancelSection: return .setlist
         default: return .shortcuts
         }
     }

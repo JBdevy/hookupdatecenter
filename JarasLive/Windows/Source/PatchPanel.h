@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -28,7 +29,7 @@ class PatchPanel final : public Component {
     Viewport viewport;
     Component content;
     OwnedArray<Component> fields;
-    TextButton close{"Fechar"};
+    TextButton close{localization::translate("Fechar")};
     int height = 0;
     std::set<ID> targets;
     int batchCategory = 0, batchChoice = 1;
@@ -96,7 +97,7 @@ class PatchPanel final : public Component {
                 next.mode = i == 0 ? "mtc" : "ltc"; track.timecode = next;
             }); };
         }
-        label("Taxa de quadros", 0, 48, 140);
+        label(localization::translate("Taxa de quadros"), 0, 48, 140);
         const std::array<double, 4> rates{24, 25, 29.97, 30};
         int selected = 4;
         for (int i = 0; i < 4; ++i) if (rates[(size_t)i] == settings.frameRate) selected = i + 1;
@@ -125,7 +126,7 @@ class PatchPanel final : public Component {
         };
         offset->onReturnKey = saveOffset;
         // Rebuilding on focus loss would delete the control being clicked.
-        button("Aplicar", 220, 160, 80, saveOffset);
+        button(localization::translate("Aplicar"), 220, 160, 80, saveOffset);
         if (settings.mode == "mtc") {
             label(String::fromUTF8("Saída MIDI"), 0, 198, 300);
             StringArray names{"Nenhuma"}; std::vector<int> ids{0};
@@ -260,14 +261,14 @@ class PatchPanel final : public Component {
                 if (inputPatches[i].firstChannel == t->inputPatch->firstChannel &&
                     inputPatches[i].channelCount == t->inputPatch->channelCount)
                     selected = (int)i + 1;
-        label("Entrada", 0, 44, 62);
+        label(localization::translate("Entrada"), 0, 44, 62);
         choice(66, 44, 234, inputs, selected, [this, inputPatches](int n) {
             edit([&](auto &t) {
                 t.inputPatch = inputPatches[(size_t)jlimit(0,(int)inputPatches.size()-1,n-1)];
             });
         });
-        label("Entrada MIDI", 0, 80, 194);
-        label("Canal MIDI", 208, 80, 92);
+        label(localization::translate("Entrada MIDI"), 0, 80, 194);
+        label(localization::translate("Canal MIDI"), 208, 80, 92);
         StringArray midi{"Nenhum", "MIDI 1", "MIDI 2", "MIDI 3"};
         choice(0, 108, 196, midi, t->midiInput.value_or(0)+1, [this](int n) {
             edit([&](auto &t) {

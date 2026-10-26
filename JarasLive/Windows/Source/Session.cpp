@@ -333,7 +333,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
     busy = true; exportCancelled = false;
     const auto cancellation=std::make_shared<std::atomic<bool>>(false);
     loadCancellation=cancellation;
-    message = String::fromUTF8("Carregando projeto…"); importProgress = 0;
+    message = localization::translate(String::fromUTF8("Carregando projeto…")); importProgress = 0;
     if (progress) progress(message, -1);
     const auto weak = std::weak_ptr<int>(alive);
     const auto sampleRate=audio.sampleRate();
@@ -408,13 +408,13 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                         files.insert(ProjectCodec::resolveMedia(prepared->mediaDirectory, source->path, false).getFullPathName());
                 }
             int done = 0; const auto total = (int)files.size();
-            report(String::fromUTF8("Carregando formas de onda… ") + "0/" + String(total), total ? 0 : 1);
+            report(localization::translate(String::fromUTF8("Preparing waveforms…")) + " " + "0/" + String(total), total ? 0 : 1);
             for (const auto &path : files) {
                 checkpoint();
                 WaveformCache::preload(File(path), cancellation.get());
                 checkpoint();
                 ++done;
-                report(String::fromUTF8("Carregando formas de onda… ") + String(done) + "/" + String(total), double(done) / total);
+                report(localization::translate(String::fromUTF8("Preparing waveforms…")) + " " + String(done) + "/" + String(total), double(done) / total);
             }
             checkpoint();
             prepared->audio=std::make_unique<AudioEngine>(sampleRate,offline);
@@ -425,7 +425,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                 const auto now=Time::getMillisecondCounterHiRes();
                 if(count==0||count==totalWork||now-lastReport>=25) {
                     lastReport=now;
-                    report(String::fromUTF8("Preparando áudio… ")+String(count)+"/"+String(totalWork),double(count)/totalWork);
+                    report(localization::translate(String::fromUTF8("Preparing audio…")) + " "+String(count)+"/"+String(totalWork),double(count)/totalWork);
                 }
             };
             control.pluginDispatcher=[checkpoint,weak,cancellation](std::function<void()> operation) {
@@ -632,7 +632,7 @@ void Session::save(const File &file) {
     mediaDirectory = document.getParentDirectory();
     observedMedia = std::move(operation->references);
     dirty = false;
-    message = String::fromUTF8("Projeto salvo · ") + Time::getCurrentTime().formatted("%d/%m/%Y %H:%M");
+    message = localization::translate("Salvo") + " · " + Time::getCurrentTime().formatted("%d/%m/%Y %H:%M");
     notify();
 }
 void Session::waitForSave(std::function<void(String)> completed) {
@@ -654,7 +654,7 @@ void Session::saveAsync(const File &file, std::function<void(String)> completed)
     // Save As moves the media root. Hold media edits until the new root is
     // complete; a regular Save keeps editing and transport available.
     if (operation->changesDirectory) busy = true;
-    message = String::fromUTF8("Salvando projeto…");
+    message = localization::translate(String::fromUTF8("Salvando…"));
     operation->revision = revision;
     if (tick) tick(); else if (changed) changed();
     const auto weak = std::weak_ptr<int>(alive);
@@ -677,7 +677,7 @@ void Session::saveAsync(const File &file, std::function<void(String)> completed)
                 mediaDirectory = document.getParentDirectory();
                 observedMedia.insert(operation->references.begin(), operation->references.end());
                 if (revision == operation->revision) dirty = false;
-                message = String::fromUTF8("Projeto salvo · ") + Time::getCurrentTime().formatted("%d/%m/%Y %H:%M");
+                message = localization::translate("Salvo") + " · " + Time::getCurrentTime().formatted("%d/%m/%Y %H:%M");
             } else if (failure.isEmpty()) {
                 failure = String::fromUTF8("O projeto foi salvo, mas outra sessão foi aberta durante a gravação do arquivo.");
             }
@@ -1345,7 +1345,7 @@ void Session::detectRegionBPM(std::set<ID> ids) {
     const auto directory = mediaDirectory; const std::weak_ptr<int> lifetime = alive;
     const auto cancelled = std::make_shared<std::atomic<bool>>(false);
     bpmCancellation = cancelled;
-    message = String::fromUTF8("Detectando BPM…"); notify();
+    message = localization::translate(String::fromUTF8("Detectando BPM…")); notify();
     // Analysis never owns Session::busy: cursor, selection and Click controls
     // remain interactive, and opening a project does not wait in this queue.
     bpmWorker.addJob([this, sourceSong, signature, projectID, directory, ids, lifetime, cancelled] {

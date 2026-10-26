@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 #include "RegionEditing.h"
@@ -107,8 +108,8 @@ class MultiLoopsPanel final : public Component {
         controls.clear(); name.setVisible(false); content.removeChildComponent(&name);
         const auto *part = region(); if (!part) return;
         const bool bypass = bypassed();
-        cancel.setButtonText(stage ? "Cancelar" : "Fechar"); next.setVisible(stage != 0);
-        next.setButtonText(stage == 1 ? String::fromUTF8("Próximo") : stage == 2 ? "OK" : "Salvar");
+        cancel.setButtonText(stage ? localization::translate("Cancelar") : localization::translate("Fechar")); next.setVisible(stage != 0);
+        next.setButtonText(stage == 1 ? localization::translate("Next") : stage == 2 ? "OK" : localization::translate("Salvar"));
         next.setEnabled(stage != 2 || (validPair(draft) && !bypass));
         int y = 0;
         if (stage == 0) {
@@ -130,19 +131,19 @@ class MultiLoopsPanel final : public Component {
                 button(loop.enabled.value_or(true) ? "On" : "Off",0,y,42,[this,loop] { auto changed = loop; changed.enabled = !loop.enabled.value_or(true); save(changed); },loop.enabled.value_or(true))->setEnabled(!bypass);
                 label(text(loop.name),50,y,bypass ? 190 : 245);
                 if (bypass) label("Bypass",240,y,60,11);
-                button("Marcadores",310,y,100,[this,loop] { draft = loop; stage = 2; refreshLater(); });
-                button("Editar",418,y,76,[this,loop] { draft = loop; stage = 3; prepareTracks(); refreshLater(); });
-                button("Excluir",502,y,76,[this,id=loop.id] { change([&](auto &p) { p.multiLoops.erase(std::remove_if(p.multiLoops.begin(),p.multiLoops.end(),[&](const auto &v){return v.id==id;}),p.multiLoops.end()); }); });
+                button(localization::translate("Marcadores"),310,y,100,[this,loop] { draft = loop; stage = 2; refreshLater(); });
+                button(localization::translate("Editar"),418,y,76,[this,loop] { draft = loop; stage = 3; prepareTracks(); refreshLater(); });
+                button(localization::translate("Excluir"),502,y,76,[this,id=loop.id] { change([&](auto &p) { p.multiLoops.erase(std::remove_if(p.multiLoops.begin(),p.multiLoops.end(),[&](const auto &v){return v.id==id;}),p.multiLoops.end()); }); });
                 y += 42;
             }
         } else if (stage == 1) {
-            content.addAndMakeVisible(name); name.setBounds(0,0,590,28); name.setFont(theme::font(13)); name.setTextToShowWhenEmpty("Nome",theme::secondary);
+            content.addAndMakeVisible(name); name.setBounds(0,0,590,28); name.setFont(theme::font(13)); name.setTextToShowWhenEmpty(localization::translate("Nome"),theme::secondary);
             name.setColour(TextEditor::outlineColourId, theme::line); name.onReturnKey = [this] { next.triggerClick(); };
             name.grabKeyboardFocus(); y = 80;
         } else if (stage == 2) {
-            label(text(draft.name),0,0,590); label("Marcador 1",0,32,270); label("Marcador 2",310,32,270); y = 66;
+            label(text(draft.name),0,0,590); label(localization::translate("Marcador 1"),0,32,270); label(localization::translate("Marcador 2"),310,32,270); y = 66;
             const auto values = markers();
-            if (values.empty()) label("Nenhum marcador encontrado",0,y,590);
+            if (values.empty()) label(localization::translate("Nenhum marcador encontrado"),0,y,590);
             for (const auto &m : values) {
                 for (bool second : {false,true}) {
                     const bool active = (second ? draft.marker2 : draft.marker1) == m.id;

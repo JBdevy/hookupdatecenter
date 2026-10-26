@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Appearance.h"
 #include "VinhetasAudio.h"
 #include <deque>
@@ -289,7 +290,7 @@ class VinhetasPanel final : public Component, private Timer {
         syncMIDIMappings();globalState=root.clone();revision=++globalRevision;appearance.set("jaras.vinhetas",root);
     }
     void menu(int preset,int pad) {
-        PopupMenu menu;menu.addItem(1,"Editar");if(pad>=0)menu.addItem(2,"Inserir audio");menu.addItem(3,"Learn MIDI");
+        PopupMenu menu;menu.addItem(1,localization::translate("Editar"));if(pad>=0)menu.addItem(2,"Inserir audio");menu.addItem(3,"Learn MIDI");
         menu.showMenuAsync(PopupMenu::Options().withTargetComponent(pad>=0?static_cast<Component*>(&pads[(size_t)pad]):&presetButtons[(size_t)preset]),[safe=SafePointer<VinhetasPanel>(this),preset,pad](int action){
             if(!safe)return;
             if(action==3){safe->learning=pad>=0?pad:preset;safe->learningPreset=pad<0;safe->audio.learningMIDI=true;safe->repaint();return;}

@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "MIDIEditing.h"
 #include "EditorShortcuts.h"
@@ -226,7 +227,7 @@ class MIDIEditorPanel final : public Component, private Timer {
         quantize.setEnabled(enabled && canvas.hasVisibleNotes());
         undo.setEnabled(session.canUndo() && enabled);
         redo.setEnabled(session.canRedo() && enabled);
-        play.setButtonText(session.transport().playing ? "Pausar" : "Play");
+        play.setButtonText(session.transport().playing ? localization::translate("Pausar") : "Play");
         canvas.repaint();
     }
     void openQuantize() {
@@ -271,7 +272,7 @@ class MIDIEditorPanel final : public Component, private Timer {
           private:
             ParameterSlider strength;
             ToggleButton ends{String::fromUTF8("Quantizar também o final das notas")};
-            TextButton ok{"Aplicar"}, cancel{"Cancelar"};
+            TextButton ok{localization::translate("Aplicar")}, cancel{localization::translate("Cancelar")};
         };
         const auto safe = SafePointer<MIDIEditorPanel>(this);
         CallOutBox::launchAsynchronously(

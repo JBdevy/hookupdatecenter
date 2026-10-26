@@ -21,7 +21,7 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         list.setColour(ListBox::backgroundColourId, theme::panel);
         addAndMakeVisible(name);
         name.setFont(theme::font(13));
-        name.setTextToShowWhenEmpty("Nome da playlist", theme::secondary);
+        name.setTextToShowWhenEmpty(localization::translate("Nome da playlist"), theme::secondary);
         name.setText(text(playlist.name));
         name.setComponentID("playlistName");
         setComponentID("playlistEditor");
@@ -31,7 +31,7 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         }
         saveButton.getProperties().set("plain", false);
         saveButton.setColour(TextButton::buttonColourId, Colour(0xff3d7d56));
-        saveButton.setButtonText(editing ? "Salvar" : "Criar");
+        saveButton.setButtonText(editing ? localization::translate("Salvar") : localization::translate("Criar"));
         closeButton.getProperties().set("icon", "close");
         all.onClick = [this] {
             SparseSet<int> rows;
@@ -77,7 +77,7 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(13));
-        g.drawText(adding ? "Adicionar regiões" : editing ? "Editar playlist" : "Nova playlist", 12, 8, getWidth() - 52, 28,
+        g.drawText(adding ? localization::translate(String::fromUTF8("Adicionar regiões")) : editing ? localization::translate("Editar playlist") : localization::translate("Nova playlist"), 12, 8, getWidth() - 52, 28,
                    Justification::centredLeft);
         g.setColour(theme::secondary);
         g.setFont(theme::font(10));
@@ -110,7 +110,7 @@ class PlaylistEditor final : public Component, private ListBoxModel {
     bool editing = false, adding = false;
     ListBox list;
     TextEditor name;
-    TextButton all{"Todas"}, clear{"Limpar"}, saveButton{"Criar"}, closeButton;
+    TextButton all{localization::translate("Todas")}, clear{localization::translate("Limpar")}, saveButton{localization::translate("Criar")}, closeButton;
     int getNumRows() override { return (int)regions.size(); }
     void selectedRowsChanged(int) override { update(); }
     void update() {
@@ -181,7 +181,7 @@ class RegionEditor final : public Component {
         setColourValue(colour);
         addAndMakeVisible(upper);
         upper.setVisible(showsUppercase);
-        upper.setButtonText("Caixa alta");
+        upper.setButtonText(localization::translate("Caixa alta"));
         upper.setToggleState(uppercase, dontSendNotification);
         for (auto *b : {&saveButton, &cancelButton}) {
             addAndMakeVisible(b);
@@ -240,7 +240,7 @@ class RegionEditor final : public Component {
     ParameterSlider rgb[3];
     ToggleButton upper;
     OwnedArray<TextButton> swatches;
-    TextButton saveButton{"Salvar"}, cancelButton{"Cancelar"};
+    TextButton saveButton{localization::translate("Salvar")}, cancelButton{localization::translate("Cancelar")};
     unsigned colourValue() const {
         return ((unsigned)rgb[0].getValue() << 16) | ((unsigned)rgb[1].getValue() << 8) |
                (unsigned)rgb[2].getValue();

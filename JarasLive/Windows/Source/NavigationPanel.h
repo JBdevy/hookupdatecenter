@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Common.h"
 namespace catlive {
 // Matches SidebarView: Projects opens a sheet; Live Session returns to the
@@ -45,6 +46,6 @@ class NavigationPanel final : public Component {
     }
   private:
     std::function<void()> close;
-    TextButton projects{"Projetos"}, live{"Live Session"};
+    TextButton projects{localization::translate("Projetos")}, live{"Live Session"};
 };
 }

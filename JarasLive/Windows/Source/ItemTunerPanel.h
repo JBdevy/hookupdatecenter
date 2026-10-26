@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -39,7 +40,7 @@ class ItemTunerPanel final : public Component, private Timer {
     Session &session;
     ID id;
     std::function<void(String)> error;
-    TextButton minus{String::fromUTF8("−")}, plus{"+"}, close{"Fechar"};
+    TextButton minus{String::fromUTF8("−")}, plus{"+"}, close{localization::translate("Fechar")};
     String name;
     double pitch = 0;
     void refresh() {

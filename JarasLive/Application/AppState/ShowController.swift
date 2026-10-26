@@ -704,6 +704,7 @@ public struct ShowTimelinePresentationState: Equatable {
         case .setlistUp, .setlistDown: setlistNavigationRequest = SetlistNavigationRequest(id: UUID(), direction: action == .setlistUp ? -1 : 1)
         case .toggleAuto: toggleRegionAuto()
         case .ignoreNext: send(.ignoreNext)
+        case .cancelSection: send(.cancelSection)
         case .splitItems: splitItemsRequest &+= 1
         case .normalizeItems: normalizeItemsRequest &+= 1
         case .createTempoMarker: tempoMarkerRequest &+= 1

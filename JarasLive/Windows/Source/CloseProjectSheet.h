@@ -21,14 +21,14 @@ class CloseProjectSheet final : public Component {
   public:
     CloseProjectSheet(bool playback = false, bool application = true) : playback(playback) {
         heading = playback ? (application ? "Encerrar o CatLive?" : "Fechar aba?") : "Deseja salvar este projeto?";
-        message = application ? String::fromUTF8("A reprodução está em andamento. Deseja realmente encerrar o CatLive?")
+        message = application ? localization::translate(String::fromUTF8("A reprodução está em andamento. Deseja realmente encerrar o CatLive?"))
                               : String::fromUTF8("A reprodução está em andamento. Deseja realmente fechar esta aba?");
         setName(localization::translate(heading)); setWantsKeyboardFocus(true);
         setFocusContainerType(FocusContainerType::focusContainer);
         for (auto *button : {&save, &discard, &cancel}) addAndMakeVisible(button);
         if (playback) {
-            save.setButtonText("Cancelar");
-            discard.setButtonText(application ? "Encerrar CatLive" : "Fechar aba");
+            save.setButtonText(localization::translate("Cancelar"));
+            discard.setButtonText(application ? localization::translate("Encerrar CatLive") : localization::translate("Fechar aba"));
             cancel.setVisible(false);
         }
         for (auto *button : {&save, &discard, &cancel}) button->setButtonText(localization::translate(button->getButtonText()));

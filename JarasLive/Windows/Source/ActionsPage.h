@@ -148,7 +148,7 @@ class ActionsPage final : public Component, private ChangeListener {
             updateTarget(number);
             track.setInputRestrictions(4, "0123456789");
             track.setText(number > 0 ? String(number) : String());
-            track.setTextToShowWhenEmpty("Selecionada", theme::secondary);
+            track.setTextToShowWhenEmpty(localization::translate("Selecionada"), theme::secondary);
             track.onTextChange = [this, updateTarget] {
                 updateTarget(track.getText().getIntValue());
             };
@@ -193,14 +193,14 @@ class ActionsPage final : public Component, private ChangeListener {
                     g.fillRoundedRectangle(getLocalBounds().toFloat(), 4);
                 g.setColour(theme::secondary);
                 g.setFont(theme::font(10));
-                g.drawText(kind == "midi" ? "MIDI" : "Teclado", 6, 4, getWidth() - 12, 14,
+                g.drawText(kind == "midi" ? "MIDI" : localization::translate("Teclado"), 6, 4, getWidth() - 12, 14,
                            Justification::centredLeft);
                 g.setColour(listening ? theme::green : Colours::white);
                 g.setFont(theme::font(11));
                 g.drawText(getName(), 6, 20, getWidth() - 12, 14, Justification::centredLeft);
             }
         } input;
-        TextButton reset{String::fromUTF8("Restaurar")}, remove{String::fromUTF8("×")};
+        TextButton reset{localization::translate(String::fromUTF8("Restaurar"))}, remove{String::fromUTF8("×")};
         TextEditor track;
     };
     ActionBindings &actions;
@@ -209,7 +209,7 @@ class ActionsPage final : public Component, private ChangeListener {
     int category = 0, contentHeight = 0;
     String kind = "keyboard";
     OwnedArray<TextButton> tabs;
-    TextButton keyboard{"Teclado"}, midi{"MIDI"};
+    TextButton keyboard{localization::translate("Teclado")}, midi{"MIDI"};
     Label information;
     Viewport viewport;
     Component rows;

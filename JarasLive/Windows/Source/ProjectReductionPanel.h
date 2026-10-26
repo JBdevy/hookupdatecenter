@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ProjectReduction.h"
 #include "ModalSheet.h"
@@ -28,7 +29,7 @@ class ProjectReductionPanel final : public Component, private Timer {
     Session &session;std::function<void(std::function<void()>)> save;
     std::vector<jaras::Track> sources;std::vector<projectReduction::Group> groups;
     ListBox left{"Destinos",&leftModel},right{"Origens",&rightModel};
-    TextButton remove{"Remover"},create{"+ Create Track"},cancel{"Cancelar"},reduce{"Reduzir"},saveButton{"Salvar"};
+    TextButton remove{localization::translate("Remover")},create{"+ Create Track"},cancel{localization::translate("Cancelar")},reduce{"Reduzir"},saveButton{localization::translate("Salvar")};
     double displayedProgress=0;ProgressBar progressBar{displayedProgress};
     Label status;int editing=-1;bool refreshing=false;
     struct Work{std::atomic<bool> cancel{false};std::atomic<double> progress{0};std::mutex mutex;String message;};std::shared_ptr<Work> work;

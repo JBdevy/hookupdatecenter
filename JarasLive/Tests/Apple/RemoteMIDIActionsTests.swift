@@ -21,6 +21,11 @@ extension RemoteMIDIActions {
   let restored = RemoteMIDIActions(); precondition(restored.bindings == midi.bindings)
   midi.clear(.stop); precondition(midi.bindings["stop"] == nil)
   print("REMOTE_MIDI_LEARN_NOTE_CC_CHANNEL_EDGE_AND_PERSISTENCE_OK")
+  midi.learning = .cancelSection; midi.receive(42, 0xb0, 79, 127)
+  midi.receive(42, 0xb0, 79, 0); midi.receive(42, 0xb0, 79, 127)
+  precondition(midi.event?.action == .cancelSection, "Cancel section must dispatch independently of Stop and Repeat")
+  precondition(RemoteMIDIActions().bindings["cancelSection"] != nil, "Cancel section MIDI mapping must persist")
+  midi.clear(.cancelSection)
   midi.beginBlock(1)
   let beforeLearning = midi.event!.id
   midi.receive(42, 0xc2, 79, 0)

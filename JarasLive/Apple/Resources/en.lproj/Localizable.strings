@@ -1826,3 +1826,5 @@
 "No audio tracks in this project." = "No audio tracks in this project.";
 "Esc cancels. Existing shortcuts are preserved." = "Esc cancels. Existing shortcuts are preserved.";
 "Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings." = "Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings.";
+
+"Cancel queued section" = "Cancel queued section";

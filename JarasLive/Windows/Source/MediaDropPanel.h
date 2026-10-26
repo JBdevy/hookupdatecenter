@@ -1,13 +1,14 @@
 #pragma once
+#include "Localization.h"
 #include "ModalSheet.h"
 #include "MediaDropLayout.h"
 namespace catlive {
 class MediaDropPanel final : public Component {
-    ToggleButton separate{String::fromUTF8("Uma pista por item")},same{String::fromUTF8("Na mesma pista, em sequência")},stacked{String::fromUTF8("Na mesma pista, iniciando juntos")};
+    ToggleButton separate{String::fromUTF8("Uma pista por item")},same{localization::translate(String::fromUTF8("Na mesma pista, em sequência"))},stacked{localization::translate(String::fromUTF8("Na mesma pista, iniciando juntos"))};
     Label gapLabel{{},String::fromUTF8("Intervalo entre itens (s)")},error;
     TextEditor gap;
     ParameterSlider interval{Slider::LinearHorizontal,Slider::NoTextBox};
-    TextButton cancel{String::fromUTF8("Cancelar")},apply{String::fromUTF8("Importar")};
+    TextButton cancel{localization::translate(String::fromUTF8("Cancelar"))},apply{localization::translate(String::fromUTF8("Importar"))};
     std::function<void(MediaDropLayout,double)> accepted;
     void update(){bool visible=same.getToggleState();gap.setVisible(visible);gapLabel.setVisible(visible);interval.setVisible(visible);error.setText({},dontSendNotification);error.setVisible(visible);ModalSheet::resizeContent(*this,visible?283:188);}
     void submit(){auto value=gap.getText().trim().replaceCharacter(',','.');char *end=nullptr;double seconds=std::strtod(value.toRawUTF8(),&end);

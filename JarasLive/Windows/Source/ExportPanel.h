@@ -1,4 +1,5 @@
 #pragma once
+#include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
 namespace catlive {
@@ -95,7 +96,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
             rebuild();
         };
         channels.addItem("Mono", 1);
-        channels.addItem(String::fromUTF8("Estéreo"), 2);
+        channels.addItem(localization::translate(String::fromUTF8("Estéreo")), 2);
         channels.onChange = [this] {
             if (updating)
                 return;
@@ -138,8 +139,8 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         auto label = [&](String text, int x, int y, int width) {
             g.drawText(text, x, y, width, 26, Justification::centredLeft);
         };
-        label("Origem", 20, 12, 52);
-        label("Limites", 232, 12, 52);
+        label(localization::translate("Origem"), 20, 12, 52);
+        label(localization::translate("Limites"), 232, 12, 52);
         g.setColour(theme::secondary);
         g.setFont(theme::font(10));
         g.drawText(String((int)jobs.size()) + " arquivos", getWidth() - 130, 12, 110, 26,
@@ -149,18 +150,18 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         g.setColour(Colours::white);
         g.setFont(theme::font(13));
         label(String::fromUTF8("Diretório:"), 34, 80, 130);
-        label("Nome do arquivo:", 34, 116, 130);
+        label(localization::translate("Nome do arquivo:"), 34, 116, 130);
         g.setColour(Colour(0xff151515));
         g.fillRoundedRectangle(20, getHeight() - 128.f, 420, 78, 5);
         g.setColour(Colours::white);
         g.setFont(theme::font(12));
         const int formatY = getHeight() - 81;
-        label("Formato", 30, formatY, 58);
+        label(localization::translate("Formato"), 30, formatY, 58);
         label(encodings[selectedOutput].format == "MP3" ? "Taxa de bits" : "Bits", 174, formatY,
               78);
         g.setFont(theme::font(10));
-        label("Taxa de amostragem", 20, getHeight() - 36, 110);
-        label("Canais", 240, getHeight() - 36, 48);
+        label(localization::translate("Taxa de amostragem"), 20, getHeight() - 36, 110);
+        label(localization::translate("Canais"), 240, getHeight() - 36, 48);
         if (rendering || status.isNotEmpty()) {
             g.setColour(session.busy ? theme::green : theme::secondary);
             g.setFont(theme::font(11));
@@ -200,9 +201,9 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
     std::optional<std::pair<double, double>> area;
     ComboBox source, bounds, format, quality, rate, channels;
     TextEditor directory, pattern;
-    TextButton browse, primary{String::fromUTF8("Formato de saída principal")},
+    TextButton browse, primary{localization::translate(String::fromUTF8("Formato de saída principal"))},
         secondary{String::fromUTF8("Formato de saída secundária")}, renderButton{"Renderizar"};
-    ToggleButton enableSecondary{String::fromUTF8("Ativar saída secundária")};
+    ToggleButton enableSecondary{localization::translate(String::fromUTF8("Ativar saída secundária"))};
     OwnedArray<TextButton> tokens;
     ListBox files;
     std::vector<ExportJob> jobs;
@@ -309,7 +310,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
                 c->setEnabled(!rendering);
             for (auto *button : tokens)
                 button->setEnabled(!rendering);
-            renderButton.setButtonText(rendering ? "Cancelar" : "Renderizar");
+            renderButton.setButtonText(rendering ? localization::translate("Cancelar") : localization::translate("Renderizar"));
         } catch (const std::exception &e) {
             status = String::fromUTF8(e.what());
             if (error)
@@ -324,7 +325,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
             for (auto *c : getChildren())
                 c->setEnabled(true);
             updateEncoding();
-            renderButton.setButtonText("Renderizar");
+            renderButton.setButtonText(localization::translate("Renderizar"));
         }
         if (rendering)
             repaint();
