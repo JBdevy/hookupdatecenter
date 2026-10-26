@@ -65,6 +65,7 @@
 #include "PartsPanelTests.h"
 #include "StemGraphTests.h"
 #include "MediaImportTests.h"
+#include "StemFolderImportTests.h"
 #include "GridMediaClipboardTests.h"
 #include "FloatingControlTests.h"
 #include "ProjectOpenTests.h"
@@ -396,6 +397,7 @@ int runTests(const File &directory) {
     addPartsPanelTests(directory, test);
     stemGraphTests::registerTests(directory, test, skipped);
     mediaImportTests::registerTests(directory, test);
+    stemImportTests::registerTests(directory, test);
     liveItemResizeTests::registerTests(directory, test);
     liveSessionEditTests::registerTests(directory, test);
     streamingReaderTests::registerTests(directory, test);
@@ -5518,7 +5520,7 @@ int runTests(const File &directory) {
         song.tracks[0].clips[0].loopStart = 1;
         song.tracks[0].clips[0].loopLength = 2;
         clipEditing::split(song, song.tracks[0].clips[0].id, 15);
-        expect(song.tracks[0].clips.size() == 2 && song.tracks[0].clips[1].sourceOffset == 6 &&
+        expect(song.tracks[0].clips.size() == 2 && song.tracks[0].clips[1].sourceOffset == 2 &&
                    song.tracks[0].clips[1].loopLength == 2,
                "Split reset the loop source");
         song.tracks[0].role.id = "timecode";

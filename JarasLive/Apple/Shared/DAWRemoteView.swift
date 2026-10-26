@@ -184,14 +184,14 @@ struct DAWRemoteClientView: View {
             .statusBarHidden(true).persistentSystemOverlays(.hidden)
             .onAppear {
                 remote.resumeBrowsing()
-                JarasMobileApplicationDelegate.setObserverOrientation(remote.presentationAccess == .observer)
+                JarasMobileApplicationDelegate.setRemoteOrientation(true)
             }
             .onDisappear {
                 remote.stop()
-                JarasMobileApplicationDelegate.setObserverOrientation(false)
+                JarasMobileApplicationDelegate.setRemoteOrientation(false)
             }
             .onChange(of: remote.presentationAccess) { access in
-                JarasMobileApplicationDelegate.setObserverOrientation(access == .observer)
+                JarasMobileApplicationDelegate.setRemoteOrientation(true)
             }
             .onChange(of: remote.connected) { connected in
                 directorPIN = ""; enteringMode = nil
@@ -962,8 +962,12 @@ private struct RemoteSidebarRail<Content: View>: View {
     var openTeleprompterRemote: ((Int) -> Void)? = nil
     @ObservedObject var remote: DAWRemoteSession = .shared
     @State private var phonePanel: DAWRemotePhonePanel = .setlist
+    @State private var transientFooterNotice = ""
     @State private var navigationOpen = false
     @State private var sidebarHidden = false
+    @State private var remotePortrait = false
+    private var phoneLayout: Bool { UIDevice.current.userInterfaceIdiom == .phone || (!local && !observer && remotePortrait) }
+    private var sidebarCollapsed: Bool { sidebarHidden || prompterFullscreen }
     @State private var projectsOpen = false
     @State private var playlistPickerOpen = false
     private struct EntryEditor: Identifiable {
@@ -1183,18 +1187,18 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private func updatePanelSubscription() {
         guard state.timer != nil else { return }
-        let panel = UIDevice.current.userInterfaceIdiom == .phone ? (observer && phonePanel.subscription > 2 ? 0 : phonePanel.subscription) : (prompterPanel?.rawValue ?? (noticesOpen ? 3 : 0))
+        let panel = phoneLayout ? (observer && phonePanel.subscription > 2 ? 0 : phonePanel.subscription) : (prompterPanel?.rawValue ?? (noticesOpen ? 3 : 0))
         action(.remotePanel, value: Double(panel))
     }
     private var workspaceContent: some View {
         VStack(spacing: 0) {
-            if !local, !observer, phonePanel != .vinhetas, let tabs = state.projectTabs, tabs.count > 1 {
+            if !local, !observer, !prompterFullscreen, phonePanel != .vinhetas, let tabs = state.projectTabs, tabs.count > 1 {
                 RemoteProjectTabStrip(tabs: tabs, enabled: controlsEnabled && state.projects?.busy != true) {
                     action(.selectProjectTab, target: $0)
                 }
             }
             Group {
-                if UIDevice.current.userInterfaceIdiom == .phone {
+                if phoneLayout {
                     if observer { phoneRepertoire } else { phoneDirectorWorkspace }
                 }
                 else if observer { observerWorkspace }
@@ -1314,7 +1318,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         }
     }
     private var workspaceState: some View {
-        workspaceContent
+        AnyView(workspaceContent)
         .onChange(of: state.vinhetas) { next in if let next { remoteVinhetasFeedback.receive(next) } }
         .onChange(of: state.selectedPlaylist) { _ in selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; nativeSetlistRemoval = nil; confirmingRemoval = false; localShow?.selectSetlistBlock(nil) }
         .onChange(of: state.project) { _ in remoteVinhetasFeedback.reset(); selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; trackScrolling.pointerReset = UUID(); deletingTracks = nil; splittingItems = nil; nativeMarker = nil; nativeNormalization = false; tempoStepPending = false; pitchStepPending = false }
@@ -1411,17 +1415,35 @@ private struct RemoteSidebarRail<Content: View>: View {
         .onReceive(localShow?.$tempoMarkerRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in beginNativeMarker(tempo: true) }
     }
     var body: some View {
-        nativeEditingWorkspace
+        AnyView(nativeEditingWorkspace)
+        .task(id: state.project.uuidString + "\n" + state.message) {
+            transientFooterNotice = local ? "" : state.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !transientFooterNotice.isEmpty else { return }
+            do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+            guard !Task.isCancelled else { return }
+            transientFooterNotice = ""
+        }
+        .background(GeometryReader { geometry in
+            Color.clear.onAppear { remotePortrait = geometry.size.height > geometry.size.width }
+                .onChange(of: geometry.size) { size in remotePortrait = size.height > size.width }
+        })
+        .onChange(of: phoneLayout) { compact in
+            if !local && !observer {
+                if compact, let panel = prompterPanel { phonePanel = panel == .first ? .teleprompter1 : .teleprompter2 }
+                else if !compact { prompterPanel = phonePanel == .teleprompter1 ? .first : phonePanel == .teleprompter2 ? .second : nil }
+            }
+            updatePanelSubscription()
+        }
         .background(RemoteKeyboardDismissal(active: searchFocused) { searchFocused = false })
         .background(RemoteSidebarEdgeReveal(active:
-            sidebarHidden && controlsEnabled && state.projects?.busy != true &&
+            sidebarHidden && !prompterFullscreen && controlsEnabled && state.projects?.busy != true &&
                 !navigationOpen && !projectsOpen && !playlistPickerOpen && !settingsOpen &&
                 !timerOpen && !noticesOpen && !confirmSave,
             reveal: revealSidebar))
         .overlay(alignment: .bottomLeading) {
             // These layouts have no visible transport footer. Keep a local
             // way back without adding playback controls to Observer mode.
-            if sidebarHidden && (observer || prompterFullscreen || keyboardVisible) {
+            if sidebarHidden && !prompterFullscreen && (observer || keyboardVisible) {
                 restoreSidebarButton(height: 31).background(RemoteSurface.panel)
                     .clipShape(RoundedRectangle(cornerRadius: 4)).padding(.leading, 6)
                     .disabled(state.projects?.busy == true)
@@ -1610,7 +1632,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private var remoteVinhetasScreen: some View {
         RemoteVinhetasScreen(state: state.vinhetas, project: state.project, song: state.song,
-            phone: UIDevice.current.userInterfaceIdiom == .phone, send: send, feedback: $remoteVinhetasFeedback)
+            phone: phoneLayout, send: send, feedback: $remoteVinhetasFeedback)
     }
     private var cancelSectionButton: some View {
         Button { action(.cancelSection) } label: {
@@ -1621,9 +1643,36 @@ private struct RemoteSidebarRail<Content: View>: View {
             .disabled(state.sectionPlayback?.queuedMarker == nil)
             .accessibilityLabel("Cancel queued section")
     }
+    private var phoneDirectorPanel: AnyView {
+                    switch phonePanel {
+                    case .vinhetas: return AnyView(remoteVinhetasScreen)
+                    case .mixer: return AnyView(trackMixer)
+                    case .setlist: return AnyView(setlist)
+                    case .grid:
+                        return AnyView(RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
+                            if command == "bpm" { detectRegionBPM?(id) }
+                            else if command == "loops" { openRegionLoops?(id) }
+                            else if command == "unify" { unifyName = ""; unifyingRegion = id }
+                            else if command == "init" { configInitRegion = id }
+                        },
+                            control: { action($0, target: $1, value: $2) }, preview: { scrubPosition = $0 }, seek: { position in
+                                scrubPosition = nil
+                                if local { action(.seek, value: position); return }
+                                guard !state.playing, let region = selectedTimelineRegion else { return }
+                                pendingSeek = position; seekSentAt = Date(); action(.seek, target: region.id, value: position)
+                            }))
+                    case .teleprompter1, .teleprompter2:
+                        return AnyView(RemoteNativeTeleprompterPanel(index: phonePanel.subscription, timer: timer,
+                            fullscreen: prompterFullscreen, toggleFullscreen: { prompterFullscreen.toggle() }, managesSubscription: false, remote: remote))
+                    case .notices:
+                        return AnyView(RemoteNativeNoticesView(close: { choosePhonePanel(.grid) }, managesSubscription: false, remote: remote))
+                    case .sections: return AnyView(remoteSections)
+                    }
+
+    }
     private var phoneDirectorWorkspace: some View {
-        HStack(spacing: sidebarHidden ? 0 : 1) {
-            RemoteSidebarRail(hidden: sidebarHidden) {
+        HStack(spacing: sidebarCollapsed ? 0 : 1) {
+            RemoteSidebarRail(hidden: sidebarCollapsed) {
                 Menu {
                     Button("Projects") { projectsOpen = true }
                     Button("Exit Remote", action: exitRemote)
@@ -1648,32 +1697,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             }.buttonStyle(RemoteFullAreaButtonStyle(surface: true))
             VStack(spacing: 1) {
                 if !prompterFullscreen && phonePanel != .vinhetas { phoneTransport }
-                Group {
-                    switch phonePanel {
-                    case .vinhetas: remoteVinhetasScreen
-                    case .mixer: trackMixer
-                    case .setlist: setlist
-                    case .grid:
-                        RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
-                            if command == "bpm" { detectRegionBPM?(id) }
-                            else if command == "loops" { openRegionLoops?(id) }
-                            else if command == "unify" { unifyName = ""; unifyingRegion = id }
-                            else if command == "init" { configInitRegion = id }
-                        },
-                            control: { action($0, target: $1, value: $2) }, preview: { scrubPosition = $0 }, seek: { position in
-                                scrubPosition = nil
-                                if local { action(.seek, value: position); return }
-                                guard !state.playing, let region = selectedTimelineRegion else { return }
-                                pendingSeek = position; seekSentAt = Date(); action(.seek, target: region.id, value: position)
-                            })
-                    case .teleprompter1, .teleprompter2:
-                        RemoteNativeTeleprompterPanel(index: phonePanel.subscription, timer: timer,
-                            fullscreen: prompterFullscreen, toggleFullscreen: { prompterFullscreen.toggle() }, managesSubscription: false, remote: remote)
-                    case .notices:
-                        RemoteNativeNoticesView(close: { choosePhonePanel(.grid) }, managesSubscription: false, remote: remote)
-                    case .sections: remoteSections
-                    }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+                phoneDirectorPanel.frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
                 if phonePanel == .setlist || phonePanel == .sections {
                     setlistControls.padding(.horizontal, 10)
                 }
@@ -1763,9 +1787,13 @@ private struct RemoteSidebarRail<Content: View>: View {
     private var phoneDisplayDivider: some View {
         Rectangle().fill(Color.white.opacity(0.22)).frame(height: 1).allowsHitTesting(false)
     }
+    private var footerInformationText: String {
+        if !transientFooterNotice.isEmpty { return transientFooterNotice }
+        return state.loop ? "Loop Ativo" : state.footerInformation ?? ""
+    }
     private var phoneInformationDisplay: some View {
-        TransportInformationMessage(message: state.loop ? "Loop Ativo" : state.footerInformation ?? "",
-            beatPhase: state.loop ? state.footerLoopBeatPhase : nil, steady: !state.loop)
+        TransportInformationMessage(message: footerInformationText,
+            beatPhase: transientFooterNotice.isEmpty && state.loop ? state.footerLoopBeatPhase : nil, steady: !transientFooterNotice.isEmpty || !state.loop)
             .font(.jarasSystem(size: 10, weight: .bold)).lineLimit(2).minimumScaleFactor(0.7)
             .multilineTextAlignment(.center).accessibilityLabel("Information")
     }
@@ -1775,8 +1803,8 @@ private struct RemoteSidebarRail<Content: View>: View {
             .popover(isPresented: $settingsOpen) { NativeRemoteSettingsView(observer: true).preferredColorScheme(.dark) }
     }
     private var phoneRepertoire: some View {
-        HStack(spacing: sidebarHidden ? 0 : 1) {
-            RemoteSidebarRail(hidden: sidebarHidden) {
+        HStack(spacing: sidebarCollapsed ? 0 : 1) {
+            RemoteSidebarRail(hidden: sidebarCollapsed) {
                 Menu { Button("Exit Remote", action: exitRemote) } label: {
                     Image(systemName: "line.3.horizontal").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Menu")
@@ -1816,11 +1844,11 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private var observerWorkspace: some View {
         GeometryReader { geometry in
-            let width = max(1, geometry.size.width - (sidebarHidden ? 0 : RemoteSidebarMetrics.width + 1))
+            let width = max(1, geometry.size.width - (sidebarCollapsed ? 0 : RemoteSidebarMetrics.width + 1))
             let portrait = geometry.size.height > geometry.size.width
             let headerLayout = portrait ? AnyLayout(VStackLayout(spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))
-            HStack(spacing: sidebarHidden ? 0 : 1) {
-                RemoteSidebarRail(hidden: sidebarHidden) {
+            HStack(spacing: sidebarCollapsed ? 0 : 1) {
+                RemoteSidebarRail(hidden: sidebarCollapsed) {
                     Button { navigationOpen.toggle() } label: { Image(systemName: "line.3.horizontal").frame(width: 44, height: 44) }
                         .accessibilityLabel("Abrir barra lateral")
                     topPrompterButton(.first, title: "TP1", minimumHeight: RemoteSidebarMetrics.buttonSize)
@@ -1929,7 +1957,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         GeometryReader { geometry in
             let railWidth = RemoteSidebarMetrics.width * 0.8
             let railButton = railWidth - 8
-            let contentWidth = max(0, geometry.size.width - (sidebarHidden ? 0 : railWidth + 1))
+            let contentWidth = max(0, geometry.size.width - (sidebarCollapsed ? 0 : railWidth + 1))
             let panelSpace = max(1, contentWidth - (local ? 44 : 20))
             let iconExtension = panelWidths.track > 0 ? min(trackIconWidth, panelSpace * panelWidths.grid) : 0
             let baseSetlist = prompterFullscreen ? 0 : prompterPanel == nil ? panelSpace * panelWidths.setlist : max(1, contentWidth - (local ? 22 : 10)) * prompterSetlistFraction
@@ -1942,8 +1970,8 @@ private struct RemoteSidebarRail<Content: View>: View {
                 rightVisible: rightPartsVisible)
             let leftParts = nativeParts.left
             let parts = nativeParts.right
-            HStack(spacing: sidebarHidden ? 0 : 1) {
-                RemoteSidebarRail(hidden: sidebarHidden, width: railWidth) {
+            HStack(spacing: sidebarCollapsed ? 0 : 1) {
+                RemoteSidebarRail(hidden: sidebarCollapsed, width: railWidth) {
                     Button { withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() } } label: {
                         Image(systemName: "line.3.horizontal").font(.jarasSystem(size: 17, weight: .semibold))
                             .frame(width: railButton, height: 44).contentShape(Rectangle())
@@ -2200,7 +2228,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             toggleLive: { if state.setlistLiveEnabled != nil { action(.toggleSetlistLive) } },
             toggleParts: {
                 searchFocused = false
-                if UIDevice.current.userInterfaceIdiom == .phone {
+                if phoneLayout {
                     choosePhonePanel(phonePanel.togglingFooterParts())
                 } else {
                     let wasOpen = sectionsOpen && sectionsInList
@@ -2342,8 +2370,8 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 bpm: state.songDisplays?.currentBPM, color: state.playing ? JarasTheme.green : JarasTheme.text)
                                 .frame(width: max(0, (geometry.size.width - 1) * 0.75)).accessibilityLabel("Current song")
                             Rectangle().fill(JarasTheme.line).frame(width: 1)
-                            TransportInformationMessage(message: state.loop ? "Loop Ativo" : state.footerInformation ?? "",
-                                beatPhase: state.loop ? state.footerLoopBeatPhase : nil, steady: !state.loop)
+                            TransportInformationMessage(message: footerInformationText,
+                                beatPhase: transientFooterNotice.isEmpty && state.loop ? state.footerLoopBeatPhase : nil, steady: !transientFooterNotice.isEmpty || !state.loop)
                                 .font(.jarasSystem(size: 10, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
                                 .frame(width: max(0, (geometry.size.width - 1) * 0.25), height: 25).clipped()
                                 .accessibilityLabel("Information")
@@ -2555,7 +2583,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                         .frame(height: nativeRulerHeight).padding(.trailing, trackIconWidth).background(RemoteSurface.panel)
                         .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.line).frame(height: 1).allowsHitTesting(false) }
                 }
-            } else if UIDevice.current.userInterfaceIdiom == .pad {
+            } else if UIDevice.current.userInterfaceIdiom == .pad && !phoneLayout {
                 RemoteSurface.panel.frame(height: RemoteNativeGridMetrics.rulerAreaHeight)
             } else { masterStrip.padding(.trailing, trackIconWidth).background(RemoteSurface.panel) }
             HStack(spacing: 1) {
@@ -2678,7 +2706,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         case .bypass: action(.toggleMultiLoopBypass)
         case .cancelSection: action(.cancelSection)
         case .toggleParts:
-            if UIDevice.current.userInterfaceIdiom == .phone { choosePhonePanel(phonePanel.togglingFooterParts()) }
+            if phoneLayout { choosePhonePanel(phonePanel.togglingFooterParts()) }
             else { sectionsInList = true; sectionsOpen.toggle() }
         case .playlistUp, .playlistDown:
             let ids = (state.playlists ?? []).map(\.id)

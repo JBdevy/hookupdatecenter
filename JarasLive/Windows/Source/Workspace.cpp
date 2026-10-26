@@ -1,3 +1,4 @@
+#include "StemFolderImportPanel.h"
 #include "Localization.h"
 #include "TrackInstrumentPicker.h"
 #include "ItemNamePanel.h"
@@ -1658,6 +1659,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
         return {0, 0, 1, 16};
     }
+    var paintProfile() const {
+        auto result=object();put(result,"zoom",w.pixelsPerSecond);put(result,"frames",(int64)paintCount);
+        put(result,"lastMs",paintMilliseconds);put(result,"maxMs",maxPaintMilliseconds);
+        put(result,"totalMs",totalPaintMilliseconds);Array<var> stages;for(auto value:paintStages)stages.add(value);put(result,"stages",stages);return result;
+    }
     var state() const {
         auto v = object();
         if(const auto range=visualTimeRange()) {auto selection=object();put(selection,"start",range->first);put(selection,"end",range->second);put(v,"timeSelection",selection);}
@@ -1827,7 +1833,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
     }
 
-    double paintMilliseconds = 0, maxPaintMilliseconds = 0;
+    double paintMilliseconds = 0, maxPaintMilliseconds = 0, totalPaintMilliseconds = 0;
     std::array<double,4> paintStages{};
     std::map<std::string,File> waveformFiles;
     File waveformDirectory;
@@ -1865,7 +1871,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 if (t.w.capturingSnapshot) return;
                 t.paintMilliseconds = Time::getMillisecondCounterHiRes() - started;
                 t.maxPaintMilliseconds = std::max(t.maxPaintMilliseconds, t.paintMilliseconds);
-                ++t.paintCount;
+                ++t.paintCount;t.totalPaintMilliseconds+=t.paintMilliseconds;
             };
             const ScopeGuard measure{measurePaint};
             auto stageStart=started;int stageIndex=0;
@@ -1981,13 +1987,15 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 if (!g.clipRegionIntersects({0, y - 3, getWidth(), height + 6})) continue;
                 const auto &track = song->tracks[row];
                 const bool trackMuted=trackTree::silenced(*song,track);
-                const auto background = t.w.trackSelected(track.id) ? theme::panel
-                    : t.w.appearance.colour("jaras.timeline.background", 0x161616);
-                g.setColour(background);
-                g.fillRect(0, y, getWidth(), height);
+                // Unselected rows already have this background and grid from the
+                // canvas pass. Only the selected row needs a different fill.
+                if(t.w.trackSelected(track.id)) {
+                    g.setColour(theme::panel);
+                    g.fillRect(0,y,getWidth(),height);
+                    drawGrid((float)y,(float)(y+height));
+                }
                 g.setColour(theme::line.withAlpha(.8f));
                 g.drawHorizontalLine(y + height - 1, 0, (float)getWidth());
-                drawGrid((float)y, (float)(y + height));
                 const bool groupMove = movingClipPreview && !resizeEdge && t.w.selectedClips.count(dragClip) && t.w.selectedClips.size()>1;
                 std::vector<jaras::AudioClip> movingClips;
                 if(groupMove) {
@@ -2020,13 +2028,13 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         editedClip = sourceClip; applySelectedControl(*editedClip, *controlClip);
                     } else if (resizedClipPreview && resizedClipPreview->id == sourceClip.id) editedClip = *resizedClipPreview;
                     const auto &clip = editedClip ? *editedClip : sourceClip;
-                    const auto geometry=t.w.itemGeometry((int)row,clip.id,previewLayout?&*previewLayout:nullptr);
-                    const float itemHeight = geometry.height;
-                    const float itemY = y + geometry.top;
                     float left = t.xAt(clip.startTime),
                           right = t.xAt(clip.startTime + clip.duration);
                     if (right < 0 || left > getWidth())
                         continue;
+                    const auto geometry=t.w.itemGeometry((int)row,clip.id,previewLayout?&*previewLayout:nullptr);
+                    const float itemHeight = geometry.height;
+                    const float itemY = y + geometry.top;
                     auto colour = theme::track(track);
                     auto rect = juce::Rectangle<float>(
                         left, itemY + 3.f, std::max(2.f, right - left - 2), itemHeight - 6.f);
@@ -5011,6 +5019,10 @@ void Workspace::timerCallback() {
     const double now = Time::getMillisecondCounterHiRes() / 1000.0;
     if (now - layoutSaveTime >= 1 && !ModifierKeys::getCurrentModifiersRealtime().isAnyMouseButtonDown()) {
         layoutSaveTime = now; saveWorkspaceLayout();
+        if(session.inspection) {
+            const auto profile=SystemStats::getEnvironmentVariable("CATLIVE_ZOOM_PROFILE",{});
+            if(profile.isNotEmpty())File(profile).appendText(JSON::toString(timeline->paintProfile(),true)+"\n");
+        }
     }
     if (session.dirty) {
         if (!savePulseStarted) savePulseStarted = now;
@@ -5687,6 +5699,7 @@ void Workspace::chooseRecordingProject() {
         }), 400, 190);
 }
 void Workspace::createProject(bool withStems, int recordingChannels, bool inNewTab) {
+    if (withStems) { chooseImport(false, inNewTab); return; }
     auto work = [safe = Component::SafePointer<Workspace>(this), withStems, recordingChannels, inNewTab] {
         if (!safe) return;
         auto chooseLocation = [safe, withStems, recordingChannels, inNewTab](String name) {
@@ -5750,10 +5763,7 @@ void Workspace::createProject(bool withStems, int recordingChannels, bool inNewT
                     else safe->confirmProjectReplacement(name, create);
                 });
         };
-        if (!withStems && recordingChannels == 0)
-            chooseLocation("Untitled");
-        else
-            safe->prompt("Create Project", "Project name", "Untitled", chooseLocation);
+        chooseLocation("Untitled");
     };
     work();
 }
@@ -5825,16 +5835,61 @@ void Workspace::chooseSave(bool saveAs, std::function<void()> saved) {
             safe->perform([&] { safe->session.saveAsync(fc.getResult(), finish); });
         });
 }
-void Workspace::chooseImport() {
-    chooser = std::make_unique<FileChooser>("Importar multitracks",
-                                            File::getSpecialLocation(File::userDocumentsDirectory),
-                                            "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg", true);
-    chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles |
-                             FileBrowserComponent::canSelectMultipleItems,
-                         [safe = Component::SafePointer<Workspace>(this)](const FileChooser &fc) {
-                             if (safe)
-                                 safe->perform([&] { safe->session.importAudio(fc.getResults()); });
-                         });
+void Workspace::chooseImport(bool adding, bool inNewTab) {
+    if(session.busy || session.audio.isRecording())return;
+    if(adding && session.document==File{}) { chooseSave(false,[safe=SafePointer<Workspace>(this)]{if(safe)safe->chooseImport();});return; }
+    const auto projectID=session.project().id;
+    chooser=std::make_unique<FileChooser>(localization::translate("Select stem folders"),File::getSpecialLocation(File::userDocumentsDirectory),"",true);
+    chooser->launchAsync(FileBrowserComponent::openMode|FileBrowserComponent::canSelectDirectories|FileBrowserComponent::canSelectMultipleItems,
+        [safe=SafePointer<Workspace>(this),adding,inNewTab,projectID](const FileChooser& picker){
+            if(!safe||picker.getResults().isEmpty())return;
+            auto scan=std::make_shared<stemImport::Scan>();
+            for(const auto& directory:picker.getResults())scan->folders.push_back({directory,{}});
+                    safe->showPanel(localization::translate("Review stems"),std::make_unique<StemFolderImportPanel>(scan,adding,
+                        [safe,adding,inNewTab,projectID](std::shared_ptr<stemImport::Scan> scan,String removal,bool detectBPM,std::function<void()> closeReview){
+                            if(!safe||safe->session.busy)return;
+                            auto build=[safe,scan,removal,detectBPM,adding,inNewTab,projectID,closeReview](File target){
+                                if(!safe||safe->session.busy)return;
+                                if(adding&&safe->session.project().id!=projectID){safe->showError("The project changed during import.");return;}
+                                if(!adding&&target.existsAsFile()){safe->showError("A project already exists at this location. Choose another name.");return;}
+                                auto launch=[safe,scan,removal,detectBPM,adding,inNewTab,target,closeReview]{
+                                    if(!safe)return;
+                                    closeReview();
+                                    auto base=adding?safe->session.project():Session::makeEmptyProject(target.getFileNameWithoutExtension());
+                                    if(!adding)base.projectSyncID=uuid();
+                                    const auto original=adding?safe->session.snapshot():var();
+                                    int totalFiles=0;for(const auto& folder:scan->folders)totalFiles+=(int)folder.files.size();
+                                    auto finish=safe->beginProjectLoading(target,localization::translate("Importing")+" 0/"+String(totalFiles));
+                                    safe->session.busy=true;
+                                    Thread::launch([safe,scan,removal,detectBPM,adding,inNewTab,target,base,original,finish,totalFiles]{
+                                        String error;StringArray warnings=scan->warnings;Array<File> copied;
+                                        try {
+                                            auto progress=[safe,totalFiles](String file,double value){MessageManager::callAsync([safe,file,value,totalFiles]{if(safe){safe->session.message=file.startsWith("Detecting BPM:")?localization::translate(String::fromUTF8("Detecting BPM…"))+" "+file.fromFirstOccurrenceOf(":",false,false).trim():localization::translate("Importing")+" "+String((int)std::lround(value*totalFiles))+"/"+String(totalFiles)+": "+file;safe->session.importProgress=value;safe->session.notify();std::function<void(Component&)> update=[&](Component& component){if(auto* browser=dynamic_cast<ProjectBrowser*>(&component))browser->updateLoading(safe->session.message);for(auto* child:component.getChildren())update(*child);};update(*safe);}});};
+                                            auto project=stemImport::build(*scan,removal,base,target,detectBPM,progress,warnings,&copied);
+                                            ProjectCodec::write(target,ProjectCodec::encode(project,original));
+                                        }catch(const std::exception& e){for(const auto& file:copied)file.deleteFile();error=String::fromUTF8(e.what());}
+                                        MessageManager::callAsync([safe,target,inNewTab,finish,error,warnings]{
+                                            if(!safe)return;safe->session.busy=false;
+                                            if(error.isNotEmpty()){finish(error);return;}
+                                            if(inNewTab){finish({});if(safe->openInNewProjectTab)safe->openInNewProjectTab(target);return;}
+                                            safe->openProject(target,[safe,warnings]{if(safe&&!warnings.isEmpty())safe->showPanel("Review stems",std::make_unique<ImportNoticePanel>(warnings),560,360);},true);
+                                        });
+                                    });
+                                };
+                                if(adding){if(safe->session.dirty)safe->chooseSave(false,launch);else launch();}
+                                else if(inNewTab)launch();else safe->confirmProjectReplacement(target.getFileNameWithoutExtension(),launch);
+                            };
+                            if(adding){build(safe->session.document);return;}
+                            safe->chooser=std::make_unique<FileChooser>(localization::translate("Create Project"),File::getSpecialLocation(File::userDocumentsDirectory).getChildFile("Untitled.jl"),"*.jl",true);
+                            safe->chooser->launchAsync(FileBrowserComponent::saveMode|FileBrowserComponent::canSelectFiles,
+                                [safe,build](const FileChooser& picker){
+                                    if(!safe||picker.getResult()==File{})return;
+                                    auto chosen=picker.getResult().withFileExtension("jl");auto parent=chosen.getParentDirectory();
+                                    auto target=parent.getFileName()==chosen.getFileNameWithoutExtension()?chosen:parent.getChildFile(chosen.getFileNameWithoutExtension()).getChildFile(chosen.getFileName());
+                                    MessageManager::callAsync([safe,build,target]{if(safe)build(target);});
+                                });
+                        },true),760,570);
+        });
 }
 void Workspace::choosePackage() {
     if (session.busy) return;

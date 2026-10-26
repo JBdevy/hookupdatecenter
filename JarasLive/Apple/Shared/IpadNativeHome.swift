@@ -331,7 +331,7 @@ extension UTType {
             guard let container = bootstrap.container else { error = bootstrap.error ?? "Could not open Native mode."; return }
             tabs.install(container)
             guard await container.setLocalPlaybackEnabled(true) else { error = container.show.message; return }
-            JarasMobileApplicationDelegate.setObserverOrientation(false)
+            JarasMobileApplicationDelegate.setRemoteOrientation(false)
             native = true; starting = false
             if let package { container.documents.importPortablePackage(package) }
         }

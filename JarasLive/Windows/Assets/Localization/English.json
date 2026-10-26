@@ -1428,5 +1428,11 @@
   "Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings.": "Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings.",
   "Wait for Fadeout to finish before changing these options.": "Wait for Fadeout to finish before changing these options.",
   "Preparing audio…": "Preparing audio…",
-  "Save Project": "Save Project"
+  "Save Project": "Save Project",
+  "Select stem folders": "Select stem folders",
+  "Reading audio files…": "Reading audio files…",
+  "Original files remain unchanged. Audio is copied beside the project.": "Original files remain unchanged. Audio is copied beside the project.",
+  "songs": "songs",
+  "audio files": "audio files",
+  "Importing": "Importing"
 }

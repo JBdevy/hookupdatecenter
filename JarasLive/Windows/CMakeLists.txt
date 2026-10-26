@@ -46,7 +46,18 @@ set_target_properties(CatLiveLame PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 target_include_directories(CatLiveLame PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame" "${CATLIVE_LAME_ROOT}")
 target_compile_definitions(CatLiveLame PRIVATE HAVE_CONFIG_H _CRT_SECURE_NO_WARNINGS)
 target_compile_options(CatLiveLame PRIVATE /utf-8)
+# Run exactly the same pure import rules as JavaScriptCore on Apple platforms.
+include(FetchContent)
+FetchContent_Declare(catlive_quickjs
+    GIT_REPOSITORY https://github.com/quickjs-ng/quickjs.git
+    GIT_TAG 6a9fe9af5ca0bf7c49ae697edef44864272317d1)
+FetchContent_GetProperties(catlive_quickjs)
+if(NOT catlive_quickjs_POPULATED)
+    FetchContent_Populate(catlive_quickjs)
+    add_subdirectory("${catlive_quickjs_SOURCE_DIR}" "${catlive_quickjs_BINARY_DIR}" EXCLUDE_FROM_ALL)
+endif()
 juce_add_binary_data(CatLiveAssets SOURCES
+    Assets/HookImportRules.js
     Assets/Localization/English.json Assets/Localization/Portuguese.json
     Assets/Localization/StageDefaults.json Assets/Localization/StageFields.json
     Assets/Localization/InstrumentCatalog.json Assets/Teleprompter.html
@@ -217,3 +228,6 @@ target_link_libraries(LoopbackDeviceTests PRIVATE juce::juce_audio_devices juce:
 target_compile_definitions(LoopbackDeviceTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_WASAPI=1 JUCE_ASIO=0 JUCE_MODAL_LOOPS_PERMITTED=1 NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(LoopbackDeviceTests PRIVATE /utf-8 /bigobj)
+
+target_link_libraries(CatLive PRIVATE qjs)
+install(FILES "${catlive_quickjs_SOURCE_DIR}/LICENSE" DESTINATION . RENAME QuickJS-LICENSE.txt)

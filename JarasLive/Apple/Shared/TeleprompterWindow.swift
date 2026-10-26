@@ -101,7 +101,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         Text(timerValue().text).opacity(timerValue().opacity).font(.custom("Arial-BoldMT",size: font)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.3)
             .foregroundStyle(Color(hex: timerValue().expired ? settings.clockExpiredColor : settings.clockColor)).padding(.horizontal,10).padding(.vertical,5)
             .frame(maxWidth: fillWidth ? .infinity : nil, maxHeight: fillWidth ? .infinity : nil)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.clockBorderEnabled ? border(settings.clockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 2))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.clockBorderEnabled ? border(settings.clockBorderColor,rgb: settings.rgbClockBorderEnabled,date: date) : .clear,lineWidth: 1))
     }
     private func localClock(_ date: Date,font: CGFloat, fillWidth: Bool = false) -> some View {
         let values = Calendar.current.dateComponents([.hour,.minute,.second],from: date)

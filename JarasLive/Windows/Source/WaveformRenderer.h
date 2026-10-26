@@ -21,6 +21,7 @@ struct WaveformRenderer {
               inCurve(clip.fadeInCurve.value_or(0), clip.fadeInSCurve.value_or(1)),
               outCurve(clip.fadeOutCurve.value_or(0), clip.fadeOutSCurve.value_or(1)) {}
         float at(double x) const {
+            if(in<=0 && out<=0)return 1.f;
             const double elapsed = (x - origin) / scale;
             return (float)((in > 0 ? inCurve.value(elapsed / in) : 1) *
                 (out > 0 ? outCurve.value((duration - elapsed) / out) : 1));

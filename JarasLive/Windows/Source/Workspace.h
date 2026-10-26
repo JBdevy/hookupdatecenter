@@ -102,7 +102,7 @@ class Workspace final : public Component,
     void chooseOpen();
     void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false, bool allowMissing = false, ID remoteRequest = {});
     void chooseSave(bool saveAs = false, std::function<void()> saved = {});
-    void chooseImport();
+    void chooseImport(bool adding = true, bool inNewTab = false);
     void chooseExport();
     void chooseSoundFont();
     void openVideo();

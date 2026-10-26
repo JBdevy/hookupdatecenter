@@ -148,8 +148,10 @@ class CatLiveApplication final : public JUCEApplication {
             if (auto *peer = getPeer()) {
                 workArea.attach((HWND)peer->getNativeHandle());
                 auto engines = peer->getAvailableRenderingEngines();
+                const auto renderer=SystemStats::getEnvironmentVariable("CATLIVE_RENDERER",
+                    Appearance{}.value("jaras.windows.renderer","Direct2D").toString());
                 for (int i = 0; i < engines.size(); ++i)
-                    if (engines[i].containsIgnoreCase("Direct2D"))
+                    if (engines[i].containsIgnoreCase(renderer))
                         peer->setCurrentRenderingEngine(i);
             }
         }

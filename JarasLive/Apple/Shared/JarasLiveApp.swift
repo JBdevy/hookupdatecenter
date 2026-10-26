@@ -9,9 +9,9 @@ import UIKit
         UIDevice.current.userInterfaceIdiom == .pad ? Self.iPadOrientations : .portrait
     }
 
-    static func setObserverOrientation(_ observer: Bool) {
+    static func setRemoteOrientation(_ remote: Bool) {
         guard UIDevice.current.userInterfaceIdiom == .pad else { return }
-        iPadOrientations = observer ? .all : .landscape
+        iPadOrientations = remote ? .all : .landscape
         updateOrientations()
     }
 
