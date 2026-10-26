@@ -15,10 +15,11 @@ class ProjectOpenConfirmationPanel final : public Component {
         }
     } cancel, open;
     String detail;
-    std::function<void()> accept;
+    std::function<void()> accept, rejected;
+    bool accepted = false;
   public:
-    ProjectOpenConfirmationPanel(const String &project, std::function<void()> action)
-        : detail(localization::translate("The current project will be replaced by %@.").replace("%@",project)), accept(std::move(action)) {
+    ProjectOpenConfirmationPanel(const String &project, std::function<void()> action, std::function<void()> cancelled = {})
+        : detail(localization::translate("The current project will be replaced by %@.").replace("%@",project)), accept(std::move(action)), rejected(std::move(cancelled)) {
         getProperties().set("selfContainedSheet",true);
         getProperties().set("sheetCornerRadius",38.0);
         setComponentID("projectOpenConfirmation");setWantsKeyboardFocus(true);
@@ -26,8 +27,9 @@ class ProjectOpenConfirmationPanel final : public Component {
         open.setButtonText(localization::translate("Open Project"));open.setComponentID("confirmOpenProject");open.primary=true;
         addAndMakeVisible(cancel);addAndMakeVisible(open);
         cancel.onClick=[this]{ModalSheet::dismiss(*this);};
-        open.onClick=[this]{auto action=accept;ModalSheet::dismiss(*this);MessageManager::callAsync(std::move(action));};
+        open.onClick=[this]{accepted=true;auto action=accept;ModalSheet::dismiss(*this);MessageManager::callAsync(std::move(action));};
     }
+    ~ProjectOpenConfirmationPanel() override { if (!accepted && rejected) rejected(); }
     void paint(Graphics &g) override {
         const auto bounds=getLocalBounds().toFloat().reduced(.5f);
         g.setGradientFill(ColourGradient(Colour(0xf5373739),0,0,Colour(0xf52e2e30),(float)getWidth(),(float)getHeight(),false));

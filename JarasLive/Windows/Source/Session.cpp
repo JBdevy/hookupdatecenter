@@ -408,13 +408,13 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                         files.insert(ProjectCodec::resolveMedia(prepared->mediaDirectory, source->path, false).getFullPathName());
                 }
             int done = 0; const auto total = (int)files.size();
-            report(String::fromUTF8("Preparando waveforms… ") + "0/" + String(total), total ? 0 : 1);
+            report(String::fromUTF8("Carregando formas de onda… ") + "0/" + String(total), total ? 0 : 1);
             for (const auto &path : files) {
                 checkpoint();
                 WaveformCache::preload(File(path), cancellation.get());
                 checkpoint();
                 ++done;
-                report(String::fromUTF8("Preparando waveforms… ") + String(done) + "/" + String(total), double(done) / total);
+                report(String::fromUTF8("Carregando formas de onda… ") + String(done) + "/" + String(total), double(done) / total);
             }
             checkpoint();
             prepared->audio=std::make_unique<AudioEngine>(sampleRate,offline);

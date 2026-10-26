@@ -279,14 +279,15 @@ void ProjectBrowser::resized() {
     browseButton.setBounds(getWidth() - 100, 114, 76, 24);
     search.setBounds(24, 148, width, 35);
     const bool hasError = loadingError.getText().isNotEmpty();
-    const int statusHeight = loading ? 32 : hasError ? 44 : 0;
+    const int statusHeight = loading ? 60 : hasError ? 44 : 0;
     const int contentBottom = projectOpen ? getHeight() - 64 : getHeight() - 24;
     const int listHeight = std::min(170, std::max(0, contentBottom - 193 - statusHeight));
     recents.setBounds(24, 193, width, listHeight);
     const int statusY = recents.getBottom() + 10;
     const bool canCancel = loading && (bool)cancelLoadingAction;
-    spinnerBounds = {24, statusY + 2, 16, 16};
-    loadingStatus.setBounds(48, statusY, std::max(0, width - 24 - (canCancel ? 88 : 0)), 20);
+    spinnerBounds = {getWidth() / 2 - 10, statusY, 20, 20};
+    loadingStatus.setJustificationType(Justification::centred);
+    loadingStatus.setBounds(24, statusY + 26, width, 22);
     cancelLoading.setBounds(getWidth() - 104, statusY - 2, 80, 24);
     cancelLoading.setVisible(canCancel);
     loadingError.setBounds(24, statusY, width, 34);

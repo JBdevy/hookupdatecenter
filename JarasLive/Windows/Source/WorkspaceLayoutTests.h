@@ -3,9 +3,37 @@
 #include "MIDIItemExport.h"
 #include "FloatingControlTests.h"
 #include "ProjectDeletionPanel.h"
+#include "ProjectOpenConfirmationPanel.h"
 #include "SetlistRows.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void projectReplacement(const File &directory) {
+        using floatingControlTests::require;
+        Session session; session.inspection=true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(Session::makeEmptyProject("Original"))); session.audio.setOffline(true);
+        const auto file=directory.getNonexistentChildFile("replace-current", "").getChildFile("Original.jl");
+        session.save(file);
+        Auth auth; Lighting lighting(session); Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("replacement-ui",".json"));
+        w.setSize(1200,800); w.projectOpened(false);
+        session.edit([](jaras::Project &p){p.name="Preserved edit";},false);
+        bool applied=false, cancelled=false;
+        auto find=[&]() -> ProjectOpenConfirmationPanel * {
+            for(auto *child:w.getChildren())if(auto *sheet=dynamic_cast<ModalSheet*>(child))
+                for(auto *content:sheet->getChildren())if(auto *panel=dynamic_cast<ProjectOpenConfirmationPanel*>(content))return panel;
+            return nullptr;
+        };
+        w.confirmProjectReplacement("Next",[&]{applied=true;},[&]{cancelled=true;});
+        auto *panel=find();require(panel!=nullptr,"Replacement used a system alert instead of the rounded panel");
+        panel->keyPressed(KeyPress(KeyPress::escapeKey));floatingControlTests::pump();
+        require(cancelled&&!applied&&session.dirty&&session.project().name=="Preserved edit","Cancel modified the outgoing project");
+        w.confirmProjectReplacement("Next",[&]{applied=true;});panel=find();require(panel!=nullptr,"Second confirmation missing");
+        panel->keyPressed(KeyPress(KeyPress::returnKey));
+        const auto deadline=Time::getMillisecondCounterHiRes()+15000;
+        while(!applied&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        require(applied&&!session.dirty,"Replacement ran before saving or never continued");
+        Session reopened;reopened.inspection=true;reopened.audio.prepareOffline(48000);reopened.audio.setOffline(true);reopened.load(file);
+        require(reopened.project().name=="Preserved edit","Replacement discarded unsaved edits");
+    }
     static void liveRecordingWaveform(const File &directory) {
         using floatingControlTests::require;
         auto project=floatingControlTests::fixture();
@@ -471,6 +499,7 @@ struct WorkspaceLayoutTests {
 };
 namespace workspaceLayoutTests {
 template<class Test> void registerTests(const File &directory,Test &test) {
+    test("Project replacement saves edits before continuing and Cancel preserves them",[&]{WorkspaceLayoutTests::projectReplacement(directory);});
     test("Recording live waveform is visible in compact tracks before Stop",[&]{WorkspaceLayoutTests::liveRecordingWaveform(directory);});
     test("MIDI item export preserves trimmed notes and channels while muted",[&]{
         using floatingControlTests::require;

@@ -3232,7 +3232,7 @@ public struct ShowTimelinePresentationState: Equatable {
         guard let saved = snapshot.project.savedCursor ?? cursorMemory?.cursor(for: snapshot.project.id),
               let song = snapshot.project.songs.first(where: { $0.id == saved.songID }) else { return }
         if snapshot.transport.songId != song.id { try executor.executeAutomation(.select, target: song.id, value: 0) }
-        let position = min(song.duration, saved.position)
+        let position = max(0, saved.position)
         try executor.executeAutomation(.editSeek, target: nil, value: position)
         let update = try executor.playbackSnapshot()
         snapshot.transport = update.transport; snapshot.nextSongId = update.nextSongId

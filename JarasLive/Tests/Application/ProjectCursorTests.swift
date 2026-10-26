@@ -826,9 +826,9 @@ final class ProjectCursorTests: XCTestCase {
         XCTAssertFalse(show.hasUnsavedChanges)
         project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: project.songs[0].duration + 90)
         try show.replaceProject(project)
-        XCTAssertEqual(show.snapshot.transport.position, project.songs[0].duration)
+        XCTAssertEqual(show.snapshot.transport.position, project.songs[0].duration + 90)
     }
-    @MainActor func testSavedCursorClampsToProjectEndAndIgnoresInvalidPosition() throws {
+    @MainActor func testSavedCursorKeepsEmptyTimelinePositionAndIgnoresInvalidPosition() throws {
         let suite = "jaras-test-cursor-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -837,7 +837,7 @@ final class ProjectCursorTests: XCTestCase {
         memory.remember(project: project.id, songID: project.songs[0].id, position: project.songs[0].duration + 90)
         memory.remember(project: project.id, songID: project.songs[0].id, position: .nan)
         let show = try ShowController(executor: CursorExecutor(), persistence: MemoryProjectStore(), initialProject: project, cursorMemory: memory)
-        XCTAssertEqual(show.snapshot.transport.position, project.songs[0].duration)
+        XCTAssertEqual(show.snapshot.transport.position, project.songs[0].duration + 90)
         XCTAssertFalse(show.isPlaying)
     }
 }

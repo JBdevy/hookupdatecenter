@@ -22,6 +22,7 @@
 #include "MissingMediaPanel.h"
 #include "ValidationNoticePanel.h"
 #include "ProjectOpenConfirmationPanel.h"
+#include "RecordingProject.h"
 #include "TrackDeletionConfirmationPanel.h"
 #include "TimebaseConfirmationPanel.h"
 #include "ImportNoticePanel.h"
@@ -3667,11 +3668,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     projectBrowser->browse = [this] { chooseOpen(); };
     projectBrowser->open = [safe = Component::SafePointer<Workspace>(this)](File file) {
         if (!safe) return;
-        if (safe->projectReady && file != safe->session.document) {
-            auto panel = std::make_unique<ProjectOpenConfirmationPanel>(file.getFileNameWithoutExtension(),
-                [safe, file] { if (safe) safe->openProject(file); });
-            ModalSheet::open(*safe, localization::translate("Open another project?"), std::move(panel), 460, 232);
-        } else safe->openProject(file);
+        safe->openProject(file);
     };
     projectBrowser->openInNewTab = [this](File file) { if (projectReady && openInNewProjectTab) openInNewProjectTab(file); };
     projectBrowser->deleteProject = [this](File file) { deleteRecentProject(file); };
@@ -5393,6 +5390,45 @@ void Workspace::confirm(const String &title, const String &message, std::functio
                                          cancelled();
                                  }));
 }
+void Workspace::confirmProjectReplacement(const String &name, std::function<void()> action, std::function<void()> cancelled) {
+    auto proceed = [safe = SafePointer<Workspace>(this), action] {
+        if (!safe) return;
+        // Match macOS: save the outgoing document before replacing it.
+        if (safe->projectReady && (safe->session.dirty || safe->session.isSaving())) {
+            if (safe->session.document == File()) { safe->chooseSave(false, action); return; }
+            auto finish = safe->beginProjectLoading(safe->session.document, String::fromUTF8("Salvando projeto atual…"));
+            try { safe->session.saveAsync(safe->session.document, [safe, finish, action](String error) {
+                finish(error);
+                if (!safe || error.isNotEmpty()) return;
+                if (safe->session.dirty) safe->chooseSave(false, action);
+                else action();
+            }); } catch (const std::exception &e) { finish(String::fromUTF8(e.what())); }
+        } else action();
+    };
+    if (!projectReady) { proceed(); return; }
+    ModalSheet::open(*this, localization::translate("Open another project?"),
+        std::make_unique<ProjectOpenConfirmationPanel>(name, proceed, cancelled), 460, 232);
+}
+std::function<void(String)> Workspace::beginProjectLoading(const File &file, const String &status) {
+    std::vector<SafePointer<ProjectBrowser>> browsers;
+    browsers.emplace_back(projectBrowser.get());
+    auto collect = [&] {
+        for (auto *child : getChildren())
+            if (auto *sheet = dynamic_cast<ModalSheet *>(child); sheet && sheet->getName() == "Projetos")
+                for (auto *content : sheet->getChildren())
+                    if (auto *browser = dynamic_cast<ProjectBrowser *>(content)) browsers.emplace_back(browser);
+    };
+    collect();
+    if (std::none_of(browsers.begin(), browsers.end(), [](const auto &b) { return b && b->isShowing(); })) {
+        showProjectBrowser(); collect();
+    }
+    for (const auto &b : browsers) if (b) {
+        b->beginLoading(file); b->updateLoading(status); ModalSheet::blockDismiss(*b, true);
+    }
+    return [browsers](String error) {
+        for (const auto &b : browsers) if (b) { b->finishLoading(error); ModalSheet::blockDismiss(*b, false); }
+    };
+}
 void Workspace::deleteRecentProject(const File &file) {
     if(session.busy || session.audio.isRecording())return;
     const auto owner=SafePointer<Workspace>(this);
@@ -5614,9 +5650,9 @@ void Workspace::openProject(const File &file, std::function<void()> loaded, bool
             else safe->showError(message);
         }
     };
-    if (!confirmed && session.dirty && projectReady) {
+    if (!confirmed && projectReady && file != session.document) {
         host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::waiting, "Confirm opening the project on the PC. The current project has unsaved changes.");
-        confirm("Open another project?", "The current project has unsaved changes.", action,
+        confirmProjectReplacement(file.getFileNameWithoutExtension(), action,
             [host, remoteRequest] { host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::cancelled); });
     } else
         action();
@@ -5664,29 +5700,39 @@ void Workspace::createProject(bool withStems, int recordingChannels, bool inNewT
                             : chosen.getParentDirectory()
                                   .getChildFile(chosen.getFileNameWithoutExtension())
                                   .getChildFile(chosen.getFileName());
-                    safe->perform([&] {
-                        if (target.existsAsFile())
-                            throw std::runtime_error("A project already exists at this "
-                                                     "location. Choose another name.");
-                        if (inNewTab) {
-                            if (!safe->projectReady || !safe->openInNewProjectTab || safe->session.busy || safe->session.audio.isRecording()) return;
-                            auto project = Session::makeEmptyProject(name);
-                            project.projectSyncID = uuid();
-                            ProjectCodec::write(target, ProjectCodec::encode(project));
-                            safe->openInNewProjectTab(target);
-                            return;
-                        }
-                        if (recordingChannels > 0)
-                            safe->session.createRecordingProject(name, recordingChannels, target);
-                        else {
-                            safe->session.newProject(name);
-                            safe->session.save(target);
-                        }
-                        safe->lighting.loadSettings();
-                        safe->projectOpened();
-                        if (withStems)
-                            safe->chooseImport();
-                    });
+                    auto create = [safe, target, name, recordingChannels, withStems, inNewTab] {
+                        if (!safe || safe->session.busy || safe->session.audio.isRecording()) return;
+                        if (target.existsAsFile()) { safe->showError("A project already exists at this location. Choose another name."); return; }
+                        auto finish = safe->beginProjectLoading(target, String::fromUTF8("Criando projeto…"));
+                        safe->session.busy = true;
+                        // Write the new document off the message thread; keep the
+                        // outgoing session intact until normal asynchronous loading succeeds.
+                        Thread::launch([safe, target, name, recordingChannels, withStems, inNewTab, finish] {
+                            String error;
+                            try {
+                                auto project = recordingChannels > 0 ? makeRecordingProject(name, recordingChannels) : Session::makeEmptyProject(name);
+                                project.projectSyncID = uuid();
+                                ProjectCodec::write(target, ProjectCodec::encode(project));
+                            } catch (const std::exception &e) { error = String::fromUTF8(e.what()); }
+                            MessageManager::callAsync([safe, target, recordingChannels, withStems, inNewTab, finish, error] {
+                                if (!safe) return;
+                                safe->session.busy = false;
+                                if (error.isNotEmpty()) { finish(error); return; }
+                                if (inNewTab) { finish({}); if (safe->openInNewProjectTab) safe->openInNewProjectTab(target); return; }
+                                safe->openProject(target, [safe, recordingChannels, withStems] {
+                                    if (!safe) return;
+                                    if (recordingChannels > 0 && safe->session.song()) {
+                                        std::set<ID> tracks;
+                                        for (const auto &track : safe->session.song()->tracks) tracks.insert(track.id);
+                                        if (!tracks.empty()) safe->session.cycleRecordArm(*tracks.begin(), tracks);
+                                    }
+                                    if (withStems) safe->chooseImport();
+                                }, true);
+                            });
+                        });
+                    };
+                    if (inNewTab) create();
+                    else safe->confirmProjectReplacement(name, create);
                 });
         };
         if (!withStems && recordingChannels == 0)
@@ -5694,11 +5740,7 @@ void Workspace::createProject(bool withStems, int recordingChannels, bool inNewT
         else
             safe->prompt("Create Project", "Project name", "Untitled", chooseLocation);
     };
-    if (!inNewTab && session.dirty && projectReady)
-        confirm(String::fromUTF8("Descartar alterações?"),
-                String::fromUTF8("O projeto tem alterações que ainda não foram salvas."), work);
-    else
-        work();
+    work();
 }
 void Workspace::newSong() {
     prompt(String::fromUTF8("Nova música"), "Nome", String::fromUTF8("Nova música"),
@@ -5726,11 +5768,7 @@ void Workspace::chooseOpen() {
                                        MessageManager::callAsync([safe,file]{if(safe)safe->openProject(file);});
                                    });
     };
-    if (session.dirty)
-        confirm("Abrir outro projeto?",
-                String::fromUTF8("As alterações atuais ainda não foram salvas."), launch);
-    else
-        launch();
+    launch();
 }
 void Workspace::chooseSave(bool saveAs, std::function<void()> saved) {
     auto finish = [safe = SafePointer<Workspace>(this), saved](String error) {
@@ -5919,7 +5957,7 @@ void Workspace::chooseMigration(bool logic) {
             });
     };
     if (session.dirty && projectReady)
-        confirm("Create Project", "The current project has unsaved changes.", launch);
+        confirmProjectReplacement("Untitled", launch);
     else
         launch();
 }

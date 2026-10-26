@@ -1241,7 +1241,7 @@ void Engine::execute(const Command& c) {
         transport_.queue.songId = c.target; break;
     case CommandKind::editSeek:
         if (currentSong()) {
-            transport_.editPosition = std::clamp(c.value, 0.0, currentSong()->duration);
+            transport_.editPosition = std::max(0.0, c.value);
             if (!transport_.playing) {
                 clearIgnoreNext();
                 transport_.paused = false; resumeSub_ = false;
