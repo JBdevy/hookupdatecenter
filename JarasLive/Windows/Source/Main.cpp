@@ -607,12 +607,17 @@ class CatLiveApplication final : public JUCEApplication {
             for (size_t index = 0; index < tabWorkspaces.size(); ++index)
                 if (remote::wireID(tabWorkspaces[index]->remoteProjectTabID) == id) { if (index != selectedTab) selectProjectTab(index); return; }
         };
+        workspace.closeRemoteProjectTab = [this](const String &id) {
+            for (size_t index = 0; index < tabWorkspaces.size(); ++index)
+                if (remote::wireID(tabWorkspaces[index]->remoteProjectTabID) == id) { closeProjectTab(index); return; }
+        };
         workspace.activateExistingProjectTab = [this](File file) {
             for (size_t index = 0; index < tabSessions.size(); ++index)
                 if (index != selectedTab && tabSessions[index]->document == file) { selectProjectTab(index); return true; }
             return false;
         };
         workspace.openInNewProjectTab = [this](File file) { openProjectTab(file); };
+        workspace.openRemoteProjectInNewTab = [this](File file, ID request) { openProjectTab(file, request); };
         workspace.navigateProjectTab = [this](int direction) {
             if (tabWorkspaces.size() < 2 || selectedTab >= tabSessions.size() || tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording()) return;
             if ((direction < 0 && selectedTab == 0) || (direction > 0 && selectedTab + 1 >= tabWorkspaces.size())) return;
@@ -634,11 +639,22 @@ class CatLiveApplication final : public JUCEApplication {
         content->activateProjectTab();
         content->grabKeyboardFocus();
     }
-    void openProjectTab(const File &file) {
-        if (!file.existsAsFile()) return;
+    void openProjectTab(const File &file, ID remoteRequest = {}) {
+        const auto host = firstWorkspace->projectRemoteHost();
+        if (!file.existsAsFile()) {
+            host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::failed, {}, "This project is no longer available in the PC's recent projects.");
+            return;
+        }
         for (size_t index = 0; index < tabSessions.size(); ++index)
-            if (tabSessions[index]->document == file) { selectProjectTab(index); return; }
-        if (tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording()) return;
+            if (tabSessions[index]->document == file) {
+                selectProjectTab(index);
+                host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::completed);
+                return;
+            }
+        if (tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording()) {
+            host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::failed, {}, "Wait for the current operation or stop recording on the PC.");
+            return;
+        }
         try {
             const size_t previousTab = selectedTab;
             auto tab = std::make_unique<ProjectTab>();
@@ -672,8 +688,9 @@ class CatLiveApplication final : public JUCEApplication {
             tabWorkspaces.push_back(workspace); tabSessions.push_back(tab->session.get());
             extraTabs.push_back(std::move(tab));
             selectProjectTab(tabWorkspaces.size() - 1);
-            workspace->openProject(file);
+            workspace->openProject(file, {}, false, false, remoteRequest);
         } catch (const std::exception &error) {
+            host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::failed, {}, error.what());
             tabWorkspaces[selectedTab]->activateProjectTab();
             tabWorkspaces[selectedTab]->showError(String::fromUTF8(error.what()));
         }

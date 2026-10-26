@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+extension Font { static var jarasHeadline: Font { .headline }; static var jarasCaption: Font { .caption } }
+extension NSFont { static func jarasSystemFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont { .systemFont(ofSize: size, weight: weight) } }
 struct Part: Identifiable { let id = UUID(); var name: String; var color: UInt32?; var usesUppercase = true }
 extension Color { init(hex: UInt32) { self.init(red: Double(hex >> 16 & 255)/255, green: Double(hex >> 8 & 255)/255, blue: Double(hex & 255)/255) } }
 struct InputValidationShake: GeometryEffect { var animatableData: Double; func effectValue(size: CGSize) -> ProjectionTransform { ProjectionTransform(.identity) } }

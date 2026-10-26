@@ -4,11 +4,39 @@
 #include "RemoteDiscovery.h"
 #include "Appearance.h"
 #include "ProjectSync.h"
+#include "RemoteProjectOpening.h"
 namespace catlive::remote {
 class Host final : private Timer {
   public:
     explicit Host(Appearance &value) : sync(value), preferences(value) {}
     ProjectSync sync;
+    ProjectOpening projectOpening;
+    // A newly-created tab has no playable document yet. Continue serving the
+    // outgoing presentation with its correlated loading state during that gap.
+    var projectSnapshot(int panel, var value) {
+        if (projectPresentationRequest != projectOpening.id()) {
+            projectPresentationRequest = projectOpening.id(); projectPresentations.clear();
+        }
+        if (value.isObject()) {
+            if (projectOpening.active()) projectPresentations[panel] = value.clone();
+        }
+        else if (projectOpening.active() && !projectPresentations.empty()) {
+            const auto found = projectPresentations.find(panel);
+            value = (found != projectPresentations.end() ? found->second : projectPresentations.begin()->second).clone();
+        } else return value;
+        if (projectOpening.id().empty()) return value;
+        auto projects = get(value, "projects").clone();
+        if (!projects.isObject()) projects = object();
+        put(projects, "commandID", wireID(projectOpening.id()));
+        put(projects, "commandState", projectOpening.stateName());
+        if (projectOpening.active()) {
+            put(projects, "busy", true); put(projects, "canOpen", false);
+            put(projects, "status", text(projectOpening.status()));
+        }
+        put(projects, "error", text(projectOpening.error()));
+        put(value, "projects", projects);
+        return value;
+    }
     ~Host() override { stop(); }
     std::function<var(int)> presentation;
     std::function<bool(const Command &)> perform;
@@ -47,6 +75,7 @@ class Host final : private Timer {
         transport.stop();
         for(auto &entry:clients)releaseVinhetas(entry.second);
         clients.clear();
+        projectPresentations.clear();
         port = 0;
         advertising = false;
     }
@@ -236,6 +265,8 @@ class Host final : private Timer {
     Transport transport;
     Discovery discovery;
     std::map<ID, Client> clients;
+    std::map<int, var> projectPresentations;
+    ID projectPresentationRequest;
     std::deque<double> failedPINs;
     bool advertising = false;
     double lastPublish = 0;

@@ -5,6 +5,25 @@
 #include "SetlistRows.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void dividerMargins(const File &directory) {
+        using floatingControlTests::require;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);
+        Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("divider-margins",".json"));
+        w.setSize(1600,900);w.projectOpened(false);w.partsLeftVisible=false;w.partsRightVisible=false;
+        w.mixerWidth=350;w.setlistWidth=300;
+        for(bool mixer:{false,true})for(bool setlist:{false,true})for(bool leading:{false,true}) {
+            w.mixerVisible=mixer;w.setlistVisible=setlist;
+            w.setlistPlacement=leading?Workspace::SetlistPlacement::left:Workspace::SetlistPlacement::right;w.resized();
+            const auto state=get(w.diagnostics(),"timeline");
+            require(num(state,"x")==w.tracksViewport.getRight()+(mixer?20:0),"Mixer divider lost its reserved Mac margin");
+            require(w.mixerDivider.getWidth()==(mixer?20:0)&&w.setlistDivider.getWidth()==(setlist?14:0),"Hidden divider retained a margin or visible rail collapsed");
+            require(w.tracksViewport.getWidth()==(mixer?350:0),"Divider margin reduced mixer controls");
+            if(setlist&&!leading)require(num(state,"x")+num(state,"width")==w.setlistDivider.getX(),"Setlist rail overlaps the grid");
+            if(setlist&&leading)require(w.setlistDivider.getRight()==w.tracksViewport.getX(),"Leading setlist gap was not reserved");
+        }
+    }
     static void trackIconWidth(const File &directory) {
         using floatingControlTests::require;
         auto project=floatingControlTests::fixture();
@@ -428,6 +447,7 @@ struct WorkspaceLayoutTests {
 };
 namespace workspaceLayoutTests {
 template<class Test> void registerTests(const File &directory,Test &test) {
+    test("Workspace divider margins match Mac without shrinking track controls",[&]{WorkspaceLayoutTests::dividerMargins(directory);});
     test("Track icon column extends the mixer without moving group or child controls; hiding and removal restore width",[&]{WorkspaceLayoutTests::trackIconWidth(directory);});
     test("Deleting another recent project during playback preserves the current dirty project and audio clock",[&]{WorkspaceLayoutTests::deleteRecentWhilePlaying(directory);});
     test("Item context unifies the full selection per track with audio, MIDI, result selection and Undo; LR swap preserves unselected items",[&]{WorkspaceLayoutTests::unifyItems(directory);});

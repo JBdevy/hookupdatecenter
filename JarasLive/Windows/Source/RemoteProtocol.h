@@ -104,7 +104,7 @@ struct Command {
         else if (a == "renamePlaylist")
             valid = target && zero && c.message.trim().isNotEmpty();
         else if (a == "deleteRegion" || a == "duplicatePlaylist" || a == "deletePlaylist" ||
-                 a == "requestImage" || a == "openRecentProject" || a == "openRecentProjectInNewTab" || a == "selectProjectTab" || a == "clipMute" ||
+                 a == "requestImage" || a == "openRecentProject" || a == "openRecentProjectInNewTab" || a == "selectProjectTab" || a == "closeProjectTab" || a == "clipMute" ||
                  a == "queueSection")
             valid = target && zero;
         else if (a == "toggleMultiLoopBypass" || a == "toggleSetlistLive" || a == "cancelSection" ||

@@ -887,7 +887,7 @@ struct TrackMixerRow: View, Equatable {
             }
             .overlay { if dragState.blockedTarget == track.id { TrackDropBlockedBadge() } }
             #if os(macOS)
-            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, dragName: track.name, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, icon: { editTrackDetails(details.iconRequest) }, group: show.current?.tracks.contains(where: { trackSelection.contains($0.id) && $0.stereoLink != nil }) == true ? nil : groupSelection, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard && track.role.rawValue != "vinhetas" ? {
+            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, dragName: track.name, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, icon: { editTrackDetails(details.iconRequest) }, group: show.current?.canCreateTrackGroup(track.id) == true ? { show.createTrackGroup(track.id) } : nil, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard && track.role.rawValue != "vinhetas" ? {
                 let range = TimelineAreaSelection.shared.range
                 let valid = range?.song == show.current?.id
                 if let id = show.addMIDIItem(track: track.id, start: valid ? range?.start : nil, duration: valid ? range.map { $0.end - $0.start } : nil) { MIDIEditorWindows.shared.open(show: show, item: id) }
@@ -1030,7 +1030,7 @@ struct TrackMixerRow: View, Equatable {
     #endif
 
 }
-private struct TrackGroupSymbol: View {
+struct TrackGroupSymbol: View {
     let nested: Bool
     var body: some View {
         HStack(alignment: .center, spacing: 1) {
@@ -1049,10 +1049,16 @@ struct TrackGroupButton: View {
     private struct Request { let project: UUID; let track: UUID; let parent: UUID? }
     @State private var request: Request?
     @State private var confirming = false
+    @State private var hovering = false
     var body: some View {
         Button { request = Request(project: project, track: track, parent: parent); confirming = true } label: {
-            TrackGroupSymbol(nested: parent != nil).frame(width: 28, height: height).contentShape(Rectangle())
+            TrackGroupSymbol(nested: parent != nil).frame(width: 28, height: height)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(hovering ? 0.24 : 0)))
+                .contentShape(Rectangle())
         }.buttonStyle(.plain).trackControlSelectionExclusion()
+            #if os(macOS)
+            .onHover { hovering = $0 }
+            #endif
             .accessibilityLabel(parent == nil ? "Ungroup" : "Remove from group")
             .jarasHelp(parent == nil ? "Ungroup" : "Remove from group")
             .alert(Text(LocalizedStringKey(request?.parent == nil ? "Dissolve this track group?" : "Move this group out of its parent group?")),
@@ -3046,7 +3052,7 @@ private struct FooterMixerStrip: View, Equatable {
     }
     private var canLink: Bool { selected && show.current?.linkableTracks(selection) != nil }
     private var isFolder: Bool { id.map { id in show.current?.tracks.contains(where: { $0.parentTrackID == id }) == true } == true }
-    private var canGroup: Bool { selected && selection.count > 1 && show.current?.tracks.contains(where: { selection.contains($0.id) && $0.stereoLink != nil }) != true }
+    private var canGroup: Bool { id.map { show.current?.canCreateTrackGroup($0) == true } == true }
     private func select() {
         guard let track, track.kind == .standard, let song = show.current else { return }
         var ids = selection
@@ -3258,7 +3264,7 @@ private struct FooterMixerStrip: View, Equatable {
                 if let track {
                     TrackRightClickInput(project: show.snapshot.project.id, track: track.id, kind: track.kind, dragName: track.name, select: select,
                         patch: { patchPresented = true }, fx: { fxPresented = true }, edit: edit, icon: editIcon,
-                        group: canGroup ? { show.groupTracks(selection) } : nil,
+                        group: canGroup ? { show.createTrackGroup(track.id) } : nil,
                         ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil,
                         link: canLink ? link : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil,
                         duplicateTracks: duplicateSelection, deleteTracks: { requestDeletion(deleteIDs, project: deleteProject) }, deleteTrackCount: deleteIDs.count)
@@ -3281,7 +3287,7 @@ private struct FooterMixerStrip: View, Equatable {
                     if let duplicateSelection {
                         Button(LocalizedStringKey(deleteIDs.count > 1 ? "Duplicate tracks" : "Duplicate track"), action: duplicateSelection)
                     }
-                    if canGroup { Button("Create group") { show.groupTracks(selection) } }
+                    if canGroup, let id { Button("Create group") { show.createTrackGroup(id) } }
                     if let id, isFolder { Button("Ungroup") { show.ungroupTrack(id) } }
                     if let track, track.parentTrackID != nil { Button("Remove from group") { show.removeTrackFromGroup(track.id) } }
                     if canLink { Button("Link tracks", action: link) }

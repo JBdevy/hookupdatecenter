@@ -340,14 +340,19 @@ struct VinhetasPanel: View {
                     edit: { edit = Edit(preset: preset, pad: index) },
                     insert: { importTarget = (preset, index); importing = true },
                     learn: { model.learningPreset = nil; model.learningPad = index })
-                    .frame(maxWidth: .infinity, minHeight: 58)
+                    .frame(maxWidth: .infinity, minHeight: 44)
                 #endif
             }
             HStack(spacing: 6) {
                 Text(item.volume <= 0 ? "−∞" : String(format: "%+.1f", 20 * log10(item.volume)))
                     .font(.system(size: 10, weight: .semibold)).monospacedDigit().frame(width: 34, alignment: .leading)
                 VinhetasFader(value: Binding(get: { model.library.presets[preset].pads[index].volume }, set: { model.volume(preset: preset, pad: index, value: $0) }))
-            }.frame(height: 20)
+            }
+            #if os(macOS)
+            .frame(height: 20)
+            #else
+            .frame(height: 44)
+            #endif
         }.frame(maxWidth: .infinity)
     }
 }
@@ -432,7 +437,7 @@ private struct VinhetasPadSurface: NSViewRepresentable {
 private struct VinhetasFader: View {
     @Binding var value: Double
     var body: some View {
-        RemoteNativeSlider(value: value, range: 0...2, height: 20, resetValue: 1) { value = $0 }
+        RemoteNativeSlider(value: value, range: 0...2, height: 44, resetValue: 1, locksScrolling: true) { value = $0 }
             .accessibilityLabel("Volume do pad")
     }
 }
@@ -506,15 +511,18 @@ struct VinhetasPadSurface: UIViewRepresentable {
     }
 }
 
-/// The bank keeps the desktop 8×2 arrangement; smaller windows can scroll it.
+/// The entire 8×2 bank fits its panel and stays fixed, including empty areas.
 struct IpadVinhetasPanel: View {
     let touchMenusEnabled: Bool
     let createTrack: () -> Void
     var body: some View {
         GeometryReader { geometry in
-            ScrollView([.horizontal, .vertical]) {
-                VinhetasPanel(createTrack: createTrack, touchMenusEnabled: touchMenusEnabled).frame(width: max(1000, geometry.size.width), alignment: .topLeading)
-            }
+            let scale = max(0.01, min(1, min(geometry.size.width / 1000, geometry.size.height / 260)))
+            VinhetasPanel(createTrack: createTrack, touchMenusEnabled: touchMenusEnabled)
+                .frame(width: geometry.size.width / scale, height: geometry.size.height / scale, alignment: .topLeading)
+                .scaleEffect(scale, anchor: .topLeading)
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                .clipped()
         }.background(JarasTheme.panel)
     }
 }

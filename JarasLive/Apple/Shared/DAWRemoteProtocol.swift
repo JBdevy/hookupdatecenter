@@ -126,7 +126,7 @@ enum DAWRemoteNoticeDelivery: Equatable {
 struct DAWRemoteCommand: Codable {
     enum Action: String, Codable {
         case play, pause, stop, subPlay, subStop, toggleLoop, seek, queueSection, cancelSection, toggleMultiLoopBypass, toggleSetlistLive
-        case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, openRecentProjectInNewTab, selectProjectTab
+        case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, openRecentProjectInNewTab, selectProjectTab, closeProjectTab
         case remotePanel, noticeSend, noticeClear, noticePin, noticeDestination, noticeSaveTemplate
         case requestImage
         case timerStart, timerStop
@@ -183,7 +183,7 @@ struct DAWRemoteCommand: Codable {
         case .noticeClear: return target == nil && value == 0
         case .noticePin: return target == nil && (value == 0 || value == 1)
         case .noticeDestination: return target == nil && (value == 1 || value == 2) && enabled != nil
-        case .openRecentProject, .openRecentProjectInNewTab, .selectProjectTab: return target != nil && value == 0
+        case .openRecentProject, .openRecentProjectInNewTab, .selectProjectTab, .closeProjectTab: return target != nil && value == 0
         case .clipGain: return target != nil && (0...pow(10, 24.0 / 20)).contains(value)
         case .clipMute, .queueSection: return target != nil && value == 0
         case .volume: return (0...4).contains(value)
@@ -299,7 +299,10 @@ struct DAWRemoteState: Codable, Equatable {
         var canOpenInNewTab: Bool? = nil
         var status: String
         var error: String
+        var commandID: UUID? = nil
+        var commandState: String? = nil
         var valid: Bool {
+            (commandState.map { ["opening", "completed", "failed", "cancelled", "waiting"].contains($0) } ?? true) &&
             recent.count <= 20 && Set(recent.map(\.id)).count == recent.count &&
             recent.filter(\.current).count <= 1 && recent.allSatisfy { !$0.name.isEmpty && $0.name.utf8.count <= 1024 } &&
             status.utf8.count <= 2048 && error.utf8.count <= 2048
@@ -908,6 +911,27 @@ struct DAWRemoteVinhetasFeedback {
     private struct Key: Hashable { let preset: Int; let pad: Int }
     private struct Press { let id: UUID; let gate: Bool; var held: Bool; var sounding: Bool; var confirmed = false }
     private var presses: [Key: Press] = [:]
+    private struct Gate { var baseline: Bool; var awaiting: [Bool]; var expires: TimeInterval }
+    private var gates: [Key: Gate] = [:]
+    private(set) var gateRevision = UUID()
+    func gate(preset: Int, pad: Int, confirmed: Bool, now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        guard let gate = gates[Key(preset: preset, pad: pad)], gate.expires > now else { return confirmed }
+        return gate.awaiting.last ?? confirmed
+    }
+    @discardableResult mutating func toggleGate(preset: Int, pad: Int, confirmed: Bool,
+                                               now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        let key = Key(preset: preset, pad: pad)
+        let desired = !gate(preset: preset, pad: pad, confirmed: confirmed, now: now)
+        var prediction = gates[key].flatMap { $0.expires > now ? $0 : nil } ?? Gate(baseline: confirmed, awaiting: [], expires: now)
+        prediction.awaiting.append(desired); prediction.expires = now + 2
+        gates[key] = prediction; gateRevision = UUID()
+        if desired { stop(preset: preset, pad: pad) }
+        return desired
+    }
+    mutating func expireGates(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        gates = gates.filter { $0.value.expires > now }
+    }
+    mutating func stopAll() { presses.removeAll() }
     mutating func down(id: UUID, preset: Int, pad: Int, gate: Bool) {
         presses[Key(preset: preset, pad: pad)] = Press(id: id, gate: gate, held: gate, sounding: !gate)
     }
@@ -916,12 +940,24 @@ struct DAWRemoteVinhetasFeedback {
         if presses[key]?.gate == true { presses[key]?.held = false; presses[key]?.sounding = false }
     }
     mutating func stop(preset: Int, pad: Int) { presses[Key(preset: preset, pad: pad)] = nil }
-    mutating func reset() { presses.removeAll() }
+    mutating func reset() { presses.removeAll(); gates.removeAll() }
     func lit(preset: Int, pad: Int) -> Bool {
         let press = presses[Key(preset: preset, pad: pad)]
         return press?.held == true || press?.sounding == true
     }
-    mutating func receive(_ state: DAWRemoteVinhetas) {
+    mutating func receive(_ state: DAWRemoteVinhetas, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        expireGates(now: now)
+        for (key, stored) in gates {
+            var prediction = stored
+            let confirmed = state.presets[key.preset].pads[key.pad].gate
+            // Consume observed transitions in order. A stale initial value
+            // cannot acknowledge the last of two rapid, opposite taps.
+            if confirmed != prediction.baseline {
+                prediction.baseline = confirmed
+                if let index = prediction.awaiting.firstIndex(of: confirmed) { prediction.awaiting.removeFirst(index + 1) }
+            }
+            gates[key] = prediction.awaiting.isEmpty ? nil : prediction
+        }
         let acknowledged = Set(state.receivedPresses ?? [])
         for (key, stored) in presses {
             var press = stored

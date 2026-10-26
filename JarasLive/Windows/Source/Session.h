@@ -69,6 +69,7 @@ class Session final : private Timer {
     void setTrackInstrumentIcon(const std::set<ID> &, std::optional<std::string>);
     void resizeItem(const ID &, double start, double end);
     std::vector<ID> duplicateTracks(const std::set<ID> &);
+    void editTrackHierarchy(const ID &, const std::function<void(jaras::Song &)> &);
     void undo();
     void redo();
     bool canUndo() const { return !undoHistory.empty(); }
@@ -135,17 +136,25 @@ class Session final : private Timer {
     void commitItemTiming(jaras::Project, const ID &, bool recordHistory);
     MarkerHistory markerHistory(const ID &) const;
     void applyMarkerHistory(const MarkerHistory &, bool recordHistory);
+    struct TrackHierarchyHistory {
+        struct Row { ID id; std::optional<ID> parent; std::optional<jaras::OutputPatch> patch,secondary; std::optional<std::vector<jaras::OutputPatch>> outputs; };
+        ID song; std::vector<Row> rows;
+    };
+    TrackHierarchyHistory trackHierarchyHistory(const ID &) const;
+    void applyTrackHierarchy(const TrackHierarchyHistory &, bool recordHistory);
     struct HistoryEntry {
         var project;
         std::optional<MarkerHistory> markers;
         std::optional<std::map<ID, var>> effects;
         std::optional<ItemTimingHistory> itemTiming;
         std::optional<ItemHistory> items;
+        std::optional<TrackHierarchyHistory> hierarchy;
         HistoryEntry(var value) : project(std::move(value)) {}
         HistoryEntry(MarkerHistory value) : markers(std::move(value)) {}
         HistoryEntry(std::map<ID, var> value) : effects(std::move(value)) {}
         HistoryEntry(ItemTimingHistory value) : itemTiming(std::move(value)) {}
         HistoryEntry(ItemHistory value) : items(std::move(value)) {}
+        HistoryEntry(TrackHierarchyHistory value) : hierarchy(std::move(value)) {}
     };
     std::vector<HistoryEntry> undoHistory, redoHistory;
     std::map<ID, var> currentEffects(const std::map<ID, var> &) const;

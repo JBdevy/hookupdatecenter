@@ -63,13 +63,18 @@ struct TestSnapshot { var project = TestProject() }
     var additionalProtectedMediaURLs: () -> Set<URL> = { [] }
     var activateExistingProjectTab: ((URL) -> Bool)?
     var openInNewProjectTab: ((URL) -> Void)?
+    var openRemoteInNewProjectTab: ((URL, UUID) -> Void)?
+    var canChangeProject: () -> Bool = { true }
+    static var remoteResults: [(UUID, String)] = []
+    static func finishRemoteProjectOpening(_ id: UUID, state: String, error: String = "") { remoteResults.append((id, state)) }
     var navigateProjectTab: ((Int) -> Void)?
     init(show: ShowController) { self.show = show }
-    func open(_ url: URL) {
+    func open(_ url: URL, remoteCommandID: UUID? = nil) {
         busy = true
         if url.lastPathComponent == "bad.jl" { error = "Invalid fixture"; ready = false }
         else { currentURL = url; ready = true }
         busy = false
+        if let remoteCommandID { Self.finishRemoteProjectOpening(remoteCommandID, state: ready ? "completed" : "failed") }
     }
     func rememberProjectMedia() async throws {}
 }
@@ -102,6 +107,7 @@ enum DAWRemoteState { struct ProjectTab { var id: UUID; var name: String; var se
     static var documents: ProjectDocuments?
     static var projectTabsProvider: () -> [DAWRemoteState.ProjectTab] = { [] }
     static var selectProjectTabHandler: ((UUID) -> Void)?
+    static var closeProjectTabHandler: ((UUID) -> Void)?
     static func bind(_ show: ShowController) {}
 }
 @MainActor final class ResolumeController { static let shared = ResolumeController(); func bind(_ show: ShowController) {} }
@@ -160,12 +166,24 @@ enum ProjectTabNavigation {
         precondition(first.projectAudio.midi.isEmpty && second.projectAudio.midi.count == 1)
         tabs.receiveMIDI(device: 1, status: 0xb0, number: 64, value: 0)
         precondition(first.projectAudio.midi.count == 1 && second.projectAudio.midi.count == 2)
-        tabs.open(URL(fileURLWithPath: "/fixtures/./first.jl"))
+        let existingRequest = UUID()
+        tabs.open(URL(fileURLWithPath: "/fixtures/./first.jl"), remoteCommandID: existingRequest)
+        precondition(ProjectDocuments.remoteResults.last?.0 == existingRequest && ProjectDocuments.remoteResults.last?.1 == "completed")
         precondition(tabs.projects.count == 2 && tabs.active === first)
         TrackRecording.shared.recording = true
-        tabs.navigate(1); tabs.open(URL(fileURLWithPath: "/fixtures/third.jl"))
+        let rejectedRequest = UUID()
+        tabs.navigate(1); tabs.open(URL(fileURLWithPath: "/fixtures/third.jl"), remoteCommandID: rejectedRequest)
+        precondition(ProjectDocuments.remoteResults.last?.0 == rejectedRequest && ProjectDocuments.remoteResults.last?.1 == "failed")
         precondition(tabs.active === first && tabs.projects.count == 2)
         TrackRecording.shared.recording = false
+        first.documents.importingAudio = true
+        precondition(!first.documents.canChangeProject(), "Importing audio must close project-navigation admission")
+        let importingRequest = UUID()
+        tabs.open(URL(fileURLWithPath: "/fixtures/second.jl"), remoteCommandID: importingRequest)
+        precondition(ProjectDocuments.remoteResults.last?.0 == importingRequest && ProjectDocuments.remoteResults.last?.1 == "failed")
+        precondition(tabs.active === first && tabs.projects.count == 2, "Blocked navigation must not report completion or replace the active tab")
+        first.documents.importingAudio = false
+        precondition(first.documents.canChangeProject() && !second.documents.canChangeProject(), "Only the active document may replace its project")
         tabs.setPendingRevocation(true)
         precondition(first.show.pendingRevocation && second.show.pendingRevocation)
         TestAlert.response = .alertThirdButtonReturn
@@ -174,7 +192,9 @@ enum ProjectTabNavigation {
         TestAlert.response = .alertFirstButtonReturn
         let saved = try await tabs.confirmAndSaveBackgroundProjects(excluding: first.documents)
         precondition(saved && second.show.saves == 1 && first.show.hasUnsavedChanges)
-        tabs.open(URL(fileURLWithPath: "/fixtures/bad.jl"))
+        let failedRequest = UUID()
+        tabs.open(URL(fileURLWithPath: "/fixtures/bad.jl"), remoteCommandID: failedRequest)
+        precondition(ProjectDocuments.remoteResults.last?.0 == failedRequest && ProjectDocuments.remoteResults.last?.1 == "failed")
         for _ in 0..<10 { try await Task.sleep(nanoseconds: 10_000_000) }
         precondition(tabs.projects.count == 2 && tabs.active === first && first.show.isPlaying)
         ProjectSyncControl.following = true
@@ -184,12 +204,12 @@ enum ProjectTabNavigation {
         ProjectSyncControl.following = false
         // Closing one tab cancels cleanly, then saves/removes only that tab.
         TestAlert.response = .alertThirdButtonReturn
-        tabs.close(0)
+        DAWRemoteHostBridge.closeProjectTabHandler?(first.remoteProjectTabID)
         for _ in 0..<10 { try await Task.sleep(nanoseconds: 1_000_000) }
         precondition(tabs.projects.count == 2 && first.show.isPlaying)
         second.show.isPlaying = true
         TestAlert.response = .alertFirstButtonReturn
-        tabs.close(0)
+        DAWRemoteHostBridge.closeProjectTabHandler?(first.remoteProjectTabID)
         for _ in 0..<10 { try await Task.sleep(nanoseconds: 1_000_000) }
         precondition(tabs.projects.count == 1 && tabs.active === second)
         precondition(first.projectAudio.closed && second.show.isPlaying)

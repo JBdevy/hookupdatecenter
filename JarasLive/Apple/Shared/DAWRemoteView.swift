@@ -351,6 +351,7 @@ struct DAWRemoteClientView: View {
     static weak var documents: ProjectDocuments?
     static var projectTabsProvider: () -> [DAWRemoteState.ProjectTab] = { [] }
     static var selectProjectTabHandler: ((UUID) -> Void)?
+    static var closeProjectTabHandler: ((UUID) -> Void)?
     private static var noticeImageDate = Date.distantPast
     private static var noticeImageData: Data?
     private static var lastTimerState: TeleprompterTimer?
@@ -572,10 +573,14 @@ struct DAWRemoteClientView: View {
                 if let target = command.target { Self.selectProjectTabHandler?(target) }
                 return
             }
+            if command.action == .closeProjectTab {
+                if let target = command.target { Self.closeProjectTabHandler?(target) }
+                return
+            }
             if command.action == .openRecentProject || command.action == .openRecentProjectInNewTab {
                 #if os(macOS)
                 if let target = command.target {
-                    documents?.openRemoteProject(target, inNewTab: command.action == .openRecentProjectInNewTab)
+                    documents?.openRemoteProject(target, inNewTab: command.action == .openRecentProjectInNewTab, commandID: command.id)
                 }
                 #endif
                 return
@@ -2289,7 +2294,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     IpadMasterPanFader(show: localShow).frame(width: 80, height: 28)
                 } else {
                     RemotePanFader(value: state.masterPan ?? 0) { action(.pan, value: $0) }
-                        .frame(width: 80, height: 28).accessibilityLabel("Master pan")
+                        .frame(width: UIDevice.current.userInterfaceIdiom == .phone ? 104 : 80, height: 28).accessibilityLabel("Master pan")
                         .disabled(state.masterPan == nil)
                 }
                 Button { action(.mute) } label: { Text(verbatim: "M") }
@@ -2607,7 +2612,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         let ids = Set(selectionTargets(id))
         let standard = track?.kind == .standard
         let patchable = track.map { [.standard, .timecode, .video, .click].contains($0.kind) } ?? false
-        let canGroup = standard && ids.count > 1 && ids.isSubset(of: groupableTracks)
+        let canGroup = song?.canCreateTrackGroup(id) == true
         let folder = song?.tracks.contains { $0.parentTrackID == id } == true
         func guarded(_ action: (() -> Void)?) -> (() -> Void)? {
             guard let action else { return nil }
@@ -2625,7 +2630,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             addAudio: guarded(standard && ids.count == 1 ? addTrackAudio.map { callback in { callback(id) } } : nil),
             fx: guarded(standard ? { openSelectedFX?(selectionTargets(id)) } : nil),
             soundDesigner: guarded(track?.kind == .click ? openClickSound.map { callback in { callback(id) } } : nil),
-            group: guarded(canGroup ? { groupTracks?(ids) } : nil),
+            group: guarded(canGroup ? { localShow?.createTrackGroup(id) } : nil),
             ungroup: guarded(folder ? { localShow?.ungroupTrack(id) } : nil),
             removeFromGroup: guarded(track?.parentTrackID != nil ? { localShow?.removeTrackFromGroup(id) } : nil),
             link: guarded(song?.linkableTracks(ids) != nil ? {
@@ -4693,6 +4698,7 @@ struct RemoteNativeSlider: View {
     var height: CGFloat = 28
     var linked = false
     var resetValue = 0.0
+    var locksScrolling = false
     let change: (Double) -> Void
     @State private var editing = false
     @State private var draft = 0.0
@@ -4724,7 +4730,7 @@ struct RemoteNativeSlider: View {
                     .overlay(Rectangle().fill(Color(white: 0.33)).frame(width: 1, height: 12))
                     .offset(x: CGFloat(fraction) * max(1, geometry.size.width - 12))
             }.frame(maxHeight: .infinity).contentShape(Rectangle())
-                .overlay(RemoteSliderTouchInput(
+                .overlay(RemoteSliderTouchInput(locksScrolling: locksScrolling,
                     changed: { update($0, width: geometry.size.width) },
                     ended: { update($0, width: geometry.size.width); commit(draft) },
                     reset: { commit(resetValue) }))
@@ -4748,13 +4754,14 @@ struct RemoteNativeSlider: View {
 /// Tap and pan are distinct native gestures: a double tap never commits a
 /// positional drag afterwards. The single tap waits for the double-tap decision.
 private struct RemoteSliderTouchInput: UIViewRepresentable {
+    var locksScrolling = false
     @Environment(\.isEnabled) private var enabled
     let changed: (CGFloat) -> Void
     let ended: (CGFloat) -> Void
     let reset: () -> Void
     func makeUIView(context: Context) -> RemoteSliderTouchView { RemoteSliderTouchView() }
     func updateUIView(_ view: RemoteSliderTouchView, context: Context) {
-        view.changed = changed; view.ended = ended; view.reset = reset
+        view.changed = changed; view.ended = ended; view.reset = reset; view.locksScrolling = locksScrolling
         view.isUserInteractionEnabled = enabled
     }
 }
@@ -4762,22 +4769,42 @@ private final class RemoteSliderTouchView: UIView, UIGestureRecognizerDelegate {
     var changed: ((CGFloat) -> Void)?
     var ended: ((CGFloat) -> Void)?
     var reset: (() -> Void)?
+    var locksScrolling = false
+    private final class ScrollLock { weak var view: UIScrollView?; init(_ view: UIScrollView) { self.view = view } }
+    private var scrollLocks: [ScrollLock] = []
+    private func lockAncestorScrolling() {
+        guard locksScrolling, scrollLocks.isEmpty else { return }
+        var ancestor = superview
+        while let view = ancestor {
+            if let scroll = view as? UIScrollView, scroll.isScrollEnabled { scrollLocks.append(ScrollLock(scroll)); scroll.isScrollEnabled = false }
+            ancestor = view.superview
+        }
+    }
+    func restoreScrolling() { for lock in scrollLocks { lock.view?.isScrollEnabled = true }; scrollLocks.removeAll() }
+    override func didMoveToWindow() { super.didMoveToWindow(); if window == nil { restoreScrolling() } }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { restoreScrolling(); super.touchesEnded(touches, with: event) }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if !(gestureRecognizers ?? []).contains(where: { $0 is UIPanGestureRecognizer && ($0.state == .began || $0.state == .changed) }) { restoreScrolling() }
+        super.touchesCancelled(touches, with: event)
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool { lockAncestorScrolling(); return true }
     private var lastDragX: CGFloat?
     override init(frame: CGRect) {
         super.init(frame: frame)
         let pan = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
         pan.maximumNumberOfTouches = 1; pan.delegate = self
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(resetTapped))
-        doubleTap.numberOfTapsRequired = 2
-        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+        doubleTap.numberOfTapsRequired = 2; doubleTap.delegate = self
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:))); tap.delegate = self
         tap.require(toFail: doubleTap)
         addGestureRecognizer(pan); addGestureRecognizer(doubleTap); addGestureRecognizer(tap)
         isAccessibilityElement = false
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    @objc private func resetTapped() { reset?() }
-    @objc private func tapped(_ gesture: UITapGestureRecognizer) { ended?(gesture.location(in: self).x) }
+    @objc private func resetTapped() { reset?(); restoreScrolling() }
+    @objc private func tapped(_ gesture: UITapGestureRecognizer) { ended?(gesture.location(in: self).x); restoreScrolling() }
     @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
+        defer { if [.ended, .cancelled, .failed].contains(gesture.state) { restoreScrolling() } }
         switch gesture.state {
         case .began, .changed:
             lastDragX = gesture.location(in: self).x; changed?(lastDragX!)
@@ -5267,7 +5294,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
                 }
                 if panVisible {
                     RemotePanFader(value: track.pan) { send(.pan, $0) }
-                        .frame(width: 52.5, height: 28).accessibilityLabel("Pan " + track.name)
+                        .frame(width: UIDevice.current.userInterfaceIdiom == .phone ? 104 : 52.5, height: 28).accessibilityLabel("Pan " + track.name)
                 }
                 } else if kind == .click, let localShow {
                     Button("Insert") { localShow.insertClickItems(track: track.id) }
@@ -6776,7 +6803,7 @@ private struct RemoteVinhetasScreen: View {
         let press = DAWRemoteCommand(project: project, song: song, action: .vinhetasDown,
             target: UUID(), pad: index, preset: preset)
         if let item = state?.presets[preset].pads[index], let id = press.target {
-            feedback.down(id: id, preset: preset, pad: index, gate: item.gate)
+            feedback.down(id: id, preset: preset, pad: index, gate: feedback.gate(preset: preset, pad: index, confirmed: item.gate))
         }
         held[index] = press; send(press)
     }
@@ -6817,12 +6844,16 @@ private struct RemoteVinhetasScreen: View {
                     .font(.jarasCallout).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            .task(id: feedback.gateRevision) {
+                do { try await Task.sleep(nanoseconds: 2_100_000_000) } catch { return }
+                feedback.expireGates()
+            }
             .onDisappear(perform: releaseAll)
             .onChange(of: project) { _ in releaseAll() }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in releaseAll() }
     }
     private var panic: some View {
-        Button { releaseAll(); feedback.reset(); send(.init(project: project, song: song, action: .vinhetasPanic)) } label: {
+        Button { releaseAll(); feedback.stopAll(); send(.init(project: project, song: song, action: .vinhetasPanic)) } label: {
             Text("Panic").font(.system(size: 12, weight: .semibold)).frame(width: 60, height: 30)
                 .foregroundStyle(.white).background(Color(hex: 0x8d2845)).cornerRadius(5)
         }.buttonStyle(.plain).accessibilityLabel("Panic")
@@ -6848,17 +6879,18 @@ private struct RemoteVinhetasScreen: View {
     }
     private func pad(_ index: Int, preset: Int, state: DAWRemoteVinhetas) -> some View {
         let item = state.presets[preset].pads[index]
+        let gate = feedback.gate(preset: preset, pad: index, confirmed: item.gate)
         return VStack(spacing: 4) {
             HStack(spacing: 4) {
                 Button {
-                    if !item.gate { feedback.stop(preset: preset, pad: index) }
+                    let desired = feedback.toggleGate(preset: preset, pad: index, confirmed: item.gate)
                     send(.init(project: project, song: song, action: .vinhetasGate,
-                        enabled: !item.gate, pad: index, preset: preset))
+                        enabled: desired, pad: index, preset: preset))
                 } label: {
-                    VStack(spacing: 1) { Text("Gate"); Text(verbatim: item.gate ? "On" : "Off") }
+                    VStack(spacing: 1) { Text("Gate"); Text(verbatim: gate ? "On" : "Off") }
                         .font(.system(size: 10, weight: .semibold)).frame(width: 34, height: 40)
-                }.buttonStyle(.plain).foregroundStyle(item.gate ? Color.black : JarasTheme.secondary)
-                    .background(item.gate ? JarasTheme.yellow : Color.clear).cornerRadius(4)
+                }.buttonStyle(.plain).foregroundStyle(gate ? Color.black : JarasTheme.secondary)
+                    .background(gate ? JarasTheme.yellow : Color.clear).cornerRadius(4)
                 VinhetasPadSurface(name: item.name, color: item.color, active: feedback.lit(preset: preset, pad: index),
                     down: { down(index, preset: preset) }, up: { release(index) },
                     touchMenusEnabled: false, contextMenusEnabled: false, edit: {}, insert: {}, learn: {})
@@ -6869,10 +6901,10 @@ private struct RemoteVinhetasScreen: View {
             HStack(spacing: 6) {
                 Text(verbatim: item.volume <= 0 ? "−∞" : String(format: "%+.1f", 20 * log10(item.volume)))
                     .font(.system(size: 10, weight: .semibold)).monospacedDigit().frame(width: 34, alignment: .leading)
-                RemoteNativeSlider(value: item.volume, range: 0...2, height: 20, resetValue: 1) {
+                RemoteNativeSlider(value: item.volume, range: 0...2, height: 44, resetValue: 1) {
                     send(.init(project: project, song: song, action: .vinhetasVolume, value: $0, pad: index, preset: preset))
                 }.accessibilityLabel("Volume do pad")
-            }.frame(height: 20)
+            }.frame(height: 44)
         }
     }
 }

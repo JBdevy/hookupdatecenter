@@ -2730,6 +2730,14 @@ public struct ShowTimelinePresentationState: Equatable {
     public func unlinkTracks(_ id: UUID) {
         editProject { project in for song in project.songs.indices { project.songs[song].unlinkTracks(id) } }
     }
+    public func createTrackGroup(_ id: UUID) {
+        guard canControl(), !finishing, let song = current, song.canCreateTrackGroup(id) else { return }
+        do {
+            var project = snapshot.project
+            try project.createTrackGroup(id, song: song.id)
+            editProject { $0 = project }
+        } catch { message = error.localizedDescription }
+    }
     public func groupTracks(_ ids: Set<UUID>) {
         guard canControl(), !finishing, ids.count > 1, current?.tracks.contains(where: { ids.contains($0.id) && $0.stereoLink != nil }) != true else { return }
         do { try executor.groupTracks(Array(ids)); snapshot = try executor.snapshot(); markChanged() }

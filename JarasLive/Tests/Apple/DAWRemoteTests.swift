@@ -286,6 +286,20 @@ projectsFixture.projects = .init(recent: reordered, busy: true, canOpen: false, 
 if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(projectsFixture)) {
     require(decoded.projects?.busy == true && decoded.projects?.canOpen == false, "host owns opening progress and transition availability")
 } else { fatalError("project progress state packet") }
+let openingRequest = UUID()
+for phase in ["opening", "completed", "failed", "cancelled", "waiting"] {
+    projectsFixture.projects?.commandID = openingRequest
+    projectsFixture.projects?.commandState = phase
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(projectsFixture)) {
+        require(decoded.projects?.commandID == openingRequest && decoded.projects?.commandState == phase,
+                "Project opening result survives snapshots and is correlated with its initiating command")
+    } else { fatalError("project opening acknowledgment") }
+}
+projectsFixture.projects?.commandState = "invented"
+require(!projectsFixture.valid, "Unknown project operation states cannot enter the client")
+projectsFixture.projects?.commandID = nil; projectsFixture.projects?.commandState = nil
+require(projectsFixture.valid, "Older hosts remain compatible without opening acknowledgments")
+print("REMOTE_PROJECT_OPENING_ACKNOWLEDGMENT_AND_LEGACY_OK")
 print("REMOTE_RECENT_PROJECTS_OPAQUE_IDS_AND_OPEN_COMMAND_OK")
 print("REMOTE_NATIVE_STATE_TYPED_ACTIONS_AND_VERSION_VALIDATION_OK")
 
@@ -1276,6 +1290,13 @@ require(selectTab.valid && DAWRemoteAccessRules.allows(selectTab, mode: .directo
 require(!DAWRemoteAccessRules.allows(selectTab, mode: .observer) && !DAWRemoteAccessRules.allows(selectTab, mode: .notices), "Observers and notices cannot switch project tabs")
 require(!DAWRemoteCommand(project: project, action: .selectProjectTab).valid, "Tab selection needs a target")
 require(!DAWRemoteCommand(project: project, action: .selectProjectTab, target: remoteTabIDs[0], value: 1).valid, "Tab selection does not accept an index or transport value")
+let closeTab = DAWRemoteCommand(project: project, action: .closeProjectTab, target: remoteTabIDs[0])
+require(closeTab.valid && DAWRemoteAccessRules.allows(closeTab, mode: .director), "Director can request closing an issued project tab")
+require(!DAWRemoteAccessRules.allows(closeTab, mode: .observer) && !DAWRemoteAccessRules.allows(closeTab, mode: .notices), "Observer cannot close project tabs")
+require(!DAWRemoteCommand(project: project, action: .closeProjectTab).valid, "Closing requires a tab identity")
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(closeTab)) {
+    require(decoded.action == .closeProjectTab && decoded.target == remoteTabIDs[0], "Tab close command roundtrips")
+} else { fatalError("close project tab packet") }
 print("REMOTE_PROJECT_TABS_PROTOCOL_AND_ACCESS_OK")
 
 // Six banks are presentation data; no host paths or MIDI mapping crosses the wire.
@@ -1374,3 +1395,24 @@ for invalid in [-1.01, 1.01, Double.infinity, Double.nan] {
     require(!panFixture.valid, "Master pan rejects invalid snapshot values")
 }
 print("REMOTE_MASTER_PAN_BOUNDS_AND_STATE_OK")
+
+var localGateFeedback = DAWRemoteVinhetasFeedback()
+var localGateState = vinhetasFixture.vinhetas!
+localGateState.presets[0].pads[0].gate = false
+require(localGateFeedback.toggleGate(preset: 0, pad: 0, confirmed: false, now: 10), "Gate enables before host responds")
+localGateFeedback.receive(localGateState, now: 10.1)
+require(localGateFeedback.gate(preset: 0, pad: 0, confirmed: false, now: 10.1), "Old snapshots cannot undo the local Gate")
+require(!localGateFeedback.toggleGate(preset: 0, pad: 0, confirmed: false, now: 10.2), "Second fast tap uses local state")
+localGateState.presets[0].pads[0].gate = true
+localGateFeedback.receive(localGateState, now: 10.3)
+require(!localGateFeedback.gate(preset: 0, pad: 0, confirmed: true, now: 10.3), "Late acknowledgement of first tap cannot undo second tap")
+localGateState.presets[0].pads[0].gate = false
+localGateFeedback.receive(localGateState, now: 10.4)
+localGateState.presets[0].pads[0].gate = true
+localGateFeedback.receive(localGateState, now: 10.5)
+require(localGateFeedback.gate(preset: 0, pad: 0, confirmed: true, now: 10.5), "Later desktop Gate changes remain synchronized")
+require(localGateFeedback.toggleGate(preset: 0, pad: 0, confirmed: false, now: 20), "Another local Gate change")
+require(!localGateFeedback.gate(preset: 1, pad: 0, confirmed: false, now: 20.1), "Gate changes stay within their preset")
+localGateFeedback.expireGates(now: 23)
+require(!localGateFeedback.gate(preset: 0, pad: 0, confirmed: false, now: 23), "Unconfirmed Gate changes return to authoritative state after timeout")
+print("REMOTE_GATE_LOCAL_IMMEDIATE_RAPID_TAPS_STALE_STATE_AND_PRESET_ISOLATION_OK")

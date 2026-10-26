@@ -432,6 +432,21 @@ public extension Project {
             }
         }
     }
+    /// Turn a root track into the folder for every normal root below it.
+    /// Existing subgroups keep their descendants and route through this new parent.
+    mutating func createTrackGroup(_ id: UUID, song songID: UUID) throws {
+        guard let song = songs.firstIndex(where: { $0.id == songID }),
+              songs[song].canCreateTrackGroup(id),
+              let parent = songs[song].tracks.firstIndex(where: { $0.id == id }) else { return }
+        var candidate = self
+        for index in candidate.songs[song].tracks.indices where index > parent {
+            let track = candidate.songs[song].tracks[index]
+            guard track.kind == .standard, track.role.rawValue != "vinhetas", track.parentTrackID == nil else { continue }
+            candidate.songs[song].tracks[index].sendToGroup(id)
+        }
+        try candidate.validate()
+        self = candidate
+    }
     mutating func moveNormalTrack(_ source: UUID, on target: UUID, after: Bool, outsideGroup: Bool, song songID: UUID) {
         guard let song = songs.firstIndex(where: { $0.id == songID }),
               let destination = songs[song].normalTrackDropDestination(source, on: target, after: after, outsideGroup: outsideGroup),
@@ -637,6 +652,14 @@ public extension Project {
 }
 
 public extension Song {
+    func canCreateTrackGroup(_ id: UUID) -> Bool {
+        guard let parent = tracks.firstIndex(where: { $0.id == id }),
+              tracks[parent].kind == .standard, tracks[parent].role.rawValue != "vinhetas",
+              tracks[parent].parentTrackID == nil, tracks[parent].stereoLink == nil else { return false }
+        return tracks.dropFirst(parent + 1).contains {
+            $0.kind == .standard && $0.role.rawValue != "vinhetas" && $0.parentTrackID == nil
+        }
+    }
     /// Master and special singleton lanes have no duplication action.
     func trackDuplicationTargets(_ ids: Set<UUID>) -> Set<UUID> {
         let eligible = Set(tracks.filter { $0.kind == .standard && $0.role.rawValue != "vinhetas" }.map(\.id))

@@ -270,6 +270,12 @@ struct SongListView: View {
         }
         let regionIDs = content.regionIDs
         let visible = content.entries
+        let continuingDrawerRows = Set(zip(visible, visible.dropFirst()).compactMap { current, next -> UUID? in
+            guard case .region(let child, _) = current,
+                  let parent = child.parentRegionID, expandedRegions.contains(parent),
+                  case .region(let following, _) = next, following.parentRegionID == parent else { return nil }
+            return child.id
+        })
         let visibleSelection = Set(selectedEntries.map {
             setlistVisibleRegionID($0, parent: content.regionParents[$0], expanded: expandedRegions)
         })
@@ -423,6 +429,19 @@ struct SongListView: View {
                                              }) { phase in
                                 selectEntry(region.id, visible: visible, phase: phase)
                             }.equatable().padding(.leading, region.parentRegionID == nil ? 0 : 18)
+                                .overlay(alignment: .leading) {
+                                    if let parent = region.parentRegionID, expandedRegions.contains(parent) {
+                                        GeometryReader { geometry in
+                                            Path { path in
+                                                let middle = geometry.size.height / 2
+                                                path.move(to: CGPoint(x: 5, y: 0))
+                                                path.addLine(to: CGPoint(x: 5, y: continuingDrawerRows.contains(region.id) ? geometry.size.height + 4 : middle))
+                                                path.move(to: CGPoint(x: 5, y: middle))
+                                                path.addLine(to: CGPoint(x: 14, y: middle))
+                                            }.stroke(JarasTheme.green.opacity(0.7), lineWidth: 1)
+                                        }.frame(width: 18).allowsHitTesting(false).accessibilityHidden(true)
+                                    }
+                                }
                                 .contextMenu {
                                     let targets = selectedEntries.contains(region.id) ? selectedEntries : [region.id]
                                     let sourceID = show.playlistRegionSourceID(region.id)

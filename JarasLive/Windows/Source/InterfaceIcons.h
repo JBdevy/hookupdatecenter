@@ -30,6 +30,13 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         g.drawEllipse(cx - 2, cy - 5.5f, 11, 11, 1.3f);
         return true;
     }
+    if(name=="folderFilled"||name=="folderNested") {
+        auto folder=[&](float x,float y,float width,float height){Path shape;shape.startNewSubPath(x,y);shape.lineTo(x+width*.4f,y);shape.lineTo(x+width*.55f,y+height*.2f);shape.lineTo(x+width,y+height*.2f);shape.lineTo(x+width,y+height);shape.lineTo(x,y+height);shape.closeSubPath();g.fillPath(shape);};
+        const auto cx=bounds.getCentreX(),cy=bounds.getCentreY();
+        if(name=="folderNested") {folder(cx-12,cy-3,8,6);folder(cx-2,cy-5,12,10);g.setColour(Colours::black);g.fillRect(cx+1,cy,6.f,1.2f);}
+        else folder(cx-6,cy-5,12,10);
+        return true;
+    }
     if (name == "folder" || name == "folderOpen") {
         p.startNewSubPath(2, 7);
         p.lineTo(2, 4);

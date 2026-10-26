@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão da cópia de teste (sem publicação)'
         required: true
-        default: '1.15'
+        default: '1.16'
 
 permissions:
   contents: read

@@ -46,6 +46,29 @@ inline MouseEvent mouse(Component &canvas, Point<float> at, Point<float> anchor,
 }
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Marker heads stay inside regions and thin monotonically when zooming out", [&] {
+        auto song=fixture().songs.front();song.parts.clear();
+        jaras::Part root;root.id="root";root.startTime=10;root.endTime=20;song.parts.push_back(root);
+        auto child=root;child.id="child";child.startTime=12;child.endTime=15;child.parentRegionID=root.id;song.parts.push_back(child);
+        for(int kind=0;kind<4;++kind) {
+            jaras::TimelineMarker marker{"marker","A long marker name",19.5,0x54ff93};
+            if(kind==1)marker.tempoBPM=140;
+            if(kind==2)marker.section=true;
+            if(kind==3){marker.sourceRegionID=child.id;marker.unifiedRegionID=root.id;}
+            const auto end=timelineRegionLabels::markerRegionEnd(song,marker);
+            require(end==20,"Marker did not use its containing root region boundary");
+            bool hidden=false;
+            for(double scale=500;scale>=.1;scale*=.97) {
+                const auto width=timelineRegionLabels::markerHeadWidth(marker.position,30,end,180,scale);
+                require(width<=.5*scale+.0001,"Marker head crossed the region end at distant zoom");
+                require(!hidden||width==0,"Marker head reappeared while zooming out");
+                if(width==0)hidden=true;
+            }
+        }
+        jaras::TimelineMarker outside{"outside","Outside",21,0};
+        require(std::isinf(timelineRegionLabels::markerRegionEnd(song,outside)),"An outside marker was constrained to an unrelated region");
+        require(timelineRegionLabels::markerHeadWidth(19,19,20,80,100)==0,"Coincident marker heads overlap");
+    });
     test("Region movement preserves long audio tails, MIDI and explicit loose ownership across saves", [] {
         auto project=fixture();auto &song=project.songs[0];song.duration=31;
         auto &audio=song.tracks[1].clips[0];audio.startTime=15;audio.duration=15.153840445;

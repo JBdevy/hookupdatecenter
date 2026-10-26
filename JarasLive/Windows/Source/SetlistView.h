@@ -310,11 +310,11 @@ class Workspace::Setlist final : public Component,
             for (const auto &root : roots)
                 totalDuration += root.second->endTime - root.second->startTime;
             const auto parents=timelineRegionLabels::parents(*song);
-            auto addPart = [&](const jaras::Part &part, int number, const ID &occurrence = ID{}) {
+            auto addPart = [&](const jaras::Part &part, int number, const ID &occurrence = ID{}, bool drawerChild = false) {
                 Entry entry;
                 entry.id=occurrence.empty()?part.id:occurrence;entry.sourceId=part.id;entry.duplicate=entry.id!=part.id;entry.name=timelineRegionLabels::displayName(part);
                 entry.start=part.startTime;entry.end=part.endTime;
-                entry.child=part.parentRegionID.has_value();entry.number=number;
+                entry.child=part.parentRegionID.has_value();entry.drawerChild=drawerChild;entry.number=number;
                 entry.regionNumber=ids[part.id];
                 entry.colour=Colour(0xff000000u|part.color.value_or(0x777777));
                 entry.hasChildren=!entry.child && parents.count(part.id);
@@ -328,7 +328,7 @@ class Workspace::Setlist final : public Component,
                     if (root.first==part->id && parents.count(part->id) && expanded.count(root.first)) {
                         int childNumber=0;
                         for (const auto &child:sorted)
-                            if (child.parentRegionID==part->id) addPart(child,++childNumber);
+                            if (child.parentRegionID==part->id) addPart(child,++childNumber,ID{},true);
                     }
                 }
                 addBlocks(std::nullopt);
@@ -495,7 +495,7 @@ class Workspace::Setlist final : public Component,
         double start = 0, end = 0;
         int number = 0, regionNumber = 0;
         Colour colour;
-        bool child = false, block = false, hasChildren = false, blockSymbol = true;
+        bool child = false, drawerChild = false, block = false, hasChildren = false, blockSymbol = true;
     };
     Workspace &w;
     SetlistRows list;
@@ -797,7 +797,7 @@ class Workspace::Setlist final : public Component,
         }
         return drawer;
     }
-    void paintListBoxItem(int row, Graphics &g, int width, int, bool selected) override {
+    void paintListBoxItem(int row, Graphics &g, int width, int height, bool selected) override {
         if (row < 0 || row >= getNumRows())
             return;
         const auto &entry = entries[(size_t)row];
@@ -832,6 +832,15 @@ class Workspace::Setlist final : public Component,
             std::find(state.playedLiveRegionIDs->begin(), state.playedLiveRegionIDs->end(), entry.sourceId) != state.playedLiveRegionIDs->end();
         const bool prepareOnly = state.prepareWithoutPlayback.value_or(false);
         const int left = entry.child ? 18 : 0;
+        if (entry.drawerChild) {
+            // Match the track-mixer group rail, inside the existing drawer gutter.
+            // The final child closes its branch; standalone/duplicate entries have no rail.
+            const bool last = row + 1 >= getNumRows() || !entries[(size_t)row + 1].drawerChild;
+            const int x = left - 11;
+            g.setColour(theme::green.withAlpha(.7f));
+            g.drawVerticalLine(x, 0, last ? 17.f : (float)height);
+            g.drawHorizontalLine(17, (float)x, (float)left - 4);
+        }
         auto bounds = juce::Rectangle<float>((float)left, 0, (float)width - left - (entry.block ? 0 : 14), 34);
         g.setColour(played ? Colour(0xff451010) : theme::panel);
         g.fillRoundedRectangle(bounds, 5);

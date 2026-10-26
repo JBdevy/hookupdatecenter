@@ -1365,6 +1365,45 @@ void Session::commitItemTiming(jaras::Project project, const ID &id, bool record
     dirty = true;
     notify();
 }
+Session::TrackHierarchyHistory Session::trackHierarchyHistory(const ID &id) const {
+    TrackHierarchyHistory result;result.song=id;
+    for(const auto &song:project().songs)if(song.id==id)for(const auto &t:song.tracks)
+        result.rows.push_back({t.id,t.parentTrackID,t.patch,t.secondaryPatch,t.outputs});
+    return result;
+}
+void Session::editTrackHierarchy(const ID &id,const std::function<void(jaras::Song &)> &change) {
+    if(busy||jaras::projectSync::readOnly())return;
+    if(audio.isRecording())throw std::runtime_error("Conclua a gravação antes de mover pistas.");
+    auto p=project();
+    for(auto &song:p.songs)if(song.id==id){
+        change(song);
+        TrackHierarchyHistory result;result.song=id;
+        for(const auto &t:song.tracks)result.rows.push_back({t.id,t.parentTrackID,t.patch,t.secondaryPatch,t.outputs});
+        applyTrackHierarchy(result,true);return;
+    }
+}
+void Session::applyTrackHierarchy(const TrackHierarchyHistory &history,bool recordHistory) {
+    const auto before=trackHierarchyHistory(history.song);auto p=project();
+    for(auto &song:p.songs)if(song.id==history.song){
+        if(song.tracks.size()!=history.rows.size())throw std::runtime_error("Track hierarchy changed.");
+        std::vector<jaras::Track> ordered;ordered.reserve(song.tracks.size());std::set<ID> seen;
+        for(const auto &row:history.rows){
+            auto found=std::find_if(song.tracks.begin(),song.tracks.end(),[&](const auto &t){return t.id==row.id;});
+            if(found==song.tracks.end()||!seen.insert(row.id).second)throw std::runtime_error("Track hierarchy changed.");
+            auto track=std::move(*found);track.parentTrackID=row.parent;track.patch=row.patch;track.secondaryPatch=row.secondary;track.outputs=row.outputs;
+            ordered.push_back(std::move(track));
+        }
+        song.tracks=std::move(ordered);
+    }
+    syncClock();auto next=core;next.applyProjectEdit(std::move(p));
+    bool prepared=true;
+    if(next.currentSong()&&next.currentSong()->id==history.song)
+        prepared=!graphCancellation&&audio.refreshTrackRouting(*next.currentSong());
+    core.applyProjectEdit(next.project());
+    if(!prepared)prepareLiveGraph();
+    if(recordHistory){undoHistory.emplace_back(before);if(undoHistory.size()>40)undoHistory.erase(undoHistory.begin());redoHistory.clear();}
+    dirty=true;notify();
+}
 void Session::edit(const std::function<void(jaras::Project &)> &change, bool rebuild, bool allowTimingEdit) {
     if (jaras::projectSync::readOnly()) return;
     if (busy)
@@ -1629,12 +1668,14 @@ void Session::undo() {
     else if (value.markers) redoHistory.emplace_back(markerHistory(value.markers->song));
     else if (value.itemTiming) redoHistory.emplace_back(itemTimingHistory(value.itemTiming->clip.id));
     else if (value.items) redoHistory.emplace_back(itemHistory(*value.items));
+    else if (value.hierarchy) redoHistory.emplace_back(trackHierarchyHistory(value.hierarchy->song));
     else redoHistory.emplace_back(snapshot());
     undoHistory.pop_back();
     if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);
     else if (value.itemTiming) applyItemTiming(*value.itemTiming, false);
     else if (value.items) applyItemHistory(*value.items, false);
+    else if (value.hierarchy) applyTrackHierarchy(*value.hierarchy, false);
     else restoreSnapshot(value.project);
 }
 void Session::redo() {
@@ -1648,12 +1689,14 @@ void Session::redo() {
     else if (value.markers) undoHistory.emplace_back(markerHistory(value.markers->song));
     else if (value.itemTiming) undoHistory.emplace_back(itemTimingHistory(value.itemTiming->clip.id));
     else if (value.items) undoHistory.emplace_back(itemHistory(*value.items));
+    else if (value.hierarchy) undoHistory.emplace_back(trackHierarchyHistory(value.hierarchy->song));
     else undoHistory.emplace_back(snapshot());
     redoHistory.pop_back();
     if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);
     else if (value.itemTiming) applyItemTiming(*value.itemTiming, false);
     else if (value.items) applyItemHistory(*value.items, false);
+    else if (value.hierarchy) applyTrackHierarchy(*value.hierarchy, false);
     else restoreSnapshot(value.project);
 }
 void Session::importAudio(const Array<File> &files, double at) { importMedia(files,at,{},MediaDropLayout::separateTracks,0); }

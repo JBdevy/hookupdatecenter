@@ -1160,7 +1160,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             folder.setTooltip(t->parentTrackID ? "Remove from group" : "Ungroup");
             folder.setButtonText({});
             folder.getProperties().set("icon",
-                                       w.collapsedGroups.count(id) ? "folder" : "folderOpen");
+                                       t->parentTrackID ? "folderNested" : "folderFilled");
             folder.setColour(TextButton::textColourOffId, theme::green);
             auto patches = t->outputPatches();
             auto p = patches.empty() ? jaras::OutputPatch{-1, 2} : patches.front();
@@ -1362,7 +1362,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
     void itemDropped(const SourceDetails &d) override {
         itemDragMove(d);const auto destination=w.trackDropPreview;const ID song=w.session.song()?w.session.song()->id:ID{};
         itemDragExit(d);
-        if(destination)w.perform([&]{w.session.edit([&](jaras::Project &p){for(auto &s:p.songs)if(s.id==song)trackDrop::apply(s,*destination);});});
+        if(destination)w.perform([&]{w.session.editTrackHierarchy(song,[&](jaras::Song &s){trackDrop::apply(s,*destination);});});
     }
 
   private:
@@ -1646,6 +1646,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         Array<var> markerHeads;
         for (const auto &flag:markerFlags) {
             auto marker=object();put(marker,"id",text(flag.id));put(marker,"label",flag.label);put(marker,"width",flag.width);
+            put(marker,"visibleWidth",timelineRegionLabels::markerHeadWidth(flag.position,flag.next,flag.regionEnd,flag.width,w.pixelsPerSecond));
             markerHeads.add(marker);
         }
         put(v,"markerHeads",markerHeads);
@@ -1743,7 +1744,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     }
     WaveformCache waveforms;
     uint64 waveformRevision = 0;
-    struct MarkerFlag {ID id;double position=0,next=std::numeric_limits<double>::infinity();String label;float width=0;unsigned colour=0;bool tempo=false,section=false,linked=false;};
+    struct MarkerFlag {ID id;double position=0,next=std::numeric_limits<double>::infinity(),regionEnd=std::numeric_limits<double>::infinity();String label;float width=0;unsigned colour=0;bool tempo=false,section=false,linked=false;};
     uint64 markerRevision=~uint64(0);
     std::vector<MarkerFlag> markerFlags;
     void refreshMarkers(const jaras::Song &song) {
@@ -1753,15 +1754,15 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             MarkerFlag flag;flag.id=m.id;flag.position=m.position;flag.colour=m.color;flag.tempo=bool(m.tempoBPM);
             flag.section=!flag.tempo && m.section.value_or(false);flag.linked=bool(m.sourceRegionID || m.unifiedRegionID);
             flag.label=timelineRegionLabels::marker(song,m);
+            flag.regionEnd=timelineRegionLabels::markerRegionEnd(song,m);
             flag.width=std::ceil(GlyphArrangement::getStringWidth(theme::mediumFont(9),flag.label))+10;
             markerFlags.push_back(std::move(flag));
         }
         std::stable_sort(markerFlags.begin(),markerFlags.end(),[](const auto &a,const auto &b){return a.position<b.position;});
         for(int type=0;type<2;++type) {
-            double next=std::numeric_limits<double>::infinity(),position=next;
+            double next=std::numeric_limits<double>::infinity();
             for(auto at=markerFlags.rbegin();at!=markerFlags.rend();++at) if(at->tempo==bool(type)) {
-                if(at->position<position) {next=position;position=at->position;}
-                at->next=next;
+                at->next=next;next=at->position;
             }
         }
     }
@@ -1827,7 +1828,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 g.setColour(theme::green.withAlpha(.65f));
                 g.fillRect(x, (float)t.regionHeight()+32, pixel, tick.primary ? 5.f : 3.f);
                 if (tick.label.isNotEmpty()) {
-                    g.setFont(theme::mediumFont(9));
+                    g.setFont(theme::mediumFont(8.5f));
                     g.setColour(Colour(0xff54ff93));
                     g.drawText(tick.label, juce::Rectangle<float>(x + 3, (float)t.regionHeight()+32, 124, 16),
                                Justification::centredLeft);
@@ -1850,7 +1851,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             for(const auto &m:t.markerFlags) {
                 const float x=t.xAt(m.position);
                 if(x>getWidth()) break;
-                const float width=std::min(m.width,(float)((m.next-m.position)*t.w.pixelsPerSecond-3));
+                const float width=timelineRegionLabels::markerHeadWidth(m.position,m.next,m.regionEnd,m.width,t.w.pixelsPerSecond);
                 if(width<18 || x+width<0) continue;
                 const juce::Rectangle<float> flag(x,(float)t.regionHeight()+(m.tempo?17.f:1.f),width,14);
                 if(m.tempo) {
@@ -2276,7 +2277,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 if (const auto *song = t.w.session.song()) {
                     t.refreshMarkers(*song);
                     for (const auto &flag : t.markerFlags) {
-                        const float width = std::min(flag.width, (float)((flag.next-flag.position)*t.w.pixelsPerSecond-3));
+                        const float width = timelineRegionLabels::markerHeadWidth(flag.position,flag.next,flag.regionEnd,flag.width,t.w.pixelsPerSecond);
                         if (!juce::Rectangle<float>(t.xAt(flag.position),(float)t.regionHeight()+(flag.tempo?17.f:1.f),std::max(8.f,width),14).contains(e.position)) continue;
                         if (e.mods.isPopupMenu()) { ++t.w.contextCount; t.w.showMarkerMenu(flag.id, e.getScreenPosition()); }
                         else if (e.mods.isAltDown()) t.w.perform([&] {
@@ -3811,7 +3812,8 @@ void Workspace::activateProjectTab() {
     actions.resetMIDIState();
     actions.inputEnabled = true;
     remoteHost->presentation = [this](int panel) -> var {
-        if (!projectReady || loginPanel) return var();
+        if (loginPanel) return var();
+        if (!projectReady) return remoteHost->projectSnapshot(panel, var());
         auto state = remotePresentation->snapshot(panel);
         if (vinhetasPanel) {
             const auto *song=session.song();
@@ -3831,7 +3833,7 @@ void Workspace::activateProjectTab() {
         put(projects, "status", session.busy ? "Opening project…" : session.audio.isRecording() ? "Stop recording on the PC to open a project." : "");
         put(projects, "error", remoteProjectError);
         put(state, "projects", projects);
-        return state;
+        return remoteHost->projectSnapshot(panel, state);
     };
     remoteHost->perform = [safe = SafePointer<Workspace>(this)](const remote::Command &command) {
         if (!safe) return false;
@@ -3847,21 +3849,33 @@ void Workspace::activateProjectTab() {
             if(command.action=="vinhetasPanic"){panel.remotePanic();return true;}
             return false;
         }
-        if (command.action == "selectProjectTab") {
-            if (!safe->selectRemoteProjectTab || remote::wireID(command.project) != remote::wireID(safe->session.project().id)) return false;
+        if (command.action == "selectProjectTab" || command.action == "closeProjectTab") {
+            const bool close = command.action == "closeProjectTab";
+            if (!(close ? bool(safe->closeRemoteProjectTab) : bool(safe->selectRemoteProjectTab)) ||
+                remote::wireID(command.project) != remote::wireID(safe->session.project().id)) return false;
             // Activate after the current Remote callback returns: activation replaces
             // that callback while keeping the existing clients connected.
             const auto project = safe->session.project().id;
             const auto target = command.target;
-            MessageManager::callAsync([safe, project, target] {
-                if (safe && safe->session.project().id == project && safe->selectRemoteProjectTab)
-                    safe->selectRemoteProjectTab(remote::wireID(target));
+            MessageManager::callAsync([safe, project, target, close] {
+                if (!safe || safe->session.project().id != project || safe->remoteHost->projectOpening.active()) return;
+                const auto action = close ? safe->closeRemoteProjectTab : safe->selectRemoteProjectTab;
+                if (action) action(remote::wireID(target));
             });
             return true;
         }
         if (command.action == "openRecentProject" || command.action == "openRecentProjectInNewTab") {
-            if (remote::wireID(command.project) != remote::wireID(safe->session.project().id) ||
-                safe->session.busy || safe->session.audio.isRecording()) return false;
+            if (remote::wireID(command.project) != remote::wireID(safe->session.project().id)) return false;
+            auto host = safe->remoteHost;
+            if (!host->projectOpening.begin(command.id)) return false;
+            // Capture before a new tab replaces the presentation callback.
+            (void)host->presentation(0);
+            const auto reject = [host, id = command.id](const String &message) {
+                host->projectOpening.update(id, remote::ProjectOpening::State::failed, {}, utf8(message));
+                return false;
+            };
+            if (safe->session.busy || safe->session.audio.isRecording())
+                return reject("Wait for the current operation or stop recording on the PC.");
             safe->remoteProjectError.clear();
             // Revalidate the catalog before resolving a potentially stale command.
             safe->remoteRecentPaths = RecentProjects::read();
@@ -3869,16 +3883,27 @@ void Workspace::activateProjectTab() {
             const auto file = safe->remoteProjectCatalog.file(command.target);
             if (!file || !file->existsAsFile()) {
                 safe->remoteProjectError = "This project is no longer available in the PC's recent projects.";
-                return false;
+                return reject(safe->remoteProjectError);
             }
             const bool inNewTab = command.action == "openRecentProjectInNewTab";
-            if (inNewTab && !safe->openInNewProjectTab) return false;
-            if (*file == safe->session.document) return true;
+            if (inNewTab && !safe->openRemoteProjectInNewTab) return reject("Opening another tab is unavailable.");
+            if (*file == safe->session.document) {
+                host->projectOpening.update(command.id, remote::ProjectOpening::State::completed);
+                return true;
+            }
             const auto project = safe->session.project().id;
-            MessageManager::callAsync([safe, project, file = *file, inNewTab] {
-                if (!safe || safe->session.project().id != project || safe->session.busy || safe->session.audio.isRecording()) return;
-                if (inNewTab) safe->openInNewProjectTab(file);
-                else safe->openProject(file);
+            MessageManager::callAsync([safe, host, request = command.id, project, file = *file, inNewTab] {
+                if (!safe || safe->session.project().id != project || safe->session.busy || safe->session.audio.isRecording()) {
+                    host->projectOpening.update(request, remote::ProjectOpening::State::cancelled);
+                    return;
+                }
+                try {
+                    if (inNewTab) safe->openRemoteProjectInNewTab(file, request);
+                    else safe->openProject(file, {}, false, false, request);
+                } catch (const std::exception &error) {
+                    host->projectOpening.update(request, remote::ProjectOpening::State::failed, {}, error.what());
+                    safe->showError(String::fromUTF8(error.what()));
+                }
             });
             return true;
         }
@@ -4310,7 +4335,9 @@ void Workspace::resized() {
                        std::max(1, getHeight() - title - transport - bottom)};
     const int availableWidth = workspaceBounds.getWidth();
     const bool detachedSetlist = setlistPlacement == SetlistPlacement::detached;
-    const int columnsBudget=std::max(0,availableWidth-100);
+    const int mixerGap=mixerVisible?20:0;
+    const int setlistGap=setlistVisible&&!detachedSetlist?14:0;
+    const int columnsBudget=std::max(0,availableWidth-100-mixerGap-setlistGap);
     const int mixerMinimum=mixerVisible?std::min(180,columnsBudget):0;
     const int setlistMinimum=setlistVisible&&!detachedSetlist?std::min(minimumSetlistWidth,std::max(0,columnsBudget-mixerMinimum)):0;
     const bool rightPartsDocked=partsRightVisible&&setlistVisible&&!detachedSetlist;
@@ -4327,7 +4354,7 @@ void Workspace::resized() {
     // rather than squeezing Patch/faders/M/S into a narrower track body.
     const int mixerBodyWidth=mixerVisible?std::min(mixerWidth,std::max(mixerMinimum,columnsBudget-right-sectionsWidth-leftPartsWidth)):0;
     const int left=mixerBodyWidth+(mixerVisible&&showsTrackIcons?40:0);
-    const int leadingSetlist = setlistPlacement == SetlistPlacement::left ? right : 0;
+    const int leadingSetlist = setlistPlacement == SetlistPlacement::left ? right+setlistGap : 0;
     const int partsX = rail + leadingSetlist;
     const int mixerX = partsX + leftPartsWidth;
     // The master is independent of track mixer visibility, as in the Mac transport.
@@ -4430,10 +4457,10 @@ void Workspace::resized() {
     tracksViewport.setVisible(mixerVisible);
     tracksViewport.setBounds(mixerX, workspaceBounds.getY() + timeline->headerHeight(), left,
                              std::max(1, workspaceBounds.getHeight() - timeline->headerHeight()));
-    tracksContent.setSize(std::max(1, left - 8), std::max(tracksViewport.getHeight(), rowTop(rows.size()) + trackHeight * 2));
+    tracksContent.setSize(std::max(1, left), std::max(tracksViewport.getHeight(), rowTop(rows.size()) + trackHeight * 2));
     for (int i = 0; i < rows.size(); ++i) {
         rows[i]->setVisible(!rowHidden(i));
-        rows[i]->setBounds(0, rowTop(i), std::max(1, left - 8), rowHeight(i));
+        rows[i]->setBounds(0, rowTop(i), std::max(1, left), rowHeight(i));
     }
     addTrack.setBounds(mixerX + mixerBodyWidth - 48, workspaceBounds.getY() + 20, 32, 24);
     addTrack.setVisible(mixerVisible);
@@ -4445,8 +4472,8 @@ void Workspace::resized() {
     trackVisibilityButton.setVisible(mixerVisible);
     timelineSnap.setBounds(trackVisibilityButton.getX()-28,trackVisibilityButton.getY(),24,24);
     timelineSnap.setVisible(mixerVisible);
-    timeline->setBounds(mixerX + left, workspaceBounds.getY(),
-                        std::max(1, workspaceBounds.getWidth() - left - right - sectionsWidth - leftPartsWidth),
+    timeline->setBounds(mixerX + left + mixerGap, workspaceBounds.getY(),
+                        std::max(1, workspaceBounds.getWidth() - left - right - sectionsWidth - leftPartsWidth - mixerGap - setlistGap),
                         workspaceBounds.getHeight());
     if (!detachedSetlist) {
         setlist->setVisible(setlistVisible);
@@ -4492,8 +4519,8 @@ void Workspace::resized() {
     if (keyboardVisible)
         keyboard->setBounds(0, mixerHeight, dockWidth, 108);
     mixerDivider.setVisible(mixerVisible); setlistDivider.setVisible(setlistVisible && !detachedSetlist);
-    mixerDivider.setBounds(mixerX + left - 3, workspaceBounds.getY(), 6, workspaceBounds.getHeight());
-    setlistDivider.setBounds((leadingSetlist?setlist->getRight():setlist->getX()) - 3, workspaceBounds.getY(), 6, workspaceBounds.getHeight());
+    mixerDivider.setBounds(mixerX + left, workspaceBounds.getY(), mixerGap, workspaceBounds.getHeight());
+    setlistDivider.setBounds(leadingSetlist?setlist->getRight():setlist->getX()-setlistGap, workspaceBounds.getY(), setlistGap, workspaceBounds.getHeight());
     footerHeightDivider.setBounds(rail, footerBounds.getY() - 3, getWidth() - rail, 6);
     mixerHeightDivider.setVisible(footerMixerVisible);
     mixerHeightDivider.setBounds(rail, dockViewport.getY() - 3, getWidth() - rail, 6);
@@ -5285,12 +5312,14 @@ void Workspace::confirmTrackDeletion(const std::set<ID> &ids, std::function<void
     ModalSheet::open(*this, localization::translate("Delete selected tracks and their items?"),
         std::make_unique<TrackDeletionConfirmationPanel>(std::move(remove)), 384, 150);
 }
-void Workspace::confirm(const String &title, const String &message, std::function<void()> done) {
+void Workspace::confirm(const String &title, const String &message, std::function<void()> done, std::function<void()> cancelled) {
     AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon, title, message, "Continuar",
                                  "Cancelar", this,
-                                 ModalCallbackFunction::create([done](int result) {
+                                 ModalCallbackFunction::create([done, cancelled](int result) {
                                      if (result)
                                          done();
+                                     else if (cancelled)
+                                         cancelled();
                                  }));
 }
 void Workspace::deleteRecentProject(const File &file) {
@@ -5401,15 +5430,31 @@ void Workspace::projectOpened(bool fitTimeline) {
     repaint();
     grabKeyboardFocus();
 }
-void Workspace::openProject(const File &file, std::function<void()> loaded, bool confirmed, bool allowMissing) {
+void Workspace::openProject(const File &file, std::function<void()> loaded, bool confirmed, bool allowMissing, ID remoteRequest) {
+    const auto host = remoteHost;
     saveWorkspaceLayout();
-    if (session.busy) return;
-    if (activateExistingProjectTab && activateExistingProjectTab(file)) return;
+    if (session.busy) {
+        host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::failed, {}, "Wait for the current operation on the PC.");
+        return;
+    }
+    if (activateExistingProjectTab && activateExistingProjectTab(file)) {
+        host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::completed);
+        return;
+    }
     timeline->cancelInteraction();
-    if (file.hasFileExtension("ziplive;zip")) { choosePackageDestination(file); return; }
-    auto action = [safe = Component::SafePointer<Workspace>(this), file, loaded, allowMissing] {
-        if (!safe || safe->session.busy) return;
-        safe->perform([safe, file, loaded, allowMissing] {
+    if (file.hasFileExtension("ziplive;zip")) {
+        if (!remoteRequest.empty()) {
+            host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::failed, {}, "Import this package on the PC before opening it from Recent projects.");
+        } else choosePackageDestination(file);
+        return;
+    }
+    auto action = [safe = Component::SafePointer<Workspace>(this), host, remoteRequest, file, loaded, allowMissing] {
+        if (!safe || safe->session.busy) {
+            host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::cancelled);
+            return;
+        }
+        host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::opening, "Opening project…");
+        try {
             if (safe->session.audio.isRecording())
                 throw std::runtime_error("Conclua a gravação antes de abrir outro projeto.");
             // Keep the same Projects view while preparing the next document,
@@ -5443,7 +5488,8 @@ void Workspace::openProject(const File &file, std::function<void()> loaded, bool
                 }
             };
             try { safe->session.loadAsync(file,
-                [browsers](String status, double) {
+                [browsers, host, remoteRequest](String status, double) {
+                    host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::opening, utf8(status));
                     for (const auto &browser : browsers) if (browser) browser->updateLoading(status);
                 },
                 [safe] {
@@ -5455,31 +5501,53 @@ void Workspace::openProject(const File &file, std::function<void()> loaded, bool
                     safe->selectedTracks.clear(); safe->selectedTrack.clear();
                     safe->trackSelectionAnchor.clear(); safe->collapsedGroups.clear();
                 },
-                [safe, finish, loaded](String error) {
+                [safe, host, remoteRequest, finish, loaded](String error) {
                     finish(error);
-                    if (!safe) return;
-                    if (error.isEmpty()) { safe->lighting.loadSettings(); safe->projectOpened(); if (loaded) loaded(); }
+                    if (!safe) {
+                        host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::cancelled);
+                        return;
+                    }
+                    try {
+                        if (error.isEmpty()) { safe->lighting.loadSettings(); safe->projectOpened(); if (loaded) loaded(); }
+                    } catch (const std::exception &failure) { error = String::fromUTF8(failure.what()); }
+                    host->projectOpening.update(remoteRequest, error.isEmpty() ? remote::ProjectOpening::State::completed : remote::ProjectOpening::State::failed, {}, utf8(error));
                     if (safe->projectTabLoadFinished) safe->projectTabLoadFinished(error);
                 }, allowMissing ? std::function<void(StringArray)>{} :
-                    [safe, finish, file, loaded](StringArray paths) {
+                    [safe, host, remoteRequest, finish, file, loaded](StringArray paths) {
                         finish({});
-                        if (!safe) return;
+                        if (!safe) {
+                            host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::cancelled);
+                            return;
+                        }
+                        host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::waiting, "Resolve the missing audio files on the PC to continue opening the project.");
                         ModalSheet::open(*safe, localization::translate("Missing audio files"),
-                            std::make_unique<MissingMediaPanel>(file, paths, [safe, file, loaded](bool proceed) {
-                                if (!safe) return;
-                                if (proceed) safe->openProject(file, loaded, true, true);
-                                else if (safe->projectTabLoadFinished)
-                                    safe->projectTabLoadFinished(String::fromUTF8("Abertura cancelada."));
+                            std::make_unique<MissingMediaPanel>(file, paths, [safe, host, remoteRequest, file, loaded](bool proceed) {
+                                if (safe && proceed) safe->openProject(file, loaded, true, true, remoteRequest);
+                                else {
+                                    host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::cancelled);
+                                    if (safe && safe->projectTabLoadFinished)
+                                        safe->projectTabLoadFinished(String::fromUTF8("Abertura cancelada."));
+                                }
                             }), 560, 396);
                     });
             } catch (const std::exception &error) {
-                finish(String::fromUTF8(error.what()));
+                const auto message = String::fromUTF8(error.what());
+                finish(message);
+                host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::failed, {}, utf8(message));
+                if (safe->projectTabLoadFinished) safe->projectTabLoadFinished(message);
             }
-        });
+        } catch (const std::exception &error) {
+            const auto message = String::fromUTF8(error.what());
+            host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::failed, {}, utf8(message));
+            if (safe->projectTabLoadFinished) safe->projectTabLoadFinished(message);
+            else safe->showError(message);
+        }
     };
-    if (!confirmed && session.dirty && projectReady)
-        confirm("Open another project?", "The current project has unsaved changes.", action);
-    else
+    if (!confirmed && session.dirty && projectReady) {
+        host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::waiting, "Confirm opening the project on the PC. The current project has unsaved changes.");
+        confirm("Open another project?", "The current project has unsaved changes.", action,
+            [host, remoteRequest] { host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::cancelled); });
+    } else
         action();
 }
 void Workspace::openTransportFadeout() {
@@ -6171,7 +6239,7 @@ void Workspace::showTrackMenu(ID id, Point<int> point) {
     auto targets = trackSelected(id) ? selectedTracks : std::set<ID>{id};
     targets.insert(id);
     const bool standard = jaras::fixedTrackName(track.role).empty();
-    const bool groupable = standard && targets.size()>1 && std::none_of(song->tracks.begin(),song->tracks.end(),[&](const auto &t) {return targets.count(t.id) && (t.stereoLinkPartner || !jaras::fixedTrackName(t.role).empty());});
+    const bool groupable = trackEditing::canCreateGroup(*song,id);
     PopupMenu menu;
     if (standard || track.role.id=="timecode" || track.role.id=="video" || track.role.id=="generatedClick") menu.addItem(1,"Patch");
     if (track.role.id=="generatedClick") menu.addItem(2,"Sound Designer");
@@ -6203,10 +6271,12 @@ void Workspace::showTrackMenu(ID id, Point<int> point) {
                     w.rebuild(); w.updateState();
                 }
             });
-            if(choice>=5 && choice<=9)w.perform([&] {w.session.edit([&](jaras::Project &p) {
-                if(choice==5){auto core=w.session.core;core.groupTracks(std::vector<ID>(targets.begin(),targets.end()));p=core.project();}
-                if(choice==6)for(auto &song:p.songs)if(song.id==songID)trackEditing::ungroup(song,id);
-                if(choice==7)for(auto &song:p.songs)if(song.id==songID)trackEditing::removeFromGroup(song,id);
+            if(choice>=5 && choice<=7)w.perform([&]{w.session.editTrackHierarchy(songID,[&](jaras::Song &s){
+                if(choice==5)trackEditing::createGroup(s,id);
+                if(choice==6)trackEditing::ungroup(s,id);
+                if(choice==7)trackEditing::removeFromGroup(s,id);
+            });});
+            if(choice>=8 && choice<=9)w.perform([&] {w.session.edit([&](jaras::Project &p) {
                 if(choice==8){const auto &song=*w.session.song();const auto first=std::find_if(song.tracks.begin(),song.tracks.end(),[&](const auto &t){return targets.count(t.id);});trackEditing::link(p,songID,targets,1,theme::track(*first).getARGB()&0xffffff);}
                 if(choice==9)trackEditing::unlink(p,id);
             });});

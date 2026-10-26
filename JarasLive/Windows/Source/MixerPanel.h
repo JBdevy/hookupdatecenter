@@ -428,7 +428,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 refresh(); return;
             }
             itemDragMove(d);const auto destination=mixer.dropPreview;const ID song=mixer.session.song()?mixer.session.song()->id:ID{};itemDragExit(d);
-            if(destination)try{mixer.session.edit([&](jaras::Project &p){for(auto &s:p.songs)if(s.id==song)trackDrop::apply(s,*destination);});}catch(const std::exception &e){mixer.error(String::fromUTF8(e.what()));}
+            if(destination)try{mixer.session.editTrackHierarchy(song,[&](jaras::Song &s){trackDrop::apply(s,*destination);});}catch(const std::exception &e){mixer.error(String::fromUTF8(e.what()));}
         }
         bool scrollEffects(const MouseEvent &event, const MouseWheelDetails &wheel) {
             if (std::abs(wheel.deltaX)>std::abs(wheel.deltaY) || event.mods.isShiftDown() || wheel.deltaY==0 ||

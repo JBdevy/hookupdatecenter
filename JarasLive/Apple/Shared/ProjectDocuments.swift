@@ -22,6 +22,10 @@ enum PortableProjectImportPrompt: String, Identifiable {
     var additionalProtectedMediaURLs: () -> Set<URL> = { [] }
     var activateExistingProjectTab: ((URL) -> Bool)?
     var openInNewProjectTab: ((URL) -> Void)?
+    #if os(macOS)
+    var openRemoteInNewProjectTab: ((URL, UUID) -> Void)?
+    var canChangeProject: () -> Bool = { true }
+    #endif
     var navigateProjectTab: ((Int) -> Void)?
     @Published var projectTabCount = 1
     @Published var projectTabIndex = 0
@@ -301,9 +305,17 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     private func beginOpening(_ operation: @escaping @MainActor () async throws -> Void) {
         busy = true; error = ""; status = "Opening project…"; canCancelOpening = true
+        #if os(macOS)
+        if let request = remoteOpening { Self.finishRemoteProjectOpening(request.id, state: "opening") }
+        #endif
         openingCancellation = ProjectOpeningCancellation()
         openingTask = Task {
-            defer { busy = false; canCancelOpening = false; openingTask = nil; openingCancellation = nil; status = "" }
+            defer {
+                busy = false; canCancelOpening = false; openingTask = nil; openingCancellation = nil; status = ""
+                #if os(macOS)
+                finishRemoteOpening()
+                #endif
+            }
             do { try await operation() }
             catch is CancellationError { missingAudioPrompt = nil }
             catch { if Task.isCancelled { missingAudioPrompt = nil } else { self.error = error.localizedDescription } }
@@ -463,33 +475,68 @@ enum PortableProjectImportPrompt: String, Identifiable {
     #if os(macOS)
     private var remoteProjectCatalog = DAWRemoteProjectCatalog()
     private var remoteProjectError = ""
+    // The Remote connection survives tab changes. Keep the last acknowledged
+    // operation outside an individual document, including a failed new tab.
+    private static var remoteOpeningID: UUID?
+    private static var remoteOpeningState: String?
+    private static var remoteOpeningError = ""
+    private var remoteOpening: (id: UUID, destination: URL)?
+    private func updateRemoteOpeningDestination(_ id: UUID?, to destination: URL) {
+        guard let id, remoteOpening?.id == id else { return }
+        remoteOpening?.destination = destination.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    static func finishRemoteProjectOpening(_ id: UUID, state: String, error: String = "") {
+        guard remoteOpeningID == id else { return }
+        remoteOpeningState = state; remoteOpeningError = error
+    }
+    private func finishRemoteOpening() {
+        guard let request = remoteOpening else { return }
+        if missingAudioPrompt != nil {
+            Self.finishRemoteProjectOpening(request.id, state: "waiting")
+            return
+        }
+        let opened = ready && currentURL?.standardizedFileURL.resolvingSymlinksInPath() == request.destination
+        Self.finishRemoteProjectOpening(request.id, state: error.isEmpty ? (opened ? "completed" : "cancelled") : "failed",
+            error: error.isEmpty ? "" : "Could not open the project. Check the Mac for details.")
+        remoteOpening = nil
+    }
     var remoteProjectBrowser: DAWRemoteState.ProjectBrowser {
         let recent = remoteProjectCatalog.update(self.recent, current: currentURL)
         let recording = TrackRecording.shared.recording || TrackRecording.shared.busy
         let busy = self.busy || show.saving
-        let status = busy ? "Opening project…" : recording ? "Stop recording on the Mac to open a project." : ""
-        let error = !remoteProjectError.isEmpty ? remoteProjectError : missingAudioPrompt != nil ?
+        let status = busy ? (self.status.isEmpty ? "Opening project…" : self.status) : missingAudioPrompt != nil ?
+            "Resolve missing audio on the Mac to continue." : recording ? "Stop recording on the Mac to open a project." : ""
+        let error = !Self.remoteOpeningError.isEmpty ? Self.remoteOpeningError : !remoteProjectError.isEmpty ? remoteProjectError : missingAudioPrompt != nil ?
             "Resolve missing audio on the Mac to continue." : self.error.isEmpty ? "" :
             "Could not open the project. Check the Mac for details."
         return .init(recent: recent, busy: busy,
-                     canOpen: !busy && !recording && missingAudioPrompt == nil,
-                     canOpenInNewTab: openInNewProjectTab != nil, status: status, error: error)
+                     canOpen: !busy && !importingAudio && !recording && missingAudioPrompt == nil && canChangeProject(),
+                     canOpenInNewTab: openInNewProjectTab != nil, status: status, error: error,
+                     commandID: Self.remoteOpeningID, commandState: Self.remoteOpeningState)
     }
-    func openRemoteProject(_ id: UUID, inNewTab: Bool = false) {
+    func openRemoteProject(_ id: UUID, inNewTab: Bool = false, commandID: UUID = UUID()) {
         remoteProjectError = ""
-        guard remoteProjectBrowser.canOpen else { return }
-        guard let url = remoteProjectCatalog.url(for: id) else {
-            remoteProjectError = "This project is no longer in the Mac’s recent projects."
+        Self.remoteOpeningID = commandID; Self.remoteOpeningState = "opening"; Self.remoteOpeningError = ""
+        guard remoteProjectBrowser.canOpen else {
+            Self.finishRemoteProjectOpening(commandID, state: "failed", error: "Finish the current operation before opening another project.")
             return
         }
-        guard url != currentURL?.standardizedFileURL else { return }
+        guard let url = remoteProjectCatalog.url(for: id) else {
+            remoteProjectError = "This project is no longer in the Mac’s recent projects."
+            Self.finishRemoteProjectOpening(commandID, state: "failed", error: remoteProjectError)
+            return
+        }
+        guard url.standardizedFileURL.resolvingSymlinksInPath() != currentURL?.standardizedFileURL.resolvingSymlinksInPath() else {
+            Self.finishRemoteProjectOpening(commandID, state: "completed"); return
+        }
         if inNewTab {
-            openInNewProjectTab?(url)
+            if let openRemoteInNewProjectTab { openRemoteInNewProjectTab(url, commandID) }
+            else { Self.finishRemoteProjectOpening(commandID, state: "failed", error: "Opening a new project tab is unavailable.") }
             return
         }
         // The normal document transition flushes unsaved changes before replacing
         // the project, and keeps the current project if saving or loading fails.
-        open(url)
+        open(url, remoteCommandID: commandID)
     }
     #endif
     init(store: DocumentProjectStore, show: ShowController, preview: Bool) {
@@ -779,14 +826,43 @@ enum PortableProjectImportPrompt: String, Identifiable {
         try await activate(enriched, at: url)
         if enriched != project { try await ProjectStore(url: url).save(enriched) }
     }
-    func open(_ url: URL) {
-        if activateExistingProjectTab?(url) == true { return }
-        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+    func open(_ url: URL) { open(url, remoteCommandID: nil) }
+    func open(_ url: URL, remoteCommandID: UUID?) {
+        #if os(macOS)
+        if let remoteCommandID { remoteOpening = (remoteCommandID, url.standardizedFileURL.resolvingSymlinksInPath()) }
+        guard canChangeProject(), !importingAudio else {
+            if let remoteCommandID {
+                Self.finishRemoteProjectOpening(remoteCommandID, state: "failed", error: "Finish the current operation before opening another project.")
+                remoteOpening = nil
+            }
+            return
+        }
+        #endif
+        if activateExistingProjectTab?(url) == true {
+            #if os(macOS)
+            if let remoteCommandID { Self.finishRemoteProjectOpening(remoteCommandID, state: "completed"); remoteOpening = nil }
+            #endif
+            return
+        }
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
+            #if os(macOS)
+            if let remoteCommandID {
+                Self.finishRemoteProjectOpening(remoteCommandID, state: "failed", error: "Finish the current operation before opening another project.")
+                remoteOpening = nil
+            }
+            #endif
+            return
+        }
         // Recent Projects and Finder can both request the document already in
         // memory. Reloading its older disk snapshot would discard current edits
         // after activate() saves them, including when the path is an alias.
         if ready, let currentURL,
-           currentURL.standardizedFileURL.resolvingSymlinksInPath() == url.standardizedFileURL.resolvingSymlinksInPath() { return }
+           currentURL.standardizedFileURL.resolvingSymlinksInPath() == url.standardizedFileURL.resolvingSymlinksInPath() {
+            #if os(macOS)
+            finishRemoteOpening()
+            #endif
+            return
+        }
         if ["ziplive", "zip"].contains(url.pathExtension.lowercased()) { importPortablePackage(url); return }
         #if os(macOS)
         if ["logicx", "rpp"].contains(url.pathExtension.lowercased()) { importDAW(url); return }
@@ -796,6 +872,9 @@ enum PortableProjectImportPrompt: String, Identifiable {
             let url = try await ProjectOpeningWork.run {
                 try url.pathExtension.lowercased() == "bkjl" ? ProjectBackups.restore(url) : url
             }
+            #if os(macOS)
+            self.updateRemoteOpeningDestination(remoteCommandID, to: url)
+            #endif
             guard let project = try await ProjectStore(url: url).load() else { throw ProjectError.invalid("Project not found") }
             try Task.checkCancellation()
             try project.validate()
@@ -813,7 +892,12 @@ enum PortableProjectImportPrompt: String, Identifiable {
         guard !busy, let prompt = missingAudioPrompt else { return }
         busy = true; status = "Searching for missing audio…"
         Task {
-            defer { busy = false }
+            defer {
+                busy = false
+                #if os(macOS)
+                finishRemoteOpening()
+                #endif
+            }
             let accessing = folder.startAccessingSecurityScopedResource()
             defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
             do {
@@ -842,7 +926,12 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     func cancelMissingAudioOpen() {
         if canCancelOpening { cancelOpening() }
-        else if !busy { missingAudioPrompt = nil }
+        else if !busy {
+            missingAudioPrompt = nil
+            #if os(macOS)
+            finishRemoteOpening()
+            #endif
+        }
     }
     #if os(macOS)
     func chooseMigration(_ fileExtension: String) {

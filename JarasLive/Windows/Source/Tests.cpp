@@ -5,6 +5,7 @@
 #include "Workspace.h"
 #include "StartupSplash.h"
 #include "TrackTree.h"
+#include "TrackGroupCreationTests.h"
 #include "ClipAudio.h"
 #include "ResolumeComposition.h"
 #include "LightingRegionTests.h"
@@ -17,6 +18,7 @@
 #include "RemoteHost.h"
 #include "RemotePresentation.h"
 #include "RemoteProjectCatalog.h"
+#include "RemoteProjectOpeningTests.h"
 #include "LicenseProof.h"
 #include "TimelineGrid.h"
 #include "TimelineBulkEditing.h"
@@ -248,6 +250,68 @@ int runTests(const File &directory) {
         session.undo();expect(list(get(fxchain::settings(session,id),"inserted")).size()==2 && fxchain::enabled(fxchain::settings(session,id),"EQ"),"Removal undo failed");
         expect(opens==0 && error.isEmpty(),"Modified click opened FX manager or failed");
     });
+    trackGroupCreationTests::run(test);
+    test("Track hierarchy drops preserve audio readers and route nested groups through their parent",[&]{
+        const auto folder=directory.getNonexistentChildFile("hierarchy-tone","");expect(folder.createDirectory().wasOk(),"Create fixture folder");
+        auto stream=folder.getChildFile("tone.wav").createOutputStream();WavAudioFormat format;
+        std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.get(),48000,2,24,{},0));expect(bool(writer),"Create fixture audio");stream.release();
+        AudioBuffer<float> tone(2,48000*8);for(int c=0;c<2;++c)for(int n=0;n<tone.getNumSamples();++n)tone.setSample(c,n,.2f);
+        expect(writer->writeFromAudioSampleBuffer(tone,0,tone.getNumSamples()),"Write fixture audio");writer.reset();
+        jaras::Project p;p.id=uuid();p.name="Hierarchy";jaras::Song song;song.id=uuid();song.name="Song";song.duration=8;
+        const ID group=uuid(),child=uuid(),nested=uuid(),leaf=uuid(),outside=uuid();
+        for(const auto &id:{group,child,nested,leaf,outside}){jaras::Track t;t.id=id;t.name=id;t.role.id="other";song.tracks.push_back(t);}
+        song.tracks[0].volume=.5;song.tracks[1].parentTrackID=group;song.tracks[1].patch=jaras::OutputPatch{-2,2};
+        song.tracks[2].volume=.5;song.tracks[3].parentTrackID=nested;song.tracks[3].patch=jaras::OutputPatch{-2,2};
+        jaras::AudioClip clip;clip.id=uuid();clip.duration=8;clip.audioFile=jaras::AudioFile{"tone.wav",{}};song.tracks[3].clips={clip};
+        song.parts={{uuid(),"Music",0,8}};p.songs={song};p.savedCursor=jaras::SavedProjectCursor{song.id,0};
+        Session session;session.inspection=true;session.mediaDirectory=folder;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(p));session.audio.setOffline(true);session.command(jaras::CommandKind::play);
+        auto peak=[&]{AudioBuffer<float> out(2,512);for(int n=0;n<8;++n)session.audio.render(out.getArrayOfWritePointers(),2,512);return out.getMagnitude(0,512);};
+        const auto initial=peak();expect(initial>.01f,"Initial output missing");
+        const auto commits=get(session.audio.streamDiagnostics(),"transportRepositions");
+        const auto preparation=JSON::toString(session.audio.preparationDiagnostics);
+        auto into=trackDrop::resolve(*session.song(),nested,child,true,false);expect(into&&into->parent==group,"Nested group destination wrong");
+        const auto started=Time::getMillisecondCounterHiRes();session.editTrackHierarchy(song.id,[&](jaras::Song &s){trackDrop::apply(s,*into);});
+        directory.getChildFile("hierarchy-timing.txt").replaceWithText(String(Time::getMillisecondCounterHiRes()-started,3)+" ms");
+        expect(!session.preparingLiveAudio(),"Drop recreated graph");expect(std::abs(peak()/initial-.5f)<.02f,"Nested group skipped parent master or duplicated its output");
+        expect(session.audio.trackPeak(group)>.01f,"Parent master meter did not receive nested audio");
+        session.undo();expect(std::abs(peak()/initial-1.f)<.02f,"Undo did not restore independent group output");
+        session.redo();expect(std::abs(peak()/initial-.5f)<.02f,"Redo did not restore parent output");
+        auto out=trackDrop::resolve(*session.song(),nested,outside,false,false);expect(out&&!out->parent,"Exit destination wrong");
+        session.editTrackHierarchy(song.id,[&](jaras::Song &s){trackDrop::apply(s,*out);});expect(std::abs(peak()/initial-1.f)<.02f,"Leaving parent did not restore master route");
+        auto leafIn=trackDrop::resolve(*session.song(),leaf,child,true,false);expect(bool(leafIn),"Leaf drop missing");
+        session.editTrackHierarchy(song.id,[&](jaras::Song &s){trackDrop::apply(s,*leafIn);});expect(std::abs(peak()/initial-1.f)<.02f,"Regular track did not route through parent master");
+        expect(get(session.audio.streamDiagnostics(),"transportRepositions")==commits,"Track drop/Undo repositioned playback");
+        expect(JSON::toString(session.audio.preparationDiagnostics)==preparation,"Track drop recreated readers or processors");
+        expect(session.audio.refreshItemPresence(*session.song()),"Reordering broke item-presence cache");
+    });
+    test("Reordered MIDI tracks keep their own prepared notes through item Delete Undo and Redo",[&]{
+        auto p=projectFixture();auto &song=p.songs.front();song.tracks.clear();song.parts.clear();song.markers.reset();song.duration=8;
+        jaras::Track a,b;a.id=uuid();a.name="MIDI A";a.role.id="keys";b.id=uuid();b.name="MIDI B";b.role.id="keys";
+        const auto item=[](int pitch){jaras::AudioClip c;c.id=uuid();c.name="Note";c.duration=4;c.midi.emplace();c.midi->sourceBPM=120;c.midi->notes={{uuid(),0,8,pitch,100,1}};return c;};
+        const auto first=item(60),retained=item(64),other=item(79);a.clips={first,retained};b.clips={other};song.tracks={a,b};
+        const auto songID=song.id;p.savedCursor=jaras::SavedProjectCursor{songID,0};
+        Session session;session.inspection=true;session.mediaDirectory=directory;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(p));session.audio.setOffline(true);
+        const auto *graph=session.audio.preparationDiagnostics.getDynamicObject();
+        const auto check=[&](const ID &id,const std::vector<int> &expected){
+            bool found=false;
+            for(const auto &entry:list(get(session.audio.streamDiagnostics(),"trackMIDI")))if(str(entry,"track")==text(id)){
+                found=true;std::vector<int> pitches;for(const auto &value:list(get(entry,"pitches")))pitches.push_back((int)value);
+                expect(num(entry,"noteCount")==double(expected.size())&&pitches==expected,"Prepared MIDI notes came from the neighbouring reordered track");
+            }
+            expect(found,"MIDI bus disappeared from the prepared graph");
+            expect(session.audio.preparationDiagnostics.getDynamicObject()==graph&&!session.preparingLiveAudio(),"MIDI edit rebuilt the graph and masked stale bus indices");
+        };
+        check(a.id,{60,64});check(b.id,{79});
+        session.editTrackHierarchy(songID,[](jaras::Song &s){std::swap(s.tracks[0],s.tracks[1]);});
+        expect(session.song()->tracks[0].id==b.id&&session.song()->tracks[1].id==a.id,"Fixture did not reorder the document");
+        check(a.id,{60,64});check(b.id,{79});
+        session.removeClips({first.id});check(a.id,{64});check(b.id,{79});
+        session.undo();check(a.id,{60,64});check(b.id,{79});
+        session.redo();check(a.id,{64});check(b.id,{79});
+        session.removeClips({retained.id});check(a.id,{});check(b.id,{79});
+        session.undo();check(a.id,{64});check(b.id,{79});
+        session.undo();check(a.id,{60,64});check(b.id,{79});
+    });
     test("Peak readouts retain maxima through silence, ignore invalid values and reset explicitly",[]{
         meterDisplay::PeakHold peak;
         peak.record(.01f);expect(peak.amplitude()==0,"Noise below -24 dB displayed a peak");
@@ -352,6 +416,46 @@ int runTests(const File &directory) {
     midiTakePlaybackTests::registerTests(test);
     regionLaneTests::registerTests(directory,test);
     setlistSearchTests::registerTests(directory,test);
+    remoteProjectOpeningTests::registerStateTests(test);
+    test("Remote project opening survives an empty new tab and keeps terminal results for the client", [&] {
+        Appearance preferences(directory.getNonexistentChildFile("remote-project-opening", ".json"));
+        remote::Host host(preferences);
+        const auto request = uuid(), original = uuid(), incoming = uuid();
+        auto old = object(), projects = object();
+        put(old, "project", remote::wireID(original)); put(projects, "busy", false); put(projects, "canOpen", true);
+        put(old, "projects", projects);
+        expect(host.projectSnapshot(0, old)["projects"]["commandID"].isVoid(), "Idle snapshot invented a pending command");
+        host.projectOpening.begin(request);
+        auto first = host.projectSnapshot(0, old.clone());
+        expect(flag(first["projects"], "busy") && !flag(first["projects"], "canOpen") &&
+               str(first["projects"], "commandID") == remote::wireID(request), "Remote did not receive the opening before the tab changed");
+        // This is the new Workspace's presentation while projectReady is false,
+        // including a client viewing a panel that has not been cached yet.
+        auto pending = host.projectSnapshot(2, var());
+        expect(str(pending, "project") == remote::wireID(original) && str(pending["projects"], "commandState") == "opening",
+               "New tab stopped publishing Remote state during preparation");
+        host.projectOpening.update(request, remote::ProjectOpening::State::waiting, "Confirm on the PC");
+        pending = host.projectSnapshot(0, var());
+        expect(str(pending["projects"], "commandState") == "waiting" && str(pending["projects"], "status") == "Confirm on the PC", "Host confirmation lost its correlated waiting state");
+        auto next = old.clone(); put(next, "project", remote::wireID(incoming));
+        // A ready Workspace constructs a fresh idle ProjectBrowser. Do not
+        // reuse the outgoing var's busy fields (JUCE var objects are shared).
+        auto readyProjects = object(); put(readyProjects, "busy", false); put(readyProjects, "canOpen", true);
+        put(next, "projects", readyProjects);
+        host.projectOpening.update(request, remote::ProjectOpening::State::completed);
+        for (int repeat = 0; repeat < 3; ++repeat) {
+            const auto completed = host.projectSnapshot(0, next.clone());
+            expect(str(completed, "project") == remote::wireID(incoming) && !flag(completed["projects"], "busy") &&
+                   str(completed["projects"], "commandState") == "completed" && str(completed["projects"], "commandID") == remote::wireID(request),
+                   "Completion disappeared before a coalesced client could receive it");
+        }
+        const auto retry = uuid(); host.projectOpening.begin(retry); host.projectSnapshot(0, next.clone());
+        pending = host.projectSnapshot(2, var());
+        expect(str(pending, "project") == remote::wireID(incoming), "Another load reused a stale panel from the previous project");
+        host.projectOpening.update(retry, remote::ProjectOpening::State::failed, {}, "Invalid project");
+        const auto failed = host.projectSnapshot(0, next.clone());
+        expect(str(failed["projects"], "error") == "Invalid project" && !flag(failed["projects"], "busy"), "Failed new tab did not restore a usable Remote with its error");
+    });
     test("Remote recent projects retain opaque IDs and support opening in a new tab", [&] {
         remote::ProjectCatalog catalog;
         const auto first = directory.getChildFile("one/Concert.jl"), second = directory.getChildFile("two/Concert.jl");
@@ -368,8 +472,61 @@ int runTests(const File &directory) {
         put(request, "value", 1); bool rejected = false;
         try { (void)remote::Command::decode(request); } catch (...) { rejected = true; }
         expect(rejected, "New-tab command accepted arbitrary payload");
+        put(request, "action", "closeProjectTab"); put(request, "value", 0);
+        const auto close = remote::Command::decode(request);
+        expect(close.target == firstID && close.allowed("director") && !close.allowed("observer") && !close.allowed("notices"),
+               "Closing a project tab lost its target or bypassed director authorization");
+        put(request, "value", 1); rejected = false;
+        try { (void)remote::Command::decode(request); } catch (...) { rejected = true; }
+        expect(rejected, "Close-tab command accepted an arbitrary value");
         catalog.update(StringArray{first.getFullPathName()}, first);
         expect(!catalog.file(secondID) && !catalog.file(uuid()), "Removed or unissued projects could be opened remotely");
+    });
+    test("Remote project commands complete same-project opens, report read failures and route tab closure", [&] {
+        const auto previousRecents = RecentProjects::read();
+        struct RestoreRecents { StringArray paths; ~RestoreRecents() { RecentProjects::write(paths); } } restore{previousRecents};
+        const auto folder = directory.getNonexistentChildFile("remote-project-commands", ""); folder.createDirectory();
+        const auto current = folder.getChildFile("Current.jl"), broken = folder.getChildFile("Broken.jl"), missing = folder.getChildFile("Missing.jl");
+        auto project = floatingControlTests::fixture();
+        expect(current.replaceWithText(JSON::toString(ProjectCodec::encode(project))) && broken.replaceWithText("{ invalid project"), "Cannot create opening fixtures");
+        RecentProjects::write({current.getFullPathName(), broken.getFullPathName(), missing.getFullPathName()});
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.document = current; session.dirty = false;
+        Auth auth; Lighting lighting(session);
+        Workspace workspace(session, auth, lighting, false, folder.getChildFile("appearance.json")); workspace.setSize(1024, 768);
+        const auto host = workspace.projectRemoteHost();
+        const auto catalog = list(get(get(host->presentation(0), "projects"), "recent"));
+        auto sendOpen = [&](const char *name, bool accepted) {
+            const auto row = std::find_if(catalog.begin(), catalog.end(), [&](const auto &entry) { return str(entry, "name") == name; });
+            expect(row != catalog.end(), "Fixture missing from Remote catalog");
+            auto value = object(); put(value, "id", remote::wireID(uuid())); put(value, "project", remote::wireID(session.project().id));
+            put(value, "action", "openRecentProject"); put(value, "target", (*row)["id"]); put(value, "value", 0);
+            const auto command = remote::Command::decode(value);
+            expect(host->perform(command) == accepted, "Remote acceptance differs from the project operation");
+            return command.id;
+        };
+        const auto same = sendOpen("Current", true);
+        expect(str(get(host->presentation(0), "projects"), "commandID") == remote::wireID(same) &&
+               str(get(host->presentation(0), "projects"), "commandState") == "completed" && !session.busy,
+               "Opening the current project stranded the client's local loading modal");
+        const auto gone = sendOpen("Missing", false);
+        expect(host->projectOpening.id() == gone && std::string(host->projectOpening.stateName()) == "failed" && !host->projectOpening.error().empty(),
+               "Missing recent project returned no correlated error");
+        const auto failed = sendOpen("Broken", true);
+        expect(host->projectOpening.active(), "Accepted request did not enter loading before dispatch");
+        const auto until = Time::getMillisecondCounterHiRes() + 15000;
+        while (host->projectOpening.active() && Time::getMillisecondCounterHiRes() < until) floatingControlTests::pump();
+        expect(!session.busy && host->projectOpening.id() == failed && std::string(host->projectOpening.stateName()) == "failed" &&
+               session.document == current && session.project().id == project.id, "Failed read replaced the current document or left Remote loading");
+        // Restore the ordinary editor after the inline browser error and verify
+        // close is deferred through the normal Main tab hook, never direct deletion.
+        workspace.projectOpened(false);
+        String closed; workspace.closeRemoteProjectTab = [&](const String &id) { closed = id; };
+        auto close = object(); put(close, "id", remote::wireID(uuid())); put(close, "project", remote::wireID(session.project().id));
+        put(close, "action", "closeProjectTab"); put(close, "target", remote::wireID(workspace.remoteProjectTabID)); put(close, "value", 0);
+        expect(host->perform(remote::Command::decode(close)) && closed.isEmpty(), "Remote tab closure bypassed the deferred close/save path");
+        floatingControlTests::pump();
+        expect(closed == remote::wireID(workspace.remoteProjectTabID) && current.existsAsFile(), "Remote tab closure lost its stable tab ID or removed a project file");
     });
     remoteSetlistSelectionTests::registerTests(directory,test);
     addTrackVisibilityTests(directory,test);

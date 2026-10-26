@@ -35,6 +35,23 @@ inline String identifier(const jaras::Song &song, size_t index, const std::set<I
     return String::formatted("%dst  %02d", part.pitchSemitones.value_or(0), (int)index + 1);
 }
 
+// Match the Mac's region-boundary clipping, including overlapping regions.
+// A linked song marker belongs to its unified parent; other markers use the
+// earliest end of the root regions that contain their position.
+inline double markerRegionEnd(const jaras::Song &song, const jaras::TimelineMarker &marker) {
+    double end=std::numeric_limits<double>::infinity();
+    for(const auto &part:song.parts) {
+        if(part.parentRegionID) continue;
+        if(marker.unifiedRegionID && *marker.unifiedRegionID==part.id) return part.endTime;
+        if(part.startTime<=marker.position && marker.position<part.endTime) end=std::min(end,part.endTime);
+    }
+    return end;
+}
+inline float markerHeadWidth(double position, double next, double regionEnd, float naturalWidth, double scale) {
+    const auto available=std::min({(double)naturalWidth,(next-position)*scale-3,(regionEnd-position)*scale});
+    return available>=18 ? (float)available : 0.f;
+}
+
 inline String marker(const jaras::Song &song, const jaras::TimelineMarker &value) {
     if (value.tempoBPM)
         return String::formatted("%g  %d/%d",*value.tempoBPM,value.tempoBeats.value_or(4),value.tempoUnit.value_or(4));

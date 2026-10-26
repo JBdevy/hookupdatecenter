@@ -529,6 +529,10 @@ enum AppStartupPresentation {
             guard let self, let index = self.projects.firstIndex(where: { $0.remoteProjectTabID == id }) else { return }
             self.select(index)
         }
+        DAWRemoteHostBridge.closeProjectTabHandler = { [weak self] id in
+            guard let self, let index = self.projects.firstIndex(where: { $0.remoteProjectTabID == id }) else { return }
+            self.close(index)
+        }
     }
     private func configure(_ container: AppContainer) {
         container.documents.additionalProtectedMediaURLs = { [weak self, weak container] in
@@ -548,9 +552,14 @@ enum AppStartupPresentation {
             guard let self, let container else { return false }
             let path = url.standardizedFileURL.resolvingSymlinksInPath()
             guard let index = self.projects.firstIndex(where: { $0 !== container && $0.documents.currentURL?.standardizedFileURL.resolvingSymlinksInPath() == path }) else { return false }
-            self.select(index); return true
+            self.select(index); return self.selected == index
+        }
+        container.documents.canChangeProject = { [weak self, weak container] in
+            guard let self, let container else { return false }
+            return !self.closingTab && self.active === container && !container.documents.importingAudio
         }
         container.documents.openInNewProjectTab = { [weak self] url in self?.open(url) }
+        container.documents.openRemoteInNewProjectTab = { [weak self] url, id in self?.open(url, remoteCommandID: id) }
         container.documents.navigateProjectTab = { [weak self] direction in self?.navigate(direction) }
         container.show.navigateProjectTab = { [weak self] direction in self?.navigate(direction) }
     }
@@ -595,13 +604,21 @@ enum AppStartupPresentation {
             !TrackRecording.shared.recording && !TrackRecording.shared.busy
         }
     }
-    func open(_ url: URL) {
-        guard !closingTab else { return }
-        guard let current = active, current.documents.ready, !current.documents.busy,
-              !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+    func open(_ url: URL, remoteCommandID: UUID? = nil) {
+        let rejectRemote: (String) -> Void = { message in
+            if let remoteCommandID { ProjectDocuments.finishRemoteProjectOpening(remoteCommandID, state: "failed", error: message) }
+        }
+        guard !closingTab else { rejectRemote("Finish closing the current tab first."); return }
+        guard let current = active, current.documents.ready, !current.documents.busy, !current.documents.importingAudio,
+              !TrackRecording.shared.recording, !TrackRecording.shared.busy else {
+            rejectRemote("Finish the current operation before opening another project."); return
+        }
         let canonical = url.standardizedFileURL.resolvingSymlinksInPath()
         if let index = projects.firstIndex(where: { $0.documents.currentURL?.standardizedFileURL.resolvingSymlinksInPath() == canonical }) {
-            select(index); return
+            select(index)
+            guard selected == index else { rejectRemote("Finish the current operation before opening another project."); return }
+            if let remoteCommandID { ProjectDocuments.finishRemoteProjectOpening(remoteCommandID, state: "completed") }
+            return
         }
         do {
             let audio = StemAudioPlayback(engine: AVAudioEngine(), auxiliarySelectedHardware: true)
@@ -610,9 +627,18 @@ enum AppStartupPresentation {
             projects.append(next)
             for project in projects { project.documents.projectTabCount = projects.count }
             select(projects.count - 1)
+            guard active === next else {
+                projects.removeAll { $0 === next }
+                for project in projects { project.documents.projectTabCount = projects.count }
+                next.projectAudio.prepareForClosing()
+                rejectRemote("Finish the current operation before opening another project."); return
+            }
             watchOpening(next, fallback: current)
-            next.documents.open(url)
-        } catch { current.documents.error = error.localizedDescription }
+            next.documents.open(url, remoteCommandID: remoteCommandID)
+        } catch {
+            current.documents.error = error.localizedDescription
+            rejectRemote("Could not open the project. Check the Mac for details.")
+        }
     }
     private func watchOpening(_ project: AppContainer, fallback: AppContainer) {
         let id = ObjectIdentifier(project)

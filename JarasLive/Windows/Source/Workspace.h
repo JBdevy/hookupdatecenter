@@ -92,13 +92,15 @@ class Workspace final : public Component,
     std::function<bool(File)> activateExistingProjectTab;
     std::function<void(String)> projectTabLoadFinished;
     std::function<void(File)> openInNewProjectTab;
+    std::function<void(File, ID)> openRemoteProjectInNewTab;
     std::function<void(int)> navigateProjectTab;
     const jaras::ID remoteProjectTabID = uuid();
     std::function<var()> remoteProjectTabs;
     std::function<void(const String &)> selectRemoteProjectTab;
+    std::function<void(const String &)> closeRemoteProjectTab;
     std::function<bool(int)> canNavigateProjectTab;
     void chooseOpen();
-    void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false, bool allowMissing = false);
+    void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false, bool allowMissing = false, ID remoteRequest = {});
     void chooseSave(bool saveAs = false, std::function<void()> saved = {});
     void chooseImport();
     void chooseExport();
@@ -295,7 +297,7 @@ class Workspace final : public Component,
     TapTempo tempoTaps;
     bool lastSubCursorVisible = false;
     void prompt(const String &, const String &, const String &, std::function<void(String)>);
-    void confirm(const String &, const String &, std::function<void()>);
+    void confirm(const String &, const String &, std::function<void()>, std::function<void()> cancelled = {});
     void confirmTrackDeletion(const std::set<ID> &, std::function<void()>);
     void newProject();
     void deleteRecentProject(const File &);

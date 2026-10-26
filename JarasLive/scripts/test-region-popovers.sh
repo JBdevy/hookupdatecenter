@@ -17,7 +17,7 @@ eager='''.popover(isPresented: Binding(get: { editingRegion == part.id }, set: {
 }.popover(isPresented: Binding(get: { unifyingRegion == part.id }, set: { if !$0 { unifyingRegion = nil } })) {
  UnifyRegionEditor { show.unifyRegions(containing: part.id, name: $0) }
 }'''
-editor=Path('Apple/Shared/RegionEditor.swift').read_text().split('#if os(macOS)')[0]
+editor=Path('Apple/Shared/RegionEditor.swift').read_text().split('#if os(macOS)\nimport AppKit\nstruct RegionRightClick:')[0]
 fixtures=[]
 lazy = '''ZStack(alignment: .topLeading) {
  HitSurface(id: part.id).frame(width: width, height: 24)
@@ -42,5 +42,5 @@ for name,body in [('LazyRegionFixture',lazy),('EagerRegionFixture','HitSurface(i
 ''')
 Path(sys.argv[1]).write_text(editor+'\n'+'\n'.join(fixtures)+'\n'+Path('Tests/Apple/RegionPopoverTests.swift').read_text())
 PY
-swiftc -suppress-warnings -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -suppress-warnings -swift-version 5 Apple/Shared/NativeTooltips.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

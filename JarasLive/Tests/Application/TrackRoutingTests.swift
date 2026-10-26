@@ -29,6 +29,90 @@ import XCTest
     func applyProjectEdit(_ p: Project) throws { try p.validate(); project = p; fullEdits += 1 }
 }
 final class TrackRoutingTests: XCTestCase {
+    @MainActor func testCreateGroupFromOneRootIncludesAllFollowingRootsAndPreservesNestedAudioRouting() throws {
+        var project = Project.empty(name: "Create group below track")
+        var tracks = (0..<7).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        tracks[3].parentTrackID = tracks[2].id; tracks[3].outputs = [.masterGroup]
+        tracks[4].parentTrackID = tracks[3].id; tracks[4].patch = .masterGroup
+        tracks[2].outputs = [.master, OutputPatch(firstChannel: 7, channelCount: 2)]
+        tracks[5].patch = OutputPatch.none
+        tracks[6].outputs = []
+        tracks[1].outputs = [.master, OutputPatch(firstChannel: 3, channelCount: 2)]
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertTrue(show.current!.canCreateTrackGroup(tracks[1].id))
+        show.createTrackGroup(tracks[1].id)
+        let result = try XCTUnwrap(show.current?.tracks)
+        XCTAssertEqual(result.map(\.id), tracks.map(\.id))
+        XCTAssertEqual(result[0], tracks[0], "Tracks above the chosen master remain untouched")
+        XCTAssertEqual(result[1], tracks[1], "The folder keeps its own audio and output settings")
+        for index in [2, 5, 6] {
+            XCTAssertEqual(result[index].parentTrackID, tracks[1].id)
+            XCTAssertEqual(result[index].primaryOutput, .masterGroup)
+        }
+        XCTAssertEqual(result[2].outputPatches, [.masterGroup, OutputPatch(firstChannel: 7, channelCount: 2)])
+        XCTAssertEqual(result[3], tracks[3]); XCTAssertEqual(result[4], tracks[4])
+        XCTAssertEqual(TrackHierarchy(result).ancestors(of: tracks[4].id), [tracks[3].id, tracks[2].id, tracks[1].id])
+        try show.snapshot.project.validate()
+        XCTAssertEqual(executor.fullEdits, 1)
+        show.undo(); XCTAssertEqual(show.current?.tracks, tracks)
+        show.redo(); XCTAssertEqual(show.current?.tracks, result)
+    }
+    func testCreateGroupRejectsMembersAndSpecialTracksAndLeavesLastRootUnchanged() throws {
+        var project = Project.empty(name: "Group eligibility")
+        let click = Track(id: UUID(), name: "Click", role: TrackRole(rawValue: TrackKind.click.rawValue))
+        let pads = Track(id: UUID(), name: "VINHETAS-FX", role: TrackRole(rawValue: "vinhetas"))
+        var tracks = (0..<4).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        tracks[1].parentTrackID = tracks[0].id; tracks[1].patch = .masterGroup
+        project.songs[0].tracks = [pads, click] + tracks
+        try project.validate()
+        let songID = project.songs[0].id
+        for id in [pads.id, click.id, tracks[1].id, tracks[3].id, UUID()] {
+            XCTAssertFalse(project.songs[0].canCreateTrackGroup(id))
+            let before = project
+            try project.createTrackGroup(id, song: songID)
+            XCTAssertEqual(project, before)
+        }
+        try project.createTrackGroup(tracks[0].id, song: songID)
+        XCTAssertEqual(project.songs[0].tracks.prefix(2), [pads, click])
+        XCTAssertEqual(project.songs[0].tracks[3], tracks[1], "Existing children keep the same route")
+        XCTAssertEqual(project.songs[0].tracks[4].parentTrackID, tracks[0].id)
+        XCTAssertEqual(project.songs[0].tracks[5].parentTrackID, tracks[0].id)
+    }
+    @MainActor func testCreateGroupRejectsAudioFeedbackAtomically() throws {
+        var project = Project.empty(name: "Reject feedback")
+        var parent = Track(id: UUID(), name: "Parent", role: .other)
+        let child = Track(id: UUID(), name: "Child", role: .other)
+        parent.routing = TrackRouting(transmitters: [child.id])
+        project.songs[0].tracks = [parent, child]
+        try project.validate()
+        let original = project
+        XCTAssertThrowsError(try project.createTrackGroup(parent.id, song: project.songs[0].id))
+        XCTAssertEqual(project, original)
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.createTrackGroup(parent.id)
+        XCTAssertEqual(show.snapshot.project, original)
+        XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertFalse(show.message.isEmpty)
+    }
+    func testCreateGroupKeepsLinkedPairBelowTogetherButCannotUseLinkedMaster() throws {
+        var project = Project.empty(name: "Linked children")
+        let tracks = (0..<4).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        project.songs[0].linkTracks([tracks[1].id, tracks[2].id], firstInput: 1, color: 0x44aa55)
+        XCTAssertFalse(project.songs[0].canCreateTrackGroup(tracks[1].id))
+        XCTAssertTrue(project.songs[0].canCreateTrackGroup(tracks[0].id))
+        try project.createTrackGroup(tracks[0].id, song: project.songs[0].id)
+        try project.validate()
+        for index in 1...3 {
+            XCTAssertEqual(project.songs[0].tracks[index].parentTrackID, tracks[0].id)
+            XCTAssertEqual(project.songs[0].tracks[index].primaryOutput, .masterGroup)
+        }
+        XCTAssertEqual(project.songs[0].tracks[1].stereoLink?.partner, tracks[2].id)
+        XCTAssertEqual(project.songs[0].tracks[2].stereoLink?.partner, tracks[1].id)
+    }
     func testLongRoutingChainValidatesWithoutRecursionAndRejectsCycleAtEnd() throws {
         var project = Project.empty(name: "Long routing chain")
         var tracks = (0..<30_000).map { Track(id: UUID(), name: "Track \($0)", role: .other) }

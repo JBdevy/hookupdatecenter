@@ -97,6 +97,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     bool refreshItemPresence(const jaras::Song &);
     void setItemControls(const jaras::AudioClip &);
     void setMixer(const jaras::Project &, const jaras::Song &);
+    bool refreshTrackRouting(const jaras::Song &);
     void setOffline(bool enabled);
     void extendOfflineDuration(double end) {
         if (attached || !std::isfinite(end) || end < 0)
@@ -208,17 +209,22 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         put(result, "transportRepositions", (int64)transportRepositions);
         put(result, "voiceCount", (int)voices.size()); put(result, "busCount", (int)buses.size());
         int processors = 0;
-        Array<var> trackEffects, itemEffects;
+        Array<var> trackEffects, itemEffects, trackMIDI;
         for (const auto &bus : buses) {
             const auto inserted = get(bus->settings, "inserted");
             if (!list(inserted).isEmpty()) { auto entry=object();put(entry,"track",text(bus->id));put(entry,"effects",inserted);trackEffects.add(entry); }
+            // Bounded MIDI samples make identity/routing regressions observable
+            // without dumping a whole score or walking all of its notes.
+            auto midi=object();Array<var> pitches;
+            for(size_t i=0;i<std::min(size_t(16),bus->midiNotes.size());++i)pitches.add(bus->midiNotes[i].pitch);
+            put(midi,"track",text(bus->id));put(midi,"noteCount",(int64)bus->midiNotes.size());put(midi,"pitches",pitches);trackMIDI.add(midi);
         }
         for (const auto &voice : voices) {
             processors += voice->clipAudio ? 1 : 0;
             const auto inserted = get(voice->fxSettings, "inserted");
             if (!list(inserted).isEmpty()) {auto entry=object();put(entry,"item",text(voice->clipID));put(entry,"effects",inserted);itemEffects.add(entry);}
         }
-        put(result, "clipProcessors", processors); put(result, "trackEffects", trackEffects);
+        put(result, "clipProcessors", processors); put(result, "trackEffects", trackEffects); put(result,"trackMIDI",trackMIDI);
         put(result, "itemEffects", itemEffects); put(result, "masterEffects", get(masterFXSettings,"inserted"));
         return result;
     }
@@ -347,6 +353,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         std::atomic<bool> armed{false};
         std::atomic<bool> fadeoutSelected{false};
     };
+    struct TrackRoute { int parent=-1; std::vector<jaras::OutputPatch> outputs; };
     struct LatencyPlan {
         struct Route { int target=-1;native::StereoDelay delay[2]; };
         struct Channel {
@@ -365,7 +372,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::unique_ptr<LatencyPlan> latencyPlan;
     std::unique_ptr<LatencyPlan> makeLatencyPlan(const ID *replacement=nullptr,const NativeFX *prepared=nullptr,
                                                 std::optional<bool> midiTakeActive={},bool admitReady=false,
-                                                bool releaseRemoved=false, const std::vector<Voice *> *itemVoices=nullptr)const;
+                                                bool releaseRemoved=false, const std::vector<Voice *> *itemVoices=nullptr,
+                                                const std::vector<TrackRoute> *routes=nullptr, const std::vector<int> *order=nullptr)const;
     bool offlineMode=false;
     uint64 stemLatencyFingerprint=0;
     std::atomic<bool> presentationTailing{false};

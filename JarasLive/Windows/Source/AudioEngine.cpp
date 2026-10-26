@@ -229,10 +229,16 @@ void AudioEngine::previewMIDIItem(const jaras::Song &song,const jaras::AudioClip
 }
 bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
     if (song.tracks.size() != buses.size()) return false;
+    // A hierarchy edit retains the bus/processor order while the document's
+    // tracks move. Every per-bus rebuild must resolve the track by identity.
+    std::map<ID, const jaras::Track *> tracksByID;
+    for (const auto &track : song.tracks)
+        if (!tracksByID.emplace(track.id, &track).second) return false;
     std::map<ID, const jaras::AudioClip *> wanted;
     for (size_t i = 0; i < buses.size(); ++i) {
-        if (buses[i]->id != song.tracks[i].id) return false;
-        for (const auto &clip : song.tracks[i].clips) {
+        const auto found = tracksByID.find(buses[i]->id);
+        if (found == tracksByID.end()) return false;
+        for (const auto &clip : found->second->clips) {
             // Missing media and visual-only items legitimately have no voice.
             // Only an item absent from this graph's original model needs preparation.
             if (!preparedItemIDs.count(clip.id)) return false;
@@ -252,7 +258,7 @@ bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
     std::optional<jaras::TimecodeProgram> timecode;
     bool timecodeMuted = false;
     for (size_t i = 0; i < buses.size(); ++i) {
-        const auto &track = song.tracks[i];
+        const auto &track = *tracksByID.at(buses[i]->id);
         bool changedMIDI = false;
         for (const auto &voice : voices) if (voice->bus == i && voice->midiItem && !wanted.count(voice->clipID)) changedMIDI = true;
         for (const auto &voice : removedItemVoices) if (voice->bus == i && voice->midiItem && wanted.count(voice->clipID)) changedMIDI = true;
@@ -521,7 +527,9 @@ void AudioEngine::configureMetronome(const var &settings) {
 }
 std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID *replacement,const NativeFX *prepared,
                                                                     std::optional<bool> midiTakeActive,bool admitReady,
-                                                                    bool releaseRemoved,const std::vector<Voice *> *itemVoices)const {
+                                                                    bool releaseRemoved,const std::vector<Voice *> *itemVoices,
+                                                                    const std::vector<TrackRoute> *routes,const std::vector<int> *routingOrder)const {
+    const auto &order = routingOrder ? *routingOrder : busOrder;
     std::vector<Voice *> active;
     if (!itemVoices) { active.reserve(voices.size()); for (const auto &voice : voices) active.push_back(voice.get()); itemVoices = &active; }
     auto result=std::make_unique<LatencyPlan>();result->buses.resize(buses.size());
@@ -536,12 +544,13 @@ std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID 
     };
     for(const auto *voice:*itemVoices)if(!voice->frozen)result->buses[voice->bus].own=std::max(result->buses[voice->bus].own,voiceLatency(*voice));
     for(size_t i=0;i<buses.size();i++)result->buses[i].input=result->buses[i].own;
-    for(int index:busOrder) {
+    for(int index:order) {
         const auto &bus=*buses[size_t(index)];auto &channel=result->buses[size_t(index)];
         channel.output=channel.input+latency(bus.id,bus.fx[0]);
         std::set<int> destinations(bus.sends.begin(),bus.sends.end());
-        for(const auto &patch:bus.outputs) {
-            if(patch.firstChannel==-2&&bus.parent>=0)destinations.insert(bus.parent);
+        const auto parent=routes?(*routes)[size_t(index)].parent:bus.parent;
+        for(const auto &patch:routes?(*routes)[size_t(index)].outputs:bus.outputs) {
+            if(patch.firstChannel==-2&&parent>=0)destinations.insert(parent);
             else if(patch.firstChannel==0)result->masterInput=std::max(result->masterInput,channel.output);
             else if(patch.firstChannel>0)result->total=std::max(result->total,channel.output);
         }
@@ -556,12 +565,12 @@ std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID 
     // dry track parallel to CatStem must retain instant volume/mute/fade control
     // after its audio has waited for the latent branch.
     result->masterInput=std::max(result->masterInput,result->total-masterLatency);
-    for(auto order=busOrder.rbegin();order!=busOrder.rend();++order) {
-        const auto &bus=*buses[size_t(*order)];auto &channel=result->buses[size_t(*order)];
+    for(auto it=order.rbegin();it!=order.rend();++it) {
+        const auto &bus=*buses[size_t(*it)];auto &channel=result->buses[size_t(*it)];
         unsigned shift=std::numeric_limits<unsigned>::max();
         auto destination=[&](unsigned target){shift=std::min(shift,target>=channel.output?target-channel.output:0);};
         for(const auto &route:channel.routes)destination(result->buses[size_t(route.target)].input);
-        for(const auto &patch:bus.outputs){if(patch.firstChannel==0)destination(result->masterInput);else if(patch.firstChannel>0)destination(result->total);}
+        for(const auto &patch:routes?(*routes)[size_t(*it)].outputs:bus.outputs){if(patch.firstChannel==0)destination(result->masterInput);else if(patch.firstChannel>0)destination(result->total);}
         if(shift!=std::numeric_limits<unsigned>::max()){channel.input+=shift;channel.output+=shift;}
     }
     const auto masterOutput=result->masterInput+masterLatency;
@@ -571,6 +580,8 @@ std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID 
         bool equal=true;for(size_t i=0;i<buses.size();i++) {
             const auto &a=latencyPlan->buses[i],&b=result->buses[i];
             equal&=a.own==b.own&&a.input==b.input&&a.output==b.output;
+            equal&=a.routes.size()==b.routes.size();
+            for(size_t j=0;j<std::min(a.routes.size(),b.routes.size());++j)equal&=a.routes[j].target==b.routes[j].target;
         }
         for(const auto *voice:*itemVoices)if(!voice->frozen) {
             auto found=latencyPlan->clips.find(voice->clipID);
@@ -1574,6 +1585,39 @@ void AudioEngine::setItemControls(const jaras::AudioClip &clip) {
         u.fadeInShape={clip.fadeInCurve.value_or(0),clip.fadeInSCurve.value_or(1)}; u.fadeOutShape={clip.fadeOutCurve.value_or(0),clip.fadeOutSCurve.value_or(1)};
         u.mute=clip.muted; u.fxBypassed=clip.fxBypassed.value_or(false); enqueue(u);
     }
+}
+bool AudioEngine::refreshTrackRouting(const jaras::Song &song) {
+    if(song.tracks.size()!=buses.size())return false;
+    jaras::validateRouting(song);
+    std::map<ID,int> indices;
+    for(size_t i=0;i<buses.size();++i)indices.emplace(buses[i]->id,(int)i);
+    std::vector<TrackRoute> routes(buses.size());
+    for(const auto &track:song.tracks) {
+        const auto found=indices.find(track.id);if(found==indices.end())return false;
+        auto &route=routes[size_t(found->second)];route.outputs=track.outputPatches();
+        if(track.parentTrackID){const auto parent=indices.find(*track.parentTrackID);if(parent==indices.end())return false;route.parent=parent->second;}
+    }
+    // Keep bus indices, readers, instruments and FX instances. Only the
+    // parent/output edges and their processing order change on a track drop.
+    std::vector<int> order,visits(buses.size(),0);order.reserve(buses.size());
+    std::function<void(int)> visit=[&](int i){
+        if(visits[size_t(i)]==2)return;
+        if(visits[size_t(i)]==1)throw std::runtime_error("Track routing creates an audio feedback loop.");
+        visits[size_t(i)]=1;
+        for(int target:buses[size_t(i)]->sends)visit(target);
+        for(const auto &patch:routes[size_t(i)].outputs)if(patch.firstChannel==-2&&routes[size_t(i)].parent>=0)visit(routes[size_t(i)].parent);
+        visits[size_t(i)]=2;order.push_back(i);
+    };
+    for(const auto &track:song.tracks)visit(indices.at(track.id));
+    std::reverse(order.begin(),order.end());
+    auto latency=makeLatencyPlan(nullptr,nullptr,{},false,false,nullptr,&routes,&order);
+    {
+        const ScopedLock lock(devices.getAudioCallbackLock());
+        applyUpdates();
+        for(size_t i=0;i<buses.size();++i){buses[i]->parent=routes[i].parent;buses[i]->outputs.swap(routes[i].outputs);}
+        busOrder.swap(order);installLatencyPlan(latency,true);
+    }
+    return true;
 }
 void AudioEngine::setMixer(const jaras::Project &project, const jaras::Song &song) {
     Update u;

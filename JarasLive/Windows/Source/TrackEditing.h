@@ -1,8 +1,28 @@
 #pragma once
 #include "TrackTree.h"
+#include "TrackDrop.h"
 #include "ProjectCodec.h"
 #include "TrackDuplication.h"
 namespace catlive::trackEditing {
+// The row action groups all roots below the clicked root; nested trees remain intact.
+inline bool canCreateGroup(const jaras::Song &song, const ID &id) {
+    const auto first = trackTree::index(song, id);
+    if (first == song.tracks.size()) return false;
+    const auto &parent = song.tracks[first];
+    if (parent.parentTrackID || parent.stereoLinkPartner || parent.role.id == "vinhetas" || !jaras::fixedTrackName(parent.role).empty()) return false;
+    return std::any_of(song.tracks.begin() + first + 1, song.tracks.end(), [](const auto &track) {
+        return !track.parentTrackID && track.role.id != "vinhetas" && jaras::fixedTrackName(track.role).empty();
+    });
+}
+inline void createGroup(jaras::Song &song, const ID &id) {
+    if (!canCreateGroup(song, id)) return;
+    const auto first = trackTree::index(song, id);
+    for (size_t i = first + 1; i < song.tracks.size(); ++i) {
+        auto &track = song.tracks[i];
+        if (!track.parentTrackID && track.role.id != "vinhetas" && jaras::fixedTrackName(track.role).empty())
+            trackDrop::setParent(track, id);
+    }
+}
 inline bool linkable(const jaras::Song &song, const std::set<ID> &ids) {
     if(ids.size()!=2)return false;
     std::vector<size_t> selected;
