@@ -30,7 +30,12 @@ private final class ShowController {
     }
     func deleteItems(_ ids: Set<UUID>) { deletedItems.append(ids) }
 }
-private struct TestState { var project: UUID; var song: UUID; var selectedPlaylist: UUID?; var setlistBlocks: [RowID]?; var playing = false }
+private struct TestState {
+    var project: UUID; var song: UUID; var selectedPlaylist: UUID?; var setlistBlocks: [RowID]?
+    var playing = false
+    var subPlaying = false
+    var showsSetlistSelection: Bool { !playing && !subPlaying }
+}
 private struct TestRow { let region: RowID }
 private enum TestEntry { case region(TestRow), block(RowID) }
 private final class TestRows {
@@ -55,6 +60,7 @@ private final class TestScrolling {
 }
 private final class WorkspaceProbe {
     var local = true
+    var nativeKeyboardBrowsing = false
     var observer = false
     var controlsEnabled = true
     var remoteMIDISetlistID: UUID?
@@ -111,6 +117,19 @@ private final class WorkspaceProbe {
             expect(view.selectedSetlistEntries.isEmpty && !view.confirmingRemoval, "Confirmation clears the deleted selection")
             view.deleteNativeSelection()
             expect(view.nativeSetlistRemoval == nil && show.deletedEntries.count == 1, "Repeated Delete must not fall back to the old focused song")
+        }
+        for local in [false, true] {
+            for subPlaying in [false, true] {
+                let view = WorkspaceProbe(), song = view.localShow!.regions.first!
+                view.local = local
+                view.state.playing = !subPlaying; view.state.subPlaying = subPlaying
+                view.nativeKeyboardBrowsing = true
+                view.selectedSetlistEntries = [song]
+                view.selectSetlistEntry(song)
+                expect(!view.nativeKeyboardBrowsing, "Touch must leave external-keyboard browsing mode")
+                expect(view.selectedSetlistEntries.isEmpty && view.setlistSelectionAnchor == nil, "Touch cannot leave blue selection during main or Sub Play")
+                expect(view.regionActions == [song], "Touch must still send its queue toggle")
+            }
         }
         for scope in [TestScrolling.SelectionScope.tracks, .grid] {
             let view = WorkspaceProbe(), show = view.localShow!
@@ -211,7 +230,7 @@ private final class WorkspaceProbe {
                 let before = view.regionActions.count
                 view.performRemoteBlockMIDI(2)
                 expect(view.regionActions.count == before + 1 && view.regionActions.last == secondSong, "Stopped and playing Remote both use the same single selectRegion command as a song click, without an additional Play")
-                expect(view.selectedSetlistEntries == [secondSong] && view.remoteMIDISetlistID == secondSong, "Remote block MIDI updates the song selection and navigation anchor")
+                expect(view.selectedSetlistEntries == (playing ? [] : [secondSong]) && view.remoteMIDISetlistID == secondSong, "Remote block MIDI keeps its navigation anchor but shows blue selection only while stopped")
             }
             let beforeEmpty = view.regionActions.count
             for number in [0, 3, 4, 129] { view.performRemoteBlockMIDI(number) }
