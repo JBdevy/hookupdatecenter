@@ -2686,17 +2686,38 @@ private final class FooterMixerDocumentView: NSView {
 private final class FooterMixerHostingView: NSHostingView<AnyView> {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { frame.size }
+    private weak var channelGeometry: FooterMixerStripGeometryView?
+    func setChannelFrame(_ viewport: NSRect) {
+        if channelGeometry == nil {
+            func find(_ view: NSView) -> FooterMixerStripGeometryView? {
+                if let geometry = view as? FooterMixerStripGeometryView { return geometry }
+                for child in view.subviews { if let found = find(child) { return found } }
+                return nil
+            }
+            channelGeometry = find(self)
+        }
+        var hosted = viewport
+        if let channelGeometry {
+            // The native channel owns its visible geometry. Keep the outer
+            // SwiftUI decorations at one proposal instead of re-laying out its
+            // context menus, sheets and overlays on every vertical pixel.
+            hosted.size.height = max(724, viewport.height)
+            channelGeometry.setViewportHeight(max(0, viewport.height - 10))
+        }
+        if frame != hosted { frame = hosted }
+    }
 }
 /// Only the FX viewport changes size during a mixer height drag. The lower
 /// controls retain their SwiftUI proposal and move as one native rectangle.
 private struct FooterMixerStripGeometry: NSViewRepresentable {
     let slotsOnly: Bool
     let iconHeight: CGFloat
+    let selected: Bool
     let slots: AnyView
     let footer: (CGFloat) -> AnyView
     func makeNSView(context: Context) -> FooterMixerStripGeometryView { FooterMixerStripGeometryView() }
     func updateNSView(_ view: FooterMixerStripGeometryView, context: Context) {
-        view.update(slotsOnly: slotsOnly, iconHeight: iconHeight, slots: slots, footer: footer)
+        view.update(slotsOnly: slotsOnly, iconHeight: iconHeight, slots: slots, selected: selected, footer: footer)
     }
     @available(macOS 13, *)
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: FooterMixerStripGeometryView, context: Context) -> CGSize? {
@@ -2710,10 +2731,20 @@ private final class FooterMixerStripGeometryView: NSView {
     private var iconHeight: CGFloat = 0
     private var makeFooter: ((CGFloat) -> AnyView)?
     private var controlsHeight: CGFloat?
+    private var viewportHeight: CGFloat?
+    private var selected = false
+    private let bottomSelection = CALayer()
+    func setViewportHeight(_ height: CGFloat) {
+        guard viewportHeight != height else { return }
+        viewportHeight = height; needsLayout = true
+    }
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override init(frame: NSRect) {
         super.init(frame: frame)
+        wantsLayer = true
+        bottomSelection.backgroundColor = NSColor.white.withAlphaComponent(0.65).cgColor
+        layer?.addSublayer(bottomSelection)
         for view in [slots, footer] {
             if #available(macOS 13, *) { view.sizingOptions = [] }
             if #available(macOS 13.3, *) { view.safeAreaRegions = [] }
@@ -2722,13 +2753,13 @@ private final class FooterMixerStripGeometryView: NSView {
         }
     }
     required init?(coder: NSCoder) { fatalError() }
-    func update(slotsOnly: Bool, iconHeight: CGFloat, slots: AnyView, footer: @escaping (CGFloat) -> AnyView) {
-        self.slotsOnly = slotsOnly; self.iconHeight = iconHeight; makeFooter = footer
+    func update(slotsOnly: Bool, iconHeight: CGFloat, slots: AnyView, selected: Bool = false, footer: @escaping (CGFloat) -> AnyView) {
+        self.slotsOnly = slotsOnly; self.iconHeight = iconHeight; self.selected = selected; makeFooter = footer
         self.slots.rootView = slots; controlsHeight = nil; needsLayout = true
     }
     override func layout() {
         super.layout()
-        let layout = FooterMixerStripLayout(height: bounds.height, slotsOnly: slotsOnly, iconHeight: iconHeight)
+        let layout = FooterMixerStripLayout(height: viewportHeight ?? bounds.height, slotsOnly: slotsOnly, iconHeight: iconHeight)
         if controlsHeight != layout.controlsHeight {
             controlsHeight = layout.controlsHeight
             if let makeFooter { footer.rootView = makeFooter(layout.controlsHeight) }
@@ -2739,6 +2770,60 @@ private final class FooterMixerStripGeometryView: NSView {
         slots.isHidden = top.height <= 0
         if slots.frame != top { slots.frame = top }
         if footer.frame != bottom { footer.frame = bottom }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        bottomSelection.isHidden = !selected || viewportHeight == nil
+        bottomSelection.frame = NSRect(x: 0, y: max(0, (viewportHeight ?? bounds.height) - 0.5), width: bounds.width, height: 0.5)
+        CATransaction.commit()
+    }
+}
+/// Fixed FX document: changing its viewport height never proposes a new
+/// size to every slot button and native context target.
+private final class FooterEffectSlotsViewport: NSView {
+    private let scroll = NSScrollView()
+    private let document = FooterMixerDocumentView()
+    private let host = FooterMixerHostingView(rootView: AnyView(EmptyView()))
+    private let track = CALayer(), thumb = CALayer()
+    private var contentHeight: CGFloat = 0
+    private var boundsObserver: NSObjectProtocol?
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true; layer?.masksToBounds = true
+        scroll.drawsBackground = false; scroll.hasHorizontalScroller = false; scroll.hasVerticalScroller = false
+        scroll.horizontalScrollElasticity = .none; scroll.verticalScrollElasticity = .none
+        if #available(macOS 13, *) { host.sizingOptions = [] }
+        if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+        document.addSubview(host); scroll.documentView = document; addSubview(scroll)
+        track.backgroundColor = NSColor(calibratedRed: 84.0/255, green: 1, blue: 147.0/255, alpha: 0.15).cgColor
+        thumb.backgroundColor = NSColor(calibratedRed: 84.0/255, green: 1, blue: 147.0/255, alpha: 1).cgColor
+        track.cornerRadius = 1; thumb.cornerRadius = 1; layer?.addSublayer(track); layer?.addSublayer(thumb)
+        scroll.contentView.postsBoundsChangedNotifications = true
+        boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in self?.updateThumb() }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
+    func update(content: AnyView, height: CGFloat) {
+        host.rootView = content; contentHeight = max(0, height); needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        if scroll.frame != bounds { scroll.frame = bounds }
+        let frame = NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: contentHeight)
+        if host.frame != frame { host.frame = frame }
+        if document.frame != frame { document.frame = frame }
+        updateThumb()
+    }
+    private func updateThumb() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let height = bounds.height, visible = contentHeight > height + 1 && height > 0
+        track.isHidden = !visible; thumb.isHidden = !visible
+        guard visible else { return }
+        let length = min(height, max(12, height * height / contentHeight))
+        let fraction = min(1, max(0, scroll.contentView.bounds.minY / (contentHeight - height)))
+        track.frame = NSRect(x: max(0, bounds.width - 2), y: 0, width: 2, height: height)
+        thumb.frame = NSRect(x: track.frame.minX, y: (height - length) * fraction, width: 2, height: length)
     }
 }
 private final class FooterMixerScrollView: NSView {
@@ -2912,7 +2997,8 @@ private final class FooterMixerScrollView: NSView {
             mountedVersions[index] = version
             let frame = NSRect(x: CGFloat(index) * trackStride, y: 0,
                                width: trackStride + 7, height: scroll.contentSize.height)
-            if strip.frame != frame { strip.frame = frame; changed = true }
+            if strip.frame.size.width != frame.width { changed = true }
+            strip.setChannelFrame(frame)
             if changed { pendingStripLayout.insert(index) }
         }
         preparing = false
@@ -2951,7 +3037,9 @@ private final class FooterMixerScrollView: NSView {
         if let master {
             let frame = NSRect(x: masterRight ? max(0, bounds.width - masterWidth - 10) : 0,
                                y: 16, width: masterWidth + 10, height: scrollFrame.height)
-            if master.frame != frame { master.frame = frame; master.layoutSubtreeIfNeeded() }
+            let previousSize = master.frame.size
+            master.setChannelFrame(frame)
+            if previousSize != master.frame.size { master.layoutSubtreeIfNeeded() }
         }
         if bar.frame != barFrame { bar.frame = barFrame }
         if scroll.frame != scrollFrame { scroll.frame = scrollFrame }
@@ -2960,7 +3048,8 @@ private final class FooterMixerScrollView: NSView {
         // Hidden cached channels receive their current height when remounted.
         // Resizing them here reflows up to 64 offscreen SwiftUI trees per pixel.
         for strip in strips.values where strip.frame.height != scroll.contentSize.height {
-            strip.frame.size.height = scroll.contentSize.height
+            var frame = strip.frame; frame.size.height = scroll.contentSize.height
+            strip.setChannelFrame(frame)
         }
         move(to: scroll.contentView.bounds.minX)
         NativeVerticalTrackMeterView.refreshVisibleMeters(in: scroll.contentView)
@@ -3227,7 +3316,7 @@ private struct FooterMixerStrip: View, Equatable {
         }.frame(width: 22).buttonStyle(CompactTrackButtonStyle()).font(.jarasSystem(size: 10, weight: .bold))
     }
     private var slots: some View {
-        FooterEffectSlotsScroll {
+        FooterEffectSlotsScroll(contentHeight: CGFloat(max(3, settings.effectKeys.count + 1)) * 21 - 2) {
             VStack(spacing: 2) {
                 ForEach(settings.effectKeys, id: \.self) { effect in
                     FooterEffectSlot(show: show, track: id, effect: effect, settings: settings)
@@ -3326,7 +3415,7 @@ private struct FooterMixerStrip: View, Equatable {
         let deleteIDs = deletionTargets, deleteProject = show.snapshot.project.id
         Group {
             #if os(macOS)
-            FooterMixerStripGeometry(slotsOnly: slotsOnly, iconHeight: showsInstrumentIcons ? 30 : 0,
+            FooterMixerStripGeometry(slotsOnly: slotsOnly, iconHeight: showsInstrumentIcons ? 30 : 0, selected: selected,
                 slots: AnyView(Group {
                     if hasStandardControls { slots.trackControlSelectionExclusion() }
                     else { Color.clear }
@@ -3430,9 +3519,19 @@ private struct FooterEffectScrollBounds: PreferenceKey {
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 private struct FooterEffectSlotsScroll<Content: View>: View {
+    let contentHeight: CGFloat
+    #if os(macOS)
+    @Environment(\.openFX) private var openFX
+    @Environment(\.locale) private var locale
+    @Environment(\.colorScheme) private var colorScheme
+    #endif
     @ViewBuilder let content: () -> Content
     @State private var documentBounds: CGRect = .zero
     var body: some View {
+        #if os(macOS)
+        FooterEffectSlotsNative(content: AnyView(content().environment(\.openFX, openFX)
+            .environment(\.locale, locale).environment(\.colorScheme, colorScheme)), height: contentHeight)
+        #else
         GeometryReader { viewport in
             ScrollView(.vertical, showsIndicators: false) {
                 content().frame(width: viewport.size.width).background(GeometryReader { geometry in
@@ -3455,8 +3554,21 @@ private struct FooterEffectSlotsScroll<Content: View>: View {
                 }
             }
         }
+        #endif
     }
 }
+#if os(macOS)
+private struct FooterEffectSlotsNative: NSViewRepresentable {
+    let content: AnyView
+    let height: CGFloat
+    func makeNSView(context: Context) -> FooterEffectSlotsViewport { FooterEffectSlotsViewport() }
+    func updateNSView(_ view: FooterEffectSlotsViewport, context: Context) { view.update(content: content, height: height) }
+    @available(macOS 13, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: FooterEffectSlotsViewport, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? nsView.frame.width, height: proposal.height ?? nsView.frame.height)
+    }
+}
+#endif
 private struct FooterEffectSlot: View {
     let show: ShowController
     let track: UUID?

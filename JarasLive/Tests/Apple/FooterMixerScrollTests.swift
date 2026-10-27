@@ -536,3 +536,41 @@ heightStrip.layoutSubtreeIfNeeded()
 precondition(lowerHost.frame.height == 56 && lowerHost.frame.maxY == heightStrip.bounds.height - 4,
              "Slots-only must preserve the lower name/icon row")
 print("FOOTER_MIXER_HEIGHT_DRAG_FIXED_CONTROLS_400_STEPS_AND_SLOTS_ONLY_OK")
+
+private let slotsViewport = FooterEffectSlotsViewport(frame: NSRect(x: 0, y: 0, width: 75, height: 40))
+slotsViewport.update(content: AnyView(VStack(spacing: 2) { ForEach(0..<8) { Text("FX \($0)").frame(height: 19) } }), height: 166)
+slotsViewport.layoutSubtreeIfNeeded()
+private let fxScroll = slotsViewport.subviews.compactMap { $0 as? NSScrollView }.first!
+private let fxDocument = fxScroll.documentView!
+private let fxRoot = fxDocument.subviews.first!
+let fixedFXFrame = fxRoot.frame
+for height in 41...300 {
+    slotsViewport.setFrameSize(NSSize(width: 75, height: height)); slotsViewport.layoutSubtreeIfNeeded()
+    precondition(fxRoot.frame == fixedFXFrame && fxDocument.frame == fixedFXFrame,
+                 "Mixer expansion must only resize the FX viewport, leaving slot content geometry fixed")
+    precondition(fxScroll.frame == slotsViewport.bounds, "FX viewport must fill the channel's slot area")
+}
+slotsViewport.setFrameSize(NSSize(width: 75, height: 40)); slotsViewport.layoutSubtreeIfNeeded()
+fxScroll.contentView.scroll(to: NSPoint(x: 0, y: 80)); fxScroll.reflectScrolledClipView(fxScroll.contentView)
+precondition(fxScroll.contentView.bounds.minY == 80, "Native FX viewport must retain vertical scrolling")
+print("FOOTER_FX_VIEWPORT_RESIZE_PRESERVES_FIXED_SLOT_DOCUMENT_AND_SCROLLING_OK")
+
+private let stableChannelHost = FooterMixerHostingView(rootView: AnyView(
+    FooterMixerStripGeometry(slotsOnly: false, iconHeight: 0, selected: true, slots: AnyView(Color.clear),
+        footer: { AnyView(Color.clear.frame(height: $0 + 26)) }).padding(5)))
+stableChannelHost.frame = NSRect(x: 0, y: 0, width: 93, height: 240)
+window.contentView!.addSubview(stableChannelHost); stableChannelHost.layoutSubtreeIfNeeded()
+private func findChannelGeometry(_ root: NSView) -> FooterMixerStripGeometryView? {
+    if let geometry = root as? FooterMixerStripGeometryView { return geometry }
+    return root.subviews.lazy.compactMap(findChannelGeometry).first
+}
+private let stableGeometry = findChannelGeometry(stableChannelHost)!
+for height in 241...500 {
+    stableChannelHost.setChannelFrame(NSRect(x: 0, y: 0, width: 93, height: height))
+    stableChannelHost.layoutSubtreeIfNeeded()
+    precondition(stableChannelHost.frame.height == 724, "Channel decorations must keep a fixed SwiftUI size proposal")
+    precondition(abs(stableGeometry.subviews[1].frame.maxY - CGFloat(height - 14)) < 0.01,
+                 "Fixed outer decoration size must not displace the channel's lower controls")
+}
+stableChannelHost.removeFromSuperview()
+print("FOOTER_CHANNEL_FIXED_HOST_PROPOSAL_AND_EXACT_NATIVE_VISIBLE_GEOMETRY_OK")
