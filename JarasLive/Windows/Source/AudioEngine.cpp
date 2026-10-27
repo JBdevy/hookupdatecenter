@@ -1787,6 +1787,7 @@ AudioEngine::State AudioEngine::state() const {
     return s;
 }
 void AudioEngine::setOffline(bool enabled) {
+    offlineRendering=enabled;
     for (auto &voice : voices) if (voice->source)
         for (auto &reader : voice->source->readers)
             reader->setOffline(enabled);
@@ -1798,12 +1799,13 @@ void AudioEngine::applyUpdates() {
     auto apply = [this](const Update &u) {
         if (u.kind == Update::transport) {
             if(u.resetElapsed)elapsedSamples=0;
+            const bool startingFromStop=!offlineMode&&!offlineRendering&&!current.playing&&!current.subPlaying&&(u.state.playing||u.state.subPlaying);
             bool changed[2]{};
             for(int h=0;h<2;h++) {
                 const bool before=h==0?current.playing:current.subPlaying,after=h==0?u.state.playing:u.state.subPlaying;
                 const double at=h==0?u.state.position:u.state.subPosition,old=h==0?current.position:current.subPosition;
                 changed[h]=!u.state.preserveLatency&&(before!=after||std::abs(at-old)>1.5/rate.load());
-                if(changed[h])resetLatencyHead(h,at);
+                if(changed[h]){resetLatencyHead(h,at);playbackStartRamp[h]=startingFromStop&&after?at:-1;playbackStartFrame[h]=renderClock;}
                 else if(u.state.preserveLatency) {
                     if(before&&!after){tailFrames[h]=latencyPlan?latencyPlan->total:0;tailCursor[h]=at;}
                     else if(after)tailFrames[h]=0;
@@ -1979,6 +1981,9 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
         else
             right *= 1 + (float)values.pan;
         float fade = 1;
+        const double entry=playbackStartRamp[head];
+        if(entry>=0 && v.start<=entry+1e-7)
+            fade*=float(jlimit(0.,1.,double(renderClock+dest+i-playbackStartFrame[head])/(sr*.003)));
         if (v.fadeIn > 0)
             fade *= (float)v.fadeInShape.value(local / std::min(v.duration, v.fadeIn));
         if (v.fadeOut > 0)

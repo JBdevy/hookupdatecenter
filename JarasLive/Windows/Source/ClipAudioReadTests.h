@@ -43,6 +43,40 @@ inline float expected(const AudioBuffer<float> &source,double rate,const jaras::
     return sample(first)+float(frame-first)*(sample(first+1)-sample(first));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+
+    test("Playback from Stop smooths file starts and seeks without changing exports or future attacks",[&] {
+        const auto folder=directory.getNonexistentChildFile("play-onset","");folder.createDirectory();
+        auto stream=folder.getChildFile("constant.wav").createOutputStream();WavAudioFormat wav;
+        std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(),48000,2,24,{},0));
+        require(writer!=nullptr,"Onset writer");stream.release();
+        AudioBuffer<float> pcm(2,48000);for(int ch=0;ch<2;++ch)FloatVectorOperations::fill(pcm.getWritePointer(ch),.25f,48000);
+        require(writer->writeFromAudioSampleBuffer(pcm,0,48000),"Onset fixture");writer.reset();
+        jaras::Project project;project.id=uuid();jaras::Song song;song.id=uuid();song.duration=2;
+        jaras::Track track;track.id=uuid();track.role.id="other";
+        jaras::AudioClip clip;clip.id=uuid();clip.duration=1;clip.audioFile=jaras::AudioFile{"constant.wav",{}};
+        track.clips={clip};song.tracks={track};project.songs={song};
+        for(double sr:{44100.,48000.})for(bool offline:{false,true}) {
+            auto owned=std::make_unique<AudioEngine>(sr,offline);auto &engine=*owned;engine.prepareSong(song,folder,{},&project);engine.setOffline(offline);engine.setMixer(project,song);
+            AudioBuffer<float> output(2,37);
+            for(double start:{0.,.25,0.}) {
+                AudioEngine::State state;state.position=start;engine.transport(state);engine.render(output.getArrayOfWritePointers(),2,37);
+                state.playing=true;engine.transport(state);
+                float previous=0,step=0,first=0,last=0;
+                for(int block=0;block<12;++block){engine.render(output.getArrayOfWritePointers(),2,37);for(int n=0;n<37;++n){float value=output.getSample(0,n);if(block==0&&n==0)first=value;step=std::max(step,std::abs(value-previous));previous=value;last=value;}}
+                require(std::abs(last-.25f)<.001,"Start ramp changed settled gain");
+                require(offline?std::abs(first-.25f)<.001:std::abs(first)<.001,"First sample violates transport/export contract");
+                if(!offline)require(step<.003,"Play produced an abrupt PCM step");
+            }
+        }
+        song.tracks[0].clips[0].startTime=.02;
+        auto owned=std::make_unique<AudioEngine>(48000,false);auto &engine=*owned;engine.prepareSong(song,folder,{},&project);engine.setOffline(false);engine.setMixer(project,song);
+        AudioBuffer<float> output(2,1200);
+        // Prime this future source through the production streaming path first.
+        AudioEngine::State state;state.playing=true;state.position=.02;engine.transport(state);engine.render(output.getArrayOfWritePointers(),2,480);
+        state.playing=false;state.position=0;engine.transport(state);engine.render(output.getArrayOfWritePointers(),2,480);
+        state.playing=true;engine.transport(state);engine.render(output.getArrayOfWritePointers(),2,1200);
+        require(std::abs(output.getSample(0,960)-.25f)<.001,"Future file attack was faded");
+    });
     test("Long clip and source-loop boundaries never fragment a block into single-frame reads",[&] {
         auto source=samples(2,8192);
         for(double duration:{56605.733581225104,1.e15,std::numeric_limits<double>::infinity()})

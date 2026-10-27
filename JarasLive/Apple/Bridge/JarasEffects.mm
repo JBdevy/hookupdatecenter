@@ -16,6 +16,7 @@
 #include <vector>
 #include <mach/mach_time.h>
 #include "JarasMobileAudioIO.inc"
+#include "JarasPreparedClip.inc"
 
 @implementation JarasAudioOutputConnection
 + (BOOL)startPlayer:(AVAudioPlayerNode *)player error:(NSError **)error {
@@ -25,6 +26,23 @@
             userInfo:@{NSLocalizedDescriptionKey: exception.reason ?: @"Unable to start audio playback"}];
         return NO;
     }
+}
+// AVAudioPlayerNode's immediate start can wait for an I/O cycle. Start the
+// already prepared independent players together rather than one cycle per stem.
++ (BOOL)startPlayers:(NSArray<AVAudioPlayerNode *> *)players error:(NSError **)error {
+    if (players.count == 1) return [self startPlayer:players.firstObject error:error];
+    NSLock *lock = [[NSLock alloc] init];
+    __block NSError *failure = nil;
+    dispatch_apply(players.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t index) {
+        NSError *current = nil;
+        if (![self startPlayer:players[index] error:&current]) {
+            [lock lock];
+            if (!failure) failure = current;
+            [lock unlock];
+        }
+    });
+    if (failure && error) *error = failure;
+    return failure == nil;
 }
 + (AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error {
     // A HAL route change can report 0 Hz / 0 channels while the selected
@@ -189,6 +207,8 @@ struct EffectAnalysis {
 @end
 
 struct VoiceGainKernel {
+    std::atomic<uint64_t> startHost{0};
+    double sampleRate=48000;
     std::atomic<bool> enabled{true};
     std::atomic<float> gain{1};
     float current=1;
@@ -217,6 +237,7 @@ struct VoiceGainKernel {
 - (AUAudioUnitBusArray *)outputBusses { return _outputs; }
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
     if(![super allocateRenderResourcesAndReturnError:error]) return NO;
+    gain.sampleRate=_output.format.sampleRate;
     gain.capacity=self.maximumFramesToRender; gain.channels=_output.format.channelCount;
     gain.silence.assign(gain.capacity*gain.channels,0);
     gain.resetRequested.store(true,std::memory_order_release);
@@ -261,11 +282,27 @@ struct VoiceGainKernel {
             const auto& buffer=output->mBuffers[ch]; auto data=static_cast<float*>(buffer.mData);
             if(data) scaleAudioBlock(data+frame*buffer.mNumberChannels,(frames-frame)*buffer.mNumberChannels,state->current);
         }
+        // Prepared sources drain their converters while silent. Enforce the
+        // audible deadline after conversion/insert FX so cached samples cannot
+        // escape before a newly scheduled onset, even on an immediate replay.
+        const auto start = state->startHost.load(std::memory_order_acquire);
+        if (start && ((time->mFlags & kAudioTimeStampHostTimeValid) || start == UINT64_MAX)) {
+            const double before = start == UINT64_MAX ? double(frames) :
+                (double(start) - double(time->mHostTime)) * [AVAudioTime secondsForHostTime:1] * state->sampleRate;
+            const auto silent = unsigned(std::clamp(std::ceil(before), 0., double(frames)));
+            if (silent) for (unsigned ch=0; ch<output->mNumberBuffers; ++ch) {
+                auto &buffer=output->mBuffers[ch];
+                if (buffer.mData) memset(buffer.mData, 0, silent * sizeof(float) * buffer.mNumberChannels);
+            }
+        }
         return noErr;
     };
 }
 @end
 @implementation JarasVoiceGain
++ (void)setStartHostTime:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime {
+    ((JarasVoiceGainUnit *)node.AUAudioUnit)->gain.startHost.store(hostTime, std::memory_order_release);
+}
 + (AVAudioUnitEffect *)makeNode {
     static dispatch_once_t once;
     AudioComponentDescription d={kAudioUnitType_Effect,'JLvg','Jara',0,0};

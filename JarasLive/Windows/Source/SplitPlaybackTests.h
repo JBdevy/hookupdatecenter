@@ -62,7 +62,9 @@ inline void glueUndoRealtime(const File& directory) {
     AudioBuffer<float> output(2,480);
     for(int block=0;block<320;++block) {
         session.audio.render(output.getArrayOfWritePointers(),2,480);
-        for(int n=0;n<480;++n)require(std::abs(output.getSample(0,n)-.1f)<.004f,"Streaming split/glue Undo left a hole in one half");
+        // The explicit Play has a short onset ramp; all subsequent PCM,
+        // including both sides of the split, must remain uninterrupted.
+        for(int n=block==0?240:0;n<480;++n)require(std::abs(output.getSample(0,n)-.1f)<.004f,"Streaming split/glue Undo left a hole in one half");
         Thread::sleep(10);
     }
     state.playing=false;session.audio.transportAsync(state);

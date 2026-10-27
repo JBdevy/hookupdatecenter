@@ -27,6 +27,9 @@ legalRefs.append(add("tinySoundFontLicense", 'isa = PBXFileReference; lastKnownF
 legalRefs.append(add("ebur128License", 'isa = PBXFileReference; lastKnownFileType = text; path = "Core/ThirdParty/EBUR128/EBUR128-LICENSE.txt"; sourceTree = SOURCE_ROOT;'))
 for name in ['VST3-LICENSE.txt','VST3-SOURCE.txt']:
  legalRefs.append(add('vst3:'+name, f'isa = PBXFileReference; lastKnownFileType = text; path = {q("Core/ThirdParty/VST3/"+name)}; sourceTree = SOURCE_ROOT;'))
+macLegalRefs=[]
+for name in ['LICENSE-stretch.txt','LICENSE-linear.txt']:
+ macLegalRefs.append(add('signalsmith:'+name, f'isa = PBXFileReference; lastKnownFileType = text; path = {q("Windows/ThirdParty/Signalsmith/"+name)}; sourceTree = SOURCE_ROOT;'))
 stemWorker=add('stemWorker', 'isa = PBXFileReference; lastKnownFileType = folder; path = Apple/Resources/StemSeparation; sourceTree = SOURCE_ROOT;')
 stemRuntime=add('stemRuntime', 'isa = PBXFileReference; lastKnownFileType = folder; path = build/StemSeparationRuntime; sourceTree = SOURCE_ROOT;')
 stemModel=add('stemCoreMLModel', 'isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = Apple/Resources/CatStemHTDemucs6.mlpackage; sourceTree = SOURCE_ROOT;')
@@ -45,7 +48,7 @@ for platform,label,bundle in [('macosx','macOS','com.hookdeveloper.jaraslive.mac
  frameworks=add('frameworks:'+label,f'isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = {arr(frameworkBuilds)}; runOnlyForDeploymentPostprocessing = 0;')
  assetBuild=add('assetBuild:'+label,f'isa = PBXBuildFile; fileRef = {assets};')
  localizedBuild=add('localizedBuild:'+label,f'isa = PBXBuildFile; fileRef = {localization};')
- legalBuilds=[add('legalBuild:'+label+ref,f'isa = PBXBuildFile; fileRef = {ref};') for ref in legalRefs]
+ legalBuilds=[add('legalBuild:'+label+ref,f'isa = PBXBuildFile; fileRef = {ref};') for ref in legalRefs + (macLegalRefs if platform=='macosx' else [])]
  if platform=='macosx': legalBuilds += [add('stemBuild:'+ref, f'isa = PBXBuildFile; fileRef = {ref};') for ref in [stemWorker,stemRuntime]]
  if platform=='iphoneos': legalBuilds.append(add('stemCoreMLLicenseBuild:'+label, f'isa = PBXBuildFile; fileRef = {stemModelLicense};'))
  iconBuilds=[add('iconBuild:'+label,f'isa = PBXBuildFile; fileRef = {icon};')] if platform=='macosx' else []

@@ -1,9 +1,29 @@
 #import <AVFoundation/AVFoundation.h>
 NS_ASSUME_NONNULL_BEGIN
+#if TARGET_OS_OSX
+/// File-backed source with the same lookahead pitch processing as Windows.
+/// Preparation reads/decodes on the control thread; playback reads bounded PCM
+/// pages replenished by a worker, never opening a file in the render callback.
+@interface JarasPreparedClip : NSObject
+@property(nonatomic, readonly) AVAudioSourceNode *node;
+@property(nonatomic, readonly) double sourcePosition;
+@property(nonatomic, readonly) BOOL playing;
+@property(nonatomic, readonly) uint64_t underruns;
+- (instancetype)initWithFormat:(AVAudioFormat *)format;
+- (BOOL)prepareURL:(NSURL *)url sourceFrame:(double)frame endFrame:(double)end
+             rate:(double)rate pitch:(double)semitones loopStart:(double)loopStart loopEnd:(double)loopEnd
+            error:(NSError **)error;
+- (void)startAtHostTime:(uint64_t)host ramp:(BOOL)ramp;
+- (void)setRate:(double)rate pitch:(double)semitones;
+- (void)setEndFrame:(double)end;
+- (void)stop;
+@end
+#endif
 /// Validate one hardware-format snapshot and contain Core Audio exceptions at
 /// the Objective-C API boundary if a device vanishes during connection.
 @interface JarasAudioOutputConnection : NSObject
 + (BOOL)startPlayer:(AVAudioPlayerNode *)player error:(NSError **)error NS_SWIFT_NAME(start(_:));
++ (BOOL)startPlayers:(NSArray<AVAudioPlayerNode *> *)players error:(NSError **)error NS_SWIFT_NAME(start(_:));
 + (nullable AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error NS_SWIFT_NAME(connect(_:));
 @end
 /// Native iPad hardware is deliberately separate from the AVAudioEngine graph.
@@ -96,6 +116,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Fixed item output: gain changes never reconnect the graph. Idle sources
 /// return silence without rendering their upstream player or effect chain.
 @interface JarasVoiceGain : NSObject
++ (void)setStartHostTime:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime;
 + (AVAudioUnitEffect *)makeNode;
 + (void)setDecibels:(AVAudioUnitEffect *)node decibels:(double)decibels;
 + (void)setRenderEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;

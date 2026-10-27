@@ -3272,8 +3272,8 @@ int runTests(const File &directory) {
             engine.transport(state);
             render();
         }
-        expect(std::abs(output.getSample(0, 100) - .1f) < .002f, "Left channel incorrect");
-        expect(std::abs(output.getSample(1, 100) - .2f) < .002f, "Stereo channels collapsed");
+        expect(std::abs(output.getSample(0, 255) - .1f) < .002f, "Left channel incorrect");
+        expect(std::abs(output.getSample(1, 255) - .2f) < .002f, "Stereo channels collapsed");
         // Adding a generated track must retain unchanged readers and their audio.
         auto clickTrack = track;
         clickTrack.id = uuid(); clickTrack.role.id = "generatedClick";
@@ -3283,8 +3283,8 @@ int runTests(const File &directory) {
         expect((int)engine.preparationDiagnostics["reusedSources"] == 1,
                "Adding Click reopened unchanged source metadata");
         engine.setMixer(p, song); engine.transport(state); render();
-        expect(std::abs(output.getSample(0, 100) - .1f) < .002f &&
-                   std::abs(output.getSample(1, 100) - .2f) < .002f,
+        expect(std::abs(output.getSample(0, 255) - .1f) < .002f &&
+                   std::abs(output.getSample(1, 255) - .2f) < .002f,
                "Adding Click changed existing audio");
         song.tracks.pop_back();
         expect(file.setLastModificationTime(file.getLastModificationTime() + RelativeTime::seconds(2)),
@@ -3306,8 +3306,8 @@ int runTests(const File &directory) {
             engine.transport(state);
         }
         render();
-        expect(std::abs(output.getSample(0, 100) - .025f) < .002f &&
-                   std::abs(output.getSample(1, 100) - .05f) < .002f,
+        expect(std::abs(output.getSample(0, 255) - .025f) < .002f &&
+                   std::abs(output.getSample(1, 255) - .05f) < .002f,
                "Command backlog lost the final mute or mixer update");
         expect(std::abs(engine.state().position - .11) < .0001,
                "Command backlog lost the final seek");
@@ -3322,13 +3322,13 @@ int runTests(const File &directory) {
         engine.setMixer(p, song);
         engine.transport(state);
         render();
-        expect(std::abs(output.getSample(0, 100) - .05f) < .002f, "Master fader incorrect");
+        expect(std::abs(output.getSample(0, 255) - .05f) < .002f, "Master fader incorrect");
         trace("subplay");
         state.subPlaying = true;
         state.subPosition = .1;
         engine.transport(state);
         render();
-        expect(std::abs(output.getSample(0, 100) - .1f) < .002f, "Sub Play did not mix both heads");
+        expect(std::abs(output.getSample(0, 255) - .1f) < .002f, "Sub Play did not mix both heads");
         song.tracks[0].mute = true;
         engine.setMixer(p, song);
         render();

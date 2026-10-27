@@ -375,7 +375,11 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
                                                 std::optional<bool> midiTakeActive={},bool admitReady=false,
                                                 bool releaseRemoved=false, const std::vector<Voice *> *itemVoices=nullptr,
                                                 const std::vector<TrackRoute> *routes=nullptr, const std::vector<int> *order=nullptr)const;
+    // Only explicit playback from Stop; queues, loops and exports retain their attacks.
+    double playbackStartRamp[2]{-1, -1};
+    uint64 playbackStartFrame[2]{};
     bool offlineMode=false;
+    bool offlineRendering=false;
     uint64 stemLatencyFingerprint=0;
     std::atomic<bool> presentationTailing{false};
     std::atomic<unsigned> presentationDelay{0};
