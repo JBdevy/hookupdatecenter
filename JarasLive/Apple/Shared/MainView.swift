@@ -1317,6 +1317,7 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
         dragBoundary = boundary
         origin = (event.locationInWindow.y, boundary?.effectiveHeight ?? height)
         lastHeight = origin?.height
+        NotificationCenter.default.post(name: Notification.Name("CatLiveFooterResizeBegan"), object: window)
         NSCursor.resizeUpDown.push(); cursorPushed = true
         if let window, !(window.firstResponder is TimelineGridKeyboardTarget) { window.makeFirstResponder(self) }
     }
@@ -1353,6 +1354,7 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
         CATransaction.commit(); finishCursor()
     }
     private func finishCursor() {
+        NotificationCenter.default.post(name: Notification.Name("CatLiveFooterResizeEnded"), object: window)
         if cursorPushed { NSCursor.pop(); cursorPushed = false }
         window?.invalidateCursorRects(for: self)
     }

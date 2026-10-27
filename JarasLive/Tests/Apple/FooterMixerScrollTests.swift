@@ -199,8 +199,9 @@ for height: CGFloat in [232, 400, 260, 232] {
 for width: CGFloat in [500, 2200, 420, 1600, 500] {
     window.setContentSize(NSSize(width: width, height: 232)); view.layoutSubtreeIfNeeded()
     let channels = scroll.documentView!.subviews.compactMap { $0 as? FooterMixerHostingView }
-    precondition(channels.count >= 4 && channels.allSatisfy { $0.frame.width == 93 && $0.frame.height == scroll.contentSize.height },
-        "Resizing the window changes the viewport while each retained channel keeps its supplied rectangle")
+    let mounted = channels.filter { !$0.isHidden }
+    precondition(mounted.count >= 4 && mounted.allSatisfy { $0.frame.width == 93 && $0.frame.height == scroll.contentSize.height },
+        "Resizing the window gives mounted channels their current viewport rectangle")
     if #available(macOS 13.3, *) {
         precondition(channels.allSatisfy { $0.safeAreaRegions.isEmpty },
             "Explicitly positioned channels do not inherit or propagate window safe-area sizing")
@@ -483,12 +484,18 @@ let initialBuilds = cacheMakes[0]!
 cacheMove(20)
 precondition(view.cachedStrips[0]?.view === initialFirst && initialFirst.window === window && initialFirst.visibleRect.isEmpty && initialFirst.isHidden,
              "Offscreen hosts preserve their window environment while the clip excludes their drawing")
+let cachedHeight = initialFirst.frame.height
+let previousSize = view.frame.size
+view.setFrameSize(NSSize(width: previousSize.width, height: previousSize.height + 60)); view.layoutSubtreeIfNeeded()
+precondition(initialFirst.frame.height == cachedHeight, "Height drag must not resize hidden cached channels")
 let attachmentsBeforeReversal = FooterWindowLifecycleProbe.attachments
 cacheMove(0)
 precondition(FooterWindowLifecycleProbe.attachments == attachmentsBeforeReversal,
              "Warm reversal must not detach/reattach native controls or invalidate their window environment")
 precondition(initialFirst.superview === scroll.documentView && cacheMakes[0] == initialBuilds,
              "Warm reversal reuses the same host and SwiftUI root without rebuilding its controls")
+precondition(initialFirst.frame.height == scroll.contentSize.height, "A cached channel must adopt the current height when revealed")
+view.setFrameSize(previousSize); view.layoutSubtreeIfNeeded()
 cacheMove(20)
 cacheVersions[0] = 90001
 updateCacheFixture()
@@ -502,3 +509,30 @@ updateCacheFixture(count: 0)
 precondition(view.cachedStrips.isEmpty, "Deleting the track list releases detached roots")
 window.orderOut(nil)
 print("MIXER_WARM_REVERSAL_REUSES_ATTACHED_BOUNDED_HOSTS_AND_INVALIDATES_OFFSCREEN_VERSIONS_OK")
+
+// Enlarging the docked mixer adds FX space without proposing a new size to
+// the lower controls. This is the path that used to reflow every fader per pixel.
+private let heightStrip = FooterMixerStripGeometryView(frame: NSRect(x: 0, y: 0, width: 83, height: 240))
+var lowerRootBuilds = 0
+heightStrip.update(slotsOnly: false, iconHeight: 0, slots: AnyView(Color.clear), footer: { height in
+    lowerRootBuilds += 1
+    return AnyView(VStack(spacing: 0) { Color.red.frame(height: height); Text("Track").frame(height: 26) })
+})
+heightStrip.layoutSubtreeIfNeeded()
+let lowerHost = heightStrip.subviews[1]
+let lowerSize = lowerHost.frame.size
+for height in 241...640 {
+    heightStrip.setFrameSize(NSSize(width: 83, height: height)); heightStrip.layoutSubtreeIfNeeded()
+    precondition(lowerHost.frame.size == lowerSize, "Mixer height drag remeasured the fixed controls")
+    precondition(abs(lowerHost.frame.maxY - CGFloat(height - 4)) < 0.01, "Track name must remain at the bottom of the channel")
+    precondition(heightStrip.subviews[0].frame.maxY == lowerHost.frame.minY, "Slots and controls must remain adjacent")
+}
+precondition(lowerRootBuilds == 1, "Increasing mixer height rebuilt the control hierarchy")
+heightStrip.update(slotsOnly: true, iconHeight: 30, slots: AnyView(Color.clear), footer: { height in
+    precondition(height == 0, "Slots-only must hide the control area")
+    return AnyView(Text("Track icon").frame(height: 56))
+})
+heightStrip.layoutSubtreeIfNeeded()
+precondition(lowerHost.frame.height == 56 && lowerHost.frame.maxY == heightStrip.bounds.height - 4,
+             "Slots-only must preserve the lower name/icon row")
+print("FOOTER_MIXER_HEIGHT_DRAG_FIXED_CONTROLS_400_STEPS_AND_SLOTS_ONLY_OK")

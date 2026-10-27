@@ -164,6 +164,21 @@ MainActor.assumeIsolated {
     precondition(controls.allSatisfy { $0.count == 1 }, "child control state survives stable root publications")
     print("WORKSPACE_PARENT_PUBLICATIONS_PRESERVE_NATIVE_ROOTS_AND_CHILD_CONTROL_STATE_OK")
 
+    let originalWindowSize = window.contentView!.frame.size
+    let originalHostedHeight = leftHost.frame.height
+    NotificationCenter.default.post(name: Notification.Name("CatLiveFooterResizeBegan"), object: window)
+    for reduction: CGFloat in [20, 60, 110, 40] {
+        window.setContentSize(NSSize(width: originalWindowSize.width, height: originalWindowSize.height - reduction)); settle(root)
+        precondition(leftHost.frame.height == originalHostedHeight && rightHost.frame.height == originalHostedHeight,
+                     "Footer expansion must crop the workspace without remeasuring timeline/Setlist rows")
+        precondition(leftHost.superview!.layer?.masksToBounds == true, "Cropped workspace must not draw over the footer")
+    }
+    NotificationCenter.default.post(name: Notification.Name("CatLiveFooterResizeEnded"), object: window); settle(root)
+    precondition(leftHost.frame.height == leftHost.superview!.bounds.height && rightHost.frame.height == leftHost.frame.height,
+                 "Releasing or cancelling footer resize must restore the exact workspace viewport")
+    window.setContentSize(originalWindowSize); settle(root)
+    print("WORKSPACE_FOOTER_RESIZE_RETAINS_HOST_LAYOUT_AND_FINAL_VIEWPORT_OK")
+
     precondition(window.makeFirstResponder(rightControl))
     let focused = window.firstResponder
     let grids = descendants(GridNativeScrollView.self, in: leftHost)

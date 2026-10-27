@@ -2687,6 +2687,60 @@ private final class FooterMixerHostingView: NSHostingView<AnyView> {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { frame.size }
 }
+/// Only the FX viewport changes size during a mixer height drag. The lower
+/// controls retain their SwiftUI proposal and move as one native rectangle.
+private struct FooterMixerStripGeometry: NSViewRepresentable {
+    let slotsOnly: Bool
+    let iconHeight: CGFloat
+    let slots: AnyView
+    let footer: (CGFloat) -> AnyView
+    func makeNSView(context: Context) -> FooterMixerStripGeometryView { FooterMixerStripGeometryView() }
+    func updateNSView(_ view: FooterMixerStripGeometryView, context: Context) {
+        view.update(slotsOnly: slotsOnly, iconHeight: iconHeight, slots: slots, footer: footer)
+    }
+    @available(macOS 13, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: FooterMixerStripGeometryView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? nsView.frame.width, height: proposal.height ?? nsView.frame.height)
+    }
+}
+private final class FooterMixerStripGeometryView: NSView {
+    private let slots = FooterMixerHostingView(rootView: AnyView(EmptyView()))
+    private let footer = FooterMixerHostingView(rootView: AnyView(EmptyView()))
+    private var slotsOnly = false
+    private var iconHeight: CGFloat = 0
+    private var makeFooter: ((CGFloat) -> AnyView)?
+    private var controlsHeight: CGFloat?
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        for view in [slots, footer] {
+            if #available(macOS 13, *) { view.sizingOptions = [] }
+            if #available(macOS 13.3, *) { view.safeAreaRegions = [] }
+            view.autoresizingMask = []; view.wantsLayer = true; view.clipsToBounds = true
+            addSubview(view)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    func update(slotsOnly: Bool, iconHeight: CGFloat, slots: AnyView, footer: @escaping (CGFloat) -> AnyView) {
+        self.slotsOnly = slotsOnly; self.iconHeight = iconHeight; makeFooter = footer
+        self.slots.rootView = slots; controlsHeight = nil; needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        let layout = FooterMixerStripLayout(height: bounds.height, slotsOnly: slotsOnly, iconHeight: iconHeight)
+        if controlsHeight != layout.controlsHeight {
+            controlsHeight = layout.controlsHeight
+            if let makeFooter { footer.rootView = makeFooter(layout.controlsHeight) }
+        }
+        let width = max(0, bounds.width - 8)
+        let top = NSRect(x: 4, y: 4, width: width, height: layout.slotsHeight)
+        let bottom = NSRect(x: 4, y: top.maxY, width: width, height: layout.controlsHeight + 26 + iconHeight)
+        slots.isHidden = top.height <= 0
+        if slots.frame != top { slots.frame = top }
+        if footer.frame != bottom { footer.frame = bottom }
+    }
+}
 private final class FooterMixerScrollView: NSView {
     private let scroll = NSScrollView()
     private let bar = FooterMixerGreenScroller(frame: NSRect(x: 0, y: 0, width: 200, height: 14))
@@ -2903,8 +2957,9 @@ private final class FooterMixerScrollView: NSView {
         if scroll.frame != scrollFrame { scroll.frame = scrollFrame }
         let hostFrame = NSRect(x: 0, y: 0, width: max(scroll.contentSize.width, contentWidth), height: scroll.contentSize.height)
         if host.frame != hostFrame { host.frame = hostFrame }
-        for strip in Array(strips.values) + cachedStrips.values.map(\.view)
-            where strip.frame.height != scroll.contentSize.height {
+        // Hidden cached channels receive their current height when remounted.
+        // Resizing them here reflows up to 64 offscreen SwiftUI trees per pixel.
+        for strip in strips.values where strip.frame.height != scroll.contentSize.height {
             strip.frame.size.height = scroll.contentSize.height
         }
         move(to: scroll.contentView.bounds.minX)
@@ -3057,6 +3112,8 @@ private struct FooterMixerStrip: View, Equatable {
     let active: Bool
     var slotsOnly = false
     var showsInstrumentIcons = false
+    @Environment(\.locale) private var locale
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.editTrackDetails) private var editTrackDetails
     @State private var patchPresented = false
     @State private var fxPresented = false
@@ -3222,57 +3279,73 @@ private struct FooterMixerStrip: View, Equatable {
             }
         }.frame(width: 50)
     }
+    @ViewBuilder private func fixedFooter(controlsHeight: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            if !slotsOnly {
+                ZStack(alignment: .topLeading) {
+                    VStack(spacing: 4) {
+                        if let track, track.kind == .click {
+                            Button("Insert") { show.insertClickItems(track: track.id) }
+                                .buttonStyle(CompactTrackButtonStyle(width: 47))
+                                .jarasHelp("Insert click items in regions without a click")
+                        }
+                        HStack(spacing: 3) {
+                            buttons
+                            panAndFader.frame(maxHeight: .infinity)
+                        }.frame(maxWidth: .infinity)
+                    }
+                }.frame(height: controlsHeight).trackControlSelectionExclusion()
+            }
+            Group {
+                #if os(macOS)
+                if let track {
+                    TrackDragTitle(title: track.name, foreground: 0xffffff, project: show.snapshot.project.id,
+                        track: track.id, state: TrackReorderState.shared, select: select, compact: true)
+                } else { Text("Master").font(.jarasSystem(size: 10, weight: .semibold)) }
+                #else
+                Text(verbatim: track?.name ?? "Master").font(.jarasSystem(size: 10, weight: .semibold))
+                    .lineLimit(2).multilineTextAlignment(.center)
+                    .contentShape(Rectangle()).onDrag {
+                        guard let track else { return NSItemProvider() }
+                        TrackReorderState.shared.begin(track: track.id); select()
+                        return TrackReorderState.provider(track.id)
+                    }
+                #endif
+            }.frame(maxWidth: .infinity).frame(height: 22).padding(.top, 4)
+                .foregroundStyle(.white).accessibilityHint(Text(verbatim: track?.name ?? "Master"))
+            if showsInstrumentIcons {
+                Group {
+                    if let raw = track?.instrumentIcon, let icon = TrackInstrumentIcon(rawValue: raw) {
+                        TrackInstrumentIconView(icon: icon).foregroundStyle(.white)
+                    } else { Color.clear }
+                }.frame(height: 28).padding(.top, 2).allowsHitTesting(false)
+            }
+        }
+    }
     var body: some View {
         let deleteIDs = deletionTargets, deleteProject = show.snapshot.project.id
-        GeometryReader { geometry in
-            let layout = FooterMixerStripLayout(height: geometry.size.height, slotsOnly: slotsOnly, iconHeight: showsInstrumentIcons ? 30 : 0)
-            let controlsHeight = layout.controlsHeight
-            let slotsHeight = layout.slotsHeight
-            VStack(spacing: 0) {
-                if hasStandardControls {
-                    slots.frame(height: slotsHeight).clipped().opacity(slotsHeight > 0 ? 1 : 0).allowsHitTesting(slotsHeight > 0)
-                        .trackControlSelectionExclusion()
-                } else { Color.clear.frame(height: slotsHeight) }
-                if !slotsOnly {
-                    ZStack(alignment: .topLeading) {
-                        VStack(spacing: 4) {
-                            if let track, track.kind == .click {
-                                Button("Insert") { show.insertClickItems(track: track.id) }
-                                    .buttonStyle(CompactTrackButtonStyle(width: 47))
-                                    .jarasHelp("Insert click items in regions without a click")
-                            }
-                            HStack(spacing: 3) {
-                                buttons
-                                panAndFader.frame(maxHeight: .infinity)
-                            }.frame(maxWidth: .infinity)
-                        }
-                    }.frame(height: controlsHeight).trackControlSelectionExclusion()
-                }
-                Group {
-                    #if os(macOS)
-                    if let track {
-                        TrackDragTitle(title: track.name, foreground: 0xffffff, project: show.snapshot.project.id,
-                            track: track.id, state: TrackReorderState.shared, select: select, compact: true)
-                    } else { Text("Master").font(.jarasSystem(size: 10, weight: .semibold)) }
-                    #else
-                    Text(verbatim: track?.name ?? "Master").font(.jarasSystem(size: 10, weight: .semibold))
-                        .lineLimit(2).multilineTextAlignment(.center)
-                        .contentShape(Rectangle()).onDrag {
-                            guard let track else { return NSItemProvider() }
-                            TrackReorderState.shared.begin(track: track.id); select()
-                            return TrackReorderState.provider(track.id)
-                        }
-                    #endif
-                }.frame(maxWidth: .infinity).frame(height: 22).padding(.top, 4)
-                    .foregroundStyle(.white).accessibilityHint(Text(verbatim: track?.name ?? "Master"))
-                if showsInstrumentIcons {
-                    Group {
-                        if let raw = track?.instrumentIcon, let icon = TrackInstrumentIcon(rawValue: raw) {
-                            TrackInstrumentIconView(icon: icon).foregroundStyle(.white)
-                        } else { Color.clear }
-                    }.frame(height: 28).padding(.top, 2).allowsHitTesting(false)
-                }
-            }.padding(4)
+        Group {
+            #if os(macOS)
+            FooterMixerStripGeometry(slotsOnly: slotsOnly, iconHeight: showsInstrumentIcons ? 30 : 0,
+                slots: AnyView(Group {
+                    if hasStandardControls { slots.trackControlSelectionExclusion() }
+                    else { Color.clear }
+                }.environment(\.openFX, openFX).environment(\.locale, locale).environment(\.colorScheme, colorScheme)),
+                footer: { AnyView(fixedFooter(controlsHeight: $0)
+                    .environment(\.openFX, openFX).environment(\.editTrackDetails, editTrackDetails)
+                    .environment(\.locale, locale).environment(\.colorScheme, colorScheme)) })
+            #else
+            GeometryReader { geometry in
+                let layout = FooterMixerStripLayout(height: geometry.size.height, slotsOnly: slotsOnly, iconHeight: showsInstrumentIcons ? 30 : 0)
+                VStack(spacing: 0) {
+                    if hasStandardControls {
+                        slots.frame(height: layout.slotsHeight).clipped().opacity(layout.slotsHeight > 0 ? 1 : 0).allowsHitTesting(layout.slotsHeight > 0)
+                            .trackControlSelectionExclusion()
+                    } else { Color.clear.frame(height: layout.slotsHeight) }
+                    fixedFooter(controlsHeight: layout.controlsHeight)
+                }.padding(4)
+            }
+            #endif
         }.frame(width: track == nil ? FooterMixerMetrics.masterWidth : FooterMixerMetrics.width).frame(maxHeight: .infinity)
             .background(color.opacity(selected ? 0.38 : 0.24)).overlay(alignment: .top) { color.frame(height: 3) }
             .overlay { if selected { Rectangle().stroke(Color.white.opacity(0.65), lineWidth: 1).allowsHitTesting(false) } }

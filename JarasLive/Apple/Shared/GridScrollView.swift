@@ -357,6 +357,11 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
     private var sidebarDetached = false
     private var liveWidth: CGFloat?
     private var pendingSavedWidth: CGFloat?
+    private var footerResizeHeight: CGFloat?
+    @objc private func footerResizeBegan(_ notification: Notification) { footerResizeHeight = bounds.height }
+    @objc private func footerResizeEnded(_ notification: Notification) {
+        footerResizeHeight = nil; needsLayout = true
+    }
     private var resizing = false
     private var applyingFrames = false
     private var onEnd: (CGFloat) -> Void = { _ in }
@@ -367,7 +372,7 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         self.leading = WorkspaceHostingView(rootView: leading)
         self.trailing = WorkspaceHostingView(rootView: trailing)
         super.init(frame: .zero)
-        wantsLayer = true
+        wantsLayer = true; layer?.masksToBounds = true
         autoresizesSubviews = false
         if #available(macOS 13, *) { self.leading.sizingOptions = []; self.trailing.sizingOptions = [] }
         // The outer window has already resolved the workspace content rect.
@@ -441,7 +446,15 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+        for name in ["CatLiveFooterResizeBegan", "CatLiveFooterResizeEnded"] {
+            NotificationCenter.default.removeObserver(self, name: Notification.Name(name), object: nil)
+        }
+        footerResizeHeight = nil
         if let window {
+            NotificationCenter.default.addObserver(self, selector: #selector(footerResizeBegan(_:)),
+                name: Notification.Name("CatLiveFooterResizeBegan"), object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(footerResizeEnded(_:)),
+                name: Notification.Name("CatLiveFooterResizeEnded"), object: window)
             NativeTimelineInputGate.shared.add(self)
             NotificationCenter.default.addObserver(self, selector: #selector(workspaceWindowBecameKey(_:)),
                 name: NSWindow.didBecomeKeyNotification, object: window)
@@ -454,6 +467,11 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         CATransaction.begin(); CATransaction.setDisableActions(true)
         defer { CATransaction.commit(); applyingFrames = false }
         let available = bounds.size
+        // Growing the footer only crops this workspace. Keep its timeline and
+        // Setlist layout stable until release rather than rebuilding all rows
+        // for each vertical pixel. If more space is exposed, grow once to cover it.
+        if let height = footerResizeHeight { footerResizeHeight = max(height, available.height) }
+        let hostedHeight = footerResizeHeight ?? available.height
         let maximum = max(0, min(486.5, available.width - 420))
         func bounded(_ width: CGFloat) -> CGFloat { width <= 0 ? 0 : min(maximum, max(minimum, width)) }
         let visibleWidth = sidebarDetached ? 0 : bounded((resizing ? liveWidth : nil) ?? pendingSavedWidth ?? savedWidth)
@@ -464,11 +482,11 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         // The hosts retain their identities when changing sides. Only native
         // sibling frames move, so Setlist selection and timeline focus survive.
         let leftFrame = CGRect(x: sidebarLeading ? visibleWidth + barWidth : 0, y: 0,
-                               width: primaryWidth, height: available.height)
+                               width: primaryWidth, height: hostedHeight)
         let barFrame = CGRect(x: sidebarLeading ? visibleWidth : primaryWidth, y: 0,
                               width: barWidth, height: available.height)
         let rightFrame = CGRect(x: sidebarLeading ? 0 : primaryWidth + barWidth, y: 0,
-                                width: mountedWidth, height: available.height)
+                                width: mountedWidth, height: hostedHeight)
         if leading.frame != leftFrame {
             leading.layoutProfile?.sizeChanged(leading, from: leading.frame.size, to: leftFrame.size)
             leading.frame = leftFrame

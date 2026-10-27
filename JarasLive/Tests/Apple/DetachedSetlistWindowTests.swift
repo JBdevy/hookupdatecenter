@@ -8,6 +8,12 @@ import AppKit
     func register(_ window: NSWindow) {}
 }
 extension View { func interfaceScaled() -> some View { self } }
+// Window level coordination is covered separately; this fixture only owns the
+// detached Setlist lifecycle and does not mount a main workspace window.
+@MainActor enum ProjectionWindow {
+    static func followWorkspaceWindow(_ window: NSWindow) {}
+}
+
 
 MainActor.assumeIsolated {
     _ = NSApplication.shared
@@ -25,7 +31,7 @@ MainActor.assumeIsolated {
     owner.setPartsVisible(true)
     precondition(first.contentView!.frame.width == 800, "Parts must not shrink a wider user window")
     owner.setPartsVisible(false)
-    precondition(first.minSize.width == 320 && first.contentView!.frame.width == 800,
+    precondition(first.minSize.width == 224 && first.contentView!.frame.width == 800,
                  "Closing Parts must relax the minimum without shrinking the user's window")
     owner.hide()
     precondition(owner.isDetached && !owner.isVisible && owner.window === first)
