@@ -18,6 +18,7 @@
 #include "WaveformCache.h"
 #include "ProjectMediaRecovery.h"
 #include "ClipEditing.h"
+#include "FinishedSetlistSelection.h"
 namespace catlive {
 namespace {
 jaras::Song emptySong(const String &name) {
@@ -760,6 +761,19 @@ jaras::TransportState Session::presentationTransport() const {
     }
     return value;
 }
+void Session::reconcileSetlistSelectionAfterAdvance(const jaras::TransportState &before) {
+    if(clearFinishedSetlistSelection(project(),focusedRegion,before,transport())) {
+        focusedRegion.reset(); ++setlistFocusRevision;
+        if(selectionChanged) selectionChanged();
+    }
+    const auto &after=transport();
+    if(before.playing && !after.playing && !after.paused && !after.subPlay.playing &&
+       !before.queuedRegionId && !after.queuedRegionId && before.songId==after.songId && focusedRegion) {
+        core.execute({jaras::CommandKind::selectRegion,*focusedRegion});
+        ++setlistFocusRevision;
+        if(selectionChanged) selectionChanged();
+    }
+}
 void Session::syncClock() {
     // A prepared seek is not applied until the next device callback. Do not
     // advance the core with samples from the old head or resend that seek in
@@ -782,6 +796,7 @@ void Session::syncClock() {
     };
     const auto liveMarksBefore=markedCount(project());
     core.advance(elapsed);
+    reconcileSetlistSelectionAfterAdvance(before);
     if(markedCount(project())!=liveMarksBefore) { dirty=true; ++revision; }
     presentationQueues.advance(elapsed, audio.presentationLatencyFrames() / audio.sampleRate(),
                                before, transport());
@@ -997,7 +1012,10 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
     if (old != transport().songId)
         prepare();
     if (old != transport().songId) { focusedRegion.reset(); ++setlistFocusRevision; }
-    if (kind == jaras::CommandKind::selectRegion || kind == jaras::CommandKind::queueRegion)
+    if (kind == jaras::CommandKind::queueRegion && beforeCommand.playing &&
+        beforeCommand.queuedRegionId && !transport().queuedRegionId)
+        focusSetlistRegion(std::nullopt, true);
+    else if (kind == jaras::CommandKind::selectRegion || kind == jaras::CommandKind::queueRegion)
         focusSetlistRegion(target, true);
     else if (kind == jaras::CommandKind::editSeek || (kind == jaras::CommandKind::queueSection && !transport().playing))
         focusTimelineRegion(transport().editPosition);

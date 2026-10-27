@@ -237,3 +237,11 @@ public extension Song {
             indicatorTrack: target, after: after)
     }
 }
+
+public extension Song {
+    func trackDragRoots(_ selection: Set<UUID>) -> [UUID] {
+        let hierarchy = TrackHierarchy(tracks)
+        return tracks.filter { $0.kind == .standard && selection.contains($0.id) &&
+            selection.isDisjoint(with: hierarchy.ancestors(of: $0.id)) }.map(\.id)
+    }
+}

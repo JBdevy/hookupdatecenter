@@ -23,6 +23,16 @@ public:
         :read(std::move(get)),clear(std::move(reset)),colour(std::move(foreground)){
         setComponentID("peakReadout");setTitle("Reset peak");startTimerHz(20);
     }
+    bool hitTest(int x, int y) override {
+        const auto amplitude=read();
+        if(amplitude<=0)return false;
+        const auto db=std::round(20*std::log10(amplitude)*100)/100;
+        const auto value=(db>=0?"+":"")+String(db,2);
+        const auto field=getLocalBounds().toFloat().withSizeKeepingCentre(
+            std::min((float)getWidth(),GlyphArrangement::getStringWidth(theme::semiboldFont(8),value)+4.f),
+            std::min(12.f,(float)getHeight()));
+        return field.contains((float)x,(float)y);
+    }
     void paint(Graphics &g)override{
         const auto amplitude=read();if(amplitude<=0)return;
         const auto db=std::round(20*std::log10(amplitude)*100)/100;

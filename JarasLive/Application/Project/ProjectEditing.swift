@@ -919,3 +919,34 @@ public extension Project {
         }}
     }
 }
+
+public extension Project {
+    /// Move a selection as one ordered block. Selected folders carry their
+    /// descendants and only the roots acquire the destination group's send.
+    mutating func moveSelectedTracks(_ selection: Set<UUID>, on target: UUID, after: Bool, outsideGroup: Bool, song songID: UUID) {
+        guard let songIndex = songs.firstIndex(where: { $0.id == songID }) else { return }
+        let song = songs[songIndex], roots = Set(song.trackDragRoots(selection))
+        let hierarchy = TrackHierarchy(song.tracks)
+        let movingIDs = roots.reduce(into: roots) { $0.formUnion(hierarchy.descendants(of: $1)) }
+        guard !roots.isEmpty, !movingIDs.contains(target), let hit = song.tracks.first(where: { $0.id == target && $0.kind == .standard }) else { return }
+        var remaining = song.tracks.filter { !movingIDs.contains($0.id) }
+        var parent = after && song.tracks.contains(where: { $0.parentTrackID == target }) ? target : hit.parentTrackID
+        var boundary = remaining.firstIndex { $0.id == target }!
+        if outsideGroup, let group = parent, let folder = remaining.first(where: { $0.id == group }) {
+            let members = hierarchy.descendants(of: group).union([group])
+            boundary = after ? remaining.lastIndex(where: { members.contains($0.id) })! : remaining.firstIndex(where: { $0.id == group })!
+            parent = folder.parentTrackID
+        }
+        guard parent.map({ !movingIDs.contains($0) }) ?? true else { return }
+        let moving = song.tracks.filter { movingIDs.contains($0.id) }.map { original -> Track in
+            var track = original
+            if roots.contains(track.id), track.parentTrackID != parent {
+                if let parent { track.sendToGroup(parent) } else { track.detachFromGroup() }
+            }
+            return track
+        }
+        remaining.insert(contentsOf: moving, at: boundary + (after ? 1 : 0))
+        songs[songIndex].tracks = remaining
+        orderSpecialTracks()
+    }
+}

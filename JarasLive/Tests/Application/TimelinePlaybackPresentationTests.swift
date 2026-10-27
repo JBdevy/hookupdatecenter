@@ -170,4 +170,27 @@ final class TimelinePlaybackPresentationTests: XCTestCase {
         XCTAssertEqual(TransportSongDisplays(song: song, transport: state, focusedRegion: first.id).current?.id, second.id)
     }
 
+    func testFinishedSelectionClearsOnlyAudibleSongAndPreservesBrowsing() {
+        var song = Project.demo().songs[0]
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
+        let next = Part(id: UUID(), name: "Next", startTime: 20, endTime: 30)
+        song.parts = [first, next]
+        var before = transport(main: 9.99); before.songId = song.id; before.regionId = first.id
+        var after = before; after.regionId = next.id; after.position = 20
+        XCTAssertTrue(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: after))
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(next.id, song: song, playlist: nil, before: before, after: after))
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: before))
+        after = before; after.playing = false; after.position = 10
+        XCTAssertTrue(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: after))
+        after.paused = true
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: after))
+        let root = Part(id: UUID(), name: "Drawer", startTime: 0, endTime: 30)
+        song.parts = [root, first, next]
+        song.parts[1].parentRegionID = root.id; song.parts[2].parentRegionID = root.id
+        before.regionId = root.id; after = before; after.position = 20
+        XCTAssertTrue(FinishedSetlistSelection.shouldClear(first.id, song: song, playlist: nil, before: before, after: after))
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(root.id, song: song, playlist: nil, before: before, after: after))
+        XCTAssertFalse(FinishedSetlistSelection.shouldClear(next.id, song: song, playlist: nil, before: before, after: after))
+    }
+
 }

@@ -73,6 +73,20 @@ inline void HozMixerFocusTests::run(const File &directory) {
         Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,preferences);
         workspace.setSize(1366,900);workspace.footerMixerVisible=true;workspace.resized();
         auto &panel=*workspace.footerMixer;panel.setSize(640,350);check(panel,false);
+        // A saved oversized height must not push controls below the dock.
+        workspace.mixerHeightSetting=724;workspace.resized();
+        require(panel.getHeight()<=workspace.dockViewport.getHeight(),"Hoz-Mixer escaped the visible dock at maximum height");
+        for(auto *strip:panel.strips)require(strip->getLocalBounds().contains(strip->layout().name),"Resizing clips the track name");
+        panel.setSize(640,350);
+        const auto firstID=project.songs[0].tracks[0].id,secondID=project.songs[0].tracks[1].id;
+        workspace.selectedTracks={firstID,secondID};workspace.selectedTrack=firstID;
+        auto *firstStrip=panel.strips[0];const auto point=firstStrip->layout().name.getCentre().toFloat();
+        const Time now=Time::getCurrentTime();
+        MouseEvent press(Desktop::getInstance().getMainMouseSource(),point,ModifierKeys(ModifierKeys::leftButtonModifier),1,0,0,0,0,firstStrip,firstStrip,now,point,now,1,false);
+        firstStrip->mouseDown(press);
+        require(workspace.selectedTracks.size()==2,"Mouse-down collapsed the track selection before a drag");
+        firstStrip->mouseUp(press);
+        require(workspace.selectedTracks==std::set<ID>{firstID},"Click release did not select only the clicked track");
         const auto snapshot=JSON::toString(session.snapshot());const auto revision=session.revision;
         const auto undo=session.canUndo(),redo=session.canRedo();
         auto &fader=panel.strips[0]->fader;auto &pan=panel.strips[0]->pan;

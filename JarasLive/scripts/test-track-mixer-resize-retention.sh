@@ -31,7 +31,7 @@ private enum AutomationTarget { enum Kind { case pan, volume } }
 private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white }
 private struct TrackControlIdentity: Equatable { let project: UUID; let track: UUID? }
 private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin(track: UUID) {} ; func finish() {} }
-private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); var pinnedTracks = Set<UUID>(); func addControl(_ view: NSView) {} ; func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
+private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); var pinnedTracks = Set<UUID>(); func addControl(_ view: NSView) {} ; func handle(_ event: NSEvent) {} ; func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
 private enum Counts { static var origin=0; static var size=0; static var slotLayouts=0; static var update=0; static func reset(){origin=0;size=0;slotLayouts=0;update=0} }
 ''')
 for i,p in enumerate(parts):

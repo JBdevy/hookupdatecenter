@@ -20,6 +20,7 @@
 #include "RemoteTransport.h"
 #include "RemoteHost.h"
 #include "RemotePresentation.h"
+#include "FinishedSetlistSelection.h"
 #include "RemoteProjectCatalog.h"
 #include "RemoteProjectOpeningTests.h"
 #include "LicenseProof.h"
@@ -158,6 +159,22 @@ int runTests(const File &directory) {
             failed += name + ": " + String::fromUTF8(e.what()) + "\n";
         }
     };
+    test("Multiple track drag preserves ordered roots, descendants and group routing", [&] {
+        jaras::Project p;jaras::Song song;song.id=uuid();
+        for(int i=0;i<7;++i){jaras::Track t;t.id=std::to_string(i);t.name=t.id;t.role.id="other";song.tracks.push_back(t);}
+        trackDrop::setParent(song.tracks[2],ID("1"));trackDrop::setParent(song.tracks[5],ID("4"));
+        const auto original=song.tracks;const std::set<ID> selected{"0","1","2"};
+        const auto drag=trackDrop::description(p,song,"1",selected);
+        const auto ids=trackDrop::sources(drag,p,song);
+        expect(ids==std::vector<ID>{"0","1"},"Selected child must travel once with its folder");
+        expect(!trackDrop::resolve(song,ids,"2",true,false),"Drop into own child accepted");
+        const auto destination=trackDrop::resolve(song,ids,"4",true,false);
+        expect(bool(destination),"Multiple-track destination missing");trackDrop::apply(song,*destination,ids);
+        std::vector<ID> order;for(const auto &t:song.tracks)order.push_back(t.id);
+        expect(order==std::vector<ID>{"3","4","0","1","2","5","6"},"Multiple drop changed relative order");
+        expect(song.tracks[2].parentTrackID==ID("4")&&song.tracks[3].parentTrackID==ID("4")&&song.tracks[4].parentTrackID==ID("1"),"Folder hierarchy lost");
+        expect(song.tracks[2].patch->firstChannel==-2&&song.tracks[3].patch->firstChannel==-2,"Group sends not updated");
+    });
     test("Automatic access checks preserve activation on token expiry and enforce quarantine",[&]{
         for(const String code:{String(),String("invalidSession"),String("unavailable"),String("quarantined")}) {
             const auto folder=directory.getNonexistentChildFile("access-policy-"+code,"");folder.createDirectory();
@@ -1365,6 +1382,67 @@ int runTests(const File &directory) {
         button.mouseDown(right); button.mouseUp(released);
         expect(activated == 0 && mapped == 1, "BPM mapping opens once and never changes tempo");
 
+    });
+    test("Setlist keyboard browses during playback, Enter toggles queue and Auto, and prepares after natural stop", [&] {
+        auto p=projectFixture();auto &song=p.songs[0];song.tracks.clear();song.markers.reset();p.savedCursor.reset();
+        song.parts={{"first","First",0,2},{"second","Second",2,4},{"third","Third",4,6}};song.duration=6;
+        p.regionSetlist=jaras::RegionSetlist{};p.regionSetlist->stopAtRegionEnd=true;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(p));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("keyboard-setlist",".json"));workspace.setSize(1366,768);
+        session.command(jaras::CommandKind::selectRegion,"first");session.command(jaras::CommandKind::play);
+        workspace.keyPressed(KeyPress(KeyPress::downKey));workspace.keyStateChanged(false);
+        expect(session.focusedRegion==ID("second") && !session.transport().queuedRegionId,"Down queued instead of browsing");
+        workspace.keyPressed(KeyPress(KeyPress::downKey));workspace.keyStateChanged(false);
+        expect(session.focusedRegion==ID("third") && session.transport().regionId==ID("first"),"Down did not advance from the browsed row");
+        workspace.keyPressed(KeyPress(KeyPress::upKey));workspace.keyStateChanged(false);
+        expect(session.focusedRegion==ID("second"),"Up did not browse backwards");
+        expect(workspace.keyPressed(KeyPress(KeyPress::returnKey)),"Enter was not handled");workspace.keyStateChanged(false);
+        expect(session.transport().queuedRegionId==ID("second"),"Enter did not queue selected song");
+        auto setlist=*session.project().regionSetlist;setlist.autoAdvance=true;session.configureSetlist(setlist);
+        expect(workspace.keyPressed(KeyPress(KeyPress::returnKey)),"Second Enter was not handled");workspace.keyStateChanged(false);
+        expect(!session.transport().queuedRegionId && !session.project().regionSetlist->autoAdvance && session.focusedRegion==ID("second"),"Enter cancellation must clear queue and Auto but retain blue selection");
+        workspace.keyPressed(KeyPress(KeyPress::downKey));workspace.keyStateChanged(false);workspace.keyPressed(KeyPress(KeyPress::upKey));workspace.keyStateChanged(false);
+        expect(session.focusedRegion==ID("second"),"Browsing after cancellation failed");
+        const auto before=session.transport();session.core.advance(2.1);session.reconcileSetlistSelectionAfterAdvance(before);
+        expect(!session.transport().playing && session.transport().regionId==ID("second") && std::abs(session.transport().position-2)<.001,"Finished playback did not prepare browsed song");
+        session.command(jaras::CommandKind::play);expect(session.transport().regionId==ID("second"),"Play ignored prepared song");session.command(jaras::CommandKind::stop);
+    });
+    test("Finished song clears only its own setlist selection", [&] {
+        auto p=projectFixture();auto &song=p.songs[0];
+        const auto first=song.parts[0].id,second=song.parts[1].id;
+        jaras::TransportState before;before.songId=song.id;before.regionId=first;before.playing=true;before.position=song.parts[0].startTime;
+        auto after=before;after.regionId=second;after.position=song.parts[1].startTime;
+        expect(clearFinishedSetlistSelection(p,first,before,after),"Finished selected song stayed blue");
+        expect(!clearFinishedSetlistSelection(p,second,before,after),"Browsing another song was cleared");
+        expect(!clearFinishedSetlistSelection(p,first,before,before),"Ordinary playback cleared selection");
+        after=before;after.playing=false;
+        expect(clearFinishedSetlistSelection(p,first,before,after),"Automatic stop kept finished selection");
+        after.paused=true;
+        expect(!clearFinishedSetlistSelection(p,first,before,after),"Pause cleared selection");
+        Session session;session.inspection=true;session.restoreSnapshot(ProjectCodec::encode(p));session.focusedRegion.reset();
+        session.command(jaras::CommandKind::selectRegion,first);session.command(jaras::CommandKind::play);
+        session.command(jaras::CommandKind::queueRegion,second);
+        expect(session.focusedRegion==second,"Queue selection missing");
+        session.command(jaras::CommandKind::queueRegion,second);
+        expect(!session.transport().queuedRegionId && !session.focusedRegion,"Queue cancellation left a blue selection");
+        session.command(jaras::CommandKind::stop);
+        Appearance prefs(directory.getNonexistentChildFile("selection-remote",".json"));StageState stage(prefs);
+        remote::Presentation presentation(session,stage);
+        expect(get(presentation.snapshot(0),"focusedRegion").isVoid(),"Remote resurrected cleared selection from transport");
+    });
+    test("Empty peak readouts pass clicks to track selection", [&] {
+        float amplitude=0;
+        Component row;
+        row.setBounds(0,0,200,64);
+        row.setVisible(true);
+        meterDisplay::PeakReadout peak([&]{return amplitude;},[&]{amplitude=0;});
+        row.addAndMakeVisible(peak);peak.setBounds(21,31,43,12);
+        expect(row.getComponentAt(42,37)==&row,"Empty readout swallowed the fader-row click");
+        amplitude=1;
+        expect(row.getComponentAt(42,37)==&peak,"Visible peak must remain resettable");
+        expect(row.getComponentAt(21,37)==&row,"Readout margin swallowed track selection");
+        amplitude=0;
+        expect(row.getComponentAt(42,37)==&row,"Cleared peak still swallowed track selection");
     });
     test("Parameter wheels forward scrolling without changing gain or pan", [&] {
         struct Parent : Component { int calls=0; void mouseWheelMove(const MouseEvent &, const MouseWheelDetails &) override { ++calls; } } parent;

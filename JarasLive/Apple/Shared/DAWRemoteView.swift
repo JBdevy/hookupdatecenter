@@ -499,7 +499,7 @@ struct DAWRemoteClientView: View {
                 prepareOnly: show.regionSetlist.preparesWithoutPlayback,
                 masterColor: snapshot.project.masterColor ?? 0x414141,
                 masterNameColor: JarasTheme.masterNameHex(snapshot.project.masterColor ?? 0x414141),
-                regionAuto: show.regionSetlist.autoAdvance, queueStartedAt: transport.queueStartedAt,
+                regionAuto: show.regionSetlist.autoAdvance, regionAutoUntilBlockEnd: show.regionSetlist.autoUntilBlockEnd, queueStartedAt: transport.queueStartedAt,
                 playbackEnd: transport.ignoreNextEnd ?? song?.parts.first(where: { $0.id == transport.regionId })?.endTime,
                 projectSavedAt: show.lastSavedAt ?? snapshot.project.updatedAt, footerInformation: information,
                 footerLoopBeatPhase: FooterInformationDisplay.loopBeatPhase(transport: transport, song: song),
@@ -991,6 +991,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var confirmingRemoval = false
     @State private var duplicateQueueWarning = false
     @State private var selectedSetlistEntries: Set<UUID> = []
+    @State private var nativeKeyboardBrowsing = false
     @State private var setlistSelectionAnchor: UUID?
     @State private var draggingSetlistEntries: Set<UUID> = []
     @State private var setlistRowHeights: [UUID: CGFloat] = [:]
@@ -1320,6 +1321,12 @@ private struct RemoteSidebarRail<Content: View>: View {
     private var workspaceState: some View {
         AnyView(workspaceContent)
         .onChange(of: state.vinhetas) { next in if let next { remoteVinhetasFeedback.receive(next) } }
+        .onChange(of: state.focusedRegion) { id in
+            if local && nativeKeyboardBrowsing { selectedSetlistEntries = id.map { [$0] } ?? []; setlistSelectionAnchor = id }
+        }
+        .onChange(of: state.showsSetlistSelection) { visible in
+            if !visible { selectedSetlistEntries = []; setlistSelectionAnchor = nil }
+        }
         .onChange(of: state.selectedPlaylist) { _ in selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; nativeSetlistRemoval = nil; confirmingRemoval = false; localShow?.selectSetlistBlock(nil) }
         .onChange(of: state.project) { _ in remoteVinhetasFeedback.reset(); selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; trackScrolling.pointerReset = UUID(); deletingTracks = nil; splittingItems = nil; nativeMarker = nil; nativeNormalization = false; tempoStepPending = false; pitchStepPending = false }
         .onAppear {
@@ -1347,6 +1354,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             }
             if !entries.isEmpty {
                 trackScrolling.selectionScope = .setlist
+                nativeKeyboardBrowsing = true
                 localShow.stepRegion(request.direction, entries: entries)
                 selectedSetlistEntries = localShow.focusedRegion.map { [$0] } ?? []
                 setlistSelectionAnchor = localShow.focusedRegion
@@ -1511,6 +1519,14 @@ private struct RemoteSidebarRail<Content: View>: View {
                 trackScrolling.itemSelection.replace([]); selectedTracks = []
                 show.setMixerTrackSelection([], anchor: nil)
                 selectedSetlistEntries = []; setlistSelectionAnchor = nil; show.selectSetlistBlock(nil)
+            }
+            return true
+        }
+        if flags.isEmpty, [36,76].contains(event.keyCode), trackScrolling.selectionScope == .setlist {
+            if !event.isRepeat {
+                _ = show.activateSetlistSelection()
+                selectedSetlistEntries = show.focusedRegion.map { [$0] } ?? []
+                setlistSelectionAnchor = show.focusedRegion
             }
             return true
         }
@@ -1765,7 +1781,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     Spacer(minLength: 2)
                     Text(verbatim: timeText).monospacedDigit().font(.jarasSystem(size: 12, weight: .semibold))
                 }.foregroundStyle(JarasTheme.secondary)
-                Text(verbatim: state.songDisplays?.current ?? selectedTimelineRegion?.name ?? state.songName)
+                Text(verbatim: state.currentSongName)
                     .font(.jarasSystem(size: 13, weight: .semibold)).foregroundStyle(JarasTheme.green).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }.padding(6).background(RemoteSurface.display).cornerRadius(5)
@@ -1818,7 +1834,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             VStack(spacing: 1) {
                 if !prompterFullscreen {
                     VStack(spacing: 5) {
-                        phoneObserverDisplay(state.playing ? "Now playing" : "Selected song", name: state.songDisplays?.current ?? observerCurrentName, color: JarasTheme.green)
+                        phoneObserverDisplay(state.playing ? "Now playing" : "Selected song", name: state.currentSongName, color: JarasTheme.green)
                         phoneObserverDisplay("Queued", name: state.songDisplays?.queued ?? observerQueuedName, color: JarasTheme.yellow)
                         phoneInformationDisplay
                             .overlay(Rectangle().stroke(Color.white.opacity(0.22), lineWidth: 1).allowsHitTesting(false))
@@ -1933,7 +1949,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     case .block(let block): RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0, scale: min(2.5, max(1, observerSetlistScale))).equatable()
                     case .region(let row):
                     let region = row.region
-                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: observerRegion(region.id, contains: state.focusedRegion),
+                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: state.showsSetlistSelection && observerRegion(region.id, contains: state.focusedRegion),
                         active: state.playing && observerRegion(region.id, contains: state.setlistCurrentEntryId), queued: observerRegion(region.id, contains: state.setlistQueuedEntryId),
                         color: remoteColor(region.color), nameColor: remoteColor(region.nameColor ?? 0xffffff),
                         duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.setlistCurrentEntryId ? state.position : region.start)))),
@@ -2366,7 +2382,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     GeometryReader { geometry in
                         HStack(spacing: 0) {
                             SongNameDisplay(title: state.playing ? "Now playing" : "Selected song",
-                                name: state.songDisplays?.current ?? selectedTimelineRegion?.name ?? state.songName,
+                                name: state.currentSongName,
                                 bpm: state.songDisplays?.currentBPM, color: state.playing ? JarasTheme.green : JarasTheme.text)
                                 .frame(width: max(0, (geometry.size.width - 1) * 0.75)).accessibilityLabel("Current song")
                             Rectangle().fill(JarasTheme.line).frame(width: 1)
@@ -2772,6 +2788,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         return state.tracks.filter { ids.contains($0.id) }.map(\.id)
     }
     private func selectSetlistEntry(_ id: UUID) {
+        nativeKeyboardBrowsing = false
         trackScrolling.selectionScope = .setlist
         let isBlock = local && (state.setlistBlocks?.contains { $0.id == id } == true)
         if local, hardwareModifiers.contains(.shift), let anchor = setlistSelectionAnchor {
@@ -2785,7 +2802,8 @@ private struct RemoteSidebarRail<Content: View>: View {
             if !selectedSetlistEntries.insert(id).inserted { selectedSetlistEntries.remove(id) }
             setlistSelectionAnchor = id
         } else {
-            selectedSetlistEntries = [id]; setlistSelectionAnchor = id
+            selectedSetlistEntries = state.showsSetlistSelection ? [id] : []
+            setlistSelectionAnchor = state.showsSetlistSelection ? id : nil
             if !isBlock { action(.selectRegion, target: id) }
         }
         if local { localShow?.selectSetlistBlock(selectedSetlistEntries.count == 1 ? selectedSetlistEntries.first : nil) }
@@ -2886,7 +2904,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 case .region(let row):
                                 let region = row.region
                                 Button { selectSetlistEntry(region.id) } label: {
-                                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: selectedSetlistEntries.contains(region.id) || (selectedSetlistEntries.isEmpty && region.id == state.focusedRegion),
+                                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: (state.showsSetlistSelection || (local && nativeKeyboardBrowsing)) && (selectedSetlistEntries.contains(region.id) || (selectedSetlistEntries.isEmpty && region.id == state.focusedRegion)),
                                         active: state.playing && region.id == state.setlistCurrentEntryId, queued: state.playing && region.id == (state.setlistQueuedEntryId),
                                         color: remoteColor(region.color), nameColor: remoteColor(region.nameColor ?? (row.child ? 0xffeb3b : 0xffffff)),
                                         duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.setlistCurrentEntryId ? state.position : region.start)))),
@@ -2939,7 +2957,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         if local {
             Button { selectSetlistEntry(block.id) } label: {
                 RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0,
-                    selected: selectedSetlistEntries.contains(block.id)).equatable()
+                    selected: state.showsSetlistSelection && selectedSetlistEntries.contains(block.id)).equatable()
             }.buttonStyle(RemoteFullAreaButtonStyle())
                 .onDrag {
                     guard prepareNativeSetlistDrag(block.id) else { return NSItemProvider() }

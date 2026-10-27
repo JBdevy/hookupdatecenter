@@ -298,6 +298,7 @@ final class ProjectCursorTests: XCTestCase {
                 XCTAssertEqual(show.regionFocusRequest, gridRequest)
                 XCTAssertNotEqual(show.setlistFocusRequest, listRequest)
                 XCTAssertEqual(show.snapshot.transport.queuedRegionId, target)
+                XCTAssertEqual(show.focusedRegion, target == nil ? nil : queued.id, "Removing the queued song must not leave it blue")
                 XCTAssertEqual(show.snapshot.transport.subPlay.playing, subplay)
                 XCTAssertEqual(show.snapshot.transport.position, 20, accuracy: 0.1)
             }
@@ -308,6 +309,47 @@ final class ProjectCursorTests: XCTestCase {
         executor.regionCommandResult = nil
         show.focusRegion(queued.id)
         XCTAssertNotEqual(show.regionFocusRequest, gridRequest, "Stopped selection must still reveal the song")
+    }
+    @MainActor func testKeyboardSelectionPreparesAfterNaturalEndWithoutStartingPlayback() throws {
+        var project = Project.empty(name: "Keyboard ready")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
+        let second = Part(id: UUID(), name: "Second", startTime: 10, endTime: 20)
+        let third = Part(id: UUID(), name: "Third", startTime: 20, endTime: 30)
+        project.songs[0].parts = [first, second, third]; project.songs[0].duration = 30
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.focusRegion(first.id); show.send(.play)
+        show.stepRegion(1, commitAfterDelay: false); show.stepRegion(1, commitAfterDelay: false)
+        XCTAssertEqual(show.focusedRegion, third.id); XCTAssertNil(show.snapshot.transport.queuedRegionId)
+        XCTAssertEqual(show.snapshot.transport.regionId, first.id)
+        executor.transport.position = 10; executor.transport.playing = false
+        show.tick()
+        XCTAssertEqual(show.focusedRegion, third.id)
+        XCTAssertEqual(show.snapshot.transport.regionId, third.id)
+        XCTAssertEqual(show.snapshot.transport.editPosition, 20)
+        XCTAssertFalse(show.snapshot.transport.playing)
+        show.send(.play)
+        XCTAssertEqual(show.snapshot.transport.regionId, third.id)
+        show.send(.stopAll)
+    }
+    @MainActor func testEnterUsesBrowsedSelectionAndCancelsAutoWithQueue() throws {
+        var project = Project.empty(name: "Keyboard queue")
+        let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)
+        let second = Part(id: UUID(), name: "Second", startTime: 10, endTime: 20)
+        project.songs[0].parts = [first, second]; project.songs[0].duration = 20
+        project.regionSetlist = RegionSetlist(); project.regionSetlist?.autoAdvance = true
+        let executor = CursorExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.focusRegion(first.id); show.send(.play); show.stepRegion(1, commitAfterDelay: false)
+        var queued = executor.transport; queued.queuedRegionId = second.id; executor.regionCommandResult = queued
+        XCTAssertTrue(show.activateSetlistSelection()); XCTAssertEqual(show.snapshot.transport.queuedRegionId, second.id)
+        queued.queuedRegionId = nil; executor.regionCommandResult = queued
+        XCTAssertTrue(show.activateSetlistSelection())
+        XCTAssertNil(show.snapshot.transport.queuedRegionId); XCTAssertEqual(show.focusedRegion, second.id)
+        XCTAssertFalse(show.regionSetlist.autoAdvance); XCTAssertTrue(show.snapshot.transport.playing)
+        queued.queuedRegionId = second.id; executor.regionCommandResult = queued
+        XCTAssertTrue(show.activateSetlistSelection()); XCTAssertEqual(show.snapshot.transport.queuedRegionId, second.id)
+        show.send(.stopAll)
     }
     @MainActor func testBrowsingSetlistDuringPlaybackDoesNotRequestGridRecenter() async throws {
         var project = Project.empty(name: "Browse viewport")

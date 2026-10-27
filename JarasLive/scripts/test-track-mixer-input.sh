@@ -8,6 +8,13 @@ from pathlib import Path
 import sys
 root=Path(sys.argv[1]);s=Path('Apple/Shared/TrackMixerRow.swift').read_text()
 parts=['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n', Path('Application/Transport/TransportFadeout.swift').read_text().split('extension ShowController {')[0], ('// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1])]
+# Exercise the real row equality gate, including the height-mode inputs supplied
+# by TimelineGridView. Omitting them from the fixture concealed boundary rebuilds.
+a=s.index('        #if os(macOS)', s.index('    static func ==', s.index('struct TrackMixerRow:')))
+b=s.index('        return lhs.show', a)
+parts.append('private struct FixtureHeightMode { let compactHeight: Bool; let minimalHeight: Bool }\n'
+             'private func productionHeightModesEqual(_ lhs: FixtureHeightMode, _ rhs: FixtureHeightMode) -> Bool {\n'
+             +s[a:b]+'return sameHeightMode\n}')
 for begin,end in [('struct TrackMixerHeightGeometry','\n#endif'),('private struct CompactTrackButtonStyle:','private struct TrackPanFader:'),('private struct DirectVolumeSlider:','\n#endif'),('private struct TrackDragTitle:','\n#endif')]:
  a=s.index(begin);parts.append(s[a:s.index(end,a)])
 m=Path('Apple/Shared/StemAudioPlayback.swift').read_text()
@@ -18,10 +25,11 @@ a=v.index('private struct TimelineTrackRowsContainer');parts.append(v[a:v.index(
 parts.append('''
 private enum AutomationTarget { enum Kind { case pan, volume } }
 @MainActor private final class ShowController: ObservableObject { let transportFadeout = TransportFadeout(); var projectSessionID = UUID(); @Published var snapshot = 0; func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind) -> Double? { nil } }
-private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white }
+private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white; static let trackButton = Color.gray }
+private extension Color { init(hex: UInt32) { self.init(red: Double((hex >> 16) & 255)/255, green: Double((hex >> 8) & 255)/255, blue: Double(hex & 255)/255) } }
 private struct TrackControlIdentity: Equatable { let project: UUID; let track: UUID? }
 private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin(track: UUID) {} ; func finish() {} }
-private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); var pinnedTracks = Set<UUID>(); func addControl(_ view: NSView) {} ; func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
+private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); var pinnedTracks = Set<UUID>(); func addControl(_ view: NSView) {} ; func handle(_ event: NSEvent) {} ; func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
 private enum Counts { static var origin=0; static var size=0; static var slotLayouts=0; static var update=0; static func reset(){origin=0;size=0;slotLayouts=0;update=0} }
 ''')
 # Count only calls from the actual native implementations, without changing behavior.
@@ -44,6 +52,7 @@ marker=marker.replace('private weak var mixerInput:', '''var recordedCursorRects
     private weak var mixerInput:''')
 parts.append(marker)
 scroll=Path('Apple/Shared/GridScrollView.swift').read_text()
+a=scroll.index('@MainActor final class NativeDragEdgeScroll');parts.append(scroll[a:scroll.index('\n#endif',a)])
 a=scroll.index('enum TimelineLayoutDiagnostics');parts.append(scroll[a:scroll.index('protocol SidebarResizeLayoutBoundary',a)])
 a=scroll.index('final class GridNativeScrollView: NSScrollView');parts.append(scroll[a:scroll.index('\n#endif',a)])
 gate=Path('Apple/Shared/NativeTimelineInputGate.swift').read_text()

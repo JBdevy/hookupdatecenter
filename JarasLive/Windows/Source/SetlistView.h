@@ -179,6 +179,33 @@ class Workspace::Setlist final : public Component,
             return;
         }
     }
+    void stepSelection(int direction) {
+        std::vector<ID> ids;
+        for (const auto &entry : entries) if (!entry.block) ids.push_back(entry.id);
+        if (ids.empty() || w.session.busy) return;
+        const auto anchor = w.session.focusedRegion.value_or(ID{});
+        auto found = std::find(ids.begin(),ids.end(),anchor);
+        int index = found == ids.end() ? (direction > 0 ? 0 : (int)ids.size()-1)
+            : jlimit(0,(int)ids.size()-1,(int)std::distance(ids.begin(),found)+direction);
+        keyboardTarget = ids[(size_t)index];
+        if (w.session.transport().playing) w.session.focusSetlistRegion(keyboardTarget,true);
+        else w.session.command(jaras::CommandKind::selectRegion,*keyboardTarget);
+        w.selectionAreas.activate(*this);
+        refresh();
+    }
+    bool activateSelection() {
+        auto target = w.session.focusedRegion ? w.session.focusedRegion : keyboardTarget;
+        if (!target || w.session.busy) return false;
+        if (std::none_of(entries.begin(),entries.end(),[&](const auto &entry){return !entry.block && entry.id==*target;})) return false;
+        keyboardTarget=target;
+        const bool wasQueueing=w.session.transport().playing && w.session.transport().queuedRegionId.has_value();
+        w.session.command(w.session.transport().playing ? jaras::CommandKind::queueRegion : jaras::CommandKind::selectRegion,*target);
+        // Keyboard cancellation keeps the browsed row selected; pointer cancellation does not.
+        if (wasQueueing && !w.session.transport().queuedRegionId && !w.session.focusedRegion)
+            w.session.focusSetlistRegion(target,true);
+        refresh();
+        return true;
+    }
     bool keyPressed(const KeyPress &key) override {
         if (dynamic_cast<TextEditor *>(Component::getCurrentlyFocusedComponent()))
             return retryEditorShortcut(key);
@@ -663,6 +690,7 @@ class Workspace::Setlist final : public Component,
     std::set<ID> expanded;
     std::set<ID> selection;
     ID selectedEntry;
+    std::optional<ID> keyboardTarget;
     int regionCount = 0;
     double totalDuration = 0;
     void setSearching(bool value) {

@@ -57,6 +57,9 @@ class Session final : private Timer {
     jaras::projectSync::Frame projectSyncFrame() { syncClock(); return core.projectSyncFrame(); }
     void applyProjectSync(const jaras::projectSync::Frame &, double elapsed, bool first, std::optional<ID> focused = {});
     void command(jaras::CommandKind, const ID &target = {}, double value = 0);
+    void focusSetlistRegion(std::optional<ID>, bool force = false);
+    void reconcileSetlistSelectionAfterAdvance(const jaras::TransportState &before);
+
     std::optional<std::pair<double,double>> selectedTimeRange() const;
     void selectTimeRange(double from, double to);
     void clearTimeRange();
@@ -142,7 +145,6 @@ class Session final : private Timer {
     struct TimeSelection { ID project, song; double start, end; };
     std::optional<TimeSelection> timeSelection;
     void focusTimelineRegion(double position, bool force = false);
-    void focusSetlistRegion(std::optional<ID>, bool force = false);
     struct TimelineHistory { jaras::Project project; bool tempo = false; };
     void applyTimelineHistory(const TimelineHistory &, bool recordHistory);
     struct MarkerHistory { ID song; std::optional<std::vector<jaras::TimelineMarker>> markers; };

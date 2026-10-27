@@ -78,8 +78,9 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         createTrack();
     else if (action == "projectStart" || action == "projectEnd")
         command(jaras::CommandKind::editSeek, {}, action == "projectStart" ? 0 : song->duration);
-    else if (action == "nextRegion" || action == "previousRegion" || action == "setlistUp" ||
-             action == "setlistDown" || action == "partsUp" || action == "partsDown") {
+    else if (action == "setlistUp" || action == "setlistDown") {
+        setlist->stepSelection(action == "setlistDown" ? 1 : -1);
+    } else if (action == "nextRegion" || action == "previousRegion" || action == "partsUp" || action == "partsDown") {
         std::vector<const jaras::Part *> parts;
         const bool child = action.startsWith("parts");
         for (const auto &part : song->parts)

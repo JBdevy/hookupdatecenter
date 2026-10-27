@@ -29,6 +29,30 @@ import XCTest
     func applyProjectEdit(_ p: Project) throws { try p.validate(); project = p; fullEdits += 1 }
 }
 final class TrackRoutingTests: XCTestCase {
+    @MainActor func testMultipleTrackDropPreservesOrderTreesRoutingAndSingleUndo() throws {
+        var project = Project.empty(name: "Multi drag")
+        var tracks = (0..<7).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        tracks[2].parentTrackID = tracks[1].id; tracks[2].patch = .masterGroup
+        tracks[5].parentTrackID = tracks[4].id; tracks[5].patch = .masterGroup
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setMixerTrackSelection([tracks[0].id, tracks[1].id, tracks[2].id], anchor: tracks[0].id)
+        XCTAssertFalse(show.canDropTrack(tracks[0].id, on: tracks[2].id, after: true))
+        show.dropTrack(tracks[0].id, on: tracks[4].id, before: tracks[5].id)
+        let result = try XCTUnwrap(show.current?.tracks)
+        XCTAssertEqual(result.map(\.id), [3,4,0,1,2,5,6].map { tracks[$0].id })
+        XCTAssertEqual(result[2].parentTrackID, tracks[4].id)
+        XCTAssertEqual(result[3].parentTrackID, tracks[4].id)
+        XCTAssertEqual(result[4], tracks[2])
+        XCTAssertEqual(result[2].primaryOutput, .masterGroup)
+        XCTAssertEqual(result[3].primaryOutput, .masterGroup)
+        XCTAssertEqual(executor.fullEdits, 1)
+        try show.snapshot.project.validate()
+        show.undo(); XCTAssertEqual(show.current?.tracks, tracks)
+        show.redo(); XCTAssertEqual(show.current?.tracks, result)
+    }
+
     @MainActor func testCreateGroupFromOneRootIncludesAllFollowingRootsAndPreservesNestedAudioRouting() throws {
         var project = Project.empty(name: "Create group below track")
         var tracks = (0..<7).map { Track(id: UUID(), name: "Track \($0)", role: .other) }

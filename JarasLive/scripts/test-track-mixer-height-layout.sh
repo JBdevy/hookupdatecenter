@@ -31,7 +31,7 @@ final class TrackReorderState: ObservableObject {
 final class TrackSelectionRouter {
  static let shared = TrackSelectionRouter()
  var pinnedTracks = Set<UUID>()
- func perform(track: UUID, event: NSEvent, action: () -> Void) { action() }
+ func handle(_ event: NSEvent) {} ; func perform(track: UUID, event: NSEvent, action: () -> Void) { action() }
 }
 '''
 with root.joinpath('layout.swift').open('a') as f: f.write('\n'+stubs+'\n'+title)

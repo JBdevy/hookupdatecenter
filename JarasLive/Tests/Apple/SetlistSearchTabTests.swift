@@ -76,6 +76,18 @@ MainActor.assumeIsolated {
     require(popup.isShown && closed == 1, "Shift-Tab must retain ordinary focus navigation")
     tab()
     require(!popup.isShown && closed == 2, "Plain Tab must close search after focus navigation too")
+    window.makeKeyAndOrderFront(nil); window.makeFirstResponder(nil); app.activate(ignoringOtherApps: true)
+    var moves: [Int] = [], activations = 0
+    keys.move = { moves.append($0); return true }
+    keys.activate = { activations += 1; return true }
+    func press(_ code: CGKeyCode) {
+        for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!.post(tap: .cghidEventTap) }
+        pump(0.1)
+    }
+    pump(0.3); press(125); press(125); press(126); press(36); press(76)
+    require(moves == [1, 1, -1], "Arrows must browse one row per press")
+    require(activations == 2, "Return and keypad Enter must activate the browsed selection")
+    print("SETLIST_ARROWS_RETURN_KEYPAD_ENTER_OK")
     print("SETLIST_TAB_OPEN_CLOSE_REOPEN_WITH_FOCUSED_TEXT_OK")
     window.close()
 }

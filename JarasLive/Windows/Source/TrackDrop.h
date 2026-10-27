@@ -108,4 +108,58 @@ inline void apply(jaras::Song &song,const Destination &d) {
     auto at=std::find_if(remaining.begin(),remaining.end(),[&](const auto &t){return t.id==d.before;});
     remaining.insert(at,moving.begin(),moving.end());song.tracks=std::move(remaining);
 }
+// Freeze the selected roots in project order when the drag starts. Children of
+// a selected folder move once with that folder, retaining their internal sends.
+inline std::vector<ID> roots(const jaras::Song &song,const std::set<ID> &selection) {
+    std::vector<ID> result;
+    for(size_t i=0;i<song.tracks.size();++i) {
+        const auto &t=song.tracks[i];
+        if(!selection.count(t.id)||!jaras::fixedTrackName(t.role).empty())continue;
+        if(std::none_of(result.begin(),result.end(),[&](const ID &root){return trackTree::descendant(song,i,root);}))result.push_back(t.id);
+    }
+    return result;
+}
+inline var description(const jaras::Project &project,const jaras::Song &song,const ID &track,const std::set<ID> &selection) {
+    auto value=description(project,song,track);Array<var> ids;
+    for(const auto &id:roots(song,selection.count(track)?selection:std::set<ID>{track}))ids.add(text(id));
+    put(value,"tracks",ids);return value;
+}
+inline std::vector<ID> sources(const var &value,const jaras::Project &project,const jaras::Song &song) {
+    const auto first=source(value,project,song);if(first.empty())return {};
+    std::set<ID> ids;for(const auto &id:list(get(value,"tracks")))ids.insert(utf8(id.toString()));
+    if(ids.empty())ids.insert(first);return roots(song,ids);
+}
+inline std::optional<Destination> resolve(const jaras::Song &song,const std::vector<ID> &ids,const ID &target,bool after,bool outside) {
+    if(ids.empty())return {};
+    const auto targetIndex=trackTree::index(song,target);
+    for(const auto &id:ids)if(id==target||trackTree::descendant(song,targetIndex,id))return {};
+    if(ids.size()==1)return resolve(song,ids.front(),target,after,outside);
+    if(targetIndex==song.tracks.size()||!jaras::fixedTrackName(song.tracks[targetIndex].role).empty())return {};
+    Destination d;d.source=ids.front();d.target=target;d.indicator=target;d.after=after;
+    d.parent=after&&trackTree::end(song,targetIndex)>targetIndex+1?std::optional<ID>(target):song.tracks[targetIndex].parentTrackID;
+    size_t boundary=targetIndex;
+    if(outside&&d.parent){const auto group=trackTree::index(song,*d.parent);if(group==song.tracks.size())return {};boundary=after?trackTree::end(song,group)-1:group;d.parent=song.tracks[group].parentTrackID;d.indicator=song.tracks[boundary].id;}
+    const auto insertion=boundary+(after?1:0);d.before=insertion<song.tracks.size()?song.tracks[insertion].id:ID{};d.joins=!outside&&d.parent.has_value();return d;
+}
+inline void apply(jaras::Song &song,const Destination &d,const std::vector<ID> &ids) {
+    if(ids.size()<2){apply(song,d);return;}
+    std::set<ID> movingIDs;
+    for(const auto &id:ids){const auto start=trackTree::index(song,id);for(size_t i=start;i<trackTree::end(song,start);++i)movingIDs.insert(song.tracks[i].id);}
+    if(movingIDs.count(d.target)||(d.parent&&movingIDs.count(*d.parent)))return;
+    std::vector<jaras::Track> moving,remaining;
+    ID before=d.before;
+    if(movingIDs.count(before)) {
+        auto i=trackTree::index(song,before);while(i<song.tracks.size()&&movingIDs.count(song.tracks[i].id))++i;
+        before=i<song.tracks.size()?song.tracks[i].id:ID{};
+    }
+    for(auto t:song.tracks) {
+        if(movingIDs.count(t.id)){
+            if(std::find(ids.begin(),ids.end(),t.id)!=ids.end())setParent(t,d.parent);
+            moving.push_back(std::move(t));
+        }else remaining.push_back(std::move(t));
+    }
+    auto at=std::find_if(remaining.begin(),remaining.end(),[&](const auto &t){return t.id==before;});
+    remaining.insert(at,moving.begin(),moving.end());song.tracks=std::move(remaining);
+}
+
 }

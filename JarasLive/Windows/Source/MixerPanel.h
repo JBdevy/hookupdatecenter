@@ -372,7 +372,8 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 if(event.mods.isPopupMenu())mixer.openContextMenu(id,event.getScreenPosition());
                 return;
             }
-            mixer.selectTrack(id, event.mods);
+            pendingSelection=mixer.selectedTrack(id)&&event.mods.isLeftButtonDown()&&!event.mods.isShiftDown()&&!event.mods.isCtrlDown()&&!event.mods.isPopupMenu();
+            if(!pendingSelection)mixer.selectTrack(id, event.mods);
             if (event.mods.isPopupMenu()) mixer.openContextMenu(id,event.getScreenPosition());
             else dragging=event.mods.isLeftButtonDown();
         }
@@ -389,10 +390,12 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 mixer.startDragging(description, this, ScaledImage(preview),true); return;
             }
             if(dragging&&e.getDistanceFromDragStart()>8&&track()&&jaras::fixedTrackName(track()->role).empty()&&mixer.session.song()) {
-                dragging=false;mixer.startDragging(trackDrop::description(mixer.session.project(),*mixer.session.song(),id),this);
+                pendingSelection=false;dragging=false;std::set<ID> selected;for(const auto &t:mixer.session.song()->tracks)if(mixer.selectedTrack(t.id))selected.insert(t.id);mixer.startDragging(trackDrop::description(mixer.session.project(),*mixer.session.song(),id,selected),this);
             }
         }
         void mouseUp(const MouseEvent &e) override {
+            if(pendingSelection&&e.getDistanceFromDragStart()<=8)mixer.selectTrack(id,e.mods);
+            pendingSelection=false;
             if (pressedSlot >= 0 && !e.mods.isPopupMenu() && e.getDistanceFromDragStart() <= 8) {
                 if (e.mods.isAltDown() || e.mods.isShiftDown()) {
                     if (pressedEffect.isNotEmpty()) changeEffect(pressedEffect,e.mods.isAltDown());
@@ -412,7 +415,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 effectDropSlot = slotAt(d.localPosition); mixer.dropPreview.reset(); mixer.blocked.clear(); repaint(); return;
             }
             if(!mixer.session.song())return;
-            mixer.dropPreview=trackDrop::resolve(*mixer.session.song(),trackDrop::source(d.description,mixer.session.project(),*mixer.session.song()),id,d.localPosition.x>getWidth()/2,d.localPosition.y<16);
+            mixer.dropPreview=trackDrop::resolve(*mixer.session.song(),trackDrop::sources(d.description,mixer.session.project(),*mixer.session.song()),id,d.localPosition.x>getWidth()/2,d.localPosition.y<16);
             mixer.blocked=mixer.dropPreview?ID{}:id;mixer.repaint();
         }
         void itemDragExit(const SourceDetails &) override {effectDropSlot=-1;mixer.dropPreview.reset();mixer.blocked.clear();mixer.repaint();repaint();}
@@ -429,7 +432,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 refresh(); return;
             }
             itemDragMove(d);const auto destination=mixer.dropPreview;const ID song=mixer.session.song()?mixer.session.song()->id:ID{};itemDragExit(d);
-            if(destination)try{mixer.session.editTrackHierarchy(song,[&](jaras::Song &s){trackDrop::apply(s,*destination);});}catch(const std::exception &e){mixer.error(String::fromUTF8(e.what()));}
+            if(destination)try{mixer.session.editTrackHierarchy(song,[&](jaras::Song &s){trackDrop::apply(s,*destination,trackDrop::sources(d.description,mixer.session.project(),s));});}catch(const std::exception &e){mixer.error(String::fromUTF8(e.what()));}
         }
         bool scrollEffects(const MouseEvent &event, const MouseWheelDetails &wheel) {
             if (std::abs(wheel.deltaX)>std::abs(wheel.deltaY) || event.mods.isShiftDown() || wheel.deltaY==0 ||
@@ -471,6 +474,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         int pressedSlot=-1, effectDropSlot=-1, firstSlot=0, hoveredSlot=-1;
         String pressedEffect;
         friend struct MasterMixerTests;
+        bool pendingSelection=false;
         friend struct HozMixerFocusTests;
         struct StripLayout { juce::Rectangle<int> slots,name;int controlsY=0,controlsHeight=0; };
         StripLayout layout() const {
@@ -586,6 +590,9 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
     std::unique_ptr<Strip> master;
     struct MixerViewport final : Viewport {
         std::function<void()> moved;
+        void mouseWheelMove(const MouseEvent &event,const MouseWheelDetails &wheel) override {
+            Component::mouseWheelMove(event,wheel);
+        }
         void visibleAreaChanged(const juce::Rectangle<int> &) override { if (moved) moved(); }
     } viewport;
     Component content;

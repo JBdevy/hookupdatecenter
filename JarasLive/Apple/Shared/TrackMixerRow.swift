@@ -838,7 +838,6 @@ struct TrackMixerRow: View, Equatable {
                 HStack(spacing: 3) {
                     if showsFader && (track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click) {
                         TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas")
-                            .trackControlSelectionExclusion()
                     }
                 }.buttonStyle(TrackControlButtonStyle()).frame(height: track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click ? 20 : 4)
                 if track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click {
@@ -887,7 +886,7 @@ struct TrackMixerRow: View, Equatable {
             }
             .overlay { if dragState.blockedTarget == track.id { TrackDropBlockedBadge() } }
             #if os(macOS)
-            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, dragName: track.name, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, icon: { editTrackDetails(details.iconRequest) }, group: show.current?.canCreateTrackGroup(track.id) == true ? { show.createTrackGroup(track.id) } : nil, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard && track.role.rawValue != "vinhetas" ? {
+            .overlay(TrackRightClickInput(project: project, track: track.id, kind: track.kind, dragName: track.name, selected: selected, select: select, patch: { patchTarget = editorTarget(project: project) }, fx: { fxTarget = editorTarget(project: project) }, edit: { editTrackDetails(details) }, icon: { editTrackDetails(details.iconRequest) }, group: show.current?.canCreateTrackGroup(track.id) == true ? { show.createTrackGroup(track.id) } : nil, ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil, link: canLink ? { linkSelectedTracks() } : nil, unlink: track.stereoLink != nil ? { show.unlinkTracks(track.id) } : nil, soundDesigner: track.kind == .click ? { clickSoundPresented = true } : nil, createMIDI: track.kind == .standard && track.role.rawValue != "vinhetas" ? {
                 let range = TimelineAreaSelection.shared.range
                 let valid = range?.song == show.current?.id
                 if let id = show.addMIDIItem(track: track.id, start: valid ? range?.start : nil, duration: valid ? range.map { $0.end - $0.start } : nil) { MIDIEditorWindows.shared.open(show: show, item: id) }
@@ -1017,7 +1016,6 @@ struct TrackMixerRow: View, Equatable {
                 Group {
                     if showsFader && lowerTitle {
                         TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas")
-                            .trackControlSelectionExclusion()
                     } else { Color.clear }
                 }.clipped().jarasPlaced(at: 4)
                 Group {
@@ -1427,15 +1425,15 @@ private struct TrackVolumeFader: View {
                 .font(.jarasSystem(size: compact ? 9 : 10, weight: .medium, design: .monospaced))
                 .foregroundStyle(JarasTheme.text).frame(width: compact ? 34 : 40, alignment: .leading)
                 .contentShape(Rectangle()).onTapGesture(count: 2) { decibels = 0; show.sendMixerControl(.volume, target: track, value: 1) }
-                .jarasHelp("Double-click to reset to 0 dB")
-            volumeControl
+                .jarasHelp("Double-click to reset to 0 dB").trackControlSelectionExclusion(selectsTrack: true)
+            volumeControl.trackControlSelectionExclusion()
                 .frame(height: compact ? 20 : 27)
                 .modifier(MappingRightClick(track: track, command: "volume", hitHeight: 16))
                 .frame(maxWidth: .infinity)
                 .jarasHelp("Double-click to reset to 0 dB")
                 .accessibilityLabel(track == nil ? "Master volume" : "Track volume")
                 .accessibilityValue(displayedDB <= -60 ? "−∞ dB" : String(format: "%.1f dB", displayedDB))
-            if let track, showsPhase { PhaseInvertButton(show: show, track: track, inverted: phaseInverted) }
+            if let track, showsPhase { PhaseInvertButton(show: show, track: track, inverted: phaseInverted).trackControlSelectionExclusion() }
         }.frame(height: compact ? 20 : 27).padding(.horizontal, 4)
             .onAppear { synchronize() }
             .onChange(of: volume) { _ in if !dragging { synchronize() } }
@@ -2045,9 +2043,9 @@ private struct FooterTrackInsertion: ViewModifier {
 
 }
 private extension View {
-    @ViewBuilder func trackControlSelectionExclusion() -> some View {
+    @ViewBuilder func trackControlSelectionExclusion(selectsTrack: Bool = false) -> some View {
         #if os(macOS)
-        background(TrackControlSelectionExclusion())
+        background(TrackControlSelectionExclusion(selectsTrack: selectsTrack))
         #else
         self
         #endif
@@ -2060,6 +2058,7 @@ private struct TrackRightClickInput: NSViewRepresentable {
     let track: UUID
     let kind: TrackKind
     var dragName = ""
+    var selected = false
     let select: () -> Void
     let patch: () -> Void
     let fx: () -> Void
@@ -2076,16 +2075,18 @@ private struct TrackRightClickInput: NSViewRepresentable {
     var deleteTracks: (() -> Void)? = nil
     var deleteTrackCount = 1
     func makeNSView(context: Context) -> TrackRightClickView { TrackRightClickView() }
-    func updateNSView(_ view: TrackRightClickView, context: Context) { view.interactionBlocked = interactionBlocked; view.project = project; view.track = track; view.kind = kind; view.dragName = dragName; view.select = select; view.patch = patch; view.fx = fx; view.edit = edit; view.icon = icon; view.group = group; view.ungroup = ungroup; view.removeFromGroup = removeFromGroup; view.link = link; view.unlink = unlink; view.soundDesigner = soundDesigner; view.createMIDI = createMIDI; view.duplicateTracks = duplicateTracks; view.deleteTracks = deleteTracks; view.deleteTrackCount = deleteTrackCount; view.action = { [weak view] in view?.openMenu() } }
+    func updateNSView(_ view: TrackRightClickView, context: Context) { view.interactionBlocked = interactionBlocked; view.project = project; view.track = track; view.kind = kind; view.dragName = dragName; view.selected = selected; view.select = select; view.patch = patch; view.fx = fx; view.edit = edit; view.icon = icon; view.group = group; view.ungroup = ungroup; view.removeFromGroup = removeFromGroup; view.link = link; view.unlink = unlink; view.soundDesigner = soundDesigner; view.createMIDI = createMIDI; view.duplicateTracks = duplicateTracks; view.deleteTracks = deleteTracks; view.deleteTrackCount = deleteTrackCount; view.action = { [weak view] in view?.openMenu() } }
 }
 /// Resolve one row per click, including after native scroll hosting recycles rows.
 /// The title also calls this route directly, so selecting it never relies solely
 /// on a passive event monitor. Both paths share the event to avoid double toggles.
 struct TrackControlSelectionExclusion: NSViewRepresentable {
+    var selectsTrack = false
     func makeNSView(context: Context) -> TrackControlSelectionExclusionView { TrackControlSelectionExclusionView() }
-    func updateNSView(_ view: TrackControlSelectionExclusionView, context: Context) {}
+    func updateNSView(_ view: TrackControlSelectionExclusionView, context: Context) { view.selectsTrack = selectsTrack }
 }
 final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObserver {
+    var selectsTrack = false
     private weak var mixerInput: TrackMixerNativeControlView?
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func resetCursorRects() {
@@ -2134,6 +2135,9 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
     private var monitor: Any?
     private var lastEventTime: TimeInterval?
     private var pressedTrack: UUID?
+    private var pendingSelection: (() -> Void)?
+    private var pointerMoved = false
+    private var handledDownTime: TimeInterval?
     private weak var dragRow: TrackRightClickView?
     private var dragStart: NSPoint?
     private var dragProject: UUID?
@@ -2142,7 +2146,7 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
     func resetProjectSession() {
         sessionGeneration &+= 1
         lastEventTime = nil; pressedTrack = nil; dragRow = nil; dragStart = nil; dragProject = nil
-        menuTracks.removeAll(); selectionModifiers = nil
+        menuTracks.removeAll(); selectionModifiers = nil; pendingSelection = nil; handledDownTime = nil
     }
     /// A reused row must retain the track that owns an in-flight button press.
     var pinnedTracks: Set<UUID> { menuTracks.union(pressedTrack.map { [$0] } ?? []) }
@@ -2158,8 +2162,15 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
         }
     }
     func handle(_ event: NSEvent) {
-        if event.type == .leftMouseUp { pressedTrack = nil; dragRow = nil; dragStart = nil; return }
-        guard event.type == .leftMouseDown else { return }
+        if event.type == .leftMouseDragged { pointerMoved = true; pendingSelection = nil; return }
+        if event.type == .leftMouseUp {
+            let selection = pendingSelection
+            pendingSelection = nil
+            if !pointerMoved && !TrackReorderState.shared.active { selection?() }
+            pressedTrack = nil; dragRow = nil; dragStart = nil; return
+        }
+        guard event.type == .leftMouseDown, handledDownTime != event.timestamp else { return }
+        handledDownTime = event.timestamp; pendingSelection = nil; pointerMoved = false
         pressedTrack = nil; dragRow = nil; dragStart = nil
         guard !TimelineTrackHeightResizeView.handlesPointer(event) else { return }
         guard !RightClickRouter.shared.handlesModifiedLeftClick(event) else { return }
@@ -2174,11 +2185,11 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
         guard let row = matches.min(by: { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }) else { return }
         pressedTrack = row.track
         if controls.allObjects.contains(where: { button in
+            if (button as? TrackControlSelectionExclusionView)?.selectsTrack == true { return false }
             let point = button.convert(event.locationInWindow, from: nil)
             return button.window === window && !button.isHiddenOrHasHiddenAncestor &&
                 button.bounds.contains(point) && button.visibleRect.contains(point)
         }) { return }
-        guard row.kind == .standard else { return }
         // The title already owns its native drag source. All other unoccupied
         // space uses this row, while registered controls retain their gestures.
         if let root = window.contentView {
@@ -2191,24 +2202,27 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
                 if view is TrackDragTitleView { isTitle = true; break }
                 hit = view.superview
             }
-            if !isTitle { dragRow = row; dragStart = event.locationInWindow; dragProject = row.project }
+            if !isTitle && row.kind == .standard { dragRow = row; dragStart = event.locationInWindow; dragProject = row.project }
         }
 
         // A recycled slot may target another row before this callback runs.
         // Preserve the click's original track/action and project generation.
         let track = row.track, project = row.project, select = row.select, generation = sessionGeneration
-        DispatchQueue.main.async { [weak self, weak row] in
+        let action = { [weak self, weak row] in
             guard let self, let row, row.window === window, row.project == project,
                   self.sessionGeneration == generation else { return }
             self.perform(track: track, event: event) { select?() }
         }
+        if row.selected && event.modifierFlags.intersection([.command, .shift]).isEmpty {
+            pendingSelection = action
+        } else { action() }
     }
     private func beginEmptyAreaDrag(_ event: NSEvent) -> Bool {
         guard !TrackReorderState.shared.active, let row = dragRow, let start = dragStart,
               row.window === event.window, row.project == dragProject, row.track == pressedTrack,
               !row.interactionBlocked, !RightClickRouter.shared.interactionBlocked,
               hypot(event.locationInWindow.x - start.x, event.locationInWindow.y - start.y) >= 4 else { return false }
-        dragRow = nil; dragStart = nil
+        dragRow = nil; dragStart = nil; pendingSelection = nil; pointerMoved = true
         let state = TrackReorderState.shared
         state.begin(track: row.track)
         let source = TrackDragSource(); source.state = state
@@ -2249,6 +2263,7 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
     }
 }
 private final class TrackRightClickView: RightClickTargetView {
+    var selected = false
     var dragName = ""
     var kind = TrackKind.standard
     var project = UUID()
@@ -2384,7 +2399,7 @@ private final class TrackDragTitleView: NSView {
     override func draw(_ dirtyRect: NSRect) { label().draw(in: compact ? bounds : NSRect(x: 0, y: (bounds.height - 14) / 2, width: bounds.width, height: 14)) }
     override func mouseDown(with event: NSEvent) {
         down = event.locationInWindow
-        TrackSelectionRouter.shared.perform(track: track, event: event) { self.select?() }
+        TrackSelectionRouter.shared.handle(event)
     }
     override func mouseUp(with event: NSEvent) { down = nil }
     override func mouseDragged(with event: NSEvent) {
@@ -3264,7 +3279,7 @@ private struct FooterMixerStrip: View, Equatable {
             #if os(macOS)
             .overlay {
                 if let track {
-                    TrackRightClickInput(project: show.snapshot.project.id, track: track.id, kind: track.kind, dragName: track.name, select: select,
+                    TrackRightClickInput(project: show.snapshot.project.id, track: track.id, kind: track.kind, dragName: track.name, selected: selected, select: select,
                         patch: { patchPresented = true }, fx: { fxPresented = true }, edit: edit, icon: editIcon,
                         group: canGroup ? { show.createTrackGroup(track.id) } : nil,
                         ungroup: isFolder ? { show.ungroupTrack(track.id) } : nil, removeFromGroup: track.parentTrackID != nil ? { show.removeTrackFromGroup(track.id) } : nil,

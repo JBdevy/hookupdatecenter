@@ -21,7 +21,7 @@ final class TrackReorderState: NSObject {
 }
 final class TrackSelectionRouter {
  static let shared = TrackSelectionRouter()
- func perform(track: UUID, event: NSEvent, _ action: () -> Void) { action() }
+ func handle(_ event: NSEvent) {} ; func perform(track: UUID, event: NSEvent, _ action: () -> Void) { action() }
 }
 '''
 Path(sys.argv[1]).write_text(stubs + helper + '\n' + native_title + '\n' + Path('Tests/Apple/TrackNameContrastTests.swift').read_text())

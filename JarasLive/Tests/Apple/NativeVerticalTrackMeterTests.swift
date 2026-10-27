@@ -230,6 +230,8 @@ import Foundation
     precondition(meter.hitTest(meter.convert(NSPoint(x: 2, y: 30), to: meter.superview)) == nil,
         "The bars still pass through selection and dragging after moving the reset target to the bottom")
     meter.mouseDown(with: bottomPeakClick)
+    precondition(meter.hitTest(meter.convert(bottomPeakPoint, to: meter.superview)) == nil,
+        "Clearing a peak releases its invisible rectangle for track selection")
     precondition(level.peakHold.decibels == nil && meter.layer?.backgroundColor == nil
         && meterLayer("meter-peak").backgroundColor == nil,
         "Resetting the held peak keeps the area transparent")

@@ -249,7 +249,10 @@ struct SongListView: View {
             entrySelectionAnchor = id
         } else {
             selectedEntries = [id]; entrySelectionAnchor = id
-            if let entry = visible.first(where: { $0.id == id }), case .region = entry { show.focusRegion(id) }
+            if let entry = visible.first(where: { $0.id == id }), case .region = entry {
+                show.focusRegion(id)
+                if show.focusedRegion == nil { selectedEntries = []; entrySelectionAnchor = nil }
+            }
         }
         show.selectSetlistBlock(selectedEntries.count == 1 ? selectedEntries.first : nil)
     }
@@ -548,7 +551,7 @@ struct SongListView: View {
             let next = current.map { ($0 + direction + lists.count) % lists.count } ?? (direction > 0 ? 0 : lists.count - 1)
             show.selectRegionPlaylist(lists[next].id); query = ""
             return lists[next].name
-        }, released: { show.finishRegionNavigation() }, delete: { requestRemoval(selectedEntries, keyboard: true) }))
+        }, released: { show.finishRegionNavigation() }, activate: { show.activateSetlistSelection() }, delete: { requestRemoval(selectedEntries, keyboard: true) }))
         #endif
         .onChange(of: show.setlistNavigationRequest) { request in
             guard let request, !creatingPlaylist && !choosingPlaylist else { return }
@@ -1487,9 +1490,10 @@ private struct SetlistArrowKeys: NSViewRepresentable {
     let move: (Int) -> Bool
     let playlist: (Int) -> String?
     let released: () -> Void
+    let activate: () -> Bool
     let delete: () -> Void
     func makeNSView(context: Context) -> SetlistKeyView { SetlistKeyView() }
-    func updateNSView(_ view: SetlistKeyView, context: Context) { view.searching = searching; view.searchMove = searchMove; view.searchChoose = searchChoose; view.move = move; view.playlist = playlist; view.search = search; view.released = released; view.delete = delete }
+    func updateNSView(_ view: SetlistKeyView, context: Context) { view.searching = searching; view.searchMove = searchMove; view.searchChoose = searchChoose; view.move = move; view.playlist = playlist; view.search = search; view.released = released; view.activate = activate; view.delete = delete }
 }
 final class SetlistKeyView: NSView {
     var searching = false
@@ -1499,6 +1503,7 @@ final class SetlistKeyView: NSView {
     var move: ((Int) -> Bool)?
     var playlist: ((Int) -> String?)?
     var released: (() -> Void)?
+    var activate: (() -> Bool)?
     var delete: (() -> Void)?
     private static weak var deleteOwner: SetlistKeyView?
     static func ownsDelete(_ event: NSEvent) -> Bool {
@@ -1593,6 +1598,12 @@ final class SetlistKeyView: NSView {
                     PlaylistSelectionNotice.shared.present(name, in: window)
                 }
                 return nil
+            }
+            if event.window === self.window, self.acceptsNavigation, [36,76].contains(event.keyCode),
+               playlistModifiers.isEmpty, Self.deleteOwner === self {
+                self.stopRepeating(commit: false)
+                if event.isARepeat { return nil }
+                return self.activate?() == true ? nil : event
             }
             if RegionShortcutView.handleSelectedObjectsDelete(event) { self.stopRepeating(commit: false); return nil }
             if ControlMappings.shared.handleKey(event) { self.stopRepeating(commit: false); return nil }

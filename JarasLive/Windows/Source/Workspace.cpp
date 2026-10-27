@@ -1106,6 +1106,9 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         };
         addAndMakeVisible(volume);
         volume.setComponentID("trackVolume");
+        volume.backgroundDown=[this](const MouseEvent &e){mouseDown(e.getEventRelativeTo(this));};
+        volume.backgroundDrag=[this](const MouseEvent &e){mouseDrag(e.getEventRelativeTo(this));};
+        volume.backgroundUp=[this](const MouseEvent &e){mouseUp(e.getEventRelativeTo(this));};
         volume.setSliderStyle(Slider::LinearHorizontal);
         volume.setTextBoxStyle(Slider::NoTextBox, false, 0, 0);
         volume.setDoubleClickReturnValue(true, 1);
@@ -1314,7 +1317,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         const bool audioButtons=standard||(t&&(t->role.id=="timecode"||t->role.id=="generatedClick"));
         mute.setVisible(audioButtons);solo.setVisible(audioButtons);
         if(solo.isVisible())place(solo,22);if(mute.isVisible())place(mute,22);
-        if(special){special->setVisible(!standard);special->setBounds(std::max(22,x-(t&&t->role.id=="timecode"?116:108)),y,t&&t->role.id=="timecode"?116:108,textTrack?48:h);}
+        if(special){special->setVisible(!standard);special->setBounds(std::max(22,x-(t&&t->role.id=="timecode"?116:t&&t->role.id=="generatedClick"?47:108)),y,t&&t->role.id=="timecode"?116:t&&t->role.id=="generatedClick"?47:108,textTrack?48:h);}
         pan.setVisible(expanded&&standard&&t->role.id!="vinhetas");
         if (pan.isVisible()) place(pan, 42);
         if(standard){env.setVisible(expanded&&t->role.id!="vinhetas");place(record,22);if(expanded){place(fx,22);if(env.isVisible())place(env,28);place(output,34);}}
@@ -1363,7 +1366,8 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
                 return;
             }
         }
-        w.selectMixerTrack(id, e.mods);
+        pendingSelection = w.trackSelected(id) && e.mods.isLeftButtonDown() && !e.mods.isShiftDown() && !e.mods.isCtrlDown() && !e.mods.isPopupMenu();
+        if (!pendingSelection) w.selectMixerTrack(id, e.mods);
         w.selectedClip.clear();
         w.updateState();
         repaint();
@@ -1376,22 +1380,22 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
     }
     void mouseDrag(const MouseEvent &e) override {
         if(dragging && e.getDistanceFromDragStart()>8 && track() && jaras::fixedTrackName(track()->role).empty() && w.session.song()) {
-            dragging=false;w.scrollingTrackDrag=id;w.startDragging(trackDrop::description(w.session.project(),*w.session.song(),id),this);
+            pendingSelection=false;dragging=false;w.scrollingTrackDrag=id;w.startDragging(trackDrop::description(w.session.project(),*w.session.song(),id,w.selectedTracks),this);
         }
     }
-    void mouseUp(const MouseEvent &) override {dragging=false;setMouseCursor(MouseCursor::NormalCursor);}
+    void mouseUp(const MouseEvent &e) override {if(pendingSelection&&e.getDistanceFromDragStart()<=8)w.selectMixerTrack(id,e.mods);pendingSelection=false;dragging=false;setMouseCursor(MouseCursor::NormalCursor);}
     bool isInterestedInDragSource(const SourceDetails &d) override {return w.session.song()&&!trackDrop::source(d.description,w.session.project(),*w.session.song()).empty();}
     void itemDragEnter(const SourceDetails &d) override {itemDragMove(d);}
     void itemDragMove(const SourceDetails &d) override {
         if(!w.session.song())return;
-        w.trackDropPreview=trackDrop::resolve(*w.session.song(),trackDrop::source(d.description,w.session.project(),*w.session.song()),id,d.localPosition.y>getHeight()/2,d.localPosition.x<16);
+        w.trackDropPreview=trackDrop::resolve(*w.session.song(),trackDrop::sources(d.description,w.session.project(),*w.session.song()),id,d.localPosition.y>getHeight()/2,d.localPosition.x<16);
         w.trackDropBlocked=w.trackDropPreview?ID{}:id;w.repaint();
     }
     void itemDragExit(const SourceDetails &) override {w.trackDropPreview.reset();w.trackDropBlocked.clear();w.repaint();}
     void itemDropped(const SourceDetails &d) override {
         itemDragMove(d);const auto destination=w.trackDropPreview;const ID song=w.session.song()?w.session.song()->id:ID{};
         itemDragExit(d);
-        if(destination)w.perform([&]{w.session.editTrackHierarchy(song,[&](jaras::Song &s){trackDrop::apply(s,*destination);});});
+        if(destination)w.perform([&]{w.session.editTrackHierarchy(song,[&](jaras::Song &s){trackDrop::apply(s,*destination,trackDrop::sources(d.description,w.session.project(),s));});});
     }
 
   private:
@@ -1403,7 +1407,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
     TextButton folder;
     GainFader volume;
     ParameterSlider pan;
-    bool updating = false, dragging = false;
+    bool updating = false, dragging = false, pendingSelection = false;
 };
 
 class Workspace::Timeline final : public Component, private ScrollBar::Listener, private Timer {
@@ -4378,10 +4382,12 @@ void Workspace::paint(Graphics &g) {
 }
 void Workspace::resized() {
     if (fadeoutOverlay) fadeoutOverlay->setBounds(getLocalBounds());
-    const int mixerHeight = footerMixerVisible ? jlimit(273, 724, mixerHeightSetting) : 0;
     const bool compactTransport = getWidth() < 1270, narrowTransport = getWidth() < 900;
     const int rail = 32, title = 32, transport = narrowTransport ? 166 : compactTransport ? 126 : 86;
     const int footerHeight = jlimit(27, 161, footerHeightSetting);
+    const int otherPanels=(keyboardVisible?108:0)+(vinhetasVisible&&!vinhetasDetached?240:0);
+    const int mixerLimit=std::max(0,getHeight()-title-transport-footerHeight-128-otherPanels);
+    const int mixerHeight=footerMixerVisible?std::min(jlimit(273,724,mixerHeightSetting),mixerLimit):0;
     const int dockHeight = (keyboardVisible ? 108 : 0) + mixerHeight + (vinhetasVisible && !vinhetasDetached ? 240 : 0);
     // Keep the timeline usable; scroll the lower panels at their original sizes
     // when the monitor cannot display all of them together.
@@ -5194,6 +5200,10 @@ bool Workspace::keyPressed(const KeyPress &key) {
     }
     if (code == KeyPress::tabKey && !ctrl && !shift && !alt && projectReady) {
         if (!isRepeat) { ++shortcutCount; setlist->toggleSearch(); }
+        return true;
+    }
+    if (code == KeyPress::returnKey && !ctrl && !shift && !alt && selectionAreas.activeScope()=="setlist") {
+        if (!isRepeat) perform([&]{setlist->activateSelection();});
         return true;
     }
     const KeyPress normalised(code, mods, key.getTextCharacter());

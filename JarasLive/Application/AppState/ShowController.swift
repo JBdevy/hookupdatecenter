@@ -223,6 +223,7 @@ public struct ShowTimelinePresentationState: Equatable {
     @Published public private(set) var regionFocusRequest = UUID()
     @Published public private(set) var setlistFocusRequest = UUID()
     private var regionNavigationTask: Task<Void, Never>?
+    private var lastSetlistNavigationID: UUID?
     public func stepRegion(_ direction: Int, entries: [SetlistEntry]? = nil, commitAfterDelay: Bool = true) {
         selectedSetlistBlock = nil
         regionNavigationTask?.cancel(); regionNavigationTask = nil
@@ -240,6 +241,7 @@ public struct ShowTimelinePresentationState: Equatable {
         } else { index = direction < 0 ? regions.count - 1 : 0 }
         let id = regions[index].id
         focusedRegion = id
+        lastSetlistNavigationID = id
         if commitAfterDelay { finishRegionNavigation() }
     }
     public func finishRegionNavigation() {
@@ -256,7 +258,21 @@ public struct ShowTimelinePresentationState: Equatable {
             self.focusRegion(id)
         }
     }
+    @discardableResult public func activateSetlistSelection() -> Bool {
+        guard let id = focusedRegion ?? lastSetlistNavigationID, playlistRegion(id) != nil else { return false }
+        let wasQueueing = snapshot.transport.playing && snapshot.transport.queuedRegionId != nil
+        focusRegion(id)
+        // Enter keeps the browsed row ready after cancelling its queue. Touch
+        // and mouse activation continue to clear the highlight in focusRegion.
+        if wasQueueing && snapshot.transport.queuedRegionId == nil && focusedRegion == nil {
+            focusedRegion = id
+            setlistFocusRequest = UUID()
+        }
+        lastSetlistNavigationID = id
+        return true
+    }
     public func focusRegion(_ id: UUID) {
+        lastSetlistNavigationID = nil
         selectedSetlistBlock = nil
         restoredCursorPosition = nil
         navigationFocusPosition = nil
@@ -282,8 +298,9 @@ public struct ShowTimelinePresentationState: Equatable {
             return
         }
         let queueing = snapshot.transport.playing
+        let wasQueued = snapshot.transport.queuedRegionId != nil
         send(queueing ? .queueRegion : .selectRegion, target: id)
-        focusedRegion = id
+        focusedRegion = queueing && wasQueued && snapshot.transport.queuedRegionId == nil ? nil : id
         // Queue selection reveals only the setlist row. The grid keeps following
         // the current transport (or Sub Play) until the queued song takes over.
         if queueing { setlistFocusRequest = UUID() }
@@ -499,6 +516,13 @@ public struct ShowTimelinePresentationState: Equatable {
     public func setAutoUntilBlockEnd(_ enabled: Bool) {
         guard (regionSetlist.autoUntilBlockEnd == true) != enabled else { return }
         var state = regionSetlist; state.autoUntilBlockEnd = enabled; _ = configureRegionSetlist(state)
+    }
+    private func clearFinishedSetlistSelection(before: TransportState, after: TransportState) {
+        guard let song = snapshot.project.songs.first(where: { $0.id == before.songId }),
+              FinishedSetlistSelection.shouldClear(focusedRegion, song: song, playlist: selectedRegionPlaylist,
+                                                  before: before, after: after) else { return }
+        regionNavigationTask?.cancel(); regionNavigationTask = nil
+        focusedRegion = nil
     }
     private func focusPreparedRegion(previous: TransportState) {
         guard !snapshot.transport.playing, let queued = previous.queuedRegionId,
@@ -1417,12 +1441,23 @@ public struct ShowTimelinePresentationState: Equatable {
         let previous = snapshot.transport
         executor.advance(delta)
         do {
-            let update = try executor.playbackSnapshot()
+            var update = try executor.playbackSnapshot()
+            if previous.playing, !update.transport.playing, update.transport.paused != true,
+               !update.transport.subPlay.playing, previous.queuedRegionId == nil, update.transport.queuedRegionId == nil,
+               previous.songId == update.transport.songId, let id = focusedRegion, let song = current,
+               playlistRegion(id) != nil,
+               !FinishedSetlistSelection.shouldClear(id, song: song, playlist: selectedRegionPlaylist,
+                                                    before: previous, after: update.transport) {
+                try executor.execute(.selectRegion, target: id, value: 0)
+                update = try executor.playbackSnapshot()
+                regionFocusRequest = UUID()
+            }
             var next = snapshot
             next.transport = update.transport; next.nextSongId = update.nextSongId
             updatingPlaybackSnapshot = true
             snapshot = next
             updatingPlaybackSnapshot = false
+            clearFinishedSetlistSelection(before: previous, after: update.transport)
             recordAutomationFrame()
             recordSetlistLivePlayback(before: previous, after: update.transport, elapsed: delta)
             applyLoopMixer(); focusPreparedRegion(previous: previous); rememberCursor()
@@ -1629,6 +1664,7 @@ public struct ShowTimelinePresentationState: Equatable {
                 previous.queuedRegionId != nil && update.transport.queuedRegionId == nil
             let escapedSongQueue = command == .escape && !previous.loop.enabled && previous.queuedSectionMarkerId == nil
             let disabledAuto = (escapedSongQueue || cancelledRegionQueue) && snapshot.project.regionSetlist?.autoAdvance == true
+            if cancelledRegionQueue { focusedRegion = nil }
             if disabledAuto { snapshot.project.regionSetlist?.autoAdvance = false; setlistRevision &+= 1 }
             if command == .subSeek { revealSubCursor() }
             lastTime = playbackClock()
@@ -2770,6 +2806,12 @@ public struct ShowTimelinePresentationState: Equatable {
               song.tracks.contains(where: { $0.id == track && $0.kind == .standard }),
               song.tracks.contains(where: { $0.id == target && $0.kind == .standard }),
               !TrackHierarchy(song.tracks).ancestors(of: target).contains(track) else { return false }
+        #if os(macOS)
+        if mixerTrackSelection.contains(track), mixerTrackSelection.count > 1 {
+            let hierarchy = TrackHierarchy(song.tracks)
+            return !mixerTrackSelection.contains(target) && mixerTrackSelection.isDisjoint(with: hierarchy.ancestors(of: target))
+        }
+        #endif
         return after || !song.isGroupMemberDrop(track, on: target) || song.groupAdoption(track, above: target) != nil
     }
     public func trackDropJoinsGroup(_ track: UUID, on target: UUID, after: Bool, outsideGroup: Bool = false) -> Bool {
@@ -2782,6 +2824,13 @@ public struct ShowTimelinePresentationState: Equatable {
     public func dropTrack(_ track: UUID, on target: UUID, before: UUID?, outsideGroup: Bool = false) {
         let after = before != target
         guard canDropTrack(track, on: target, after: after), let song = current else { return }
+        #if os(macOS)
+        if mixerTrackSelection.contains(track), mixerTrackSelection.count > 1 {
+            let selection = mixerTrackSelection
+            editProject { $0.moveSelectedTracks(selection, on: target, after: after, outsideGroup: outsideGroup, song: song.id) }
+            return
+        }
+        #endif
         if song.normalTrackDropDestination(track, on: target, after: after, outsideGroup: outsideGroup) != nil {
             editProject { $0.moveNormalTrack(track, on: target, after: after, outsideGroup: outsideGroup, song: song.id) }
         } else if song.isGroupMemberDrop(track, on: target) {
@@ -3323,6 +3372,7 @@ public struct ShowTimelinePresentationState: Equatable {
         resetLoopMixer(); loopMixerProject = nil; loopMixerChanged = false; applyingLoopMixer = false
         mixerGesture = nil; mixerPreviewValues = [:]; mixerPreviewIsPan = false
         mixerTrackSelection = []; selectedTrackForActions = nil; trackSelectionRequest = nil
+        lastSetlistNavigationID = nil
         setlistNavigationRequest = nil; setlistFocusRequest = UUID(); timelineNavigationCache = nil
         splitItemsRequest = 0; normalizeItemsRequest = 0; tempoMarkerRequest = 0; addTrackRequest = 0
         detectBPMRegion = nil; detectBPMRegions = []; modalNotice = nil

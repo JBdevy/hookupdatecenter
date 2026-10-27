@@ -286,3 +286,22 @@ struct TeleprompterPreviewPlayback: Equatable {
         return 0
     }
 }
+
+/// Clear only the occurrence that just finished; browsing another row is independent.
+public enum FinishedSetlistSelection {
+    public static func shouldClear(_ focused: UUID?, song: Song, playlist: RegionPlaylist?,
+                                   before: TransportState, after: TransportState) -> Bool {
+        guard let focused, before.playing, after.paused != true else { return false }
+        let source = playlist?.regionSourceID(forEntry: focused) ?? focused
+        func matches(_ state: TransportState) -> Bool {
+            guard state.songId == song.id,
+                  let root = song.playingSetlistRegion(state.regionId, position: state.position, expanded: []) else { return false }
+            if source == root.id {
+                if let entry = state.playlistEntryId { return focused == entry }
+                return focused == source
+            }
+            return source == song.playingSetlistRegion(state.regionId, position: state.position, expanded: [root.id])?.id
+        }
+        return matches(before) && (!after.playing || !matches(after))
+    }
+}

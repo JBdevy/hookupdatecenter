@@ -17,16 +17,22 @@ using jaras::ID;
 // to the containing scroll view and never enters Slider's value-editing path.
 class ParameterSlider : public Slider {
   public:
+    std::function<void(const MouseEvent &)> backgroundDown, backgroundDrag, backgroundUp;
+    bool backgroundGesture=false;
     ParameterSlider() = default;
     ParameterSlider(SliderStyle style, TextEntryBoxPosition text) : Slider(style, text) {}
     void mouseDown(const MouseEvent &event) override {
+        backgroundGesture=backgroundDown && event.x<42;
+        if(backgroundGesture){backgroundDown(event);return;}
         dragging = event.mods.isLeftButtonDown() && !event.mods.isPopupMenu();
         if (dragging) Slider::mouseDown(event);
     }
     void mouseDrag(const MouseEvent &event) override {
+        if(backgroundGesture){if(backgroundDrag)backgroundDrag(event);return;}
         if (dragging) Slider::mouseDrag(event);
     }
     void mouseUp(const MouseEvent &event) override {
+        if(backgroundGesture){if(backgroundUp)backgroundUp(event);backgroundGesture=false;return;}
         if (dragging) Slider::mouseUp(event);
         dragging = false;
     }

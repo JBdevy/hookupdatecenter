@@ -1416,3 +1416,21 @@ require(!localGateFeedback.gate(preset: 1, pad: 0, confirmed: false, now: 20.1),
 localGateFeedback.expireGates(now: 23)
 require(!localGateFeedback.gate(preset: 0, pad: 0, confirmed: false, now: 23), "Unconfirmed Gate changes return to authoritative state after timeout")
 print("REMOTE_GATE_LOCAL_IMMEDIATE_RAPID_TAPS_STALE_STATE_AND_PRESET_ISOLATION_OK")
+
+var advancingTitle = drawerFixture
+advancingTitle.playing = true; advancingTitle.position = 2; advancingTitle.currentRegion = regionID
+advancingTitle.focusedRegion = plainRegion
+advancingTitle.songDisplays = .init(current: "Stale song", currentBPM: nil, next: nil, nextBPM: nil, queued: nil, queuedBPM: nil, playlistSeconds: 20)
+advancingTitle.sectionPlayback = nil
+require(advancingTitle.currentSongName == "Inside", "Remote title follows drawer song rather than browsed selection or stale display")
+advancingTitle.currentRegion = plainRegion; advancingTitle.position = 12; advancingTitle.focusedRegion = regionID
+require(advancingTitle.currentSongName == "Regular", "Queue handoff updates the title while blue selection is still on previous song")
+print("REMOTE_QUEUE_HANDOFF_TITLE_OK")
+
+var selectionVisibility = advancingTitle
+selectionVisibility.playing = true
+require(!selectionVisibility.showsSetlistSelection, "Remote selection must not be blue while playing")
+selectionVisibility.playing = false; selectionVisibility.subPlaying = false
+require(selectionVisibility.showsSetlistSelection, "Stopped Remote keeps selection")
+selectionVisibility.subPlaying = true
+require(!selectionVisibility.showsSetlistSelection, "Subplay also suppresses blue selection")

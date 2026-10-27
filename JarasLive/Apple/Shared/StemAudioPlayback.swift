@@ -4448,10 +4448,15 @@ struct VerticalTrackMeter: NSViewRepresentable {
         refreshVisibleDrawing()
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
-        // Only the reserved number rectangle consumes a click. The bars and
-        // scale remain transparent to track selection, scrolling and dragging.
+        // Only a visible peak number consumes a click. Its reserved rectangle
+        // must remain available to track selection when the readout is empty.
         let local = convert(point, from: superview)
-        guard showScale, !isHiddenOrHasHiddenAncestor, bounds.contains(local), peakLabel.frame.contains(local) else { return nil }
+        guard showScale, peakDB != nil, !peakLabel.isHidden, !isHiddenOrHasHiddenAncestor,
+              bounds.contains(local), let text = peakLabel.string as? NSAttributedString else { return nil }
+        let width = min(peakLabel.frame.width, ceil(text.size().width) + 4)
+        let hitRect = CGRect(x: peakLabel.frame.midX - width / 2, y: peakLabel.frame.minY,
+                             width: width, height: peakLabel.frame.height)
+        guard hitRect.contains(local) else { return nil }
         return self
     }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

@@ -123,8 +123,8 @@ class Presentation final {
         put(result, "markers", markers);
         if (t.regionId) {
             put(result, "currentRegion", wireID(*t.regionId));
-            put(result, "focusedRegion", wireID(session.focusedRegion.value_or(t.playlistEntryId.value_or(*t.regionId))));
         }
+        if (session.focusedRegion) put(result,"focusedRegion",wireID(*session.focusedRegion));
         if (t.queuedRegionId)
             put(result, "queuedRegion", wireID(*t.queuedRegionId));
         if (t.playlistEntryId) put(result,"currentPlaylistEntryId",wireID(*t.playlistEntryId));
@@ -188,6 +188,7 @@ class Presentation final {
         put(result, "multiLoopsBypassed", t.multiLoopsBypassed);
         put(result, "setlistLiveEnabled", setlist.liveEnabled.value_or(false));
         put(result, "regionAuto", setlist.autoAdvance);
+        put(result, "regionAutoUntilBlockEnd", setlist.autoUntilBlockEnd);
         put(result, "prepareOnly", setlist.prepareWithoutPlayback.value_or(false));
         put(result, "setlistFontStyle", stage.preferences.fontStyle());
         Array<var> played;
