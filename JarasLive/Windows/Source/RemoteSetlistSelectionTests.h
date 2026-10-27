@@ -336,7 +336,11 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         const auto localQueue=session.transport().queuedRegionId;
         require(localQueue==parts.back().id,"Local click did not queue the destination");
         select(parts.back().id);require(!session.transport().queuedRegionId,"Remote reclick did not cancel the existing queue");
-        playbackUnchanged();selectedAndRevealed(workspace,*rows,parts.back().id);
+        playbackUnchanged();
+        const auto cancelledSelection=get(workspace.diagnostics(),"setlist");
+        require(!session.focusedRegion && strings(get(cancelledSelection,"selectedEntries")).empty() &&
+                strings(get(cancelledSelection,"visibleSelectedEntries")).empty(),
+                "Remote queue cancellation must clear the blue selection, unlike keyboard Enter");
         select(parts.back().id);require(session.transport().queuedRegionId==localQueue,"Remote queue differs from local selection");
         playbackUnchanged();selectedAndRevealed(workspace,*rows,parts.back().id);
         select(parts[0].id);
