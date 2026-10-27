@@ -559,6 +559,11 @@ public struct ShowTimelinePresentationState: Equatable {
         guard forceReveal || changedPlaylist || focusedRegion != selection else { return }
         focusedRegion = selection; setlistFocusRequest = UUID()
     }
+    public func setSubplayExclusiveTracks(_ ids: Set<UUID>) {
+        var state = regionSetlist
+        state.subplayExclusiveTrackIDs = current?.tracks.filter { ids.contains($0.id) }.map(\.id) ?? []
+        _ = configureRegionSetlist(state)
+    }
     public func setAutomaticSubplay(_ enabled: Bool, seconds: Double? = nil, bars: Int? = nil, next: Bool? = nil) {
         var state = regionSetlist; state.automaticSubplay = enabled
         if let seconds, seconds.isFinite {

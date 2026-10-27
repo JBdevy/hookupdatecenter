@@ -22,6 +22,14 @@ int main() {
     auto edited=a.project();edited.projectSyncID="wrong";a.applyProjectEdit(edited);assert(a.project().projectSyncID==fixture().projectSyncID);
     a.execute({CommandKind::selectRegion,"one"});a.execute({CommandKind::play});a.advance(4);
     auto frame=wire(a);assert(b.applyProjectSync(frame,.01,true));
+    {
+        auto isolated=frame;isolated.transport.exclusivePlaybackRegionId="two";
+        isolated.transport.subExclusivePlaybackRegionId="one";
+        isolated.setlist->subplayExclusiveTrackIDs=std::vector<ID>{"track"};
+        const auto data=projectSync::encode(isolated);const auto restored=projectSync::decode(data.data(),data.size());
+        assert(restored.transport.exclusivePlaybackRegionId=="two" && restored.transport.subExclusivePlaybackRegionId=="one");
+        assert(restored.setlist->subplayExclusiveTrackIDs==std::vector<ID>{"track"});
+    }
     assert(b.transport().playing && std::abs(b.transport().position-4.01)<1e-6);
     assert(b.project().regionSetlist->playlists.empty());
     // Mixer changes are absolute, idempotent and do not reposition a rolling transport.

@@ -736,6 +736,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
         optionalNum(rs, "automaticSubplaySeconds", state.automaticSubplaySeconds);
         optionalNum(rs, "automaticSubplayBars", state.automaticSubplayBars);
         optionalNum(rs, "automaticSubplayNext", state.automaticSubplayNext);
+        optionalIDs(rs, "subplayExclusiveTrackIDs", state.subplayExclusiveTrackIDs);
         optionalNum(rs, "prepareWithoutPlayback", state.prepareWithoutPlayback);
         optionalNum(rs, "liveEnabled", state.liveEnabled);
         optionalIDs(rs, "playedLiveRegionIDs", state.playedLiveRegionIDs);
@@ -1075,6 +1076,8 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
         emit(rs, "automaticSubplaySeconds", state.automaticSubplaySeconds);
         emit(rs, "automaticSubplayBars", state.automaticSubplayBars);
         emit(rs, "automaticSubplayNext", state.automaticSubplayNext);
+        if(state.subplayExclusiveTrackIDs) put(rs,"subplayExclusiveTrackIDs",idsJSON(*state.subplayExclusiveTrackIDs));
+        else remove(rs,"subplayExclusiveTrackIDs");
         emit(rs, "liveEnabled", state.liveEnabled);
         if (state.playedLiveRegionIDs)
             put(rs, "playedLiveRegionIDs", idsJSON(*state.playedLiveRegionIDs));

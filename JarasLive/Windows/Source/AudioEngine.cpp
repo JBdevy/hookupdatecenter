@@ -217,7 +217,7 @@ void AudioEngine::previewMIDIItem(const jaras::Song &song,const jaras::AudioClip
             voice->midiTiming.swap(timing);
             voice->start=clip.startTime;voice->duration=clip.duration;
             voice->offset=clip.sourceOffset;voice->speed=clip.playbackRate;
-            voice->playbackStart=jaras::playbackItemStart(song,clip);
+            voice->playbackStart=jaras::playbackItemStart(song,clip); voice->regionOwnerIndex=jaras::playbackOwnerIndex(song,clip.regionOwnerID);
             voice->fadeIn=clip.fadeIn.value_or(0); voice->fadeOut=clip.fadeOut.value_or(0);
             for(auto &expected:voice->midiExpected)expected=-2;
         }
@@ -245,7 +245,7 @@ bool AudioEngine::cacheSplitItems(const jaras::Song &song, const std::map<ID, ID
         auto voice = std::make_unique<Voice>();
         voice->track=track.id; voice->clipID=clip.id; voice->source=original->source; voice->bus=original->bus;
         voice->start=clip.startTime; voice->duration=clip.duration; voice->offset=clip.sourceOffset; voice->speed=clip.playbackRate;
-        voice->playbackStart=jaras::playbackItemStart(song,clip);
+        voice->playbackStart=jaras::playbackItemStart(song,clip); voice->regionOwnerIndex=jaras::playbackOwnerIndex(song,clip.regionOwnerID);
         voice->clipGain=original->clipGain; voice->clipPan=original->clipPan; voice->channelMode=original->channelMode;
         voice->fadeIn=clip.fadeIn.value_or(0); voice->fadeOut=clip.fadeOut.value_or(0); voice->fadeInShape=original->fadeInShape; voice->fadeOutShape=original->fadeOutShape;
         voice->volume=original->volume; voice->pan=original->pan; voice->mute=original->mute; voice->solo=original->solo;
@@ -327,7 +327,7 @@ bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
         for (auto &voice : voices) if (const auto found=wanted.find(voice->clipID);found!=wanted.end()) {
             const auto &clip=*found->second;
             voice->start=clip.startTime; voice->duration=clip.duration; voice->offset=clip.sourceOffset; voice->speed=clip.playbackRate;
-            voice->playbackStart=jaras::playbackItemStart(song,clip);
+            voice->playbackStart=jaras::playbackItemStart(song,clip); voice->regionOwnerIndex=jaras::playbackOwnerIndex(song,clip.regionOwnerID);
             voice->fadeIn=clip.fadeIn.value_or(0); voice->fadeOut=clip.fadeOut.value_or(0);
         }
         for (auto &entry : midi) replaceSharedMIDI(entry.first, entry.second);
@@ -367,6 +367,7 @@ void AudioEngine::refreshItemTiming(const jaras::Song &song, const jaras::AudioC
             target->start = clip.startTime; target->duration = clip.duration;
             target->offset = clip.sourceOffset; target->speed = clip.playbackRate;
             target->playbackStart.swap(playbackStart);
+            target->regionOwnerIndex=jaras::playbackOwnerIndex(song,clip.regionOwnerID);
             target->clipAudio.swap(processor);
         }
         duration = song.duration;
@@ -505,6 +506,7 @@ void AudioEngine::refreshTempo(const jaras::Song &before, const jaras::Song &aft
             voice.start = edit.clip->startTime; voice.duration = edit.clip->duration;
             voice.offset = edit.clip->sourceOffset; voice.speed = edit.clip->playbackRate;
             voice.playbackStart.swap(edit.playbackStart);
+            voice.regionOwnerIndex=jaras::playbackOwnerIndex(after,edit.clip->regionOwnerID);
             if (voice.midiItem) {
                 voice.midiTiming.swap(edit.midiTiming);
                 std::swap(voice.midiSequence, edit.midi); voice.sharedMIDINotes.swap(edit.shared);
@@ -517,8 +519,10 @@ void AudioEngine::refreshTempo(const jaras::Song &before, const jaras::Song &aft
         current.end = std::isfinite(current.end) ? remap(current.end) : current.end;
         position = current.position; subPosition = current.subPosition;
         for (int h = 0; h < 2; ++h) {
-            if (std::isfinite(current.scope[h].minimum)) current.scope[h].minimum = remap(current.scope[h].minimum);
-            if (std::isfinite(current.scope[h].maximum)) current.scope[h].maximum = remap(current.scope[h].maximum);
+            for(auto* scope : {&current.scope[h],&current.exclusiveScope[h]}) {
+                if (std::isfinite(scope->minimum)) scope->minimum = remap(scope->minimum);
+                if (std::isfinite(scope->maximum)) scope->maximum = remap(scope->maximum);
+            }
             presentedPosition[h] = remap(presentedPosition[h].load());
             tailCursor[h] = remap(tailCursor[h]);
             if (latencyPlan) latencyPlan->timeline[h].remap(remap);
@@ -950,6 +954,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             checkpoint();
             auto bus = std::make_unique<Bus>();
             bus->id = track.id;
+            bus->subplayExclusive=project && project->regionSetlist && project->regionSetlist->subplayExclusiveTrackIDs && std::find(project->regionSetlist->subplayExclusiveTrackIDs->begin(),project->regionSetlist->subplayExclusiveTrackIDs->end(),track.id)!=project->regionSetlist->subplayExclusiveTrackIDs->end();
             bus->held.record(heldPeaks[track.id]);
             bus->timecode = track.role.id == "timecode";
             bus->vinhetasBus = track.role.id == "vinhetas";
@@ -1148,7 +1153,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                 voice->track = track.id;
                 voice->clipID = clip.id;
                 voice->start = clip.startTime;
-                voice->playbackStart = jaras::playbackItemStart(song, clip);
+                voice->playbackStart = jaras::playbackItemStart(song, clip); voice->regionOwnerIndex=jaras::playbackOwnerIndex(song,clip.regionOwnerID);
                 voice->duration = clip.duration;
                 voice->offset = clip.sourceOffset;
                 voice->speed = clip.playbackRate;
@@ -1228,7 +1233,7 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback
     auto equalNotes=[](const auto &a,const auto &b) {
         return a.size()==b.size() && std::equal(a.begin(),a.end(),b.begin(),[](const auto &x,const auto &y) {
             return x.start==y.start && x.end==y.end && x.pitch==y.pitch && x.velocity==y.velocity &&
-                   x.channel==y.channel && x.playbackStart==y.playbackStart;
+                   x.channel==y.channel && x.playbackStart==y.playbackStart && x.regionOwnerIndex==y.regionOwnerIndex;
         });
     };
     const bool sameMaster=preservePlayback && JSON::toString(masterFXSettings)==JSON::toString(prepared.masterFXSettings);
@@ -1408,11 +1413,11 @@ std::vector<AudioEngine::TransportRead> AudioEngine::transportReads(const State 
         const double cursor=head==0?state.position:state.subPosition;
         std::map<const Source*,std::vector<const Voice*>> activeSources;
         for(const auto &voice:voices)
-            if(voice->source && state.scope[head].allows(voice->playbackStart) &&
+            if(voice->source && trackScope(state,head,voice->bus).allows(voice->playbackStart,voice->regionOwnerIndex) &&
                voice->start<=cursor && voice->start+voice->duration>cursor)
                 activeSources[voice->source.get()].push_back(voice.get());
         for(const auto &voice:voices) {
-            if(!voice->source || !state.scope[head].allows(voice->playbackStart))continue;
+            if(!voice->source || !trackScope(state,head,voice->bus).allows(voice->playbackStart,voice->regionOwnerIndex))continue;
             const auto add=[&](double at,bool loop) {
                 if(voice->start>at+(loop?0:2) || voice->start+voice->duration<=at)return;
                 // Continuous cut halves share the same physical source clock.
@@ -1574,7 +1579,7 @@ void AudioEngine::transport(const State &state) {
         if (head == 0 ? !state.playing : !state.subPlaying) continue;
         const auto cursor = head == 0 ? state.position : state.subPosition;
         for (auto& voice : voices) {
-            if (!voice->source || !state.scope[head].allows(voice->playbackStart) || voice->start > cursor + 2 ||
+            if (!voice->source || !trackScope(state,head,voice->bus).allows(voice->playbackStart,voice->regionOwnerIndex) || voice->start > cursor + 2 ||
                 voice->start + voice->duration <= cursor) continue;
             auto* reader = voice->source->readers[head].get();
             const double local = std::max(0., cursor - voice->start);
@@ -1706,6 +1711,7 @@ void AudioEngine::setMixer(const jaras::Project &project, const jaras::Song &son
                 u.mute = t.mute;
                 u.solo = t.solo;
                 u.inputMonitoring=t.inputMonitoring.value_or(true);
+                u.subplayExclusive=project.regionSetlist && project.regionSetlist->subplayExclusiveTrackIDs && std::find(project.regionSetlist->subplayExclusiveTrackIDs->begin(),project.regionSetlist->subplayExclusiveTrackIDs->end(),t.id)!=project.regionSetlist->subplayExclusiveTrackIDs->end();
                 u.midiSlot=t.role.id=="vinhetas"?0:t.midiInput.value_or(0);u.midiChannel=t.midiChannel.value_or(0);
                 enqueue(u);
                 break;
@@ -1826,6 +1832,7 @@ void AudioEngine::applyUpdates() {
             // the running head and decoder history until Sub Play actually starts.
             if (!current.subPlaying && !u.state.subPlaying) current.subPosition=u.state.subPosition;
             current.scope[0]=u.state.scope[0]; current.scope[1]=u.state.scope[1];
+            current.exclusiveScope[0]=u.state.exclusiveScope[0];current.exclusiveScope[1]=u.state.exclusiveScope[1];
             current.loop=u.state.loop; current.loopStart=u.state.loopStart; current.loopEnd=u.state.loopEnd;
             current.end=u.state.end; current.timecodePreferred=u.state.timecodePreferred;
         }
@@ -1848,7 +1855,7 @@ void AudioEngine::applyUpdates() {
             v.pan = u.pan;
             v.mute = u.mute;
             v.solo = u.solo;
-            v.inputMonitoring=u.inputMonitoring;v.midiSlot=u.midiSlot;v.midiChannel=u.midiChannel;
+            v.subplayExclusive=u.subplayExclusive;v.inputMonitoring=u.inputMonitoring;v.midiSlot=u.midiSlot;v.midiChannel=u.midiChannel;
             v.phase = u.phase;
         }
     };
@@ -1863,7 +1870,7 @@ void AudioEngine::mixMIDIVoice(Voice &v, int head, double at, float *const *out,
     const double sr=rate.load(std::memory_order_relaxed);
     const unsigned ownDelay=v.ownsMIDI()?v.fx[head].latencyFrames():0;
     const unsigned busDelay=latencyPlan?latencyPlan->buses[v.bus].own:ownDelay;
-    running=running&&v.ownsMIDI()&&!v.itemMuted&&current.scope[head].allows(v.playbackStart);
+    running=running&&v.ownsMIDI()&&!v.itemMuted&&trackScope(current,head,v.bus).allows(v.playbackStart,v.regionOwnerIndex);
     const bool intersects=at+count/sr>v.start&&at<v.start+v.duration+busDelay/sr;
     if (!running || !intersects) {
         if (v.midiExpected[head] == -1) return;
@@ -1882,7 +1889,7 @@ void AudioEngine::mixMIDIVoice(Voice &v, int head, double at, float *const *out,
     auto &messages=v.midiMessages[head];messages.clear();
     const bool timelineRunning=head==0?current.playing:current.subPlaying;
     MIDIPlayback::appendExternal(v.midiSequence,messages,v.midiExpected[head],v.midiScopes[head],
-                                 at,count,sr,current.scope[head],timelineRunning);
+                                 at,count,sr,trackScope(current,head,v.bus),timelineRunning);
     const double automationAt=v.midiTiming->sourceAt(std::max(v.start,at));
     v.fx[head].applyAutomation(v.automation,automationAt);
     v.fx[head].process(buffer,count,at,timelineRunning,&messages,(renderClock+dest)/sr);
@@ -2141,12 +2148,12 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 auto &bus=*buses[index];
                 if(!bus.fx[head].hasExternal())continue;
                 auto &messages=bus.externalMIDI[head];
-                const auto scope=current.scope[head];
+                const auto scope=trackScope(current,head,index);
                 const bool reset=std::abs(bus.externalExpected[head]-cursor)>1.5/sr||bus.externalScopes[head]!=scope;
                 if(reset || !sourceAudible(index)) {
                     for(int channel=1;channel<=16;++channel)messages.addEvent(MidiMessage::allNotesOff(channel),done);
                     if(sourceAudible(index))for(const auto &note:bus.midiNotes)
-                        if(note.velocity>0&&scope.allows(note.playbackStart)&&note.start<cursor-1e-9&&note.end>cursor+1e-9)
+                        if(note.velocity>0&&scope.allows(note.playbackStart,note.regionOwnerIndex)&&note.start<cursor-1e-9&&note.end>cursor+1e-9)
                             messages.addEvent(MidiMessage::noteOn(note.channel,note.pitch,(uint8)note.velocity),done);
                 }
                 if(!sourceAudible(index)){bus.externalExpected[head]=-1;continue;}
@@ -2154,7 +2161,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 auto event=std::lower_bound(bus.externalEvents.begin(),bus.externalEvents.end(),cursor-1e-9,
                     [](const MIDIPlayback::Event &event,double value){return event.time<value;});
                 for(;event!=bus.externalEvents.end()&&event->time<end-1e-9;++event) {
-                    const auto &note=event->note;if(!scope.allows(note.playbackStart))continue;
+                    const auto &note=event->note;if(!scope.allows(note.playbackStart,note.regionOwnerIndex))continue;
                     messages.addEvent(event->on?MidiMessage::noteOn(note.channel,note.pitch,(uint8)note.velocity):MidiMessage::noteOff(note.channel,note.pitch),
                         done+jlimit(0,count-1,(int)std::round((event->time-cursor)*sr)));
                 }
@@ -2163,7 +2170,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             {
             AudioCallbackMetrics::Detail traversalProfile(callbackMetrics,3);
             for (auto &v : voices)
-                if (sourceAudible(v->bus) && current.scope[head].allows(v->playbackStart)) {
+                if (sourceAudible(v->bus) && trackScope(current,head,v->bus).allows(v->playbackStart,v->regionOwnerIndex)) {
                     if (v->source && v->start > cursor && v->start <= cursor + 2)
                         v->source->readers[head]->request((int64)std::floor((v->clipAudio ? v->clipAudio->sourcePosition(0) : v->offset) * v->source->readers[head]->sampleRate));
                     mixVoice(*v, head, cursor, (v->frozen ? buses[v->bus]->frozen[head] : buses[v->bus]->clips[head]).getArrayOfWritePointers(), 2, done, count);
@@ -2173,7 +2180,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             AudioCallbackMetrics::Detail generatorProfile(callbackMetrics,4);
             for (size_t index = 0; index < buses.size(); ++index)
                 if (sourceAudible(index) && buses[index]->midi)
-                    buses[index]->midi->render(head, cursor, buses[index]->head(head), done, count, current.scope[head]);
+                    buses[index]->midi->render(head, cursor, buses[index]->head(head), done, count, trackScope(current,head,index));
             for (size_t busIndex = 0; busIndex < buses.size(); ++busIndex)
                 if (sourceAudible(busIndex) && buses[busIndex]->click) {
                     auto &bus = *buses[busIndex];
@@ -2215,7 +2222,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         if(!run&&tailFrames[head]&&done<samples) {
             const int count=std::min<unsigned>(unsigned(samples-done),tailFrames[head]);
             // Flush delayed item processors as well as downstream bus delays.
-            for(auto &voice:voices)if(sourceAudible(voice->bus)&&current.scope[head].allows(voice->playbackStart))
+            for(auto &voice:voices)if(sourceAudible(voice->bus)&&trackScope(current,head,voice->bus).allows(voice->playbackStart,voice->regionOwnerIndex))
                 mixVoice(*voice,head,tailCursor[head],(voice->frozen?buses[voice->bus]->frozen[head]:buses[voice->bus]->clips[head]).getArrayOfWritePointers(),2,done,count);
             for(int n=done;n<samples;n++)timelinePositions[size_t(head)][size_t(n)]=tailCursor[head]+(n-done)/sr;
             tailCursor[head]+=count/sr;tailFrames[head]-=unsigned(count);

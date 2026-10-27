@@ -1862,3 +1862,7 @@
 "Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings." = "Clique em Mapear MIDI e acione uma nota ou botão CC. A entrada MIDI deve estar ativa em Configurações.";
 
 "Cancel queued section" = "Cancelar trecho engatilhado";
+
+"Choose tracks" = "Escolher pistas";
+
+"On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items." = "Nessas pistas, o Subplay automático interrompe os itens da música anterior e mantém apenas os itens da música que entra.";

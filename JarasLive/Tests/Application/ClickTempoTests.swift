@@ -1,6 +1,25 @@
 import XCTest
 @testable import JarasApplication
 final class ClickTempoTests: XCTestCase {
+    func testWeakSecondaryAttacksDoNotTurn160Into284OrEraseQuietQuarterNotes() {
+        var pulses: [ClickTempoDetector.Transient] = []
+        for beat in 0..<80 {
+            let at = Double(beat) * 0.375 + 0.0001
+            pulses.append(.init(position: at, peak: (4...11).contains(beat) ? 1 : 0.7))
+            if ![4,6,8,9,10].contains(beat) {
+                pulses.append(.init(position: beat == 11 ? 4.28893424 : at + 0.18965, peak: beat == 11 ? 0.30176 : 0.07))
+            }
+        }
+        let primary = ClickTempoDetector.primaryTransients(pulses)
+        XCTAssertEqual(primary.count, 80)
+        for (beat, pulse) in primary.enumerated() { XCTAssertEqual(pulse.position, Double(beat) * 0.375 + 0.0001, accuracy: 1e-9) }
+        let sections = ClickTempoDetector.sections(onsets: primary.map(\.position))
+        XCTAssertEqual(sections.count, 1); XCTAssertEqual(sections.first?.bpm, 160)
+        var quiet = (0..<40).map { ClickTempoDetector.Transient(position: Double($0) * 0.375, peak: $0 % 4 == 0 ? 1 : 0.07) }
+        quiet[17].peak = 0.001
+        XCTAssertEqual(ClickTempoDetector.primaryTransients(quiet), quiet, "Real quiet quarter notes must retain their measured phase")
+    }
+
     func testRedetectionKeepsTheNextSongWhenAnOutgoingChildOverlapsIt() throws {
         var song = Project.empty(name: "Overlapping songs").songs[0]
         let group = UUID(), a = UUID(), b = UUID()
@@ -132,7 +151,7 @@ final class ClickTempoTests: XCTestCase {
             }
             XCTAssertEqual(detected.markers.map(\.position), [start, start + 5.125])
             XCTAssertEqual(detected.markers.map(\.tempoBPM), [150, 150])
-            XCTAssertEqual(detected.markers.map(\.tempoBeats), [6, 6])
+            XCTAssertEqual(detected.markers.map(\.tempoBeats), [4, 4])
             XCTAssertEqual(detected.markers.map(\.tempoReferenceBPM), [150, 150])
             song.insertDetectedTempo(detected.markers, replacing: region)
             song.insertDetectedTempo(detected.markers, replacing: region)
@@ -301,7 +320,7 @@ final class ClickTempoTests: XCTestCase {
         }
         XCTAssertEqual(ClickTempoDetector.sections(onsets: fixed), [.init(position: fixed[0], bpm: 120)])
     }
-    func testRapidTempoChangesPreserveSongMeterAndEverySection() throws {
+    func testRapidTempoChangesUseFourFourAndPreserveEverySection() throws {
         var song = Project.empty(name: "Variable").songs[0]
         song.beatsPerBar = 6
         let region = Part(id: UUID(), name: "Variable", startTime: 10, endTime: 80)
@@ -317,7 +336,7 @@ final class ClickTempoTests: XCTestCase {
         XCTAssertEqual(result.markers[0].position, 10)
         XCTAssertEqual(result.markers[1].position, 10.123, accuracy: 1e-9)
         XCTAssertEqual(result.markers.map(\.tempoBPM), [100,100,140,160,110])
-        XCTAssertTrue(result.markers.allSatisfy { $0.tempoBeats == 6 })
+        XCTAssertTrue(result.markers.allSatisfy { $0.tempoBeats == 4 })
         XCTAssertEqual(result.markers[0].tempoUnit, 4)
     }
     func testMarkerPositionUsesTrimmedRateAdjustedClickOnsets() throws {
@@ -453,7 +472,7 @@ final class ClickTempoTests: XCTestCase {
             XCTAssertEqual(song, before, "analysis never changes the live song")
             let marker = try XCTUnwrap(detection.markers.first)
             XCTAssertEqual(marker.tempoBPM, 150)
-            XCTAssertEqual(marker.tempoBeats, 6); XCTAssertEqual(marker.tempoUnit, 4)
+            XCTAssertEqual(marker.tempoBeats, 4); XCTAssertEqual(marker.tempoUnit, 4)
             XCTAssertEqual(marker.tempoReferenceBPM, 150)
             song.insertDetectedTempo(detection.markers)
             XCTAssertEqual(song.timeSettings, before.timeSettings)

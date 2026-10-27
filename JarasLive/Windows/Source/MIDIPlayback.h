@@ -47,6 +47,7 @@ struct PlaybackNote {
     double start = 0, end = 0;
     int pitch = 60, velocity = 100, channel = 1;
     std::optional<double> playbackStart;
+    std::uint32_t regionOwnerIndex=0;
 };
 inline bool hasTakeInstrument(const var &fx, bool bypassed = false) {
     if (bypassed) return false;
@@ -109,7 +110,7 @@ inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                          jlimit(0, 127,
                                 (int)std::round(note.velocity *
                                                 (clip.muted ? 0 : std::min(127., clip.gain.value_or(1))) * jaras::itemFadeGain(clip, start))),
-                         note.channel, song ? jaras::playbackItemStart(*song, clip) : std::optional<double>(clip.startTime)});
+                         note.channel, song ? jaras::playbackItemStart(*song, clip) : std::optional<double>(clip.startTime), song ? jaras::playbackOwnerIndex(*song,clip.regionOwnerID) : 0});
                 if (result.size() > 1000000)
                     throw std::runtime_error("Too many MIDI playback notes.");
             }
@@ -161,7 +162,7 @@ class MIDIPlayback {
             for (int channel = 1; channel <= 16; ++channel)
                 messages.addEvent(MidiMessage::allNotesOff(channel), 0);
             for (const auto &note : sequence.notes)
-                if (note.velocity > 0 && scope.allows(note.playbackStart) &&
+                if (note.velocity > 0 && scope.allows(note.playbackStart,note.regionOwnerIndex) &&
                     note.start < at - 1e-9 && note.end > at + 1e-9)
                     messages.addEvent(MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity), 0);
         }
@@ -170,7 +171,7 @@ class MIDIPlayback {
             [](const Event &event, double value) { return event.time < value; });
         for (; event != sequence.events.end() && event->time < end - 1e-9; ++event) {
             const auto &note = event->note;
-            if (!scope.allows(note.playbackStart)) continue;
+            if (!scope.allows(note.playbackStart,note.regionOwnerIndex)) continue;
             messages.addEvent(event->on ? MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity)
                                         : MidiMessage::noteOff(note.channel, note.pitch),
                               jlimit(0, count - 1, (int)std::round((event->time - at) * rate)));
@@ -242,7 +243,7 @@ class MIDIPlayback {
             scopes[head] = scope;
             reset(head);
             for (const auto &note : notes)
-                if (note.velocity>0 && scope.allows(note.playbackStart) && note.start < at - 1e-9 && note.end > at + 1e-9)
+                if (note.velocity>0 && scope.allows(note.playbackStart,note.regionOwnerIndex) && note.start < at - 1e-9 && note.end > at + 1e-9)
                     midi.addEvent(
                         MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity), 0);
         }
@@ -252,7 +253,7 @@ class MIDIPlayback {
                              [](const Event &event, double value) { return event.time < value; });
         for (; event != events.end() && event->time < end - 1e-9; ++event) {
             const auto &note = event->note;
-            if (!scope.allows(note.playbackStart)) continue;
+            if (!scope.allows(note.playbackStart,note.regionOwnerIndex)) continue;
             const int sample = jlimit(0, count - 1, (int)std::round((event->time - at) * rate));
             midi.addEvent(event->on
                               ? MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity)

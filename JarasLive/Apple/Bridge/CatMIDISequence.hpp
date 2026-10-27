@@ -12,6 +12,7 @@ struct CatMIDINote {
     // Stable source identity survives tempo remapping. Zero means unidentified,
     // and cannot authorize preserving a note across a changed sequence.
     uint64_t identityHigh=0,identityLow=0;
+    uint8_t headMask=3;
 };
 struct CatMIDIEvent { unsigned offset; uint8_t status, pitch, velocity; };
 
@@ -138,7 +139,7 @@ public:
                     state.plan=plan->generation;
                     for(unsigned index=0;index<plan->notes.size();++index) {
                         const auto& note=plan->notes[index];
-                        if(note.start<position-1e-10&&note.end>position) {
+                        if((note.headMask&(1u<<head)) && note.start<position-1e-10&&note.end>position) {
                             if(preserve) {
                                 const int key=int(note.channel)*128+note.pitch;
                                 chases[head].held[key].include(note);chases[head].velocities[key]=note.velocity;
@@ -170,6 +171,7 @@ public:
             if(t.kind==TransitionKind::reset) {releaseNow(t.head,t.offset);continue;}
             if(t.kind==TransitionKind::reconcile) {reconcileNow(t.head,t.offset);continue;}
             const auto& note=plan->notes[t.note];
+            if(!(note.headMask&(1u<<t.head)))continue;
             const int key=int(note.channel)*128+note.pitch;auto& held=states[t.head].held[key];
             if(t.on) {
                 const bool start=held.count==0&&!states[1-t.head].held[key].count;

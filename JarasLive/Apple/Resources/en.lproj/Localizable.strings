@@ -1828,3 +1828,7 @@
 "Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings." = "Click Map MIDI and press a MIDI note or CC button. MIDI input must be enabled in Settings.";
 
 "Cancel queued section" = "Cancel queued section";
+
+"Choose tracks" = "Choose tracks";
+
+"On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items." = "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.";

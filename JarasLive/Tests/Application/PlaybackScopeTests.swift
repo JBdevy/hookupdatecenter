@@ -2,6 +2,23 @@ import XCTest
 @testable import JarasApplication
 
 final class PlaybackScopeTests: XCTestCase {
+    func testAutomaticSubplayUsesItemOwnerAndKeepsIncomingTrackAudibleAfterPromotion() {
+        let song = Project.empty(name: "Subplay ownership").songs[0]
+        let old = UUID(), incoming = UUID(), selected = UUID(), other = UUID()
+        var transport = TransportState(playing: true, songId: song.id, position: 9,
+            queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: true, position: 20))
+        transport.subExclusivePlaybackRegionId = incoming
+        XCTAssertFalse(song.allowsExclusiveSubplay(transport, head: 0, track: selected, owner: old, selectedTracks: [selected]))
+        XCTAssertFalse(song.allowsExclusiveSubplay(transport, head: 1, track: selected, owner: old, selectedTracks: [selected]))
+        XCTAssertTrue(song.allowsExclusiveSubplay(transport, head: 1, track: selected, owner: incoming, selectedTracks: [selected]))
+        XCTAssertTrue(song.allowsExclusiveSubplay(transport, head: 0, track: other, owner: old, selectedTracks: [selected]))
+        transport.exclusivePlaybackRegionId = incoming; transport.subExclusivePlaybackRegionId = nil
+        transport.subPlay.playing = false
+        XCTAssertTrue(song.allowsExclusiveSubplay(transport, head: 0, track: selected, owner: incoming, selectedTracks: [selected]))
+        XCTAssertFalse(song.allowsExclusiveSubplay(transport, head: 0, track: selected, owner: old, selectedTracks: [selected]))
+        XCTAssertTrue(song.allowsExclusiveSubplay(transport, head: 0, track: selected, owner: nil, selectedTracks: [selected]))
+    }
+
     func testCompiledItemStartIndexMatchesLiveOwnershipLookup() {
         var song = Project.empty(name: "Playback index").songs[0]
         let group = UUID(), a = UUID(), b = UUID()

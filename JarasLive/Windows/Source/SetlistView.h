@@ -1166,10 +1166,48 @@ class Workspace::Setlist final : public Component,
             (bool)w.appearance.value("jaras.blocks.symbol",true),
             [self](bool enabled){if(self){auto result=self->w.appearance.set("jaras.blocks.symbol",enabled);if(result.failed())self->w.showError(result.getErrorMessage());}},close),280,118);
     }
+    class SubplayTracksPanel final : public Component {
+      public:
+        SubplayTracksPanel(const jaras::Song& song,const std::vector<ID>& selected,
+                           std::function<void(std::vector<ID>)> save,std::function<void()> close) {
+            for(const auto& track:song.tracks) {
+                if(!jaras::fixedTrackName(track.role).empty() || track.role.id=="vinhetas")continue;
+                auto row=std::make_unique<ToggleButton>(text(track.name));
+                row->setComponentID("subplayExclusiveTrack:"+text(track.id));
+                row->setToggleState(std::find(selected.begin(),selected.end(),track.id)!=selected.end(),dontSendNotification);
+                rows.addAndMakeVisible(*row);ids.push_back(track.id);checks.push_back(std::move(row));
+            }
+            viewport.setViewedComponent(&rows,false);addAndMakeVisible(viewport);
+            explanation.setText(localization::translate("On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items."),dontSendNotification);
+            explanation.setFont(theme::font(12));explanation.setColour(Label::textColourId,theme::secondary);
+            addAndMakeVisible(explanation);
+            cancel.setButtonText(localization::translate("Cancel"));apply.setButtonText(localization::translate("Apply"));
+            cancel.onClick=close;apply.onClick=[this,save,close]{std::vector<ID> chosen;for(size_t i=0;i<checks.size();++i)if(checks[i]->getToggleState())chosen.push_back(ids[i]);save(std::move(chosen));close();};
+            addAndMakeVisible(cancel);addAndMakeVisible(apply);
+        }
+        void resized() override {
+            explanation.setBounds(18,10,getWidth()-36,54);
+            viewport.setBounds(14,72,getWidth()-28,getHeight()-136);
+            rows.setSize(std::max(1,viewport.getWidth()-18),std::max(1,int(checks.size())*34));
+            for(size_t i=0;i<checks.size();++i)checks[i]->setBounds(4,int(i)*34,rows.getWidth()-8,32);
+            cancel.setBounds(18,getHeight()-48,110,30);apply.setBounds(getWidth()-128,getHeight()-48,110,30);
+        }
+      private:
+        Component rows;Viewport viewport;Label explanation;TextButton cancel,apply;
+        std::vector<ID> ids;std::vector<std::unique_ptr<ToggleButton>> checks;
+    };
+    void chooseSubplayTracks() {
+        if(!w.session.song())return;
+        auto self=SafePointer<Setlist>(this);
+        auto close=[self]{if(self)for(auto* child:self->w.getChildren())if(auto* sheet=dynamic_cast<ModalSheet*>(child);sheet&&sheet->getName()==localization::translate("Choose tracks"))sheet->exitModalState(0);};
+        ModalSheet::open(w,localization::translate("Choose tracks"),std::make_unique<SubplayTracksPanel>(*w.session.song(),
+            currentState().subplayExclusiveTrackIDs.value_or(std::vector<ID>{}),
+            [self](std::vector<ID> ids){if(self){auto next=self->currentState();next.subplayExclusiveTrackIDs=std::move(ids);self->apply(std::move(next));}},close),460,430);
+    }
     class AutoOptionsPanel final : public Component {
       public:
         AutoOptionsPanel(std::function<jaras::RegionSetlist()> readState,
-                         std::function<void(jaras::RegionSetlist)> writeState)
+                         std::function<void(jaras::RegionSetlist)> writeState, std::function<void()> choose)
             : read(std::move(readState)),write(std::move(writeState)) {
             untilBlock.setButtonText(localization::translate("Run queue until the end of the block"));
             withoutPlayback.setButtonText(localization::translate("Without playback"));
@@ -1180,6 +1218,8 @@ class Workspace::Setlist final : public Component,
             for(auto *button : {&untilBlock,&withoutPlayback,&subplay}) addAndMakeVisible(button);
             addAndMakeVisible(leadLabel);addAndMakeVisible(lead);
             lead.setComponentID("autoSubplayLead");
+            chooseTracks.setButtonText(localization::translate("Choose tracks"));chooseTracks.setComponentID("autoSubplayChooseTracks");addAndMakeVisible(chooseTracks);
+            chooseTracks.onClick=[this,choose]{if(auto* box=findParentComponentOfClass<CallOutBox>())box->dismiss();MessageManager::callAsync(choose);};
             for(int i=1;i<=5;++i) {
                 lead.addItem(String(i)+"s",i*2-1);
                 lead.addItem(String(i)+" "+localization::translate(i==1?"bar":"bars"),i*2);
@@ -1202,9 +1242,10 @@ class Workspace::Setlist final : public Component,
         void resized() override {
             const int width=getWidth()-36;
             untilBlock.setBounds(18,12,width,38);withoutPlayback.setBounds(18,60,width,28);
-            subplay.setBounds(18,102,width,28);leadLabel.setBounds(18,144,width-134,28);lead.setBounds(getWidth()-148,144,130,28);
+            subplay.setBounds(18,102,width,28);leadLabel.setBounds(18,144,width-134,28);lead.setBounds(getWidth()-148,144,130,28);chooseTracks.setBounds(18,184,width,30);
         }
       private:
+        TextButton chooseTracks;
         ToggleButton untilBlock,withoutPlayback,subplay;
         Label leadLabel;
         ComboBox lead;
@@ -1218,14 +1259,15 @@ class Workspace::Setlist final : public Component,
             lead.setSelectedId(state.automaticSubplayNext.value_or(false) ? 11 : state.automaticSubplayBars ? jlimit(1,5,*state.automaticSubplayBars)*2 : jlimit(1,5,(int)state.automaticSubplaySeconds.value_or(1))*2-1,dontSendNotification);
             subplay.setVisible(!hidden);leadLabel.setVisible(!hidden);lead.setVisible(!hidden);
             lead.setEnabled(state.automaticSubplay.value_or(false));leadLabel.setEnabled(state.automaticSubplay.value_or(false));
-            setSize(350,hidden?106:190);
+            chooseTracks.setVisible(!hidden);
+            setSize(350,hidden?106:232);
         }
     };
     void autoOptions() {
         auto self=SafePointer<Setlist>(this);
         auto panel=std::make_unique<AutoOptionsPanel>(
             [self]{return self?self->currentState():jaras::RegionSetlist{};},
-            [self](jaras::RegionSetlist next){if(self)self->apply(std::move(next));});
+            [self](jaras::RegionSetlist next){if(self)self->apply(std::move(next));},[self]{if(self)self->chooseSubplayTracks();});
         CallOutBox::launchAsynchronously(std::move(panel),automatic.getScreenBounds(),nullptr);
     }
     class ConfigInitPanel final : public Component {

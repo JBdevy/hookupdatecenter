@@ -1,3 +1,4 @@
+#include "../../Core/Transport/PlaybackScope.hpp"
 #include "../../Core/Transport/Engine.hpp"
 #include "../../Core/Import/TrackTaxonomy.hpp"
 #include <iostream>
@@ -1478,6 +1479,37 @@ int main() {
         expect(engine.currentSong()->parts[0].endTime==17.5 && engine.currentSong()->parts[1].startTime==17.5,"batch ownership preserves the established tempo mapping");
         engine.moveRegion("retime-owner-a",35);
         expect(engine.currentSong()->markers->at(0).position==12.5 && engine.currentSong()->markers->at(1).position==35 && engine.currentSong()->markers->at(2).position==17.5,"after retiming only the region's owned tempo marker follows its movement");
+    }
+    {
+        Project project;project.id="exclusive-project";project.name="Subplay items";
+        project.songs={{"exclusive-song","Timeline",40,120,{{"exclusive-track","Stems",{"other"}}},{}}};
+        auto& song=project.songs[0];song.duration=40;
+        song.parts={{"outgoing","Outgoing",0,10},{"incoming","Incoming",20,30}};
+        song.regionOwnershipInitialized=true;song.regionOwnershipVersion=3;
+        AudioClip old;old.id="old";old.name="Old tail";old.startTime=0;old.duration=25;
+        old.audioFile=AudioFile{"old.wav"};old.regionOwnerID="outgoing";
+        auto incoming=old;incoming.id="new";incoming.startTime=20;incoming.duration=10;incoming.regionOwnerID="incoming";
+        auto late=old;late.id="late-old";late.startTime=22;late.duration=3;
+        song.tracks[0].clips={old,incoming,late};
+        project.regionSetlist.emplace();project.regionSetlist->automaticSubplay=true;
+        project.regionSetlist->automaticSubplaySeconds=1;project.regionSetlist->subplayExclusiveTrackIDs=std::vector<ID>{song.tracks[0].id};
+        Engine e;e.loadProject(project);e.execute({CommandKind::selectRegion,"outgoing"});e.execute({CommandKind::play});e.execute({CommandKind::queueRegion,"incoming"});e.advance(9);
+        auto scope=[&](bool secondary){return exclusiveSubplayScope(*e.currentSong(),e.transport(),secondary);};
+        auto owner=[&](const AudioClip& clip){return playbackOwnerIndex(*e.currentSong(),clip.regionOwnerID);};
+        expect(e.transport().subPlay.playing && e.transport().subExclusivePlaybackRegionId=="incoming","automatic entry records its item owner");
+        expect(!scope(false).allows(playbackItemStart(*e.currentSong(),old),owner(old)),"selected outgoing track stops its previous-song items");
+        expect(scope(true).allows(playbackItemStart(*e.currentSong(),incoming),owner(incoming)) && !scope(true).allows(playbackItemStart(*e.currentSong(),late),owner(late)),"incoming head accepts its own items and rejects previous-song items even with later onsets");
+        expect(scope(true).allows(std::nullopt,0),"unattached global items keep their existing behavior");
+        expect(playbackScope(*e.currentSong(),e.transport()).allows(playbackItemStart(*e.currentSong(),old)),"unselected tracks keep the outgoing song");
+        e.advance(1);
+        expect(e.transport().exclusivePlaybackRegionId=="incoming" && !e.transport().subPlay.playing,"promotion preserves incoming item isolation");
+        expect(scope(false).allows(playbackItemStart(*e.currentSong(),incoming),owner(incoming)) && !scope(false).allows(playbackItemStart(*e.currentSong(),late),owner(late)),"promoted song continues ignoring outgoing items");
+        e.execute({CommandKind::queueSection,"outgoing"});e.advance(10);
+        expect(!e.transport().exclusivePlaybackRegionId,"jumping to another song ends the previous song's isolation");
+        e.execute({CommandKind::stopAll});e.execute({CommandKind::selectRegion,"outgoing"});e.execute({CommandKind::play});
+        expect(!e.transport().exclusivePlaybackRegionId && !e.transport().subExclusivePlaybackRegionId,"fresh Play restores ordinary item playback");
+        e.execute({CommandKind::queueRegion,"incoming"});e.advance(9);e.execute({CommandKind::subStop});
+        expect(!e.transport().subExclusivePlaybackRegionId && scope(false).allows(playbackItemStart(*e.currentSong(),old),owner(old)),"cancelling automatic Subplay restores outgoing items");
     }
     std::cout << "JARAS_CORE_OK\n";
 }

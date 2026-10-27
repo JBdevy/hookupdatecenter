@@ -1434,5 +1434,7 @@
   "Original files remain unchanged. Audio is copied beside the project.": "Original files remain unchanged. Audio is copied beside the project.",
   "songs": "songs",
   "audio files": "audio files",
-  "Importing": "Importing"
+  "Importing": "Importing",
+  "Choose tracks": "Choose tracks",
+  "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.": "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items."
 }

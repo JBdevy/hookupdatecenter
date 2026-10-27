@@ -27,7 +27,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         bool playing = false, subPlaying = false, loop = false;
         bool preserveLatency = false; // scheduled musical transition, not a manual seek
         double loopStart = 0, loopEnd = 0;
-        jaras::PlaybackScope scope[2];
+        jaras::PlaybackScope scope[2], exclusiveScope[2];
         int timecodePreferred = -1;
         double end = std::numeric_limits<double>::infinity();
     };
@@ -281,6 +281,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     struct Voice {
         ID track, clipID;
         std::optional<double> playbackStart;
+        std::uint32_t regionOwnerIndex=0;
         double start = 0, duration = 0, offset = 0, speed = 1, clipGain = 1, clipPan = 0,
                fadeIn = 0, fadeOut = 0;
         jaras::FadeCurve fadeInShape, fadeOutShape;
@@ -315,6 +316,9 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     SharedMIDIUpdate sharedMIDISequence(size_t bus, const Voice *replacement = nullptr,
                                        bool ownsReplacement = false) const;
     void replaceSharedMIDI(size_t bus, SharedMIDIUpdate &);
+    const jaras::PlaybackScope& trackScope(const State& state, int head, size_t bus) const {
+        return buses[bus]->subplayExclusive ? state.exclusiveScope[head] : state.scope[head];
+    }
     void mixMIDIVoice(Voice &, int head, double at, float *const *out, int channels,
                       int dest, int count, bool running);
     struct Bus {
@@ -339,7 +343,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         AutomationProgram automation;
         var settings;
         std::unique_ptr<ClickProgram> click;
-        bool timecode = false, vinhetasBus = false;
+        bool timecode = false, vinhetasBus = false, subplayExclusive = false;
         std::vector<PlaybackNote> midiNotes;
         std::vector<MIDIPlayback::Event> externalEvents;
         MidiBuffer externalMIDI[2];
@@ -436,7 +440,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         bool resetElapsed=false;
         uint64 transportSerial=0;
         enum Kind { transport, mixer, item, routing } kind = transport;
-        bool inputMonitoring=true;
+        bool inputMonitoring=true, subplayExclusive=false;
         int midiSlot=0,midiChannel=0;
         State state;
         double itemGain=1, itemPan=0, fadeIn=0, fadeOut=0;

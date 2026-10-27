@@ -9,6 +9,54 @@ inline double median(std::vector<double> values) {
     std::sort(values.begin(),values.end()); const auto n=values.size();
     return n%2 ? values[n/2] : (values[n/2-1]+values[n/2])*.5;
 }
+// Reject secondary attacks only against two nearby strong clicks. One bar
+// accent alone must not hide quieter quarter notes or change the tempo.
+inline std::vector<Transient> primaryTransients(const std::vector<Transient>& pulses) {
+    std::vector<bool> weak(pulses.size());
+    for(size_t i=0;i<pulses.size();++i) {
+        std::array<double,6> levels{};size_t count=0;
+        const auto first=i>3?i-3:0;
+        for(size_t j=first;j<std::min(pulses.size(),i+4);++j)
+            if(j!=i && std::isfinite(pulses[j].peak) && pulses[j].peak>0)levels[count++]=pulses[j].peak;
+        std::sort(levels.begin(),levels.begin()+count);
+        if(count>=2) {
+            const double reference=i>0 && i+1<pulses.size()?std::min(pulses[i-1].peak,pulses[i+1].peak):levels[count-2];
+            weak[i]=pulses[i].peak<reference*.15;
+        }
+    }
+    const auto close=[](double a,double b){return std::abs(a-b)<=std::max(.0015,std::abs(b)*.01);};
+    std::vector<Transient> result;result.reserve(pulses.size());
+    for(size_t i=0;i<pulses.size();++i) {
+        bool secondary=false;
+        if(weak[i]) {
+            if(i>0 && i+1<pulses.size()) {
+                const double period=pulses[i+1].position-pulses[i-1].position;
+                int previous=int(i)-2;size_t next=i+2;
+                while(previous>=0 && weak[size_t(previous)])--previous;
+                while(next<pulses.size() && weak[next])++next;
+                secondary=(previous>=0 && close(pulses[i-1].position-pulses[size_t(previous)].position,period)) ||
+                    (next<pulses.size() && close(pulses[next].position-pulses[i+1].position,period));
+            } else if(i==0 && pulses.size()>=4)
+                secondary=weak[2] && close(pulses[2].position-pulses[0].position,pulses[3].position-pulses[1].position);
+            else if(pulses.size()>=4)
+                secondary=weak[i-2] && close(pulses[i].position-pulses[i-2].position,pulses[i-1].position-pulses[i-3].position);
+        }
+        if(!secondary)result.push_back(pulses[i]);
+    }
+    std::vector<Transient> filtered;filtered.reserve(result.size());
+    for(size_t i=0;i<result.size();++i) {
+        bool inserted=false;
+        if(i>=2 && i+2<result.size()) {
+            const auto &previous=result[i-1],&next=result[i+1];
+            const auto across=next.position-previous.position,tolerance=std::max(.0015,across*.01);
+            inserted=result[i].peak<std::min(previous.peak,next.peak)*.5 && across>=.2 && across<=1 &&
+                std::abs(previous.position-result[i-2].position-across)<=tolerance &&
+                std::abs(result[i+2].position-next.position-across)<=tolerance;
+        }
+        if(!inserted)filtered.push_back(result[i]);
+    }
+    return filtered;
+}
 inline std::optional<int> meter(const std::vector<Transient> &input, const std::atomic<bool> *cancel = nullptr) {
     std::vector<Transient> pulses;
     for(const auto &p:input)if(std::isfinite(p.peak)&&p.peak>0&&std::all_of(p.shape.begin(),p.shape.end(),[](double v){return std::isfinite(v);}))pulses.push_back(p);
@@ -188,12 +236,13 @@ inline std::vector<jaras::TimelineMarker> markers(const jaras::Song &song,const 
         }
     std::sort(pulses.begin(),pulses.end(),[](const auto &a,const auto &b){return a.position<b.position;});std::vector<Transient> unique;
     for(const auto &p:pulses)if(unique.empty()||p.position-unique.back().position>.08)unique.push_back(p);
+    unique=primaryTransients(unique);
     std::vector<double> positions;for(const auto &p:unique)positions.push_back(p.position);
-    const auto signature=meter(unique,cancel);
+    // Imported songs use 4/4; accent repetition does not change the meter.
+    const auto signature=std::optional<int>{4};
     const auto spans=markerSections(sections(positions,signature.value_or(song.beatsPerBar),cancel),signature.value_or(song.beatsPerBar),signature?4:song.beatUnit,region.endTime);std::vector<jaras::TimelineMarker> result;
-    for(size_t i=0;i<spans.size();++i){const auto &span=spans[i];const double end=i+1<spans.size()?spans[i+1].position:region.endTime;
-        std::vector<Transient> local;for(const auto &p:unique)if(p.position>=span.position&&p.position<end)local.push_back(p);
-        const auto signature=meter(local,cancel);jaras::TimelineMarker m;m.id=uuid();m.name="TEMPO";m.position=span.position;m.color=0x999999;m.tempoBPM=span.bpm;m.tempoBeats=signature.value_or(song.beatsPerBar);m.tempoUnit=signature?4:song.beatUnit;m.tempoTimebase="global";m.tempoReferenceBPM=span.bpm;result.push_back(m);
+    for(size_t i=0;i<spans.size();++i){const auto &span=spans[i];
+        jaras::TimelineMarker m;m.id=uuid();m.name="TEMPO";m.position=span.position;m.color=0x999999;m.tempoBPM=span.bpm;m.tempoBeats=signature.value_or(song.beatsPerBar);m.tempoUnit=signature?4:song.beatUnit;m.tempoTimebase="global";m.tempoReferenceBPM=span.bpm;result.push_back(m);
     }
     if(!result.empty()&&result.front().position>region.startTime){auto m=result.front();m.id=uuid();m.position=region.startTime;result.insert(result.begin(),m);}
     return result;

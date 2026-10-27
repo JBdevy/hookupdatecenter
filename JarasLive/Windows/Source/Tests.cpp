@@ -791,6 +791,18 @@ int runTests(const File &directory) {
         expect(notes[0].velocity==4 && notes[3].velocity==50 && notes[7].velocity==100,"MIDI fade velocity differs from Mac");
         expect(clip.midi->notes[0].velocity==100,"Fade destroyed source MIDI velocities");
     });
+    test("Click tempo rejects weak secondary attacks without erasing quiet quarter notes", [&] {
+        std::vector<clickTempo::Transient> pulses;
+        for(int beat=0;beat<80;++beat) {
+            const double at=beat*.375+.0001;pulses.push_back({at,beat>=4&&beat<=11?1.:.7,{}});
+            if(beat!=4&&beat!=6&&beat!=8&&beat!=9&&beat!=10)pulses.push_back({beat==11?4.28893424:at+.18965,beat==11?.30176:.07,{}});
+        }
+        const auto primary=clickTempo::primaryTransients(pulses);expect(primary.size()==80,"Secondary attacks changed the beat count");
+        std::vector<double> onsets;for(size_t i=0;i<primary.size();++i){expect(std::abs(primary[i].position-(i*.375+.0001))<1e-9,"Filtering moved a measured click");onsets.push_back(primary[i].position);}
+        const auto sections=clickTempo::sections(onsets);expect(sections.size()==1&&std::abs(sections[0].bpm-160)<.001,"A 160 BPM click became a false 284 BPM section");
+        std::vector<clickTempo::Transient> quiet;for(int beat=0;beat<40;++beat)quiet.push_back({beat*.375,beat%4==0?1.:.07,{}});quiet[17].peak=.001;
+        expect(clickTempo::primaryTransients(quiet).size()==quiet.size(),"A bar accent erased quiet quarter notes");
+    });
     test("Automatic Subplay seconds and bars survive Windows project serialization", [&] {
         auto p=projectFixture();p.regionSetlist=jaras::RegionSetlist{};p.regionSetlist->automaticSubplay=true;
         for(int count=1;count<=5;++count) {
@@ -1032,6 +1044,30 @@ int runTests(const File &directory) {
         Appearance prefs(directory.getNonexistentChildFile("scroll-none",".json"));
         expect(!prefs.continuousScroll(),"Continuous scroll must default to none");
         prefs.set("jaras.timeline.continuousScroll",true);expect(prefs.continuousScroll(),"true did not enable continuous scroll");
+    });
+    test("Continuous scroll paints a stationary needle when the audio clock advances before painting", [&] {
+        for(double zoom:{64.,160.,1024.,81920.}) {
+            Session session;session.inspection=true;session.audio.prepareOffline(48000);session.newProject();
+            const auto preferences=directory.getNonexistentChildFile("continuous-frame",".json");
+            Appearance appearance(preferences);appearance.set("jaras.timeline.zoom",zoom);appearance.set("jaras.timeline.continuousScroll",true);
+            Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,preferences);workspace.setSize(1280,720);workspace.setVisible(true);
+            session.command(jaras::CommandKind::editSeek,{},20);session.command(jaras::CommandKind::play);
+            AudioBuffer<float> pcm(2,1024);
+            for(int frame=0;frame<4;++frame) {
+                session.tick();
+                const auto before=get(workspace.diagnostics(),"timeline");const double sampled=num(before,"framePlaybackPosition");
+                // The device advances between the scroll update and the queued
+                // GUI repaint. A fresh position read in Heads::paint drifts far
+                // ahead of the viewport, although the audio clock is correct.
+                session.audio.render(pcm.getArrayOfWritePointers(),2,1024);session.projectSyncFrame();
+                expect(session.presentationTransport().position>sampled+.01,"Fixture did not advance the device clock before painting");
+                const auto image=workspace.createComponentSnapshot(workspace.getLocalBounds());expect(image.isValid(),"Cannot paint continuous scroll fixture");
+                const auto painted=get(workspace.diagnostics(),"timeline");
+                expect(std::abs(num(painted,"paintedMainPosition")-sampled)<1e-9,"Needle paint resampled the clock after scrolling");
+                expect(std::abs(num(painted,"paintedMainNeedleX")-num(painted,"width")*.5)<.01,"Continuous needle moved away from its fixed viewport center");
+            }
+            session.command(jaras::CommandKind::stopAll);
+        }
     });
     test("Master default and temporary SubPlay cursor match Mac", [&] {
         Session session;session.newProject();expect(session.project().masterColor==0x414141,"New Master colour differs");
@@ -3526,6 +3562,38 @@ int runTests(const File &directory) {
         auto safe = audioExport::plan(p, song, 0, 0, "../CON", {}, {}, {}, {}, encoding);
         expect(!safe[0].name.containsChar('/') && !safe[0].name.containsChar('\\'),
                "Export template escaped its folder");
+    });
+    test("Automatic Subplay keeps incoming items audible on chosen tracks through promotion", [&] {
+        const auto media=directory.getChildFile("subplay-track-ownership");media.createDirectory();
+        WavAudioFormat wav;auto stream=media.getChildFile("tone.wav").createOutputStream();
+        std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(),48000,2,24,{},0));
+        expect(writer!=nullptr,"Cannot create Subplay PCM fixture");stream.release();
+        AudioBuffer<float> tone(2,48000*25);for(int channel=0;channel<2;++channel)FloatVectorOperations::fill(tone.getWritePointer(channel),.1f,tone.getNumSamples());
+        expect(writer->writeFromAudioSampleBuffer(tone,0,tone.getNumSamples()),"Cannot write Subplay PCM fixture");writer.reset();
+        jaras::Project project;project.id=uuid();project.name="Selective Subplay";
+        jaras::Song song;song.id=uuid();song.name="Timeline";song.duration=40;song.bpm=120;
+        const auto old=uuid(),incoming=uuid();song.parts={{old,"Outgoing",0,10},{incoming,"Incoming",20,30}};
+        song.regionOwnershipInitialized=true;song.regionOwnershipVersion=3;
+        for(int i=0;i<2;++i) {
+            jaras::Track track;track.id=uuid();track.name=i?"Unselected":"Selected";track.role.id="other";
+            jaras::AudioClip clip;clip.id=uuid();clip.name="Outgoing tail";clip.duration=25;clip.audioFile=jaras::AudioFile{"tone.wav"};clip.regionOwnerID=old;
+            track.clips.push_back(clip);clip.id=uuid();clip.name="Incoming";clip.startTime=20;clip.duration=10;clip.gain=2;clip.regionOwnerID=incoming;track.clips.push_back(clip);
+            song.tracks.push_back(track);
+        }
+        project.songs={song};project.regionSetlist.emplace();project.regionSetlist->automaticSubplay=true;project.regionSetlist->automaticSubplaySeconds=1;
+        project.regionSetlist->subplayExclusiveTrackIDs=std::vector<ID>{song.tracks[0].id};
+        const auto restored=ProjectCodec::decode(ProjectCodec::encode(project,{}));
+        expect(restored.regionSetlist->subplayExclusiveTrackIDs==project.regionSetlist->subplayExclusiveTrackIDs,"Selected Subplay tracks were not saved");
+        jaras::Engine core;core.loadProject(project);AudioEngine audio;audio.prepareOffline(48000);audio.prepareSong(*core.currentSong(),media,{},&core.project());audio.setOffline(true);
+        AudioBuffer<float> output(2,512);
+        const auto check=[&](float expected){
+            const auto& transport=core.transport();AudioEngine::State state;state.position=transport.position;state.playing=transport.playing;state.subPosition=transport.subPlay.position;state.subPlaying=transport.subPlay.playing;
+            for(int head=0;head<2;++head){state.scope[head]=jaras::playbackScope(*core.currentSong(),transport,head==1);state.exclusiveScope[head]=jaras::exclusiveSubplayScope(*core.currentSong(),transport,head==1);}
+            audio.transport(state);for(int block=0;block<8;++block)audio.render(output.getArrayOfWritePointers(),2,512);
+            expect(std::abs(output.getSample(0,256)-expected)<.002f,"Subplay item isolation changed incoming or unselected audio: "+String(output.getSample(0,256)));
+        };
+        core.execute({jaras::CommandKind::selectRegion,old});core.execute({jaras::CommandKind::play});core.execute({jaras::CommandKind::queueRegion,incoming});core.advance(9);
+        check(.6f);core.advance(1);check(.5f);
     });
     test("Unified playback renders only eligible stems for grid entry, continuous play and Ignore Next", [&] {
         const auto media = directory.getChildFile("playback-scope-fixture");

@@ -1434,5 +1434,7 @@
   "Original files remain unchanged. Audio is copied beside the project.": "Os arquivos originais não são alterados. O áudio é copiado para a pasta do projeto.",
   "songs": "músicas",
   "audio files": "arquivos de áudio",
-  "Importing": "Importando"
+  "Importing": "Importando",
+  "Choose tracks": "Escolher pistas",
+  "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.": "Nessas pistas, o Subplay automático interrompe os itens da música anterior e mantém apenas os itens da música que entra."
 }

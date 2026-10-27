@@ -389,6 +389,7 @@ public struct RegionSetlist: Codable, Equatable, Sendable {
     public var automaticSubplay: Bool?
     public var automaticSubplaySeconds: Double?
     public var automaticSubplayBars: Int?
+    public var subplayExclusiveTrackIDs: [UUID]?
     public var automaticSubplayNext: Bool?
     public var subplayLeadSelection: Int {
         if automaticSubplayNext == true { return 11 }
@@ -761,6 +762,8 @@ public struct SubPlayState: Codable, Equatable, Sendable { public var playing: B
 public struct TransportState: Codable, Equatable, Sendable {
     public var playbackStartRegionId: UUID? = nil
     public var subPlaybackStartRegionId: UUID? = nil
+    public var exclusivePlaybackRegionId: UUID? = nil
+    public var subExclusivePlaybackRegionId: UUID? = nil
     public var multiLoopsBypassed: Bool? = nil
     public var queuedSectionMarkerId: UUID?
     public var automaticSectionTriggerId: UUID? = nil
@@ -853,6 +856,12 @@ public extension Song {
             return playbackRegionStart(part)
         }
         return regionOwnershipInitialized == true ? nil : clip.startTime
+    }
+    func allowsExclusiveSubplay(_ transport: TransportState, head: Int, track: UUID, owner: UUID?, selectedTracks: Set<UUID>) -> Bool {
+        guard head != 2, selectedTracks.contains(track), let owner else { return true }
+        if head == 0, transport.subPlay.playing, transport.subExclusivePlaybackRegionId != nil { return false }
+        guard let required = head == 0 ? transport.exclusivePlaybackRegionId : transport.subExclusivePlaybackRegionId else { return true }
+        return owner == required
     }
     func playbackScope(_ transport: TransportState, head: Int = 0, destination: Double? = nil) -> PlaybackScope {
         let entry: UUID?

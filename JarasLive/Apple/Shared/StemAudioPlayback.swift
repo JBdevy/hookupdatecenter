@@ -1201,7 +1201,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         contiguousNext.removeAll(); contiguousPrevious.removeAll(); contiguousSourceEnd.removeAll()
         analysisEffects.removeAll(); armedMIDIRecordingTracks.removeAll(); armedInstrumentTracks.removeAll()
         instrumentRenderPending = false; setGraphRenderEnabled(false)
-        midiPlans.removeAll(); midiPlanRevision = nil; midiPlanSong = nil; midiTakeCacheTick = 0
+        midiPlans.removeAll(); appliedSharedMIDIValues.removeAll(); sharedMIDIIsolation = nil; midiPlanRevision = nil; midiPlanSong = nil; midiTakeCacheTick = 0
         automationSong = nil; itemAutomationVoiceKeys.removeAll(); voiceClockAnchors.removeAll()
         allowsTempoChanges = false; lastTempoEditTime = -.infinity
         timecodeTrackID = nil; timecodePhaseInverted = false; lastVideoNoAudio = nil
@@ -2716,7 +2716,7 @@ for (key,sampler) in samplers {
                         guard let instrument = bus.effects.instrumentInput(for: id.effect) else { self.engine.detach(sampler.node); self.instrumentRequests[id] = nil; self.instrumentNames[id] = nil; return }
                         self.engine.connect(sampler.node, to: instrument, fromBus: 0, toBus: 1, format: format)
                         self.samplers[id] = sampler
-                        sampler.setSequenceNotes(self.midiPlans[id.track] ?? [])
+                        sampler.setSequenceNotes(self.appliedSharedMIDIValues[id.track] ?? self.midiPlans[id.track] ?? [])
                         if let playback = self.latestPlayback { self.updateMIDISequenceClocks(playback.snapshot.transport) }
                         self.instrumentRequests[id] = nil
                         self.applyLevels()
@@ -2741,6 +2741,47 @@ for (key,sampler) in samplers {
     private var midiPlanRevision: UInt64?
     private var midiPlanSong: UUID?
     private var midiPlans: [UUID: [[String: Double]]] = [:]
+    private var appliedSharedMIDIValues: [UUID: [[String: Double]]] = [:]
+    private struct SharedMIDIIsolation: Equatable {
+        let main: UUID?, secondary: UUID?
+        let secondaryRunning: Bool
+        let tracks: Set<UUID>
+    }
+    private var sharedMIDIIsolation: SharedMIDIIsolation?
+    private func sharedMIDIValues(song: Song, clip: AudioClip) -> [[String: Double]] {
+        let owner = song.parts.firstIndex { $0.id == clip.regionOwnerID }.map { $0 + 1 } ?? 0
+        return song.midiPlaybackNotes(in: clip).map { note in
+            var value = note.sequenceValues; value["ownerIndex"] = Double(owner); return value
+        }
+    }
+    private func applySharedMIDIIsolation(_ transport: TransportState) {
+        guard let snapshot = latestPlayback?.snapshot,
+              let song = snapshot.project.songs.first(where: { $0.id == transport.songId }) else { return }
+        let next = SharedMIDIIsolation(main: transport.exclusivePlaybackRegionId, secondary: transport.subExclusivePlaybackRegionId,
+            secondaryRunning: transport.subPlay.playing, tracks: Set(snapshot.project.regionSetlist?.subplayExclusiveTrackIDs ?? []))
+        guard sharedMIDIIsolation != next else { return }
+        let affected = next.tracks.union(sharedMIDIIsolation?.tracks ?? [])
+        sharedMIDIIsolation = next
+        let main = song.parts.firstIndex { $0.id == next.main }.map { $0 + 1 } ?? 0
+        let secondary = song.parts.firstIndex { $0.id == next.secondary }.map { $0 + 1 } ?? 0
+        for track in affected {
+            let values = (midiPlans[track] ?? []).map { note -> [String: Double] in
+                guard next.tracks.contains(track), let owner = note["ownerIndex"], owner > 0 else { return note }
+                var value = note
+                let first = !(next.secondaryRunning && next.secondary != nil) && (main == 0 || Int(owner) == main)
+                let second = secondary == 0 || Int(owner) == secondary
+                let mask = (first ? 1 : 0) | (second ? 2 : 0)
+                if mask != 3 { value["headMask"] = Double(mask) }
+                return value
+            }
+            guard appliedSharedMIDIValues[track] != values else { continue }
+            appliedSharedMIDIValues[track] = values
+            for (key, sampler) in samplers where key.track == track { sampler.setSequenceNotes(values) }
+            #if os(macOS)
+            trackBuses[track]?.effects.setMIDISequence(values)
+            #endif
+        }
+    }
     private struct MIDITakePlan {
         let track: UUID
         var clip: AudioClip
@@ -2861,8 +2902,8 @@ for (key,sampler) in samplers {
             }
             if wasInstrument != source.clip.hasTakeInstrument || refreshNotes {
                 let notes = midiTakeSources.values.filter { $0.track == source.track && !$0.clip.hasTakeInstrument }
-                    .flatMap { song.midiPlaybackNotes(in: $0.clip) }.map(\.sequenceValues)
-                midiPlans[source.track] = notes
+                    .flatMap { sharedMIDIValues(song: song, clip: $0.clip) }
+                midiPlans[source.track] = notes; appliedSharedMIDIValues[source.track] = notes; sharedMIDIIsolation = nil
 
 for (key, sampler) in samplers where key.track == source.track { sampler.setSequenceNotes(notes) }
 
@@ -2912,6 +2953,7 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
                 // Prepare only nearby takes. Ended/idle instances keep their
                 // graph but the gate stops all upstream plugin render work.
                 guard song.playbackScope(transport, head: head).allows(song.playbackItemStart(clip)),
+                      song.allowsExclusiveSubplay(transport,head:head,track:plan.track,owner:clip.regionOwnerID,selectedTracks:Set(latestPlayback?.snapshot.project.regionSetlist?.subplayExclusiveTrackIDs ?? [])),
                       clip.muted != true, clip.startTime < position + 2,
                       clip.startTime + clip.duration > position - 1 else { continue }
                 let existed = midiTakeVoices[key] != nil
@@ -2987,7 +3029,7 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
         midiTakePlans.removeAll(keepingCapacity: true)
         midiTakeSources.removeAll(keepingCapacity: true)
         for track in song.tracks where track.kind == .standard {
-            let notes = track.clips.flatMap { clip -> [MIDIPlaybackNote] in
+            let values = track.clips.flatMap { clip -> [[String: Double]] in
                 guard clip.midi != nil else { return [] }
                 midiTakeSources[clip.id] = (track.id, clip)
                 if clip.hasTakeInstrument {
@@ -2996,23 +3038,24 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
                     midiTakePlans[clip.id] = MIDITakePlan(track: track.id, clip: clip, segments: song.tempoAudioSegments(clip), notes: notes)
                     return []
                 }
-                return song.midiPlaybackNotes(in: clip)
+                return sharedMIDIValues(song: song, clip: clip)
             }
-            let values = notes.map { ["start": $0.start, "end": $0.end, "pitch": Double($0.pitch), "velocity": Double($0.velocity), "channel": Double($0.channel)] }
             plans[track.id] = values
             if midiPlans[track.id] != values {
-
-for (key, sampler) in samplers where key.track == track.id { sampler.setSequenceNotes(values) }
-
+                appliedSharedMIDIValues[track.id] = values
+                for (key, sampler) in samplers where key.track == track.id { sampler.setSequenceNotes(values) }
             }
             #if os(macOS)
-            trackBuses[track.id]?.effects.setMIDISequence(values)
+            trackBuses[track.id]?.effects.setMIDISequence(appliedSharedMIDIValues[track.id] ?? values)
             #endif
         }
         midiPlans = plans
+        appliedSharedMIDIValues = appliedSharedMIDIValues.filter { plans[$0.key] != nil }
+        sharedMIDIIsolation = nil
 
 }
     private func updateMIDISequenceClocks(_ transport: TransportState) {
+        applySharedMIDIIsolation(transport)
         for head in 0..<2 {
             let position = head == 0 ? transport.position : transport.subPlay.position
             let running = head == 0 ? transport.playing : transport.subPlay.playing
@@ -3388,6 +3431,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         let now = realtime ? sampledAt : Double(engine.manualRenderingSampleTime) / engine.manualRenderingFormat.sampleRate
         let elapsed = now - lastUpdate; lastUpdate = now
         let transport = snapshot.transport
+        let exclusiveSubplayTracks = Set(snapshot.project.regionSetlist?.subplayExclusiveTrackIDs ?? [])
         let running = transport.playing || transport.subPlay.playing
         if transportWasRunning && !running {
             // Clear both players and effect memory, while keeping the device warm.
@@ -3837,10 +3881,10 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             // Cancel already scheduled sources as well as rejecting new ones.
             // Fragment onsets can differ from the original item's attachment.
             for key in Array(voices.keys) where key.head == head {
-                if let voice = voices[key], !scope.allows(fragmentPlaybackStarts[voice.clip.id]) { remove(key) }
+                if let voice = voices[key], !scope.allows(fragmentPlaybackStarts[voice.clip.id]) || !song.allowsExclusiveSubplay(transport,head:head,track:voice.track,owner:voice.clip.regionOwnerID,selectedTracks:exclusiveSubplayTracks) { remove(key) }
             }
             for key in Array(effectTails.keys) where key.head == head {
-                if let tail = effectTails[key], !scope.allows(fragmentPlaybackStarts[tail.voice.clip.id]) {
+                if let tail = effectTails[key], !scope.allows(fragmentPlaybackStarts[tail.voice.clip.id]) || !song.allowsExclusiveSubplay(transport,head:head,track:tail.voice.track,owner:tail.voice.clip.regionOwnerID,selectedTracks:exclusiveSubplayTracks) {
                     effectTails[key] = nil; recycle(tail.voice)
                 }
             }
@@ -3886,7 +3930,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             let candidates = playbackClipIndex.candidates(at: schedulingPosition, lookahead: lookahead)
             let pending = head == 2 ? candidates.filter {
                 let clip = clips[$0].1
-                return voices[VoiceKey(clip: clip.id, head: head)] == nil && clip.audioFile != nil && scope.allows(fragmentPlaybackStarts[clip.id])
+                return voices[VoiceKey(clip: clip.id, head: head)] == nil && clip.audioFile != nil && scope.allows(fragmentPlaybackStarts[clip.id]) && song.allowsExclusiveSubplay(transport,head:head,track:clips[$0].0,owner:clip.regionOwnerID,selectedTracks:exclusiveSubplayTracks)
             }.count : 0
             let secondsToJump = preparedJump.map { jump in
                 let now = mach_absolute_time()
@@ -3895,7 +3939,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             let preparationBudget = head == 2 ? Self.jumpPreparationBatchSize(pending: pending, seconds: secondsToJump, interval: elapsed) : Int.max
             for index in candidates {
                 let (track, clip) = clips[index]
-                guard scope.allows(fragmentPlaybackStarts[clip.id]) else { continue }
+                guard scope.allows(fragmentPlaybackStarts[clip.id]), song.allowsExclusiveSubplay(transport,head:head,track:track,owner:clip.regionOwnerID,selectedTracks:exclusiveSubplayTracks) else { continue }
                 if let prepareEnd, clip.startTime >= prepareEnd { continue }
                 let key = VoiceKey(clip: clip.id, head: head)
                 if var voice = voices[key], clip.loopLength != nil {

@@ -814,7 +814,7 @@ void Session::syncClock() {
             std::abs(expected.position - actual.position) <= tolerance &&
             (!expected.subPlay.playing || std::abs(expected.subPlay.position - actual.subPosition) <= tolerance);
         const bool transition = oldJump != expected.sectionJumpSerial || oldPromotion != expected.subPlayPromotion;
-        if (!aligned || transition || before.queuedSectionMarkerId != expected.queuedSectionMarkerId)
+        if (!aligned || transition || before.queuedSectionMarkerId != expected.queuedSectionMarkerId || before.exclusivePlaybackRegionId!=expected.exclusivePlaybackRegionId || before.subExclusivePlaybackRegionId!=expected.subExclusivePlaybackRegionId)
             // Loops already wrap at a sample boundary inside the audio engine.
             // Acknowledge the core's loop event without replaying its onset.
             publishTransport(transition, aligned);
@@ -832,6 +832,8 @@ void Session::publishTransport(bool preserveLatency, bool routingOnly) {
     if (song()) {
         state.scope[0] = jaras::playbackScope(*song(), t);
         state.scope[1] = jaras::playbackScope(*song(), t, true);
+        state.exclusiveScope[0]=jaras::exclusiveSubplayScope(*song(),t);
+        state.exclusiveScope[1]=jaras::exclusiveSubplayScope(*song(),t,true);
     }
     state.end = t.ignoreNextEnd.value_or(std::numeric_limits<double>::infinity());
     state.loop = t.loop.enabled;
@@ -1456,6 +1458,7 @@ void Session::applySetlistHistory(const SetlistHistory &state, bool recordHistor
         if (undoHistory.size()>40) undoHistory.erase(undoHistory.begin());
         redoHistory.clear();
     }
+    if(song()) audio.setMixer(project(),*song());
     dirty=true; publishTransport(); ++revision;
     if (setlistChanged) setlistChanged(); else if (changed) changed();
 }
@@ -2402,9 +2405,11 @@ void Session::applyProjectSync(const jaras::projectSync::Frame &frame, double el
     syncClock();
     const auto oldSong=transport().songId;
     const auto oldRegion=transport().regionId;
+    const auto oldExclusiveTracks=project().regionSetlist ? project().regionSetlist->subplayExclusiveTrackIDs : std::nullopt;
     bool mixerChanged=false;
     const bool changed=core.applyProjectSync(frame, elapsed, first, &mixerChanged);
-    if(mixerChanged) {dirty=true;if(song())audio.setMixer(project(),*song());}
+    const auto exclusiveTracks=project().regionSetlist ? project().regionSetlist->subplayExclusiveTrackIDs : std::nullopt;
+    if(mixerChanged || oldExclusiveTracks!=exclusiveTracks) {dirty=true;if(song())audio.setMixer(project(),*song());}
     if(focused) {
         auto source=*focused;
         if(project().regionSetlist) for(const auto &playlist:project().regionSetlist->playlists)

@@ -199,6 +199,8 @@ struct SongListView: View {
         return show.allRegions.filter { !existing.contains($0.id) }
     }
     @State private var showingAutoOptions = false
+    @State private var choosingSubplayTracks = false
+    @State private var subplayTrackDraft = Set<UUID>()
     @State private var configInitRegion: Part?
     @State private var configInitSelection = 1
     @State private var searching = false
@@ -324,6 +326,12 @@ struct SongListView: View {
                                         }
                                         Text(verbatim: "Next").tag(11)
                                     }.disabled(show.regionSetlist.automaticSubplay != true)
+                                    Button("Choose tracks") {
+                                        subplayTrackDraft = Set(show.regionSetlist.subplayExclusiveTrackIDs ?? [])
+                                        showingAutoOptions = false
+                                        DispatchQueue.main.async { choosingSubplayTracks = true }
+                                    }
+
                                 }
                             }.toggleStyle(.automatic).padding(18).frame(width: 320)
                         }
@@ -584,6 +592,28 @@ struct SongListView: View {
             } else if removal?.playlist == nil {
                 Text("The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder.")
             }
+        }
+        .sheet(isPresented: $choosingSubplayTracks) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Choose tracks").font(.jarasHeadline)
+                Text("On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.")
+                    .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(show.current?.tracks.filter { $0.kind == .standard } ?? []) { track in
+                            Toggle(isOn: Binding(get: { subplayTrackDraft.contains(track.id) }, set: { enabled in
+                                if enabled { subplayTrackDraft.insert(track.id) } else { subplayTrackDraft.remove(track.id) }
+                            })) { Text(verbatim: track.name) }
+                        }
+                    }.padding(8)
+                }
+                HStack {
+                    Button("Cancel") { choosingSubplayTracks = false }
+                    Spacer()
+                    Button("Apply") { show.setSubplayExclusiveTracks(subplayTrackDraft); choosingSubplayTracks = false }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }.padding(22).frame(width: 460, height: 440).background(JarasTheme.background)
         }
         .sheet(item: $regionExport) { request in
             AudioExportView(project: request.project, song: request.song, mediaDirectory: request.mediaDirectory,

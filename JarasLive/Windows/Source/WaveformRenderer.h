@@ -87,8 +87,11 @@ struct WaveformRenderer {
                     const auto segment = juce::Rectangle<float>((float)x, lane.getY(), (float)((end - position) * pixelsPerSecond), lane.getHeight()).getIntersection(lane);
                     const bool cropped=segment!=lane;
                     if(cropped) {g.saveState();Path clipPath;clipPath.addRectangle(segment);g.reduceClipRegion(clipPath);}
+                    // Reading every PCM sample is useful only at close zoom.
+                    // At overview zoom the cached extrema retain transients
+                    // while keeping continuous-scroll work bounded by pixels.
                     bool detailed = false;
-                    if (step < 256) detailed = drawDetail(g, cache, data, sourceChannel, source, sourceEnd, sourceScale, x, middle, amplitude, step, fade);
+                    if (data->sampleRate / (sourceScale * physical) <= 32) detailed = drawDetail(g, cache, data, sourceChannel, source, sourceEnd, sourceScale, x, middle, amplitude, step, fade);
                     if (!detailed) drawEnvelope(g, *data, sourceChannel, source, sourceEnd, sourceScale, x, middle, amplitude, physical, fade);
                     if(cropped) g.restoreState();
                 }
@@ -144,6 +147,41 @@ struct WaveformRenderer {
             pages[frame / WaveformCache::Detail::pageFrames] = std::move(page);
         }
         if (!complete) return false;
+        // Multiple samples per pixel need an extrema envelope, not a rounded
+        // stroke through every local turn. The latter expands thousands of
+        // joins on the software renderer and stalls all message-thread meters.
+        // Retain exact PCM extrema and source-anchored buckets at this zoom.
+        if (step > 1) {
+            struct Edge { float x, upper, lower; };
+            std::vector<Edge> edges;
+            edges.reserve((size_t)((last-first)/step+3));
+            for (int64 at=first;at<=last;at+=step) {
+                const int64 until=std::min({last,at+step-1,data->frames-1});
+                float low=std::numeric_limits<float>::max(),high=-low;
+                for(int64 frame=at;frame<=until;++frame) {
+                    const auto &page=*pages.at(frame/WaveformCache::Detail::pageFrames);
+                    const float value=page.sample(channel,frame);
+                    low=std::min(low,value);high=std::max(high,value);
+                }
+                const auto edge=[&](double frame) {
+                    const float px=(float)(x+(frame/data->sampleRate-start)*scale);
+                    const float level=amplitude*fade.at(px);
+                    const float a=middle-low*level,b=middle-high*level;
+                    edges.push_back({px,std::min(a,b),std::max(a,b)});
+                };
+                if(at==first)edge((double)at);
+                edge(((double)at+until)*.5);
+                if(until==last)edge((double)until);
+            }
+            if(!edges.empty()) {
+                Path envelope;envelope.preallocateSpace((int)edges.size()*6);
+                envelope.startNewSubPath(edges.front().x,edges.front().upper);
+                for(size_t i=1;i<edges.size();++i)envelope.lineTo(edges[i].x,edges[i].upper);
+                for(auto i=edges.rbegin();i!=edges.rend();++i)envelope.lineTo(i->x,i->lower);
+                envelope.closeSubPath();g.fillPath(envelope);
+            }
+            return true;
+        }
         Path path; bool begun = false; int64 previous = -1;
         const auto append = [&](int64 frame, float value) {
             if (frame <= previous) return;

@@ -77,16 +77,17 @@ template<class A> void archive(A &a, Frame &f, std::uint64_t version = 3) {
     m.tracks.resize(size_t(count));
     for(auto &track:m.tracks) { a(track.id); a(track.volume); a(track.pan); a(track.mute); a(track.solo); }
     if (version >= 3) { a(t.playlistEntryId); a(t.queuedPlaylistEntryId); }
+    if(version>=5) { a(t.exclusivePlaybackRegionId);a(t.subExclusivePlaybackRegionId);if(f.setlist)a(f.setlist->subplayExclusiveTrackIDs); }
 }
 inline std::vector<unsigned char> encode(Frame value) {
-    Writer w; std::uint64_t version=value.transport.automaticSectionTriggerId ? 4 : 3; w(version); archive(w,value,version);
+    Writer w; std::uint64_t version=(value.transport.exclusivePlaybackRegionId || value.transport.subExclusivePlaybackRegionId || (value.setlist && value.setlist->subplayExclusiveTrackIDs)) ? 5 : value.transport.automaticSectionTriggerId ? 4 : 3; w(version); archive(w,value,version);
     if(version>=4) w(value.transport.automaticSectionTriggerId);
     if(w.bytes.size()>131072) throw std::invalid_argument("Project Sync frame too large"); return w.bytes;
 }
 inline Frame decode(const void *data,size_t size) {
     if(size>131072) throw std::invalid_argument("Project Sync frame too large");
     Reader r{(const unsigned char*)data,size}; std::uint64_t version; r(version);
-    if(version!=2 && version!=3 && version!=4) throw std::invalid_argument("Unsupported Project Sync version");
+    if(version!=2 && version!=3 && version!=4 && version!=5) throw std::invalid_argument("Unsupported Project Sync version");
     Frame f; archive(r,f,version); if(version>=4) r(f.transport.automaticSectionTriggerId); if(r.offset!=size) throw std::invalid_argument("Trailing Project Sync data"); return f;
 }
 inline bool sameID(const ID &a,const ID &b) {

@@ -1554,8 +1554,15 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             horizontal.setCurrentRangeStart(std::max(0.0, cursor - rightLimit), sendNotificationSync);
     }
     void pausePlaybackFollow() { followPolicy.pause(w.session.presentationTransport()); }
+    // Scroll and needles must share one device-clock observation. Sampling
+    // again during paint moves the needle ahead of the transform, visibly even
+    // at moderate zoom (and by hundreds of pixels at the maximum zoom).
+    std::optional<jaras::TransportState> playbackFrame;
+    bool followFramePending = false;
     void followPlayback() {
-        const auto state = w.session.presentationTransport();
+        playbackFrame = w.session.presentationTransport();
+        followFramePending = true;
+        const auto& state = *playbackFrame;
         if(followPolicy.isPaused(state))return;
         if (!w.appearance.continuousScroll() || !(state.playing || state.subPlay.playing)) { followPolicy.reset(); return; }
         if (gestureMode != 0 || Component::isMouseButtonDownAnywhere() || Component::getNumCurrentlyModalComponents() != 0) return;
@@ -1567,7 +1574,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         if(next)horizontal.setCurrentRangeStart(*next,sendNotificationSync);
     }
     void animate() {
-        const auto state = w.session.presentationTransport();
+        if(!followFramePending) playbackFrame = w.session.presentationTransport();
+        followFramePending = false;
+        const auto& state = *playbackFrame;
         playbackFrames.setRunning(isShowing() && (state.playing || state.subPlay.playing));
         const auto range=visualTimeRange();
         if(range!=lastVisualTimeRange){lastVisualTimeRange=range;canvas.repaint();}
@@ -1688,6 +1697,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         Array<var> stages;for(auto ms:paintStages) stages.add(ms);put(v,"paintStagesMilliseconds",stages);
         put(v, "vertical", vertical.getCurrentRangeStart());
         put(v, "zoom", w.pixelsPerSecond);
+        if(playbackFrame)put(v,"framePlaybackPosition",playbackFrame->position);
+        if(heads.hasPainted){put(v,"paintedMainNeedleX",heads.paintedMainX);put(v,"paintedMainPosition",heads.paintedMainPosition);}
+        if(selectedHeaderRegion && selectedHeaderProject==w.session.project().id)put(v,"selectedHeaderRegion",text(*selectedHeaderRegion));
         put(v, "subCursorVisible", w.session.subCursorVisible());
         put(v, "gestureActive", gestureMode != 0);
         put(v, "trackHeight", w.trackHeight);
@@ -1854,6 +1866,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     mutable uint64 regionLayoutRevision = ~uint64(0);
     ScrollBar horizontal, vertical;
     TimelinePlaybackFollowPolicy followPolicy;
+    std::optional<ID> selectedHeaderRegion;
+    ID selectedHeaderProject;
     Component envelopeContent;
     OwnedArray<EnvelopeLane> lanes;
     std::vector<std::pair<int, int>> lanePositions;
@@ -1969,6 +1983,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         g.drawText(timelineRegionLabels::displayName(p),
                                    juce::Rectangle<float>(a+4,(float)laneTop+2,nameWidth,12),Justification::centredLeft,true);
                     }
+                }
+                if(t.selectedHeaderRegion==p.id && t.selectedHeaderProject==t.w.session.project().id) {
+                    g.setColour(Colours::white);
+                    g.drawRect(juce::Rectangle<float>(a,(float)laneTop,std::max(1.f,b-a-1),16.f).reduced(.75f),1.5f);
                 }
             }
             g.setColour(theme::line);
@@ -2379,6 +2397,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 const auto hit=regionHit(e.position,!e.mods.isPopupMenu());
                 if (hit.first) {
                             const auto &p=*hit.first;
+                            t.selectedHeaderRegion=p.id;t.selectedHeaderProject=t.w.session.project().id;
+                            repaint(0,0,getWidth(),t.regionHeight());
                             if (e.mods.isPopupMenu()) {
                                 ++t.w.contextCount;
                                 t.w.showRegionMenu(p.id, e.getScreenPosition());
@@ -2963,8 +2983,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
       public:
         int headerHeight() const { return t.headerHeight(); }
         explicit Heads(Timeline &timeline) : t(timeline) {}
+        bool hasPainted=false;double paintedMainX=0,paintedMainPosition=0;
         void paint(Graphics &g) override {
-            const auto state = t.w.session.presentationTransport();
+            const auto state = t.playbackFrame ? *t.playbackFrame : t.w.session.presentationTransport();
+            hasPainted=true;paintedMainX=t.xAt(state.position);paintedMainPosition=state.position;
             auto head = [&](double position, Colour colour, bool playback) {
                 float x = t.xAt(position);
                 if (x < 0 || x > getWidth())

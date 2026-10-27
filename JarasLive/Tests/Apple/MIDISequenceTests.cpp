@@ -89,6 +89,19 @@ static void timingEditRegressions(double rate) {
     std::cout<<"MIDI_TIMING_EDITS_PRESERVE_IDENTIFIED_HELD_NOTES_WITHOUT_REATTACK_AND_KEEP_SEEK_LOOP_STOP_DUAL_HEAD_OK "<<rate<<"\n";
 }
 int main() {
+    {
+        auto sequence=std::make_unique<CatMIDISequence>();
+        sequence->setNotes({{0,10,60,100,0,1,1,0},{0,10,67,100,0,2,2,2}});
+        sequence->configure(0,1,0,true,0,0);sequence->configure(1,1,0,true,0,0);
+        sequence->render(0,48000,128);
+        assert(attacks(*sequence)==1 && sequence->events[0].pitch==67);
+        sequence->setNotes({{0,10,60,100,0,1,1,0},{0,10,67,100,0,2,2,1}});
+        sequence->configure(0,1.5,1,true,0,0);sequence->configure(1,0,1,false,0,0);
+        sequence->render(1,48000,128);
+        for(unsigned i=0;i<sequence->count;++i)assert(sequence->events[i].pitch==67);
+        assert(attacks(*sequence)==1);
+    }
+
     auto s=std::make_unique<CatMIDISequence>();
     s->setNotes({{.01,.02,60,100,0},{.025,.04,64,90,0}});
     s->configure(0,0,0,true,0,0);s->render(0,48000,1024);
