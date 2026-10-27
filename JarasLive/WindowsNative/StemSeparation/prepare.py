@@ -284,7 +284,7 @@ def main():
             package.extractall(staging, filter='data')
         archive.unlink()
         python = staging / 'python/python.exe'
-        subprocess.run([str(python), '-I', '-m', 'pip', 'install', '--no-cache-dir', '-r', str(lock)], check=True)
+        subprocess.run([str(python), '-I', '-m', 'pip', 'install', '--timeout', '120', '--retries', '5', '--no-cache-dir', '-r', str(lock)], check=True)
         download('https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/' + MODEL_NAME, staging / MODEL_NAME, MODEL_SHA)
         refresh_runtime(staging, root, lock)
         # Same filesystem: move the completed payload without duplicating 1.6 GiB.

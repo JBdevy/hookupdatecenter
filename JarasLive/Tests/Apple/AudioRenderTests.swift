@@ -843,7 +843,7 @@ snapshot.project.masterVolume = 0.1
 snapshot.project.masterMute = false
 try renderer.update(snapshot, revision: 7)
 let directLowMaster = try peak()
-precondition(directLowMaster > 0.09 && directLowMaster < 0.11, "direct output bypasses master fader")
+precondition(directLowMaster > 0.09 && directLowMaster < 0.11, "direct output bypasses master fader: \(directLowMaster), direct before update=\(directPeak), sample=\(engine.manualRenderingSampleTime), rate=\(outputFormat.sampleRate)")
 snapshot.project.songs[0].tracks[0].patch = .master
 try renderer.update(snapshot, revision: 8)
 let throughMaster = try peak()
