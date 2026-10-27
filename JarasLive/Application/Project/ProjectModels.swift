@@ -1227,3 +1227,32 @@ public struct AudioClipPlaybackIndex {
         collect(node.right, from: position, through: end, into: &result)
     }
 }
+
+/// Local colour overrides travel with an item's text; legacy plain text remains unchanged.
+public enum ItemTextColors {
+    public struct Run: Codable, Equatable, Sendable {
+        public var text: String
+        public var color: UInt32?
+        public init(text: String, color: UInt32? = nil) { self.text = text; self.color = color }
+    }
+    public static let prefix = "\u{001e}CatLiveText/1\n"
+    public static let palette: [UInt32] = [0xffffff, 0xff4040, 0xff9638, 0xffe740, 0x54ef86, 0x40dfff, 0x5894ff, 0xd477ff]
+    public static func runs(_ value: String) -> [Run] {
+        guard value.hasPrefix(prefix), let data = String(value.dropFirst(prefix.count)).data(using: .utf8),
+              let runs = try? JSONDecoder().decode([Run].self, from: data),
+              runs.allSatisfy({ $0.color.map { $0 <= 0xffffff } ?? true }) else { return [Run(text: value)] }
+        return runs
+    }
+    public static func plain(_ value: String) -> String { runs(value).map(\.text).joined() }
+    public static func encode(_ values: [Run]) -> String {
+        var merged: [Run] = []
+        for run in values where !run.text.isEmpty {
+            if merged.last?.color == run.color, !merged.isEmpty { merged[merged.count-1].text += run.text }
+            else { merged.append(run) }
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard merged.contains(where: { $0.color != nil }), let data = try? encoder.encode(merged),
+              let json = String(data: data, encoding: .utf8) else { return merged.map(\.text).joined() }
+        return prefix + json
+    }
+}

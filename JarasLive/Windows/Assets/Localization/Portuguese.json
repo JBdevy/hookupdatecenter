@@ -1436,5 +1436,6 @@
   "audio files": "arquivos de áudio",
   "Importing": "Importando",
   "Choose tracks": "Escolher pistas",
-  "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.": "Nessas pistas, o Subplay automático interrompe os itens da música anterior e mantém apenas os itens da música que entra."
+  "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.": "Nessas pistas, o Subplay automático interrompe os itens da música anterior e mantém apenas os itens da música que entra.",
+  "Text color": "Cor do texto"
 }

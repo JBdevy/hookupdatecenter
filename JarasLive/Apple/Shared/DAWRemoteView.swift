@@ -751,9 +751,10 @@ struct DAWRemoteClientView: View {
         let progressClip = settings.progressMode == "chords" ? chord : lyric
         let progress = progressClip.map { min(1, max(0, (position - $0.startTime) / max(0.001, $0.duration))) } ?? 0
         let queueName = queued?.name ?? snapshot.project.songs.first { $0.id == transport.queue.songId }?.name ?? ""
-        var result = DAWRemoteTeleprompter(index: index, text: settings.display(lyric?.text ?? ""), chords: settings.display(chord?.text ?? ""),
+        var result = DAWRemoteTeleprompter(index: index, text: settings.display(ItemTextColors.plain(lyric?.text ?? "")), chords: settings.display(ItemTextColors.plain(chord?.text ?? "")),
             song: settings.display(region?.name ?? ""), queued: settings.display(queueName), progress: progress,
             style: style, preview: settings.displaysPreview(previewActive), settings: settings)
+        result.textStyled = lyric?.text; result.chordsStyled = chord?.text
         if result.preview, let song {
             let setlist = snapshot.project.regionSetlist ?? RegionSetlist()
             let played = SetlistLivePlaybackTracker.previewMarks(project: snapshot.project)

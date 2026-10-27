@@ -971,6 +971,23 @@ int runTests(const File &directory) {
         expect(std::abs(extent(above,100)-extent(below,100))<=1,"Phase inversion collapsed the waveform envelope");
         expect(std::abs(data->range(0,0,1).second-.4f)<.001f,"Gain or polarity rewrote source peaks");
     });
+    test("Item text colors preserve selected Unicode words and legacy plain text", [&] {
+        const std::vector<ItemTextColors::Run> original={{String::fromUTF8("É 🎵 "),{}},{"Am7\nG",0xff4040},{" <script> literal",{}}};
+        const auto encoded=ItemTextColors::encode(original),plain=String::fromUTF8("É 🎵 Am7\nG <script> literal");
+        expect(ItemTextColors::plain(encoded)==plain,"Color metadata changed visible words");
+        const auto decoded=ItemTextColors::runs(encoded);
+        expect(decoded.size()==3 && decoded[1].color==0xff4040 && !decoded[0].color,"Selected word color did not survive serialization");
+        expect(ItemTextColors::encode({{"Am\nG",{}}})=="Am\nG","Legacy plain text must stay plain");
+        const auto malformed=ItemTextColors::prefix()+"[{\"text\":\"Am\",\"color\":16777216}]";
+        expect(ItemTextColors::plain(malformed)==malformed,"Malformed data must stay literal");
+        auto project=projectFixture();jaras::Track track;track.id=uuid();track.name="Teleprompter";track.role.id="teleprompt";
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Colored words";clip.duration=1;clip.text=utf8(encoded);track.clips.push_back(clip);
+        project.songs.front().tracks.push_back(track);
+        const auto restored=ProjectCodec::decode(ProjectCodec::encode(project,{}));
+        const auto &savedTracks=restored.songs.front().tracks;
+        const auto saved=std::find_if(savedTracks.begin(),savedTracks.end(),[&](const auto &value){return value.id==track.id;});
+        expect(saved!=savedTracks.end() && text(*saved->clips.front().text)==encoded,"Project save lost selected word colors");
+    });
     test("Waveform physical columns retain transients and scroll without repartitioning", [&] {
         auto data=std::make_shared<WaveformCache::Data>();
         data->duration=200;data->sampleRate=48000;data->frames=9600000;data->sourceChannels=data->storedChannels=1;

@@ -28,6 +28,9 @@ void Projection::paintStage(Graphics &g) {
         g.fillAll(Colours::black);
     auto label = [&](String value, juce::Rectangle<float> area, String family, float size,
                      Colour ink, Justification alignment = Justification::centred, int lines = 1) {
+        if(value.startsWith(ItemTextColors::prefix())) {
+            ItemTextColors::draw(g,value,area,StageState::font(settings,family,size),ink,alignment,display);return;
+        }
         g.setFont(StageState::font(settings, family, size));
         g.setColour(ink);
         g.drawFittedText(display(value), area.toNearestInt(), alignment, lines, .3f);
@@ -74,12 +77,17 @@ void Projection::paintStage(Graphics &g) {
         };
         title(str(content,"song"), "songName", getHeight() / 18.f);
         title(str(content,"queued"), "queueName", getHeight() / 22.f);
-        const auto chords=str(content,"chords");
+        const auto chords=str(content,"chordsStyled",str(content,"chords"));
         if (!preview && flag(settings, "chordsEnabled", true) && chords.isNotEmpty()) {
             const float size = (float)num(settings, "chordScale", 50);
             auto area = str(settings, "chordPosition", "top") == "bottom"
                             ? box.removeFromBottom(size * 1.5f)
                             : box.removeFromTop(size * 1.5f);
+            float textWidth=1;
+            const auto chordFont=StageState::font(settings,"chordFontFamily",size);
+            for(const auto &line:StringArray::fromLines(display(ItemTextColors::plain(chords))))
+                textWidth=std::max(textWidth,GlyphArrangement::getStringWidth(chordFont,line));
+            area=area.withSizeKeepingCentre(std::min(area.getWidth(),textWidth+12),area.getHeight());
             g.setColour(border("chordColor", "rgbChordBorderEnabled"));
             g.drawRoundedRectangle(area, 5, 1);
             label(chords, area.reduced(5), "chordFontFamily", size, color("chordColor"),
@@ -195,7 +203,7 @@ void Projection::paintStage(Graphics &g) {
         const auto textArea = box.reduced(6);
         const float fit = std::max(.01f,std::min(std::max(1.f,textArea.getWidth()) / longest,
             std::max(1.f,textArea.getHeight()) / (std::max(1,lines.size()) * baseFont.getHeight() * 1.2f)));
-        label(text, textArea, "fontFamily",
+        label(str(content,"textStyled",str(content,"text")), textArea, "fontFamily",
               (float)(100 * fit * num(settings, "textScale", 100) / 100.),
               color("textColor"),
               align == "left"    ? Justification::centredLeft

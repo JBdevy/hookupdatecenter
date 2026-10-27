@@ -52,10 +52,10 @@ struct TeleprompterProjectionLayout<Media: View>: View {
             title(content.queued,color: settings.queueNameColor,font: settings.queueNameFontFamily,scale: settings.queueNameScale)
         }
         if !preview && settings.chordsEnabled && !content.chords.isEmpty && settings.chordPosition == (top ? "top" : "bottom") {
-            Text(settings.display(content.chords)).font(tpFont(settings.chordFontFamily,size: settings.chordScale))
+            ItemTextColors.view(content.chordsStyled ?? content.chords, display: settings.display).font(tpFont(settings.chordFontFamily,size: settings.chordScale))
                 .foregroundStyle(Color(hex: settings.chordColor)).lineLimit(2).minimumScaleFactor(0.4).padding(6)
-                .frame(maxWidth: .infinity)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(border(settings.chordColor,rgb: settings.rgbChordBorderEnabled,date: date),lineWidth: 1))
+                .frame(maxWidth: .infinity)
         }
         if !preview && settings.progressEnabled && settings.progressPosition == (top ? "top" : "bottom") {
             GeometryReader { bar in Color(hex: settings.progressColor).frame(width: bar.size.width * content.progress) }
@@ -123,13 +123,13 @@ struct TeleprompterProjectionLayout<Media: View>: View {
             .lineLimit(1).minimumScaleFactor(0.5).frame(maxWidth: .infinity)
     }
     private func lyricText(size: CGSize,date: Date) -> some View {
-        let text = settings.display(content.text)
+        let text = settings.display(ItemTextColors.plain(content.textStyled ?? content.text))
         let lines = text.components(separatedBy: .newlines)
         let longest = max(1,lines.map(\.count).max() ?? 1)
         let font = max(1,min(max(1,size.width-12) / (Double(longest)*0.64),max(1,size.height-12) / (Double(max(1,lines.count))*1.2)) * settings.textScale / 100)
         let alignment: Alignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
         let textAlignment: TextAlignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
-        return Text(text).font(tpFont(settings.fontFamily,size: font)).foregroundStyle(Color(hex: settings.textColor))
+        return ItemTextColors.view(content.textStyled ?? content.text, display: settings.display).font(tpFont(settings.fontFamily,size: font)).foregroundStyle(Color(hex: settings.textColor))
             .multilineTextAlignment(textAlignment).lineLimit(nil).minimumScaleFactor(0.3).padding(6)
             .frame(width: max(1,size.width),height: max(1,size.height),alignment: alignment)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.textBoxEnabled ? border(settings.textBoxColor,rgb: settings.rgbTextBoxBorderEnabled,date: date) : .clear,lineWidth: 2))

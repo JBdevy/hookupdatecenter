@@ -51,6 +51,14 @@ precondition(editor.string == "Am\n" && committed.isEmpty, "Enter inserts a new 
 editor.insertText("G", replacementRange: NSRange(location: (editor.string as NSString).length, length: 0)); settle()
 key(36, flags: .command)
 precondition(committed == ["Am\nG"] && closes == 1, "Command+Enter confirms the full draft once")
+guard let coloredEditor = editor as? TextItemNotepadView else { fatalError("Missing colour-capable editor") }
+coloredEditor.applyTextColor(0xff4040, range: NSRange(location: 0, length: 2))
+settle()
+precondition(editor.string == "Am\nG" && committed == ["Am\nG"], "Colour must keep visible text unchanged and remain a draft")
+precondition(ItemTextColors.runs(coloredEditor.encodedText) == [.init(text: "Am", color: 0xff4040), .init(text: "\nG")], "Only the selected chord gets a colour")
+let encoded = coloredEditor.encodedText
+coloredEditor.loadColoredText(encoded)
+precondition(coloredEditor.encodedText == encoded && editor.string == "Am\nG", "Reopening must retain colour without exposing storage markup")
 editor.insertText(" change", replacementRange: NSRange(location: (editor.string as NSString).length, length: 0)); settle()
 key(53)
 precondition(committed == ["Am\nG"] && closes == 2, "Escape cancels without another project edit")

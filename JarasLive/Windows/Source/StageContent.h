@@ -1,4 +1,5 @@
 #pragma once
+#include "ItemTextColors.h"
 #include "Session.h"
 #include "StageState.h"
 namespace catlive {
@@ -133,7 +134,7 @@ struct StageContent {
             for(const auto &b:all)if(str(b,"name").isNotEmpty()||!list(get(b,"songs")).isEmpty())nonempty.add(b);
             for(int i=stage.previewPage*4;i<std::min(nonempty.size(),stage.previewPage*4+4);++i)blocks.add(nonempty[i]);
         }
-        put(out,"text",lyrics);put(out,"chords",chords);put(out,"song",name);put(out,"queued",queued);put(out,"progress",progress);put(out,"blocks",blocks);
+        put(out,"text",ItemTextColors::plain(lyrics));put(out,"chords",ItemTextColors::plain(chords));put(out,"textStyled",lyrics);put(out,"chordsStyled",chords);put(out,"song",name);put(out,"queued",queued);put(out,"progress",progress);put(out,"blocks",blocks);
         return result;
     }
 };

@@ -751,6 +751,7 @@ struct DAWRemoteTeleprompter: Codable, Equatable {
     }
     var index: Int
     var text: String, chords: String, song: String, queued: String
+    var textStyled: String? = nil, chordsStyled: String? = nil
     var progress: Double
     var style: Style
     var preview: Bool = false

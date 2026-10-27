@@ -38,6 +38,19 @@ MainActor.assumeIsolated {
         window.orderOut(nil); window.contentView = nil; window.close()
         return data
     }
+    var coloredSettings = TeleprompterSettings()
+    coloredSettings.clockEnabled = false; coloredSettings.localClockEnabled = false
+    coloredSettings.songNameEnabled = false; coloredSettings.queueNameEnabled = false
+    coloredSettings.windowBorderEnabled = false; coloredSettings.textBoxEnabled = false
+    coloredSettings.chordsEnabled = false; coloredSettings.textColor = 0xffffff
+    var colored = DAWRemoteTeleprompter(index: 1, text: "Am Palavra", chords: "", song: "", queued: "", progress: 0, style: .init(), settings: coloredSettings)
+    let unstyledPixels = pixels(colored)
+    colored.textStyled = ItemTextColors.encode([.init(text: "Am", color: 0xff4040), .init(text: " Palavra")])
+    precondition(pixels(colored) != unstyledPixels, "Selected lyric colour must change the actual projection pixels")
+    colored.textStyled = nil; colored.chords = "Am G"; coloredSettings.chordsEnabled = true; colored.settings = coloredSettings
+    let defaultChords = pixels(colored)
+    colored.chordsStyled = ItemTextColors.encode([.init(text: "Am", color: 0x54ef86), .init(text: " G")])
+    precondition(pixels(colored) != defaultChords, "Selected chord colour must change the actual projection pixels")
     var spacious = TeleprompterSettings()
     spacious.clockEnabled = false; spacious.localClockEnabled = false
     spacious.songNameEnabled = false; spacious.queueNameEnabled = false
