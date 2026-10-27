@@ -32,18 +32,6 @@ class RecordingOptionsPanel final : public Component, private Timer {
                 if (channels == 0 && !track.midiInput) track.midiInput = 1;
             });
         };
-        addAndMakeVisible(midiChannel);
-        midiChannel.setComponentID("recordingMIDIChannel");
-        midiChannel.addItem(localization::translate("All channels"), 1);
-        for (int channel = 1; channel <= 16; ++channel) midiChannel.addItem(String(channel), channel + 1);
-        midiChannel.onChange = [this] {
-            const int channel = midiChannel.getSelectedId() - 1;
-            if (channel < 0 || channel > 16) return;
-            change([channel](jaras::Track &track) {
-                if (track.role.id == "vinhetas") return;
-                if (channel == 0) track.midiChannel.reset(); else track.midiChannel = channel;
-            });
-        };
         addAndMakeVisible(format);
         format.setComponentID("recordingFormat");
         const Appearance settings;
@@ -82,20 +70,16 @@ class RecordingOptionsPanel final : public Component, private Timer {
         g.setFont(theme::font(13.f, true));
         g.drawText(localization::translate("Recording mode"), 16, 12, getWidth() - 32, 24, Justification::centredLeft);
         g.setFont(theme::font(12.f));
-        if (midiChannel.isVisible())
-            g.drawText(localization::translate("MIDI channel"), 16, 88, 120, 26, Justification::centredLeft);
         g.setColour(Colours::white.withMultipliedAlpha(midi ? .35f : 1.f));
-        g.drawText(localization::translate("Format"), 16, 88 + midiRowHeight(), 66, 26, Justification::centredLeft);
+        g.drawText(localization::translate("Format"), 16, 88, 66, 26, Justification::centredLeft);
     }
     void resized() override {
         modes.setBounds(16, 48, getWidth() - 32, 28);
-        midiChannel.setBounds(142, 88, getWidth() - 158, 28);
-        const int offset = midiRowHeight();
-        format.setBounds(84, 88 + offset, getWidth() - 100, 28);
-        fader.setBounds(16, 172 + offset, getWidth() - 32, 28);
-        effects.setBounds(16, 214 + offset, getWidth() - 32, 28);
-        monitor.setBounds(16, 256 + offset, getWidth() - 32, 28);
-        signal.setBounds(16, 130 + offset, getWidth() - 32, 28);
+        format.setBounds(84, 88, getWidth() - 100, 28);
+        fader.setBounds(16, 172, getWidth() - 32, 28);
+        effects.setBounds(16, 214, getWidth() - 32, 28);
+        monitor.setBounds(16, 256, getWidth() - 32, 28);
+        signal.setBounds(16, 130, getWidth() - 32, 28);
     }
 
   private:
@@ -148,9 +132,8 @@ class RecordingOptionsPanel final : public Component, private Timer {
     ID project;
     std::function<void(String)> error;
     Segmented modes, monitor, fader, effects, signal;
-    ComboBox format, midiChannel;
+    ComboBox format;
     bool midi = false;
-    int midiRowHeight() const { return midiChannel.isVisible() ? 42 : 0; }
 
     const jaras::Track *track() const {
         if (session.project().id == project)
@@ -167,9 +150,6 @@ class RecordingOptionsPanel final : public Component, private Timer {
             return;
         }
         const bool vinhetas=current->role.id=="vinhetas";
-        midiChannel.setVisible(!vinhetas);
-        midiChannel.setEnabled(!session.busy && !session.audio.isRecording());
-        midiChannel.setSelectedId(current->midiChannel.value_or(0) + 1, dontSendNotification);
         const bool output=vinhetas||current->recordingOutput.value_or(false);
         modes.allowLast(!vinhetas);
         signal.select(output?1:0);
@@ -189,7 +169,7 @@ class RecordingOptionsPanel final : public Component, private Timer {
         // Match the Mac: changing recording mode must not resize/reanchor the
         // callout. Audio-only options stay visible and disabled in MIDI mode.
         monitor.setVisible(!vinhetas);
-        setSize(318, (vinhetas ? 256 : 300) + midiRowHeight());
+        setSize(318, (vinhetas ? 256 : 300));
         repaint();
     }
     void timerCallback() override { refresh(); }
