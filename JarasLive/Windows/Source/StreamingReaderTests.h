@@ -194,6 +194,29 @@ inline void retirementDuringRead(const File& directory, bool slowOpen = false) {
 }
 template <typename Register>
 void registerTests(const File& directory, Register&& test) {
+    test("Prepared Play activates forward streaming before the onset reserve runs out", [&] {
+        const auto folder = directory.getChildFile("play-forward-handoff");
+        require(folder.createDirectory().wasOk(), "Cannot create handoff fixture");
+        const auto slow = folder.getChildFile("slow.sched"), normal = folder.getChildFile("normal.sched");
+        require(slow.replaceWithText("fixture") && normal.replaceWithText("fixture"), "Cannot write handoff fixtures");
+        Fixture fixture; AudioFormatManager formats; formats.registerFormat(new Format(fixture), true);
+        TimeSliceThread fill("Play handoff fill"); fill.startThread(Thread::Priority::high);
+        StreamingReader::Service service(formats, fill);
+        StreamingReader::Metadata meta; meta.format="Scheduling fixture"; meta.sampleRate=48000;
+        meta.frames=48000*16; meta.channels=2;
+        StreamingReader blocked(slow,meta,service), reader(normal,meta,service);
+        struct Release { Fixture& value; ~Release() { value.releaseSlow.signal(); } } release{fixture};
+        fixture.holdSlow=true; blocked.request(0);
+        require(until([&]{return fixture.slowEntered.load();}), "Slow activation did not start");
+        require(reader.prepareTransition(0,4096), "Play onset was not prepared");
+        // A different file can hold up the serial activation service. The Play
+        // preparation must activate this source itself, before its one-second
+        // pinned onset ends; PCM beyond that reserve must already be available.
+        require(reader.cached(), "Prepared Play left forward decoding dependent on the activation queue");
+        require(until([&]{return reader.ready(48000,512);}), "Forward PCM was not ready after the onset reserve");
+        verifyPCM(reader,0); verifyPCM(reader,48000);
+        require(reader.cacheMisses.load()==0 && reader.inactiveMisses.load()==0, "Play handoff dropped PCM");
+    });
     test("Seek and loop reserves preserve the old playback cache and exact destination PCM", [&] {
         const auto file = directory.getChildFile("transition.sched"); file.replaceWithText("fixture");
         Fixture fixture; AudioFormatManager formats; formats.registerFormat(new Format(fixture), true);

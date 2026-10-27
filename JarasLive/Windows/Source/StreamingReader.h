@@ -93,6 +93,16 @@ class StreamingReader final : public AudioFormatReader {
         // Include the zero-padded tail: the last device block can cross EOF.
         const auto wanted = int(std::max<int64>(count, int64(sampleRate)));
         const ScopedLock guard(lock);
+        // Prepare the ongoing decoder as part of a cold Play, not only its
+        // pinned onset. A slow file in the serial activation queue can otherwise
+        // leave this source silent when that one-second reserve runs out.
+        // Never reposition an existing reader: it may still serve the outgoing
+        // head while a seek/queue destination is being prepared independently.
+        if (!reader) {
+            request(at);
+            ensureReader();
+            if (reader) probeAt(*reader, at);
+        }
         if (pinned[slot] && pinned[slot]->contains(at, count)) return true;
         // Retain the decoder's exact MP3 checkpoints while this source is
         // active. Opening a new decoder for every cursor move throws away its
