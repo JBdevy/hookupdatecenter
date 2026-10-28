@@ -1,5 +1,7 @@
 #pragma once
+#include <optional>
 #include "WaveformCache.h"
+#include "ClipTempo.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
 // Source-anchored min/max columns at physical-pixel resolution; real PCM
@@ -8,9 +10,9 @@ struct WaveformRenderer {
     // ±1 PCM (0 dBFS) reaches the channel clipping border, not half that level.
     static float fullScale(float channelHeight) { return std::max(0.f, channelHeight - 1.f) * .5f; }
 
-    static double gain(const jaras::AudioClip &clip) {
+    static double gain(const jaras::AudioClip &clip, std::optional<double> itemGainOverride = std::nullopt) {
         const auto limit=std::pow(10.,24./20);
-        return jlimit(0.,limit,clip.gain.value_or(1)) * jlimit(0.,limit,clip.normalizationGain.value_or(1)) * (clip.phaseInverted.value_or(false) ? -1 : 1);
+        return jlimit(0.,limit,itemGainOverride.value_or(clip.gain.value_or(1))) * jlimit(0.,limit,clip.normalizationGain.value_or(1)) * (clip.phaseInverted.value_or(false) ? -1 : 1);
     }
     struct FadeEnvelope {
         double origin, scale, duration, in, out;
@@ -31,21 +33,24 @@ struct WaveformRenderer {
     static void draw(Graphics &g, WaveformCache &cache,
                      const std::shared_ptr<const WaveformCache::Data> &data,
                      const jaras::AudioClip &clip, juce::Rectangle<float> item,
-                     juce::Rectangle<float> viewport, double pixelsPerSecond, Colour ink, bool clipToItem = true) {
+                     juce::Rectangle<float> viewport, double pixelsPerSecond, Colour ink, bool clipToItem = true,
+                     std::optional<double> itemGainOverride = std::nullopt, const jaras::Song *song = nullptr,
+                     const ClipTempo *preparedTiming = nullptr) {
         if (!data || data->sourceChannels <= 0 || pixelsPerSecond <= 0) return;
         const int mode = clip.channelMode.value_or(0);
         const int channels = (mode == 0 || mode == 4) ? data->sourceChannels : 1;
         const float top = item.getY() + 18, height = std::max(0.f, item.getBottom() - top - 2) / channels;
         if (height <= 0) return;
-        const double rate = std::max(.001, clip.playbackRate), sourceScale = pixelsPerSecond / rate;
+        std::optional<ClipTempo> localTiming;
+        if(!preparedTiming)localTiming.emplace(clip,song);
+        const auto &timing=preparedTiming?*preparedTiming:*localTiming;
         const double visibleStart = std::max(0., (viewport.getX() - item.getX()) / pixelsPerSecond);
         const double visibleEnd = std::min(clip.duration, (viewport.getRight() - item.getX()) / pixelsPerSecond);
         if (visibleEnd <= visibleStart) return;
         const double loop = clip.loopLength.value_or(0), loopStart = clip.loopStart.value_or(0);
-        const float amplitude = fullScale(height) * (float)gain(clip);
+        const float amplitude = fullScale(height) * (float)gain(clip,itemGainOverride);
         const FadeEnvelope fade(clip, item.getX(), pixelsPerSecond);
         const float physical = jlimit(1.f, 8.f, g.getInternalContext().getPhysicalPixelScaleFactor());
-        const auto step = WaveformCache::step(data->sampleRate, sourceScale * physical / 2.0);
         g.saveState();
         if (clipToItem) {Path outline;outline.addRoundedRectangle(item,3);g.reduceClipRegion(outline);}
         g.setColour(ink);
@@ -60,8 +65,11 @@ struct WaveformRenderer {
             Path laneClip; laneClip.addRectangle(lane); g.reduceClipRegion(laneClip);
             double position = visibleStart;
             while (position < visibleEnd) {
-                const double source = WaveformCache::sourcePosition(clip, position);
-                const double raw = clip.sourceOffset + position * rate;
+                const auto *span=timing.at(clip.startTime+position);
+                const double rate=std::max(.001,span?span->rate:clip.playbackRate), sourceScale=pixelsPerSecond/rate;
+                const auto step=WaveformCache::step(data->sampleRate,sourceScale*physical/2.0);
+                const double raw=timing.sourceAt(clip.startTime+position);
+                const double source=loop>0 && raw>=loopStart ? loopStart+std::fmod(raw-loopStart,loop) : raw;
                 if (loop > 0 && loop * sourceScale < 1 && raw >= loopStart) {
                     // Preserve any nonrepeating prefix before drawing subpixel repeats.
                     const auto peaks=data->range(sourceChannel,loopStart,loopStart+loop);
@@ -80,7 +88,8 @@ struct WaveformRenderer {
                 const double untilLoop = loop <= 0 ? visibleEnd - position
                     : raw < loopStart ? (loopStart - raw) / rate
                     : std::max(1e-9, (loopStart + loop - source) / rate);
-                const double end = std::min(visibleEnd, position + untilLoop);
+                const double untilTempo=span?span->end-clip.startTime-position:visibleEnd-position;
+                const double end = std::min({visibleEnd, position + untilLoop,position+std::max(1e-9,untilTempo)});
                 const double sourceEnd = std::min(data->duration, source + (end - position) * rate);
                 if (sourceEnd > source) {
                     const double x = item.getX() + position * pixelsPerSecond;

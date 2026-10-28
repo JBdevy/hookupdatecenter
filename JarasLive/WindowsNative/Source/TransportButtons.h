@@ -20,13 +20,13 @@ class TransportButtons final {
         RECT rect{};
         float scale = 1, dimming = 0, fontSize = 9;
         bool active = false, enabled = true, visible = true, blocked = false;
-        unsigned background = 0xff252525, foreground = 0xffffffff, activeBackground = 0xff6cbd4b;
+        unsigned background = 0xff252525, foreground = 0xffffffff, activeBackground = 0xff6cbd4b, surface = 0xff1d1d1d;
         unsigned accent = 0;
         // `tooltip` is retained as the native accessibility/window description;
         // CatLive does not create hover tooltip windows.
         std::wstring text, icon, tooltip;
         bool operator==(const State &b) const {
-            return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
+            return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && surface==b.surface && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
         }
     };
     using Click = std::function<void(bool)>;
@@ -39,8 +39,14 @@ class TransportButtons final {
         check(write->CreateFontFaceReference(fontFile.c_str(),nullptr,0,DWRITE_FONT_SIMULATIONS_NONE,&face));
         check(write->CreateFontSetBuilder(&builder)); check(builder->AddFontFaceReference(face.Get()));
         check(builder->CreateFontSet(&set)); check(write->CreateFontCollectionFromFontSet(set.Get(),&fonts));
-        // Use the same Inter SemiBold em size supplied by the Setlist button.
-        check(write->CreateTextFormat(L"Inter",fonts.Get(),DWRITE_FONT_WEIGHT_SEMI_BOLD,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,9.f,L"pt-BR",&format));
+        // A legacy font collection exposes this bundled face as "Inter
+        // SemiBold". Asking for "Inter" can silently fall back to a system font.
+        Ptr<IDWriteFontFamily> family;Ptr<IDWriteLocalizedStrings> names;
+        check(fonts->GetFontFamily(0,&family));check(family->GetFamilyNames(&names));
+        UINT32 length=0;check(names->GetStringLength(0,&length));
+        std::wstring familyName(length+1,L'\0');check(names->GetString(0,familyName.data(),length+1));
+        familyName.resize(length);
+        check(write->CreateTextFormat(familyName.c_str(),fonts.Get(),DWRITE_FONT_WEIGHT_SEMI_BOLD,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,9.f,L"pt-BR",&format));
         format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
@@ -111,7 +117,7 @@ class TransportButtons final {
             if(FAILED(factory->CreateHwndRenderTarget(properties,D2D1::HwndRenderTargetProperties(b.window,D2D1::SizeU(r.right,r.bottom)),&b.target)))return;
         }
         auto *t=b.target.Get();t->SetDpi(96.f*scale,96.f*scale);t->BeginDraw();t->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);t->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-        t->Clear(colour(0xff252525));
+        t->Clear(colour(s.surface));
         const float width=r.right/scale,height=r.bottom/scale;
         auto bg=colour(s.active?s.activeBackground:s.background);
         if(s.accent){bg=colour(s.accent);bg.a=s.active?1.f:b.pressed?.7f:.45f;}
@@ -121,10 +127,26 @@ class TransportButtons final {
         t->FillRoundedRectangle(bounds,brush.Get());
         brush->SetColor(s.accent&&s.active?colour(s.accent):D2D1::ColorF(1,1,1,.45f));t->DrawRoundedRectangle(bounds,brush.Get(),.8f);
         auto fg=colour(s.foreground);if(!s.enabled&&!s.accent)fg.a*=.35f;brush->SetColor(fg);
-        const bool text=!s.text.empty();float iconSize=12.f,textWidth=0;
+        const bool text=!s.text.empty();float iconSize=s.icon.empty()?0.f:12.f,textWidth=0;
+        const float gap=iconSize>0 && text?3.f:0.f;
         Ptr<IDWriteTextLayout> layout;
-        if(text){write->CreateTextLayout(s.text.c_str(),(UINT32)s.text.size(),format.Get(),std::max(1.f,width-18.f),height,&layout);if(layout){layout->SetFontSize(s.fontSize,DWRITE_TEXT_RANGE{0,(UINT32)s.text.size()});DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);textWidth=metrics.width;}}
-        const float x=text?(width-iconSize-3-textWidth)*.5f:(width-iconSize)*.5f,y=(height-iconSize)*.5f;
+        if(text) {
+            const float available=std::max(1.f,width-iconSize-gap-4.f);
+            write->CreateTextLayout(s.text.c_str(),(UINT32)s.text.size(),format.Get(),available,height,&layout);
+            if(layout) {
+                const DWRITE_TEXT_RANGE range{0,(UINT32)s.text.size()};
+                layout->SetFontSize(s.fontSize,range);
+                DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);
+                if(metrics.width>available) {
+                    // Rerasterize at the final device-pixel em size; never
+                    // horizontally scale a cached bitmap or glyph outline.
+                    const float size=std::max(8.f/scale,std::floor(s.fontSize*scale*available/metrics.width)/scale);
+                    layout->SetFontSize(size,range);layout->GetMetrics(&metrics);
+                }
+                textWidth=metrics.width;
+            }
+        }
+        const float x=text?(width-iconSize-gap-textWidth)*.5f:(width-iconSize)*.5f,y=(height-iconSize)*.5f;
         auto rect=[&](float a,float c,float d,float e){t->FillRectangle(D2D1::RectF(x+a,y+c,x+d,y+e),brush.Get());};
         auto line=[&](float a,float c,float d,float e){t->DrawLine(D2D1::Point2F(x+a,y+c),D2D1::Point2F(x+d,y+e),brush.Get(),1.1f);};
         if(s.icon==L"play"){
@@ -161,7 +183,20 @@ class TransportButtons final {
             line(3,8.5f,9,8.5f); line(6,9,9.5f,.5f);
             t->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x+7.4f,y+2,x+10.2f,y+4.2f),.5f,.5f),brush.Get());
         }
-        if(layout)t->DrawTextLayout(D2D1::Point2F(x+iconSize+3,0),layout.Get(),brush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        else if(s.icon==L"teleprompter") {
+            t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x+1,y+1,x+11,y+10),1,1),brush.Get(),1);
+            line(3,4,9,4);line(3,6,8,6);line(4,12,8,12);line(6,10,6,12);
+        } else if(s.icon==L"notice") {
+            t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x+1,y+1,x+11,y+9),2,2),brush.Get(),1);
+            line(3,9,3,12);line(3,12,6,9);line(3,4,9,4);line(3,6,8,6);
+        } else if(s.icon==L"video") {
+            t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(x,y+2,x+8,y+10),1,1),brush.Get(),1);
+            line(8,4,12,2);line(12,2,12,10);line(12,10,8,8);
+        } else if(s.icon==L"save") {
+            t->DrawRectangle(D2D1::RectF(x+1,y+1,x+11,y+11),brush.Get(),1);
+            line(3,1,3,5);line(3,5,9,5);line(9,5,9,1);line(3,11,3,8);line(3,8,9,8);line(9,8,9,11);
+        } else if(s.icon==L"check") {line(1,6,5,10);line(5,10,11,2);}
+        if(layout)t->DrawTextLayout(D2D1::Point2F(x+iconSize+gap,0),layout.Get(),brush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
         if(s.dimming>0){brush->SetColor(D2D1::ColorF(0,0,0,s.dimming));t->FillRectangle(D2D1::RectF(0,0,width,height),brush.Get());}
         if(t->EndDraw()==D2DERR_RECREATE_TARGET)b.target.Reset();
     }

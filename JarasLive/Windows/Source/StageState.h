@@ -184,9 +184,10 @@ class StageTimerControl final : public Component, private Timer {
     }
     void paint(Graphics &g) override {
         g.setColour(theme::display);
-        g.fillRoundedRectangle(getLocalBounds().toFloat(), 4);
+        const auto bounds=getLocalBounds().toFloat().reduced(.5f);
+        g.fillRoundedRectangle(bounds, 6);
         g.setColour(theme::line);
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.5f), 4, 1);
+        g.drawRoundedRectangle(bounds, 6, 1);
     }
     void resized() override {
         const float scale = std::min(1.f, getWidth() / 157.f);

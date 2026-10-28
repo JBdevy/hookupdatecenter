@@ -20,8 +20,24 @@ struct ExportRequest {
     File directory;
     std::vector<ExportJob> jobs;
     ExportEncoding encodings[2];
+    bool preProcessingItems = false;
 };
 namespace audioExport {
+// Work on a render copy: the document, sources and selected time interval stay intact.
+inline jaras::Song itemProcessingSong(jaras::Song song,bool preProcessing) {
+    if(!preProcessing)return song;
+    for(auto &track:song.tracks) {
+        track.volume=1;track.pan=0;track.mute=false;track.solo=false;
+        track.phaseInverted.reset();track.fxJSON.reset();track.automationJSON.reset();
+        for(auto &clip:track.clips) {
+            clip.gain.reset();clip.pan.reset();clip.muted=false;clip.phaseInverted.reset();
+            clip.normalizationGain.reset();clip.fadeIn.reset();clip.fadeOut.reset();
+            clip.fadeInCurve.reset();clip.fadeInSCurve.reset();clip.fadeOutCurve.reset();clip.fadeOutSCurve.reset();
+            clip.fxJSON.reset();clip.fxBypassed.reset();clip.automationJSON.reset();clip.channelMode.reset();
+        }
+    }
+    return song;
+}
 // Mirrors Application/Export/AudioExportPlan.swift. IDs and timing remain in the shared model.
 inline std::vector<ExportJob> plan(const jaras::Project &project, const jaras::Song &song,
                                    int source, int bounds, const String &pattern,
@@ -170,7 +186,9 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
              encoding.bitrate != 192 && encoding.bitrate != 224 &&
              encoding.bitrate != 256 && encoding.bitrate != 320))
             throw std::runtime_error("Formato de exportação inválido.");
-        auto song = original;
+        auto song = itemProcessingSong(original,request.preProcessingItems && !job.clip.empty());
+        auto renderProject=project;
+        if(!job.clip.empty())renderProject.masterFXJSON.reset();
         for (auto &track : song.tracks) {
             track.clips.erase(std::remove_if(track.clips.begin(), track.clips.end(),
                                              [&](const auto &clip) {
@@ -186,10 +204,10 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         AudioEngine engine;
         engine.prepareOffline(encoding.rate);
         engine.prepareSong(song, media,
-                           project.masterFXJSON ? JSON::parse(text(*project.masterFXJSON)) : var(),
-                           &project);
+                           renderProject.masterFXJSON ? JSON::parse(text(*renderProject.masterFXJSON)) : var(),
+                           &renderProject);
         engine.setOffline(true);
-        engine.setMixer(project, song);
+        engine.setMixer(renderProject, song);
         engine.setExportCapture(job.track);
         engine.extendOfflineDuration(job.end + engine.exportLatencyFrames()/encoding.rate);
         engine.waitForStems();

@@ -39,14 +39,31 @@ inline std::vector<double> clickBeats(const jaras::Song &song,const jaras::Audio
 }
 // Match TimelineTempo.snap: visible divisions plus region/marker/cursor anchors.
 inline double snap(double time, const jaras::Song &song, double scale, bool free,
-                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false, const std::set<ID> *excludedItems = nullptr, const ID *excludedRegion = nullptr, const ID *excludedMarker = nullptr) {
+                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false, const std::set<ID> *excludedItems = nullptr, const ID *excludedRegion = nullptr, const ID *excludedMarker = nullptr,
+                   const std::vector<std::pair<ID,double>> *itemEdges = nullptr) {
     if (!std::isfinite(time) || !std::isfinite(scale) || scale <= 0) return 0;
     const double position=std::max(0.,time);
     if (free || !std::isfinite(scale) || scale<=0) return position;
+    auto visitNearbyItemEdges = [&](double radius, auto &&visit) {
+        if (itemEdges) {
+            const double lower = std::max(0., position - radius), upper = position + radius;
+            auto at = std::lower_bound(itemEdges->begin(), itemEdges->end(), lower,
+                [](const auto &entry, double value) { return entry.second < value; });
+            for (; at != itemEdges->end() && at->second <= upper; ++at)
+                if (!excludedItems || !excludedItems->count(at->first)) visit(at->second);
+            return;
+        }
+        for (const auto &track : song.tracks) for (const auto &clip : track.clips)
+            if (!excludedItems || !excludedItems->count(clip.id)) {
+                const double start = clip.startTime, end = clip.startTime + clip.duration;
+                if (start >= position - radius && start <= position + radius) visit(start);
+                if (end >= position - radius && end <= position + radius) visit(end);
+            }
+    };
     double strong=position, strongDistance=std::numeric_limits<double>::infinity();
     auto considerStrong=[&](double anchor){const double distance=std::abs(anchor-position);if(std::isfinite(anchor)&&anchor>=0&&distance*scale<=12+1e-9&&(distance<strongDistance||(distance==strongDistance&&anchor<strong))){strong=anchor;strongDistance=distance;}};
     if(transport){considerStrong(transport->editPosition);considerStrong(transport->position);if(transport->subPlay.playing)considerStrong(transport->subPlay.position);}
-    if(includeItemEdges)for(const auto &track:song.tracks)for(const auto &clip:track.clips)if(!excludedItems||!excludedItems->count(clip.id)){considerStrong(clip.startTime);considerStrong(clip.startTime+clip.duration);}
+    if(includeItemEdges)visitNearbyItemEdges(12/scale,considerStrong);
     if(std::isfinite(strongDistance))return strong;
     auto map=sections(song,std::max(song.duration,position)+1);
     Section active{0,song.duration,song.bpm,song.beatsPerBar,song.beatUnit};
@@ -64,9 +81,7 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
     if(step>0)consider(std::min(active.end,active.start+std::round((position-active.start)/step)*step));
     for(const auto &part:song.parts) if(!excludedRegion || part.id!=*excludedRegion){consider(part.startTime);consider(part.endTime);}
     if(song.markers)for(const auto &marker:*song.markers)if(!excludedMarker || marker.id!=*excludedMarker)consider(marker.position);
-    if(includeItemEdges) for(const auto &track:song.tracks) for(const auto &clip:track.clips) if(!excludedItems||!excludedItems->count(clip.id)) {
-        consider(clip.startTime);consider(clip.startTime+clip.duration);
-    }
+    if(includeItemEdges) visitNearbyItemEdges(distance,consider);
     if(transport) {
         consider(transport->editPosition);consider(transport->position);
         if(transport->subPlay.playing)consider(transport->subPlay.position);
@@ -74,8 +89,9 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
     return nearest;
 }
 inline double snapSelection(double time, const jaras::Song &song, double scale,
-                            const jaras::TransportState &transport, bool free, const std::set<ID> *excludedItems = nullptr) {
-    return snap(time,song,scale,free,false,&transport,true,excludedItems);
+                            const jaras::TransportState &transport, bool free, const std::set<ID> *excludedItems = nullptr,
+                            const std::vector<std::pair<ID,double>> *itemEdges = nullptr) {
+    return snap(time,song,scale,free,false,&transport,true,excludedItems,nullptr,nullptr,itemEdges);
 }
 inline double snapCursor(double time, const jaras::Song &song, double scale, bool free) {
     return snap(time,song,scale,free,true,nullptr,true);

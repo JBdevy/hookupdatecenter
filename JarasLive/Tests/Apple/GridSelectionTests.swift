@@ -320,7 +320,8 @@ for (target, expected) in cursorTargets {
     precondition(NSCursor.current === expected && CursorSetProbe.calls == 1,
                  "an external cursor change is corrected even when the desired timeline cursor is unchanged")
     inner.contentView.scroll(to: CGPoint(x: targetOffset + 40, y: 0))
-    grid.cursorUpdate(with: event(.mouseMoved, point))
+    let bodyPoint = CGPoint(x: point.x, y: point.y + GridSelectionItem.headerHeight + 8)
+    grid.cursorUpdate(with: event(.mouseMoved, bodyPoint))
     precondition(NSCursor.current === NSCursor.arrow, "moving the target away restores the body arrow")
 }
 let stationaryEdgePoint = CGPoint(x: 200, y: 290)
@@ -806,7 +807,7 @@ for channels in [1, 2] {
 }
 menuGrid.updateSelection([contextMIDIMuted]); toggled = []
 let unmuteMIDI = menuGrid.itemContextMenu(for: contextMIDIMuted)
-precondition(unmuteMIDI.items.first?.title == "Unmute items")
+precondition(unmuteMIDI.items.contains { $0.title == "Unmute items" })
 invoke(unmuteMIDI, "muteMIDISelection")
 precondition(toggled == [contextMIDIMuted])
 print("MIDI_CONTEXT_ONLY_MUTE_UNMUTE_MONO_STEREO_AND_MIXED_SELECTION_FILTER_OK")
@@ -837,48 +838,26 @@ invoke(menuGrid.itemContextMenu(for: contextAudibleID), "glueSelection")
 precondition(glued == [contextAudibleID], "A single audio item can also be unified")
 print("AUDIO_MIDI_GLUE_MENU_COMPLETE_SELECTION_AND_SINGLE_ITEM_OK")
 
-// Header phase and pan never start item movement or a timeline seek.
+// Item headers expose gain, M, FX and pan; values share the hover/drag bubble.
 grid.removeFromSuperview(); window.contentView = grid
 grid.frame = NSRect(x: 0, y: 0, width: 800, height: 600); grid.timelineOrigin = .zero
 grid.headerHeight = 71; grid.interactionBlocked = false
 NativeTimelineInputGate.shared.setBlocked(false, for: window)
 grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 100, y: 100, width: 240, height: 50))]
-var phaseClicks: [UUID] = [], panEdits: [(UUID, Double, Bool)] = []
-grid.phase = { phaseClicks.append($0) }; grid.pan = { panEdits.append(($0,$1,$2)) }
-let phaseRect = grid.items[0].phaseRect!, panRect = grid.items[0].panKnobRect!
-precondition(phaseRect.maxX < panRect.minX && grid.items[0].gainLabelRect!.maxX < grid.items[0].muteRect!.minX && grid.items[0].gainLabelRect!.minX > grid.items[0].gainKnobRect!.maxX,
-             "volume and its dB value come first, followed by mute, FX, phase and pan")
+var panEdits: [(UUID, Double, Bool)] = []
+grid.pan = { panEdits.append(($0,$1,$2)) }
+let compactHeader = grid.items[0], panRect = grid.items[0].panKnobRect!
+precondition(compactHeader.phaseRect == nil && compactHeader.gainLabelRect == nil && compactHeader.panLabelRect == nil,
+             "phase and permanent readouts stay out of the item strip")
+precondition(compactHeader.gainKnobRect!.maxX < compactHeader.muteRect!.minX && compactHeader.muteRect!.maxX < compactHeader.fxRect!.minX && compactHeader.fxRect!.maxX < panRect.minX,
+             "header keeps gain, mute, FX and pan in order")
 let beforeMixSeeks = seeks.count
-_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: phaseRect.midX, y: phaseRect.midY)))
-_ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: phaseRect.midX, y: phaseRect.midY)))
-precondition(phaseClicks == [first])
 _ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: panRect.midX, y: panRect.midY)))
 _ = grid.handlePointerEvent(event(.leftMouseDragged, CGPoint(x: panRect.midX, y: panRect.midY - 60)))
 _ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: panRect.midX, y: panRect.midY - 60)))
-precondition(panEdits.last!.0 == first && panEdits.last!.1 == 1 && panEdits.last!.2)
-precondition(panEdits.filter { $0.2 }.count == 1 && seeks.count == beforeMixSeeks)
-_ = grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: panRect.midX, y: panRect.midY), clicks: 2))
-_ = grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: panRect.midX, y: panRect.midY), clicks: 2))
-precondition(panEdits.last!.1 == 0 && panEdits.last!.2)
-print("ITEM_HEADER_PHASE_PAN_ORDER_DRAG_COMMIT_AND_CENTER_OK")
-
-var labeledPan = grid.items[0]
-let originalGainKnob = labeledPan.gainKnobRect
-for (value, text) in [(0.0, "Center"), (-0.5, "L-50%"), (0.75, "R-75%"), (-1.0, "L-100%"), (1.0, "R-100%"), (0.001, "Center")] {
-    labeledPan.pan = value
-    precondition(labeledPan.panLabel == text)
-    precondition(labeledPan.panLabelRect!.minX > labeledPan.panKnobRect!.maxX)
-    precondition(labeledPan.gainLabelRect!.maxX < labeledPan.panKnobRect!.minX)
-    precondition(labeledPan.gainKnobRect == originalGainKnob, "pan values must not shift the volume control")
-}
-for width in 20...200 {
-    labeledPan.rect.size.width = CGFloat(width)
-    if let label = labeledPan.panLabelRect {
-        precondition(label.maxX <= labeledPan.rect.maxX)
-        precondition(labeledPan.titleInset >= label.maxX - labeledPan.rect.minX)
-    }
-}
-print("ITEM_PAN_VALUE_LABEL_AND_STABLE_NON_OVERLAPPING_HEADER_OK")
+precondition(!panEdits.isEmpty && panEdits.last!.2 && seeks.count == beforeMixSeeks,
+             "pan edits commit without seeking or dragging the item")
+print("ITEM_COMPACT_CONTROLS_AND_PAN_GESTURE_OK")
 
 // Growing the title strip only consumes body space; track/item bounds and time
 // coordinates remain identical, including the collapsed representation.

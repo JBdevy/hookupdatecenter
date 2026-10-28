@@ -408,6 +408,13 @@ struct EQKernel {
     double channelMatrix[4] = {1,0,0,1};
     double currentInputGain=1;
     double currentInputPan=0;
+    double inputGainTarget=1;
+    double inputPanTarget=0;
+    double inputGainStep=0;
+    double inputPanStep=0;
+    double sampleRate=48000;
+    unsigned inputRampFrames=240;
+    unsigned inputRampRemaining=0;
     bool inputGainInitialized=false;
     double mix=0;
     EQKernel() { for(unsigned n=0;n<kSections;n++) for(unsigned j=0;j<5;j++) { pending[n][j].store(j==0?1:0); coefficients[n][j]=j==0?1:0; desired[n][j]=j==0?1:0; } }
@@ -415,6 +422,7 @@ struct EQKernel {
         if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
             for (unsigned ch=0; ch<2; ++ch) for (unsigned n=0; n<kSections; ++n) z1[ch][n]=z2[ch][n]=0;
             inputGainInitialized=false;
+            inputRampRemaining=0;
         }
         const int mode=channelMode.load(std::memory_order_relaxed);
         const double matrices[5][4]={{1,0,0,1},{1,0,1,0},{0,1,0,1},{0.5,0.5,0.5,0.5},{0,1,1,0}};
@@ -432,17 +440,28 @@ struct EQKernel {
         }
         const double gain=inputGain.load(std::memory_order_relaxed)*(inverted.load(std::memory_order_relaxed)?-1:1);
         const double pan=inputPan.load(std::memory_order_relaxed);
-        if(!inputGainInitialized) { currentInputGain=gain; currentInputPan=pan; inputGainInitialized=true; }
-        if(gain!=1 || currentInputGain!=1 || pan!=0 || currentInputPan!=0) {
+        if(!inputGainInitialized) {
+            currentInputGain=inputGainTarget=gain;
+            currentInputPan=inputPanTarget=pan;
+            inputGainInitialized=true;
+        } else if(gain!=inputGainTarget || pan!=inputPanTarget) {
+            inputGainTarget=gain; inputPanTarget=pan;
+            inputRampRemaining=inputRampFrames;
+            inputGainStep=(gain-currentInputGain)/inputRampRemaining;
+            inputPanStep=(pan-currentInputPan)/inputRampRemaining;
+        }
+        if(inputRampRemaining || currentInputGain!=1 || currentInputPan!=0) {
             unsigned frame=0;
-            // Smooth only parameter changes. Once settled, use a contiguous
-            // channel pass that the compiler can vectorize instead of doing
-            // control interpolation and channel lookup for every sample.
-            for(;frame<frames && (currentInputGain!=gain || currentInputPan!=pan);frame++) {
-                currentInputGain += (gain-currentInputGain)*0.02;
-                if(std::abs(gain-currentInputGain)<1e-9) currentInputGain=gain;
-                currentInputPan += (pan-currentInputPan)*0.02;
-                if(std::abs(pan-currentInputPan)<1e-9) currentInputPan=pan;
+            // Use the same short, fixed-duration ramp for every track. Solo
+            // changes then open all affected buses together instead of making
+            // louder targets appear to return before quieter ones.
+            for(;frame<frames && inputRampRemaining;frame++) {
+                currentInputGain += inputGainStep;
+                currentInputPan += inputPanStep;
+                if(--inputRampRemaining==0) {
+                    currentInputGain=inputGainTarget;
+                    currentInputPan=inputPanTarget;
+                }
                 for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);ch++) {
                     auto data=static_cast<float*>(buffers->mBuffers[ch].mData);
                     // Stereo balance matches the existing mixer: center is
@@ -535,6 +554,8 @@ struct EQKernel {
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
     if(![super allocateRenderResourcesAndReturnError:error]) return NO;
     kernel.fade.rate=_output.format.sampleRate;
+    kernel.sampleRate=_output.format.sampleRate;
+    kernel.inputRampFrames=std::max(1u,(unsigned)std::lround(kernel.sampleRate*0.005));
     return YES;
 }
 - (void)reset { [super reset]; kernel.resetRequested.store(true, std::memory_order_release); }

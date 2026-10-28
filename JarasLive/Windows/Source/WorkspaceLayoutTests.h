@@ -252,6 +252,107 @@ struct WorkspaceLayoutTests {
             session.command(jaras::CommandKind::stopAll);
         }
     }
+    static void setlistResponsiveness(const File &directory) {
+        using floatingControlTests::require;
+        const auto source=SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_PROJECT",{});
+        auto project=floatingControlTests::fixture();
+        if(source.isNotEmpty())project=ProjectCodec::decode(ProjectCodec::read(File(source)));
+        else {
+            auto &song=project.songs.front();song.duration=3600;song.parts.clear();song.markers.emplace();
+            for(int i=0;i<120;++i) {
+                song.parts.push_back({uuid(),"Song "+std::to_string(i),i*30.,(i+1)*30.});
+                jaras::TimelineMarker marker;marker.id=uuid();marker.name="Tempo";marker.position=i*30.;marker.tempoBPM=120;
+                song.markers->push_back(marker);
+            }
+            auto &tracks=song.tracks;
+            while(tracks.size()<12){auto track=tracks.front();track.id=uuid();tracks.push_back(track);}
+            const auto largeSettings=utf8("{\"inserted\":[],\"savedState\":\""+String::repeatedString("x",1024*1024)+"\"}");
+            for(auto &track:tracks) {
+                track.fxJSON=largeSettings;
+                for(int i=0;i<120;++i){jaras::AudioClip clip;clip.id=uuid();clip.name="Audio";clip.startTime=i*30.;clip.duration=30.;clip.waveform=std::vector<double>(128,.25);track.clips.push_back(clip);}
+            }
+            project.masterFXJSON=largeSettings;
+        }
+        // Use the actual document model without opening devices or constructing
+        // third-party processors. The user's file and audio remain untouched.
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);
+        session.core.loadProject(project);
+        const auto *song=session.song();require(song && !song->tracks.empty(),"Profile needs a track");
+        std::vector<ID> roots;for(const auto &part:song->parts)if(!part.parentRegionID)roots.push_back(part.id);
+        require(roots.size()>1,"Profile needs two regions");
+        auto state=session.project().regionSetlist.value_or(jaras::RegionSetlist{});
+        const ID a=uuid(),b=uuid();state.playlists.push_back({a,"Profile A",song->id,roots});state.playlists.push_back({b,"Profile B",song->id,roots});
+        state.selectedId=a;state.autoAdvance=false;state.automaticSubplay=false;state.stopAtRegionEnd=false;
+        session.configureSetlist(state);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("setlist-ui-preferences",".json"));
+        w.setSize(1366,900);w.projectOpened(false);w.pixelsPerSecond=4;w.rebuild();
+        session.command(jaras::CommandKind::selectRegion,roots.front());session.command(jaras::CommandKind::play);
+        w.createComponentSnapshot(w.getLocalBounds());
+        int rebuilds=0;const auto changed=session.changed;
+        session.changed=[&]{++rebuilds;if(changed)changed();};
+        Array<var> timings;
+        auto measure=[&](const String &name,const std::function<void()> &operation) {
+            const auto begin=Time::getMillisecondCounterHiRes();operation();const auto done=Time::getMillisecondCounterHiRes();
+            require(w.itemLayoutRevision==session.revision,"Setlist-only gesture invalidated the entire item layout");
+            const auto image=w.createComponentSnapshot(w.getLocalBounds());require(image.isValid(),"Setlist gesture did not paint");
+            auto row=object();put(row,"operation",name);put(row,"handlerMilliseconds",done-begin);
+            put(row,"paintMilliseconds",Time::getMillisecondCounterHiRes()-done);timings.add(row);
+        };
+        for(int i=0;i<3;++i) {
+            measure("queue",[&]{session.command(jaras::CommandKind::queueRegion,roots[1]);});
+            measure("stopOn",[&]{auto next=*session.project().regionSetlist;next.stopAtRegionEnd=true;session.configureSetlist(next);});
+            measure("stopOff",[&]{auto next=*session.project().regionSetlist;next.stopAtRegionEnd=false;session.configureSetlist(next);});
+            measure("playlist",[&]{auto next=*session.project().regionSetlist;next.selectedId=i%2?a:b;session.configureSetlist(next);});
+        }
+        require(rebuilds==0,"Queue or playlist policy rebuilt unrelated track and mixer controls");
+        auto report=object();put(report,"timings",timings);put(report,"workspaceRebuilds",rebuilds);put(report,"realProject",source.isNotEmpty());
+        directory.getChildFile("setlist-ui-profile.json").replaceWithText(JSON::toString(report,true));
+        session.command(jaras::CommandKind::stopAll);
+    }
+    static void immediateTrackScroll(const File &directory) {
+        using floatingControlTests::require;
+        auto project=floatingControlTests::fixture();auto &tracks=project.songs.front().tracks;
+        while(tracks.size()<30){auto track=tracks.front();track.id=uuid();tracks.push_back(track);}
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("track-scroll",".json"));
+        w.setSize(1366,900);w.projectOpened(false);
+        auto row=uiFeatureTests::find(w,"trackRow:"+text(tracks[0].id));require(row,"Mixer row missing");
+        const auto rowBounds=row->getBounds();const auto contentBounds=w.tracksContent.getLocalBounds();
+        auto check=[&] {
+            require(w.verticalOffset==w.tracksViewport.getViewPositionY(),"Track viewport and workspace scroll diverged");
+            require(num(get(w.diagnostics(),"timeline"),"vertical")==w.verticalOffset,"Grid scroll waited for the workspace status timer");
+            require(row->getBounds()==rowBounds && w.tracksContent.getLocalBounds()==contentBounds,"Scrolling rebuilt row geometry");
+        };
+        w.tracksViewport.setViewPosition(0,60);check();
+        const auto at=w.tracksViewport.getBounds().getCentre().toFloat();
+        const auto event=[&](int flags=0){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(flags),
+            1,0,0,0,0,&w,&w,Time::getCurrentTime(),at,Time::getCurrentTime(),1,false);};
+        MouseWheelDetails wheel{};wheel.deltaY=-.1f;
+        w.mouseWheelMove(event(),wheel);
+        require(w.verticalOffset==60,"Discrete wheel jumped before its first smooth frame");
+        // One 16 ms message pump can end before a 60 Hz timer's first frame;
+        // a busy runner can instead finish the entire 110 ms animation.
+        const auto firstFrame=Time::getMillisecondCounterHiRes()+500;
+        while(w.verticalOffset==60 && Time::getMillisecondCounterHiRes()<firstFrame)floatingControlTests::pump();
+        check();
+        require(w.verticalOffset>60 && w.verticalOffset<=90,"Discrete wheel did not animate a single 30-pixel step");
+        const auto deadline=Time::getMillisecondCounterHiRes()+300;
+        while(Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        check();require(w.verticalOffset==90,"Wheel was applied twice or did not reach its target");
+        wheel.isSmooth=true;wheel.deltaY=-.001f;
+        for(int i=0;i<10;++i)w.mouseWheelMove(event(),wheel);
+        check();require(w.verticalOffset==93,"Precise wheel lost fractional movement");
+        wheel.isSmooth=false;wheel.deltaY=-.1f;w.mouseWheelMove(event(),wheel);
+        w.mixerDivider.scrollTo(150);check();
+        const auto afterThumb=Time::getMillisecondCounterHiRes()+150;
+        while(Time::getMillisecondCounterHiRes()<afterThumb)floatingControlTests::pump();
+        check();require(w.verticalOffset==150,"An old wheel animation overrode a scrollbar drag");
+        const int height=w.trackHeight;wheel.deltaY=.2f;
+        w.mouseWheelMove(event(ModifierKeys::ctrlModifier),wheel);
+        require(w.trackHeight>height,"Ctrl wheel no longer adjusts track height");
+        require(w.verticalOffset==w.tracksViewport.getViewPositionY(),"Changing track height desynchronized scroll");
+    }
     static void trackTail(const File &directory) {
         using floatingControlTests::require;
         auto project=floatingControlTests::fixture();auto &tracks=project.songs.front().tracks;
@@ -527,6 +628,8 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Deleting another recent project during playback preserves the current dirty project and audio clock",[&]{WorkspaceLayoutTests::deleteRecentWhilePlaying(directory);});
     test("Item context unifies the full selection per track with audio, MIDI, result selection and Undo; LR swap preserves unselected items",[&]{WorkspaceLayoutTests::unifyItems(directory);});
     test("Generated MIDI and text items advance edit cursor without seeking playback",[&]{WorkspaceLayoutTests::generatedItems(directory);});
+    test("Setlist transport gestures retain grid geometry and avoid workspace rebuilds",[&]{WorkspaceLayoutTests::setlistResponsiveness(directory);});
+    test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
     test("Empty track tail matches Mac and appending preserves vertical scroll",[&]{WorkspaceLayoutTests::trackTail(directory);});
     test("Setlist block Delete and drag follow last area, keep songs and media, support cancel and Undo, and reject stale confirmations",[&]{WorkspaceLayoutTests::setlistBlockDeletion(directory);});
     test("Setlist block MIDI follows the current playlist ordinal and normal song selection or queue",[&]{WorkspaceLayoutTests::setlistBlockMIDI(directory);});

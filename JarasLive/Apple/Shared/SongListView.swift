@@ -336,7 +336,7 @@ struct SongListView: View {
                             }.toggleStyle(.automatic).padding(18).frame(width: 320)
                         }
                     Button { createdBlock = show.addSetlistBlock(symbol: defaultBlockSymbol, namePrefix: JarasLocalization.string("Bloco")) } label: {
-                        Text("Blocks").font(.jarasSystem(size: 9, weight: .bold)).frame(width: max(0, (geometry.size.width - 6) / 3), height: 26)
+                        Text(verbatim: JarasLocalization.string("Blocks").uppercased()).font(.jarasSystem(size: 9, weight: .bold)).frame(width: max(0, (geometry.size.width - 6) / 3), height: 26)
                             .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
                     }.buttonStyle(.plain).jarasHelp("Add a setlist block").accessibilityLabel("Blocks")
                         .immediateRightClick {

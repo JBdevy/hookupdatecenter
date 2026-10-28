@@ -271,6 +271,7 @@ bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
     for (const auto &track : song.tracks)
         if (!tracksByID.emplace(track.id, &track).second) return false;
     std::map<ID, const jaras::AudioClip *> wanted;
+    std::map<ID,size_t> wantedBuses;
     for (size_t i = 0; i < buses.size(); ++i) {
         const auto found = tracksByID.find(buses[i]->id);
         if (found == tracksByID.end()) return false;
@@ -279,6 +280,7 @@ bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
             // Only an item absent from this graph's original model needs preparation.
             if (!preparedItemIDs.count(clip.id)) return false;
             wanted.emplace(clip.id, &clip);
+            wantedBuses.emplace(clip.id,i);
         }
     }
     std::map<ID, Voice *> available;
@@ -286,6 +288,7 @@ bool AudioEngine::refreshItemPresence(const jaras::Song &song) {
     for (const auto &voice : removedItemVoices) available.emplace(voice->clipID, voice.get());
     for (const auto &entry : wanted) if (const auto found=available.find(entry.first);found!=available.end()) {
         const auto &v=*found->second; const auto &c=*entry.second;
+        if(v.bus!=wantedBuses.at(entry.first))return false;
         if ((v.midiItem || v.clipAudio) && (v.start!=c.startTime || v.duration!=c.duration || v.offset!=c.sourceOffset || v.speed!=c.playbackRate)) return false;
     }
     std::vector<Voice *> active;
@@ -2093,7 +2096,11 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     }
     if(latencyPlan)for(auto &channel:latencyPlan->buses)for(auto &buffer:channel.routed)buffer.clear(0,samples);
     const bool keepPipeline=latencyPlan&&latencyPlan->total>0;
-    auto sourceAudible=[&](size_t index){return keepPipeline||buses[index]->renderAudible;};
+    // Keep every source/voice processing while any track is soloed. The
+    // solo gate still clears non-audible buses before routing, but keeping
+    // their playback and FX state warm lets all tracks return together when
+    // the last solo is released.
+    auto sourceAudible=[&](size_t index){return keepPipeline||anySolo||buses[index]->renderAudible;};
     for (auto &bus : buses) bus->renderRouteAudible = bus->renderAudible;
     for (size_t i = 0; i < buses.size(); ++i)
         if (buses[i]->renderAudible) {

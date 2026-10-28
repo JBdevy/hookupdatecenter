@@ -1,5 +1,6 @@
 #pragma once
 #include "LiveItemResizeTests.h"
+#include "NormalizationPanel.h"
 
 namespace catlive::liveSessionEditTests {
 using liveItemResizeTests::require;
@@ -76,6 +77,144 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         fixture.wait(.375f,.25f);require(session.song()->tracks.size()==1,"Undo lost the original graph");
         session.redo();fixture.wait(.25f,.375f);require(session.song()->tracks.size()==2,"Redo lost the inserted track");
         session.command(jaras::CommandKind::stopAll);
+    });
+    test("Item gain and pan commit Undo and Redo preserve both heads and prepared readers",[&] {
+        Fixture fixture(directory);auto &session=*fixture.session;
+        const auto streams=session.audio.residentStreams();
+        const auto commits=num(session.audio.streamDiagnostics(),"transportCommits");
+        auto check=[&](float level) {
+            require(!session.preparingLiveAudio(),"Item control edit rebuilt the audio graph");
+            require(session.audio.residentStreams()==streams,"Item control edit replaced prepared readers");
+            require(num(session.audio.streamDiagnostics(),"transportCommits")==commits,"Item control edit published a transport seek");
+            fixture.render(level);
+        };
+        session.editItemControls([](auto &project) {project.songs.front().tracks.front().clips.front().gain=.5;});
+        check(.125f);
+        session.undo();check(.25f);
+        session.redo();check(.125f);
+        session.editItemControls([](auto &project) {project.songs.front().tracks.front().clips.front().pan=1;});
+        session.audio.render(fixture.block.getArrayOfWritePointers(),2,480);
+        require(fixture.block.getMagnitude(0,0,480)<1e-6f,"Item pan commit was not applied");
+        session.undo();check(.125f);
+        session.command(jaras::CommandKind::stopAll);
+    });
+    test("Timeline item moves and Undo Redo preserve main and Subplay clocks for audio video and text",[&] {
+        const auto folder=directory.getNonexistentChildFile("live-item-moves","");
+        auto project=liveItemResizeTests::fixture(folder);
+        auto &song=project.songs.front();song.duration=601;
+        song.tracks.front().clips.front().duration=600;song.tracks.front().clips.front().loopLength=1;
+        const auto audioID=song.tracks.front().clips.front().id;
+        jaras::Track video;video.id=uuid();video.role.id="video";video.name=jaras::fixedTrackName(video.role);
+        jaras::AudioClip film;film.id=uuid();film.name="Video";film.startTime=10;film.duration=1;
+        const auto videos=folder.getChildFile("Videos");require(videos.createDirectory().wasOk(),"Cannot create video fixture folder");
+        const auto source=File(__FILE__).getParentDirectory().getSiblingFile("Tests").getChildFile("Fixtures/silent.mp4");
+        require(source.copyFileTo(videos.getChildFile("silent.mp4")),"Cannot copy video fixture");
+        film.audioFile=jaras::AudioFile{"Videos/silent.mp4",{}};video.clips={film};song.tracks.push_back(video);
+        jaras::Track lyrics;lyrics.id=uuid();lyrics.role.id="teleprompt";lyrics.name=jaras::fixedTrackName(lyrics.role);
+        jaras::AudioClip textItem;textItem.id=uuid();textItem.name="Lyrics";textItem.text="Lyrics";textItem.startTime=10;textItem.duration=1;
+        lyrics.clips={textItem};song.tracks.push_back(lyrics);
+        auto session=std::make_unique<Session>();liveItemResizeTests::initialise(*session,project,folder);
+        session->command(jaras::CommandKind::editSeek,{},.1);session->command(jaras::CommandKind::play);
+        session->command(jaras::CommandKind::subSeek,{},.3);session->command(jaras::CommandKind::subPlay);
+        AudioBuffer<float> block(2,480);session->audio.render(block.getArrayOfWritePointers(),2,480);
+        const auto repositions=num(session->audio.streamDiagnostics(),"transportRepositions");
+        const auto commits=num(session->audio.streamDiagnostics(),"transportCommits");
+        auto check=[&](const std::function<void()> &edit) {
+            const auto before=session->audio.state();edit();
+            require(!session->preparingLiveAudio(),"Moving an existing item rebuilt unrelated readers");
+            require(num(session->audio.streamDiagnostics(),"transportRepositions")==repositions &&
+                    num(session->audio.streamDiagnostics(),"transportCommits")==commits,
+                    "Releasing an item resent a transport position instead of preserving the running clocks");
+            liveItemResizeTests::assertClocks(before,session->audio.state());
+            session->audio.render(block.getArrayOfWritePointers(),2,480);
+            const auto after=session->audio.state();
+            require(after.playing && after.subPlaying && std::abs(after.position-before.position-.01)<1e-9 &&
+                    std::abs(after.subPosition-before.subPosition-.01)<1e-9,"Moving an item rewound a playing head");
+            for(int frame=0;frame<480;++frame)
+                require(std::abs(block.getSample(0,frame)-.25f)<1e-5f && std::abs(block.getSample(1,frame)-.125f)<1e-5f,
+                        "An unrelated item edit interrupted the playing audio");
+        };
+        for(const auto &id:{audioID,film.id,textItem.id}) {
+            check([&]{session->editTimeline([&](auto &value){
+                for(auto &track:value.songs.front().tracks)for(auto &clip:track.clips)if(clip.id==id)clip.startTime+=.02;
+            });});
+            check([&]{session->undo();});check([&]{session->redo();});
+        }
+        session->command(jaras::CommandKind::stopAll);
+    });
+    test("Playlist switches removals Stop and Auto policies preserve both running audio heads through Undo Redo",[&] {
+        Fixture fixture(directory);auto &session=*fixture.session;
+        session.command(jaras::CommandKind::stopAll);
+        const ID first=uuid(),second=uuid(),listA=uuid(),listB=uuid();
+        session.editTimeline([&](auto &project){
+            auto &song=project.songs.front();song.parts={{first,"First",0,300},{second,"Second",300,600}};
+            jaras::RegionSetlist state;
+            state.playlists={{listA,"A",song.id,{first,second}},{listB,"B",song.id,{second,first}}};
+            state.selectedId=listA;project.regionSetlist=state;
+        });
+        session.command(jaras::CommandKind::editSeek,{},.1);session.command(jaras::CommandKind::play);
+        session.command(jaras::CommandKind::subSeek,{},.3);session.command(jaras::CommandKind::subPlay);
+        session.audio.render(fixture.block.getArrayOfWritePointers(),2,480);fixture.verify(.25f);
+        const auto repositions=num(session.audio.streamDiagnostics(),"transportRepositions");
+        const auto commits=num(session.audio.streamDiagnostics(),"transportCommits");
+        auto check=[&](const std::function<void()> &change) {
+            const auto before=session.audio.state();change();
+            require(!session.preparingLiveAudio(),"Playlist policy rebuilt the playing graph");
+            require(num(session.audio.streamDiagnostics(),"transportRepositions")==repositions &&
+                    num(session.audio.streamDiagnostics(),"transportCommits")==commits,
+                    "Playlist edit or Undo replayed a sampled transport position");
+            liveItemResizeTests::assertClocks(before,session.audio.state());fixture.render(.25f);
+        };
+        check([&]{auto state=*session.project().regionSetlist;state.selectedId=listB;session.configureSetlist(state);});
+        check([&]{session.undo();});check([&]{session.redo();});
+        check([&]{auto state=*session.project().regionSetlist;state.playlists[1].regionIds.erase(state.playlists[1].regionIds.begin());session.configureSetlist(state);});
+        check([&]{session.undo();});check([&]{session.redo();});
+        for(bool enabled:{true,false}) {
+            check([&]{auto state=*session.project().regionSetlist;state.stopAtRegionEnd=enabled;session.configureSetlist(state);});
+            check([&]{session.undo();});check([&]{session.redo();});
+        }
+        check([&]{auto state=*session.project().regionSetlist;state.autoAdvance=true;session.configureSetlist(state);});
+        check([&]{session.undo();});check([&]{session.redo();});
+        session.command(jaras::CommandKind::stopAll);
+    });
+    test("Normalization panel applies measured PCM gain immediately and Undo Redo retain both transport clocks",[&] {
+        const auto folder=directory.getNonexistentChildFile("normalization-live-controls","");
+        auto project=liveItemResizeTests::fixture(folder);auto &clip=project.songs.front().tracks.front().clips.front();
+        clip.gain=.5;const auto id=clip.id;
+        auto session=std::make_unique<Session>();liveItemResizeTests::initialise(*session,project,folder);
+        session->command(jaras::CommandKind::editSeek,{},.1);session->command(jaras::CommandKind::play);
+        session->command(jaras::CommandKind::subSeek,{},.3);session->command(jaras::CommandKind::subPlay);
+        AudioBuffer<float> block(2,480);session->audio.render(block.getArrayOfWritePointers(),2,480);
+        const auto repositions=num(session->audio.streamDiagnostics(),"transportRepositions");
+        const auto commits=num(session->audio.streamDiagnostics(),"transportCommits");
+        const auto streams=session->audio.residentStreams();
+        Appearance appearance(folder.getChildFile("appearance.json"));
+        NormalizationPanel panel(*session,appearance,id);panel.setSize(360,250);
+        auto *level=dynamic_cast<TextEditor*>(panel.findChildWithID("normalizationTarget"));
+        auto *apply=dynamic_cast<Button*>(panel.findChildWithID("normalizationApply"));
+        require(level && apply && apply->onClick,"Normalization controls are inaccessible");
+        level->setText("-12");const auto before=session->audio.state();apply->onClick();
+        const auto deadline=Time::getMillisecondCounterHiRes()+10000;
+        while(!session->song()->tracks.front().clips.front().normalizationGain && Time::getMillisecondCounterHiRes()<deadline)dispatch();
+        const auto expected=std::pow(10.,-12./20.)/.125;
+        const auto gain=session->song()->tracks.front().clips.front().normalizationGain.value_or(1);
+        require(std::abs(gain-expected)<1e-5,"Analysis finished without applying the measured normalization gain");
+        require(std::abs((double)appearance.value("jaras.normalization.target.Peak",0)+12)<1e-9,"Normalization target was not saved");
+        liveItemResizeTests::assertClocks(before,session->audio.state());
+        auto render=[&](double expectedGain) {
+            require(!session->preparingLiveAudio() && session->audio.residentStreams()==streams,
+                    "Normalization replaced live readers instead of updating gain");
+            require(num(session->audio.streamDiagnostics(),"transportRepositions")==repositions &&
+                    num(session->audio.streamDiagnostics(),"transportCommits")==commits,"Normalization sought a transport head");
+            session->audio.render(block.getArrayOfWritePointers(),2,480);
+            for(int n=0;n<480;++n)require(std::abs(block.getSample(0,n)-.125*expectedGain)<1e-5 &&
+                    std::abs(block.getSample(1,n)-.0625*expectedGain)<1e-5,"Normalization model gain did not reach the actual audio");
+        };
+        render(expected);session->undo();render(1);session->redo();render(expected);
+        const auto restored=ProjectCodec::decode(session->snapshot());
+        require(std::abs(restored.songs.front().tracks.front().clips.front().normalizationGain.value_or(1)-expected)<1e-5,
+                "Normalized gain was lost from the saved document");
+        session->command(jaras::CommandKind::stopAll);
     });
     test("Coalesced Session edits publish only the latest graph without stopping either transport",[&] {
         Fixture fixture(directory);auto &session=*fixture.session;

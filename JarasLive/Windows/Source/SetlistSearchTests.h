@@ -29,6 +29,21 @@ inline void click(Workspace &workspace,int row) {
     floatingControlTests::pump();
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Setlist search Tab reopens after every popup close without a workspace key-up",[&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(fixture()));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("search-tab-repeat",".json"));
+        workspace.setSize(1366,768);workspace.addToDesktop(ComponentPeer::windowIsTemporary);workspace.setVisible(true);workspace.grabKeyboardFocus();
+        floatingControlTests::pump();const KeyPress tab(KeyPress::tabKey);
+        for(int i=0;i<6;++i) {
+            require(workspace.keyPressed(tab),"Tab did not reach the Setlist search command");floatingControlTests::pump();
+            require(flag(get(workspace.diagnostics(),"setlist"),"searching"),"Search failed to reopen after the previous Tab close");
+            auto *field=dynamic_cast<TextEditor*>(uiFeatureTests::find(workspace,"setlistSearchField"));
+            require(field && field->keyPressed(tab),"Tab did not close the search editor");floatingControlTests::pump();
+            require(!flag(get(workspace.diagnostics(),"setlist"),"searching"),"Tab left a search popup open");
+        }
+    });
+
     test("Tab toggles focused setlist search and Advanced changes both numbering modes persistently",[&] {
         auto project=fixture();project.regionSetlist->playlists[0].regionIds={"outside","early","late"};
         Session session;session.inspection=true;session.audio.prepareOffline(48000);

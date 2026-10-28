@@ -1,6 +1,7 @@
 #pragma once
 #include "Common.h"
 #include "Localization.h"
+#include "ConfirmationStyle.h"
 #include <BinaryData.h>
 namespace catlive {
 // Shared glass surface for close decisions; save retains the app logo.
@@ -13,7 +14,7 @@ class CloseProjectSheet final : public Component {
             g.setColour(down ? colour.darker(.15f) : over ? colour.brighter(.1f) : colour);
             g.fillRoundedRectangle(getLocalBounds().toFloat(), getHeight() / 2.f);
             if (hasKeyboardFocus(false)) { g.setColour(Colours::white.withAlpha(.5f)); g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1), getHeight() / 2.f, 1); }
-            g.setColour(Colours::white); g.setFont(theme::mediumFont(13));
+            g.setColour(Colours::white); g.setFont(theme::mediumFont(confirmationStyle::buttonSize));
             g.drawText(getButtonText(), getLocalBounds(), Justification::centred);
         }
       private: bool primary;
@@ -43,34 +44,32 @@ class CloseProjectSheet final : public Component {
     }
     juce::Rectangle<int> contentFrame() const { return frame; }
     void resized() override {
+        frame = juce::Rectangle<int>(playback ? confirmationStyle::width : confirmationStyle::iconWidth,playback ? 180 : 234).withCentre(getLocalBounds().getCentre());
+        const int x=frame.getX()+confirmationStyle::margin,width=frame.getWidth()-2*confirmationStyle::margin;
+        const int bottom=frame.getBottom()-confirmationStyle::margin;
         if (playback) {
-            frame = juce::Rectangle<int>(320, 196).withCentre(getLocalBounds().getCentre());
-            save.setBounds(frame.getX()+16, frame.getY()+118, 288, 28);
-            discard.setBounds(frame.getX()+16, frame.getY()+152, 288, 28);
-            return;
+            save.setBounds(x,bottom-2*confirmationStyle::buttonHeight-confirmationStyle::gap,width,confirmationStyle::buttonHeight);
+            discard.setBounds(x,bottom-confirmationStyle::buttonHeight,width,confirmationStyle::buttonHeight);
+        } else {
+            save.setBounds(x,bottom-3*confirmationStyle::buttonHeight-2*confirmationStyle::gap,width,confirmationStyle::buttonHeight);
+            discard.setBounds(x,save.getBottom()+confirmationStyle::gap,width,confirmationStyle::buttonHeight);
+            cancel.setBounds(x,discard.getBottom()+confirmationStyle::gap,width,confirmationStyle::buttonHeight);
         }
-        frame = juce::Rectangle<int>(260, 244).withCentre(getLocalBounds().getCentre());
-        save.setBounds(frame.getX()+16, frame.getY()+132, 228, 28);
-        discard.setBounds(frame.getX()+16, frame.getY()+166, 228, 28);
-        cancel.setBounds(frame.getX()+16, frame.getY()+200, 228, 28);
     }
     void paint(Graphics &g) override {
         g.fillAll(Colours::black.withAlpha(.18f));
-        DropShadow(Colours::black.withAlpha(.4f), 22, {0, 7}).drawForRectangle(g, frame);
-        g.setGradientFill(ColourGradient(Colour(0xff303030).withAlpha(.92f), (float)frame.getX(), (float)frame.getY(),
-                                         Colour(0xff39363e).withAlpha(.88f), (float)frame.getRight(), (float)frame.getBottom(), false));
-        g.fillRoundedRectangle(frame.toFloat(), 25);
-        g.setColour(Colour(0xff565656)); g.drawRoundedRectangle(frame.toFloat().reduced(.5f), 25, 1);
-        if (playback) {
-            g.setColour(Colour(0xffdddddd)); g.setFont(theme::font(14, true));
-            g.drawText(localization::translate(heading), frame.getX()+22, frame.getY()+19, 276, 24, Justification::centredLeft);
-            g.setFont(theme::font(13));
-            g.drawFittedText(localization::translate(message), frame.getX()+22, frame.getY()+49, 276, 58, Justification::centredLeft, 3, 1.f);
-            return;
+        DropShadow(Colours::black.withAlpha(.4f),22,{0,7}).drawForRectangle(g,frame);
+        confirmationStyle::surface(g,frame.toFloat());
+        const int x=frame.getX()+confirmationStyle::margin,width=frame.getWidth()-2*confirmationStyle::margin;
+        g.setColour(Colour(0xffdddddd));g.setFont(theme::semiboldFont(confirmationStyle::titleSize));
+        if(playback) {
+            g.drawText(localization::translate(heading),x,frame.getY()+18,width,22,Justification::centredLeft);
+            g.setFont(theme::font(confirmationStyle::bodySize));
+            g.drawFittedText(localization::translate(message),x,frame.getY()+46,width,42,Justification::topLeft,3,1.f);
+        } else {
+            g.drawImageWithin(icon,frame.getCentreX()-24,frame.getY()+16,48,48,RectanglePlacement::centred);
+            g.drawText(localization::translate(heading),x,frame.getY()+74,width,24,Justification::centred);
         }
-        g.drawImageWithin(icon, frame.getX()+98, frame.getY()+24, 64, 64, RectanglePlacement::centred);
-        g.setColour(Colour(0xffdddddd)); g.setFont(theme::font(14, true));
-        g.drawText(localization::translate(heading), frame.getX()+16, frame.getY()+98, 228, 24, Justification::centred);
     }
     static void open(Component &parent, std::function<void(int)> answer, bool playback = false, bool application = true) {
         auto *sheet = new CloseProjectSheet(playback, application);

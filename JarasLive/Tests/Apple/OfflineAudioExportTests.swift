@@ -146,6 +146,33 @@ func outputPeak(_ url: URL) throws -> Float {
     try file.read(into:data)
     return UnsafeBufferPointer(start:data.floatChannelData![0],count:Int(data.frameLength)).map { abs($0) }.max()!
 }
+// Context item exports choose raw processing or print both item and track FX.
+do {
+    var itemSong = song
+    var track = a; track.role = .other; track.parentTrackID = nil; track.volume = 0.75
+    track.fx = comp; track.clips[0].gain = 0.5; track.clips[0].fx = comp
+    track.clips[0].sourceOffset = 0.1; track.clips[0].duration = 0.6
+    itemSong.tracks = [track]
+    let original = itemSong
+    for processing in [AudioItemExportProcessing.pre, .post] {
+        let renderSong = processing.song(itemSong)
+        let plan = AudioExportPlan(project: project, song: renderSong, source: .stems, bounds: .project,
+                                   template: "%stem", tracks: [], clips: [track.clips[0].id], regions: [])
+        let destination = root.appendingPathComponent("item-" + processing.rawValue)
+        try OfflineAudioExport.run(project: project, song: renderSong, plan: plan, mediaDirectory: root,
+                                   outputDirectory: destination, sampleRate: 48000,
+                                   cancellation: AudioExportCancellation(), printTrackPolarity: true) { _ in }
+        let url = destination.appendingPathComponent(plan.jobs[0].fileName)
+        let file = try AVAudioFile(forReading: url)
+        precondition(file.length == 28800, "Item export preserves its trim length")
+        let peak = try outputPeak(url)
+        let expected = processing == .pre ? 0.2 : 0.2 * 0.5 * 0.75 * pow(10.0, 12.0 / 20.0)
+        precondition(abs(Double(peak) - expected) < 0.001, "Item export prints both FX stages only in Post: \(peak) / \(expected)")
+        precondition(renderSong.tracks[0].clips[0].sourceOffset == 0.1 && renderSong.tracks[0].clips[0].startTime == track.clips[0].startTime)
+    }
+    precondition(itemSong == original, "Item rendering leaves the live song intact")
+}
+print("ITEM_PRE_POST_PROCESSING_BOTH_FX_AND_TRIMS_OK")
 // Drawer song renders use the same onset exclusion as live playback. Include an
 // ordinary region with identical bounds to catch incorrectly shared graphs.
 var drawerSong = song

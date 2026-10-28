@@ -2868,7 +2868,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     .contextMenu { if local { Button("Settings") { autoSettings = true } } }
                 if let addBlock {
                     Button(action: addBlock) {
-                        Text("Blocks").font(.jarasSystem(size: 9, weight: .bold))
+                        Text(verbatim: JarasLocalization.string("Blocks").uppercased()).font(.jarasSystem(size: 9, weight: .bold))
                             .foregroundStyle(JarasTheme.text).frame(width: 40, height: 30)
                             .modifier(RemoteControlSurface(color: nil, radius: 4))
                             .contentShape(Rectangle())

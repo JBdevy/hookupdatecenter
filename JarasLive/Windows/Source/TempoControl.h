@@ -64,9 +64,10 @@ class TempoControl final : public Component {
     }
     void paint(Graphics &g) override {
         g.setColour(Colour(0xff121212));
-        g.fillRoundedRectangle(getLocalBounds().toFloat(), 4);
+        const auto bounds=getLocalBounds().toFloat().reduced(.5f);
+        g.fillRoundedRectangle(bounds, 6);
         g.setColour(theme::line);
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.5f), 4, 1);
+        g.drawRoundedRectangle(bounds, 6, 1);
         if (const auto *song = session.song()) {
             const float scale = getWidth() / 171.f;
             g.setFont(theme::font(13));

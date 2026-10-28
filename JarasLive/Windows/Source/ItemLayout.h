@@ -112,27 +112,20 @@ struct ItemHeader {
             return true;
         };
         const auto readoutFont = theme::semiboldFont(9);
-        const auto labelWidth = [&](const String& label) { return std::ceil(GlyphArrangement::getStringWidth(readoutFont,label)) + 2.f; };
-        const float gainWidth = labelWidth(gainText(clip.gain.value_or(1)));
-        const float panWidth = labelWidth(panText(clip.pan.value_or(0)));
         const float nameWidth = std::max(24.f, std::ceil(GlyphArrangement::getStringWidth(readoutFont, title.isNotEmpty() ? title : text(clip.name)))) + 3.f;
-        const float gainThreshold = 4.6f + 23.1f + nameWidth + 19.5f + .5f + gainWidth + 1.f;
-        const float fxThreshold = gainThreshold + ((!midi || clip.fxJSON) ? 27.f : 0.f);
-        const float phaseThreshold = fxThreshold + (!midi ? 20.5f : 0.f);
-        const float panThreshold = phaseThreshold + (!midi ? 19.5f + .5f + panWidth + 1.f : 0.f);
+        const float gainThreshold = 4.6f + 19.7f + nameWidth + 16.5f + 1.f;
+        const float fxThreshold = gainThreshold + ((!midi || clip.fxJSON) ? 23.f : 0.f);
+        const float panThreshold = fxThreshold + (!midi ? 17.5f : 0.f);
         if (width >= gainThreshold) {
-            append(gainRect,19.5f,.5f);
-            append(gainLabel,gainWidth);
-        } else if (width >= 2.6f + 23.1f + nameWidth + 19.5f + 1.f) {
-            append(gainRect,19.5f);
+            append(gainRect,16.5f);
+        } else if (width >= 2.6f + 19.7f + nameWidth + 16.5f + 1.f) {
+            append(gainRect,16.5f);
         }
-        if (!append(muteRect,22.1f)) return;
+        if (!append(muteRect,18.7f)) return;
         if (width < fxThreshold) return;
-        if ((!midi || clip.fxJSON) && !append(fxRect,26)) return;
+        if ((!midi || clip.fxJSON) && !append(fxRect,22)) return;
         if (!midi) {
-            if (width < phaseThreshold || !append(phaseRect,19.5f)) return;
-            if (width < panThreshold || !append(panRect,19.5f,.5f)) return;
-            append(panLabel,labelWidth(panText(clip.pan.value_or(0))));
+            if (width < panThreshold || !append(panRect,16.5f)) return;
         }
     }
     int resizeSide(Point<float> point) const {
@@ -201,12 +194,13 @@ struct ItemHeader {
         if (out) return fadeOut;
         return none;
     }
-    void draw(Graphics &g, const jaras::AudioClip &clip) const {
+    void draw(Graphics &g, const jaras::AudioClip &clip, std::optional<double> gainOverride = {}, std::optional<double> panOverride = {}) const {
         g.saveState(); g.reduceClipRegion(visible.getSmallestIntegerContainer());
         auto button = [&](juce::Rectangle<float> r, String caption, bool active, bool bypass = false) {
             if (r.isEmpty()) return;
+            r=r.reduced(0,1.5f);
             g.setColour(bypass ? Colour(0xffff453a) : Colours::white.withAlpha(.10f)); g.fillRect(r);
-            g.setColour(active ? Colour(0xff33ff8c) : Colours::white); g.setFont(theme::semiboldFont(9)); g.drawText(caption,r,Justification::centred);
+            g.setColour(active ? Colour(0xff33ff8c) : Colours::white); g.setFont(theme::semiboldFont(8.5f)); g.drawText(caption,r,Justification::centred);
         };
         button(muteRect,"M",false,clip.muted);
         const bool hasFX = clip.fxJSON && !list(get(JSON::parse(text(*clip.fxJSON)),"inserted")).isEmpty();
@@ -214,21 +208,18 @@ struct ItemHeader {
         if (!phaseRect.isEmpty()) {
             g.setColour(clip.phaseInverted.value_or(false) ? Colours::yellow : Colours::black.withAlpha(.28f)); g.fillRect(phaseRect);
             g.setColour(clip.phaseInverted.value_or(false) ? Colours::black : Colours::white);
-            auto centre=phaseRect.getCentre(); g.drawEllipse(centre.x-4.55f,centre.y-4.55f,9.1f,9.1f,1.2f);
-            g.drawLine(centre.x-5.85f,centre.y+5.85f,centre.x+5.85f,centre.y-5.85f,1.2f);
+            auto centre=phaseRect.getCentre(); g.drawEllipse(centre.x-3.85f,centre.y-3.85f,9.1f,9.1f,1.2f);
+            g.drawLine(centre.x-4.95f,centre.y+4.95f,centre.x+4.95f,centre.y-4.95f,1.2f);
         }
         auto knob = [&](juce::Rectangle<float> r, double position) {
             if (r.isEmpty()) return;
-            const auto c=r.getCentre(); g.setColour(Colours::black); g.fillEllipse(c.x-5.85f,c.y-5.85f,11.7f,11.7f);
-            g.setColour(Colours::white); g.drawEllipse(c.x-5.85f,c.y-5.85f,11.7f,11.7f,1.5f);
+            const auto c=r.getCentre(); g.setColour(Colours::black); g.fillEllipse(c.x-4.95f,c.y-4.95f,9.9f,9.9f);
+            g.setColour(Colours::white); g.drawEllipse(c.x-4.95f,c.y-4.95f,9.9f,9.9f,1.5f);
             const float angle=(float)((135+jlimit(0.,1.,position)*270)*MathConstants<double>::pi/180);
-            g.setColour(Colour(0xff33ff8c)); g.drawLine(c.x,c.y,c.x+std::cos(angle)*4.55f,c.y+std::sin(angle)*4.55f,2);
+            g.setColour(Colour(0xff33ff8c)); g.drawLine(c.x,c.y,c.x+std::cos(angle)*3.85f,c.y+std::sin(angle)*3.85f,2);
         };
-        knob(panRect,(clip.pan.value_or(0)+1)/2);
-        knob(gainRect,(20*std::log10(std::max(.000001,clip.gain.value_or(1)))+60)/84);
-        g.setColour(Colours::white); g.setFont(theme::semiboldFont(9));
-        g.drawText(panText(clip.pan.value_or(0)),panLabel,Justification::centredLeft);
-        g.drawText(gainText(clip.gain.value_or(1)),gainLabel,Justification::centredLeft);
+        knob(panRect,(panOverride.value_or(clip.pan.value_or(0))+1)/2);
+        knob(gainRect,(20*std::log10(std::max(.000001,gainOverride.value_or(clip.gain.value_or(1))))+60)/84);
         g.restoreState();
     }
     void drawFades(Graphics &g, const jaras::AudioClip &clip) const {

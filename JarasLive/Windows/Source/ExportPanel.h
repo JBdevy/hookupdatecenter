@@ -2,11 +2,45 @@
 #include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
+#include "ConfirmationStyle.h"
 namespace catlive {
+class ItemExportProcessingPanel final : public Component {
+    TextButton pre{"Pre-Processing"},post{"Post-Processing"},cancel{localization::translate("Cancel")};
+  public:
+    explicit ItemExportProcessingPanel(std::function<void(bool)> choose) {
+        setComponentID("itemExportProcessing");
+        getProperties().set("selfContainedSheet",true);
+        getProperties().set("sheetCornerRadius",(double)confirmationStyle::radius);
+        for(auto *button:{&pre,&post,&cancel}) {
+            addAndMakeVisible(button);button->getProperties().set("fontSize",confirmationStyle::buttonSize);
+            button->getProperties().set("cornerRadius",confirmationStyle::buttonHeight/2.f);
+            button->getProperties().set("flat",true);
+        }
+        pre.setComponentID("itemExportPreProcessing");post.setComponentID("itemExportPostProcessing");
+        auto select=[this,choose](bool raw) {
+            ModalSheet::dismiss(*this);
+            MessageManager::callAsync([choose,raw]{choose(raw);});
+        };
+        pre.onClick=[select]{select(true);};post.onClick=[select]{select(false);};
+        cancel.onClick=[this]{ModalSheet::dismiss(*this);};
+    }
+    void paint(Graphics &g) override {
+        confirmationStyle::surface(g,getLocalBounds().toFloat());g.setColour(Colours::white);
+        g.setFont(theme::semiboldFont(confirmationStyle::titleSize));
+        g.drawText(localization::translate("Export audio items"),20,18,getWidth()-40,24,Justification::centredLeft);
+    }
+    void resized() override {
+        int y=52;
+        for(auto *button:{&pre,&post,&cancel}) {
+            button->setBounds(20,y,getWidth()-40,confirmationStyle::buttonHeight);
+            y+=confirmationStyle::buttonHeight+confirmationStyle::gap;
+        }
+    }
+};
 class ExportPanel final : public Component, private ListBoxModel, private Timer {
   public:
-    ExportPanel(Session &owner, ID track, ID clip, std::function<void(String)> failure, bool stems = false)
-        : session(owner), error(std::move(failure)) {
+    ExportPanel(Session &owner, ID track, ID clip, std::function<void(String)> failure, bool stems = false, bool preProcessingItems = false)
+        : session(owner), error(std::move(failure)), preProcessing(preProcessingItems) {
         if (!track.empty())
             tracks.insert(track);
         if (!clip.empty())
@@ -197,6 +231,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
   private:
     Session &session;
     std::function<void(String)> error;
+    bool preProcessing = false;
     std::set<ID> tracks, clips, regions;
     std::optional<std::pair<double, double>> area;
     ComboBox source, bounds, format, quality, rate, channels;
@@ -299,6 +334,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
             ExportRequest request;
             request.directory = File(directory.getText());
             request.jobs = jobs;
+            request.preProcessingItems = preProcessing;
             request.encodings[0] = encodings[0];
             request.encodings[1] = encodings[1];
             session.exportAudio(std::move(request));

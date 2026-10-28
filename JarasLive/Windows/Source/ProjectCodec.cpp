@@ -45,7 +45,17 @@ struct AES {
     }
 };
 std::string s(const var &v, const char *k) { return utf8(str(v, k)); }
-var merged(const var &original) { return original.isObject() ? original.clone() : object(); }
+var merged(const var &original) {
+    // Encoding replaces each schema child with its own merged object. Copy
+    // this object's fields only: recursively cloning the whole project again
+    // at song, track and item level repeatedly copied every waveform/FX state.
+    // Opaque children stay immutable; canonicalIDs detaches the final result.
+    auto result=object();
+    if(const auto *source=original.getDynamicObject())
+        for(const auto &property:source->getProperties())
+            result.getDynamicObject()->setProperty(property.name,property.value);
+    return result;
+}
 var byId(const var &array, const ID &id) {
     if (auto *values = array.getArray())
         for (const auto &value : *values)

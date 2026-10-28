@@ -1,5 +1,6 @@
 #pragma once
 #include "ModalSheet.h"
+#include "ConfirmationStyle.h"
 namespace catlive {
 inline bool tracksContainItems(const jaras::Project &project, const std::set<ID> &ids) {
     for (const auto &song : project.songs)
@@ -17,7 +18,7 @@ class TrackDeletionConfirmationPanel final : public Component {
             if (down) fill = fill.darker(.15f);
             g.setColour(fill); g.fillRoundedRectangle(getLocalBounds().toFloat(), getHeight() / 2.f);
             g.setColour(destructive ? Colour(0xffff3b30) : Colour(0xffdddddd));
-            g.setFont(theme::mediumFont(16));
+            g.setFont(theme::mediumFont(confirmationStyle::buttonSize));
             g.drawText(getButtonText(), getLocalBounds(), Justification::centred);
         }
     } cancel, remove;
@@ -25,7 +26,7 @@ class TrackDeletionConfirmationPanel final : public Component {
 public:
     explicit TrackDeletionConfirmationPanel(std::function<void()> action) : accept(std::move(action)) {
         getProperties().set("selfContainedSheet", true);
-        getProperties().set("sheetCornerRadius", 32.0);
+        getProperties().set("sheetCornerRadius", (double)confirmationStyle::radius);
         setComponentID("trackDeletionConfirmation"); setWantsKeyboardFocus(true);
         remove.destructive = true;
         cancel.setButtonText(localization::translate("Cancel")); cancel.setComponentID("cancelTrackDeletion");
@@ -35,16 +36,14 @@ public:
         remove.onClick = [this] { auto action = accept; ModalSheet::dismiss(*this); MessageManager::callAsync(std::move(action)); };
     }
     void paint(Graphics &g) override {
-        const auto frame = getLocalBounds().toFloat().reduced(.5f);
-        g.setGradientFill(ColourGradient(Colour(0xff343434), 0, 0, Colour(0xff303030), 0, (float)getHeight(), false));
-        g.fillRoundedRectangle(frame,32); g.setColour(Colour(0xff565656)); g.drawRoundedRectangle(frame,32,1);
-        g.setColour(Colour(0xffdddddd)); g.setFont(theme::semiboldFont(17));
-        g.drawFittedText(localization::translate("Delete selected tracks and their items?"),28,24,getWidth()-56,48,Justification::centredLeft,2,1.f);
+        confirmationStyle::surface(g,getLocalBounds().toFloat());
+        g.setColour(Colour(0xffdddddd));g.setFont(theme::semiboldFont(confirmationStyle::titleSize));
+        g.drawFittedText(localization::translate("Delete selected tracks and their items?"),20,20,getWidth()-40,46,Justification::centredLeft,2,1.f);
     }
     void resized() override {
-        const int gap=10,margin=20,width=(getWidth()-2*margin-gap)/2;
-        cancel.setBounds(margin,getHeight()-58,width,36);
-        remove.setBounds(margin+width+gap,getHeight()-58,getWidth()-margin*2-width-gap,36);
+        const int width=(getWidth()-2*confirmationStyle::margin-confirmationStyle::gap)/2;
+        cancel.setBounds(confirmationStyle::margin,getHeight()-52,width,confirmationStyle::buttonHeight);
+        remove.setBounds(cancel.getRight()+confirmationStyle::gap,cancel.getY(),width,confirmationStyle::buttonHeight);
     }
     bool keyPressed(const KeyPress &key) override {
         if (key == KeyPress::escapeKey || key == KeyPress::returnKey) { cancel.onClick(); return true; }

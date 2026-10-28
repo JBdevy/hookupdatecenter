@@ -663,7 +663,7 @@ class Workspace::Setlist final : public Component,
     QuietButton addPlaylist{"+"}, searchButton{String::fromUTF8("⌕")},
         live{"Live"}, parts{"Parts"};
     RegionStopButton stop;
-    QuietButton blocks{localization::translate("Blocos")};
+    QuietButton blocks{localization::translate("Blocos").toUpperCase()};
     BypassButton bypass;
     QuietButton automatic{"AUTO"};
     struct SearchEditor final : TextEditor {
@@ -697,9 +697,13 @@ class Workspace::Setlist final : public Component,
         if (value && searchPanel) { if (search.isShowing()) search.grabKeyboardFocus(); return; }
         if (!value) {
             searching=false;
+            w.heldShortcutKeys.erase(KeyPress::tabKey);
             auto panel=searchPanel; searchPanel=nullptr;
             addChildComponent(search); search.setVisible(false); search.setText({},false);
             if (panel) { panel->setComponentID({});panel->setVisible(false);if (auto *box=panel->findParentComponentOfClass<CallOutBox>()) box->dismiss(); }
+            MessageManager::callAsync([safe=SafePointer<Setlist>(this)] {
+                if(safe && !safe->searching)safe->w.grabKeyboardFocus();
+            });
             return;
         }
         if (!w.session.song()) return;

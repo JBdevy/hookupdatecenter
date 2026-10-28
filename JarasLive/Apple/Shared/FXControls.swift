@@ -76,7 +76,7 @@ struct EffectVerticalMeters: View {
                         let fraction = min(1,max(0,(20*log10(max(0.001,values[channel]))+60)/60))
                         ZStack(alignment: .bottom) {
                             RoundedRectangle(cornerRadius: 2).fill(Color.black.opacity(0.7))
-                            LinearGradient(colors: [.red,.yellow,JarasTheme.green],startPoint: .top,endPoint: .bottom)
+                            LinearGradient(colors: [.red,.yellow,Color(hex: 0xbf5af2)],startPoint: .top,endPoint: .bottom)
                                 .mask(alignment: .bottom) { Rectangle().frame(height: geometry.size.height*fraction) }
                         }.clipShape(RoundedRectangle(cornerRadius: 2))
                     }.frame(width: 9)

@@ -135,7 +135,7 @@ void Session::createRecordingProject(String name, int channels, const File &targ
 }
 void Session::prepare() {
     if (song() && preparedSong == song()->id &&
-        (transport().playing || transport().subPlay.playing)) {
+        (transport().playing || transport().subPlay.playing || (!inspection && audio.hasLiveDevice()))) {
         prepareLiveGraph();
         return;
     }
@@ -814,7 +814,12 @@ void Session::syncClock() {
             std::abs(expected.position - actual.position) <= tolerance &&
             (!expected.subPlay.playing || std::abs(expected.subPlay.position - actual.subPosition) <= tolerance);
         const bool transition = oldJump != expected.sectionJumpSerial || oldPromotion != expected.subPlayPromotion;
-        if (!aligned || transition || before.queuedSectionMarkerId != expected.queuedSectionMarkerId || before.exclusivePlaybackRegionId!=expected.exclusivePlaybackRegionId || before.subExclusivePlaybackRegionId!=expected.subExclusivePlaybackRegionId)
+        // Parts can arm a loop while advancing into its first marker. Send
+        // its bounds immediately, before the first wrap, so the callback owns
+        // that jump just as it owns every subsequent lap.
+        const bool loopChanged=before.loop.enabled!=expected.loop.enabled ||
+            before.loop.start!=expected.loop.start || before.loop.end!=expected.loop.end;
+        if (!aligned || transition || loopChanged || before.queuedSectionMarkerId != expected.queuedSectionMarkerId || before.exclusivePlaybackRegionId!=expected.exclusivePlaybackRegionId || before.subExclusivePlaybackRegionId!=expected.subExclusivePlaybackRegionId)
             // Loops already wrap at a sample boundary inside the audio engine.
             // Acknowledge the core's loop event without replaying its onset.
             publishTransport(transition, aligned);
@@ -1052,6 +1057,16 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
     if(mixer) notifyMixer();
     else if ((kind == jaras::CommandKind::selectRegion || stoppedAtQueuedSelection) && old == transport().songId && selectionChanged)
         selectionChanged();
+    else if (old == transport().songId && transportChanged &&
+             (kind == jaras::CommandKind::queueRegion || kind == jaras::CommandKind::queueSection ||
+              kind == jaras::CommandKind::cancelSection || kind == jaras::CommandKind::play ||
+              kind == jaras::CommandKind::stop || kind == jaras::CommandKind::stopAll ||
+              kind == jaras::CommandKind::pause || kind == jaras::CommandKind::subPlay ||
+              kind == jaras::CommandKind::subStop || kind == jaras::CommandKind::subSeek ||
+              kind == jaras::CommandKind::seek || kind == jaras::CommandKind::editSeek ||
+              kind == jaras::CommandKind::ignoreNext)) {
+        ++revision;transportChanged();
+    }
     else
         notify();
 }
@@ -1347,7 +1362,7 @@ void Session::applyMarkerHistory(const MarkerHistory &state, bool recordHistory)
     // Preserve live plugin instances/state and the decoder graph, also on Undo.
     core.applyProjectEdit(std::move(updated));
     if (song() && song()->id == state.song) audio.refreshTiming(*song());
-    publishTransport();
+    publishTransport(false,true);
     if (recordHistory) {
         undoHistory.emplace_back(std::move(before));
         if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
@@ -1451,15 +1466,27 @@ void Session::configureSetlist(jaras::RegionSetlist state) {
 void Session::applySetlistHistory(const SetlistHistory &state, bool recordHistory) {
     syncClock();
     SetlistHistory before{project().regionSetlist};
+    const auto beforeTransport=transport();
     core.configureRegionSetlist(state.state.value_or(jaras::RegionSetlist{}));
     if (!state.state) { auto p=project(); p.regionSetlist.reset(); core.applyProjectEdit(std::move(p)); }
+    const auto exclusive=[](const auto &value) { return value && value->subplayExclusiveTrackIDs
+        ? *value->subplayExclusiveTrackIDs : std::vector<ID>{}; };
+    const bool mixerRoutingChanged=exclusive(before.state)!=exclusive(project().regionSetlist);
     if (recordHistory) {
         undoHistory.emplace_back(std::move(before));
         if (undoHistory.size()>40) undoHistory.erase(undoHistory.begin());
         redoHistory.clear();
     }
-    if(song()) audio.setMixer(project(),*song());
-    dirty=true; publishTransport(); ++revision;
+    if(song() && mixerRoutingChanged) audio.setMixer(project(),*song());
+    const auto &afterTransport=transport();
+    const bool sameHeads=beforeTransport.songId==afterTransport.songId &&
+        beforeTransport.position==afterTransport.position && beforeTransport.playing==afterTransport.playing &&
+        (beforeTransport.subPlay.position==afterTransport.subPlay.position ||
+         (!beforeTransport.subPlay.playing && !afterTransport.subPlay.playing)) &&
+        beforeTransport.subPlay.playing==afterTransport.subPlay.playing;
+    // Playlist membership, selection and Stop/Auto policies update routing;
+    // they do not replay the last UI-clock snapshot on the audio callback.
+    dirty=true; publishTransport(sameHeads,sameHeads); ++revision;
     if (setlistChanged) setlistChanged(); else if (changed) changed();
 }
 void Session::moveMarker(const ID &id, double position) {
@@ -1469,7 +1496,7 @@ void Session::moveMarker(const ID &id, double position) {
     auto moved=*at; moved.position=position;
     auto before=markerHistory(song()->id);
     syncClock(); core.setMarkers({moved},{},false);
-    audio.refreshTiming(*song()); publishTransport();
+    audio.refreshTiming(*song()); publishTransport(false,true);
     undoHistory.emplace_back(std::move(before));
     if(undoHistory.size()>40) undoHistory.erase(undoHistory.begin());
     redoHistory.clear(); dirty=true; notify();
@@ -1585,21 +1612,61 @@ void Session::editTimeline(const std::function<void(jaras::Project &)> &change, 
         throw std::runtime_error("Desbloqueie o cadeado para alterar regiões e marcadores.");
     applyTimelineHistory({std::move(updated)}, true);
 }
+void Session::editItemControls(const std::function<void(jaras::Project &)> &change) {
+    if (busy || jaras::projectSync::readOnly()) return;
+    auto updated = project();
+    change(updated);
+    applyTimelineHistory({std::move(updated),false,true}, true);
+}
 void Session::applyTimelineHistory(const TimelineHistory &state, bool recordHistory) {
     jaras::validate(state.project);
     syncClock();
-    TimelineHistory before{project(), state.tempo};
+    TimelineHistory before{project(), state.tempo, state.itemControls};
     const auto oldSong = song() ? std::optional<jaras::Song>(*song()) : std::nullopt;
     core.applyProjectEdit(state.project);
     if (song()) {
-        if (graphCancellation) prepareLiveGraph();
+        if (state.itemControls && !graphCancellation && oldSong) {
+            std::map<ID,const jaras::AudioClip*> previous;
+            for(const auto &track:oldSong->tracks)for(const auto &clip:track.clips)previous.emplace(clip.id,&clip);
+            for(const auto &track:song()->tracks)for(const auto &clip:track.clips) {
+                const auto found=previous.find(clip.id);if(found==previous.end())continue;
+                const auto &old=*found->second;
+                if(std::tie(old.gain,old.pan,old.muted,old.phaseInverted,old.normalizationGain,old.fxBypassed,
+                            old.fadeIn,old.fadeOut,old.fadeInCurve,old.fadeInSCurve,old.fadeOutCurve,old.fadeOutSCurve)==
+                   std::tie(clip.gain,clip.pan,clip.muted,clip.phaseInverted,clip.normalizationGain,clip.fxBypassed,
+                            clip.fadeIn,clip.fadeOut,clip.fadeInCurve,clip.fadeInSCurve,clip.fadeOutCurve,clip.fadeOutSCurve))continue;
+                if(clip.midi && !clip.frozenMIDI.value_or(false))audio.previewMIDIItem(*song(),clip);
+                else audio.setItemControls(clip);
+            }
+        } else if (graphCancellation) prepareLiveGraph();
         else if (state.tempo && oldSong) {
             audio.refreshTempo(*oldSong, *song());
             publishTransport(true, true);
-        } else if (audio.refreshItemPresence(*song())) {
-            audio.refreshTiming(*song());
-            publishTransport();
-        } else prepareLiveGraph();
+        } else {
+            // A moved/trimmed item on its existing track keeps its reader and
+            // FX. Refresh only its time mapping before reconciling presence.
+            if(oldSong) {
+                std::map<ID,std::pair<ID,const jaras::AudioClip*>> previous;
+                for(const auto &track:oldSong->tracks)for(const auto &clip:track.clips)
+                    previous.emplace(clip.id,std::make_pair(track.id,&clip));
+                for(const auto &track:song()->tracks)for(const auto &clip:track.clips) {
+                    const auto found=previous.find(clip.id);
+                    if(found==previous.end() || found->second.first!=track.id)continue;
+                    const auto &old=*found->second.second;
+                    if(std::tie(old.startTime,old.duration,old.sourceOffset,old.playbackRate,old.loopStart,old.loopLength)!=
+                       std::tie(clip.startTime,clip.duration,clip.sourceOffset,clip.playbackRate,clip.loopStart,clip.loopLength))
+                        audio.refreshItemTiming(*song(),clip);
+                }
+            }
+            if (audio.refreshItemPresence(*song())) {
+                audio.refreshTiming(*song());
+                // A document edit does not seek either running head. The
+                // callback can advance while the item/region mapping is being
+                // prepared; republishing the core's sampled position here
+                // replays that elapsed audio on mouse-up (also for text/video).
+                publishTransport(false, true);
+            } else prepareLiveGraph();
+        }
     }
     if (recordHistory) {
         undoHistory.emplace_back(std::move(before));
@@ -1807,7 +1874,7 @@ void Session::setMeter(int beats, int unit) {
     syncClock();
     const auto before = snapshot();
     core.setProjectTiming(song()->bpm, beats, unit, song()->timeSettings);
-    audio.refreshTiming(*song()); publishTransport();
+    audio.refreshTiming(*song()); publishTransport(false,true);
     undoHistory.emplace_back(before);
     if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
     redoHistory.clear(); dirty = true; message.clear(); notify();
@@ -1873,7 +1940,7 @@ void Session::undo() {
     if (audio.isRecording())
         throw std::runtime_error("Pare para desfazer alterações.");
     auto value = undoHistory.back();
-    if (value.timeline) redoHistory.emplace_back(TimelineHistory{project(), value.timeline->tempo});
+    if (value.timeline) redoHistory.emplace_back(TimelineHistory{project(), value.timeline->tempo, value.timeline->itemControls});
     else if (value.setlist) redoHistory.emplace_back(SetlistHistory{project().regionSetlist});
     else if (value.effects) redoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) redoHistory.emplace_back(markerHistory(value.markers->song));
@@ -1898,7 +1965,7 @@ void Session::redo() {
     if (audio.isRecording())
         throw std::runtime_error("Pare para refazer alterações.");
     auto value = redoHistory.back();
-    if (value.timeline) undoHistory.emplace_back(TimelineHistory{project(), value.timeline->tempo});
+    if (value.timeline) undoHistory.emplace_back(TimelineHistory{project(), value.timeline->tempo, value.timeline->itemControls});
     else if (value.setlist) undoHistory.emplace_back(SetlistHistory{project().regionSetlist});
     else if (value.effects) undoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) undoHistory.emplace_back(markerHistory(value.markers->song));

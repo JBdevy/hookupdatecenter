@@ -5,6 +5,7 @@ namespace catlive {
 namespace localization {
 inline bool english = false;
 inline String translate(const String &original) {
+    if(original=="BLOCOS" || original=="BLOCKS")return english?"BLOCKS":"BLOCOS";
     if (original == "Setlist")
         return original;
     struct Catalog {

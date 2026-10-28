@@ -1,3 +1,4 @@
+#include "native_video_decoder.h"
 #include "SplitPlaybackTests.h"
 #include "MixerFeedbackTests.h"
 #include "SaveAsyncTests.h"
@@ -940,6 +941,26 @@ int runTests(const File &directory) {
             expect(rejected && !s.transport().playing,"Missing output allowed Play or omitted the warning");
         }
     });
+    test("Waveform stretches through the final source frames at relative and changing tempos", [&] {
+        auto data=std::make_shared<WaveformCache::Data>();data->duration=1;data->sampleRate=48000;data->frames=48000;data->sourceChannels=data->storedChannels=1;
+        data->levels.push_back({256,0,188});data->owned.setSize(188*4,true);
+        auto *bytes=(uint8*)data->owned.getData();const auto high=(uint16)WaveformCache::encode(.5f),low=(uint16)WaveformCache::encode(-.5f);
+        for(int i=0;i<188;++i){bytes[i*4]=(uint8)high;bytes[i*4+1]=(uint8)(high>>8);bytes[i*4+2]=(uint8)low;bytes[i*4+3]=(uint8)(low>>8);}
+        jaras::Song song;song.bpm=120;song.duration=4;
+        jaras::TimelineMarker marker;marker.id=uuid();marker.position=0;marker.tempoBPM=60;marker.tempoReferenceBPM=120;marker.tempoTimebase="relative";
+        song.markers=std::vector<jaras::TimelineMarker>{marker};
+        jaras::AudioClip clip;clip.duration=2;WaveformCache cache;
+        const auto render=[&] {Image image(Image::ARGB,640,100,true);Graphics g(image);
+            WaveformRenderer::draw(g,cache,data,clip,{0,0,(float)(clip.duration*200),100},{0,0,640,100},200,Colours::white,true,{},&song);return image;};
+        const auto extent=[](const Image &image,int x){int count=0;for(int y=18;y<98;++y)if(image.getPixelAt(x,y).getAlpha()>100)++count;return count;};
+        expect(extent(render(),380)>30,"Slowed waveform ended before the stretched item's tail");
+        marker.id=uuid();marker.position=1;marker.tempoBPM=30;song.markers->push_back(marker);clip.duration=3;
+        expect(extent(render(),570)>30,"Waveform ignored a second tempo segment inside the item");
+        song.markers->pop_back();clip.sourceOffset=.2;clip.duration=1.6;
+        expect(extent(render(),300)>30,"Stretched source trim left an empty waveform tail");
+        clip.sourceOffset=0;clip.loopLength=.5;clip.duration=3;
+        expect(extent(render(),570)>30,"Slowed loop stopped drawing at the original source boundary");
+    });
     test("Waveform pixels follow fade curves without altering cached peaks", [&] {
         auto data=std::make_shared<WaveformCache::Data>();data->duration=1;data->sampleRate=48000;data->frames=48000;data->sourceChannels=data->storedChannels=1;
         data->levels.push_back({256,0,188});data->owned.setSize(188*4,true);
@@ -1378,9 +1399,10 @@ int runTests(const File &directory) {
         jaras::Track track; track.role.id="other";
         jaras::AudioClip clip;clip.id="clip";clip.duration=10;clip.fadeIn=2;clip.fadeOut=3;
         ItemHeader header({-80,100,400,60},600,track,clip);
-        expect(header.gainRect.getX()==2.6f && !header.gainLabel.isEmpty(),"Clipped item header loses its controls");
+        expect(header.gainRect.getX()==2.6f && header.gainLabel.isEmpty() && header.panLabel.isEmpty(),"Item value readouts should use transient tooltips, not permanent labels");
+        expect(header.phaseRect.isEmpty(),"Phase inversion should not be shown in the item strip");
         const std::vector<std::pair<ItemHeader::Control,juce::Rectangle<float>>> controls{
-            {ItemHeader::mute,header.muteRect},{ItemHeader::fx,header.fxRect},{ItemHeader::phase,header.phaseRect},
+            {ItemHeader::mute,header.muteRect},{ItemHeader::fx,header.fxRect},
             {ItemHeader::pan,header.panRect},{ItemHeader::gain,header.gainRect}};
         for(const auto &a:controls) {
             expect(header.hit(a.second.getCentre(),clip)==a.first,"Header hit selects wrong control");
@@ -1731,7 +1753,8 @@ int runTests(const File &directory) {
     test("Cursor and item snapping match Mac tempo divisions and timeline anchors", [&] {
         auto song=projectFixture().songs.front();song.bpm=120;song.beatsPerBar=4;song.beatUnit=4;song.duration=40;
         song.parts={jaras::Part{uuid(),"Region",3.13,7.17}};
-        song.tracks.clear();jaras::Track edgeTrack;jaras::AudioClip edgeClip;edgeClip.startTime=4.19;edgeClip.duration=1.68;edgeTrack.clips.push_back(edgeClip);song.tracks.push_back(edgeTrack);
+        song.tracks.clear();jaras::Track edgeTrack;jaras::AudioClip edgeClip;edgeClip.id="snap-edge-a";edgeClip.startTime=4.19;edgeClip.duration=1.68;edgeTrack.clips.push_back(edgeClip);
+        jaras::AudioClip secondEdge;secondEdge.id="snap-edge-b";secondEdge.startTime=20.37;secondEdge.duration=3.12;edgeTrack.clips.push_back(secondEdge);song.tracks.push_back(edgeTrack);
         jaras::TimelineMarker marker{uuid(),"Marker",9.23,0xffffff};
         jaras::TimelineMarker tempo{uuid(),"Tempo",10.25,0xffffff};tempo.tempoBPM=60;tempo.tempoBeats=3;tempo.tempoUnit=4;
         song.markers=std::vector<jaras::TimelineMarker>{marker,tempo};
@@ -1752,6 +1775,22 @@ int runTests(const File &directory) {
             checkPosition(timelineGrid::snapCursor(target+.001,song,20,false),target,"Cursor snaps to item start and end");
             checkPosition(timelineGrid::snapCursor(target+.001,song,20,true),target+.001,"Shift bypasses item edge magnets");
         }
+        std::vector<std::pair<ID,double>> indexedEdges;
+        for(const auto &track:song.tracks)for(const auto &clip:track.clips) {
+            indexedEdges.emplace_back(clip.id,clip.startTime);
+            indexedEdges.emplace_back(clip.id,clip.startTime+clip.duration);
+        }
+        std::stable_sort(indexedEdges.begin(),indexedEdges.end(),[](const auto &a,const auto &b) {
+            return a.second==b.second?a.first<b.first:a.second<b.second;
+        });
+        for(const double position:{4.191,5.869,20.371,23.489,15.371})
+            checkPosition(timelineGrid::snapSelection(position,song,100,transport,false),
+                timelineGrid::snapSelection(position,song,100,transport,false,nullptr,&indexedEdges),
+                "Cached item-edge snapping differs from the full timeline scan");
+        const std::set<ID> excluded{"snap-edge-a"};
+        checkPosition(timelineGrid::snapSelection(4.191,song,100,transport,false,&excluded),
+            timelineGrid::snapSelection(4.191,song,100,transport,false,&excluded,&indexedEdges),
+            "Cached snapping ignores the same excluded items as a full scan");
         checkPosition(timelineGrid::snapSelection(15.371,song,100,transport,false),15.37,"Item snaps to edit cursor");
         checkPosition(timelineGrid::snapCursor(15.371,song,100,false),15.25,"Edit cursor must not snap back to its old position");
     });
@@ -1871,6 +1910,19 @@ int runTests(const File &directory) {
         expect(reader->read(&afterSeek,0,2048,4096,true,true),"Seek backwards by timestamp");
         float difference=0;for(int c=0;c<2;++c)for(int i=256;i<2048;++i)difference=std::max(difference,std::abs(first.getSample(c,i)-afterSeek.getSample(c,i)));
         expect(difference<.002f,"Seeking preserves sample alignment instead of returning the earlier keyframe");
+    });
+    test("Projection runtime decodes video frames asynchronously from the shipped FFmpeg libraries", [&] {
+        const auto video=File(__FILE__).getParentDirectory().getSiblingFile("Tests").getChildFile("Fixtures/tone-video.mp4");
+        vshook_video::Decoder decoder;vshook_video::DecodedFrame frame;
+        const auto deadline=Time::getMillisecondCounterHiRes()+5000;
+        while(Time::getMillisecondCounterHiRes()<deadline) {
+            if(decoder.frameAt(utf8(video.getFullPathName()),"fixture",.3,false,1,64,64,frame) && frame.pixels)break;
+            Thread::sleep(10);
+        }
+        expect(frame.pixels && frame.width==64 && frame.height==64,"Video projection could not load its decoder runtime");
+        bool visible=false;if(frame.pixels)for(int y=0;y<frame.height;++y)for(int x=0;x<frame.width*4;x+=4)
+            visible=visible || frame.pixels[y*frame.stride+x]>10 || frame.pixels[y*frame.stride+x+1]>10 || frame.pixels[y*frame.stride+x+2]>10;
+        expect(visible,"Video projection decoded only black pixels");
     });
     test("Projection selects the first active media item in grid order on ordinary tracks", [&] {
         jaras::Song song;jaras::Track first,second;first.id=uuid();second.id=uuid();first.role.id=second.role.id="other";
@@ -3665,6 +3717,35 @@ int runTests(const File &directory) {
         core.execute({jaras::CommandKind::stop}); render(.05f, "Promotion did not retain secondary scope");
         core.execute({jaras::CommandKind::stopAll}); core.execute({jaras::CommandKind::selectRegion, a}); core.execute({jaras::CommandKind::play}); core.advance(3.99);
         core.execute({jaras::CommandKind::ignoreNext}); render(0, "Ignore Next rendered past last owned audio");
+    });
+    test("Item Pre/Post export preserves trims and prints both item and track FX without changing the document", [&] {
+        const auto media=directory.getNonexistentChildFile("item-processing","");media.createDirectory();
+        WavAudioFormat wav;auto stream=media.getChildFile("source.wav").createOutputStream();
+        std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(),48000,2,24,{},0));
+        expect(bool(writer),"Cannot create item export source");stream.release();
+        AudioBuffer<float> signal(2,48000);for(int c=0;c<2;++c)FloatVectorOperations::fill(signal.getWritePointer(c),.05f,48000);
+        expect(writer->writeFromAudioSampleBuffer(signal,0,48000),"Cannot write item export source");writer.reset();
+        auto project=projectFixture();auto &song=project.songs[0];song.duration=2;song.parts.clear();song.markers.reset();song.tracks.resize(1);
+        auto &track=song.tracks[0];track.clips.clear();track.audioFile.reset();track.volume=.75;track.pan=0;track.mute=false;track.solo=false;
+        track.phaseInverted.reset();track.automationJSON.reset();track.role.id="other";
+        auto fx=object();put(fx,"inserted",Array<var>{"Compressor"});put(fx,"compressorEnabled",true);put(fx,"ratio",1);put(fx,"threshold",0);put(fx,"makeup",6);
+        track.fxJSON=utf8(JSON::toString(fx));project.masterFXJSON=track.fxJSON;
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Trimmed";clip.startTime=.2;clip.duration=.6;clip.sourceOffset=.1;
+        clip.audioFile=jaras::AudioFile{"source.wav",{}};clip.gain=.5;clip.fxJSON=track.fxJSON;clip.fadeIn=.05;clip.fadeOut=.05;
+        track.clips={clip};const auto original=JSON::toString(ProjectCodec::encode(project));
+        for(bool pre:{true,false}) {
+            ExportRequest request;request.directory=media.getChildFile(pre?"pre":"post");request.preProcessingItems=pre;
+            ExportJob job;job.name="item.wav";job.track=track.id;job.clip=clip.id;job.start=.2;job.end=.8;request.jobs={job};
+            std::atomic<bool> cancel{false};audioExport::render(project,song,media,request,cancel,{});
+            AudioFormatManager formats;registerAudioFormats(formats);std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(request.directory.getChildFile(job.name)));
+            expect(reader && reader->lengthInSamples==28800,"Item export changed its trimmed duration");
+            AudioBuffer<float> output(2,28800);reader->read(&output,0,28800,0,true,true);
+            const auto expected=pre?.05:.05*.5*.75*std::pow(10.,12./20);
+            expect(std::abs(output.getSample(0,12000)-expected)<.001,"Item Pre/Post signal did not match item and track processing: "+String(output.getSample(0,12000)));
+            expect(JSON::toString(ProjectCodec::encode(project))==original,"Item export changed the live document");
+        }
+        const auto raw=audioExport::itemProcessingSong(song,true);
+        expect(raw.tracks[0].clips[0].sourceOffset==.1 && raw.tracks[0].clips[0].startTime==.2 && raw.tracks[0].clips[0].audioFile->path=="source.wav","Pre export changed its source or trim");
     });
     test("WAV AIFF and native MP3 export preserve rate, bounds, channels and signal", [&] {
         const auto media = directory.getChildFile("export-fixture-" + text(uuid()));
@@ -6026,6 +6107,36 @@ int runTests(const File &directory) {
             expect(std::abs(session.audio.state().position-expected)<1e-7,"Audio repeated a loop onset");
             expect(std::abs(session.transport().position-expected)<1e-7,"Core drifted from the callback loop clock");
             expect(!session.audio.transportClockPending(),"An already executed loop scheduled another seek");
+        }
+    });
+    test("Entering a Parts loop arms the callback before its first jump without replaying the onset", [&] {
+        auto project=floatingControlTests::fixture();auto &song=project.songs.front();
+        jaras::TimelineMarker first,last;first.id=uuid();last.id=uuid();
+        first.name="$First";first.position=.02;first.section=true;
+        last.name="$Last";last.position=.09;last.section=true;
+        song.markers=std::vector<jaras::TimelineMarker>{first,last};
+        jaras::MultiLoop loop;loop.id=uuid();loop.name="Parts loop";loop.marker1=first.id;loop.marker2=last.id;loop.fadeSeconds=1;
+        song.parts.front().multiLoops.push_back(loop);
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        session.command(jaras::CommandKind::play);
+        const auto repositions=(int64)session.audio.streamDiagnostics()["transportRepositions"];
+        AudioBuffer<float> output(2,256);
+        for(int i=0;i<100;++i) {
+            session.audio.render(output.getArrayOfWritePointers(),2,256);
+            session.projectSyncFrame();
+            const double elapsed=(i+1)*256./48000.;
+            const double expected=elapsed<.09?elapsed:.02+std::fmod(elapsed-.02,.07);
+            // An exact end-of-block boundary may be published as loop.end;
+            // its next sample is loop.start. Compare the same cyclic phase.
+            const auto distance=[&](double at){const auto delta=std::abs(at-expected);return std::min(delta,std::abs(delta-.07));};
+            expect(distance(session.audio.state().position)<1e-7,"First Parts jump was late or replayed an onset: block="+String(i)+
+                " actual="+String(session.audio.state().position,9)+" expected="+String(expected,9)+
+                " core="+String(session.transport().position,9)+" loop="+String((int)session.transport().loop.enabled)+
+                " from="+String(session.transport().loop.start.value_or(-1),9)+" to="+String(session.transport().loop.end.value_or(-1),9));
+            expect(distance(session.transport().position)<1e-7,"Parts model and sample clock disagree at the first lap");
+            expect((int64)session.audio.streamDiagnostics()["transportRepositions"]==repositions,
+                   "Parts loop scheduled a second seek after the callback jump");
         }
     });
     auto report = object();

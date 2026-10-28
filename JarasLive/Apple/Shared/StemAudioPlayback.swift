@@ -4459,7 +4459,7 @@ struct VerticalTrackMeter: NSViewRepresentable {
             background.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
             clip.name = "meter-level-\(channel)"; clip.masksToBounds = true
             gradient.name = "meter-gradient-\(channel)"
-            gradient.colors = [NSColor(Color.green).cgColor, NSColor(Color.yellow).cgColor, NSColor(Color.red).cgColor]
+            gradient.colors = [NSColor(Color(hex: 0xbf5af2)).cgColor, NSColor(Color.yellow).cgColor, NSColor(Color.red).cgColor]
             gradient.locations = [0, 0.5, 1]
             gradient.startPoint = CGPoint(x: 0.5, y: 0); gradient.endPoint = CGPoint(x: 0.5, y: 1)
             clip.addSublayer(gradient)
@@ -4692,7 +4692,7 @@ struct VerticalTrackMeter: View {
             let fraction = level <= 0 ? 0 : min(1, max(0, (20 * log10(level) + 60) / 60))
             ZStack(alignment: .bottom) {
                 Rectangle().fill(Color.black.opacity(0.55))
-                Rectangle().fill(LinearGradient(colors: [.green, .yellow, .red], startPoint: .bottom, endPoint: .top))
+                Rectangle().fill(LinearGradient(colors: [Color(hex: 0xbf5af2), .yellow, .red], startPoint: .bottom, endPoint: .top))
                     .mask(alignment: .bottom) { Rectangle().frame(height: geometry.size.height * fraction) }
             }
         }

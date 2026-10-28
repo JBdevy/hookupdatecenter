@@ -6,8 +6,11 @@ inline double timelineZoomPosition(const jaras::TransportState &state) {
                           : state.playing ? state.position : state.editPosition;
     return std::isfinite(position) ? std::max(0., position) : 0.;
 }
+inline double timelineAnchoredZoomOffset(double position, double scale, double contentWidth, double viewportWidth, double screenAnchor) {
+    return jlimit(0., std::max(0., contentWidth - viewportWidth), position * scale - screenAnchor);
+}
 inline double timelineCenteredZoomOffset(double position, double scale, double contentWidth, double viewportWidth) {
-    return jlimit(0., std::max(0., contentWidth - viewportWidth), position * scale - viewportWidth / 2);
+    return timelineAnchoredZoomOffset(position,scale,contentWidth,viewportWidth,viewportWidth/2);
 }
 // Mirrors TimelinePlaybackFollowPolicy.swift, including SubPlay handoffs and
 // backward jumps. Only the presentation scrolls; the transport is never changed.

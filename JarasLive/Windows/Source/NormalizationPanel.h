@@ -13,6 +13,8 @@ class NormalizationPanel final : public Component {
         addAndMakeVisible(level);
         addAndMakeVisible(cancel);
         addAndMakeVisible(applyButton);
+        mode.setComponentID("normalizationMode");level.setComponentID("normalizationTarget");
+        applyButton.setComponentID("normalizationApply");
         mode.addItemList({"LUFS-I", "RMS-I", "Peak", "True Peak"}, 1);
         mode.setSelectedId(3, dontSendNotification);
         mode.onChange = [this] { restore(); };
@@ -144,7 +146,7 @@ class NormalizationPanel final : public Component {
                         try {
                             if (safe->session.project().id != project || safe->session.busy)
                                 throw std::runtime_error("O projeto mudou durante a análise.");
-                            safe->session.edit([&](jaras::Project &p) {
+                            safe->session.editItemControls([&](jaras::Project &p) {
                                 for (auto &song : p.songs)
                                     for (auto &track : song.tracks)
                                         for (auto &item : track.clips)

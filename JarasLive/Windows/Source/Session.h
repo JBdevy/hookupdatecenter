@@ -28,7 +28,7 @@ class Session final : private Timer {
     uint64 setlistFocusRevision = 0;
     String message;
     uint64 revision = 0;
-    std::function<void()> changed, tick, selectionChanged, mixerChanged;
+    std::function<void()> changed, tick, selectionChanged, mixerChanged, transportChanged;
     std::function<void(String)> transportFadeoutWarning;
     std::function<void(String)> audioOutputWarning;
     void toggleTransportFadeout(bool enabled, const std::set<ID> &tracks, double seconds);
@@ -65,6 +65,7 @@ class Session final : private Timer {
     void clearTimeRange();
     void configureSetlist(jaras::RegionSetlist);
     void editTimeline(const std::function<void(jaras::Project &)> &, bool allowTimingEdit = false);
+    void editItemControls(const std::function<void(jaras::Project &)> &);
     void moveMarker(const ID &, double);
     std::function<void()> setlistChanged;
     ID duplicatePlaylistRegion(const ID &playlist, const ID &entry);
@@ -145,7 +146,7 @@ class Session final : private Timer {
     struct TimeSelection { ID project, song; double start, end; };
     std::optional<TimeSelection> timeSelection;
     void focusTimelineRegion(double position, bool force = false);
-    struct TimelineHistory { jaras::Project project; bool tempo = false; };
+    struct TimelineHistory { jaras::Project project; bool tempo = false, itemControls = false; };
     void applyTimelineHistory(const TimelineHistory &, bool recordHistory);
     struct MarkerHistory { ID song; std::optional<std::vector<jaras::TimelineMarker>> markers; };
     struct ItemHistory { std::map<ID, std::vector<jaras::AudioClip>> tracks; };

@@ -2,6 +2,7 @@
 #include "StemFolderImport.h"
 #include "ModalSheet.h"
 #include "Localization.h"
+#include "ConfirmationStyle.h"
 namespace catlive {
 class StemBPMQuestion final : public Component {
     class Choice final : public TextButton {
@@ -9,19 +10,26 @@ class StemBPMQuestion final : public Component {
         bool primary=false;
         void paintButton(Graphics& g,bool hover,bool down) override {
             g.setColour((primary?Colour(0xff60b746):Colour(0xff414141)).brighter(hover?.06f:0).darker(down?.1f:0));
-            g.fillRoundedRectangle(getLocalBounds().toFloat(),getHeight()/2.f);g.setColour(Colours::white);g.setFont(theme::mediumFont(17));g.drawText(getButtonText(),getLocalBounds(),Justification::centred);
+            g.fillRoundedRectangle(getLocalBounds().toFloat(),getHeight()/2.f);g.setColour(Colours::white);g.setFont(theme::mediumFont(confirmationStyle::buttonSize));g.drawText(getButtonText(),getLocalBounds(),Justification::centred);
         }
     } yes,no,cancel;
 public:
     explicit StemBPMQuestion(std::function<void(bool)> accept) {
-        getProperties().set("selfContainedSheet",true);getProperties().set("sheetCornerRadius",36.0);
+        getProperties().set("selfContainedSheet",true);getProperties().set("sheetCornerRadius",(double)confirmationStyle::radius);
         for(auto* b:{&yes,&no,&cancel})addAndMakeVisible(*b);
         yes.primary=true;yes.setButtonText(localization::translate("Yes"));no.setButtonText(localization::translate("No"));cancel.setButtonText(localization::translate("Cancel"));
         auto finish=[this,accept](bool value){ModalSheet::dismiss(*this);MessageManager::callAsync([accept,value]{accept(value);});};
         yes.onClick=[finish]{finish(true);};no.onClick=[finish]{finish(false);};cancel.onClick=[this]{ModalSheet::dismiss(*this);};
     }
-    void paint(Graphics& g) override {g.setGradientFill(ColourGradient(Colour(0xff343434),0,0,Colour(0xff292929),0,(float)getHeight(),false));g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(.5f),36);g.setColour(Colours::white.withAlpha(.2f));g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.5f),36,1);g.setColour(Colours::white);g.setFont(theme::semiboldFont(18));g.drawFittedText(localization::translate("Detect BPM for each song?"),24,24,getWidth()-48,44,Justification::centred,2);}
-    void resized() override {yes.setBounds(20,82,getWidth()-40,36);no.setBounds(20,126,getWidth()-40,36);cancel.setBounds(20,170,getWidth()-40,36);}
+    void paint(Graphics& g) override {
+        confirmationStyle::surface(g,getLocalBounds().toFloat());g.setColour(Colours::white);
+        g.setFont(theme::semiboldFont(confirmationStyle::titleSize));
+        g.drawFittedText(localization::translate("Detect BPM for each song?"),20,20,getWidth()-40,36,Justification::centred,2);
+    }
+    void resized() override {
+        int y=68;
+        for(auto *button:{&yes,&no,&cancel}) {button->setBounds(20,y,getWidth()-40,confirmationStyle::buttonHeight);y+=confirmationStyle::buttonHeight+confirmationStyle::gap;}
+    }
 };
 class StemFolderImportPanel final : public Component,private ListBoxModel {
     class Preview final : public Component {
@@ -48,7 +56,7 @@ public:
         cancel.setButtonText(localization::translate("Cancel"));back.setButtonText(localization::translate("Back"));yes.setButtonText(localization::translate("Yes"));no.setButtonText(localization::translate("No"));
         all.onClick=[this]{if(selected.size()==scan->folders.size())selected.clear();else {selected.clear();for(size_t i=0;i<scan->folders.size();++i)selected.push_back(i);}refreshOrder();};
         back.onClick=[this]{ModalSheet::dismiss(*this);};
-        next.onClick=[this]{if(step==0){if(selected.empty())return;step=1;refreshStep();}else {auto safe=SafePointer<StemFolderImportPanel>(this);ModalSheet::open(*this,"",std::make_unique<StemBPMQuestion>([safe](bool bpm){if(safe)safe->finish(bpm);}),380,230);}};
+        next.onClick=[this]{if(step==0){if(selected.empty())return;step=1;refreshStep();}else {auto safe=SafePointer<StemFolderImportPanel>(this);ModalSheet::open(*this,"",std::make_unique<StemBPMQuestion>([safe](bool bpm){if(safe)safe->finish(bpm);}),confirmationStyle::width,200);}};
         yes.onClick=[this]{finish(true);};no.onClick=[this]{finish(false);};cancel.onClick=[this]{ModalSheet::dismiss(*this);};
         cleanup.setTextToShowWhenEmpty(localization::translate("Names to remove, separated by commas"),theme::secondary);
         for(auto* view:std::initializer_list<Component*>{&list,&preview,&search,&cleanup})addAndMakeVisible(*view);

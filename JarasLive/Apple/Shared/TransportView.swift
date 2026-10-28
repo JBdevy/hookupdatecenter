@@ -113,7 +113,11 @@ struct TransportView: View {
             #endif
                     transportDisplay
                     HStack(spacing: 3) {
+                        #if os(macOS)
+                        if remotePresentation { RegionTunerControl(show: show) }
+                        #else
                         RegionTunerControl(show: show)
+                        #endif
                         Button {
                             #if os(macOS)
                             openAdvanced()
@@ -174,7 +178,7 @@ struct TransportView: View {
                     #if os(macOS)
                     Spacer(minLength: 0)
                     if !remotePresentation {
-                    TeleprompterTimerControl()
+                    RegionTunerControl(show: show)
                     Spacer(minLength: 0)
                     HStack(spacing: 8) {
                         TeleprompterToggleButton(show: show, directory: mediaDirectory, index: 1)
@@ -1164,10 +1168,7 @@ private struct RemoteToggleButton: View {
             else { DAWRemoteHostBridge.bind(show); remote.setHostEnabled(true) }
             #endif
         } label: {
-            HStack(spacing: 2) {
-                Image(systemName: "network")
-                Text(verbatim: "Remote")
-            }.lineLimit(1)
+            Text(verbatim: "Remote").lineLimit(1)
         }.buttonStyle(TransportButtonStyle(color: remote.enabled ? JarasTheme.green : JarasTheme.liveOffRed, active: true, activeForeground: remote.enabled ? .black : .white, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
             .accessibilityLabel("Remote").accessibilityValue(remote.enabled ? "On" : "Off")
             .jarasHelp("Remote · Right-click to configure")

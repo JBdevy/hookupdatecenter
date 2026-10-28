@@ -25,7 +25,9 @@
 #include "TapTempo.h"
 #include "RemoteProjectCatalog.h"
 #include "TrackVisibility.h"
+#include "TrackMixerViewport.h"
 namespace catlive {
+class AudioPreparationOverlay;
 namespace native { class TransportButtons; }
 namespace remote { class Host; class Presentation; }
 class TeleprompterHTTP;
@@ -44,7 +46,7 @@ class MacLook final : public MacPopupMenuLook {
                        bool) override;
     Slider::SliderLayout getSliderLayout(Slider &) override;
     void drawComboBox(Graphics &, int, int, bool, int, int, int, int, ComboBox &) override;
-    Font getComboBoxFont(ComboBox &) override { return theme::font(13); }
+    Font getComboBoxFont(ComboBox &box) override { return box.getComponentID()=="setlistPlaylistSelector" ? theme::semiboldFont(9) : theme::font(13); }
     Font getPopupMenuFont() override { return theme::font(13); }
     void fillTextEditorBackground(Graphics &, int, int, TextEditor &) override;
     void drawTextEditorOutline(Graphics &, int, int, TextEditor &) override;
@@ -133,6 +135,11 @@ class Workspace final : public Component,
     std::unique_ptr<Component> masterPeakReadout;
     std::unique_ptr<native::TransportButtons> nativeTransport;
     void syncNativeTransport();
+    void refreshPlaybackState();
+    std::unique_ptr<AudioPreparationOverlay> audioPreparationOverlay;
+    std::optional<double> audioPreparationStarted;
+    std::optional<std::string> masterFXColourSource;
+    Colour masterFXColour=Colours::white;
     std::map<String, int> actionInvocations;
     class Timeline;
     std::optional<trackDrop::Destination> trackDropPreview;
@@ -202,7 +209,8 @@ class Workspace final : public Component,
     std::unique_ptr<VinhetasPanel> vinhetasPanel;
     bool vinhetasVisible = false, vinhetasDetached = false;
     void toggleVinhetasDock();
-    Viewport tracksViewport, dockViewport;
+    TrackMixerViewport tracksViewport;
+    Viewport dockViewport;
     Component tracksContent, dockContent;
     OwnedArray<TrackRow> rows;
     OwnedArray<TextButton> buttons;

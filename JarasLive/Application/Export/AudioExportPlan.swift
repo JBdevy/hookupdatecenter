@@ -15,6 +15,32 @@ public struct AudioExportEncoding: Sendable {
         self.floatingPoint = floatingPoint; self.format = format; self.bitDepth = bitDepth; self.channels = channels; self.bitrate = bitrate; self.sampleRate = sampleRate
     }
 }
+public enum AudioItemExportProcessing: String, Sendable {
+    case pre = "Pre-Processing", post = "Post-Processing"
+    /// Preserve source selection, trim, loops and tempo; remove live mix/FX on a render copy.
+    public func song(_ source: Song) -> Song {
+        guard self == .pre else { return source }
+        var song = source
+        for index in song.tracks.indices {
+            song.tracks[index].volume = 1; song.tracks[index].pan = 0
+            song.tracks[index].mute = false; song.tracks[index].solo = false
+            song.tracks[index].phaseInverted = nil; song.tracks[index].fx = nil
+            song.tracks[index].automation = nil
+            for item in song.tracks[index].clips.indices {
+                song.tracks[index].clips[item].gain = nil; song.tracks[index].clips[item].pan = nil
+                song.tracks[index].clips[item].muted = false; song.tracks[index].clips[item].phaseInverted = nil
+                song.tracks[index].clips[item].normalizationGain = nil
+                song.tracks[index].clips[item].fadeIn = nil; song.tracks[index].clips[item].fadeOut = nil
+                song.tracks[index].clips[item].fadeInCurve = nil; song.tracks[index].clips[item].fadeInSCurve = nil
+                song.tracks[index].clips[item].fadeOutCurve = nil; song.tracks[index].clips[item].fadeOutSCurve = nil
+                song.tracks[index].clips[item].fadeTimelineStart = nil; song.tracks[index].clips[item].fadeTimelineDuration = nil
+                song.tracks[index].clips[item].fx = nil; song.tracks[index].clips[item].fxBypassed = nil
+                song.tracks[index].clips[item].automation = nil; song.tracks[index].clips[item].channelMode = nil
+            }
+        }
+        return song
+    }
+}
 public enum AudioExportSource: String, CaseIterable, Sendable { case master = "Master", tracks = "Tracks", masterAndTracks = "Master + Tracks", stems = "Stems" }
 public enum AudioExportBounds: String, CaseIterable, Sendable { case project = "Complete project", area = "Selected area", regions = "Selected regions", allRegions = "All regions" }
 public struct AudioExportJob: Identifiable, Equatable, Sendable {

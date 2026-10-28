@@ -11,7 +11,7 @@ import AppKit
     @Published var progress: AudioExportProgress?
     private var cancellation = AudioExportCancellation()
     func cancel() { cancellation.cancel() }
-    func start(project: Project, song: Song, plan: AudioExportPlan, media: URL, output: URL, rate: Double, encoding: AudioExportEncoding, secondaryEncoding: AudioExportEncoding?, includeHardwareOutputs: Bool = false) {
+    func start(project: Project, song: Song, plan: AudioExportPlan, media: URL, output: URL, rate: Double, encoding: AudioExportEncoding, secondaryEncoding: AudioExportEncoding?, includeHardwareOutputs: Bool = false, printTrackPolarity: Bool = false) {
         guard !running else { return }
         cancellation = AudioExportCancellation()
         let token = cancellation
@@ -21,7 +21,7 @@ import AppKit
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try OfflineAudioExport.run(project: project,song: song,plan: plan,mediaDirectory: media,outputDirectory: output,sampleRate: rate,encoding: encoding,secondaryEncoding: secondaryEncoding,cancellation: token,
-                    includeHardwareOutputs: includeHardwareOutputs, midiInstrumentsByTrack: instruments) { update in
+                    includeHardwareOutputs: includeHardwareOutputs, printTrackPolarity: printTrackPolarity, midiInstrumentsByTrack: instruments) { update in
                     Task { @MainActor in self.progress = update }
                 }
                 Task { @MainActor in self.running = false; self.finished = true }
@@ -294,11 +294,25 @@ struct ItemAudioExportView: View {
     @AppStorage("jaras.export.itemChannels") private var channels = 0
     @AppStorage("jaras.export.directory") private var directory = ""
     @State private var choosingDirectory = false
+    @State private var processing: AudioItemExportProcessing?
     private var plan: AudioExportPlan {
         AudioExportPlan(project: request.project, song: request.song, source: .stems, bounds: .project,
                         template: "%stem", tracks: [], clips: request.items, regions: [], format: format)
     }
     var body: some View {
+        Group {
+            if processing == nil {
+                VStack(spacing: 14) {
+                    Text("Export audio items").font(.jarasHeadline)
+                    Button { processing = .pre } label: { Text(verbatim: AudioItemExportProcessing.pre.rawValue).frame(maxWidth: .infinity) }
+                    Button { processing = .post } label: { Text(verbatim: AudioItemExportProcessing.post.rawValue).frame(maxWidth: .infinity) }
+                    Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                }.buttonStyle(.bordered).controlSize(.large)
+                    .padding(24).frame(width: 420).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            } else { exportForm }
+        }
+    }
+    private var exportForm: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Export audio items").font(.jarasHeadline)
@@ -370,8 +384,8 @@ struct ItemAudioExportView: View {
         guard let media = request.mediaDirectory else { return }
         let output = URL(fileURLWithPath: (directory as NSString).expandingTildeInPath)
         guard AudioDestinationSpace.confirm(at: output) else { return }
-        session.start(project: request.project, song: request.song, plan: plan, media: media, output: output, rate: rate,
-                      encoding: AudioExportEncoding(format: format, bitDepth: bits, channels: channels, bitrate: bitrate, sampleRate: rate), secondaryEncoding: nil)
+        session.start(project: request.project, song: (processing ?? .post).song(request.song), plan: plan, media: media, output: output, rate: rate,
+                      encoding: AudioExportEncoding(format: format, bitDepth: bits, channels: channels, bitrate: bitrate, sampleRate: rate), secondaryEncoding: nil, printTrackPolarity: true)
     }
 }
 
