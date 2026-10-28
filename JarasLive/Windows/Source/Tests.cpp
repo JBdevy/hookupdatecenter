@@ -2198,7 +2198,7 @@ int runTests(const File &directory) {
         expect(num(state(),"horizontal")==num(released,"horizontal") && num(state(),"vertical")==num(released,"vertical"),
                "Edge scrolling continued after release");
     });
-    test("Region edges show a compact cursor and green grip inside the fill like Mac", [&] {
+    test("Region edges show a compact cursor and green grip on the boundary like Mac", [&] {
         auto project=projectFixture();auto &song=project.songs.front();song.parts.resize(1);song.markers.reset();
         project.savedCursor=jaras::SavedProjectCursor{song.id,0};
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
@@ -2216,7 +2216,7 @@ int runTests(const File &directory) {
             expect(canvas->getMouseCursor()!=MouseCursor(MouseCursor::NormalCursor) &&
                    canvas->getMouseCursor()!=MouseCursor(MouseCursor::LeftRightResizeCursor),"Region edge did not use its compact resize cursor");
             const auto hover=canvas->createComponentSnapshot(canvas->getLocalBounds());
-            const int gripX=roundToInt((edge>0?region.endTime:region.startTime)*zoom-scroll+(edge>0?-10:10));
+            const int gripX=roundToInt((edge>0?region.endTime:region.startTime)*zoom-scroll);
             const auto grip=hover.getPixelAt(gripX,8);
             expect(grip.getGreen()>240 && grip.getRed()<110 && grip.getBlue()>120,"Green edge grip is missing");
             canvas->mouseDown(event(anchor,anchor,free,false));canvas->mouseDrag(event(end,anchor,free,true));

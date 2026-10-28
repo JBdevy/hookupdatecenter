@@ -1155,9 +1155,11 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                             voice->source->modified = file.getLastModificationTime();
                             if(!readerContext)readerContext=std::make_shared<ReaderContext>();
                             voice->source->context=readerContext;
-                            for (int h = 0; h < 2; ++h)
+                            for (int h = 0; h < 2; ++h) {
                                 voice->source->readers[h] = std::make_unique<StreamingReader>(
                                     file, metadata, readerContext->streams);
+                                voice->source->readers[h]->setOffline(offlineRendering, offlineMode);
+                            }
                         }
                     }
                     sources[sourceKey] = voice->source;

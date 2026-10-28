@@ -1549,11 +1549,12 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         vertical.setCurrentRangeStart(y,dontSendNotification);
         invalidate();
     }
-    void refreshMixer() {
-        // Mixer state changes colours, never geometry/envelopes/markers.
+    void refreshMixer(bool markersChanged = false) {
+        // Pitch changes marker labels; ordinary mixer toggles retain their layout.
         const auto revision=w.session.revision;
         if(regionLayoutRevision+1==revision)regionLayoutRevision=revision;
-        if(markerRevision+1==revision)markerRevision=revision;
+        if(markersChanged)markerRevision=~uint64(0);
+        else if(markerRevision+1==revision)markerRevision=revision;
         if(lanesRevision+1==revision)lanesRevision=revision;
         canvas.retainGeometryAfterStateChange();
         canvas.repaint();heads.repaint();
@@ -4134,7 +4135,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
             if(itemLayoutRevision+1==session.revision)itemLayoutRevision=session.revision;
             if(itemTitleRevision+1==session.revision)itemTitleRevision=session.revision;
             tempoControl->retainTempoAfterMixerChange();
-            timeline->refreshMixer();
+            timeline->refreshMixer(true);
         }
         tuner->repaint(); caption->repaint(); updateState();
     };

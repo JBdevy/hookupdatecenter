@@ -201,6 +201,7 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         AudioExportProgress update;
         update.fileName = job.name; update.completed = int(jobIndex); update.total = int(request.jobs.size());
         update.overall = double(jobIndex) / request.jobs.size();
+        if (progress) progress(update.overall);
         if (preview) preview(update);
         auto lastPreview = Time::getMillisecondCounterHiRes();
         auto song = itemProcessingSong(original,request.preProcessingItems && !job.clip.empty());
