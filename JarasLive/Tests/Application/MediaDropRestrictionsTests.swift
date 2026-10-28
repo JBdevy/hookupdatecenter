@@ -26,7 +26,7 @@ final class MediaDropRestrictionsTests: XCTestCase {
         XCTAssertEqual(writer.status, .completed)
         return url
     }
-    func testVideoUsesAnyExistingTrackOrCreatesStandardTrackAndMixedBatchesFail() async throws {
+    func testVideoUsesCompatibleTracksAndRejectsProgramChangeAndMixedBatches() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let source = try await video(root.appendingPathComponent("Source"))
@@ -34,9 +34,13 @@ final class MediaDropRestrictionsTests: XCTestCase {
         let audio = try StemImportTests().fixture(root, folder: "Source", file: "Audio.wav").appendingPathComponent("Audio.wav")
         XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([audio, source], start: 0, destinationTracks: [], destination: destination))
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))
+        for media in [source, audio] {
+            XCTAssertThrowsError(try StemProjectImporter.prepareDroppedAudio([media], start: 0, destinationTracks: [UUID()], destination: destination, destinationKind: .programChange))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path), "Rejected Program Change drops must not copy media")
         let created = try StemProjectImporter.prepareDroppedAudio([source], start: 0, destinationTracks: [], destination: destination)
         XCTAssertEqual(created.tracks[0].kind, .standard)
-        for kind in TrackKind.allCases {
+        for kind in TrackKind.allCases where kind != .programChange {
             let id = UUID()
             let imported = try StemProjectImporter.prepareDroppedAudio([source], start: 10, destinationTracks: [id], destination: destination, destinationKind: kind)
             XCTAssertEqual(imported.tracks[0].id, id)

@@ -70,6 +70,7 @@ enum StemProjectImporter {
     static func prepareDroppedAudio(_ urls: [URL], start: Double, destinationTracks: [UUID], destination: URL, layout: AudioDropLayout = .separateTracks, gap: Double = 0, destinationKind: TrackKind? = nil, videoTrackAvailable: Bool = false, deferWaveform: Bool = false,
                                     progress: (@Sendable (Int, Int, String) -> Void)? = nil) throws -> DroppedAudio {
         guard start.isFinite, start >= 0, gap.isFinite, (0...60).contains(gap), !urls.isEmpty else { throw ProjectError.invalid("No media files to import") }
+        guard destinationKind != .programChange else { throw ProjectError.invalid("Program Change tracks accept only program markers") }
         // Validate the entire batch before making any project directory or copying media.
         let sources = try droppedSources(urls)
         guard let kind = sources.first?.kind else { throw ProjectError.invalid("No media files to import") }
