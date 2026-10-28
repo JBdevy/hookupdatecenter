@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "ClipTempo.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
 // ProjectModels.TrackLanes: simultaneous items occupy distinct visual lanes.
@@ -63,25 +64,33 @@ struct ItemLanes {
     }
 };
 // ClipRepetitionBoundaries: show visible source repeats, skipping subpixel seams.
-inline std::vector<float> itemLoopSeams(const jaras::AudioClip &clip, juce::Rectangle<float> bounds, float viewportWidth, double scale) {
+inline std::vector<float> itemLoopSeams(const jaras::AudioClip &clip, juce::Rectangle<float> bounds, float viewportWidth, double scale, const ClipTempo *timing = nullptr) {
     std::vector<float> result;
-    const double length=clip.loopLength.value_or(0),rate=clip.playbackRate;
-    if(length<=0 || rate<=0 || scale<=0 || !std::isfinite(length)) return result;
-    const double interval=length/rate,offset=clip.sourceOffset-clip.loopStart.value_or(0);
-    const double phase=std::fmod(std::fmod(offset,length)+length,length),origin=(length-phase)/rate;
+    const double length=clip.loopLength.value_or(0);
+    if(length<=0 || scale<=0 || !std::isfinite(length)) return result;
     const double lower=std::max(1e-6,(-bounds.getX()-4)/scale),upper=std::min(clip.duration-1e-6,(viewportWidth-bounds.getX()+4)/scale);
-    const double skip=std::max(1.,std::ceil(10/scale/interval)),step=interval*skip;
-    double position=origin+std::ceil(std::max(0.,std::ceil((lower-origin)/interval))/skip)*step;
-    for(;position<=upper;) {
-        result.push_back(bounds.getX()+(float)(position*scale));
-        const double next=position+step;if(next<=position) break;position=next;
-    }
+    const auto append=[&](double start,double end,double source,double rate) {
+        if(rate<=0 || !std::isfinite(rate))return;
+        const double interval=length/rate,offset=source-clip.loopStart.value_or(0);
+        const double phase=std::fmod(std::fmod(offset,length)+length,length),origin=start+(length-phase)/rate;
+        const double from=std::max(lower,start),to=std::min(upper,end);
+        const double skip=std::max(1.,std::ceil(10/scale/interval)),step=interval*skip;
+        double position=origin+std::ceil(std::max(0.,std::ceil((from-origin)/interval))/skip)*step;
+        for(;position<=to;) {
+            const float x=bounds.getX()+(float)(position*scale);
+            if(result.empty() || x-result.back()>=9.999f)result.push_back(x);
+            const double next=position+step;if(next<=position)break;position=next;
+        }
+    };
+    if(timing)for(const auto &span:timing->spans)
+        append(span.start-clip.startTime,span.end-clip.startTime,span.source,span.rate);
+    else append(0,clip.duration,clip.sourceOffset,clip.playbackRate);
     return result;
 }
-inline Path itemOutline(const jaras::AudioClip &clip, juce::Rectangle<float> r, float viewportWidth, double scale) {
+inline Path itemOutline(const jaras::AudioClip &clip, juce::Rectangle<float> r, float viewportWidth, double scale, const ClipTempo *timing = nullptr) {
     Path path;
     const float radius=r.getWidth()<20 ? 0 : 3;
-    const auto seams=itemLoopSeams(clip,r,viewportWidth,scale);
+    const auto seams=itemLoopSeams(clip,r,viewportWidth,scale,timing);
     if(seams.empty()) {path.addRoundedRectangle(r,radius);return path;}
     const float left=r.getX(),right=r.getRight(),top=r.getY(),bottom=r.getBottom(),depth=std::min(5.f,r.getHeight()/3);
     path.startNewSubPath(left+radius,top);path.lineTo(right-radius,top);path.quadraticTo(right,top,right,top+radius);

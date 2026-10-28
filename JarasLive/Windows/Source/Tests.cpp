@@ -1,4 +1,5 @@
 #include "native_video_decoder.h"
+#include <charconv>
 #include "SplitPlaybackTests.h"
 #include "MixerFeedbackTests.h"
 #include "SaveAsyncTests.h"
@@ -1394,6 +1395,19 @@ int runTests(const File &directory) {
         expect(!outline.contains(150,59) && outline.contains(140,59) && outline.contains(150,50),"Loop boundary must cut a triangle out of the bottom edge");
         clip.duration=1e9;clip.loopLength=.001;
         expect(itemLoopSeams(clip,{0,0,5e6f,60},800,.005).size()<82,"Minimum zoom iterates invisible repetitions");
+    });
+    test("BPM stretching does not create repetition triangles until the source actually repeats", [&] {
+        jaras::Song song;song.bpm=120;
+        jaras::TimelineMarker marker;marker.position=0;marker.tempoBPM=60;marker.tempoReferenceBPM=120;marker.tempoTimebase="relative";
+        song.markers=std::vector<jaras::TimelineMarker>{marker};
+        jaras::AudioClip clip;clip.loopLength=4;clip.duration=8;
+        ClipTempo stretched(clip,&song);
+        expect(itemLoopSeams(clip,{0,0,800,60},1600,100,&stretched).empty(),"Changing BPM created a false expansion notch");
+        clip.duration=12;ClipTempo expanded(clip,&song);
+        const auto seams=itemLoopSeams(clip,{0,0,1200,60},1600,100,&expanded);
+        expect(seams.size()==1 && std::abs(seams.front()-800)<.001,"Expansion notch does not follow the stretched source boundary");
+        marker.position=4;marker.tempoBPM=120;song.markers->push_back(marker);clip.duration=6;ClipTempo segmented(clip,&song);
+        expect(itemLoopSeams(clip,{0,0,600,60},1600,100,&segmented).empty(),"An internal BPM boundary created a false source repeat");
     });
     test("Item header controls remain disjoint and fades stay below the header", [&] {
         jaras::Track track; track.role.id="other";
@@ -2837,6 +2851,55 @@ int runTests(const File &directory) {
         directory.getChildFile("fixture.json").replaceWithText(JSON::toString(root));
         auto known = ProjectCodec::seal(JSON::toString(root, true));
         directory.getChildFile("fixture.jl").replaceWithData(known.getData(), known.getSize());
+    });
+    test("Project saves preserve numeric precision and escaped opaque metadata", [&] {
+        auto document=ProjectCodec::encode(projectFixture());
+        auto metadata=object();
+        const String label=String::fromUTF8("São João 🎵")+String("\n\t\"\\");
+        put(metadata,"label",label);
+        Array<var> numbers;
+        for(double value:{0.0,-0.0,0.10000000000000002,140.164,1.2345678901234567,
+                          1.0e-200,1.0e200,std::numeric_limits<double>::min(),
+                          std::numeric_limits<double>::max(),std::numeric_limits<double>::denorm_min()})
+            numbers.add(value);
+        numbers.add(var((int64)9223372036854775807LL));
+        numbers.add(var((int64)(-9223372036854775807LL-1)));
+        numbers.add(true);numbers.add(false);numbers.add(var());
+        put(metadata,"values",numbers);put(document,"futureSaveMetadata",metadata);
+        const auto file=directory.getChildFile("SavePrecision/Show.jl");
+        ProjectCodec::write(file,document);
+        MemoryBlock sealed;expect(file.loadFileAsData(sealed),"Saved document could not be read");
+        const auto plaintext=ProjectCodec::unseal(sealed);
+        const auto serializedValues=plaintext.fromFirstOccurrenceOf("\"futureSaveMetadata\":",false,false)
+            .fromFirstOccurrenceOf("\"values\":[",false,false);
+        const char *next=serializedValues.toRawUTF8(),*end=next+serializedValues.getNumBytesAsUTF8();
+        for(int i=0;i<10;++i) {
+            double value=0;const auto parsed=std::from_chars(next,end,value);
+            const auto wanted=(double)numbers[i];
+            expect(parsed.ec==std::errc{}&&value==wanted&&std::signbit(value)==std::signbit(wanted),
+                   "Serialized double lost precision at index "+String(i));
+            if(parsed.ec!=std::errc{})break;
+            next=parsed.ptr<end?parsed.ptr+1:end;
+        }
+        const auto saved=ProjectCodec::read(file);
+        const auto actualMetadata=get(saved,"futureSaveMetadata");
+        expect(str(actualMetadata,"label")==label,"UTF-8, quotes, backslashes and control characters changed");
+        const auto *actual=get(actualMetadata,"values").getArray();
+        expect(actual&&actual->size()==numbers.size(),"Opaque numeric metadata lost values");
+        if(actual&&actual->size()==numbers.size())for(int i=0;i<numbers.size();++i) {
+            if(numbers[i].isDouble()) {
+                const auto wanted=(double)numbers[i],found=(double)(*actual)[i];
+                // JUCE's existing reader clamps exponents below -308 to zero.
+                // Verify the saved token exactly above, while retaining that
+                // established read behavior for the smallest subnormal value.
+                const double readable=std::abs(wanted)>0&&std::abs(wanted)<std::numeric_limits<double>::min()?0.0:wanted;
+                expect((*actual)[i].isDouble()&&found==readable&&std::signbit(found)==std::signbit(wanted),
+                       "Double precision/type/sign changed at numeric index "+String(i));
+            } else if(numbers[i].isInt64())
+                expect((int64)(*actual)[i]==(int64)numbers[i],"64-bit integer lost precision");
+            else expect((*actual)[i]==numbers[i],"Boolean or null changed");
+        }
+        expect(get(get(document,"futureSaveMetadata"),"values")==var(numbers),"Saving mutated the caller's metadata");
     });
     test("Legacy Windows IDs migrate atomically to Swift UUID spelling", [&] {
         const auto p = projectFixture();

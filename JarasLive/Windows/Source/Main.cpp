@@ -206,9 +206,13 @@ class CatLiveApplication final : public JUCEApplication {
             try {
                 if (i + 2 >= args.size())
                     throw std::runtime_error("Expected input and output project paths.");
-                auto original = ProjectCodec::read(File(args[i + 1]));
-                auto model = ProjectCodec::decode(original);
-                ProjectCodec::write(File(args[i + 2]), ProjectCodec::encode(model, original));
+                auto timings=object();auto started=Time::getMillisecondCounterHiRes();
+                const auto record=[&](const char *stage){const auto now=Time::getMillisecondCounterHiRes();put(timings,stage,now-started);started=now;};
+                auto original = ProjectCodec::read(File(args[i + 1]));record("readMilliseconds");
+                auto model = ProjectCodec::decode(original);record("decodeMilliseconds");
+                auto encoded=ProjectCodec::encode(model, original);record("encodeMilliseconds");
+                ProjectCodec::write(File(args[i + 2]),encoded);record("writeMilliseconds");
+                File(args[i+2]).withFileExtension("roundtrip-timing.json").replaceWithText(JSON::toString(timings));
             } catch (const std::exception &e) {
                 testResult = 1;
                 if (i+2<args.size()) File(args[i+2]).withFileExtension("roundtrip-error.txt").replaceWithText(String::fromUTF8(e.what()));

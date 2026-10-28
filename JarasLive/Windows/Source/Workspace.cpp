@@ -2228,7 +2228,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     const float waveGray = muted ? .78f : luminance > .68f ? .52f : luminance > .42f ? .9f : .8f;
                     if (muted) colour = Colour::greyLevel(selected ? .7f : .55f);
                     const bool compact=rect.getWidth()<20;
-                    const auto outline=itemOutline(clip,rect,(float)getWidth(),t.w.pixelsPerSecond);
+                    const auto outline=itemOutline(clip,rect,(float)getWidth(),t.w.pixelsPerSecond,
+                        clip.loopLength?&waveformTiming(clip,*song):nullptr);
                     g.setColour(colour);
                     g.fillPath(outline);
                     if(!selected && !compact) {g.setColour(colour.withAlpha(.75f));g.strokePath(outline,PathStrokeType(.6f));}

@@ -2,6 +2,7 @@
 #include "MediaPath.h"
 #include "FXSchema.h"
 #include "MarkerEditing.h"
+#include <charconv>
 #include <bcrypt.h>
 #include <stdexcept>
 #include <windows.h>
@@ -55,6 +56,42 @@ var merged(const var &original) {
         for(const auto &property:source->getProperties())
             result.getDynamicObject()->setProperty(property.name,property.value);
     return result;
+}
+// Millions of cached waveform numbers made the general JSON formatter dominate
+// Save. to_chars emits round-trip-safe doubles without per-number String
+// formatting/allocation. JUCE still owns string escaping and uncommon var types.
+void writeDocumentJSON(OutputStream &out,const var &value) {
+    const auto token=[&](const String &text){out.write(text.toRawUTF8(),text.getNumBytesAsUTF8());};
+    if(value.isBool()){out.writeText((bool)value?"true":"false",false,false,nullptr);return;}
+    if(value.isInt() || value.isInt64()) {
+        char buffer[32];const auto result=std::to_chars(buffer,buffer+sizeof(buffer),(int64)value);
+        if(result.ec==std::errc{}){out.write(buffer,size_t(result.ptr-buffer));return;}
+    }
+    if(value.isDouble() && std::isfinite((double)value)) {
+        char buffer[64];const auto result=std::to_chars(buffer,buffer+sizeof(buffer),(double)value,std::chars_format::general);
+        if(result.ec==std::errc{}) {
+            out.write(buffer,size_t(result.ptr-buffer));
+            if(std::find_if(buffer,result.ptr,[](char c){return c=='.'||c=='e'||c=='E';})==result.ptr)out.writeText(".0",false,false,nullptr);
+            return;
+        }
+    }
+    if(const auto *array=value.getArray()) {
+        out.writeByte('[');bool first=true;
+        for(const auto &item:*array){if(!first)out.writeByte(',');first=false;writeDocumentJSON(out,item);}
+        out.writeByte(']');return;
+    }
+    if(const auto *object=value.getDynamicObject()) {
+        out.writeByte('{');bool first=true;
+        for(const auto &property:object->getProperties()) {
+            if(!first)out.writeByte(',');first=false;
+            token(JSON::toString(var(property.name.toString()),true,17));out.writeByte(':');writeDocumentJSON(out,property.value);
+        }
+        out.writeByte('}');return;
+    }
+    token(JSON::toString(value,true,17));
+}
+String documentJSON(const var &value) {
+    MemoryOutputStream out(1024*1024);writeDocumentJSON(out,value);return out.toUTF8();
 }
 var byId(const var &array, const ID &id) {
     if (auto *values = array.getArray())
@@ -463,13 +500,22 @@ bool ProjectCodec::isMacMetadata(const File &file) {
     return input.openedOk() && input.readIntBigEndian() == 0x00051607;
 }
 void ProjectCodec::write(const File &file, const var &input, bool savingCurrentDocument) {
+    const bool profiling=SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_SAVE",{})=="1";
+    auto timings=object();auto started=Time::getMillisecondCounterHiRes();
+    const auto record=[&](const char *stage){if(profiling){const auto now=Time::getMillisecondCounterHiRes();put(timings,stage,now-started);started=now;}};
     const auto value = canonicalIDs(input);
+    record("canonicalMilliseconds");
     decode(value);
+    record("validationMilliseconds");
     auto folder = file.getParentDirectory();
     require(folder.createDirectory().wasOk(), "Could not create project folder.");
     for (auto &other : folder.findChildFiles(File::findFiles, false, "*.jl"))
         require(other == file || isMacMetadata(other) || (savingCurrentDocument && file.existsAsFile()), "Choose a separate folder for each CatLive project.");
-    auto bytes = seal(JSON::toString(value, true, 17));
+    record("folderMilliseconds");
+    const auto plain=documentJSON(value);
+    record("jsonMilliseconds");
+    auto bytes = seal(plain);
+    record("encryptionMilliseconds");
     TemporaryFile tmp(file);
     {
         FileOutputStream out(tmp.getFile());
@@ -478,8 +524,11 @@ void ProjectCodec::write(const File &file, const var &input, bool savingCurrentD
         out.flush();
         require(out.getStatus().wasOk(), "Could not flush project.");
     }
+    record("diskMilliseconds");
     require(tmp.overwriteTargetFileWithTemporary(),
             "Could not replace project; the previous file was preserved.");
+    record("replaceMilliseconds");
+    if(profiling)file.withFileExtension("save-profile.json").replaceWithText(JSON::toString(timings));
 }
 File ProjectCodec::resolveMedia(const File &directory, const std::string &relative, bool resolveExisting) {
     auto path = text(relative).replaceCharacter('\\', '/');
