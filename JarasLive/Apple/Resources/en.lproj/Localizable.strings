@@ -1834,3 +1834,8 @@
 "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items." = "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.";
 
 "Text color" = "Text color";
+
+
+/* Unified Native trial and lifetime purchase action. */
+"Buy lifetime access" = "Buy lifetime access";
+"The 7-day trial is free. After it ends, lifetime access is a separate one-time purchase at the price shown above. There is no subscription or automatic charge. Your projects are kept. Remote stays free." = "The 7-day trial is free. After it ends, lifetime access is a separate one-time purchase at the price shown above. There is no subscription or automatic charge. Your projects are kept. Remote stays free.";

@@ -174,37 +174,31 @@ extension NativePurchaseStore {
                 else { Text("Price unavailable").foregroundStyle(.white.opacity(0.65)) }
             }.frame(minHeight: 40)
             Button {
-                if store.unlocked { openNative() }
-                else { Task { await store.buy() } }
+                Task { if await store.activateNative() { openNative() } }
             } label: {
                 HStack {
                     Spacer()
                     if store.busy { ProgressView().tint(.black) }
-                    Text(store.unlocked ? "Open Native mode" : "Unlock Native mode").font(.jarasSystem(size: 16, weight: .bold))
+                    Text(LocalizedStringKey(primaryActionTitle)).font(.jarasSystem(size: 16, weight: .bold))
                     Spacer()
                 }.frame(height: 44).foregroundStyle(.black)
                     .background(LinearGradient(colors: [green, Color(red: 0.22, green: 0.77, blue: 0.42)], startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: 12))
                     .contentShape(RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).disabled(store.busy || (!store.unlocked && store.product == nil))
-                .opacity(store.product == nil && !store.unlocked ? 0.45 : 1)
-                .accessibilityIdentifier("native-purchase-buy")
+            }.buttonStyle(.plain).disabled(!store.primaryActionAvailable)
+                .opacity(store.primaryActionAvailable ? 1 : 0.45)
+                .accessibilityIdentifier("native-purchase-primary")
             if !store.unlocked {
                 if store.trialDaysRemaining > 0 {
                     Text("Free trial: \(store.trialDaysRemaining) day(s) remaining")
                         .font(.jarasSubheadline.bold()).foregroundStyle(green)
-                    Button("Continue free trial", action: openNative).buttonStyle(.bordered).tint(green).disabled(store.busy)
                 } else if store.trialExpiresAt != nil {
                     Text("Your 7-day free trial has ended.").font(.jarasSubheadline).foregroundStyle(.orange)
                 } else {
-                    Button("Start 7-day free trial") { Task { await store.startTrial() } }
-                        .buttonStyle(.bordered).tint(green).controlSize(.large)
-                        .disabled(store.busy || store.trialProduct == nil || store.product == nil)
-                        .accessibilityIdentifier("native-purchase-trial")
                     if !store.loading && store.trialProduct == nil {
                         Text("The free trial is unavailable right now. Try again shortly.").font(.jarasCaption).foregroundStyle(.white.opacity(0.65))
                     }
                 }
-                Text("Try all Native features for 7 days. Afterward, Native mode requires the one-time purchase shown above. Your projects are kept. Remote stays free. No automatic charge.")
+                Text("The 7-day trial is free. After it ends, lifetime access is a separate one-time purchase at the price shown above. There is no subscription or automatic charge. Your projects are kept. Remote stays free.")
                     .font(.jarasCaption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -229,6 +223,14 @@ extension NativePurchaseStore {
         }.padding(18).frame(maxWidth: .infinity)
             .background { RemoteSurface.panel.clipShape(RoundedRectangle(cornerRadius: 22)) }
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(green.opacity(0.3)))
+    }
+    private var primaryActionTitle: String {
+        switch store.primaryAction {
+        case .openPurchased: return "Open Native mode"
+        case .continueTrial: return "Continue free trial"
+        case .startTrial: return "Start 7-day free trial"
+        case .purchase: return "Buy lifetime access"
+        }
     }
 }
 #endif

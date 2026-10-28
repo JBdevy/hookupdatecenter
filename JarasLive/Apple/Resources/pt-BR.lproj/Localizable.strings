@@ -1868,3 +1868,8 @@
 "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items." = "Nessas pistas, o Subplay automático interrompe os itens da música anterior e mantém apenas os itens da música que entra.";
 
 "Text color" = "Cor do texto";
+
+
+/* Unified Native trial and lifetime purchase action. */
+"Buy lifetime access" = "Comprar acesso vitalício";
+"The 7-day trial is free. After it ends, lifetime access is a separate one-time purchase at the price shown above. There is no subscription or automatic charge. Your projects are kept. Remote stays free." = "O teste de 7 dias é gratuito. Depois dele, o acesso vitalício é uma compra única separada, pelo preço mostrado acima. Não há assinatura nem cobrança automática. Seus projetos são preservados. O Remote continua gratuito.";

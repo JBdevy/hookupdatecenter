@@ -6,6 +6,7 @@ public struct NativePurchaseProduct: Equatable, Sendable {
     public init(displayPrice: String) { self.displayPrice = displayPrice }
 }
 public enum NativePurchaseResult: Sendable { case purchased, pending, cancelled }
+public enum NativePurchasePrimaryAction: Equatable, Sendable { case openPurchased, continueTrial, startTrial, purchase }
 public enum NativePurchaseFailure: Error { case productsUnavailable }
 public struct NativeTrialEntitlement: Sendable {
     public let originalPurchaseDate: Date
@@ -40,6 +41,30 @@ public struct NativeTrialEntitlement: Sendable {
     @Published public private(set) var loading = false
     @Published public private(set) var busy = false
     @Published public private(set) var notice = ""
+    public var primaryAction: NativePurchasePrimaryAction {
+        if unlocked { return .openPurchased }
+        if canAccessNative { return .continueTrial }
+        return trialExpiresAt == nil ? .startTrial : .purchase
+    }
+    public var primaryActionAvailable: Bool {
+        guard !busy, checked else { return false }
+        switch primaryAction {
+        case .openPurchased, .continueTrial: return true
+        case .startTrial: return !loading && trialProduct != nil && product != nil
+        case .purchase: return !loading && product != nil
+        }
+    }
+    /// A new customer activates only the zero-price trial product. The paid
+    /// product is offered after the trial; neither flow auto-converts to it.
+    public func activateNative() async -> Bool {
+        guard primaryActionAvailable else { return false }
+        switch primaryAction {
+        case .startTrial: await startTrial()
+        case .purchase: await buy()
+        case .openPurchased, .continueTrial: break
+        }
+        return canAccessNative
+    }
     private let client: any NativePurchaseClient
     private let secureStore: any SecureStore
     private let now: () -> Date
