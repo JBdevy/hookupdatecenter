@@ -309,7 +309,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             const auto meterBounds=fader.getBounds();
             const int meterTop=meterBounds.getY()+4,meterBottom=meterBounds.getBottom()-4;
             const auto levels = mixer.session.audio.meterLevels(id);
-            for (int ch = 0; !jaras::isTeleprompterRole(t->role) && t->role.id!="chords" && ch < 2; ++ch)
+            for (int ch = 0; !jaras::isTeleprompterRole(t->role) && t->role.id!="chords" && t->role.id!="programChange" && ch < 2; ++ch)
                 meterDisplay::bar(g, {70.f + controlsOffset() + ch * 5, (float)meterTop, 3, (float)(meterBottom - meterTop)}, levels[(size_t)ch]);
             const auto shownVolume = id.empty()?t->volume:mixer.session.trackDisplayVolume(id,t->volume);
             const auto db = shownVolume > 0 ? String(Decibels::gainToDecibels(shownVolume), 1)
@@ -322,7 +322,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                            28+controlsOffset(), controls, 52, 10, Justification::centred);
             }
             g.setFont(theme::semiboldFont(9));
-            if(!jaras::isTeleprompterRole(t->role)&&t->role.id!="chords")g.drawText((shownVolume >= 1 ? "+" : "") + db + " dB", 28+controlsOffset(), controls + (jaras::fixedTrackName(t->role).empty()?36:25), 52, 12,
+            if(!jaras::isTeleprompterRole(t->role)&&t->role.id!="chords" && t->role.id!="programChange")g.drawText((shownVolume >= 1 ? "+" : "") + db + " dB", 28+controlsOffset(), controls + (jaras::fixedTrackName(t->role).empty()?36:25), 52, 12,
                        Justification::centred);
             }
             g.setColour(Colours::white);g.setFont(theme::semiboldFont(10));
@@ -338,15 +338,15 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 firstSlot=jlimit(0,maximumFirstSlot(),firstSlot);
                 return;
             }
-            fx.setVisible(standard);record.setVisible(standard&&!id.empty());pan.setVisible(standard);phase.setVisible(standard&&!id.empty());mono.setVisible(id.empty());fader.setVisible(!textTrack);mute.setVisible(standard||(t&&(t->role.id=="timecode"||t->role.id=="generatedClick")));solo.setVisible(mute.isVisible());
+            fx.setVisible(standard);record.setVisible(standard&&!id.empty());pan.setVisible(standard);phase.setVisible(standard&&!id.empty());mono.setVisible(id.empty());fader.setVisible(!textTrack&&t&&t->role.id!="programChange");mute.setVisible(standard||(t&&(t->role.id=="timecode"||t->role.id=="generatedClick"||t->role.id=="programChange")));solo.setVisible(mute.isVisible());
             const auto geometry=layout();
             firstSlot=jlimit(0,maximumFirstSlot(),firstSlot);
             const int y=geometry.controlsY,available=geometry.controlsHeight;
-            if(special){special->setVisible(!standard);special->setBounds((getWidth()-47)/2,y,47,21);special->refresh();}
+            if(special){special->setVisible(!standard);special->setBounds((getWidth()-47)/2,y,47,t&&t->role.id=="programChange"?72:21);special->refresh();}
             const int gap=jlimit(2,5,(available-117)/5);
             const int buttonHeight=std::min(21,std::max(16,(available-12-5*gap)/5));
             const int step=buttonHeight+gap;
-            peak->setVisible(!textTrack);
+            peak->setVisible(!textTrack&&t&&t->role.id!="programChange");
             fx.setBounds(4,y,22,buttonHeight);
             mute.setBounds(4,y+(standard?step:25),22,buttonHeight);
             solo.setBounds(4,y+(standard?2*step:25+step),22,buttonHeight);

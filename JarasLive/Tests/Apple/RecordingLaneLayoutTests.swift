@@ -4,6 +4,20 @@ import Foundation
     @MainActor static func main() {
         var track = Track(id: UUID(), name: "Input", role: .other)
         track.clips = [AudioClip(id: UUID(), name: "Existing", startTime: 10, duration: 5)]
+        let rowCache = TrackLayoutCache()
+        var key = TimelineRenderKey(revision: 1, songID: UUID(), movingClip: nil, movingStart: 0,
+            movingTrack: nil, movingRegion: nil, regionDelta: 0, resizingRegion: nil, resizedStart: 0, resizedEnd: 0)
+        let before = rowCache.layout([track], height: 100, key: key)
+        let secondTake = AudioClip(id: UUID(), name: "Live same position", startTime: 10, duration: 0.01)
+        RecordingLaneLayout.shared.reserve(track: track, clip: secondTake)
+        key.recordingRevision = RecordingLaneLayout.shared.revision
+        let liveRows = rowCache.layout([track], height: 100, key: key)
+        precondition(before.lanes[0].count == 1 && liveRows.lanes[0].count == 2,
+            "A live recording must occupy its own lane before the song's saved clips change")
+        precondition(liveRows.itemLaneHeight(track.clips[0].id, track: 0) < liveRows.audioHeights[0])
+        RecordingLaneLayout.shared.remove(secondTake.id); key.recordingRevision = RecordingLaneLayout.shared.revision
+        let cancelledRows = rowCache.layout([track], height: 100, key: key)
+        precondition(cancelledRows.lanes[0].count == 1, "Cancelled recording must release its lane immediately")
         let take = AudioClip(id: UUID(), name: "Input - 001", startTime: 8, duration: 0.01)
         let layout = RecordingLaneLayout()
         layout.reserve(track: track, clip: take)
@@ -51,6 +65,18 @@ import Foundation
         RecordingLaneLayout.shared.remove(live.id)
         let stopped = TrackRowLayout(tracks: [track], baseHeight: 100)
         precondition(stopped.itemLaneHeight(isolated.id, track: 0) == stopped.audioHeights[0])
+        var pcTrack = Track(id: UUID(), name: "Program Change", role: TrackRole(rawValue: "programChange"))
+        pcTrack.programChanges = (1...6).map { slot in
+            ProgramChangeMarker(id: UUID(), position: 10, program: slot, channel: 1, name: "PC \(slot)", output: slot)
+        }
+        let pcCache = TrackLayoutCache()
+        let stacked = pcCache.layout([pcTrack, track], height: 100, key: key)
+        precondition(stacked.audioHeights[0] == 152, "Six heads must fit inside their own track")
+        precondition(stacked.offsets[1] >= 152, "Following tracks must move below the stacked heads")
+        pcTrack.programChanges?.removeLast(5)
+        let oneHead = pcCache.layout([pcTrack, track], height: 100, key: key)
+        precondition(oneHead.audioHeights[0] == 100, "Deleting stacked heads must invalidate cached row height")
+        print("PROGRAM_CHANGE_SIX_HEADS_EXPAND_AND_RELEASE_ROW_HEIGHT_OK")
         print("TRACK_ROW_LOCAL_HEIGHT_RECORDING_RESERVATION_AND_STOP_RESTORATION_OK")
         print("RECORDING_LIVE_LANES_OVERLAP_GROWTH_FINALIZATION_AND_NO_GRID_INVALIDATION_OK")
     }

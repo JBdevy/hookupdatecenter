@@ -21,6 +21,80 @@ import XCTest
 }
 
 final class TrackCreationTests: XCTestCase {
+    @MainActor func testSixProgramChangesStackAndSeventhIsRejectedWithoutLosingOutputs() throws {
+        var project = Project.empty(name: "Six MIDI outputs")
+        var pc = Track(id: UUID(), name: "Program Change", role: TrackRole(rawValue: "programChange")); pc.midiOutput = 1
+        project.songs[0].tracks = [pc]
+        let show = try ShowController(executor: BulkTrackExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        for output in 1...6 {
+            show.setProgramChangeRouting(pc.id, output: output)
+            XCTAssertTrue(show.applyProgramChange(pc.id, program: output * 2, channel: output, name: "Timbre \(output)", position: 5))
+        }
+        let markers = try XCTUnwrap(show.current?.tracks[0].programChanges)
+        XCTAssertEqual(markers.map(\.output), (1...6).map(Optional.some))
+        let layout = ProgramChangeLayout(markers)
+        XCTAssertEqual(layout.count, 6)
+        XCTAssertEqual(markers.map { layout.lanes[$0.id] }, (0..<6).map(Optional.some))
+        XCTAssertFalse(show.applyProgramChange(pc.id, program: 100, channel: 10, name: "Seventh", position: 5))
+        XCTAssertEqual(show.current?.tracks[0].programChanges?.count, 6)
+        show.setProgramChangeRouting(pc.id, output: 1)
+        XCTAssertEqual(show.current?.tracks[0].programChanges, markers)
+        show.selectProgramChange(markers[5].id); XCTAssertTrue(show.copyProgramChange())
+        XCTAssertTrue(show.pasteProgramChange())
+        XCTAssertEqual(show.selectedProgramChange?.output, 6)
+        var invalid = show.snapshot.project
+        invalid.songs[0].tracks[0].midiInput = -1
+        invalid.songs[0].tracks[0].solo = true
+        invalid.songs[0].tracks[0].mute = true
+        XCTAssertNoThrow(try invalid.validate(), "Program Change must support both M and S")
+        invalid.songs[0].tracks[0].programChanges?.append(ProgramChangeMarker(id: UUID(), position: 5, program: 1, channel: 1, name: "Seventh", output: 1))
+        XCTAssertThrowsError(try invalid.validate())
+    }
+    @MainActor func testNamedProgramChangeCopyPastePreservesPayloadAndSelection() throws {
+        var project = Project.empty(name: "Program Change")
+        var pc = Track(id: UUID(), name: "Program Change", role: TrackRole(rawValue: "programChange"))
+        pc.midiInput = 6; pc.midiOutput = 6
+        project.songs[0].tracks = [pc]
+        let show = try ShowController(executor: BulkTrackExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertFalse(show.copyProgramChange())
+        XCTAssertTrue(show.applyProgramChange(pc.id, program: 127, channel: 16, name: "Órgão 123456789", position: 5))
+        let marker = try XCTUnwrap(show.selectedProgramChange)
+        XCTAssertEqual(marker.title.count, 12)
+        XCTAssertTrue(show.copyItems([]))
+        XCTAssertTrue(show.programChangePasteReady)
+        XCTAssertTrue(show.pasteProgramChange()) // Fixture edit cursor is zero.
+        let pasted = try XCTUnwrap(show.selectedProgramChange)
+        XCTAssertNotEqual(pasted.id, marker.id)
+        XCTAssertEqual(pasted.position, 0)
+        XCTAssertEqual(pasted.name, marker.name)
+        XCTAssertEqual(pasted.program, 127)
+        XCTAssertEqual(pasted.channel, 16)
+        XCTAssertTrue(show.programChangePasteReady)
+        show.selectProgramChange(marker.id)
+        XCTAssertFalse(show.programChangePasteReady)
+        let decoded = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(show.snapshot.project))
+        XCTAssertEqual(decoded.songs[0].tracks[0].programChanges?.last?.name, marker.name)
+        try decoded.validate()
+        show.undo()
+        XCTAssertEqual(show.current?.tracks[0].programChanges?.count, 1)
+        show.redo()
+        XCTAssertEqual(show.current?.tracks[0].programChanges?.count, 2)
+    }
+
+    @MainActor func testAddAndShortcutFollowLastSelectedTrackAndInheritGroup() throws {
+        var project = Project.empty(name: "Insertion")
+        let group = Track(id: UUID(), name: "Group", role: .other)
+        var child = Track(id: UUID(), name: "Child", role: .other); child.parentTrackID = group.id
+        let tail = Track(id: UUID(), name: "Tail", role: .other)
+        project.songs[0].tracks = [group, child, tail]
+        let show = try ShowController(executor: BulkTrackExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.setMixerTrackSelection([group.id,child.id],anchor:group.id)
+        let id = try XCTUnwrap(show.addTracks(name:"New",role:.other,count:1).first)
+        XCTAssertEqual(show.current?.tracks.map(\.id),[group.id,child.id,id,tail.id])
+        XCTAssertEqual(show.current?.tracks[2].parentTrackID,group.id)
+        XCTAssertEqual(show.current?.tracks[2].outputPatches.first,.masterGroup)
+        try show.snapshot.project.validate()
+    }
     @MainActor func testNewStandardColorPreservesExistingAndSpecialTracks() throws {
         var project = Project.empty(name: "Colors")
         let legacy = Track(id: UUID(), name: "Legacy", role: .guide)

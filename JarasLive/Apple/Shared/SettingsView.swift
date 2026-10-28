@@ -129,7 +129,7 @@ struct SettingsView: View {
                     case .midi:
                         Text("MIDI inputs").font(.jarasHeadline)
                         if audio.midiSources.isEmpty { Text("No MIDI inputs").foregroundStyle(JarasTheme.secondary) }
-                        ForEach(0..<3, id: \.self) { slot in
+                        ForEach(0..<6, id: \.self) { slot in
                             Picker("MIDI \(slot + 1)", selection: Binding(get: { audio.midiSlots[slot] }, set: { audio.selectMIDI($0, slot: slot) })) {
                                 Text("None").tag(Int32(0))
                                 if audio.midiSlots[slot] != 0 && !audio.midiDevices.contains(where: { $0.id == audio.midiSlots[slot] }) {
@@ -138,17 +138,17 @@ struct SettingsView: View {
                                 ForEach(audio.midiDevices.filter { device in !audio.midiSlots.enumerated().contains { $0.offset != slot && $0.element == device.id } }) { device in Text(device.name).tag(device.id) }
                             }.padding(10).background(JarasTheme.panel).cornerRadius(6)
                         }
-                        #if os(macOS)
                         Text("MIDI output").font(.jarasHeadline)
-                        Picker("MIDI output", selection: Binding(get: { audio.midiOutput }, set: { audio.selectMIDIOutput($0) })) {
-                            Text("None").tag(Int32(0))
-                            if audio.midiOutput != 0 && !audio.midiOutputs.contains(where: { $0.id == audio.midiOutput }) {
-                                Text(audio.midiOutputTitle).tag(audio.midiOutput)
-                            }
-                            ForEach(audio.midiOutputs) { device in Text(device.name).tag(device.id) }
-                        }.padding(10).background(JarasTheme.panel).cornerRadius(6)
+                        ForEach(0..<6, id: \.self) { slot in
+                            Picker("MIDI \(slot + 1)", selection: Binding(get: { audio.midiOutputSlots[slot] }, set: { audio.selectMIDIOutput($0, slot: slot) })) {
+                                Text("None").tag(Int32(0))
+                                if audio.midiOutputSlots[slot] != 0 && !audio.midiOutputs.contains(where: { $0.id == audio.midiOutputSlots[slot] }) {
+                                    Text(audio.midiOutputSlotTitle(slot)).tag(audio.midiOutputSlots[slot])
+                                }
+                                ForEach(audio.midiOutputs) { device in Text(device.name).tag(device.id) }
+                            }.padding(10).background(JarasTheme.panel).cornerRadius(6)
+                        }
                         if audio.midiOutputs.isEmpty { Text("No MIDI outputs").foregroundStyle(JarasTheme.secondary) }
-                        #endif
                         Button("Refresh devices") { audio.refreshMIDI() }
                     case .actions:
                         DAWActionsList(show: show)

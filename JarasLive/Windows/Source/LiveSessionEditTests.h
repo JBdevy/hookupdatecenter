@@ -67,6 +67,15 @@ struct Fixture {
     }
 };
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Recording mode and MIDI Patch changes preserve audio readers and Undo",[&] {
+        Fixture fixture(directory); auto &session=*fixture.session;
+        const auto graph=session.audio.preparationDiagnostics.getDynamicObject();
+        session.editTrackSettings([](auto &project){auto &track=project.songs.front().tracks.front();track.recordingChannels=0;track.midiInput=6;track.midiChannel=12;});
+        require(!session.preparingLiveAudio() && session.audio.preparationDiagnostics.getDynamicObject()==graph,"REC or MIDI Patch rebuilt the graph");
+        require(session.song()->tracks.front().midiInput==6,"Sixth MIDI input was rejected"); fixture.render(.25f);
+        session.undo();require(session.song()->tracks.front().midiInput!=6,"Undo did not restore MIDI Patch"); fixture.render(.25f);
+        session.redo();require(session.song()->tracks.front().midiInput==6,"Redo lost the sixth MIDI slot");fixture.render(.25f);
+    });
     test("Session structural edits and Undo/Redo prepare asynchronously while both audio heads continue",[&] {
         Fixture fixture(directory);auto &session=*fixture.session;
         fixture.add(.5);
@@ -76,6 +85,19 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         session.undo();require(session.preparingLiveAudio(),"Live structural Undo rebuilt synchronously");
         fixture.wait(.375f,.25f);require(session.song()->tracks.size()==1,"Undo lost the original graph");
         session.redo();fixture.wait(.25f,.375f);require(session.song()->tracks.size()==2,"Redo lost the inserted track");
+        session.command(jaras::CommandKind::stopAll);
+    });
+    test("Track deletion and Undo retain both clocks and complete track data without JSON history",[&] {
+        Fixture fixture(directory);auto &session=*fixture.session;
+        const auto added=fixture.add(.5);fixture.wait(.25f,.375f);
+        const auto before=session.song()->tracks.back();
+        session.removeTrack(added);
+        require(session.song()->tracks.size()==1 && !session.busy,"Track delete did not update immediately");
+        fixture.wait(.375f,.25f);
+        session.undo();fixture.wait(.25f,.375f);
+        const auto &restored=session.song()->tracks.back();
+        require(restored.id==before.id && restored.clips.front().id==before.clips.front().id && restored.volume==before.volume,"Undo lost deleted track data");
+        session.redo();fixture.wait(.375f,.25f);
         session.command(jaras::CommandKind::stopAll);
     });
     test("Item gain and pan commit Undo and Redo preserve both heads and prepared readers",[&] {

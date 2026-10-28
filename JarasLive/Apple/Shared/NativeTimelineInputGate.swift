@@ -21,6 +21,22 @@ protocol NativeTimelineBodyInputHost: AnyObject {
     var timelineBodyInput: (NSView & NativeTimelineBodyInput)? { get set }
 }
 
+/// Interactive heads painted above the body retain their input before the
+/// grid's selection monitor and fast native hit test claim the same point.
+enum NativeTimelineOverlayInputRegistration {
+    private static let views = NSHashTable<NSView>.weakObjects()
+    static func add(_ view: NSView) { views.add(view) }
+    static func hit(in host: NSView, point: NSPoint) -> NSView? {
+        guard let window = host.window, window.attachedSheet == nil,
+              !NativeTimelineInputGate.shared.isBlocked(window) else { return nil }
+        return views.allObjects.first { view in
+            let local = view.convert(point, from: nil)
+            return view.window === window && !view.isHiddenOrHasHiddenAncestor &&
+                view.isDescendant(of: host) && view.visibleRect.contains(local) && view.bounds.contains(local)
+        }
+    }
+}
+
 extension NativeTimelineBodyInputHost where Self: NSView {
     /// Only the visible body is owned by this shortcut. Header, sidebar,
     /// splitters, floating editors and blocked modal input follow AppKit.
@@ -29,7 +45,9 @@ extension NativeTimelineBodyInputHost where Self: NSView {
         guard !isHiddenOrHasHiddenAncestor, bounds.contains(local), visibleRect.contains(local),
               let target = timelineBodyInput, target.window === window,
               target.isDescendant(of: self) else { return nil }
-        return target.hitTestTimelineBody(atWindowPoint: convert(local, to: nil))
+        let location = convert(local, to: nil)
+        if let marker = NativeTimelineOverlayInputRegistration.hit(in: self, point: location) { return marker }
+        return target.hitTestTimelineBody(atWindowPoint: location)
     }
 }
 

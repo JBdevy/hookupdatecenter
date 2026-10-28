@@ -259,6 +259,7 @@ struct DAWRemoteState: Codable, Equatable {
         var laneCount: Int? = nil
         var linkedTrack: UUID? = nil
         var heightScale: Double? = nil
+        var minimumHeight: Double? = nil
         var peakDB: Double? = nil
         var canMeter: Bool? = nil
         var parentTrack: UUID? = nil
@@ -428,7 +429,7 @@ struct DAWRemoteState: Codable, Equatable {
         Set((markers ?? []).map(\.id)).count == (markers ?? []).count &&
         position >= 0 && duration >= 0 && tracks.count <= 4096 && regions.count <= 8192 &&
         timelineRegions.count <= 8192 && songs.count <= 4096 &&
-        tracks.allSatisfy { Self.validPeak($0.peakDB) && $0.volume.isFinite && $0.pan.isFinite && ($0.heightScale == nil || ($0.heightScale!.isFinite && (0.1...10).contains($0.heightScale!))) && $0.clips.count <= 16384 && ($0.laneCount == nil || (1...10001).contains($0.laneCount!)) &&
+        tracks.allSatisfy { ($0.minimumHeight == nil || ($0.minimumHeight!.isFinite && (0...10000).contains($0.minimumHeight!))) && Self.validPeak($0.peakDB) && $0.volume.isFinite && $0.pan.isFinite && ($0.heightScale == nil || ($0.heightScale!.isFinite && (0.1...10).contains($0.heightScale!))) && $0.clips.count <= 16384 && ($0.laneCount == nil || (1...10001).contains($0.laneCount!)) &&
             $0.clips.allSatisfy { $0.start.isFinite && $0.duration.isFinite && $0.duration >= 0 && ($0.lane == nil || (0...10000).contains($0.lane!)) && ($0.gain == nil || ($0.gain!.isFinite && $0.gain! >= 0)) } } &&
         (regions + timelineRegions).allSatisfy { $0.start.isFinite && $0.end.isFinite && $0.end >= $0.start }
     }
@@ -657,7 +658,7 @@ enum DAWRemoteItemLayout {
         max(28, ((track.laneCount ?? 1) > 1 ? 86 * 0.7 : 86) * heightScale(scale) * (track.heightScale ?? 1))
     }
     static func rowHeight(_ track: DAWRemoteState.Track, scale: Double = 1) -> Double {
-        laneHeight(track, scale: scale) * Double(max(1, track.laneCount ?? 1))
+        max(track.minimumHeight ?? 0, laneHeight(track, scale: scale) * Double(max(1, track.laneCount ?? 1)))
     }
     /// Remote shows one region. Lanes occupied only by another song must not
     /// leave empty space here; overlapping visible items share the same compact

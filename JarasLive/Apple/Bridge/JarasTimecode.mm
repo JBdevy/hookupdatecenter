@@ -415,3 +415,96 @@ struct MetronomeSignal {
     _signal->configure(position,host,running,first,last,sampleTime);
 }
 @end
+
+#include "../../Core/MIDI/ProgramChangePlayback.hpp"
+#include <unordered_map>
+@implementation JarasProgramChangeSender {
+    dispatch_queue_t _pcQueue;
+    dispatch_source_t _pcTimer;
+    MIDIClientRef _pcClient;
+    MIDIPortRef _pcPort;
+    std::unordered_map<std::string,MIDIEndpointRef> _pcDestinations;
+    std::vector<jaras::ProgramChangeMarker> _pcMarkers;
+    std::array<jaras::ProgramChangeCursor,2> _pcCursors;
+    std::array<double,2> _pcPosition;
+    std::array<bool,2> _pcRunning, _pcJumped;
+    uint64_t _pcHost, _pcPromotion;
+    double _pcTicks;
+    bool _pcMuted;
+}
+- (instancetype)init {
+    if((self=[super init])) {
+        mach_timebase_info_data_t info;mach_timebase_info(&info);_pcTicks=1e9*info.denom/info.numer;
+        _pcQueue=dispatch_queue_create("live.jaras.program-change",DISPATCH_QUEUE_SERIAL);
+        MIDIClientCreate(CFSTR("CatLive Program Change"),nullptr,nullptr,&_pcClient);
+        MIDIOutputPortCreate(_pcClient,CFSTR("Program Change Output"),&_pcPort);
+        _pcTimer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,_pcQueue);
+        dispatch_source_set_timer(_pcTimer,DISPATCH_TIME_NOW,NSEC_PER_MSEC,NSEC_PER_MSEC/4);
+        __weak JarasProgramChangeSender* weak=self;
+        dispatch_source_set_event_handler(_pcTimer,^{[weak pulseProgramChanges];});
+        dispatch_resume(_pcTimer);
+    }
+    return self;
+}
+- (void)setMarkers:(NSArray<NSDictionary*>*)markers destination:(int32_t)destination muted:(BOOL)muted {
+    dispatch_async(_pcQueue,^{
+        self->_pcMarkers.clear();self->_pcDestinations.clear();
+        std::unordered_map<int32_t,MIDIEndpointRef> endpoints;
+        for(ItemCount i=0;i<MIDIGetNumberOfDestinations();++i) {
+            auto endpoint=MIDIGetDestination(i);SInt32 identifier=0,offline=0;
+            MIDIObjectGetIntegerProperty(endpoint,kMIDIPropertyUniqueID,&identifier);
+            MIDIObjectGetIntegerProperty(endpoint,kMIDIPropertyOffline,&offline);
+            if(!offline)endpoints[identifier]=endpoint;
+        }
+        for(NSDictionary* value in markers) {
+            const std::string id=[[value[@"id"] description] UTF8String];
+            self->_pcMarkers.push_back({id,[value[@"position"] doubleValue],[value[@"program"] intValue],[value[@"channel"] intValue]});
+            const auto target=value[@"destination"]?[value[@"destination"] intValue]:destination;
+            if(target && endpoints.count(target))self->_pcDestinations[id]=endpoints[target];
+        }
+        std::stable_sort(self->_pcMarkers.begin(),self->_pcMarkers.end(),[](const auto& a,const auto& b){return a.position<b.position;});
+        self->_pcMuted=muted;
+    });
+}
+- (void)setPosition:(double)position subPosition:(double)subPosition running:(BOOL)running subRunning:(BOOL)subRunning hostTime:(uint64_t)hostTime promotion:(uint64_t)promotion {
+    dispatch_async(_pcQueue,^{
+        const bool promoted=self->_pcPromotion!=promotion;
+        if(promoted) {
+            self->_pcCursors[0]=self->_pcCursors[1];self->_pcCursors[1].stop();self->_pcPromotion=promotion;
+        }
+        const double elapsed=self->_pcHost?double(int64_t(hostTime-self->_pcHost))/self->_pcTicks:0;
+        const double positions[]{position,subPosition};const bool states[]{bool(running),bool(subRunning)};
+        for(int head=0;head<2;++head) {
+            const double predicted=self->_pcPosition[head]+(self->_pcRunning[head]?elapsed:0);
+            if(!(promoted&&head==0) && (self->_pcRunning[head]!=states[head] || std::abs(positions[head]-predicted)>.08))self->_pcJumped[head]=true;
+            self->_pcPosition[head]=positions[head];self->_pcRunning[head]=states[head];
+        }
+        self->_pcHost=hostTime;
+        [self pulseProgramChanges];
+    });
+}
+- (void)pulseProgramChanges {
+    if(!_pcHost)return;
+    const uint64_t now=mach_absolute_time();
+    const double elapsed=double(int64_t(now-_pcHost))/_pcTicks;
+    if(elapsed<0)return;
+    for(int head=0;head<2;++head) {
+        auto send=[&](const auto& marker){
+            auto destination=_pcDestinations.find(marker.id);
+            if(_pcMuted || destination==_pcDestinations.end() || !_pcPort)return;
+            const Byte bytes[]{Byte(0xc0|(marker.channel-1)),Byte(marker.program)};
+            MIDIPacketList list;auto packet=MIDIPacketListInit(&list);MIDIPacketListAdd(&list,sizeof(list),packet,now,2,bytes);
+            MIDISend(_pcPort,destination->second,&list);
+        };
+        if(_pcJumped[head])_pcCursors[head].advance(_pcMarkers,_pcPosition[head],_pcRunning[head],true,send);
+        _pcCursors[head].advance(_pcMarkers,_pcPosition[head]+(_pcRunning[head]?elapsed:0),_pcRunning[head],false,send);
+        _pcJumped[head]=false;
+    }
+}
+- (void)stop { dispatch_async(_pcQueue,^{for(int head=0;head<2;++head){self->_pcRunning[head]=false;self->_pcCursors[head].stop();}}); }
+- (void)dealloc {
+    if(_pcTimer)dispatch_source_cancel(_pcTimer);
+    if(_pcPort)MIDIPortDispose(_pcPort);
+    if(_pcClient)MIDIClientDispose(_pcClient);
+}
+@end

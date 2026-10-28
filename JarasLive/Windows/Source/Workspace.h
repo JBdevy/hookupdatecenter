@@ -259,7 +259,9 @@ class Workspace final : public Component,
     ID selectedTrack, selectedClip;
     std::set<ID> selectedClips;
     bool clipSelected(const ID &id) const { return selectedClips.empty() ? selectedClip == id : selectedClips.count(id) != 0; }
-    void clearItemSelection() { selectedClip.clear(); selectedClips.clear(); }
+    void clearItemSelection() { selectedClip.clear(); selectedClips.clear(); session.selectProgramChange({}); }
+    void selectProgramMarker(const ID&);
+    void pasteProgramMarker();
     void copyGridItems(bool moving = false);
     void pasteGridItems(bool duplicate = false);
     void importMediaAt(const Array<File> &, double at, ID target);
@@ -296,6 +298,7 @@ class Workspace final : public Component,
     mutable uint64 itemTitleRevision = ~uint64(0);
     mutable ID itemTitleSong;
     mutable std::map<ID,String> itemTitles;
+    mutable std::unique_ptr<jaras::TempoEditMap::PlaybackRates> itemTitleTempo;
     int rowTop(int index) const;
     int rowAt(int y) const;
     void updateState();

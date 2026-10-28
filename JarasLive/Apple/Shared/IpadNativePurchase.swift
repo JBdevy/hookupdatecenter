@@ -29,8 +29,15 @@ import StoreKit
             if case .verified(let transaction) = result,
                transaction.productID == NativePurchaseStore.productID,
                transaction.productType == .nonConsumable,
-               transaction.revocationDate == nil, !transaction.isUpgraded { return true }
+               transaction.revocationDate == nil, !transaction.isUpgraded {
+                // Diagnostic state only: never grants access without verification.
+                UserDefaults.standard.set(transaction.environment.rawValue, forKey: "catlive.nativeVerifiedEnvironment")
+                UserDefaults.standard.set("permanent", forKey: "catlive.nativeVerifiedAccess")
+                return true
+            }
         }
+        UserDefaults.standard.set("none", forKey: "catlive.nativeVerifiedAccess")
+        UserDefaults.standard.removeObject(forKey: "catlive.nativeVerifiedEnvironment")
         return false
     }
     func trialEntitlement() async -> NativeTrialEntitlement? {

@@ -140,7 +140,7 @@ struct RootView: View {
                         HStack {
                             Button("Modes") { leaveNative?() }.disabled(documents.busy)
                             Spacer()
-                            Text("Native").font(.jarasHeadline).foregroundStyle(JarasTheme.green)
+                            NativeAccessTitle()
                             Spacer()
                             if documents.ready { Button("Back to project") { browsingNative = false } }
                         }.padding(16).background(JarasTheme.panel)

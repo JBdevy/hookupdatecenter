@@ -82,6 +82,32 @@ class TempoEditMap {
     }
 
 public:
+    // A tempo/pitch gesture and a grid repaint share each owner's compiled
+    // tempo program across its stems, rather than rescanning all songs per bin.
+    class PlaybackRates {
+        Song song;
+        std::unordered_map<ID, const Part*> owners;
+        std::unordered_map<ID, Program> programs;
+    public:
+        explicit PlaybackRates(const Song& value) {
+            song.bpm=value.bpm; song.timeSettings=value.timeSettings;
+            song.regionOwnershipInitialized=value.regionOwnershipInitialized;
+            song.parts=value.parts; song.markers=value.markers;
+        }
+        const Program& points(const AudioClip& clip) {
+            auto found=owners.find(clip.id);
+            if(found==owners.end()) found=owners.emplace(clip.id, owner(song,clip)).first;
+            const auto* part=found->second;
+            const auto key=part?part->id:ID{};
+            auto cached=programs.find(key);
+            if(cached==programs.end())cached=programs.emplace(key,program(song,part)).first;
+            return cached->second;
+        }
+        double playbackRate(const AudioClip& clip,double time) {
+            if(clip.frozenMIDI.value_or(false)||clip.renderedTiming.value_or(false)||clip.renderedTempo.value_or(false))return clip.playbackRate;
+            return clip.playbackRate*speedAt(points(clip),time);
+        }
+    };
     static const Part* tempoOwner(const Song& song, const AudioClip& clip) { return owner(song, clip); }
     static double tempoEditEnd(const Song& song, const Part& part) {
         return folder(song,part) ? part.endTime : std::min(part.endTime,ownerLimit(song,part));

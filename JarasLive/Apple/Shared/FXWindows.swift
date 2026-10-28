@@ -468,6 +468,59 @@ private struct WorkspaceToolContent<Content: View>: View {
     }
 }
 
+
+/// Editors remain independent windows so mixer, timeline and transport stay interactive.
+private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
+    @Binding var presented: Bool
+    let title: String
+    @ViewBuilder let content: () -> Content
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
+    func updateNSView(_ view: NSView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.presented = $presented
+        guard presented else { coordinator.close(notify: false); return }
+        if coordinator.panel != nil { return }
+        guard !coordinator.opening else { return }
+        coordinator.opening = true
+        let title = title, content = content
+        DispatchQueue.main.async { [weak coordinator] in
+            guard let coordinator else { return }
+            coordinator.opening = false
+            guard coordinator.presented?.wrappedValue == true else { return }
+            let panel = makeWorkspacePanel(title: JarasLocalization.string(title),
+                size: NSSize(width: 380, height: 500), minimum: NSSize(width: 320, height: 240))
+            panel.identifier = NSUserInterfaceItemIdentifier("catlive.editor." + title)
+            panel.delegate = coordinator
+            let host = NSHostingView(rootView: WorkspaceToolContent(content: content().environment(\.workspaceEditorDismiss, { [weak coordinator] in coordinator?.close(notify: true) }), updateTitle: { [weak panel] in
+                panel?.title = JarasLocalization.string(title)
+            }).interfaceScaled())
+            if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+            panel.contentView = host
+            let fitted = host.fittingSize
+            if fitted.width.isFinite && fitted.height.isFinite {
+                panel.setContentSize(NSSize(width: min(940, max(340, fitted.width)), height: min(700, max(280, fitted.height))))
+            }
+            InterfaceScaling.shared.register(panel)
+            coordinator.panel = panel
+            panel.center(); attachWorkspacePanel(panel); panel.makeKeyAndOrderFront(nil)
+        }
+    }
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) { coordinator.close(notify: false) }
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var presented: Binding<Bool>?
+        var panel: NSPanel?
+        var opening = false
+        func close(notify: Bool) {
+            guard let panel else { return }
+            self.panel = nil; panel.delegate = nil
+            panel.parent?.removeChildWindow(panel); panel.close(); panel.contentView = nil
+            if notify { presented?.wrappedValue = false }
+        }
+        func windowWillClose(_ notification: Notification) { close(notify: true) }
+    }
+}
+
 #else
 struct MovableFXPanel<Content: View>: View {
     @ViewBuilder let content: () -> Content
@@ -482,3 +535,33 @@ struct MovableFXPanel<Content: View>: View {
     }
 }
 #endif
+
+
+private struct WorkspaceEditorDismissKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+extension EnvironmentValues {
+    var workspaceEditorDismiss: (() -> Void)? {
+        get { self[WorkspaceEditorDismissKey.self] }
+        set { self[WorkspaceEditorDismissKey.self] = newValue }
+    }
+}
+
+extension View {
+    @ViewBuilder func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) -> some View {
+        #if os(macOS)
+        background(WorkspaceEditorPresenter(presented: isPresented, title: title, content: content).frame(width: 0, height: 0))
+        #else
+        sheet(isPresented: isPresented, content: content)
+        #endif
+    }
+    @ViewBuilder func workspaceEditor<Item: Identifiable, Content: View>(_ title: String, item: Binding<Item?>, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
+        #if os(macOS)
+        background(WorkspaceEditorPresenter(presented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }), title: title) {
+            if let value = item.wrappedValue { content(value) }
+        }.frame(width: 0, height: 0))
+        #else
+        sheet(item: item, content: content)
+        #endif
+    }
+}

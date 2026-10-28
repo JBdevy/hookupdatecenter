@@ -47,13 +47,9 @@ class PartsPanel final : public Component, private Timer {
                                  : theme::display);
             g.fillRoundedRectangle(r.toFloat(), 5);
             g.setColour(selected ? Colours::white : theme::secondary);
-            g.setFont(theme::font(9));
-            g.drawText(localization::translate(i ? (session.presentationTransport().subPlay.playing ? "Sub Play" : "Queued")
-                         : "Playing / Selected"),
-                       r.removeFromTop(15), Justification::centred);
-            g.setFont(theme::semiboldFont(12));
-            g.drawFittedText(i ? queued.title() : current.title(), r.reduced(3, 1),
-                             Justification::centred, 2, .45f);
+            g.setFont(theme::semiboldFont(13));
+            g.drawText(localization::translate(i ? "Queued" : session.presentationTransport().playing ? "Now playing" : "Selected song"),
+                       r.reduced(3,0), Justification::centred, true);
         }
     }
     void resized() override {

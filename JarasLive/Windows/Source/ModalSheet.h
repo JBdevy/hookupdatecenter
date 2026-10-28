@@ -66,14 +66,17 @@ class ModalSheet final : public Component {
         return false;
     }
     static void open(Component &parent, String name, std::unique_ptr<Component> panel, int width,
-                     int height) {
+                     int height, std::function<void()> didClose = {}) {
         const SafePointer<Component> previousFocus(Component::getCurrentlyFocusedComponent());
         auto *sheet = new ModalSheet(std::move(name), std::move(panel), width, height);
         parent.addAndMakeVisible(sheet);
         sheet->setBounds(parent.getLocalBounds());
         sheet->toFront(true);
         sheet->enterModalState(
-            true, ModalCallbackFunction::create([safe = SafePointer<Component>(&parent), previousFocus](int) {
+            true, ModalCallbackFunction::create([safe = SafePointer<Component>(&parent), previousFocus, didClose = std::move(didClose)](int) {
+                // Run after JUCE removes the modal component, so native child
+                // controls are restored against the unobscured workspace.
+                if (didClose) MessageManager::callAsync(didClose);
                 if (previousFocus && previousFocus->isShowing() && !previousFocus->isCurrentlyBlockedByAnotherModalComponent()) {
                     previousFocus->grabKeyboardFocus(); return;
                 }

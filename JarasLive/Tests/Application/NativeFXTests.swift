@@ -314,10 +314,10 @@ final class NativeFXTests: XCTestCase {
         parameters.attack = .nan
         XCTAssertThrowsError(try parameters.validate())
     }
-    func testTrackMIDISelectionPersistsAndIsLimitedToThreeSlots() throws {
+    func testTrackMIDISelectionPersistsAndIsLimitedToSixSlots() throws {
         var project = Project.demo()
-        for slot in 1...3 { project.songs[0].tracks[0].midiInput = slot; try project.validate(); XCTAssertEqual(try JSONDecoder().decode(Project.self,from: JSONEncoder().encode(project)),project) }
-        project.songs[0].tracks[0].midiInput = 4
+        for slot in 1...6 { project.songs[0].tracks[0].midiInput = slot; try project.validate(); XCTAssertEqual(try JSONDecoder().decode(Project.self,from: JSONEncoder().encode(project)),project) }
+        project.songs[0].tracks[0].midiInput = 7
         XCTAssertThrowsError(try project.validate())
     }
     func testRecordingWaveformHistoryStaysBounded() {

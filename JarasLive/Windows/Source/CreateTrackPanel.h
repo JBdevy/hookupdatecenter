@@ -2,17 +2,18 @@
 #include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
+#include "TrackTree.h"
 namespace catlive {
 class CreateTrackPanel final : public Component {
   public:
-    CreateTrackPanel(Session &owner, std::function<void(String)> failure)
-        : session(owner), error(std::move(failure)) {
+    CreateTrackPanel(Session &owner, std::function<void(String)> failure, ID after = {})
+        : session(owner), error(std::move(failure)), afterTrack(std::move(after)) {
         type.setComponentID("createTrackType");
         confirm.setComponentID("createTrackConfirm");
         name.setComponentID("createTrackName");
         addAndMakeVisible(type);
         type.addItemList({String::fromUTF8("Padrão"), "Timecode", "Teleprompter 1",
-                          "Teleprompter 2", "Cifras", "Click"},
+                          "Teleprompter 2", "Cifras", "Click", "Program Change"},
                          1);
         type.setSelectedId(1, dontSendNotification);
         type.onChange = [this] { update(); };
@@ -66,6 +67,7 @@ class CreateTrackPanel final : public Component {
 
   private:
     Session &session;
+    ID afterTrack;
     std::function<void(String)> error;
     ComboBox type;
     TextEditor name, count;
@@ -75,8 +77,8 @@ class CreateTrackPanel final : public Component {
     String message;
     std::string role() const {
         const char *roles[]{"other",       "timecode", "teleprompt",
-                            "teleprompt2", "chords",   "generatedClick"};
-        return roles[jlimit(0, 5, type.getSelectedId() - 1)];
+                            "teleprompt2", "chords",   "generatedClick", "programChange"};
+        return roles[jlimit(0, 6, type.getSelectedId() - 1)];
     }
     void update() {
         const bool standard = type.getSelectedId() == 1;
@@ -111,6 +113,7 @@ class CreateTrackPanel final : public Component {
             session.edit([&](jaras::Project &project) {
                 for (auto &song : project.songs)
                     if (song.id == songID) {
+                        auto anchor = afterTrack;
                         for (int i = 0; i < quantity; ++i) {
                             jaras::Track track;
                             track.id = uuid();
@@ -123,6 +126,7 @@ class CreateTrackPanel final : public Component {
                             if (kind == "other" && inputChannels > 0) {
                                 track.inputPatch = jaras::OutputPatch{1, std::min(2, inputChannels)};
                             }
+                            if (kind == "programChange") { track.midiInput=1; track.midiOutput=1; track.patch=jaras::OutputPatch{-1,2}; track.color=0x91a8ff; }
                             if (kind == "timecode") {
                                 track.timecode = jaras::TimecodeSettings{};
                                 track.patch = jaras::OutputPatch{-1, 2};
@@ -140,7 +144,10 @@ class CreateTrackPanel final : public Component {
                                         track.clips.push_back(clip);
                                     }
                             }
-                            song.tracks.push_back(std::move(track));
+                            if (kind == "other") {
+                                const auto next = track.id;
+                                trackTree::insertAfter(song, std::move(track), anchor); anchor = next;
+                            } else song.tracks.push_back(std::move(track));
                         }
                     }
             });

@@ -473,8 +473,9 @@ struct DAWRemoteClientView: View {
                           clips: items?.clips ?? [],
                           nameColor: JarasTheme.trackNameHex(track, emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute),
                           emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute, laneCount: items?.lanes ?? 1, linkedTrack: track.stereoLink?.partner, heightScale: track.heightScale,
-                          peakDB: sendsPeaks && !track.kind.isText && track.kind != .timecode ? StemAudioPlayback.shared.meter(for: track.id).peakHold.decibels : nil,
-                          canMeter: !track.kind.isText && track.kind != .timecode, parentTrack: track.parentTrackID,
+                          minimumHeight: remote.isLocalWorkspace && track.kind == .programChange ? Double(max(52, track.programChangeLaneCount * 24 + 8)) : nil,
+                          peakDB: sendsPeaks && !track.kind.isText && track.kind != .timecode && track.kind != .programChange ? StemAudioPlayback.shared.meter(for: track.id).peakHold.decibels : nil,
+                          canMeter: !track.kind.isText && track.kind != .timecode && track.kind != .programChange, parentTrack: track.parentTrackID,
                           instrumentIcon: track.instrumentIcon)
                 }, regions: cachedRegions, timelineRegions: cachedTimelineRegions,
                 currentRegion: transport.regionId, queuedRegion: transport.queuedRegionId, focusedRegion: show.focusedRegion,
@@ -1361,6 +1362,12 @@ private struct RemoteSidebarRail<Content: View>: View {
                 setlistSelectionAnchor = localShow.focusedRegion
             }
         }
+        .onReceive(localShow?.$selectedProgramChangeID.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { id in
+            guard local, id != nil else { return }
+            trackScrolling.itemSelection.replace([]); trackScrolling.selectionScope = .grid
+            selectedTracks = []; localShow?.setMixerTrackSelection([], anchor: nil)
+            TimelineAreaSelection.shared.clear()
+        }
         .onChange(of: state.bpm) { _ in tempoStepPending = false }
         .onChange(of: state.pitchSemitones) { _ in pitchStepPending = false }
         .onChange(of: state.pitchRegion) { _ in tempoStepPending = false; pitchStepPending = false }
@@ -1488,10 +1495,18 @@ private struct RemoteSidebarRail<Content: View>: View {
                 }
                 return true
             case 8 where command, 7 where command:
+                if show.selectedProgramChange != nil {
+                    if !event.isRepeat { show.copyProgramChange() }
+                    return true
+                }
                 guard trackScrolling.selectionScope == .grid else { return ControlMappings.shared.handleHardwareKey(event) }
                 if !event.isRepeat { _ = show.copyItems(trackScrolling.itemSelection.items, moving: event.keyCode == 7) }
                 return true
             case 9 where command:
+                if show.hasProgramChangeClipboard {
+                    if !event.isRepeat { show.pasteProgramChange() }
+                    return true
+                }
                 if !event.isRepeat {
                     let pasted = show.pasteItems()
                     if !pasted.isEmpty { trackScrolling.itemSelection.replace(pasted); trackScrolling.selectionScope = .grid }
@@ -1510,13 +1525,18 @@ private struct RemoteSidebarRail<Content: View>: View {
             }
         }
         if flags.isEmpty, event.keyCode == 51 || event.keyCode == 117 {
-            if !event.isRepeat { deleteNativeSelection() }
+            if !event.isRepeat {
+                if let marker = show.selectedProgramChangeID,
+                   let track = show.current?.tracks.first(where: { ($0.programChanges ?? []).contains { $0.id == marker } }) {
+                    show.removeProgramChange(track: track.id, marker: marker)
+                } else { deleteNativeSelection() }
+            }
             return true
         }
         if flags.isEmpty, event.keyCode == 53 {
             if !event.isRepeat {
                 trackScrolling.pointerReset = UUID()
-                show.send(.escape)
+                show.send(.escape); show.selectProgramChange(nil)
                 trackScrolling.itemSelection.replace([]); selectedTracks = []
                 show.setMixerTrackSelection([], anchor: nil)
                 selectedSetlistEntries = []; setlistSelectionAnchor = nil; show.selectSetlistBlock(nil)
@@ -2262,7 +2282,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             if verticalSections {
                 VStack(spacing: 4) {
                     cancelSectionButton.padding([.top, .leading, .trailing], 4)
-                    SectionListTabs(current: current?.name, queued: queued?.name, subPlaying: state.subPlaying) { secondary in
+                    SectionListTabs(current: current?.name, queued: queued?.name, subPlaying: state.subPlaying, playing: state.playing) { secondary in
                         remoteSectionBank(secondary: secondary)
                     }
                 }
@@ -2611,6 +2631,10 @@ private struct RemoteSidebarRail<Content: View>: View {
                         ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { number, track in
                             let nextAncestors = number + 1 < visibleTracks.count ? ancestors[visibleTracks[number + 1].id] ?? [] : []
                             let guides = (ancestors[track.id] ?? []).map { nextAncestors.contains($0) }
+                            if local, let show = localShow, let source = show.current?.tracks.first(where: { $0.id == track.id }), source.kind == .programChange {
+                                ProgramChangeTrackRow(show: show, track: source, deleteTrack: { requestNativeTrackDeletion([track.id]) })
+                                    .frame(height: DAWRemoteItemLayout.rowHeight(track, scale: trackScrolling.heightScale))
+                            } else {
                             RemoteNativeMixerRow(track: track, project: state.project, song: state.song, number: number + 1,
                                 compact: DAWRemoteItemLayout.rowHeight(track, scale: trackScrolling.heightScale) < 70,
                                 local: local, localShow: localShow, nativeContextMenu: local, showsInstrumentIcons: trackIconWidth > 0, nativePhaseInverted: phaseInvertedTracks.contains(track.id),
@@ -2631,6 +2655,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 .modifier(IpadTrackReorderModifier(show: localShow, track: track.id,
                                     enabled: local && editingTracks, controller: trackReordering))
                                 .modifier(nativeTrackMenu(track.id))
+                            }
                         }
                     }
                     #if os(iOS)
@@ -3593,6 +3618,7 @@ private struct RemoteNativeTimeline: View {
                     #if os(iOS)
                     .background(RemoteTrackScrollProbe(controller: scrolling, isGrid: true, gridTap: { fraction in
                         guard local || (!state.playing && region != nil) else { return }
+                        if local { localShow?.selectProgramChange(nil) }
                         let time = start + fraction * span
                         if local, let song {
                             seek(TimelineTempo.snap(time, song: song, pixelsPerSecond: width / span,
@@ -3771,6 +3797,7 @@ private struct RemoteNativeTimeline: View {
         let hits = pointerItems(width: width)
         let time = max(0, start + Double(event.position.x / max(1, width)) * span)
         if event.phase == .began {
+            show.selectProgramChange(nil)
             pauseFollowing(); scrolling.selectionScope = .grid
             let item = hits.first { $0.rect.contains(event.position) }?.id
             pointerStart = (show.snapshot.project.id, song, item, time, event.position, scrolling.itemSelection)
@@ -4254,6 +4281,13 @@ private struct RemoteNativeTimeline: View {
                     }
                 } else { control(action, id, value) }
             }).equatable()
+            .overlay(alignment: .topLeading) {
+                if local, let show = localShow, let source = nativeSong?.tracks.first(where: { $0.id == track.id }), source.kind == .programChange {
+                    ProgramChangeMarkerLane(show: show, track: source, pixelsPerSecond: width / span,
+                        height: DAWRemoteItemLayout.rowHeight(track, scale: scrolling.heightScale), start: start)
+                        .frame(width: width, height: DAWRemoteItemLayout.rowHeight(track, scale: scrolling.heightScale))
+                }
+            }
     }
 
 }
@@ -5731,6 +5765,7 @@ private final class IpadMixerMeterView: UIView {
         gridTap?(min(1, max(0, Double(x / scroll.bounds.width))))
     }
     private func receiveGridTap(_ touch: UITouch) -> Bool {
+        if ProgramChangeHeadAnchorView.contains(touch) { return false }
         if pointerEditing && touch.type == .indirectPointer { return false }
         var view = touch.view
         while let candidate = view, candidate !== gridScrollView {

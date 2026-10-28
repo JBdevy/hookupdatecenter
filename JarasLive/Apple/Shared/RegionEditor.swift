@@ -31,6 +31,7 @@ struct NameColorEditor: View {
     var showsName = true
     var previewColor: ((UInt32) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.workspaceEditorDismiss) private var closeEditor
     @FocusState private var nameFocused: Bool
     @State private var name = ""
     @State private var red = 0.0
@@ -122,7 +123,7 @@ struct NameColorEditor: View {
         nameFocused = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         #endif
-        if let close { close() } else { dismiss() }
+        if let close { close() } else { (closeEditor ?? { dismiss() })() }
     }
     private func channel(_ title: String, value: Binding<Double>, color: Color) -> some View {
         HStack {
@@ -371,6 +372,7 @@ private final class NativeEditorColorSwatch: NSButton {
 struct UnifyRegionEditor: View {
     let create: (String) -> Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.workspaceEditorDismiss) private var closeEditor
     @FocusState private var focused: Bool
     @State private var name = ""
     @State private var invalid = false
@@ -384,7 +386,7 @@ struct UnifyRegionEditor: View {
                 .onSubmit(confirm).onChange(of: name) { _ in invalid = false }
             if invalid { Text("Choose a name").font(.jarasCaption).foregroundStyle(.red) }
             HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { (closeEditor ?? { dismiss() })() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Unify", action: confirm).keyboardShortcut(.defaultAction)
             }
@@ -397,7 +399,7 @@ struct UnifyRegionEditor: View {
             withAnimation(.linear(duration: 0.3)) { shake += 1 }
             return
         }
-        if create(name) { dismiss() }
+        if create(name) { (closeEditor ?? { dismiss() })() }
     }
 }
 #if os(macOS)

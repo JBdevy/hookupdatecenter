@@ -337,6 +337,9 @@ jaras::Project ProjectCodec::decode(const json &input) {
             optionalJSON(rt, "automation", t.automationJSON);
             optionalNum(rt, "midiInput", t.midiInput);
             optionalNum(rt, "midiChannel", t.midiChannel);
+            optionalNum(rt, "midiOutput", t.midiOutput);
+            for (const auto &cue : list(get(rt, "programChanges")))
+                t.programChanges.push_back({str(cue,"id"),num(cue,"position"),(int)num(cue,"program"),(int)num(cue,"channel",1),str(cue,"name"), !get(cue,"output").is_null() ? std::optional<int>((int)num(cue,"output")) : std::nullopt});
             optionalNum(rt, "inputMonitoring", t.inputMonitoring);
             optionalNum(rt, "recordingChannels", t.recordingChannels);
             optionalText(rt, "recordingFormat", t.recordingFormat);
@@ -605,6 +608,13 @@ json ProjectCodec::encode(const jaras::Project &p, json input) {
             emitJSON(rt, "stereoLink", t.stereoLinkJSON);
             emit(rt, "midiInput", t.midiInput);
             emit(rt, "midiChannel", t.midiChannel);
+            emit(rt, "midiOutput", t.midiOutput);
+            json programChanges = json::array();
+            for(const auto &cue:t.programChanges) {
+                auto value=object();put(value,"id",cue.id);put(value,"position",cue.position);
+                put(value,"program",cue.program);put(value,"channel",cue.channel);put(value,"name",cue.name);if(cue.output)put(value,"output",*cue.output);programChanges.push_back(value);
+            }
+            if(!programChanges.empty())put(rt,"programChanges",programChanges);else rt.erase("programChanges");
             emit(rt, "inputMonitoring", t.inputMonitoring);
             emit(rt, "recordingChannels", t.recordingChannels);
             emit(rt, "recordingFormat", t.recordingFormat);

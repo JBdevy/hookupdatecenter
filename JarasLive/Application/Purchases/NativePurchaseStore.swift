@@ -123,9 +123,10 @@ public struct NativeTrialEntitlement: Sendable {
         }
         canAccessNative = entitled || remaining > 0
         if remaining > 0 {
-            // One scheduled wake-up, never a per-frame timer or work on the audio thread.
+            // Wake exactly when the displayed remaining-day count changes.
+            let nextDayBoundary = max(1, remaining - Double(max(0, trialDaysRemaining - 1)) * 86400)
             expiryTask = Task { [weak self] in
-                do { try await Task.sleep(nanoseconds: UInt64(min(remaining, 86400) * 1_000_000_000)) }
+                do { try await Task.sleep(nanoseconds: UInt64(min(remaining, nextDayBoundary) * 1_000_000_000)) }
                 catch { return }
                 await self?.refresh()
             }

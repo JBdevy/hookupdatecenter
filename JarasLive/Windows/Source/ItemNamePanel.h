@@ -9,13 +9,15 @@ class ItemNamePanel final : public Component {
     std::function<void()> close;
     void confirm() { const auto value=name.getText().trim(); if(value.isNotEmpty())commit(value); }
 public:
-    ItemNamePanel(String value, std::function<void(String)> apply, std::function<void()> dismiss)
+    ItemNamePanel(String value, std::function<void(String)> apply, std::function<void()> dismiss, int maxCharacters = 0)
         : commit(std::move(apply)), close(std::move(dismiss)) {
         for(Component *c:std::initializer_list<Component*>{&name,&cancel,&save})addAndMakeVisible(c);
+        if(maxCharacters>0)name.setInputRestrictions(maxCharacters);
         name.setText(value);name.selectAll();name.setComponentID("itemName");
         name.onReturnKey=[this]{confirm();};name.onEscapeKey=close;
         name.onTextChange=[this]{save.setEnabled(name.getText().trim().isNotEmpty());};
         cancel.onClick=close;save.onClick=[this]{confirm();};
+        save.setEnabled(value.trim().isNotEmpty());
         save.setColour(TextButton::buttonColourId,Colour(0xff63b641));
     }
     void parentHierarchyChanged() override { if(isShowing())name.grabKeyboardFocus(); }

@@ -761,3 +761,29 @@ do {
     precondition(FileManager.default.fileExists(atPath: videos.appendingPathComponent("soundtrack.wav").path))
     print("MEDIA_RERENDER_STEMS_ITEM_PHASE_PAN_BAKED_RESET_AND_ORIGINAL_PRESERVED_PCM_OK")
 }
+
+// Existing output remains intact until every replacement has rendered successfully.
+let replacementFolder = root.appendingPathComponent("replace-confirmed")
+try FileManager.default.createDirectory(at: replacementFolder, withIntermediateDirectories: true)
+let replacementJob = AudioExportPlan(jobs: [.init(id: "replacement", fileName: "existing.wav", start: 0, end: 0.1, track: nil, clip: nil)])
+let originalData = Data("original-export".utf8)
+let replacementURL = replacementFolder.appendingPathComponent("existing.wav")
+try originalData.write(to: replacementURL)
+do {
+    try OfflineAudioExport.run(project: project, song: song, plan: replacementJob, mediaDirectory: root, outputDirectory: replacementFolder,
+        sampleRate: 48000, cancellation: AudioExportCancellation()) { _ in }
+    fatalError("Unapproved overwrite must fail")
+} catch AudioExportFailure.exists { }
+precondition(try! Data(contentsOf: replacementURL) == originalData)
+let cancelledReplacement = AudioExportCancellation(); cancelledReplacement.cancel()
+do {
+    try OfflineAudioExport.run(project: project, song: song, plan: replacementJob, mediaDirectory: root, outputDirectory: replacementFolder,
+        sampleRate: 48000, cancellation: cancelledReplacement, replacingFiles: ["existing.wav"]) { _ in }
+    fatalError("Cancelled replacement must stop")
+} catch is CancellationError { }
+precondition(try! Data(contentsOf: replacementURL) == originalData)
+try OfflineAudioExport.run(project: project, song: song, plan: replacementJob, mediaDirectory: root, outputDirectory: replacementFolder,
+    sampleRate: 48000, cancellation: AudioExportCancellation(), replacingFiles: ["existing.wav"]) { _ in }
+precondition(try! Data(contentsOf: replacementURL) != originalData)
+precondition(try! FileManager.default.contentsOfDirectory(atPath: replacementFolder.path) == ["existing.wav"])
+print("OFFLINE_EXPORT_REPLACEMENT_CONFIRMATION_AND_CANCEL_PRESERVE_ORIGINAL_OK")

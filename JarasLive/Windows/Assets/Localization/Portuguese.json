@@ -714,7 +714,7 @@
   "Show on TP-1": "Exibir no TP-1",
   "Show on TP-2": "Exibir no TP-2",
   "Text scale: %lld%%": "Escala da letra: %lld%%",
-  "Text color": "Cor da letra",
+  "Text color": "Cor do texto",
   "Background color": "Cor de fundo",
   "Flash color": "Cor do pisca",
   "Show emoji": "Exibir emoji",
@@ -1437,5 +1437,8 @@
   "Importing": "Importando",
   "Choose tracks": "Escolher pistas",
   "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.": "Nessas pistas, o Subplay automático interrompe os itens da música anterior e mantém apenas os itens da música que entra.",
-  "Text color": "Cor do texto"
+  "Replace existing files?": "Substituir arquivos existentes?",
+  "Replace": "Substituir",
+  "Only six Program Change markers are allowed at the same position.": "O limite é de 6 marcadores de timbre no mesmo ponto.",
+  "Choose a MIDI output in Patch.": "Escolha uma saída MIDI no Patch."
 }

@@ -57,6 +57,30 @@ struct MappingTransferRequest: Identifiable {
     @Published var mode = "keyboard"
     @Published var candidate: ControlInput?
     @Published var error = ""
+    @Published private(set) var programChangeScanTrack: UUID?
+    @Published private(set) var scannedProgramChange: (program: Int, channel: Int)?
+    private var programChangeProject: UUID?
+    func scanProgramChange(_ track: UUID) -> (program: Int, channel: Int)? {
+        guard let show, show.current?.tracks.contains(where: { $0.id == track && $0.kind == .programChange }) == true else { return nil }
+        if programChangeScanTrack == track {
+            guard programChangeProject == show.snapshot.project.id, let value = scannedProgramChange else {
+                cancelProgramChangeScan()
+                return nil
+            }
+            return value
+        }
+        programChangeProject = show.snapshot.project.id; scannedProgramChange = nil; programChangeScanTrack = track
+        return nil
+    }
+    func cancelProgramChangeScan() { programChangeScanTrack = nil; scannedProgramChange = nil; programChangeProject = nil }
+    private func receiveProgramChange(device: Int32, status: UInt8, number: UInt8) {
+        guard status & 0xf0 == 0xc0, let show, programChangeProject == show.snapshot.project.id,
+              let track = show.current?.tracks.first(where: { $0.id == programChangeScanTrack && $0.kind == .programChange }),
+              let input = track.midiInput else { return }
+        let slots = AudioDeviceSettings.shared.midiSlots
+        guard device != 0, input == -1 ? slots.contains(device) : (1...6).contains(input) && slots[input - 1] == device else { return }
+        scannedProgramChange = (Int(number), Int(status & 0x0f) + 1)
+    }
     private weak var show: ShowController?
     private var bindingSession: UUID?
     var onMIDIReceived: ((Int32, UInt8, UInt8, UInt8, Double) -> Void)?
@@ -78,9 +102,11 @@ struct MappingTransferRequest: Identifiable {
     }
     var current: [MappedControl] { mappings.filter { $0.globalSetlistBlockNumber != nil || $0.project == show?.snapshot.project.id } }
     func bind(_ show: ShowController, session: UUID? = nil) {
+        if self.show !== show { cancelProgramChangeScan() }
         self.show = show; bindingSession = session
         migrateActionMappings()
         projectSelection = show.$snapshot.map { $0.project.id }.removeDuplicates().dropFirst().sink { [weak self] _ in
+            self?.cancelProgramChangeScan()
             // The published snapshot is assigned after its subscribers run.
             Task { @MainActor [weak self] in self?.migrateActionMappings() }
         }
@@ -133,6 +159,7 @@ struct MappingTransferRequest: Identifiable {
         guard bindingSession == session else { return false }
         for source in sources.keys { MIDIPortDisconnectSource(port, source) }
         sources.removeAll(); pressedMIDI.removeAll(); pendingVolumes.removeAll(); pendingFX.removeAll()
+        cancelProgramChangeScan()
         editing = nil; candidate = nil; show = nil; projectSelection = nil; bindingSession = nil
         return true
     }
@@ -386,7 +413,13 @@ struct MappingTransferRequest: Identifiable {
         }
     }
     private func receive(endpoint: MIDIEndpointRef, status: UInt8, number: UInt8, value: UInt8, timestamp: Double = ProcessInfo.processInfo.systemUptime) {
-        guard transferRequest == nil, let source = sources[endpoint] else { return }
+        guard let source = sources[endpoint] else { return }
+        if status & 0xf0 == 0xc0 {
+            receiveProgramChange(device: source.id, status: status, number: number)
+            if editing == nil { onMIDIReceived?(source.id, status, number, value, timestamp) }
+            return
+        }
+        guard transferRequest == nil else { return }
         KeyboardMIDIMonitor.shared.receive(source: source.id, status: status, number: number, value: value)
         if editing == nil { onMIDIReceived?(source.id, status, number, value, timestamp) }
         let kind: UInt8 = status & 0xf0 == 0xb0 ? 0xb0 : 0x90
@@ -445,6 +478,10 @@ struct MappingTransferRequest: Identifiable {
             if event.modifiers.contains(.command), [12, 13, 1].contains(event.keyCode) { return true }
             if !event.isRepeat { candidate = event.input; error = "" }
             return true
+        }
+        if event.modifiers == .command || event.modifiers == .control {
+            if event.keyCode == 8, show?.selectedProgramChange != nil { return show?.copyProgramChange() == true }
+            if event.keyCode == 9, show?.hasProgramChangeClipboard == true { show?.pasteProgramChange(); return true }
         }
         if event.modifiers == .command, [8, 7, 9].contains(event.keyCode) { return false }
         let input = event.input

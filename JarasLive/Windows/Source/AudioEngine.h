@@ -25,6 +25,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     struct State {
         double position = 0, subPosition = 0;
         bool playing = false, subPlaying = false, loop = false;
+        uint64 promotion = 0;
         bool preserveLatency = false; // scheduled musical transition, not a manual seek
         double loopStart = 0, loopEnd = 0;
         jaras::PlaybackScope scope[2], exclusiveScope[2];
@@ -62,6 +63,13 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void refreshStemLatency();
     unsigned exportLatencyFrames()const;
     void setMIDISlot(int, const String &);
+    void setMIDIOutputSlot(int slot, const String &device) { timecodeMIDI.setOutputSlot(slot, device); }
+    uint64 latestProgramChange(int slot) const {
+        if(slot == -1) { uint64 latest=0;for(const auto &packet:midiProgramChanges)latest=std::max(latest,packet.load());return latest; }
+        return slot>=1 && slot<=6 ? midiProgramChanges[size_t(slot-1)].load() : 0;
+    }
+    std::array<std::atomic<uint64>,6> midiProgramChanges{};
+    std::atomic<uint64> programChangeSerial{0};
     std::atomic<int> keyboardChannel{0}; // 0 = Omni
     std::atomic<bool> metronomeEnabled{false};
     void closeDevice();
@@ -267,6 +275,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::shared_ptr<TransportPreparation> transportPreparation;
     std::shared_ptr<TransportPreparation> queuedPreparation;
     bool asynchronousTransport=false;
+    uint64 publishedPromotion=0;
+    std::array<std::atomic<int>,2> readerHeads{{0,1}};
+    bool publishPromotion(const State &);
+    void promotePlaybackHeads();
     uint64 transportRepositions=0; // Message-thread diagnostics for full head updates.
     uint64 transportSerial=0; // Message-thread writer; carried to the callback.
     std::atomic<uint64> appliedTransportSerial{0};
@@ -439,7 +451,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     struct Update {
         bool resetElapsed=false;
         uint64 transportSerial=0;
-        enum Kind { transport, mixer, item, routing } kind = transport;
+        enum Kind { transport, mixer, item, routing, promotion } kind = transport;
         bool inputMonitoring=true, subplayExclusive=false;
         int midiSlot=0,midiChannel=0;
         State state;
@@ -471,9 +483,9 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::atomic<bool> recording{false};
     std::atomic<uint64> recordingDrops{0};
     MidiMessageCollector midiInput;
-    MidiMessageCollector midiSlots[3];
-    MidiBuffer slotMessages[3], keyboardMidi;
-    String midiDevices[3];
+    MidiMessageCollector midiSlots[6];
+    MidiBuffer slotMessages[6], keyboardMidi;
+    String midiDevices[6];
     CriticalSection midiRoutingLock;
     MidiBuffer liveMidi;
     void handleIncomingMidiMessage(MidiInput *, const MidiMessage &) override;

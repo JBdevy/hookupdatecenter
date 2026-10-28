@@ -54,8 +54,9 @@ class StreamingReader final : public AudioFormatReader {
         service.add(this);
     }
     ~StreamingReader() override { service.remove(this); }
-    void setOffline(bool value) { offline.store(value); }
+    void setOffline(bool value, bool directRead = false) { offline.store(value); directOffline.store(value && directRead); }
     void request(int64 position) noexcept {
+        if (directOffline.load(std::memory_order_relaxed)) return;
         requested.store(jlimit(int64(0), std::max(int64(0), lengthInSamples - 1), position));
         lastDemand.store(Time::getMillisecondCounter());
     }
@@ -128,6 +129,26 @@ class StreamingReader final : public AudioFormatReader {
                 FloatVectorOperations::clear(reinterpret_cast<float *>(destination[c]) + offset, count);
             return true;
         }
+        if (directOffline.load()) {
+            // Offline rendering owns a decoder and a sequential PCM cache. It
+            // must not wait for the realtime read-ahead thread on every fill.
+            const ScopedLock guard(lock);
+            if (!offlineDecoder) offlineDecoder.reset(service.formats.createReaderFor(file));
+            if (!offlineDecoder) { ++inactiveMisses; return false; }
+            if (offlineStart < 0 || at < offlineStart || at + count > offlineStart + offlinePCM.getNumSamples()) {
+                offlinePCM.setSize(int(numChannels), std::max(65536, count), false, false, true);
+                if (!offlineDecoder->read(offlinePCM.getArrayOfWritePointers(), int(numChannels), at, offlinePCM.getNumSamples())) {
+                    offlineStart = -1; ++cacheMisses; return false;
+                }
+                offlineStart = at;
+            }
+            for (int c = 0; c < channels; ++c) if (destination[c]) {
+                auto *out = reinterpret_cast<float *>(destination[c]) + offset;
+                if (c < offlinePCM.getNumChannels()) FloatVectorOperations::copy(out, offlinePCM.getReadPointer(c, int(at - offlineStart)), count);
+                else FloatVectorOperations::clear(out, count);
+            }
+            return true;
+        }
         request(at);
         const bool exporting = offline.load();
         ReadAccess access(*this);
@@ -188,6 +209,9 @@ class StreamingReader final : public AudioFormatReader {
     // Ownership is only touched under lock, outside the device callback.
     std::unique_ptr<BufferingAudioReader> reader;
     std::unique_ptr<AudioFormatReader> transitionDecoder; // Worker-only, protected by lock.
+    std::unique_ptr<AudioFormatReader> offlineDecoder;
+    AudioBuffer<float> offlinePCM;
+    int64 offlineStart = -1;
     std::vector<std::unique_ptr<BufferingAudioReader>> retired;
     std::atomic<BufferingAudioReader*> published{nullptr};
     std::atomic<uint32> activeReads{0};
@@ -210,7 +234,7 @@ class StreamingReader final : public AudioFormatReader {
     };
     std::atomic<int64> requested{-1};
     std::atomic<uint32> lastDemand{0};
-    std::atomic<bool> offline{false}, resident{false};
+    std::atomic<bool> offline{false}, directOffline{false}, resident{false};
     uint32 lastOpenAttempt = 0;
     bool attemptedOpen = false;
     void ensureReader() {
@@ -229,6 +253,8 @@ class StreamingReader final : public AudioFormatReader {
         return current.read(&probe, 0, count, at, true, true);
     }
     void serviceDemand() {
+        if (directOffline.load(std::memory_order_relaxed)) return;
+        if (directOffline.load()) return;
         const ScopedTryLock guard(lock);
         if (!guard.isLocked()) return;
         if (activeReads.load(std::memory_order_seq_cst) == 0) { retired.clear(); retiredPinned.clear(); }

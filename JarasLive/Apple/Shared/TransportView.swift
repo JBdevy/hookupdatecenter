@@ -58,14 +58,14 @@ struct TransportView: View {
                 .environment(\.transportControlWidth, buttonWidth)
                 .frame(width: width, height: 86, alignment: .leading)
         }.frame(height: 86).clipped()
-            .sheet(isPresented: $showingExport) { AudioExportView(project: show.snapshot.project, song: show.current, mediaDirectory: mediaDirectory) }
+            .workspaceEditor("Export", isPresented: $showingExport) { AudioExportView(project: show.snapshot.project, song: show.current, mediaDirectory: mediaDirectory) }
             #if !os(macOS)
             .sheet(isPresented: $showingAdvanced) { AdvancedView(show: show, documents: documents) }
             #endif
-            .sheet(isPresented: $showingFadeout) { TransportFadeoutSettings(show: show) }
+            .workspaceEditor("Fadeout", isPresented: $showingFadeout) { TransportFadeoutSettings(show: show) }
             #if os(macOS)
             .background { if !remotePresentation { TransportFadeoutPresenter(show: show).frame(width: 0, height: 0) } }
-            .sheet(isPresented: $showingResolume) { ResolumeSettingsView(show: show) }
+            .workspaceEditor("Resolume", isPresented: $showingResolume) { ResolumeSettingsView(show: show) }
             .sheet(isPresented: $showingPortableExport) {
                 if let documents { PortableProjectExportView(documents: documents) }
             }
@@ -128,8 +128,9 @@ struct TransportView: View {
                             Text(verbatim: "Advanced").font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 68, height: 25).contentShape(Rectangle())
                                 #if os(macOS)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x454545)))
-                                #endif
+                                #else
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
+                                #endif
                         }.buttonStyle(.plain).accessibilityLabel("Advanced").jarasHelp("Advanced")
                         #if os(macOS)
                         if !remotePresentation {
@@ -137,7 +138,6 @@ struct TransportView: View {
                             Button { showingResolume = true } label: {
                                 Text(verbatim: title).font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 64, height: 25).contentShape(Rectangle())
                                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x454545)))
-                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
                             }.buttonStyle(.plain).accessibilityLabel(title).jarasHelp(title)
                         }
                         }
@@ -146,8 +146,9 @@ struct TransportView: View {
                             Text("Export").font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 82, height: 25).contentShape(Rectangle())
                                 #if os(macOS)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x454545)))
-                                #endif
+                                #else
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.8)))
+                                #endif
                         }.buttonStyle(.plain).jarasHelp("Export").accessibilityLabel("Export")
                         Button(action: openSettings) {
                             Image(systemName: "gearshape").frame(width: 32, height: 25).contentShape(Rectangle())
@@ -680,7 +681,7 @@ private struct TempoControl: View {
             .onChange(of: show.current?.meterBeats) { _ in refreshMeter() }
             .onChange(of: show.current?.meterUnit) { _ in refreshMeter() }
             .onChange(of: show.snapshot.project.id) { _ in show.resetTapTempo(); refreshMeter() }
-            .sheet(isPresented: $editing) {
+            .workspaceEditor("Tempo", isPresented: $editing) {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("BPM").font(.jarasHeadline)
                     TextField("BPM", text: $bpmDraft).textFieldStyle(.roundedBorder).focused($bpmFocus).onSubmit(commitBPM)
@@ -936,7 +937,7 @@ private struct MetronomeControl: View {
             .accessibilityLabel("Metronome").accessibilityValue(settings.enabled ? "On" : "Off")
             .jarasHelp("Metronome · Right-click to configure")
             .immediateRightClick { configuring = true }
-            .sheet(isPresented: $configuring) { MetronomeEditor() }
+            .workspaceEditor("Metronome", isPresented: $configuring) { MetronomeEditor() }
     }
 }
 #if os(macOS)
@@ -1047,6 +1048,7 @@ struct MetronomeEditor: View {
     @ObservedObject private var settings = MetronomeSettings.shared
     @ObservedObject private var audio = AudioDeviceSettings.shared
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.workspaceEditorDismiss) private var closeEditor
     @State private var importing = false
     @State private var importingA = true
     var body: some View {
@@ -1084,7 +1086,7 @@ struct MetronomeEditor: View {
             volume("Click B", value: $settings.gainB)
             Text("A: first beat · B: remaining beats").font(.jarasCaption).foregroundStyle(.secondary)
             if !settings.error.isEmpty { Text(verbatim: settings.error).foregroundStyle(.red).font(.jarasCaption) }
-            HStack { Spacer(); Button("Close") { dismiss() }.keyboardShortcut(.defaultAction) }
+            HStack { Spacer(); Button("Close") { (closeEditor ?? { dismiss() })() }.keyboardShortcut(.defaultAction) }
         }.padding(20).frame(width: 400)
             .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
                 switch result {

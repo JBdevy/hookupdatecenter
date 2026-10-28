@@ -722,7 +722,12 @@ struct TrackMixerRow: View, Equatable {
         let top = song.tracks[indices[0]]
         show.linkTracks(trackSelection, defaultInput: TrackRecording.shared.defaultInputPatch.firstChannel, color: top.color ?? JarasTheme.roleHex(top.role))
     }
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if track.kind == .programChange {
+            ProgramChangeTrackRow(show: show, track: track, deleteTrack: deleteSelection)
+        } else { regularBody }
+    }
+    @ViewBuilder private var regularBody: some View {
         let project = projectID
         let editTargets = Set(targets.compactMap { $0 })
         let details = TrackDetailsEditRequest(project: project, tracks: editTargets,
@@ -912,14 +917,14 @@ struct TrackMixerRow: View, Equatable {
                 }
             }
             #endif
-            .sheet(item: $patchTarget) { target in
+            .workspaceEditor("Patch", item: $patchTarget) { target in
                 VStack { PatchEditor(show: show, track: target.track, targets: target.targets); Button("Close") { patchTarget = nil }.keyboardShortcut(.cancelAction) }.padding(12)
             }
-            .sheet(item: $fxTarget) { target in
+            .workspaceEditor("FX", item: $fxTarget) { target in
                 FXInsertEditor(show: show, track: target.track, targets: target.targets) { fxTarget = nil }
             }
             #if os(macOS)
-            .sheet(isPresented: $clickSoundPresented) {
+            .workspaceEditor("Sound Designer", isPresented: $clickSoundPresented) {
                 ClickSoundDesigner(show: show, track: track.id, directory: projectDirectory) { clickSoundPresented = false }
             }
             #endif
@@ -1156,13 +1161,13 @@ struct MasterStrip: View {
                 MasterTrackContextMenu(show: show, patch: { patchPresented = true },
                     fx: { fxPresented = true }, edit: { colorPresented = true })
             }
-            .sheet(isPresented: $patchPresented) {
+            .workspaceEditor("Patch", isPresented: $patchPresented) {
                 VStack { PatchEditor(show: show, track: nil, targets: [nil]); Button("Close") { patchPresented = false }.keyboardShortcut(.cancelAction) }.padding(12)
             }
-            .sheet(isPresented: $fxPresented) {
+            .workspaceEditor("FX", isPresented: $fxPresented) {
                 FXInsertEditor(show: show, track: nil, targets: [nil]) { fxPresented = false }
             }
-            .sheet(isPresented: $colorPresented) {
+            .workspaceEditor("Editar pista", isPresented: $colorPresented) {
                 NameColorEditor(title: "Editar pista", initialName: "Master", initialColor: show.snapshot.project.masterColor ?? 0x414141,
                     save: { _, color in show.editMasterColor(color) }, nameEditable: false, showsName: false)
             }
@@ -1176,7 +1181,7 @@ struct PatchButton: View {
     @State private var presented = false
     var body: some View {
         Button(LocalizedStringKey(label)) { presented = true }.jarasHelp("Audio input and output")
-            .popover(isPresented: $presented) {
+            .workspaceEditor("Patch", isPresented: $presented) {
                 PatchEditor(show: show, track: track, targets: [track])
             }
     }
@@ -1222,7 +1227,7 @@ struct PatchEditor: View {
                                 Text("MIDI input")
                                 Picker("MIDI input", selection: Binding(get: { settings.midiInput ?? 0 }, set: { applyMIDI($0) })) {
                                     Text("None").tag(0)
-                                    ForEach(0..<3, id: \.self) { slot in Text(audio.midiSlotTitle(slot)).tag(slot + 1) }
+                                    ForEach(0..<6, id: \.self) { slot in Text(audio.midiSlotTitle(slot)).tag(slot + 1) }
                                 }.labelsHidden()
                             }.frame(maxWidth: .infinity)
                             VStack(alignment: .leading, spacing: 4) {
@@ -3487,13 +3492,13 @@ private struct FooterMixerStrip: View, Equatable {
                     deleteTracks(request.tracks)
                 }
             }
-            .sheet(isPresented: $patchPresented) {
+            .workspaceEditor("Patch", isPresented: $patchPresented) {
                 VStack { PatchEditor(show: show, track: id, targets: targets); Button("Close") { patchPresented = false }.keyboardShortcut(.cancelAction) }.padding(12)
             }
-            .sheet(isPresented: $fxPresented) {
+            .workspaceEditor("FX", isPresented: $fxPresented) {
                 FXInsertEditor(show: show, track: id, targets: targets) { fxPresented = false }
             }
-            .sheet(isPresented: $colorPresented) {
+            .workspaceEditor("Editar pista", isPresented: $colorPresented) {
                 NameColorEditor(title: "Editar pista", initialName: "Master", initialColor: show.snapshot.project.masterColor ?? 0x414141,
                     save: { _, color in show.editMasterColor(color) }, nameEditable: false, showsName: false)
             }
@@ -3923,7 +3928,7 @@ private struct BatchPatchEditor: View {
             } else if category == 1 && !outputOnly {
                 Picker("MIDI input", selection: $midi) {
                     Text("None").tag(0)
-                    ForEach(0..<3, id: \.self) { Text(audio.midiSlotTitle($0)).tag($0 + 1) }
+                    ForEach(0..<6, id: \.self) { Text(audio.midiSlotTitle($0)).tag($0 + 1) }
                 }
             } else {
                 Picker("Output", selection: $output) { ForEach(outputs, id: \.self) { Text($0.title).tag($0) } }
@@ -4106,3 +4111,214 @@ struct TrackVisibilityEditor: View {
             #endif
     }
 }
+
+struct ProgramChangeTrackRow: View {
+    @ObservedObject var show: ShowController
+    let track: Track
+    var deleteTrack: (() -> Void)?
+    @ObservedObject private var mappings = ControlMappings.shared
+    @State private var patch = false
+    @State private var naming = false
+    @State private var pending: (program: Int, channel: Int, position: Double, project: UUID, output: Int?)?
+    private var scanning: Bool { mappings.programChangeScanTrack == track.id }
+    private var copyReady: Bool { show.programChangePasteReady || show.selectedProgramChange != nil }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 3) {
+                Spacer(minLength: 0)
+                Button("Patch") { patch = true }.buttonStyle(CompactTrackButtonStyle(width: 36))
+                Button(LocalizedStringKey(show.programChangePasteReady ? "Paste" : "Copy")) {
+                    if show.programChangePasteReady { show.pasteProgramChange() }
+                    else { show.copyProgramChange() }
+                }.buttonStyle(CompactTrackButtonStyle(activeColor: copyReady ? JarasTheme.green : nil, width: 46))
+                    .disabled(!copyReady)
+                    .opacity(copyReady ? 1 : 0.4)
+                TimelineView(.periodic(from: .now, by: 0.45)) { context in
+                    Button(LocalizedStringKey(scanning ? "Apply" : "Scan")) {
+                        if let value = mappings.scanProgramChange(track.id) {
+                            pending = (value.program, value.channel, show.snapshot.transport.editPosition ?? 0, show.snapshot.project.id, track.midiOutput ?? 0)
+                            naming = true
+                        }
+                    }
+                        .buttonStyle(CompactTrackButtonStyle(activeColor: scanning ? JarasTheme.green : nil, width: 50))
+                        .opacity(scanning && Int(context.date.timeIntervalSinceReferenceDate / 0.45) % 2 == 0 ? 0.5 : 1)
+                }.fixedSize()
+                Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }
+                    .buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil))
+                Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }
+                    .buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil))
+            }
+            HStack(spacing: 6) {
+                Text("Program Change").font(.jarasSystem(size: 11, weight: .semibold))
+                Spacer(minLength: 6)
+                if scanning, let last = mappings.scannedProgramChange {
+                    Text(verbatim: "PC \(last.program + 1) · CH \(last.channel)").font(.jarasSystem(size: 10))
+                }
+            }.lineLimit(1)
+        }.padding(5).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .foregroundStyle(.white).background(Color(hex: track.kind.defaultColor ?? 0x91a8ff).opacity(track.mute ? 0.15 : 0.45))
+            .overlay(alignment: .bottom) { JarasTheme.line.frame(height: 1) }
+            .clipped()
+            .contextMenu {
+                Button("Patch") { patch = true }
+                if scanning { Button("Cancel") { mappings.cancelProgramChangeScan() } }
+                if let deleteTrack { Button("Delete track", role: .destructive, action: deleteTrack) }
+            }
+            #if os(macOS)
+            .workspaceEditor("Patch", isPresented: $patch) { patchEditor }
+            .workspaceEditor("Program Change", isPresented: $naming) { nameEditor }
+            #else
+            .popover(isPresented: $patch) { patchEditor }
+            .sheet(isPresented: $naming) { nameEditor }
+            #endif
+    }
+    private var nameEditor: some View {
+        ProgramChangeNameEditor(cancel: { naming = false }, apply: { name in
+            guard let value = pending, value.project == show.snapshot.project.id else { naming = false; return }
+            if show.applyProgramChange(track.id, program: value.program, channel: value.channel, name: name, position: value.position, output: value.output) {
+                naming = false; pending = nil; mappings.cancelProgramChangeScan()
+            }
+        })
+    }
+    private var patchEditor: some View {
+        VStack(spacing: 14) {
+            ProgramChangePatch(show: show, track: track.id)
+            Button("Close") { patch = false }.keyboardShortcut(.cancelAction)
+        }.padding(20).foregroundStyle(JarasTheme.text).background(JarasTheme.panel)
+    }
+}
+struct ProgramChangePatch: View {
+    @ObservedObject var show: ShowController
+    let track: UUID
+    @ObservedObject private var audio = AudioDeviceSettings.shared
+    private var settings: Track? { show.current?.tracks.first { $0.id == track } }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Patch").font(.jarasHeadline)
+            Picker("MIDI input", selection: Binding(get: { settings?.midiInput ?? 0 }, set: {
+                ControlMappings.shared.cancelProgramChangeScan(); show.setProgramChangeRouting(track, input: $0)
+            })) {
+                Text("All").tag(-1)
+                Text("None").tag(0)
+                ForEach(0..<6, id: \.self) { slot in Text(audio.midiSlotTitle(slot)).tag(slot + 1) }
+            }
+            Picker("MIDI output", selection: Binding(get: { settings?.midiOutput ?? 0 }, set: { show.setProgramChangeRouting(track, output: $0) })) {
+                Text("None").tag(0)
+                ForEach(0..<6, id: \.self) { slot in Text(audio.midiOutputSlotTitle(slot)).tag(slot + 1) }
+            }
+        }.frame(minWidth: 300)
+    }
+}
+struct ProgramChangeNameEditor: View {
+    var cancel: () -> Void
+    var apply: (String) -> Void
+    @State private var name = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Program Change").font(.jarasHeadline)
+            TextField("Name (up to 12 characters)", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: name) { if $0.count > 12 { name = String($0.prefix(12)) } }
+                .onSubmit { if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { apply(name) } }
+            HStack {
+                Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Apply") { apply(name) }.keyboardShortcut(.defaultAction)
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.padding(24).frame(width: 360).foregroundStyle(JarasTheme.text).background(JarasTheme.panel)
+    }
+}
+struct ProgramChangeMarkerLane: View {
+    @ObservedObject var show: ShowController
+    let track: Track
+    let pixelsPerSecond: Double
+    let height: CGFloat
+    var start: Double = 0
+    var body: some View {
+        let layout = ProgramChangeLayout(track.programChanges ?? [])
+        ZStack(alignment: .topLeading) {
+            ForEach(track.programChanges ?? []) { marker in
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(verbatim: marker.title)
+                        .font(.jarasSystem(size: 10, weight: .semibold)).foregroundStyle(.black)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 5).frame(height: 20, alignment: .leading)
+                        .background(show.selectedProgramChangeID == marker.id ? JarasTheme.green : Color(hex: 0x91a8ff), in: RoundedRectangle(cornerRadius: 3))
+                        .contentShape(Rectangle())
+                        #if os(macOS)
+                        .overlay(ProgramChangeHeadInput(select: { show.selectProgramChange(marker.id) },
+                            copy: { show.selectProgramChange(marker.id); show.copyProgramChange() },
+                            paste: show.hasProgramChangeClipboard ? { show.pasteProgramChange() } : nil,
+                            remove: { show.removeProgramChange(track: track.id, marker: marker.id) }))
+                        #else
+                        .background(ProgramChangeHeadAnchor())
+                        .onTapGesture { show.selectProgramChange(marker.id) }
+                        .contextMenu {
+                            Button("Copy") { show.selectProgramChange(marker.id); show.copyProgramChange() }
+                            Button("Paste") { show.pasteProgramChange() }.disabled(!show.hasProgramChangeClipboard)
+                            Button("Delete", role: .destructive) { show.removeProgramChange(track: track.id, marker: marker.id) }
+                        }
+                        #endif
+                    Color(hex: 0x91a8ff).frame(width: 1, height: max(0, height - 20 - CGFloat(layout.lanes[marker.id] ?? 0) * 24)).allowsHitTesting(false)
+                }.offset(x: (marker.position - start) * pixelsPerSecond, y: CGFloat(layout.lanes[marker.id] ?? 0) * 24)
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).clipped()
+    }
+}
+
+#if os(macOS)
+private struct ProgramChangeHeadInput: NSViewRepresentable {
+    let select: () -> Void
+    let copy: () -> Void
+    let paste: (() -> Void)?
+    let remove: () -> Void
+    func makeNSView(context: Context) -> ProgramChangeHeadInputView { ProgramChangeHeadInputView() }
+    func updateNSView(_ view: ProgramChangeHeadInputView, context: Context) {
+        view.select = select; view.copyMarker = copy; view.pasteMarker = paste; view.remove = remove
+    }
+}
+final class ProgramChangeHeadInputView: NSView, TimelineGridKeyboardTarget {
+    var select: () -> Void = {}
+    var copyMarker: () -> Void = {}
+    var pasteMarker: (() -> Void)?
+    var remove: () -> Void = {}
+    override var acceptsFirstResponder: Bool { true }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { NativeTimelineOverlayInputRegistration.add(self) }
+    }
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) { rightMouseDown(with: event); return }
+        window?.makeFirstResponder(self); select()
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self); select()
+        NSMenu.popUpContextMenu(markerContextMenu(), with: event, for: self)
+    }
+    func markerContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        for (tag,key) in [(1,"Copy"),(2,"Paste"),(3,"Delete")] {
+            let item = NSMenuItem(title: JarasLocalization.string(key), action: #selector(runMenu(_:)), keyEquivalent: "")
+            item.target = self; item.tag = tag; item.isEnabled = tag != 2 || pasteMarker != nil; menu.addItem(item)
+        }
+        menu.autoenablesItems = false
+        return menu
+    }
+    @objc private func runMenu(_ item: NSMenuItem) {
+        if item.tag == 1 { copyMarker() } else if item.tag == 2 { pasteMarker?() } else { remove() }
+    }
+}
+#else
+private struct ProgramChangeHeadAnchor: UIViewRepresentable {
+    func makeUIView(context: Context) -> ProgramChangeHeadAnchorView { ProgramChangeHeadAnchorView() }
+    func updateUIView(_ view: ProgramChangeHeadAnchorView, context: Context) {}
+}
+final class ProgramChangeHeadAnchorView: UIView {
+    private static let heads = NSHashTable<ProgramChangeHeadAnchorView>.weakObjects()
+    override func didMoveToWindow() { super.didMoveToWindow(); if window != nil { Self.heads.add(self) } }
+    static func contains(_ touch: UITouch) -> Bool {
+        heads.allObjects.contains { $0.window === touch.window && !$0.isHidden && $0.bounds.contains(touch.location(in: $0)) }
+    }
+}
+#endif

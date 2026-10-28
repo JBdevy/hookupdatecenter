@@ -17,7 +17,7 @@ import Foundation
             else if kind == .video { item.audioFile = AudioFile(path: "Videos/video.mov") }
             else if kind.isText { item.text = "Text" }
             else if kind == .timecode { track.importedTimecodeItems = true; track.timecode = TimecodeSettings(); item.timecode = TimecodeSettings() }
-            track.clips = [item]
+            if kind != .programChange { track.clips = [item] }
             project.songs[0].tracks.append(track)
         }
         var midi = Track(id: UUID(), name: "MIDI", role: .keys)

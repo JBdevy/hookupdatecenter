@@ -118,13 +118,14 @@ struct ResolumeSettingsView: View {
     @State private var settings: ResolumeSettings
     @ObservedObject private var runtime = ResolumeController.shared
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.workspaceEditorDismiss) private var closeEditor
     @State private var busy = false
     @State private var status = ""
     @State private var confirmCreate = false
     init(show: ShowController) { self.show = show; _settings = State(initialValue: show.snapshot.project.resolume ?? ResolumeSettings()) }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text(verbatim: "Resolume").font(.jarasTitle2.bold()); Spacer(); Button("Close") { dismiss() }.disabled(busy) }
+            HStack { Text(verbatim: "Resolume").font(.jarasTitle2.bold()); Spacer(); Button("Close") { (closeEditor ?? { dismiss() })() }.disabled(busy) }
             Divider()
             HStack {
                 Text("Host"); TextField("127.0.0.1", text: $settings.host).frame(width: 170)
@@ -147,7 +148,7 @@ struct ResolumeSettingsView: View {
             if !runtime.error.isEmpty { Text(LocalizedStringKey(runtime.error)).foregroundStyle(.red).font(.jarasCaption) }
             Spacer(minLength: 0)
             Divider()
-            HStack { Text("The map and connection settings are saved with this CatLive project.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary); Spacer(); Button("Apply") { if saveMap() { dismiss() } }.keyboardShortcut(.defaultAction).disabled(busy) }
+            HStack { Text("The map and connection settings are saved with this CatLive project.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary); Spacer(); Button("Apply") { if saveMap() { (closeEditor ?? { dismiss() })() } }.keyboardShortcut(.defaultAction).disabled(busy) }
         }.padding(24).frame(width: 680, height: 520)
             .foregroundStyle(JarasTheme.text).background(JarasTheme.background)
             .interactiveDismissDisabled(busy)

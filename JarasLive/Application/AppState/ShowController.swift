@@ -1244,13 +1244,15 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     private var itemClipboard: GridItemClipboard?
     @discardableResult public func copyItems(_ ids: Set<UUID>, moving: Bool = false) -> Bool {
+        if ids.isEmpty, selectedProgramChange != nil { return !moving && copyProgramChange() }
         guard canControl(), !finishing, let song = current?.id,
               let copied = GridItemClipboard(project: snapshot.project, song: song, selected: ids, moving: moving) else { return false }
         if pendingFXEdit { commitFX() }
-        itemClipboard = copied
+        itemClipboard = copied; programChangeClipboard = nil; programChangePasteReady = false
         return true
     }
     @discardableResult public func pasteItems() -> Set<UUID> {
+        if programChangeClipboard != nil { pasteProgramChange(); return [] }
         guard canControl(), !finishing, let clipboard = itemClipboard, clipboard.song == current?.id else { return [] }
         return pasteItems(clipboard, at: snapshot.transport.editPosition ?? snapshot.transport.position)
     }
@@ -2882,7 +2884,8 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         var project = snapshot.project
         let existing = project.songs[songIndex].tracks
-        let selectedIndex = selected.flatMap { id in existing.firstIndex { $0.id == id } }
+        let anchor = existing.last(where: { mixerTrackSelection.contains($0.id) })?.id ?? selected ?? selectedTrackForActions
+        let selectedIndex = anchor.flatMap { id in existing.firstIndex { $0.id == id } }
         let insertion = kind == .standard ? selectedIndex.map { $0 + 1 } ?? existing.count : existing.count
         let parent: UUID?
         if kind == .standard, let selectedIndex {
@@ -2895,6 +2898,7 @@ public struct ShowTimelinePresentationState: Equatable {
             var track = Track(id: UUID(), name: trackName, role: role, color: kind == .standard ? Track.defaultStandardColor : nil)
             track.parentTrackID = parent
             if kind == .standard && !inputPatches.isEmpty { track.inputPatch = inputPatches[index] }
+            if kind == .programChange { track.midiInput = 1; track.midiOutput = 1; track.patch = .none }
             if kind == .timecode { track.timecode = TimecodeSettings(); track.patch = OutputPatch.none }
             newTracks.append(track)
         }
@@ -2925,6 +2929,70 @@ public struct ShowTimelinePresentationState: Equatable {
             snapshot = try executor.snapshot(); markChanged()
             return id
         } catch { message = error.localizedDescription; return nil }
+    }
+    @Published public var selectedProgramChangeID: UUID?
+    @Published public private(set) var programChangePasteReady = false
+    private var programChangeClipboard: ProgramChangeMarker?
+    public var hasProgramChangeClipboard: Bool { programChangeClipboard != nil }
+    public var selectedProgramChange: ProgramChangeMarker? {
+        current?.tracks.flatMap { $0.programChanges ?? [] }.first { $0.id == selectedProgramChangeID }
+    }
+    public func selectProgramChange(_ id: UUID?) {
+        selectedProgramChangeID = id
+        if id != nil { programChangePasteReady = false }
+    }
+    @discardableResult public func copyProgramChange() -> Bool {
+        guard let marker = selectedProgramChange else { return false }
+        programChangeClipboard = marker; itemClipboard = nil; programChangePasteReady = true
+        return true
+    }
+    @discardableResult public func pasteProgramChange() -> Bool {
+        guard let marker = programChangeClipboard, let track = current?.tracks.first(where: { $0.kind == .programChange }) else { return false }
+        let pasted = applyProgramChange(track.id, program: marker.program, channel: marker.channel, name: marker.title, output: marker.output)
+        if pasted { programChangePasteReady = true }; return pasted
+    }
+    public func setProgramChangeRouting(_ id: UUID, input: Int? = nil, output: Int? = nil) {
+        guard input.map({ (-1...6).contains($0) }) ?? true, output.map({ (0...6).contains($0) }) ?? true else { return }
+        editProject { project in
+            for song in project.songs.indices {
+                guard let track = project.songs[song].tracks.firstIndex(where: { $0.id == id && $0.kind == .programChange }) else { continue }
+                if let input { project.songs[song].tracks[track].midiInput = input == 0 ? nil : input }
+                if let output { project.songs[song].tracks[track].midiOutput = output == 0 ? nil : output }
+            }
+        }
+    }
+    @discardableResult public func applyProgramChange(_ id: UUID, program: Int, channel: Int, name: String, position: Double? = nil, output: Int? = nil) -> Bool {
+        guard canControl(), !finishing, (0...127).contains(program), (1...16).contains(channel),
+              let track = current?.tracks.first(where: { $0.id == id && $0.kind == .programChange }) else { return false }
+        let at = position ?? snapshot.transport.editPosition ?? 0
+        let label = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(12))
+        guard !label.isEmpty, at.isFinite, at >= 0 else { return false }
+        guard (track.programChanges ?? []).filter({ abs($0.position - at) < 0.000001 }).count < 6 else {
+            message = "Only six Program Change markers are allowed at the same position."; return false
+        }
+        guard let destination = output ?? track.midiOutput, (1...6).contains(destination) else {
+            message = "Choose a MIDI output in Patch."; return false
+        }
+        let marker = ProgramChangeMarker(id: UUID(), position: at, program: program, channel: channel, name: label, output: destination)
+        editProject { project in
+            for song in project.songs.indices {
+                guard let track = project.songs[song].tracks.firstIndex(where: { $0.id == id }) else { continue }
+                project.songs[song].tracks[track].programChanges = (project.songs[song].tracks[track].programChanges ?? []) + [marker]
+                project.songs[song].duration = max(project.songs[song].duration, at + 1)
+            }
+        }
+        let inserted = current?.tracks.first(where: { $0.id == id })?.programChanges?.contains(where: { $0.id == marker.id }) == true
+        if inserted { selectedProgramChangeID = marker.id; programChangePasteReady = false }
+        return inserted
+    }
+    public func removeProgramChange(track id: UUID, marker: UUID) {
+        if selectedProgramChangeID == marker { selectedProgramChangeID = nil }
+        editProject { project in
+            for song in project.songs.indices {
+                guard let track = project.songs[song].tracks.firstIndex(where: { $0.id == id && $0.kind == .programChange }) else { continue }
+                project.songs[song].tracks[track].programChanges?.removeAll { $0.id == marker }
+            }
+        }
     }
     public func setClickSound(track id: UUID, file: AudioFile?) {
         guard current?.tracks.contains(where: { $0.id == id && $0.kind == .click }) == true else { return }

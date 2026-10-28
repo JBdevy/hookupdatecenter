@@ -19,6 +19,10 @@ public:
     }
     bool applyProjectSync(projectSync::Frame frame, double elapsed, bool first, bool *mixerChanged=nullptr);
     void applyProjectEdit(Project project);
+    // Control-thread timing history excludes immutable decoded peak arrays.
+    Project timingSnapshot();
+    void restoreTimingSnapshot(Project project);
+    void setRegionPitchState(const ID&, std::optional<int>, std::optional<std::vector<ID>>, std::optional<std::vector<ID>>);
     const Project& project() const noexcept { return project_; }
     const TransportState& transport() const noexcept { return transport_; }
     const Song* currentSong() const noexcept;
@@ -66,6 +70,7 @@ public:
     const Part* sectionPlaybackRegion() const;
     std::optional<double> nextSectionTrigger() const;
 private:
+    void commitProjectEdit(Project project);
     void advanceWithoutLiveTracking(double elapsed);
     std::vector<ID> automaticSectionHandled_;
     double automaticSectionLastPosition_ = -1;

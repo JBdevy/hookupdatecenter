@@ -73,6 +73,11 @@ void Session::notify() {
     if (changed)
         changed();
 }
+void Session::notifyTiming(bool geometry) {
+    ++revision;
+    if (timingChanged) timingChanged(geometry);
+    else if (changed) changed();
+}
 void Session::notifyMixer() {
     ++revision;
     if(mixerChanged)mixerChanged();
@@ -829,6 +834,7 @@ void Session::publishTransport(bool preserveLatency, bool routingOnly) {
     const auto &t = transport();
     AudioEngine::State state;
     state.preserveLatency = preserveLatency;
+    state.promotion = t.subPlayPromotion;
     state.position = t.position;
     state.timecodePreferred = audio.timecodePreferred(t.regionId);
     state.playing = t.playing;
@@ -1235,7 +1241,7 @@ void Session::toggleRecording() {
                 recordingItems.clear(); ++revision;
                 if (project().id != projectID) { notify(); return; }
                 try {
-                    if (!clips.empty()) edit([&](jaras::Project &project) {
+                    if (!clips.empty()) editTimeline([&](jaras::Project &project) {
                         for (auto &song : project.songs) if (song.id == songID)
                             for (auto &track : song.tracks)
                                 for (const auto &[id, clip] : clips) if (track.id == id) {
@@ -1273,17 +1279,22 @@ void Session::toggleRecording() {
     const int bitrate = (int)settings.value("jaras.media.record.bitrate", 320);
     std::vector<TrackCapture::Target> targets;
     std::vector<RecordingItem> previews;
-    StringArray recordingNames;
+    std::set<String> recordingNames;
     for (const auto &s : project().songs) for (const auto &t : s.tracks) for (const auto &clip : t.clips)
-        recordingNames.addIfNotAlreadyThere(text(clip.name), true);
-    for (const auto &file : mediaDirectory.getChildFile("Stems").findChildFiles(File::findFiles, true))
-        recordingNames.addIfNotAlreadyThere(file.getFileNameWithoutExtension(), true);
+        recordingNames.insert(text(clip.name).toLowerCase());
+    const auto stemsFolder = mediaDirectory.getChildFile("Stems");
+    const auto nameExists = [&](const String &name) {
+        if (recordingNames.count(name.toLowerCase())) return true;
+        for (const auto *extension : {".wav", ".aiff", ".aif", ".mp3", ".mid"})
+            if (stemsFolder.getChildFile(name + extension).exists()) return true;
+        return false;
+    };
     const auto allocateName = [&](String track) {
         track = File::createLegalFileName(track.trim()); if (track.isEmpty()) track = "Track";
         auto name = track;
-        for (int index = 1; recordingNames.contains(name, true); ++index)
+        for (int index = 1; nameExists(name); ++index)
             name = track + " - " + String(index).paddedLeft('0', 3);
-        recordingNames.add(name); return name;
+        recordingNames.insert(name.toLowerCase()); return name;
     };
     for (const auto &track : song()->tracks)
         if (recordingArmed(track.id) && jaras::fixedTrackName(track.role).empty()) {
@@ -1612,6 +1623,12 @@ void Session::editTimeline(const std::function<void(jaras::Project &)> &change, 
         throw std::runtime_error("Desbloqueie o cadeado para alterar regiões e marcadores.");
     applyTimelineHistory({std::move(updated)}, true);
 }
+void Session::editTrackSettings(const std::function<void(jaras::Project &)> &change, bool routing) {
+    if (busy || jaras::projectSync::readOnly()) return;
+    if (routing && audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de alterar o roteamento.");
+    auto updated = project(); change(updated);
+    applyTimelineHistory({std::move(updated), false, false, true, routing}, true);
+}
 void Session::editItemControls(const std::function<void(jaras::Project &)> &change) {
     if (busy || jaras::projectSync::readOnly()) return;
     auto updated = project();
@@ -1619,13 +1636,32 @@ void Session::editItemControls(const std::function<void(jaras::Project &)> &chan
     applyTimelineHistory({std::move(updated),false,true}, true);
 }
 void Session::applyTimelineHistory(const TimelineHistory &state, bool recordHistory) {
+    if (state.tempo) {
+        syncClock();
+        auto before = core.timingSnapshot();
+        const auto previous = std::find_if(before.songs.begin(), before.songs.end(), [&](const auto& s) { return song() && s.id == song()->id; });
+        core.restoreTimingSnapshot(state.project);
+        if (song() && previous != before.songs.end()) {
+            if (graphCancellation) prepareLiveGraph();
+            else { audio.refreshTempo(*previous, *song()); publishTransport(true, true); }
+        }
+        if (recordHistory) {
+            undoHistory.emplace_back(TimelineHistory{std::move(before), true});
+            if (undoHistory.size() > 40) undoHistory.pop_front();
+            redoHistory.clear();
+        }
+        dirty = true; notifyTiming(true); return;
+    }
     jaras::validate(state.project);
     syncClock();
-    TimelineHistory before{project(), state.tempo, state.itemControls};
+    TimelineHistory before{project(), state.tempo, state.itemControls, state.mixerControls, state.routingControls};
     const auto oldSong = song() ? std::optional<jaras::Song>(*song()) : std::nullopt;
     core.applyProjectEdit(state.project);
     if (song()) {
-        if (state.itemControls && !graphCancellation && oldSong) {
+        if (state.mixerControls) {
+            if (state.routingControls || graphCancellation) prepareLiveGraph();
+            else { audio.setMixer(project(), *song()); updateRecordArms(); }
+        } else if (state.itemControls && !graphCancellation && oldSong) {
             std::map<ID,const jaras::AudioClip*> previous;
             for(const auto &track:oldSong->tracks)for(const auto &clip:track.clips)previous.emplace(clip.id,&clip);
             for(const auto &track:song()->tracks)for(const auto &clip:track.clips) {
@@ -1673,7 +1709,7 @@ void Session::applyTimelineHistory(const TimelineHistory &state, bool recordHist
         if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
         redoHistory.clear();
     }
-    dirty = true; notify();
+    dirty = true; if (state.mixerControls) notifyMixer(); else notify();
 }
 void Session::edit(const std::function<void(jaras::Project &)> &change, bool rebuild, bool allowTimingEdit) {
     if (jaras::projectSync::readOnly()) return;
@@ -1854,17 +1890,28 @@ void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory)
     dirty = true;
     notify();
 }
-void Session::setRegionPitch(const ID &id, int semitones, std::vector<ID> tracks, std::vector<ID> groups) {
-    if (busy || !song()) return;
+Session::PitchHistory Session::pitchHistory(const ID& id) const {
+    if (song()) for (const auto& part : song()->parts) if (part.id == id)
+        return {id, part.pitchSemitones, part.pitchTrackIDs, part.pitchGroupIDs};
+    throw std::runtime_error("Unknown region");
+}
+void Session::applyPitchHistory(PitchHistory state, bool recordHistory) {
     syncClock();
-    const auto before = snapshot();
-    auto next = core;
-    next.setRegionPitch(id, semitones, std::move(tracks), std::move(groups));
-    audio.refreshRegionPitch(*next.currentSong(), id);
-    core = std::move(next);
-    undoHistory.emplace_back(before);
-    if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
-    redoHistory.clear(); dirty = true; message.clear(); notify();
+    const auto before = pitchHistory(state.region);
+    if (before.semitones == state.semitones && before.tracks == state.tracks && before.groups == state.groups) return;
+    core.setRegionPitchState(state.region, state.semitones, std::move(state.tracks), std::move(state.groups));
+    try { audio.refreshRegionPitch(*song(), state.region); }
+    catch (...) { core.setRegionPitchState(before.region, before.semitones, before.tracks, before.groups); throw; }
+    if (recordHistory) {
+        undoHistory.emplace_back(before);
+        if (undoHistory.size() > 40) undoHistory.pop_front();
+        redoHistory.clear();
+    }
+    dirty = true; message.clear(); notifyTiming(false);
+}
+void Session::setRegionPitch(const ID &id, int semitones, std::vector<ID> tracks, std::vector<ID> groups) {
+    if (busy || !song() || jaras::projectSync::readOnly()) return;
+    applyPitchHistory({id, semitones, std::move(tracks), std::move(groups)}, true);
 }
 double Session::tempoBPM() const {
     return song() ? tempoEditing::bpm(*song(), tempoEditing::position(*song(), transport())) : 120;
@@ -1889,8 +1936,8 @@ void Session::setTempo(double value) {
     syncClock();mark("clock");
     value = jlimit(60., 300., value);
     if (std::abs(value - tempoBPM()) < .0000001) return;
-    TimelineHistory before{project(), true};
-    // The undo snapshot already owns the previous song, including its peaks.
+    TimelineHistory before{core.timingSnapshot(), true};
+    // Timing history owns metadata only; peak samples stay in the live document.
     const auto &oldSong = *std::find_if(before.project.songs.begin(), before.project.songs.end(),
                                      [&](const auto &candidate) { return candidate.id == song()->id; });mark("historyAndSongCopy");
     if (const auto *part = tempoEditing::region(oldSong, transport())) {
@@ -1912,7 +1959,7 @@ void Session::setTempo(double value) {
     }
     undoHistory.emplace_back(std::move(before));
     if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
-    redoHistory.clear(); dirty = true; message.clear();mark("historyCommit");notify();mark("workspace");
+    redoHistory.clear(); dirty = true; message.clear();mark("historyCommit");notifyTiming(true);mark("workspace");
     if(profile.isNotEmpty())File(profile).appendText(JSON::toString(measurements,true)+"\n");
 }
 void Session::configureTiming(double bpm, int beats, int unit,
@@ -1947,7 +1994,8 @@ void Session::undo() {
     if (audio.isRecording())
         throw std::runtime_error("Pare para desfazer alterações.");
     auto value = undoHistory.back();
-    if (value.timeline) redoHistory.emplace_back(TimelineHistory{project(), value.timeline->tempo, value.timeline->itemControls});
+    if (value.timeline) redoHistory.emplace_back(TimelineHistory{value.timeline->tempo ? core.timingSnapshot() : project(), value.timeline->tempo, value.timeline->itemControls, value.timeline->mixerControls, value.timeline->routingControls});
+    else if (value.pitch) redoHistory.emplace_back(pitchHistory(value.pitch->region));
     else if (value.setlist) redoHistory.emplace_back(SetlistHistory{project().regionSetlist});
     else if (value.effects) redoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) redoHistory.emplace_back(markerHistory(value.markers->song));
@@ -1957,6 +2005,7 @@ void Session::undo() {
     else redoHistory.emplace_back(snapshot());
     undoHistory.pop_back();
     if (value.timeline) applyTimelineHistory(*value.timeline, false);
+    else if (value.pitch) applyPitchHistory(*value.pitch, false);
     else if (value.setlist) applySetlistHistory(*value.setlist, false);
     else if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);
@@ -1972,7 +2021,8 @@ void Session::redo() {
     if (audio.isRecording())
         throw std::runtime_error("Pare para refazer alterações.");
     auto value = redoHistory.back();
-    if (value.timeline) undoHistory.emplace_back(TimelineHistory{project(), value.timeline->tempo, value.timeline->itemControls});
+    if (value.timeline) undoHistory.emplace_back(TimelineHistory{value.timeline->tempo ? core.timingSnapshot() : project(), value.timeline->tempo, value.timeline->itemControls, value.timeline->mixerControls, value.timeline->routingControls});
+    else if (value.pitch) undoHistory.emplace_back(pitchHistory(value.pitch->region));
     else if (value.setlist) undoHistory.emplace_back(SetlistHistory{project().regionSetlist});
     else if (value.effects) undoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) undoHistory.emplace_back(markerHistory(value.markers->song));
@@ -1982,6 +2032,7 @@ void Session::redo() {
     else undoHistory.emplace_back(snapshot());
     redoHistory.pop_back();
     if (value.timeline) applyTimelineHistory(*value.timeline, false);
+    else if (value.pitch) applyPitchHistory(*value.pitch, false);
     else if (value.setlist) applySetlistHistory(*value.setlist, false);
     else if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);
@@ -2000,6 +2051,7 @@ void Session::importMedia(const Array<File> &files,double at,ID targetTrack,Medi
     auto target=std::find_if(song()->tracks.begin(),song()->tracks.end(),[&](auto &t){return t.id==targetTrack;});
     if(!targetTrack.empty()&&target==song()->tracks.end())throw std::runtime_error("A pista de destino não existe mais.");
     const auto targetRole=target==song()->tracks.end()?jaras::TrackRole{}:target->role;
+    if(targetRole.id=="programChange")throw std::runtime_error("A pista Program Change aceita apenas comandos MIDI Program Change.");
     auto weak=std::weak_ptr<int>(alive);busy=true;importProgress=0;message=String::fromUTF8("Importando mídia…");notify();
     worker.addJob([this,weak,files,at,targetTrack,layout,gap,songID,projectID,directory,targetRole,completion,deferWaveform]{
         struct Source {File file;double duration;bool projection;};
@@ -2172,7 +2224,8 @@ void Session::exportAudio(ExportRequest request) {
     const auto projectCopy = project();
     const auto songCopy = *song();
     const auto directory = mediaDirectory;
-    exportCancelled = false;
+    exportCancelled = false; exportFailed = false;
+    { const ScopedLock guard(exportProgressLock); exportPreview = {}; exportPreview.total = int(request.jobs.size()); }
     busy = true;
     importProgress = 0;
     message = String::fromUTF8("Renderizando áudio…");
@@ -2181,23 +2234,20 @@ void Session::exportAudio(ExportRequest request) {
     worker.addJob([this, weak, projectCopy, songCopy, directory, request = std::move(request)] {
         String error;
         try {
-            audioExport::render(projectCopy, songCopy, directory, request, exportCancelled,
-                                [this, weak](double progress) {
-                                    MessageManager::callAsync([this, weak, progress] {
-                                        if (!weak.expired()) {
-                                            importProgress = progress;
-                                            if (changed)
-                                                changed();
-                                        }
-                                    });
-                                });
+            audioExport::render(projectCopy, songCopy, directory, request, exportCancelled, {},
+                [this](const AudioExportProgress &progress) {
+                    // The export panel polls this small snapshot. Do not rebuild
+                    // the entire workspace for each rendered waveform update.
+                    const ScopedLock guard(exportProgressLock); exportPreview = progress;
+                });
         } catch (const std::exception &e) {
             error = String::fromUTF8(e.what());
         }
         MessageManager::callAsync([this, weak, error, count = (int)request.jobs.size()] {
             if (weak.expired())
                 return;
-            busy = false;
+            busy = false; exportFailed = error.isNotEmpty();
+            if (!exportFailed) importProgress = 1;
             message = error.isEmpty()
                           ? String::fromUTF8("Exportação concluída: ") + String(count) + " arquivos"
                           : error;
@@ -2223,15 +2273,91 @@ void Session::renameTrack(ID id, String name) {
         },
         false);
 }
+std::optional<jaras::ProgramChangeMarker> Session::scanProgramChange(const ID &id) {
+    if(busy || jaras::projectSync::readOnly() || !song())return {};
+    const auto found=std::find_if(song()->tracks.begin(),song()->tracks.end(),[&](const auto &t){return t.id==id && t.role.id=="programChange";});
+    if(found==song()->tracks.end())return {};
+    const auto packet=audio.latestProgramChange(found->midiInput.value_or(0));
+    if(!scanningProgramChange(id)) {
+        programChangeScanProject=project().id;programChangeScanTrack=id;programChangeScanBaseline=packet;return {};
+    }
+    if(!packet || packet==programChangeScanBaseline) {
+        programChangeScanTrack.clear();programChangeScanProject.clear();programChangeScanBaseline=0;
+        return {};
+    }
+    return jaras::ProgramChangeMarker{uuid(),transport().editPosition,int(packet&127),int((packet>>7)&15)+1,{},found->midiOutput.value_or(0)};
+}
+ID Session::insertProgramChange(const ID &track, jaras::ProgramChangeMarker marker) {
+    if(busy || jaras::projectSync::readOnly() || !song())return {};
+    const auto found=std::find_if(song()->tracks.begin(),song()->tracks.end(),[&](const auto &t){return t.id==track && t.role.id=="programChange";});
+    if(found==song()->tracks.end())return {};
+    marker.name=utf8(text(marker.name).trim().substring(0,12));
+    if(marker.name.empty())return {};
+    if(std::count_if(found->programChanges.begin(),found->programChanges.end(),[&](const auto &m){return std::abs(m.position-marker.position)<.000001;})>=6)
+        throw std::runtime_error("O limite é de 6 marcadores de timbre no mesmo ponto.");
+    if(!marker.output)marker.output=found->midiOutput;
+    if(!marker.output || *marker.output<1 || *marker.output>6)throw std::runtime_error("Escolha uma saída MIDI no Patch.");
+    marker.id=uuid();
+    editTrackSettings([&](auto &p){for(auto &song:p.songs)for(auto &t:song.tracks)if(t.id==track) {
+        t.programChanges.push_back(marker);
+        std::stable_sort(t.programChanges.begin(),t.programChanges.end(),[](const auto&a,const auto&b){return a.position<b.position;});
+        song.duration=std::max(song.duration,marker.position+1);
+    }},false);
+    selectedProgramChange=marker.id;
+    return marker.id;
+}
+const jaras::ProgramChangeMarker *Session::selectedProgramMarker() const {
+    if(song())for(const auto &t:song()->tracks)for(const auto &m:t.programChanges)if(m.id==selectedProgramChange)return &m;
+    return nullptr;
+}
+bool Session::copyProgramChange() {
+    const auto *marker=selectedProgramMarker();if(!marker)return false;
+    programChangeClipboard=*marker;programChangePasteReady=true;return true;
+}
+bool Session::pasteProgramChange() {
+    if(!programChangeClipboard || !song())return false;
+    for(const auto &track:song()->tracks)if(track.role.id=="programChange") {
+        auto marker=*programChangeClipboard;marker.position=transport().editPosition;
+        return !insertProgramChange(track.id,marker).empty();
+    }
+    return false;
+}
+void Session::removeProgramChange(const ID &track, const ID &marker) {
+    if(selectedProgramChange==marker)selectedProgramChange.clear();
+    editTrackSettings([&](auto &p){for(auto &song:p.songs)for(auto &t:song.tracks)if(t.id==track)
+        t.programChanges.erase(std::remove_if(t.programChanges.begin(),t.programChanges.end(),[&](const auto &m){return m.id==marker;}),t.programChanges.end());},false);
+}
 void Session::removeTrack(ID id) {
     removeTracks({id});
 }
 void Session::removeTracks(const std::set<ID> &ids) {
-    if (ids.empty()) return;
-    edit([&](jaras::Project &p) {
-        for (auto &s : p.songs)
-            for (const auto &id : ids) trackTree::remove(s, id);
-    });
+    if (ids.empty() || busy || jaras::projectSync::readOnly()) return;
+    if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de apagar pistas.");
+    auto updated = project();
+    for (auto &song : updated.songs) for (const auto &id : ids) trackTree::remove(song, id);
+    if (timelineGrid::changesLockedGeometry(project(), updated))
+        throw std::runtime_error("Desbloqueie o cadeado para apagar pistas.");
+    // The history owns native models, not a JSON round trip of every waveform.
+    // Capture only processors that will disappear, preserving their Undo state.
+    TimelineHistory before{project()};
+    std::set<ID> retained;
+    for (const auto &song : updated.songs) for (const auto &track : song.tracks) retained.insert(track.id);
+    auto capture=[&](const ID &id, std::optional<std::string> &json) {
+        if(!json)return;
+        auto settings=JSON::parse(text(*json)); audio.captureExternalEffects(id,settings);
+        json=utf8(JSON::toString(settings,true,17));
+    };
+    bool removed=false;
+    for(auto &song:before.project.songs)for(auto &track:song.tracks)if(!retained.count(track.id)) {
+        removed=true; capture(track.id,track.fxJSON);
+        for(auto &clip:track.clips)capture(clip.id,clip.fxJSON);
+    }
+    if(!removed)return;
+    const auto owned=mediaCleanup::references(project()); observedMedia.insert(owned.begin(),owned.end());
+    applyTimelineHistory({std::move(updated)},false);
+    undoHistory.emplace_back(std::move(before));
+    if(undoHistory.size()>40)undoHistory.pop_front();
+    redoHistory.clear();
 }
 Session::ItemHistory Session::itemHistory(const ItemHistory &targets) const {
     ItemHistory result;

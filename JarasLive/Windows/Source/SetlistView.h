@@ -67,6 +67,7 @@ class Workspace::Setlist final : public Component,
             button->setWantsKeyboardFocus(false);
         }
         addPlaylist.setTooltip("Criar playlist");
+        addPlaylist.getProperties().set("fontSize", 17);
         searchButton.getProperties().set("icon", "search");
         for (auto *b : {&addPlaylist, &searchButton})
             b->getProperties().set("plain", true);
@@ -227,8 +228,8 @@ class Workspace::Setlist final : public Component,
             button->setBounds(8 + left + index * 3, 2, right - left, 26);
             ++index;
         }
-        playlistMenu.setBounds(8, 34, std::max(0, getWidth() - 16 - 60), 30);
-        addPlaylist.setBounds(playlistMenu.getRight() + 3, 34, 27, 30);
+        playlistMenu.setBounds(8, 34, std::max(0, getWidth() - 16 - 65), 30);
+        addPlaylist.setBounds(playlistMenu.getRight() + 3, 32, 32, 35);
         searchButton.setBounds(addPlaylist.getRight() + 3, 34, 27, 30);
         if (!searchPanel) search.setVisible(false);
         const int footerHeight = footerVisible ? 28 : 16;

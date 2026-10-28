@@ -95,6 +95,40 @@ grid.marqueeBegan = { marqueeStarts += 1; followPausedByMarquee = true }
 func event(_ type: NSEvent.EventType, _ point: CGPoint, modifiers: NSEvent.ModifierFlags = [], clicks: Int = 1) -> NSEvent {
     NSEvent.mouseEvent(with: type, location: grid.convert(point, to: nil), modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: clicks, pressure: 1)!
 }
+// The real Program Change head must receive the event before the grid's
+// window monitor starts marquee selection or places the edit cursor.
+do {
+    let head = ProgramChangeHeadInputView(frame: CGRect(x: 310, y: 210, width: 62, height: 20))
+    var selectedHead = 0, copied = 0, pasted = 0, removed = 0
+    head.select = { selectedHead += 1 }; head.copyMarker = { copied += 1 }; head.remove = { removed += 1 }
+    grid.addSubview(head)
+    let point = CGPoint(x: 330, y: 220)
+    for type: NSEvent.EventType in [.leftMouseDown, .rightMouseDown] {
+        precondition(!grid.handlePointerEvent(event(type, point)), "Grid monitor must yield Program Change heads")
+        precondition(grid.hitTest(grid.convert(point, to: grid.superview)) === head,
+                     "Fast native body hit testing must deliver the marker menu")
+    }
+    precondition(!grid.handlePointerEvent(event(.leftMouseDown, point, modifiers: .control)))
+    head.mouseDown(with: event(.leftMouseDown, point))
+    precondition(selectedHead == 1 && window.firstResponder === head)
+    let menu = head.markerContextMenu()
+    precondition(menu.items.map(\.tag) == [1, 2, 3] && !menu.items[1].isEnabled)
+    menu.performActionForItem(at: 0); menu.performActionForItem(at: 2)
+    precondition(copied == 1 && removed == 1)
+    head.pasteMarker = { pasted += 1 }
+    let withClipboard = head.markerContextMenu()
+    precondition(withClipboard.items[1].isEnabled)
+    withClipboard.performActionForItem(at: 1)
+    precondition(pasted == 1)
+    head.isHidden = true
+    precondition(grid.hitTest(grid.convert(point, to: grid.superview)) === grid)
+    head.isHidden = false
+    NativeTimelineInputGate.shared.setBlocked(true, for: window)
+    precondition(grid.hitTest(grid.convert(point, to: grid.superview)) == nil)
+    NativeTimelineInputGate.shared.setBlocked(false, for: window)
+    head.removeFromSuperview()
+    print("PROGRAM_CHANGE_HEAD_INPUT_MENU_COPY_PASTE_DELETE_AND_HIDDEN_MODAL_GATES_OK")
+}
 func drag(_ from: CGPoint, _ to: CGPoint, modifiers: NSEvent.ModifierFlags = []) {
     let starts = marqueeStarts; followPausedByMarquee = false
     precondition(grid.handlePointerEvent(event(.rightMouseDown, from, modifiers: modifiers)))
@@ -285,6 +319,73 @@ NativeTimelineInputGate.shared.setBlocked(false, for: window)
 inner.contentView.scroll(to: CGPoint(x: 780,y: 0)); outer.contentView.scroll(to: CGPoint(x: 0,y: 300))
 print("GRID_MARQUEE_EDGE_SCROLL_BOTH_AXES_STABLE_ANCHOR_ADDITIVE_RELEASE_AND_GATE_OK")
 
+
+// Item drags share the marquee edge timer but retain their original document
+// anchor, including when the hosted offset and preview layout lag behind.
+let moveBeforeEdgeTests = grid.move
+var itemMoveStarts = 0
+grid.itemMoveBegan = { itemMoveStarts += 1 }
+var edgeMoves: [(UUID, CGSize, CGFloat, Bool)] = []
+grid.move = { edgeMoves.append(($0, $1, $2, $3)) }
+inner.contentView.scroll(to: CGPoint(x: 500, y: 0))
+outer.contentView.scroll(to: CGPoint(x: 0, y: 300))
+let heldPoint = CGPoint(x: 200, y: 220)
+let heldDocument = CGPoint(x: 700, y: 520)
+grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 660, y: 490, width: 100, height: 60)),
+              GridSelectionItem(id: second, rect: CGRect(x: 800, y: 600, width: 100, height: 60))]
+grid.updateSelection([first, second])
+precondition(grid.handlePointerEvent(event(.leftMouseDown, heldPoint)))
+precondition(grid.handlePointerEvent(event(.leftMouseDragged, CGPoint(x: 699, y: 599))))
+let firstMoveCount = edgeMoves.count
+for _ in 0..<20 { grid.advanceSelectionScroll(elapsed: 1.0/60) }
+precondition(inner.contentView.bounds.minX > 680 && outer.contentView.bounds.minY > 480,
+             "holding an item at the bottom-right edge scrolls both axes without new events")
+precondition(itemMoveStarts == 1 && edgeMoves.count > firstMoveCount && grid.selected == [first, second],
+             "edge scrolling keeps the multi-item drag active without collapsing selection")
+let edgeMove = edgeMoves.last!
+precondition(edgeMove.0 == first && !edgeMove.3 &&
+             abs(edgeMove.1.width - (699 + inner.contentView.bounds.minX - heldDocument.x)) < 0.001 &&
+             abs(edgeMove.2 - (599 + outer.contentView.bounds.minY)) < 0.001,
+             "item movement incorporates both native offsets instead of lagging behind the pointer")
+precondition(grid.handlePointerEvent(event(.leftMouseDragged, CGPoint(x: 1, y: 72))))
+let beforeReverse = grid.frame.origin
+for _ in 0..<20 { grid.advanceSelectionScroll(elapsed: 1.0/60) }
+precondition(grid.frame.origin.x < beforeReverse.x - 180 && grid.frame.origin.y < beforeReverse.y - 180,
+             "the same held item scrolls left and up")
+precondition(grid.handlePointerEvent(event(.leftMouseDragged, CGPoint(x: 350, y: 300))))
+let stoppedEdgeOrigin = grid.frame.origin
+for _ in 0..<10 { grid.advanceSelectionScroll(elapsed: 1.0/60) }
+precondition(grid.frame.origin == stoppedEdgeOrigin, "item scrolling stops away from edges")
+precondition(grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 350, y: 300))))
+let committedEdgeMove = edgeMoves.last!
+precondition(committedEdgeMove.3 &&
+             abs(committedEdgeMove.1.width - (350 + inner.contentView.bounds.minX - heldDocument.x)) < 0.001 &&
+             abs(committedEdgeMove.2 - (300 + outer.contentView.bounds.minY)) < 0.001,
+             "release commits the displayed destination with its scrolled document anchor")
+let edgeMovesAfterCommit = edgeMoves.count
+for _ in 0..<10 { grid.advanceSelectionScroll(elapsed: 1.0/60) }
+precondition(grid.frame.origin == stoppedEdgeOrigin && edgeMoves.count == edgeMovesAfterCommit,
+             "release stops the edge timer")
+// Updating the model's movement lock while held must not continue scrolling.
+inner.contentView.scroll(to: CGPoint(x: 500, y: 0)); outer.contentView.scroll(to: CGPoint(x: 0, y: 300))
+precondition(grid.handlePointerEvent(event(.leftMouseDown, heldPoint)))
+precondition(grid.handlePointerEvent(event(.leftMouseDragged, CGPoint(x: 699, y: 599))))
+grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 660, y: 490, width: 100, height: 60), movable: false)]
+let lockedEdgeOrigin = grid.frame.origin
+grid.advanceSelectionScroll(elapsed: 1.0/60)
+precondition(grid.frame.origin == lockedEdgeOrigin && edgeMoves.last!.2.isNaN,
+             "locking during edge scroll cancels the item preview without committing a move")
+precondition(grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 699, y: 599))))
+// Merely pressing a locked item at an edge must not start scrolling either.
+grid.items = [GridSelectionItem(id: first, rect: CGRect(x: 1160, y: 860, width: 60, height: 60), movable: false)]
+precondition(grid.handlePointerEvent(event(.leftMouseDown, CGPoint(x: 680, y: 580))))
+precondition(grid.handlePointerEvent(event(.leftMouseDragged, CGPoint(x: 699, y: 599))))
+grid.advanceSelectionScroll(elapsed: 1.0/60)
+precondition(grid.frame.origin == lockedEdgeOrigin, "a locked item never starts edge scrolling")
+precondition(grid.handlePointerEvent(event(.leftMouseUp, CGPoint(x: 699, y: 599))))
+grid.move = moveBeforeEdgeTests
+inner.contentView.scroll(to: CGPoint(x: 780,y: 0)); outer.contentView.scroll(to: CGPoint(x: 0,y: 300))
+print("GRID_ITEM_EDGE_SCROLL_FOUR_EDGES_STABLE_DOCUMENT_ANCHOR_MULTI_SELECTION_RELEASE_AND_LOCK_OK")
 
 // A stationary pointer must follow controls moving beneath it, while repeated
 // refreshes over the same target must not resend its image to WindowServer.

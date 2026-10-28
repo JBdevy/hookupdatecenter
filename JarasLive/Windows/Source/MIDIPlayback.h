@@ -227,6 +227,10 @@ class MIDIPlayback {
         }
         reset();
     }
+    void swapPlaybackHeads() noexcept {
+        std::swap(expected[0],expected[1]);std::swap(scopes[0],scopes[1]);
+        for(auto &layer:layers)layer->synth[0].swap(layer->synth[1]);
+    }
     void reset(int head = -1) {
         for (int h = 0; h < 2; ++h)
             if (head < 0 || head == h) {

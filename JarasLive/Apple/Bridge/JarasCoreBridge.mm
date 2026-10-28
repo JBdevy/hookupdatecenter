@@ -196,6 +196,12 @@ static NSDictionary* trackJSON(const Track& t, bool includeWaveforms = true) {
     if(t.parentTrackID) d[@"parentTrackID"]=text(*t.parentTrackID);
     if(t.midiInput) d[@"midiInput"]=@(*t.midiInput);
     if(t.midiChannel) d[@"midiChannel"]=@(*t.midiChannel);
+    if(t.midiOutput) d[@"midiOutput"]=@(*t.midiOutput);
+    if(!t.programChanges.empty()) {
+        NSMutableArray* cues=[NSMutableArray array];
+        for(const auto& cue:t.programChanges) [cues addObject:@{@"id":text(cue.id),@"position":@(cue.position),@"program":@(cue.program),@"channel":@(cue.channel),@"name":text(cue.name),@"output":cue.output ? @(*cue.output) : [NSNull null]}];
+        d[@"programChanges"]=cues;
+    }
     if(t.inputPatch) d[@"inputPatch"]=patchJSON(*t.inputPatch);
     if(t.importedTimecodeItems) d[@"importedTimecodeItems"]=@YES;
     if(t.timecode) d[@"timecode"]=timecodeJSON(*t.timecode);
@@ -389,6 +395,8 @@ static Track readTrack(NSDictionary* td) {
             if(td[@"parentTrackID"] && td[@"parentTrackID"] != NSNull.null) t.parentTrackID=str(td[@"parentTrackID"]);
             if(td[@"midiInput"] && td[@"midiInput"] != NSNull.null) t.midiInput=int(number(td[@"midiInput"]));
             if(td[@"midiChannel"] && td[@"midiChannel"] != NSNull.null) t.midiChannel=int(number(td[@"midiChannel"]));
+            if(td[@"midiOutput"] && td[@"midiOutput"] != NSNull.null) t.midiOutput=int(number(td[@"midiOutput"]));
+            for(NSDictionary* cue in array(td[@"programChanges"] ?: @[])) t.programChanges.push_back({str(cue[@"id"]),number(cue[@"position"]),(int)number(cue[@"program"]),(int)number(cue[@"channel"]),str(cue[@"name"] ?: @""), cue[@"output"] && cue[@"output"] != [NSNull null] ? std::optional<int>((int)number(cue[@"output"])) : std::nullopt});
             if(td[@"secondaryPatch"] && td[@"secondaryPatch"]!=NSNull.null) t.secondaryPatch=readPatch(td[@"secondaryPatch"]);
             if(td[@"patch"] && td[@"patch"] != NSNull.null) t.patch=readPatch(td[@"patch"]);
             if(td[@"outputs"] && td[@"outputs"] != NSNull.null) t.outputs=readPatches(td[@"outputs"]);

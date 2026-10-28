@@ -118,7 +118,7 @@ void orderSpecialTracks(Project& project) {
         for (auto& marker : *song.markers) if (!marker.tempoBPM && endpoints.count(marker.id)) { marker.section = true; marker.loopSection = true; }
     }
     const auto rank = [](const Track& track) {
-        return track.role.id == "timecode" ? 0 : track.role.id == "teleprompt" ? 1 : track.role.id == "teleprompt2" ? 2 : track.role.id == "chords" ? 3 : track.role.id == "vinhetas" ? 4 : track.role.id == "generatedClick" ? 5 : track.role.id == "video" ? 6 : 7;
+        return track.role.id == "programChange" ? -1 : track.role.id == "timecode" ? 0 : track.role.id == "teleprompt" ? 1 : track.role.id == "teleprompt2" ? 2 : track.role.id == "chords" ? 3 : track.role.id == "vinhetas" ? 4 : track.role.id == "generatedClick" ? 5 : track.role.id == "video" ? 6 : 7;
     };
     for (auto& song : project.songs) {
         const auto earlier = [&](const Track& a, const Track& b) { return rank(a) < rank(b); };
@@ -268,7 +268,7 @@ void validate(const Project& p) {
     if (p.masterSecondaryPatch) validatePatch(*p.masterSecondaryPatch, false, false, true);
     if (p.masterOutputs) for (const auto& patch : *p.masterOutputs) validatePatch(patch, false, false, true);
     std::set<ID> ids{p.id}, songIds;
-    int timecodeTracks = 0, clickTracks = 0, vinhetasTracks = 0;
+    int programChangeTracks = 0, timecodeTracks = 0, clickTracks = 0, vinhetasTracks = 0;
     auto unique = [&](const ID& id) { require(!id.empty() && ids.insert(id).second, "Duplicate or empty UUID"); };
     for (const auto& s : p.songs) {
         validateRouting(s);
@@ -288,7 +288,7 @@ void validate(const Project& p) {
             ancestors.push_back(t.id);
             unique(t.id);
             const auto fixed = fixedTrackName(t.role);
-            require(fixed.empty() || ((t.name == fixed || (t.role.id == "teleprompt" && t.name == "Teleprompter")) && (!t.solo || t.role.id == "video" || t.role.id == "generatedClick") && !t.parentTrackID), "Invalid special track");
+            require(fixed.empty() || ((t.name == fixed || (t.role.id == "teleprompt" && t.name == "Teleprompter")) && (!t.solo || t.role.id == "video" || t.role.id == "generatedClick" || t.role.id == "programChange") && !t.parentTrackID), "Invalid special track");
             const bool textTrack = isTeleprompterRole(t.role) || t.role.id == "chords";
             if (textTrack || t.role.id == "video") {
                 std::vector<const AudioClip*> ordered;
@@ -306,6 +306,20 @@ void validate(const Project& p) {
             }
             require(!textTrack || (!t.mute && !t.fxJSON && !t.audioFile && !t.midiInput && !t.midiChannel && !t.recordingFormat && !t.recordingChannels), "Text tracks cannot contain audio controls");
             if (t.role.id == "vinhetas") require(++vinhetasTracks <= 1, "Only one VINHETAS-FX track is allowed");
+            if (t.role.id == "programChange") {
+                require(++programChangeTracks <= 1, "Only one Program Change track is allowed");
+                require(t.clips.empty() && !t.audioFile && !t.fxJSON && !t.parentTrackID && !t.inputPatch && !t.recordingChannels,
+                        "Program Change tracks accept only program markers");
+                std::set<ID> ids;
+                std::vector<double> positions;for(const auto &m:t.programChanges)positions.push_back(m.position);
+                std::sort(positions.begin(),positions.end());double first=-std::numeric_limits<double>::infinity();int count=0;
+                for(double at:positions){if(std::abs(at-first)>=.000001){first=at;count=0;}require(++count<=6,"Only six Program Change markers are allowed at the same position");}
+                for (const auto &marker : t.programChanges)
+                    require(!marker.id.empty() && finite(marker.position) && marker.position >= 0 && marker.program >= 0 && marker.program <= 127 &&
+                            marker.channel >= 1 && marker.channel <= 16 && ids.insert(marker.id).second && (!marker.output || (*marker.output>=1 && *marker.output<=6)),
+                            "Invalid Program Change marker");
+            } else require(t.programChanges.empty() && !t.midiOutput, "Program Change settings require a Program Change track");
+            require(!t.midiOutput || (*t.midiOutput >= 1 && *t.midiOutput <= 6), "Invalid MIDI output");
             if (t.role.id == "timecode") require(++timecodeTracks <= 1, "Only one Timecode track is allowed");
             if (t.role.id == "generatedClick") {
                 require(++clickTracks <= 1, "Only one Click track is allowed");
@@ -318,7 +332,7 @@ void validate(const Project& p) {
             require(!t.color || *t.color <= 0xffffff, "Invalid track color");
             require(!t.heightScale || (finite(*t.heightScale) && *t.heightScale >= 0.1 && *t.heightScale <= 10), "Invalid track height");
             require(!t.midiChannel || (*t.midiChannel >= 1 && *t.midiChannel <= 16), "Invalid MIDI channel");
-            require(!t.midiInput || (*t.midiInput >= 1 && *t.midiInput <= 3), "Invalid MIDI input");
+            require(!t.midiInput || (*t.midiInput >= 1 && *t.midiInput <= 6) || (t.role.id == "programChange" && *t.midiInput == -1), "Invalid MIDI input");
             if (t.inputPatch) validatePatch(*t.inputPatch, false);
             if (t.stereoLinkPartner) {
                 const auto partner = std::find_if(s.tracks.begin(), s.tracks.end(), [&](const auto& other) { return other.id == *t.stereoLinkPartner; });

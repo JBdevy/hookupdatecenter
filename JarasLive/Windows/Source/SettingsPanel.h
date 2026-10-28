@@ -573,15 +573,15 @@ class SettingsPanel final : public Component, private Timer {
         StringArray choices{"Nenhum"};
         for (const auto &device : inputs)
             choices.add(device.name);
-        for (int slot = 0; slot < 3; ++slot) {
+        for (int slot = 0; slot < 6; ++slot) {
             const auto key = "catlive.midi.slot" + String(slot + 1);
             const auto current = preferences.value(key).toString();
             int selectedInput = 1;
             for (int i = 0; i < inputs.size(); ++i)
                 if (inputs[i].identifier == current)
                     selectedInput = i + 2;
-            label("MIDI " + String(slot + 1), 154 + slot * 64);
-            choice("MIDI " + String(slot + 1), choices, selectedInput, 110, 154 + slot * 64, 350,
+            label("MIDI " + String(slot + 1), 112 + slot * 42);
+            choice("MIDI " + String(slot + 1), choices, selectedInput, 110, 112 + slot * 42, 350,
                    [this, inputs, key, slot](int id) {
                        const auto previous = preferences.value(key).toString();
                        const String next = id > 1 ? inputs[id - 2].identifier : String();
@@ -592,7 +592,7 @@ class SettingsPanel final : public Component, private Timer {
                        }
                        if (previous.isNotEmpty()) {
                            bool used = false;
-                           for (int i = 1; i <= 3; ++i)
+                           for (int i = 1; i <= 6; ++i)
                                used |=
                                    preferences.value("catlive.midi.slot" + String(i)).toString() ==
                                    previous;
@@ -605,24 +605,24 @@ class SettingsPanel final : public Component, private Timer {
                        saveAudio();
                    });
         }
-        label(String::fromUTF8("Saída MIDI"), 352, 26, true);
-        choices = {"Nenhum"};
-        int selectedOutput = 1;
-        for (int i = 0; i < outputs.size(); ++i) {
-            choices.add(outputs[i].name);
-            if (outputs[i].identifier == session.audio.devices.getDefaultMidiOutputIdentifier())
-                selectedOutput = i + 2;
+        label(String::fromUTF8("Saídas MIDI"), 382, 26, true);
+        choices = {"Nenhum"}; for (const auto &output : outputs) choices.add(output.name);
+        for (int slot = 0; slot < 6; ++slot) {
+            const auto key = "catlive.midi.outputSlot" + String(slot + 1);
+            const auto current = preferences.value(key, slot == 0 ? session.audio.devices.getDefaultMidiOutputIdentifier() : String()).toString();
+            int selected = 1; for (int i = 0; i < outputs.size(); ++i) if (outputs[i].identifier == current) selected = i + 2;
+            label("MIDI " + String(slot + 1), 426 + slot * 42);
+            choice("MIDI " + String(slot + 1), choices, selected, 110, 426 + slot * 42, 350,
+                [this, outputs, key, slot](int id) {
+                    const String next = id > 1 ? outputs[id-2].identifier : String();
+                    const auto result = preferences.set(key,next); if (result.failed()) { error(result.getErrorMessage()); return; }
+                    session.audio.setMIDIOutputSlot(slot,next);
+                    if (slot == 0) session.audio.devices.setDefaultMidiOutputDevice(next);
+                    saveAudio();
+                });
         }
-        choice(String::fromUTF8("Saída MIDI"), choices, selectedOutput, 24, 398, 430,
-               [this, outputs](int id) {
-                   session.audio.devices.setDefaultMidiOutputDevice(
-                       id > 1 ? outputs[id - 2].identifier : String());
-                   saveAudio();
-               });
-        if (outputs.isEmpty())
-            label(String::fromUTF8("Nenhuma saída MIDI"), 442, 26, false, theme::secondary);
-        button(localization::translate("Atualizar dispositivos"), 24, 490, 190, [this] { refreshLater(); });
-        contentHeight = 550;
+        button(localization::translate("Atualizar dispositivos"),24,700,190,[this]{refreshLater();});
+        contentHeight = 760;
     }
 };
 } // namespace catlive

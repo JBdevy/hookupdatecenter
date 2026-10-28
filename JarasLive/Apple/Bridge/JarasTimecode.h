@@ -25,3 +25,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)configurePosition:(double)position hostTime:(uint64_t)hostTime running:(BOOL)running loopStart:(double)loopStart loopEnd:(double)loopEnd sampleTime:(double)sampleTime;
 @end
 NS_ASSUME_NONNULL_END
+
+NS_ASSUME_NONNULL_BEGIN
+@interface JarasProgramChangeSender : NSObject
+- (void)setMarkers:(NSArray<NSDictionary*>*)markers destination:(int32_t)destination muted:(BOOL)muted;
+- (void)setPosition:(double)position subPosition:(double)subPosition running:(BOOL)running subRunning:(BOOL)subRunning hostTime:(uint64_t)hostTime promotion:(uint64_t)promotion;
+- (void)stop;
+@end
+NS_ASSUME_NONNULL_END

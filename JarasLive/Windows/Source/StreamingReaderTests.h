@@ -194,6 +194,16 @@ inline void retirementDuringRead(const File& directory, bool slowOpen = false) {
 }
 template <typename Register>
 void registerTests(const File& directory, Register&& test) {
+    test("Offline export reads PCM without a realtime fill worker", [&] {
+        const auto file=directory.getChildFile("direct-offline.sched"); file.replaceWithText("fixture");
+        Fixture fixture; AudioFormatManager formats; formats.registerFormat(new Format(fixture),true);
+        TimeSliceThread fill("Offline test intentionally stopped");
+        StreamingReader::Service service(formats,fill);
+        StreamingReader::Metadata metadata;metadata.format="Scheduling fixture";metadata.sampleRate=48000;metadata.frames=48000*16;metadata.channels=2;
+        StreamingReader reader(file,metadata,service);reader.setOffline(true,true);
+        for(int64 at : {int64(0),int64(70000),int64(3000),int64(400000)})verifyPCM(reader,at);
+        require(fill.getNumClients()==0 && fixture.opened==1,"Offline export waited on the realtime reader service");
+    });
     test("Prepared Play activates forward streaming before the onset reserve runs out", [&] {
         const auto folder = directory.getChildFile("play-forward-handoff");
         require(folder.createDirectory().wasOk(), "Cannot create handoff fixture");

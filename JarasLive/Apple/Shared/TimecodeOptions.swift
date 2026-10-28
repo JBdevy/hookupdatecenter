@@ -19,8 +19,9 @@ struct TimecodeOptions: View {
             if settings.mode == "mtc" {
                 Picker("MIDI output", selection: value(\.midiDestination)) {
                     Text(JarasLocalization.string("Default output") + " · " + audio.midiOutputTitle).tag(Int32(0))
+                    ForEach(0..<6, id: \.self) { slot in Text(audio.midiOutputSlotTitle(slot)).tag(AudioDeviceSettings.midiOutputSlotID(slot)) }
                     ForEach(audio.midiOutputs) { port in Text(port.name).tag(port.id) }
-                    if settings.midiDestination != 0 && !audio.midiOutputs.contains(where: { $0.id == settings.midiDestination }) { Text("Unavailable").tag(settings.midiDestination) }
+                    if (settings.midiDestination > -1_000_001 || settings.midiDestination < -1_000_006) && settings.midiDestination != 0 && !audio.midiOutputs.contains(where: { $0.id == settings.midiDestination }) { Text("Unavailable").tag(settings.midiDestination) }
                 }
             }
         }

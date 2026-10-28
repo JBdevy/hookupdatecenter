@@ -1,5 +1,6 @@
 #pragma once
 #include "Workspace.h"
+#include "PatchPanel.h"
 #include "MIDIItemExport.h"
 #include "FloatingControlTests.h"
 #include "ProjectDeletionPanel.h"
@@ -7,6 +8,30 @@
 #include "SetlistRows.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void tabbedPatchWindow(const File &directory) {
+        using floatingControlTests::require;
+        Session session; session.inspection=true; session.audio.prepareOffline(48000);
+        auto project=floatingControlTests::fixture();session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getChildFile("patch-window-ui.json"));
+        Component tabs;tabs.setSize(1200,800);tabs.addAndMakeVisible(workspace);workspace.setBounds(tabs.getLocalBounds());
+        DocumentWindow root("Tabbed workspace",theme::background,0);root.setContentNonOwned(&tabs,true);root.setVisible(true);
+        Workspace::showPanel("Patch",std::make_unique<PatchPanel>(session,project.songs.front().tracks.front().id,[](String){}),360,500);
+        floatingControlTests::pump();
+        DocumentWindow *patchWindow=nullptr;
+        for(int i=0;i<Desktop::getInstance().getNumComponents();++i)
+            if(auto *window=dynamic_cast<DocumentWindow*>(Desktop::getInstance().getComponent(i)))
+                if(dynamic_cast<PatchPanel*>(window->getContentComponent()))patchWindow=window;
+        require(patchWindow!=nullptr,"Patch was not opened from the tab host");
+        require(!patchWindow->isCurrentlyModal() && Component::getCurrentlyModalComponent()==nullptr,"Patch blocked the workspace");
+        require(patchWindow->getTitleBarHeight()==0 && !patchWindow->isUsingNativeTitleBar(),"Patch retained a title bar");
+        require(patchWindow->getCloseButton()==nullptr && patchWindow->getMinimiseButton()==nullptr && patchWindow->getMaximiseButton()==nullptr,"Patch retained window chrome buttons");
+        TextButton *close=nullptr;
+        for(auto *child:patchWindow->getContentComponent()->getChildren())
+            if(auto *button=dynamic_cast<TextButton*>(child))close=button;
+        require(close!=nullptr,"Patch lost its bottom Close button");close->onClick();
+        require(!patchWindow->isVisible(),"Bottom Close did not close the modeless Patch");
+        floatingControlTests::pump();
+    }
     static void projectReplacement(const File &directory) {
         using floatingControlTests::require;
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
@@ -316,6 +341,8 @@ struct WorkspaceLayoutTests {
         if(source.isNotEmpty())project=ProjectCodec::decode(ProjectCodec::read(File(source)));
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);
         session.core.loadProject(project);
+        if(source.isNotEmpty() && SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_AUDIO",{})=="1")
+            session.audio.prepareSong(*session.song(),File(source).getParentDirectory(),{},&session.project());
         Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("tempo-ui-preferences",".json"));
         w.setSize(1366,900);w.projectOpened(false);w.pixelsPerSecond=4;w.rebuild();
         require(session.song()&&!session.song()->parts.empty(),"Tempo profile needs a region");
@@ -344,6 +371,43 @@ struct WorkspaceLayoutTests {
             require(std::abs(session.tempoBPM()-initial)<.00001&&!session.canRedo(),"Tempo redo did not restore full history");
         }
         directory.getChildFile("tempo-ui-profile.json").replaceWithText(JSON::toString(measurements,true));
+    }
+    static void pitchResponsiveness(const File &directory) {
+        using floatingControlTests::require;
+        const auto source=SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_PROJECT",{});
+        auto project=floatingControlTests::fixture();
+        if(source.isNotEmpty())project=ProjectCodec::decode(ProjectCodec::read(File(source)));
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);
+        session.core.loadProject(project);
+        if(source.isNotEmpty())session.audio.prepareSong(*session.song(),File(source).getParentDirectory(),{},&session.project());
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("pitch-ui-preferences",".json"));
+        w.setSize(1366,900);w.projectOpened(false);w.pixelsPerSecond=4;w.rebuild();
+        const auto original=session.song()->parts.front();
+        session.command(jaras::CommandKind::selectRegion,original.id);
+        int fullRebuilds=0;const auto changed=session.changed;
+        session.changed=[&]{++fullRebuilds;if(changed)changed();};
+        Array<var> measurements;
+        for(bool playing:{false,true}) {
+            if(playing)session.command(jaras::CommandKind::play);
+            for(int semitones:{1,2,0,3,0}) {
+                const auto start=Time::getMillisecondCounterHiRes();
+                session.setRegionPitch(original.id,semitones,regionPitch::defaults(*session.song(),false),regionPitch::defaults(*session.song(),true));
+                const auto changedAt=Time::getMillisecondCounterHiRes();
+                w.createComponentSnapshot(w.getLocalBounds());
+                auto row=object();put(row,"playing",playing);put(row,"semitones",semitones);
+                put(row,"handler",changedAt-start);put(row,"paint",Time::getMillisecondCounterHiRes()-changedAt);measurements.add(row);
+                require(session.transport().playing==playing,"Tuner changed transport state");
+            }
+            if(playing)session.command(jaras::CommandKind::stopAll);
+        }
+        require(fullRebuilds==0,"Pitch edit rebuilt unrelated track controls");
+        while(session.canUndo())session.undo();
+        const auto &restored=session.song()->parts.front();
+        require(restored.pitchSemitones==original.pitchSemitones && restored.pitchTrackIDs==original.pitchTrackIDs && restored.pitchGroupIDs==original.pitchGroupIDs,
+                "Tuner Undo did not restore inherited/default targets exactly");
+        while(session.canRedo())session.redo();
+        require(session.song()->parts.front().pitchSemitones==0,"Tuner Redo lost last adjustment");
+        directory.getChildFile("pitch-ui-profile.json").replaceWithText(JSON::toString(measurements,true));
     }
     static void immediateTrackScroll(const File &directory) {
         using floatingControlTests::require;
@@ -665,6 +729,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Item context unifies the full selection per track with audio, MIDI, result selection and Undo; LR swap preserves unselected items",[&]{WorkspaceLayoutTests::unifyItems(directory);});
     test("Generated MIDI and text items advance edit cursor without seeking playback",[&]{WorkspaceLayoutTests::generatedItems(directory);});
     test("Setlist transport gestures retain grid geometry and avoid workspace rebuilds",[&]{WorkspaceLayoutTests::setlistResponsiveness(directory);});
+    test("Tuner gestures retain the project and audio graph while playing and stopped",[&]{WorkspaceLayoutTests::pitchResponsiveness(directory);});
     test("Tempo gestures update grid and preserve Undo and Redo",[&]{WorkspaceLayoutTests::tempoResponsiveness(directory);});
     test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
     test("Empty track tail matches Mac and appending preserves vertical scroll",[&]{WorkspaceLayoutTests::trackTail(directory);});

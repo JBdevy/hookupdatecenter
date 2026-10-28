@@ -657,6 +657,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var selectRow: (CGFloat) -> Void = { _ in }
     var pointerDown: (NSEvent) -> Void = { _ in }
     var marqueeBegan: () -> Void = {}
+    var itemMoveBegan: () -> Void = {}
     var separateAudio: ((UUID) -> Void)? = nil
     var canSeparateAudio: ((UUID) -> Bool)? = nil
     var fileLocation: ((UUID) -> URL?)? = nil
@@ -686,6 +687,7 @@ struct GridSelectionInput: NSViewRepresentable {
         view.updateSelection(selected)
         view.fileLocation = fileLocation; view.separateAudio = separateAudio; view.canSeparateAudio = canSeparateAudio
         view.marqueeBegan = marqueeBegan
+        view.itemMoveBegan = itemMoveBegan
         view.renameItem = renameItem; view.exportMIDI = exportMIDI
         view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
@@ -786,6 +788,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     var selected = Set<UUID>()
     var selectionChanged: ((Set<UUID>) -> Void)?
     var marqueeBegan: (() -> Void)?
+    var itemMoveBegan: (() -> Void)?
     var createRegion: ((UUID) -> Void)?
     var resize: ((UUID, Bool, CGFloat, Bool) -> Void)?
     var fadeShape: ((UUID, Bool, Bool, Double, Bool) -> Void)?
@@ -835,7 +838,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private var pointerMonitor: Any?
     private var activeButton: Int?
     private var anchorInWindow = CGPoint.zero
-    private var selectionPointerInWindow = CGPoint.zero
+    private var edgePointerInWindow = CGPoint.zero
     private var selectionScrollTimer: Timer?
     private var lastSelectionScrollTime = 0.0
     override var isFlipped: Bool { true }
@@ -845,6 +848,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let local = convert(point, from: superview), viewport = coordinates.viewport
         guard bounds.contains(local), visibleRect.contains(local), viewport.contains(local),
               local.y >= viewport.minY + headerHeight else { return nil }
+        if let host = window?.contentView,
+           let head = NativeTimelineOverlayInputRegistration.hit(in: host, point: convert(local, to: nil)) { return head }
         if let extra = extraBodyHit?(convert(local, to: nil)) { return extra }
         // Returning nil allowed the hosting view underneath to reset edge/fade
         // cursors after our handler. Ruler and floating editors stay separate.
@@ -989,7 +994,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         return false
     }
     private func timelinePoint(_ event: NSEvent) -> CGPoint {
-        let point = convert(event.locationInWindow, from: nil)
+        timelinePoint(atWindowPoint: event.locationInWindow)
+    }
+    private func timelinePoint(atWindowPoint location: CGPoint) -> CGPoint {
+        let point = convert(location, from: nil)
         let space = coordinates
         return CGPoint(x: point.x - space.viewport.minX + space.origin.x, y: point.y - space.viewport.minY + space.origin.y)
     }
@@ -1007,6 +1015,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
               !isHiddenOrHasHiddenAncestor else { return false }
         let down = event.type == .leftMouseDown || event.type == .rightMouseDown
         if down {
+            if let host = window?.contentView,
+               NativeTimelineOverlayInputRegistration.hit(in: host, point: event.locationInWindow) != nil { return false }
             let point = convert(event.locationInWindow, from: nil)
             let viewport = coordinates.viewport
             // Hosting can keep an obsolete input view attached during layout.
@@ -1029,6 +1039,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     func timelineInputGateChanged(blocked: Bool) {
         guard blocked else { return }
         stopSelectionScroll()
+        if let id = draggedItem, isItemMove { move?(id, .zero, .nan, true) }
         if let fadeItem {
             if let sCurve = fadeItem.sCurve { fadeShape?(fadeItem.item.id, fadeItem.left, sCurve, sCurve ? fadeItem.item.curve(fadeItem.left).sCurve : fadeItem.item.curve(fadeItem.left).curvature, false) }
             else { fade?(fadeItem.item.id, fadeItem.left, fadeItem.left ? fadeItem.item.fadeIn : fadeItem.item.fadeOut, false) }
@@ -1056,6 +1067,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     override func mouseDown(with event: NSEvent) {
         // This view consumes native clicks before later event monitors run.
         // Report the editing area before selecting the item's owning track.
+        stopSelectionScroll()
         collapseSelectionOnRelease = nil
         pointerDown?(event)
         window?.makeFirstResponder(self)
@@ -1126,7 +1138,9 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let start = convert(dragStart, from: nil), current = convert(event.locationInWindow, from: nil)
         let translation = CGSize(width: current.x - start.x, height: current.y - start.y)
         guard hasDragged || hypot(translation.width, translation.height) >= 3 else { return }
+        let began = !hasDragged
         hasDragged = true
+        if began && isItemMove { itemMoveBegan?() }
         if gainItem != nil || panItem != nil { valueTooltipPoint = current }
         if let fadeItem {
             if let sCurve = fadeItem.sCurve {
@@ -1149,9 +1163,25 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             liveHeaderGain = (id, value); needsDisplay = true
             gain?(id, value, false)
         }
-        else if movingAllowed { move?(id, translation, dragOrigin.y + translation.height, false) }
+        else if movingAllowed {
+            edgePointerInWindow = event.locationInWindow
+            updateItemMove(ended: false)
+            startEdgeScroll()
+        }
+    }
+    private var isItemMove: Bool {
+        draggedItem != nil && hasDragged && movingAllowed && resizingLeft == nil &&
+            gainItem == nil && panItem == nil && fadeItem == nil && pressedHeader == nil
+    }
+    private func updateItemMove(ended: Bool) {
+        guard let id = draggedItem, isItemMove else { return }
+        let point = timelinePoint(atWindowPoint: edgePointerInWindow)
+        let translation = CGSize(width: point.x - dragOrigin.x, height: point.y - dragOrigin.y)
+        let inside = coordinates.viewport.contains(convert(edgePointerInWindow, from: nil))
+        move?(id, translation, ended && !inside ? .nan : point.y, ended)
     }
     override func mouseUp(with event: NSEvent) {
+        stopSelectionScroll()
         if !hasDragged {
             if let id = collapseSelectionOnRelease { selected = [id]; selectionChanged?(selected) }
             else if draggedItem == nil, pendingSeek != nil, pressedHeader == nil {
@@ -1205,9 +1235,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             else if let panItem { pan?(id, panItem.draggingPan(by: translation.height), true) }
             else if let gainItem { gain?(id, gainItem.draggingGain(by: translation.height), true) }
             else if movingAllowed {
-                let point = convert(event.locationInWindow, from: nil)
-                let inside = coordinates.viewport.contains(point)
-                move?(id, translation, inside ? dragOrigin.y + translation.height : .nan, true)
+                edgePointerInWindow = event.locationInWindow
+                updateItemMove(ended: true)
             }
         }
         draggedItem = nil; hasDragged = false; movingAllowed = false; gainItem = nil; panItem = nil; liveHeaderPan = nil; liveHeaderGain = nil; valueTooltipPoint = nil; fadeItem = nil; liveFade = nil; needsDisplay = true
@@ -1318,17 +1347,20 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         window?.makeFirstResponder(self)
         anchor = timelinePoint(event)
         anchorInWindow = event.locationInWindow
-        selectionPointerInWindow = event.locationInWindow
+        edgePointerInWindow = event.locationInWindow
         additive = !event.modifierFlags.intersection([.shift, .command, .control]).isEmpty
         baseSelection = additive ? selected : []
         selectionRect = nil
     }
     override func rightMouseDragged(with event: NSEvent) {
         guard anchor != nil else { return }
-        selectionPointerInWindow = event.locationInWindow
+        edgePointerInWindow = event.locationInWindow
         guard selectionRect != nil || hypot(event.locationInWindow.x-anchorInWindow.x, event.locationInWindow.y-anchorInWindow.y) >= 3 else { return }
         if selectionRect == nil { marqueeBegan?() }
         updateMarqueeSelection()
+        startEdgeScroll()
+    }
+    private func startEdgeScroll() {
         if selectionScrollTimer == nil {
             lastSelectionScrollTime = ProcessInfo.processInfo.systemUptime
             let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
@@ -1348,7 +1380,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     private func updateMarqueeSelection() {
         guard let anchor else { return }
-        let space = coordinates, pointer = convert(selectionPointerInWindow, from: nil)
+        let space = coordinates, pointer = convert(edgePointerInWindow, from: nil)
         let point = CGPoint(
             x: min(space.viewport.maxX, max(space.viewport.minX, pointer.x)) - space.viewport.minX + space.origin.x,
             y: min(space.viewport.maxY, max(space.viewport.minY + headerHeight, pointer.y)) - space.viewport.minY + space.origin.y)
@@ -1363,10 +1395,20 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         needsDisplay = true
     }
     func advanceSelectionScroll(elapsed: TimeInterval) {
-        guard anchor != nil, selectionRect != nil, activeButton != nil,
+        let marquee = activeButton != nil && anchor != nil && selectionRect != nil
+        let itemMove = activeButton == 0 && isItemMove
+        guard marquee || itemMove,
               window != nil, window?.attachedSheet == nil, !interactionBlocked,
               !NativeTimelineInputGate.shared.isBlocked(window), !isHiddenOrHasHiddenAncestor else {
             stopSelectionScroll(); return
+        }
+        // A lock/deletion delivered during the gesture must stop both the
+        // preview and scrolling, even if the pointer is held motionless.
+        if itemMove, let id = draggedItem, item(id: id)?.movable != true {
+            move?(id, .zero, .nan, true)
+            draggedItem = nil; movingAllowed = false; hasDragged = false
+            heldItemGuide = nil; stopSelectionScroll(); needsDisplay = true
+            return
         }
         var scrolls: [NSScrollView] = [], parent = superview
         while let view = parent {
@@ -1374,7 +1416,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             parent = view.superview
         }
         guard let horizontal = scrolls.first, let vertical = scrolls.last, horizontal !== vertical else { return }
-        let viewport = coordinates.viewport, pointer = convert(selectionPointerInWindow, from: nil)
+        let viewport = coordinates.viewport, pointer = convert(edgePointerInWindow, from: nil)
         func velocity(_ value: CGFloat, _ low: CGFloat, _ high: CGFloat) -> CGFloat {
             let band = min(28, max(1, (high - low) / 3))
             if value < low + band { return -600 * min(1, max(0, (low + band - value) / band)) }
@@ -1395,7 +1437,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         }
         let movedX = scroll(horizontal, horizontal: true, delta: velocity(pointer.x, viewport.minX, viewport.maxX) * dt)
         let movedY = scroll(vertical, horizontal: false, delta: velocity(pointer.y, viewport.minY + headerHeight, viewport.maxY) * dt)
-        if movedX || movedY { updateMarqueeSelection() }
+        if movedX || movedY {
+            if marquee { updateMarqueeSelection() }
+            else { updateItemMove(ended: false) }
+        }
     }
     override func rightMouseUp(with event: NSEvent) {
         guard let anchor else { return }

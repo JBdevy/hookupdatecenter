@@ -11,7 +11,12 @@ source = source[source.index('@MainActor final class RecordingLaneLayout'):sourc
 Path(sys.argv[1]).write_text('import Foundation\nimport Combine\n' + source)
 grid = Path('Apple/Shared/TimelineGridView.swift').read_text()
 rows = grid[grid.index('@MainActor private struct TrackRowLayout {'):grid.index('\nprivate struct TimelineHeader:')]
-Path(sys.argv[2]).write_text('import Foundation\n' + rows.replace('@MainActor private struct TrackRowLayout', '@MainActor struct TrackRowLayout'))
+def declaration(needle):
+    first = grid.index(needle)
+    return grid[first:grid.index('\n}', first) + 2]
+cache = declaration('@MainActor private final class TrackLayoutCache').replace('private final class', 'final class')
+key = declaration('struct TimelineRenderKey:')
+Path(sys.argv[2]).write_text('import Foundation\n' + rows.replace('@MainActor private struct TrackRowLayout', '@MainActor struct TrackRowLayout') + '\n' + cache + '\n' + key)
 PYTHON
 swiftc -swift-version 5 Application/Controls/NativeFXParameter.swift Application/Project/{ProjectModels,TrackAutomation,ItemFade,ItemFadeCurve,MIDIItem,ProjectDocumentCodec,ProjectDocumentAppearance,MultiLoop,AudioFileRead,TimelineTempo,OutputPatch,TrackRouting,ClipRepetition,NativeFXSettings,RecordingOverview,StemProjectImporter,MediaFileNames,HookImportRules}.swift "$build_dir/Layout.swift" "$build_dir/Rows.swift" Tests/Apple/RecordingLaneLayoutTests.swift -o "$build_dir/test"
 "$build_dir/test"

@@ -3,6 +3,15 @@
 #include "ClipTempo.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
+struct ProgramChangeLanes {
+    std::map<ID,int> lanes;int count=1;
+    explicit ProgramChangeLanes(const jaras::Track &track) {
+        std::vector<const jaras::ProgramChangeMarker*> ordered;for(const auto &m:track.programChanges)ordered.push_back(&m);
+        std::stable_sort(ordered.begin(),ordered.end(),[](auto a,auto b){return a->position<b->position;});
+        double start=-std::numeric_limits<double>::infinity();int lane=0;
+        for(auto *m:ordered){if(std::abs(m->position-start)>=.000001){start=m->position;lane=0;}lanes[m->id]=lane++;count=std::max(count,lane);}
+    }
+};
 // ProjectModels.TrackLanes: simultaneous items occupy distinct visual lanes.
 struct ItemLanes {
     std::map<ID, int> lanes;
@@ -112,7 +121,7 @@ struct ItemHeader {
         const float x = visible.getX() + 2.6f, y = bounds.getY(), width = visible.getWidth();
         titleLeft = visible.getX() + 6;
         if (!editable) return;
-        if (width < 21.7f) { titleLeft = visible.getRight(); return; }
+        if (width < 23.7f) { titleLeft = visible.getRight(); return; }
         float next = x;
         auto append = [&](juce::Rectangle<float>& target, float w, float gap = 1.f) {
             if (next + w + 2 > visible.getRight()) return false;
@@ -122,17 +131,17 @@ struct ItemHeader {
         };
         const auto readoutFont = theme::semiboldFont(9);
         const float nameWidth = std::max(24.f, std::ceil(GlyphArrangement::getStringWidth(readoutFont, title.isNotEmpty() ? title : text(clip.name)))) + 3.f;
-        const float gainThreshold = 4.6f + 14.7f + nameWidth + 16.5f + 1.f;
-        const float fxThreshold = gainThreshold + ((!midi || clip.fxJSON) ? 18.f : 0.f);
+        const float gainThreshold = 4.6f + 16.7f + nameWidth + 16.5f + 1.f;
+        const float fxThreshold = gainThreshold + ((!midi || clip.fxJSON) ? 20.f : 0.f);
         const float panThreshold = fxThreshold + (!midi ? 17.5f : 0.f);
         if (width >= gainThreshold) {
             append(gainRect,16.5f);
-        } else if (width >= 2.6f + 14.7f + nameWidth + 16.5f + 1.f) {
+        } else if (width >= 2.6f + 16.7f + nameWidth + 16.5f + 1.f) {
             append(gainRect,16.5f);
         }
-        if (!append(muteRect,13.7f)) return;
+        if (!append(muteRect,15.7f)) return;
         if (width < fxThreshold) return;
-        if ((!midi || clip.fxJSON) && !append(fxRect,17)) return;
+        if ((!midi || clip.fxJSON) && !append(fxRect,19)) return;
         if (!midi) {
             if (width < panThreshold || !append(panRect,16.5f)) return;
         }
@@ -207,9 +216,9 @@ struct ItemHeader {
         g.saveState(); g.reduceClipRegion(visible.getSmallestIntegerContainer());
         auto button = [&](juce::Rectangle<float> r, String caption, bool active, bool bypass = false) {
             if (r.isEmpty()) return;
-            r=r.withSizeKeepingCentre(r.getWidth(),std::min(9.f,r.getHeight()));
+            r=r.withSizeKeepingCentre(r.getWidth(),std::min(11.f,r.getHeight()));
             g.setColour(bypass ? Colour(0xffff453a) : Colours::white.withAlpha(.10f)); g.fillRect(r);
-            g.setColour(active ? Colour(0xff33ff8c) : Colours::white); g.setFont(theme::semiboldFont(8.5f)); g.drawText(caption,r,Justification::centred);
+            g.setColour(active ? Colour(0xff33ff8c) : Colours::white); g.setFont(theme::semiboldFont(5.5f)); g.drawText(caption,r,Justification::centred);
         };
         button(muteRect,"M",false,clip.muted);
         const bool hasFX = clip.fxJSON && !list(get(JSON::parse(text(*clip.fxJSON)),"inserted")).isEmpty();

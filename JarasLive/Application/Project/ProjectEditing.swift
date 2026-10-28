@@ -355,10 +355,10 @@ public extension Project {
     }
     /// Special tracks keep a stable prefix; normal tracks and their groups retain their order.
     mutating func orderSpecialTracks() {
-        let order: [TrackKind] = [.timecode, .teleprompt, .teleprompt2, .chords, .click, .video, .standard]
+        let order: [TrackKind] = [.programChange, .timecode, .teleprompt, .teleprompt2, .chords, .click, .video, .standard]
         for song in songs.indices {
             let tracks = songs[song].tracks
-            func rank(_ track: Track) -> Int { track.role.rawValue == "vinhetas" ? 7 : order.firstIndex(of: track.kind)! * 2 }
+            func rank(_ track: Track) -> Int { track.role.rawValue == "vinhetas" ? 9 : order.firstIndex(of: track.kind)! * 2 }
             let ranks = tracks.map(rank)
             guard zip(ranks, ranks.dropFirst()).contains(where: { $0.0 > $0.1 }) else { continue }
             songs[song].tracks = tracks.enumerated().sorted { lhs, rhs in

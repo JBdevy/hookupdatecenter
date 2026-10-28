@@ -237,7 +237,7 @@ struct SmoothSeekPanel: View {
                 .accessibilityLabel("Cancel queued section")
                 .padding(4)
             #endif
-            SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing) { secondary in
+            SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing, playing: transport.playing) { secondary in
                 bank(region: secondary ? queued : current, secondary: secondary)
             }
         }.background(JarasTheme.panel)
@@ -459,6 +459,7 @@ struct SectionListTabs<Content: View>: View {
     let current: String?
     let queued: String?
     var subPlaying = false
+    var playing = false
     @ViewBuilder let content: (Bool) -> Content
     @State private var secondary = false
     var body: some View {
@@ -472,13 +473,9 @@ struct SectionListTabs<Content: View>: View {
     }
     private func tab(_ name: String?, secondary target: Bool) -> some View {
         Button { secondary = target } label: {
-            VStack(spacing: 3) {
-                Text(LocalizedStringKey(target ? (subPlaying ? "Sub Play" : "Queued") : "Playing / Selected"))
-                    .font(.jarasSystem(size: 9, weight: .medium)).lineLimit(1).minimumScaleFactor(0.5)
-                Text(verbatim: name ?? "—").font(.jarasSystem(size: 12, weight: .semibold))
-                    .lineLimit(3).minimumScaleFactor(0.45).multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }.padding(4).frame(maxWidth: .infinity).frame(height: 42)
+            Text(LocalizedStringKey(target ? "Queued" : playing ? "Now playing" : "Selected song"))
+                .font(.jarasSystem(size: 13, weight: .semibold)).lineLimit(1)
+                .frame(maxWidth: .infinity).frame(height: 42)
                 .foregroundStyle(secondary == target ? Color.white : JarasTheme.secondary)
                 #if os(iOS)
                 .background {

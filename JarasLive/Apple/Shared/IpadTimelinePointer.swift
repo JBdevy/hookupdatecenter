@@ -191,6 +191,7 @@ final class IpadGridPointerRecognizer: UIGestureRecognizer {
     }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard touches.count == 1, let touch = touches.first, touch.type == .indirectPointer else { state = .failed; return }
+        if ProgramChangeHeadAnchorView.contains(touch) { state = .failed; return }
         // Let the same native contextMenu used by tracks and Setlist receive
         // right clicks on items. Empty-grid right drag still selects items.
         if event.buttonMask.contains(.secondary), IpadTimelinePointerContextMenu.contains(touch) { state = .failed; return }

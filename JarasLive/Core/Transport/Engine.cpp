@@ -24,6 +24,9 @@ void Engine::applyProjectEdit(Project project) {
     projectSync::requireWritable();
     if (project.id != project_.id) throw std::invalid_argument("Cannot edit another project");
     orderSpecialTracks(project); synchronizeTimecode(project); synchronizeRegionOwnership(project, &project_); validate(project);
+    commitProjectEdit(std::move(project));
+}
+void Engine::commitProjectEdit(Project project) {
     if (project_.projectSyncID) project.projectSyncID = project_.projectSyncID;
     const bool liveChanged = project_.regionSetlist && project_.regionSetlist->liveEnabled.value_or(false) !=
         (project.regionSetlist && project.regionSetlist->liveEnabled.value_or(false));
@@ -292,6 +295,7 @@ void Engine::addTrack(ID id, std::string name, TrackRole role) {
         Track track; track.id = std::move(id); track.name = fixedTrackName(role).empty() ? std::move(name) : fixedTrackName(role); track.role = std::move(role);
         // Match Swift Track.defaultStandardColor without recoloring decoded tracks.
         if (fixedTrackName(track.role).empty()) track.color = 0x828282;
+        if (track.role.id == "programChange") { track.midiInput=1; track.midiOutput=1; track.patch=OutputPatch{-1,2}; track.color=0x91a8ff; }
         if (track.role.id == "timecode") { track.timecode.emplace(); track.patch = OutputPatch{-1,2}; }
         song.tracks.push_back(std::move(track)); break;
     }
@@ -386,10 +390,14 @@ void Engine::setRegionInit(const ID& id, int count, bool bars) {
     throw std::invalid_argument("Unknown region");
 }
 void Engine::setRegionPitch(const ID& id, int semitones, std::vector<ID> tracks, std::vector<ID> groups) {
+    setRegionPitchState(id, semitones, std::move(tracks), std::move(groups));
+}
+void Engine::setRegionPitchState(const ID& id, std::optional<int> semitones,
+                                std::optional<std::vector<ID>> tracks, std::optional<std::vector<ID>> groups) {
     projectSync::requireWritable();
-    if (semitones < -12 || semitones > 12) throw std::invalid_argument("Invalid region pitch");
+    if (semitones && (*semitones < -12 || *semitones > 12)) throw std::invalid_argument("Invalid region pitch");
     for (auto& song : project_.songs) if (song.id == transport_.songId) {
-        for (const auto& identifiers : {tracks, groups}) for (const auto& target : identifiers)
+        for (const auto* identifiers : {&tracks, &groups}) if (*identifiers) for (const auto& target : **identifiers)
             if (std::none_of(song.tracks.begin(), song.tracks.end(), [&](const auto& t) { return t.id == target && fixedTrackName(t.role).empty(); })) throw std::invalid_argument("Invalid pitch track");
         for (auto& part : song.parts) if (part.id == id) {
             part.pitchSemitones = semitones; part.pitchTrackIDs = std::move(tracks); part.pitchGroupIDs = std::move(groups); return;
@@ -568,6 +576,18 @@ public:
     }
 };
 }
+Project Engine::timingSnapshot() {
+    TempoWaveformStorage waveforms(project_);
+    return project_;
+}
+void Engine::restoreTimingSnapshot(Project next) {
+    projectSync::requireWritable();
+    if (next.id != project_.id) throw std::invalid_argument("Cannot edit another project");
+    orderSpecialTracks(next); synchronizeTimecode(next); synchronizeRegionOwnership(next, &project_); validate(next);
+    TempoWaveformStorage waveforms(project_);
+    waveforms.transfer(next);
+    commitProjectEdit(std::move(next));
+}
 void Engine::setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing, bool retime) {
     projectSync::requireWritable();
     TempoWaveformStorage waveforms(project_);
@@ -712,7 +732,7 @@ void Engine::setClipText(const ID& id, std::string text) {
 }
 void Engine::setMIDIInput(const ID& id, int slot) {
     projectSync::requireWritable();
-    if(slot < 0 || slot > 3) throw std::invalid_argument("Invalid MIDI input");
+    if(slot < 0 || slot > 6) throw std::invalid_argument("Invalid MIDI input");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
         if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
         track.midiInput = slot == 0 ? std::nullopt : std::optional<int>(slot); return;
@@ -1327,7 +1347,7 @@ void Engine::execute(const Command& c) {
         if (c.target.empty() && c.kind == CommandKind::masterMono) { project_.masterMono = !project_.masterMono; return; }
         if (c.target.empty() && c.kind == CommandKind::solo) { project_.masterSolo = !project_.masterSolo; return; }
         for (auto& song : project_.songs) for (auto& track : song.tracks) if (track.id == c.target) {
-            if (!fixedTrackName(track.role).empty() && track.role.id != "video" && track.role.id != "generatedClick" && !(track.role.id == "timecode" && (c.kind == CommandKind::mute || c.kind == CommandKind::volume || c.kind == CommandKind::phase))) throw std::invalid_argument("This control is unavailable on a special track");
+            if (!fixedTrackName(track.role).empty() && track.role.id != "video" && track.role.id != "generatedClick" && !(track.role.id == "timecode" && (c.kind == CommandKind::mute || c.kind == CommandKind::volume || c.kind == CommandKind::phase)) && !(track.role.id == "programChange" && (c.kind == CommandKind::mute || c.kind == CommandKind::solo))) throw std::invalid_argument("This control is unavailable on a special track");
             if (c.kind == CommandKind::volume) track.volume = std::clamp(c.value, 0.0, std::pow(10.0, 12.0 / 20.0));
             if (c.kind == CommandKind::pan) track.pan = std::clamp(c.value, -1.0, 1.0);
             if (c.kind == CommandKind::phase) track.phaseInverted = !track.phaseInverted.value_or(false);

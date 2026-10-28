@@ -120,7 +120,7 @@ int main(int argc,char**argv){@autoreleasepool{
     expect([core setMIDIInput:midiTrack slot:2 error:&error],"select MIDI slot");
     snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect([snapshot[@"project"][@"songs"][0][@"tracks"][0][@"midiInput"] intValue]==2,"MIDI slot persists in snapshot");
-    expect(![core setMIDIInput:midiTrack slot:4 error:&error],"reject fourth MIDI slot");
+    expect(![core setMIDIInput:midiTrack slot:7 error:&error],"reject seventh MIDI slot");
     expect([core setMIDIInput:midiTrack slot:0 error:&error],"clear MIDI slot");
     snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect(snapshot[@"project"][@"songs"][0][@"tracks"][0][@"midiInput"]==nil,"cleared MIDI slot absent");

@@ -93,3 +93,46 @@ MainActor.assumeIsolated {
     precondition(drag.clipIndices(inTrack: 0, from: 100, through: 101) == [0, 1])
     print("TIMELINE_VISIBLE_CLIP_METADATA_ZOOM_REUSE_DRAG_STRUCTURAL_EDIT_OLD_GENERATION_OK")
 }
+
+MainActor.assumeIsolated {
+    let project = UUID()
+    var source = Project.empty(name: "Drag source after unlocking").songs[0]
+    var first = Track(id: UUID(), name: "First", role: .other)
+    let dragged = AudioClip(id: UUID(), name: "Move me", startTime: 10, duration: 5)
+    first.clips = [dragged, AudioClip(id: UUID(), name: "Later item", startTime: 7200, duration: 12)]
+    var second = Track(id: UUID(), name: "Destination", role: .other)
+    second.clips = [AudioClip(id: UUID(), name: "Existing destination", startTime: 300, duration: 9)]
+    source.tracks = [first, second]
+    let cache = TimelineItemSourceCache()
+    for revision: UInt64 in [1, 2, 3] { // Open, locked, unlocked.
+        let key = metadataKey(source, revision: revision, project: project)
+        let locations = cache.locations(song: source, key: key)
+        let original = locations[dragged.id]!
+        precondition(original.track == 0 && original.clip == 0)
+        for destination in [0, 1] {
+            var preview = source
+            var moved = preview.tracks[0].clips.remove(at: 0)
+            moved.startTime = 15
+            preview.tracks[destination].clips.append(moved)
+            let previewIndex = preview.tracks[destination].clips.firstIndex { $0.id == dragged.id }!
+            precondition(!source.tracks[destination].clips.indices.contains(previewIndex) ||
+                         source.tracks[destination].clips[previewIndex].id != dragged.id,
+                         "Fixture must reproduce the stale positional index during drag")
+            let resolved = source.tracks[original.track].clips[original.clip]
+            precondition(resolved.id == dragged.id && resolved.startTime == 10 && resolved.duration == 5,
+                         "Drag samples and mouse-up must retain the original item and start")
+            let retained = cache.locations(song: source, key: key)[dragged.id]!
+            precondition(retained.track == original.track && retained.clip == original.clip,
+                         "Preview movement must not replace source locations")
+        }
+    }
+    var edited = source
+    let moved = edited.tracks[0].clips.remove(at: 0)
+    edited.tracks[1].clips.append(moved)
+    // A new snapshot may be published before its render revision advances.
+    let next = cache.locations(song: edited, key: metadataKey(source, revision: 3, project: project))
+    precondition(next[dragged.id]!.track == 1 && next[dragged.id]!.clip == 1)
+    edited.tracks[1].clips.removeAll { $0.id == dragged.id }
+    precondition(cache.locations(song: edited, key: metadataKey(edited, revision: 3, project: project))[dragged.id] == nil)
+    print("DRAG_SOURCE_ID_SURVIVES_LOCK_UNLOCK_PREVIEW_REORDER_CROSS_TRACK_AND_REAL_EDIT_OK")
+}

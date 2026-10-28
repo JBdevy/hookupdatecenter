@@ -26,6 +26,18 @@ inline size_t end(const jaras::Song &song, size_t first) {
         ++last;
     return last;
 }
+// Insert a standard track directly after the anchor, inheriting the group
+// whose children occupy that position in the flattened mixer order.
+inline void insertAfter(jaras::Song &song, jaras::Track track, const ID &anchor) {
+    const auto at = index(song, anchor);
+    if (at < song.tracks.size() && jaras::fixedTrackName(song.tracks[at].role).empty()) {
+        const auto &selected = song.tracks[at];
+        const bool group = std::any_of(song.tracks.begin(), song.tracks.end(), [&](const auto &row) { return row.parentTrackID == selected.id; });
+        track.parentTrackID = group ? std::optional<ID>(selected.id) : selected.parentTrackID;
+        if (track.parentTrackID) track.patch = jaras::OutputPatch{-2,2};
+        song.tracks.insert(song.tracks.begin() + at + 1, std::move(track));
+    } else song.tracks.push_back(std::move(track));
+}
 inline bool silenced(const jaras::Song &song, const jaras::Track &track) {
     if (track.mute || !jaras::fixedTrackName(track.role).empty()) return track.mute;
     bool anySolo = false;

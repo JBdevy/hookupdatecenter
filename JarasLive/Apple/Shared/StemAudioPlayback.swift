@@ -857,6 +857,8 @@ struct TimecodePlaybackSpan {
     private var allowsTempoChanges = false
     private var voiceClockAnchors: [ObjectIdentifier: (node: AVAudioTime, player: AVAudioTime)] = [:]
     private var clockedIdlePlayers = Set<ObjectIdentifier>()
+    private var programChangeSender: JarasProgramChangeSender?
+    private var programChangeSignature = ""
     private var timecodeGenerator: JarasTimecodeGenerator?
     private var timecodeRoutes: [AVAudioUnitEffect] = []
     private var timecodeAnchor: (key: String, position: Double, host: Double)?
@@ -1651,6 +1653,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         let meter = TrackMeterLevel(); meters[id] = meter; return meter
     }
     func stop() {
+        programChangeSender?.stop()
         clockedIdlePlayers.removeAll(keepingCapacity: true)
         resettingStoppedConverters = true
         defer { resettingStoppedConverters = false; stoppedConverterMixers.removeAll(keepingCapacity: true) }
@@ -3110,20 +3113,20 @@ for sampler in samplers.values { sampler.silence() }
         #endif
         let slots = midiSlotsProvider()
         for (id, row) in tracks {
-            guard row.acceptsMIDI(status: status), let slot = row.midiInput, (1...3).contains(slot), slots.indices.contains(slot - 1), slots[slot - 1] == device,
+            guard row.acceptsMIDI(status: status), let slot = row.midiInput, (1...6).contains(slot), slots.indices.contains(slot - 1), slots[slot - 1] == device,
                   armedInstrumentTracks.contains(id) || status & 0xf0 != 0x90 || value == 0 else { continue }
             InstrumentKeyboardState.shared.receive(track: id, source: device, status: status, number: number, value: value)
         }
         #if os(macOS)
         for (id, row) in tracks {
-            guard row.acceptsMIDI(status: status), let slot = row.midiInput, (1...3).contains(slot), slots.indices.contains(slot-1), slots[slot-1] == device, let bus = trackBuses[id] else { continue }
+            guard row.acceptsMIDI(status: status), let slot = row.midiInput, (1...6).contains(slot), slots.indices.contains(slot-1), slots[slot-1] == device, let bus = trackBuses[id] else { continue }
             bus.effects.sendExternalMIDI(status: status, number: number, value: value)
         }
         #endif
 
 for (key,sampler) in samplers {
             let id = key.track
-            guard tracks[id]?.acceptsMIDI(status: status) == true, tracks[id]?.fx?.isEnabled(key.effect) == true, let slot = tracks[id]?.midiInput, (1...3).contains(slot), slots.indices.contains(slot-1), slots[slot-1] == device else { continue }
+            guard tracks[id]?.acceptsMIDI(status: status) == true, tracks[id]?.fx?.isEnabled(key.effect) == true, let slot = tracks[id]?.midiInput, (1...6).contains(slot), slots.indices.contains(slot-1), slots[slot-1] == device else { continue }
             guard armedInstrumentTracks.contains(id) || status & 0xf0 != 0x90 || value == 0 else { continue }
             sampler.sendStatus(status, data1: number, data2: value)
         }
@@ -3237,11 +3240,35 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         }
     }
     func updateTimecode(_ snapshot: ShowSnapshot) {
-        guard masterConfigured, outputAllowed, directory != nil,
-              let song = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }) else { return }
+        guard let song = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }) else { return }
+        if !masterConfigured || directory == nil { updateProgramChanges(song: song, transport: snapshot.transport); return }
+        guard outputAllowed else { programChangeSender?.stop(); return }
         updateTimecode(song: song, transport: snapshot.transport)
     }
+    private func updateProgramChanges(song: Song, transport: TransportState) {
+        guard realtime, outputAllowed else { programChangeSender?.stop(); return }
+        guard let track = song.tracks.first(where: { $0.kind == .programChange }) else {
+            programChangeSender?.stop(); programChangeSignature = ""; return
+        }
+        if programChangeSender == nil { programChangeSender = JarasProgramChangeSender() }
+        let muted = track.mute || (song.tracks.contains(where: { $0.solo }) && !track.solo)
+        let markers = track.programChanges ?? []
+        let destinations = (0..<6).map { AudioDeviceSettings.shared.resolvedMIDIDestination(AudioDeviceSettings.midiOutputSlotID($0)) }
+        let prepared: [[String: Any]] = markers.map { marker in
+            let slot = (marker.output ?? track.midiOutput ?? 0) - 1
+            let destination: Int32 = (0..<6).contains(slot) ? destinations[slot] : 0
+            return ["id": marker.id.uuidString, "position": marker.position, "program": marker.program, "channel": marker.channel, "destination": destination]
+        }
+        let signature = "\(track.id)-\(muted)-" + prepared.map { "\($0["id"]!):\($0["position"]!):\($0["program"]!):\($0["channel"]!):\($0["destination"]!)" }.joined(separator: ";")
+        if signature != programChangeSignature {
+            programChangeSignature = signature
+            programChangeSender?.setMarkers(prepared, destination: 0, muted: muted)
+        }
+        programChangeSender?.setPosition(transport.position, subPosition: transport.subPlay.position, running: transport.playing,
+            subRunning: transport.subPlay.playing, hostTime: mach_absolute_time(), promotion: UInt64(max(0, transport.subPlayPromotion ?? 0)))
+    }
     private func updateTimecode(song: Song, transport: TransportState) {
+        updateProgramChanges(song: song, transport: transport)
         guard let track = song.tracks.first(where: { $0.kind == .timecode }) else {
             if timecodeAnchor != nil {
                 timecodeGenerator?.configurePosition(0, end: 0, hostTime: mach_absolute_time(), rate: 30, mode: "", running: false, destination: 0)

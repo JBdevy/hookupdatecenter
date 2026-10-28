@@ -79,6 +79,10 @@ class TransportButtons final {
             InvalidateRect(button.window,nullptr,FALSE);
         }
     }
+    void repaintVisible() {
+        for(auto &button:buttons)if(button->window && button->state.visible)
+            RedrawWindow(button->window,nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW);
+    }
     void hide() { for(auto &b:buttons) { if(b->window) ShowWindow(b->window,SW_HIDE);b->state.visible=false; } }
   private:
     static void check(HRESULT result) { if(FAILED(result)) throw std::runtime_error("Não foi possível inicializar o desenho nativo do transporte."); }
@@ -130,7 +134,7 @@ class TransportButtons final {
         Ptr<ID2D1SolidColorBrush> brush;t->CreateSolidColorBrush(bg,&brush);if(!brush){t->EndDraw();return;}
         const auto bounds=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,width-.5f,height-.5f),6,6);
         t->FillRoundedRectangle(bounds,brush.Get());
-        auto fg=colour(s.foreground);if(!s.enabled&&!s.accent)fg.a*=.35f;brush->SetColor(fg);
+        auto fg=colour(s.foreground);if(!s.enabled&&!s.accent&&s.icon!=L"pause")fg.a*=.35f;brush->SetColor(fg);
         const bool text=!s.text.empty();float iconSize=s.icon.empty()?0.f:12.f,textWidth=0;
         const float gap=iconSize>0 && text?3.f:0.f;
         Ptr<IDWriteTextLayout> layout;

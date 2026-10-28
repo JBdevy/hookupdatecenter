@@ -1839,3 +1839,23 @@
 /* Unified Native trial and lifetime purchase action. */
 "Buy lifetime access" = "Buy lifetime access";
 "The 7-day trial is free. After it ends, lifetime access is a separate one-time purchase at the price shown above. There is no subscription or automatic charge. Your projects are kept. Remote stays free." = "The 7-day trial is free. After it ends, lifetime access is a separate one-time purchase at the price shown above. There is no subscription or automatic charge. Your projects are kept. Remote stays free.";
+
+"Replace existing files?" = "Replace existing files?";
+
+"Replace" = "Replace";
+
+"Native access unlocked" = "Native access unlocked";
+
+"Name (up to 12 characters)" = "Name (up to 12 characters)";
+
+"Only six Program Change markers are allowed at the same position." = "Only six Program Change markers are allowed at the same position.";
+
+"Choose a MIDI output in Patch." = "Choose a MIDI output in Patch.";
+
+"Lifetime" = "Lifetime";
+
+"1 day remaining — Free trial" = "1 day remaining — Free trial";
+
+"%lld days remaining — Free trial" = "%lld days remaining — Free trial";
+
+"Free trial ended" = "Free trial ended";

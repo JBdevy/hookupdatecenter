@@ -45,6 +45,7 @@ class Presentation final {
             put(result, "selectedPlaylist", wireID(selected->id));
         if (song) {
             for (const auto &track : song->tracks) {
+                if (!jaras::fixedTrackName(track.role).empty()) continue;
                 auto v = object();
                 put(v, "id", wireID(track.id));
                 put(v, "name", text(track.name));

@@ -2,24 +2,45 @@
 #include "Localization.h"
 #include "Session.h"
 #include "ModalSheet.h"
+#include "Appearance.h"
 namespace catlive {
 class PatchPanel final : public Component {
   public:
     PatchPanel(Session &s, ID target, std::function<void(String)> report, std::set<ID> selection = {})
         : session(s), id(std::move(target)), error(std::move(report)), targets(std::move(selection)) {
-        if (const auto *t = track(); t && t->role.id == "vinhetas") targets = {id};
+        if (const auto *t = track(); t && (t->role.id == "vinhetas" || t->role.id == "programChange")) targets = {id};
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
-        viewport.setScrollBarsShown(true, false);
+        viewport.setScrollBarsShown(true, false); viewport.setScrollBarThickness(4);
         addAndMakeVisible(close);
-        close.onClick = [this] { ModalSheet::dismiss(*this); };
+        close.onClick = [this] {
+            if (auto *window = findParentComponentOfClass<DocumentWindow>()) window->closeButtonPressed();
+            else ModalSheet::dismiss(*this);
+        };
+        close.getProperties().set("flat",true);
+        close.setColour(TextButton::buttonColourId,Colour(0xff484848));
         build();
     }
-    void paint(Graphics &g) override { g.fillAll(theme::background); }
+    void paint(Graphics &g) override {
+        g.setColour(Colour(0xff1f1f1f)); g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(.5f),18);
+        g.setColour(Colour(0xff484848)); g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.5f),18,1);
+        g.setColour(Colours::white); g.setFont(theme::semiboldFont(14));
+        g.drawText("Patch",28,20,getWidth()-56,24,Justification::centredLeft);
+    }
+    void mouseDown(const MouseEvent &event) override {
+        if (event.y < 46)
+            if (auto *window = findParentComponentOfClass<DocumentWindow>())
+                dragger.startDraggingComponent(window, event);
+    }
+    void mouseDrag(const MouseEvent &event) override {
+        if (event.getMouseDownPosition().y < 46)
+            if (auto *window = findParentComponentOfClass<DocumentWindow>())
+                dragger.dragComponent(window, event, nullptr);
+    }
     void resized() override {
-        viewport.setBounds(20, 0, getWidth() - 40, getHeight() - 48);
-        content.setSize(std::max(300, viewport.getWidth() - 10), height);
-        close.setBounds(getWidth() / 2 - 36, getHeight() - 38, 72, 26);
+        viewport.setBounds(28, 46, getWidth() - 56, getHeight() - 104);
+        content.setSize(300, height);
+        close.setBounds(getWidth() / 2 - 33, getHeight() - 38, 66, 24);
     }
 
   private:
@@ -27,7 +48,12 @@ class PatchPanel final : public Component {
     ID id;
     std::function<void(String)> error;
     Viewport viewport;
-    Component content;
+    ComponentDragger dragger;
+    class Content : public Component {
+      public:
+        std::vector<int> dividers;
+        void paint(Graphics &g) override { g.setColour(Colour(0xff454545)); for(int y:dividers)g.fillRect(0,y,getWidth(),1); }
+    } content;
     OwnedArray<Component> fields;
     TextButton close{localization::translate("Fechar")};
     int height = 0;
@@ -40,14 +66,14 @@ class PatchPanel final : public Component {
                     return &t;
         return nullptr;
     }
-    void edit(std::function<void(jaras::Track &)> action) {
+    void edit(std::function<void(jaras::Track &)> action, bool routing = true) {
         try {
-            session.edit([&](jaras::Project &p) {
+            session.editTrackSettings([&](jaras::Project &p) {
                 for (auto &s : p.songs)
                     for (auto &t : s.tracks)
                         if (t.id == id)
                             action(t);
-            });
+            }, routing);
         } catch (const std::exception &e) {
             if (error)
                 error(String::fromUTF8(e.what()));
@@ -62,7 +88,7 @@ class PatchPanel final : public Component {
         fields.add(label);
         content.addAndMakeVisible(label);
         label->setText(localization::translate(text), dontSendNotification);
-        label->setFont(bold ? theme::semiboldFont(12) : theme::font(12));
+        label->setFont(bold ? theme::semiboldFont(12) : theme::font(13));
         label->setBounds(x, y, width, 24);
     }
     ComboBox &choice(int x, int y, int width, const StringArray &items, int selected,
@@ -129,7 +155,8 @@ class PatchPanel final : public Component {
         button(localization::translate("Aplicar"), 220, 160, 80, saveOffset);
         if (settings.mode == "mtc") {
             label(String::fromUTF8("Saída MIDI"), 0, 198, 300);
-            StringArray names{"Nenhuma"}; std::vector<int> ids{0};
+            StringArray names{"Default"}; std::vector<int> ids{0};
+            for(int slot=0;slot<6;++slot){names.add("MIDI "+String(slot+1));ids.push_back(TimecodeMIDI::outputSlotID(slot));}
             for (const auto& port : MidiOutput::getAvailableDevices()) {
                 names.add(port.name); ids.push_back(TimecodeMIDI::destinationID(port.identifier));
             }
@@ -173,7 +200,7 @@ class PatchPanel final : public Component {
     void editMaster(std::function<void(std::vector<jaras::OutputPatch> &)> action) {
         try {
             auto outputs = masterPatches(); action(outputs);
-            session.edit([&](jaras::Project &p) { p.masterOutputs = outputs; p.masterPatch.reset(); p.masterSecondaryPatch.reset(); });
+            session.editTrackSettings([&](jaras::Project &p) { p.masterOutputs = outputs; p.masterPatch.reset(); p.masterSecondaryPatch.reset(); }, true);
         } catch (const std::exception &e) { if (error) error(String::fromUTF8(e.what())); }
         MessageManager::callAsync([safe=SafePointer<PatchPanel>(this)]{ if(safe)safe->build(); });
     }
@@ -200,7 +227,7 @@ class PatchPanel final : public Component {
         const auto *song=session.song(); if(!song)return;
         StringArray trackNames; bool allStandard=true,allGrouped=true,outputOnly=false;
         for(const auto &t:song->tracks)if(targets.count(t.id)){trackNames.add(text(t.name));allStandard &= jaras::fixedTrackName(t.role).empty();allGrouped &= t.parentTrackID.has_value();outputOnly |= t.role.id=="vinhetas";}
-        label("Patch · Selected tracks",0,8,300,true);label(trackNames.joinIntoString(", "),0,38,300);
+        label(String::fromUTF8("Patch · Selected tracks"),0,8,300,true);label(trackNames.joinIntoString(", "),0,38,300);
         if(outputOnly)batchCategory=2;
         for(int category=0;category<3;++category){
             if(outputOnly&&category!=2)continue;
@@ -210,7 +237,7 @@ class PatchPanel final : public Component {
         }
         StringArray names{"Nenhum"};std::vector<jaras::OutputPatch> patches{{-1,2}};
         auto *device=session.audio.devices.getCurrentAudioDevice();
-        if(batchCategory==1){names.addArray({"MIDI 1","MIDI 2","MIDI 3"});}
+        if(batchCategory==1){names.addArray({"MIDI 1","MIDI 2","MIDI 3","MIDI 4","MIDI 5","MIDI 6"});}
         else{
             const int count=device?(batchCategory==0?device->getInputChannelNames().size():device->getOutputChannelNames().size()):(batchCategory==0?0:2);
             if(batchCategory==2 && allStandard){names.add("Master");patches.push_back({0,2});}
@@ -221,25 +248,42 @@ class PatchPanel final : public Component {
         choice(0,120,300,names,batchChoice,[this](int n){batchChoice=n;});
         button("Apply to selected tracks",0,164,300,[this,patches]{
             if(batchCategory!=2 && session.audio.isRecording())return;
-            try{session.edit([&](jaras::Project &p){for(auto &song:p.songs)for(auto &t:song.tracks)if(targets.count(t.id)){
+            try{session.editTrackSettings([&](jaras::Project &p){for(auto &song:p.songs)for(auto &t:song.tracks)if(targets.count(t.id)){
                 if(batchCategory!=2&&t.role.id=="vinhetas")continue;
                 if(batchCategory==1){if(batchChoice==1)t.midiInput.reset();else t.midiInput=batchChoice-1;}
                 else {const auto patch=patches[(size_t)jlimit(0,(int)patches.size()-1,batchChoice-1)];
                     if(batchCategory==0)t.inputPatch=patch;
                     else{t.outputs=std::vector<jaras::OutputPatch>{patch};t.patch.reset();t.secondaryPatch.reset();}
                 }
-            }});}catch(const std::exception &e){if(error)error(String::fromUTF8(e.what()));}
+            }}, batchCategory!=1);}catch(const std::exception &e){if(error)error(String::fromUTF8(e.what()));}
         });
         fields.getLast()->setEnabled(batchCategory==2 || (allStandard && !session.audio.isRecording()));
         height=216;resized();
     }
     void build() {
-        fields.clear();
+        fields.clear(); content.dividers.clear();
         if(id.empty()){buildMaster();return;}
         if(targets.size()>1){buildBatch();return;}
         const auto *t = track();
         if (!t)
             return;
+        if (t->role.id == "programChange") {
+            const Appearance preferences;
+            const auto inputs=MidiInput::getAvailableDevices(),outputs=MidiOutput::getAvailableDevices();
+            StringArray in{localization::translate("All"),localization::translate("None")},out{localization::translate("None")};
+            for(int slot=1;slot<=6;++slot) {
+                auto input=localization::translate("None"),output=input;
+                const auto inID=preferences.value("catlive.midi.slot"+String(slot)).toString();
+                const auto outID=preferences.value("catlive.midi.outputSlot"+String(slot)).toString();
+                for(const auto &d:inputs)if(d.identifier==inID)input=d.name;
+                for(const auto &d:outputs)if(d.identifier==outID)output=d.name;
+                in.add("MIDI "+String(slot)+String::fromUTF8(" · ")+input);out.add("MIDI "+String(slot)+String::fromUTF8(" · ")+output);
+            }
+            label("MIDI input",0,8,92);label("MIDI output",0,52,92);
+            choice(96,8,204,in,t->midiInput.value_or(0)+2,[this](int n){session.programChangeScanTrack.clear();edit([&](auto &t){t.midiInput=n==2?std::nullopt:std::optional<int>(n-2);},false);});
+            choice(96,52,204,out,t->midiOutput.value_or(0)+1,[this](int n){edit([&](auto &t){t.midiOutput=n>1?std::optional<int>(n-1):std::nullopt;},false);});
+            height=94;resized();return;
+        }
         if (t->role.id == "timecode") { buildTimecode(*t); return; }
         auto *device = session.audio.devices.getCurrentAudioDevice();
         label(device ? device->getName() : String::fromUTF8("Áudio não iniciado"), 0, 8, 300);
@@ -261,6 +305,10 @@ class PatchPanel final : public Component {
                 if (inputPatches[i].firstChannel == t->inputPatch->firstChannel &&
                     inputPatches[i].channelCount == t->inputPatch->channelCount)
                     selected = (int)i + 1;
+        if (t->inputPatch && t->inputPatch->firstChannel > 0 && selected == 1) {
+            inputs.add(String(t->inputPatch->firstChannel) + String::fromUTF8(" — Indisponível"));
+            inputPatches.push_back(*t->inputPatch); selected = int(inputPatches.size());
+        }
         label(localization::translate("Entrada"), 0, 44, 62);
         choice(66, 44, 234, inputs, selected, [this, inputPatches](int n) {
             edit([&](auto &t) {
@@ -269,20 +317,27 @@ class PatchPanel final : public Component {
         });
         label(localization::translate("Entrada MIDI"), 0, 80, 194);
         label(localization::translate("Canal MIDI"), 208, 80, 92);
-        StringArray midi{"Nenhum", "MIDI 1", "MIDI 2", "MIDI 3"};
+        StringArray midi{localization::translate("None")};
+        const Appearance preferences; const auto devices = MidiInput::getAvailableDevices();
+        for (int slot = 1; slot <= 6; ++slot) {
+            const auto identifier = preferences.value("catlive.midi.slot" + String(slot)).toString();
+            auto label = localization::translate(identifier.isEmpty() ? "None" : "Unavailable");
+            for (const auto &device : devices) if (device.identifier == identifier) label = device.name;
+            midi.add("MIDI " + String(slot) + String::fromUTF8(" · ") + label);
+        }
         choice(0, 108, 196, midi, t->midiInput.value_or(0)+1, [this](int n) {
             edit([&](auto &t) {
                 if (n > 1)
                     t.midiInput = n - 1;
                 else
                     t.midiInput.reset();
-            });
+            }, false);
         });
         StringArray channels{"Todos"};
         for (int i = 1; i <= 16; ++i)
             channels.add(String(i));
         choice(208, 108, 92, channels, t->midiChannel.value_or(0) + 1,
-               [this](int n) { edit([&](auto &t) { if(n>1)t.midiChannel=n-1;else t.midiChannel.reset(); }); });
+               [this](int n) { edit([&](auto &t) { if(n>1)t.midiChannel=n-1;else t.midiChannel.reset(); }, false); });
         }
         const int outputTop=t->role.id=="vinhetas"?44:148;
         auto outputs = t->outputPatches();
@@ -350,7 +405,8 @@ class PatchPanel final : public Component {
         }
         if (jaras::fixedTrackName(t->role).empty() && t->role.id!="vinhetas")
             for (bool receive : {true, false}) {
-                y += 12;
+                content.dividers.push_back(y + 4);
+                y += 16;
                 label(receive ? "Recebimento" : "Envio", 0, y, 244, true);
                 button("+", 264, y, 36, [this, receive] {
                     edit([&](auto &t) {

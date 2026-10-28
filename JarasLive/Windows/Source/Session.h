@@ -30,6 +30,7 @@ class Session final : private Timer {
     String message;
     uint64 revision = 0;
     std::function<void()> changed, tick, selectionChanged, mixerChanged, transportChanged;
+    std::function<void(bool)> timingChanged;
     std::function<void(String)> transportFadeoutWarning;
     std::function<void(String)> audioOutputWarning;
     void toggleTransportFadeout(bool enabled, const std::set<ID> &tracks, double seconds);
@@ -66,6 +67,7 @@ class Session final : private Timer {
     void clearTimeRange();
     void configureSetlist(jaras::RegionSetlist);
     void editTimeline(const std::function<void(jaras::Project &)> &, bool allowTimingEdit = false);
+    void editTrackSettings(const std::function<void(jaras::Project &)> &, bool routing = false);
     void editItemControls(const std::function<void(jaras::Project &)> &);
     void moveMarker(const ID &, double);
     std::function<void()> setlistChanged;
@@ -90,6 +92,8 @@ class Session final : private Timer {
                      std::function<void(String)> completion = {}, bool deferWaveform = false);
     void exportMix(const File &, int bits = 24);
     void exportAudio(ExportRequest);
+    AudioExportProgress exportProgress() const { const ScopedLock guard(exportProgressLock); return exportPreview; }
+    bool exportFailed = false;
     void renderItems(std::set<ID>, bool glue = false, int midiChannels = 0, std::function<void(std::set<ID>)> completed = {});
     void separateAudioItem(ID, std::function<void(std::set<ID>)> completed = {});
     void detectRegionBPM(std::set<ID>);
@@ -124,6 +128,26 @@ class Session final : private Timer {
     void addTrack(String name = "Audio", String role = "other");
     void addSong(String);
     void renameTrack(ID, String);
+    std::optional<jaras::ProgramChangeMarker> scanProgramChange(const ID&);
+    ID insertProgramChange(const ID&, jaras::ProgramChangeMarker);
+    bool copyProgramChange();
+    bool pasteProgramChange();
+    void selectProgramChange(const ID &id) { selectedProgramChange=id; if(!id.empty())programChangePasteReady=false; }
+    const jaras::ProgramChangeMarker *selectedProgramMarker() const;
+    ID selectedProgramChange;
+    std::optional<jaras::ProgramChangeMarker> programChangeClipboard;
+    bool programChangePasteReady=false;
+    void removeProgramChange(const ID&, const ID&);
+    ID programChangeScanTrack, programChangeScanProject;
+    uint64 programChangeScanBaseline=0;
+    bool scanningProgramChange(const ID &id) const { return programChangeScanProject==project().id && programChangeScanTrack==id; }
+    uint64 scannedProgramChangePacket(const ID &id) const {
+        if(scanningProgramChange(id) && song())for(const auto &track:song()->tracks)if(track.id==id) {
+            const auto packet=audio.latestProgramChange(track.midiInput.value_or(0));
+            return packet==programChangeScanBaseline?0:packet;
+        }
+        return 0;
+    }
     void removeTrack(ID);
     void removeTracks(const std::set<ID> &);
     void setRegionPitch(const ID &, int, std::vector<ID>, std::vector<ID>);
@@ -147,7 +171,11 @@ class Session final : private Timer {
     struct TimeSelection { ID project, song; double start, end; };
     std::optional<TimeSelection> timeSelection;
     void focusTimelineRegion(double position, bool force = false);
-    struct TimelineHistory { jaras::Project project; bool tempo = false, itemControls = false; };
+    struct PitchHistory { ID region; std::optional<int> semitones; std::optional<std::vector<ID>> tracks, groups; };
+    PitchHistory pitchHistory(const ID&) const;
+    void applyPitchHistory(PitchHistory, bool recordHistory);
+    void notifyTiming(bool geometry);
+    struct TimelineHistory { jaras::Project project; bool tempo = false, itemControls = false, mixerControls = false, routingControls = false; };
     void applyTimelineHistory(const TimelineHistory &, bool recordHistory);
     struct MarkerHistory { ID song; std::optional<std::vector<jaras::TimelineMarker>> markers; };
     struct ItemHistory { std::map<ID, std::vector<jaras::AudioClip>> tracks; };
@@ -170,12 +198,14 @@ class Session final : private Timer {
     struct HistoryEntry {
         var project;
         std::optional<TimelineHistory> timeline;
+        std::optional<PitchHistory> pitch;
         std::optional<SetlistHistory> setlist;
         std::optional<MarkerHistory> markers;
         std::optional<std::map<ID, var>> effects;
         std::optional<ItemTimingHistory> itemTiming;
         std::optional<ItemHistory> items;
         std::optional<TrackHierarchyHistory> hierarchy;
+        HistoryEntry(PitchHistory value) : pitch(std::move(value)) {}
         HistoryEntry(TimelineHistory value) : timeline(std::move(value)) {}
         HistoryEntry(SetlistHistory value) : setlist(std::move(value)) {}
         HistoryEntry(var value) : project(std::move(value)) {}
@@ -217,6 +247,8 @@ class Session final : private Timer {
     void updateRecordArms();
     double recordingStart = 0;
     std::atomic<bool> exportCancelled{false};
+    mutable CriticalSection exportProgressLock;
+    AudioExportProgress exportPreview;
     TransportPresentationQueues presentationQueues;
     void timerCallback() override;
     void syncClock();

@@ -188,6 +188,7 @@ final class OfflineAudioExport {
                     includeHardwareOutputs: Bool = false,
                     printTrackPolarity: Bool = false,
                     midiInstrumentsByTrack: [UUID: [String: OfflineMIDIInstrument]] = [:],
+                    replacingFiles: Set<String> = [],
                     progress: (AudioExportProgress) -> Void) throws {
         try AudioLicenseAccess.shared.requireAccess()
         guard !plan.jobs.isEmpty else { throw AudioExportFailure.empty }
@@ -195,12 +196,13 @@ final class OfflineAudioExport {
         let fm = FileManager.default
         try fm.createDirectory(at: outputDirectory,withIntermediateDirectories: true)
         for job in plan.jobs {
-            guard !fm.fileExists(atPath: outputDirectory.appendingPathComponent(job.fileName).path) else { throw AudioExportFailure.exists(job.fileName) }
+            guard !fm.fileExists(atPath: outputDirectory.appendingPathComponent(job.fileName).path) || replacingFiles.contains(job.fileName) else { throw AudioExportFailure.exists(job.fileName) }
         }
         guard [16,24,32].contains(encoding.bitDepth), [0,1,2].contains(encoding.channels), [128,160,192,224,256,320].contains(encoding.bitrate) else { throw AudioExportFailure.invalidFormat }
         let stereo = AVAudioFormat(standardFormatWithSampleRate: sampleRate,channels: 2)!
         var writers: [Writer] = []
         var published: [URL] = []
+        var backups: [(original: URL, backup: URL)] = []
         defer { writers.forEach { $0.cleanup() } }
         do {
             var sourceChannels: [String: Int] = [:]
@@ -247,15 +249,21 @@ final class OfflineAudioExport {
             }
             if cancellation.cancelled { throw CancellationError() }
             for writer in writers {
-                // moveItem refuses to replace a destination created during export.
+                if fm.fileExists(atPath: writer.destination.path) {
+                    guard replacingFiles.contains(writer.job.fileName) else { throw AudioExportFailure.exists(writer.job.fileName) }
+                    let backup = outputDirectory.appendingPathComponent(".catlive-export-backup-" + UUID().uuidString)
+                    try fm.moveItem(at: writer.destination, to: backup)
+                    backups.append((writer.destination, backup))
+                }
                 try fm.moveItem(at: writer.temporary,to: writer.destination); published.append(writer.destination)
             }
             if let last = writers.last { progress(AudioExportProgress(completed: writers.count,total: writers.count,fileName: last.job.fileName,fraction: 1,waveform: last.waveform,clipped: last.clipped,peak: last.peak)) }
         } catch {
-            // Roll back only new files from this export; existing files are preserved.
             for url in published { try? fm.removeItem(at: url) }
+            for entry in backups { try? fm.moveItem(at: entry.backup, to: entry.original) }
             throw error
         }
+        for entry in backups { try? fm.removeItem(at: entry.backup) }
     }
     private static func render(project: Project, song: Song, writers: [Writer], mediaDirectory: URL, format: AVAudioFormat,
                                cancellation: AudioExportCancellation,midiInstruments: [String: OfflineMIDIInstrument]?,includeHardwareOutputs: Bool,printTrackPolarity: Bool,

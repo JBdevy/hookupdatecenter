@@ -3,6 +3,7 @@
 #include "Session.h"
 #include "ModalSheet.h"
 #include "ConfirmationStyle.h"
+#include "Appearance.h"
 namespace catlive {
 class ItemExportProcessingPanel final : public Component {
     TextButton pre{"Pre-Processing"},post{"Post-Processing"},cancel{localization::translate("Cancel")};
@@ -37,10 +38,40 @@ class ItemExportProcessingPanel final : public Component {
         }
     }
 };
+class ExportReplacementPanel final : public Component {
+    TextButton cancel{localization::translate("Cancel")}, replace{localization::translate("Replace")};
+    String names;
+public:
+    ExportReplacementPanel(const std::set<String> &files, std::function<void()> accepted) {
+        getProperties().set("selfContainedSheet",true);
+        getProperties().set("sheetCornerRadius",double(confirmationStyle::radius));
+        setComponentID("exportReplacementConfirmation");
+        for (const auto &file : files) { if (names.isNotEmpty()) names += "\n"; names += file; }
+        for (auto *button : {&cancel,&replace}) {
+            addAndMakeVisible(button); button->getProperties().set("flat",true);
+            button->getProperties().set("cornerRadius",15.0);
+        }
+        replace.setColour(TextButton::buttonColourId,theme::green);
+        replace.setColour(TextButton::textColourOffId,Colours::black);
+        cancel.onClick=[this]{ModalSheet::dismiss(*this);};
+        replace.onClick=[this,accepted]{ModalSheet::dismiss(*this);MessageManager::callAsync(accepted);};
+    }
+    void paint(Graphics &g) override {
+        confirmationStyle::surface(g,getLocalBounds().toFloat());g.setColour(Colours::white);
+        g.setFont(theme::semiboldFont(14));
+        g.drawFittedText(localization::translate("Replace existing files?"),20,16,getWidth()-40,36,Justification::centredLeft,2,1.f);
+        g.setFont(theme::font(12));
+        g.drawFittedText(names,20,58,getWidth()-40,getHeight()-120,Justification::topLeft,6,1.f);
+    }
+    void resized() override {
+        const int width=(getWidth()-48)/2;
+        cancel.setBounds(20,getHeight()-50,width,30);replace.setBounds(28+width,getHeight()-50,width,30);
+    }
+};
 class ExportPanel final : public Component, private ListBoxModel, private Timer {
   public:
-    ExportPanel(Session &owner, ID track, ID clip, std::function<void(String)> failure, bool stems = false, bool preProcessingItems = false)
-        : session(owner), error(std::move(failure)), preProcessing(preProcessingItems) {
+    ExportPanel(Session &owner, ID track, ID clip, std::function<void(String)> failure, bool stems = false, bool preProcessingItems = false, File preferenceFile = {})
+        : session(owner), error(std::move(failure)), preProcessing(preProcessingItems), preferences(preferenceFile) {
         if (!track.empty())
             tracks.insert(track);
         if (!clip.empty())
@@ -63,10 +94,12 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         bounds.onChange = [this] { rebuild(); };
         addAndMakeVisible(directory);
         addAndMakeVisible(pattern);
-        directory.setText((session.document == File()
+        directory.setText(preferences.value("jaras.export.directory", (session.document == File()
                                ? File::getSpecialLocation(File::userDesktopDirectory)
                                : session.document.getParentDirectory())
-                              .getFullPathName());
+                              .getFullPathName()).toString());
+        directory.onFocusLost = [this] { rememberDirectory(); };
+        directory.onReturnKey = [this] { rememberDirectory(); };
         pattern.setText("%project");
         pattern.onTextChange = [this] { rebuild(); };
         for (auto *field : {&directory, &pattern})
@@ -146,28 +179,38 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
                 session.cancelExport();
                 return;
             }
+            if (renderScreen) { ModalSheet::dismiss(*this); return; }
             start();
         };
+        restorePreferences(stems);
         updateEncoding();
         rebuild();
-        startTimerHz(8);
+        startTimerHz(20);
     }
     void selectRegions(std::set<ID> ids) {
         regions = std::move(ids); tracks.clear(); clips.clear();
-        bounds.setSelectedId(3, dontSendNotification); pattern.setText("%region", false); rebuild();
+        regionMode = true;
+        bounds.setSelectedId(3, dontSendNotification);
+        pattern.setText(str(preferences.value("catlive.export.options"), "regionFileName", "%region"), false); rebuild();
     }
     ~ExportPanel() override {
         stopTimer();
+        rememberPreferences();
         files.setModel(nullptr);
     }
     var diagnostics() const {
         auto value=object();put(value,"jobs",(int)jobs.size());put(value,"source",source.getSelectedId());
         put(value,"bounds",bounds.getSelectedId());put(value,"secondary",secondaryEnabled);
         put(value,"primaryFormat",encodings[0].format);put(value,"secondaryFormat",encodings[1].format);
+        put(value,"primaryBits",encodings[0].bits);put(value,"secondaryBits",encodings[1].bits);
+        put(value,"primaryBitrate",encodings[0].bitrate);put(value,"secondaryBitrate",encodings[1].bitrate);
+        put(value,"sampleRate",encodings[0].rate);put(value,"channels",encodings[0].channels);
+        put(value,"outputTab",selectedOutput);put(value,"fileName",pattern.getText());put(value,"directory",directory.getText());
         return value;
     }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
+        if (renderScreen) { paintRender(g); return; }
         g.setColour(Colours::white);
         g.setFont(theme::font(13));
         auto label = [&](String text, int x, int y, int width) {
@@ -207,6 +250,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         }
     }
     void resized() override {
+        if (renderScreen) { renderButton.setBounds(getWidth() - 110, getHeight() - 52, 90, 30); return; }
         source.setBounds(72, 12, 140, 26);
         bounds.setBounds(284, 12, 180, 26);
         directory.setBounds(164, 80, getWidth() - 246, 27);
@@ -231,7 +275,8 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
   private:
     Session &session;
     std::function<void(String)> error;
-    bool preProcessing = false;
+    bool preProcessing = false, regionMode = false;
+    Appearance preferences;
     std::set<ID> tracks, clips, regions;
     std::optional<std::pair<double, double>> area;
     ComboBox source, bounds, format, quality, rate, channels;
@@ -246,7 +291,70 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
     int selectedOutput = 0;
     bool updating = false, secondaryEnabled = false, rendering = false;
     String status;
+    bool renderScreen = false;
+    void paintRender(Graphics &g) {
+        const auto progress = session.exportProgress();
+        const int left = 24, width = getWidth() - 48;
+        g.setColour(Colours::white); g.setFont(theme::semiboldFont(18));
+        g.drawText(localization::translate("Rendering"), left, 20, width, 28, Justification::centredLeft);
+        g.setFont(theme::semiboldFont(12));
+        g.drawText(progress.fileName, left, 70, width, 26, Justification::centredLeft);
+        const juce::Rectangle<float> wave(float(left), 112.f, float(width), 180.f);
+        g.setColour(Colour(0xff101010)); g.fillRoundedRectangle(wave, 6);
+        const float binWidth = wave.getWidth() / progress.waveform.size();
+        const int last = std::min(600, int(std::ceil(progress.fraction * 600)));
+        for (int index = 0; index < last; ++index) {
+            const auto peak = progress.waveform[size_t(index)];
+            const float amplitude = std::min(1.f, peak) * (wave.getHeight() / 2 - 3);
+            g.setColour(peak >= 1 ? Colours::red : theme::green);
+            g.fillRect(wave.getX() + index * binWidth, wave.getCentreY() - amplitude, std::max(1.f, binWidth), std::max(1.f, 2 * amplitude));
+        }
+        g.setColour(Colour(0xff3b3b3b)); g.fillRoundedRectangle(float(left), 310.f, float(width), 5.f, 2.5f);
+        g.setColour(theme::green); g.fillRoundedRectangle(float(left), 310.f, float(width * progress.fraction), 5.f, 2.5f);
+        g.setColour(theme::secondary); g.setFont(theme::font(12));
+        g.drawText(String(progress.completed) + " / " + String(progress.total) + " " + localization::translate("files"), left, 326, width / 2, 24, Justification::centredLeft);
+        g.setColour(progress.peak >= 1 ? Colours::red : theme::secondary);
+        g.drawText(progress.peak > 0 ? "Peak " + String(20 * std::log10(progress.peak), 2) + " dBFS" : String::fromUTF8("Peak −∞ dBFS"), left + width / 2, 326, width / 2, 24, Justification::centredRight);
+        if (!session.busy) {
+            g.setColour(session.exportFailed ? Colours::red : theme::green);
+            g.drawFittedText(status, left, 370, width, std::max(30, getHeight() - 440), Justification::centredLeft, 3);
+        }
+    }
     std::unique_ptr<FileChooser> chooser;
+    void rememberDirectory() {
+        const auto path = directory.getText().trim();
+        if (File::isAbsolutePath(path)) preferences.set("jaras.export.directory", path);
+    }
+    void restorePreferences(bool stems) {
+        const auto saved = preferences.value("catlive.export.options");
+        source.setSelectedId(stems ? 4 : jlimit(1,4,(int)get(saved,"source",1)),dontSendNotification);
+        bounds.setSelectedId(jlimit(1,4,(int)get(saved,"bounds",1)),dontSendNotification);
+        pattern.setText(str(saved,"fileName","%project"),false);
+        selectedOutput=jlimit(0,1,(int)get(saved,"outputTab",0));
+        secondaryEnabled=flag(saved,"secondary",false);
+        for(int i=0;i<2;++i) {
+            auto &encoding=encodings[i];const String prefix=i==0 ? "primary" : "secondary";
+            auto value=str(saved,Identifier(prefix+"Format"),i==0 ? "WAV" : "MP3");
+            encoding.format=StringArray{"WAV","AIFF","MP3"}.contains(value) ? value : "WAV";
+            const int bits=(int)get(saved,Identifier(prefix+"Bits"),24);
+            encoding.bits=bits==16||bits==24||bits==32 ? bits : 24;
+            const int bitrate=(int)get(saved,Identifier(prefix+"Bitrate"),320);
+            encoding.bitrate=std::set<int>{64,96,128,160,192,224,256,320}.count(bitrate) ? bitrate : 320;
+            encoding.channels=(int)get(saved,"channels",2)==1 ? 1 : 2;
+            encoding.rate=(double)get(saved,"sampleRate",48000)==44100 ? 44100 : 48000;
+        }
+    }
+    void rememberPreferences() {
+        auto saved=diagnostics();
+        if(regionMode) {
+            const auto previous=preferences.value("catlive.export.options");
+            put(saved,"regionFileName",pattern.getText());
+            put(saved,"fileName",get(previous,"fileName","%project"));
+            put(saved,"source",get(previous,"source",1));put(saved,"bounds",get(previous,"bounds",1));
+        } else put(saved,"regionFileName",get(preferences.value("catlive.export.options"),"regionFileName","%region"));
+        preferences.set("catlive.export.options",saved);
+        rememberDirectory();
+    }
     void updateEncoding() {
         updating = true;
         const auto &encoding = encodings[selectedOutput];
@@ -323,22 +431,44 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         chooser->launchAsync(FileBrowserComponent::openMode |
                                  FileBrowserComponent::canSelectDirectories,
                              [safe = SafePointer<ExportPanel>(this)](const FileChooser &fc) {
-                                 if (safe && fc.getResult() != File())
+                                 if (safe && fc.getResult() != File()) {
                                      safe->directory.setText(fc.getResult().getFullPathName());
+                                     safe->rememberDirectory();
+                                 }
                              });
     }
-    void start() {
+    void start(std::optional<ExportRequest> approved = {}) {
         try {
             if (!File::isAbsolutePath(directory.getText()))
                 throw std::runtime_error("Escolha um diretório de saída válido.");
+            rememberPreferences();
             ExportRequest request;
             request.directory = File(directory.getText());
             request.jobs = jobs;
             request.preProcessingItems = preProcessing;
             request.encodings[0] = encodings[0];
             request.encodings[1] = encodings[1];
+            if (approved) request = std::move(*approved);
+            else {
+                for (const auto &job : request.jobs)
+                    if (request.directory.getChildFile(job.name).exists()) request.replaceExistingFiles.insert(job.name);
+                if (!request.replaceExistingFiles.empty()) {
+                    const auto files = request.replaceExistingFiles;
+                    auto accept = [safe=SafePointer<ExportPanel>(this),request=std::move(request)]() mutable {
+                        if (safe) safe->start(std::move(request));
+                    };
+                    ModalSheet::open(*this,localization::translate("Replace existing files?"),
+                        std::make_unique<ExportReplacementPanel>(files,std::move(accept)),360,250);
+                    return;
+                }
+            }
             session.exportAudio(std::move(request));
             rendering = session.busy;
+            renderScreen = rendering;
+            if (renderScreen) {
+                for (auto *child : getChildren()) child->setVisible(child == &renderButton);
+                resized();
+            }
             status.clear();
             for (auto *c : std::initializer_list<Component *>{
                      &source, &bounds, &format, &quality, &rate, &channels, &directory, &pattern,
@@ -358,10 +488,9 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         if (rendering && !session.busy) {
             rendering = false;
             status = session.message;
-            for (auto *c : getChildren())
-                c->setEnabled(true);
-            updateEncoding();
-            renderButton.setButtonText(localization::translate("Renderizar"));
+            renderButton.setEnabled(true);
+            renderButton.setButtonText(localization::translate("Close"));
+            repaint();
         }
         if (rendering)
             repaint();

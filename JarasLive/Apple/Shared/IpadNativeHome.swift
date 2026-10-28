@@ -262,14 +262,10 @@ extension UTType {
                         mode("Remote", detail: "Control or follow your PC’s session.", icon: "network", action: { remote = true })
                     }.frame(maxWidth: 760)
                     if !purchases.unlocked {
-                        VStack(spacing: 8) {
-                            if purchases.trialDaysRemaining > 0 {
-                                Text("Free trial: \(purchases.trialDaysRemaining) day(s) remaining")
-                            }
-                            Button("Unlock Native mode") { showingPurchase = true }
-                                .buttonStyle(.bordered).controlSize(.large)
-                                .accessibilityIdentifier("catlive-home-unlock-native")
-                        }.font(.jarasCallout).foregroundStyle(JarasTheme.green)
+                        Button("Unlock Native mode") { showingPurchase = true }
+                            .buttonStyle(.bordered).controlSize(.large)
+                            .font(.jarasCallout).foregroundStyle(JarasTheme.green)
+                            .accessibilityIdentifier("catlive-home-unlock-native")
                     }
                     if entering { ProgressView() }
                     if !error.isEmpty { Text(LocalizedStringKey(error)).foregroundStyle(.red).multilineTextAlignment(.center) }
@@ -344,6 +340,30 @@ extension UTType {
             guard await tabs.leave() else { error = tabs.active?.documents.error ?? container.documents.error; return }
             native = false
         }
+    }
+}
+
+/// The native browser header shows the verified access instead of a generic mode title.
+struct NativeAccessTitle: View {
+    @ObservedObject private var purchases = NativePurchaseStore.shared
+    var body: some View {
+        Group {
+            if purchases.unlocked {
+                Text("Lifetime")
+            } else if purchases.canAccessNative && purchases.trialDaysRemaining > 0 {
+                if purchases.trialDaysRemaining == 1 {
+                    Text("1 day remaining — Free trial")
+                } else {
+                    Text("\(purchases.trialDaysRemaining) days remaining — Free trial")
+                }
+            } else if purchases.checked && purchases.trialExpiresAt != nil {
+                Text("Free trial ended")
+            } else {
+                Text("Native")
+            }
+        }
+        .font(.jarasHeadline).foregroundStyle(JarasTheme.green)
+        .accessibilityIdentifier("catlive-native-access-status")
     }
 }
 

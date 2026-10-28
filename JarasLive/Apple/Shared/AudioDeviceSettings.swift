@@ -119,8 +119,25 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     @Published private(set) var midiOutput = (UserDefaults.standard.object(forKey: "jaras.midiOutput") as? NSNumber)?.int32Value ?? 0
     @Published private(set) var midiSlots: [Int32] = {
         let stored = (UserDefaults.standard.array(forKey: "jaras.midiSlots") as? [NSNumber])?.map(\.int32Value) ?? []
-        return Array((stored + [0,0,0]).prefix(3))
+        return Array((stored + Array(repeating: 0, count: 6)).prefix(6))
     }()
+    @Published private(set) var midiOutputSlots: [Int32] = {
+        let stored = (UserDefaults.standard.array(forKey: "jaras.midiOutputSlots") as? [NSNumber])?.map(\.int32Value)
+            ?? [(UserDefaults.standard.object(forKey: "jaras.midiOutput") as? NSNumber)?.int32Value ?? 0]
+        return Array((stored + Array(repeating: 0, count: 6)).prefix(6))
+    }()
+    static func midiOutputSlotID(_ slot: Int) -> Int32 { -1_000_001 - Int32(slot) }
+    func midiOutputSlotTitle(_ slot: Int) -> String {
+        let id = midiOutputSlots[slot]
+        let name = id == 0 ? JarasLocalization.string("None") : midiOutputs.first(where: { $0.id == id })?.name ?? ((midiNames[String(id)] ?? "MIDI") + " — " + JarasLocalization.string("Disconnected"))
+        return "MIDI \(slot + 1) · " + name
+    }
+    func selectMIDIOutput(_ id: Int32, slot: Int) {
+        guard midiOutputSlots.indices.contains(slot), id == 0 || midiOutputs.contains(where: { $0.id == id }) else { return }
+        midiOutputSlots[slot] = id
+        UserDefaults.standard.set(midiOutputSlots.map(NSNumber.init(value:)), forKey: "jaras.midiOutputSlots")
+        if slot == 0 { midiOutput = id; UserDefaults.standard.set(NSNumber(value:id), forKey:"jaras.midiOutput") }
+    }
     private var midiNames = UserDefaults.standard.dictionary(forKey: "jaras.midiNames") as? [String:String] ?? [:]
     let engine = AVAudioEngine()
     var deviceChanged: (() -> Void)?
@@ -201,13 +218,14 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     }
     func selectMIDIOutput(_ id: Int32) {
         guard id == 0 || midiOutputs.contains(where: { $0.id == id }) else { return }
-        midiOutput = id; UserDefaults.standard.set(NSNumber(value: id), forKey: "jaras.midiOutput")
+        selectMIDIOutput(id, slot: 0)
     }
     var midiOutputTitle: String {
         midiOutput == 0 ? JarasLocalization.string("None") : midiOutputs.first(where: { $0.id == midiOutput })?.name ?? ((midiNames[String(midiOutput)] ?? "MIDI") + " — " + JarasLocalization.string("Disconnected"))
     }
     func resolvedMIDIDestination(_ requested: Int32) -> Int32 {
-        let id = requested == 0 ? midiOutput : requested
+        let slot = Int(-1_000_001 - Int64(requested))
+        let id = requested == 0 ? midiOutput : midiOutputSlots.indices.contains(slot) ? midiOutputSlots[slot] : requested
         return midiOutputs.contains(where: { $0.id == id }) ? id : 0
     }
     func selectMIDI(_ id: Int32, slot: Int) {

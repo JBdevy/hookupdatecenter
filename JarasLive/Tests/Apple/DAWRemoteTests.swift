@@ -186,6 +186,19 @@ for scale in [0.35, 0.5, 1.0, 2.0, 3.0] {
     require(abs(DAWRemoteItemLayout.rowHeight(track, scale: scale) - DAWRemoteItemLayout.laneHeight(track, scale: scale) * Double(track.laneCount ?? 1)) < 0.000001, "pinch scales every overlapping lane and mixer row together")
 }
 require(DAWRemoteItemLayout.heightScale(.nan) == 1 && DAWRemoteItemLayout.heightScale(0) == 0.35 && DAWRemoteItemLayout.heightScale(100) == 3, "pinch restores only finite bounded heights")
+var programLaneFixture = fixture
+programLaneFixture.tracks[0].minimumHeight = 6 * 24 + 8
+require(programLaneFixture.valid, "native Program Change minimum lane height is valid")
+for scale in [0.35, 0.5, 1.0, 2.0] {
+    require(DAWRemoteItemLayout.rowHeight(programLaneFixture.tracks[0], scale: scale) >= 152,
+            "six Program Change heads stay inside the same mixer/grid row at every pinch scale")
+}
+let roundTripProgramLane = try JSONDecoder().decode(DAWRemoteState.self, from: JSONEncoder().encode(programLaneFixture))
+require(roundTripProgramLane.tracks[0].minimumHeight == 152, "native minimum lane height survives presentation encoding")
+programLaneFixture.tracks[0].minimumHeight = -1
+require(!programLaneFixture.valid, "negative minimum height is rejected")
+programLaneFixture.tracks[0].minimumHeight = .infinity
+require(!programLaneFixture.valid, "nonfinite minimum height is rejected")
 var visibleLaneTrack = fixture.tracks[0]
 visibleLaneTrack.laneCount = 8
 visibleLaneTrack.clips = [

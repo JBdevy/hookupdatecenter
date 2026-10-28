@@ -8,12 +8,12 @@ namespace catlive {
 class ClipAudio {
   public:
     ClipAudio(const jaras::Song &song, const jaras::Track &track, const jaras::AudioClip &clip,
-              double rate, bool prepareDSP = true) { configure(song, track, clip, rate, prepareDSP); }
+              double rate, bool prepareDSP = true, jaras::TempoEditMap::PlaybackRates* compiled = nullptr) { configure(song, track, clip, rate, prepareDSP, compiled); }
     void configure(const jaras::Song &song, const jaras::Track &track,
-                   const jaras::AudioClip &clip, double rate, bool prepareDSP = true) {
+                   const jaras::AudioClip &clip, double rate, bool prepareDSP = true, jaras::TempoEditMap::PlaybackRates* compiled = nullptr) {
         offset = clip.sourceOffset; speed = clip.playbackRate; duration = clip.duration;
         start = clip.startTime;
-        timing.emplace(clip, &song);
+        timing.emplace(clip, &song, compiled);
         loopStart = clip.loopStart.value_or(0); loopLength = clip.loopLength.value_or(0);
         segments.clear();
         std::vector<double> bounds{0, duration};
@@ -41,6 +41,7 @@ class ClipAudio {
     }
     // Called at a callback boundary. The replacement contains only a prepared
     // mapping; the running FFT history and decoder queue stay in this object.
+    void swapPlaybackHeads() noexcept { std::swap(headOrder[0],headOrder[1]); }
     bool hasPreparedPitch() const { return preparedPitchRate == sampleRate; }
     void adoptTiming(ClipAudio &replacement) {
         for (auto &head : heads) if (head.next >= 0) {
@@ -53,11 +54,11 @@ class ClipAudio {
         timing.swap(replacement.timing); segments.swap(replacement.segments);
     }
     static bool needed(const jaras::Song &song, const jaras::Track &track,
-                       const jaras::AudioClip &clip) {
+                       const jaras::AudioClip &clip, jaras::TempoEditMap::PlaybackRates* compiled = nullptr) {
         if (clip.loopLength.value_or(0) > 0 || std::abs(clip.playbackRate - 1) > 1e-9 ||
             clip.pitchSemitones.value_or(0) != 0)
             return true;
-        const ClipTempo timing(clip, &song);
+        const ClipTempo timing(clip, &song, compiled);
         for (const auto &span : timing.spans)
             if (std::abs(span.rate - 1) > 1e-9) return true;
         if (!clip.frozenMIDI.value_or(false) && !clip.renderedTiming.value_or(false))
@@ -121,7 +122,7 @@ class ClipAudio {
     }
     bool render(AudioFormatReader &reader, AudioBuffer<float> &scratch, AudioBuffer<float> &output,
                 int headIndex, double local, int count) {
-        auto &head = heads[(size_t)headIndex];
+        auto &head = heads[(size_t)headOrder[headIndex]];
         bool ok = true;
         int done = 0;
         while (done < count) {
@@ -173,6 +174,7 @@ class ClipAudio {
         double next = -1, ahead = 0, semitones = 0;
     };
     std::array<Head, 2> heads;
+    int headOrder[2]{0,1};
     std::vector<Segment> segments;
     std::optional<ClipTempo> timing;
 

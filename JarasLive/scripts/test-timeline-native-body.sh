@@ -41,6 +41,8 @@ import Metal
 private enum JarasLocalization { static func string(_ value: String) -> String { value } }
 private final class RecordingLaneLayout {
     static let shared = RecordingLaneLayout()
+    struct Item { var track: UUID }
+    var items: [UUID: Item] = [:]
     func count(for id: UUID, existing: Int) -> Int { existing }
 }
 '''
@@ -76,7 +78,9 @@ extension NativeTimelineAudioBodyView {
 preflight = between('    @discardableResult private func prepareHostedViewport(', '    @discardableResult private func updateHostedItems')
 preflight = preflight.replace('private func prepareHostedViewport', 'func prepareHostedViewport')
 preflightTests = Path('Tests/Apple/TimelineNativeBodyPreflightTests.swift').read_text().replace('__NATIVE_BODY_PREFLIGHT_METHOD__', preflight)
-out.joinpath('main.swift').write_text(stubs + '\n'.join(parts) + probes + Path('Tests/Apple/TimelineNativeBodyTests.swift').read_text() + '\n' + preflightTests)
+text_colors = Path('Apple/Shared/TextItemEditor.swift').read_text()
+text_colors = text_colors[text_colors.index('extension ItemTextColors {'):]
+out.joinpath('main.swift').write_text(stubs + text_colors + '\n'.join(parts) + probes + Path('Tests/Apple/TimelineNativeBodyTests.swift').read_text() + '\n' + preflightTests)
 renderer = Path('Apple/Shared/MetalWaveformRenderer.swift').read_text()
 renderer = renderer.replace('    private var latest: MetalWaveformFrame?', '    var nativeBodySubmissionsForTest = 0\n    private var latest: MetalWaveformFrame?', 1)
 renderer = renderer.replace('    func submit(_ frame: MetalWaveformFrame) {', '    func submit(_ frame: MetalWaveformFrame) {\n        nativeBodySubmissionsForTest += 1', 1)

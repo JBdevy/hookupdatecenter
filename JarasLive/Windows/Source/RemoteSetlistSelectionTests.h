@@ -78,6 +78,29 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
             for(const auto &tick:ticks) if(!tick.primary) require(std::abs(timelineGrid::snap(tick.time+.001,*session.song(),scale,false,false)-tick.time)<.00001,"Secondary grid line rejected snapping");
         }
     });
+    test("Remote hides special tracks while preserving ordinary tracks and groups", [&] {
+        auto project=fixture();auto &song=project.songs[0];song.tracks.clear();
+        std::vector<ID> visible;
+        for(const char *role:{"other","keys","drums","click","vinhetas","programChange","timecode","generatedClick","video","teleprompt","teleprompt2","chords"}) {
+            jaras::Track track;track.id=uuid();track.role.id=role;track.name=jaras::fixedTrackName(track.role).empty()?role:jaras::fixedTrackName(track.role);
+            if(visible.size()<5 && song.tracks.size()<5)visible.push_back(track.id);
+            if(String(role)=="keys" || String(role)=="drums")track.parentTrackID=visible.front();
+            song.tracks.push_back(track);
+        }
+        Session session;session.inspection=true;session.core.loadProject(project);
+        // Loading pins VINHETAS-FX before ordinary tracks in the desktop too.
+        // Remote must retain that host order and the original group links.
+        const std::vector<ID> ordered{visible[4],visible[0],visible[1],visible[2],visible[3]};
+        Appearance preferences(directory.getNonexistentChildFile("remote-special-tracks",".json"));
+        StageState stage(preferences);remote::Presentation presentation(session,stage);
+        for(int panel:{0,1,2}) {
+            const auto tracks=list(get(presentation.snapshot(panel),"tracks"));
+            require(tracks.size()==visible.size(),"Remote exposed a special track or hid an ordinary track");
+            for(size_t i=0;i<visible.size();++i)
+                require(str(tracks[(int)i],"id")==remote::wireID(ordered[i]),"Remote changed normal track order");
+            require(str(tracks[3],"parentTrack")==remote::wireID(visible.front()),"Remote lost group membership");
+        }
+    });
     test("Remote section cues preserve Parts timing and armed destination for observers", [&] {
         auto project=fixture();project.regionSetlist.reset();auto &song=project.songs[0];song.parts={{uuid(),"Playing",0,20}};
         const auto region=song.parts[0].id,next=uuid(),target=uuid();

@@ -18,6 +18,28 @@ public extension AudioClip {
 public enum TrackRecordingMode: Int, CaseIterable, Sendable {
     case midi = 0, mono = 1, stereo = 2
 }
+public struct ProgramChangeMarker: Codable, Identifiable, Equatable, Sendable {
+    public var id: UUID
+    public var position: Double
+    /// MIDI wire value (0...127); the interface displays 1...128.
+    public var program: Int
+    public var channel: Int
+    public var name: String? = nil
+    public var output: Int? = nil
+    public var title: String { name.flatMap { $0.isEmpty ? nil : $0 } ?? "PC \(program + 1)" }
+}
+public struct ProgramChangeLayout: Equatable, Sendable {
+    public var lanes: [UUID: Int] = [:]
+    public var count = 1
+    public init(_ markers: [ProgramChangeMarker]) {
+        let sorted = markers.enumerated().sorted { $0.element.position == $1.element.position ? $0.offset < $1.offset : $0.element.position < $1.element.position }
+        var start = -Double.infinity, lane = 0
+        for entry in sorted {
+            if abs(entry.element.position - start) >= 0.000001 { start = entry.element.position; lane = 0 }
+            lanes[entry.element.id] = lane; lane += 1; count = max(count, lane)
+        }
+    }
+}
 public struct Track: Codable, Identifiable, Equatable, Sendable {
     /// Applied only by creation paths. Decoded nil/custom colors stay unchanged.
     public static let defaultStandardColor: UInt32 = 0x828282
@@ -34,6 +56,9 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var fx: NativeFXSettings?
     public var midiInput: Int?
     public var midiChannel: Int?
+    public var midiOutput: Int?
+    public var programChanges: [ProgramChangeMarker]?
+    public var programChangeLaneCount: Int { ProgramChangeLayout(programChanges ?? []).count }
     public func acceptsMIDI(status: UInt8) -> Bool {
         status >= 0x80 && status < 0xf0 && (midiChannel == nil || midiChannel == 0 || midiChannel == Int(status & 0x0f) + 1)
     }
@@ -564,6 +589,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
         for patch in masterOutputPatches { try patch.validate(allowMaster: false, allowNone: true) }
         guard songs.flatMap(\.tracks).filter({ $0.role.rawValue == "vinhetas" }).count <= 1 else { throw ProjectError.invalid("Only one VINHETAS-FX track is allowed") }
         var identifiers: Set<UUID> = [id]
+        guard songs.flatMap(\.tracks).filter({ $0.kind == .programChange }).count <= 1 else { throw ProjectError.invalid("Only one Program Change track is allowed") }
         guard songs.flatMap(\.tracks).filter({ $0.kind == .timecode }).count <= 1 else { throw ProjectError.invalid("Only one Timecode track is allowed") }
         guard songs.flatMap(\.tracks).filter({ $0.kind == .click }).count <= 1 else { throw ProjectError.invalid("Only one Click track is allowed") }
         func register(_ id: UUID) throws { guard identifiers.insert(id).inserted else { throw ProjectError.invalid("UUID duplicado.") } }
@@ -582,7 +608,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 } else { ancestors.removeAll(keepingCapacity: true) }
                 ancestors.append(track.id)
                 try register(track.id)
-                if let fixed = track.fixedName { guard (track.name == fixed || (track.kind == .teleprompt && track.name == "Teleprompter")), (!track.solo || track.kind == .video || track.kind == .click), track.parentTrackID == nil else { throw ProjectError.invalid("Invalid special track") } }
+                if let fixed = track.fixedName { guard (track.name == fixed || (track.kind == .teleprompt && track.name == "Teleprompter")), (!track.solo || track.kind == .video || track.kind == .click || track.kind == .programChange), track.parentTrackID == nil else { throw ProjectError.invalid("Invalid special track") } }
                 guard track.clickSound == nil || track.kind == .click else { throw ProjectError.invalid("Custom click sound requires a Click track") }
                 if track.kind == .click { guard track.fx == nil, track.audioFile == nil, track.midiInput == nil, track.inputPatch == nil, track.midiChannel == nil, track.recordingChannels == nil, track.recordingFormat == nil else { throw ProjectError.invalid("Click tracks cannot record or contain FX") } }
                 if track.kind.isText { guard !track.mute, track.fx == nil, track.audioFile == nil, track.midiInput == nil, track.midiChannel == nil, track.recordingFormat == nil, track.recordingChannels == nil else { throw ProjectError.invalid("Text tracks cannot contain audio controls") } }
@@ -595,6 +621,18 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                           input.channelCount == 1, otherInput.channelCount == 1,
                           otherInput.firstChannel == input.firstChannel + (link.left ? 1 : -1) else { throw ProjectError.invalid("Invalid linked tracks") }
                 }
+                if track.kind == .programChange {
+                    guard track.clips.isEmpty, track.audioFile == nil, track.fx == nil, track.parentTrackID == nil,
+                          track.inputPatch == nil, track.recordingChannels == nil else { throw ProjectError.invalid("Program Change tracks accept only program markers") }
+                    var ids = Set<UUID>()
+                    guard track.programChangeLaneCount <= 6 else { throw ProjectError.invalid("Only six Program Change markers are allowed at the same position") }
+                    for marker in track.programChanges ?? [] {
+                        guard marker.position.isFinite, marker.position >= 0, (0...127).contains(marker.program),
+                              (1...16).contains(marker.channel), ids.insert(marker.id).inserted, marker.output == nil || (1...6).contains(marker.output!)
+                        else { throw ProjectError.invalid("Invalid Program Change marker") }
+                    }
+                } else if track.programChanges != nil || track.midiOutput != nil { throw ProjectError.invalid("Program Change settings require a Program Change track") }
+                guard track.midiOutput == nil || (1...6).contains(track.midiOutput!) else { throw ProjectError.invalid("Invalid MIDI output") }
                 try track.timecode?.validate()
                 guard track.color == nil || track.color! <= 0xffffff else { throw ProjectError.invalid("Invalid track color") }
                 guard track.heightScale == nil || TrackHeightGeometry.isValidScale(track.heightScale!) else { throw ProjectError.invalid("Invalid track height") }
@@ -610,7 +648,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     }
                 }
                 guard track.midiChannel == nil || (1...16).contains(track.midiChannel!) else { throw ProjectError.invalid("Invalid MIDI channel") }
-                guard track.midiInput == nil || (1...3).contains(track.midiInput!) else { throw ProjectError.invalid("Invalid MIDI input") }
+                guard track.midiInput == nil || (1...6).contains(track.midiInput!) || (track.kind == .programChange && track.midiInput == -1) else { throw ProjectError.invalid("Invalid MIDI input") }
                 try track.inputPatch?.validate(allowMaster: false)
                 guard track.recordingChannels == nil || TrackRecordingMode(rawValue: track.recordingChannels!) != nil else { throw ProjectError.invalid("Invalid recording channel mode") }
                 guard track.recordingFormat == nil || ["wav", "wav32", "mp3"].contains(track.recordingFormat!) else { throw ProjectError.invalid("Invalid recording format") }
@@ -973,11 +1011,12 @@ public struct RegionLanes: Equatable {
 
 
 public enum TrackKind: String, CaseIterable, Sendable {
-    case standard, video, timecode, teleprompt, teleprompt2, chords
+    case standard, video, timecode, teleprompt, teleprompt2, chords, programChange
     case click = "generatedClick"
     public var defaultColor: UInt32? {
         switch self {
         case .click: return 0x77d18b
+        case .programChange: return 0x91a8ff
         case .timecode: return 0xffdc52
         case .chords: return 0x529eff
         case .teleprompt, .teleprompt2: return 0x54ff93
@@ -985,7 +1024,7 @@ public enum TrackKind: String, CaseIterable, Sendable {
         case .standard: return nil
         }
     }
-    public var title: String { switch self { case .click: return "Click"; case .standard: return "Standard"; case .video: return "Video"; case .timecode: return "Timecode"; case .teleprompt: return "Teleprompter 1"; case .teleprompt2: return "Teleprompter 2"; case .chords: return "Chords" } }
+    public var title: String { switch self { case .click: return "Click"; case .standard: return "Standard"; case .video: return "Video"; case .programChange: return "Program Change"; case .timecode: return "Timecode"; case .teleprompt: return "Teleprompter 1"; case .teleprompt2: return "Teleprompter 2"; case .chords: return "Chords" } }
     public var isTeleprompter: Bool { self == .teleprompt || self == .teleprompt2 }
     public var isText: Bool { isTeleprompter || self == .chords }
     public var isSingleLane: Bool { isText || self == .video }
@@ -1005,7 +1044,7 @@ extension Track {
     public var kind: TrackKind { TrackKind(rawValue: role.rawValue) ?? .standard }
     public var fixedName: String? { kind == .standard ? nil : kind.title }
     public func canPlaceItem(start: Double, duration: Double, excluding id: UUID? = nil, media: Bool? = nil) -> Bool {
-        guard start.isFinite, duration.isFinite, start >= 0, duration > 0 else { return false }
+        guard kind != .programChange, start.isFinite, duration.isFinite, start >= 0, duration > 0 else { return false }
         guard kind.isSingleLane else { return true }
         let media = media ?? (id.flatMap { id in clips.first { $0.id == id }?.isProjectionMedia } ?? false)
         return !clips.contains { $0.id != id && (!kind.isTeleprompter || $0.isProjectionMedia == media) && start < $0.startTime + $0.duration - 0.0000001 && start + duration > $0.startTime + 0.0000001 }

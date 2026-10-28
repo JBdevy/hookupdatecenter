@@ -21,6 +21,15 @@ struct ExportRequest {
     std::vector<ExportJob> jobs;
     ExportEncoding encodings[2];
     bool preProcessingItems = false;
+    std::set<String> replaceExistingFiles;
+    std::function<void(var)> diagnostics;
+};
+struct AudioExportProgress {
+    String fileName;
+    int completed = 0, total = 0;
+    double fraction = 0, overall = 0;
+    float peak = 0;
+    std::array<float, 600> waveform{};
 };
 namespace audioExport {
 // Work on a render copy: the document, sources and selected time interval stay intact.
@@ -158,7 +167,8 @@ inline void appendSecondary(std::vector<ExportJob> &primary, std::vector<ExportJ
 }
 inline void render(const jaras::Project &project, const jaras::Song &original, const File &media,
                    const ExportRequest &request, std::atomic<bool> &cancel,
-                   const std::function<void(double)> &progress) {
+                   const std::function<void(double)> &progress,
+                   const std::function<void(const AudioExportProgress &)> &preview = {}) {
     if (request.jobs.empty() || request.jobs.size() > 10000)
         throw std::runtime_error("Nenhum arquivo selecionado para exportar.");
     if (request.directory.createDirectory().failed())
@@ -168,11 +178,13 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
             !std::isfinite(job.start) || !std::isfinite(job.end) || job.start < 0 ||
             job.end <= job.start)
             throw std::runtime_error("Plano de exportação inválido.");
-        if (request.directory.getChildFile(job.name).exists())
+        if (request.directory.getChildFile(job.name).exists() && !request.replaceExistingFiles.count(job.name))
             throw std::runtime_error(
                 "Já existe um arquivo com este nome. Escolha outro nome ou diretório.");
     }
     std::vector<File> published;
+    std::vector<std::unique_ptr<TemporaryFile>> staged;
+    std::vector<std::pair<File, File>> backups;
     try {
         for (size_t jobIndex = 0; jobIndex < request.jobs.size(); ++jobIndex) {
         if (cancel.load())
@@ -186,19 +198,29 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
              encoding.bitrate != 192 && encoding.bitrate != 224 &&
              encoding.bitrate != 256 && encoding.bitrate != 320))
             throw std::runtime_error("Formato de exportação inválido.");
+        AudioExportProgress update;
+        update.fileName = job.name; update.completed = int(jobIndex); update.total = int(request.jobs.size());
+        update.overall = double(jobIndex) / request.jobs.size();
+        if (preview) preview(update);
+        auto lastPreview = Time::getMillisecondCounterHiRes();
         auto song = itemProcessingSong(original,request.preProcessingItems && !job.clip.empty());
         auto renderProject=project;
         if(!job.clip.empty())renderProject.masterFXJSON.reset();
+        const auto prerollStart = std::max(0.0, job.start - 4096.0 / encoding.rate);
         for (auto &track : song.tracks) {
+            const bool hadItems = !track.clips.empty();
             track.clips.erase(std::remove_if(track.clips.begin(), track.clips.end(),
                                              [&](const auto &clip) {
-                                                 return (!job.clip.empty() &&
+                                                 return clip.startTime >= job.end ||
+                                                        clip.startTime + clip.duration <= prerollStart ||
+                                                        (!job.clip.empty() &&
                                                          clip.id != job.clip) ||
                                                         (job.minimumClipStart &&
                                                          clip.startTime < *job.minimumClipStart);
                                              }),
                               track.clips.end());
-            if (!job.clip.empty() && track.id != job.track)
+            // An emptied clip list must not revive legacy track-level media.
+            if ((hadItems && track.clips.empty()) || (!job.clip.empty() && track.id != job.track))
                 track.audioFile.reset();
         }
         AudioEngine engine;
@@ -215,7 +237,8 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
             throw std::runtime_error(
                 "Corrija as mídias ausentes e os efeitos incompatíveis antes de exportar.");
         const auto destination = request.directory.getChildFile(job.name);
-        TemporaryFile temporary(destination);
+        staged.push_back(std::make_unique<TemporaryFile>(destination));
+        auto &temporary = *staged.back();
         std::unique_ptr<AudioFormatWriter> writer;
         std::unique_ptr<MP3Writer> mp3;
         std::unique_ptr<AiffFloatWriter> aiffFloat;
@@ -251,22 +274,22 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         }
         AudioEngine::State state;
         state.playing = true;
-        const auto prerollStart = std::max(0.0, job.start - 4096.0 / encoding.rate);
         state.position = prerollStart;
         engine.transport(state);
-        AudioBuffer<float> buffer(2, 1024);
+        constexpr int blockSize = 4096;
+        AudioBuffer<float> buffer(2, blockSize);
         const int64 warmup = (int64)std::llround((job.start - prerollStart) * encoding.rate) + engine.exportLatencyFrames();
-        for (int64 at = 0; at < warmup; at += 1024) {
+        for (int64 at = 0; at < warmup; at += blockSize) {
             if (cancel.load())
                 throw std::runtime_error("Exportação cancelada.");
             engine.render(buffer.getArrayOfWritePointers(), 2,
-                          (int)std::min<int64>(1024, warmup - at));
+                          (int)std::min<int64>(blockSize, warmup - at));
         }
         const int64 frames = (int64)std::llround((job.end - job.start) * encoding.rate);
-        for (int64 at = 0; at < frames; at += 1024) {
+        for (int64 at = 0; at < frames; at += blockSize) {
             if (cancel.load())
                 throw std::runtime_error("Exportação cancelada.");
-            const int count = (int)std::min<int64>(1024, frames - at);
+            const int count = (int)std::min<int64>(blockSize, frames - at);
             engine.render(buffer.getArrayOfWritePointers(), 2, count);
             engine.checkStemErrors();
             for (int n = 0; n < count; ++n) {
@@ -276,13 +299,31 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
                 if (encoding.channels == 1)
                     buffer.setSample(0, n, (buffer.getSample(0, n) + buffer.getSample(1, n)) * .5f);
             }
+            // Bins are measured from the actual post-processing output, not
+            // the source waveform. Include clipping and the mono downmix.
+            for (int offset = 0; offset < count;) {
+                const int bin = std::min(599, int((at + offset) * 600 / frames));
+                const int length = int(std::min<int64>(count - offset, std::max<int64>(1, ((bin + 1) * frames + 599) / 600 - at - offset)));
+                float peak = 0;
+                for (int channel = 0; channel < encoding.channels; ++channel)
+                    peak = std::max(peak, buffer.getMagnitude(channel, offset, length));
+                update.waveform[size_t(bin)] = std::max(update.waveform[size_t(bin)], peak);
+                update.peak = std::max(update.peak, peak);
+                offset += length;
+            }
             if (mp3)
                 mp3->write(buffer, count);
             else if(aiffFloat) aiffFloat->write(buffer,count);
             else if (!writer->writeFromAudioSampleBuffer(buffer, 0, count))
                 throw std::runtime_error("Falha ao gravar o áudio.");
-            if (progress && at % (int64)encoding.rate < 1024)
-                progress((jobIndex + (double)at / frames) / request.jobs.size());
+            const auto now = Time::getMillisecondCounterHiRes();
+            if (now - lastPreview >= 50 || at + count == frames) {
+                update.fraction = double(at + count) / frames;
+                update.overall = (jobIndex + update.fraction) / request.jobs.size();
+                if (progress) progress(update.overall);
+                if (preview) preview(update);
+                lastPreview = now;
+            }
         }
         if (mp3)
             mp3->finish();
@@ -290,17 +331,40 @@ inline void render(const jaras::Project &project, const jaras::Song &original, c
         aiffFloat.reset();
         writer.reset();
         mp3.reset();
+        if (request.diagnostics) {
+            auto measured=object();put(measured,"preparation",engine.preparationDiagnostics);
+            put(measured,"render",engine.callbackMetrics.snapshot());request.diagnostics(measured);
+        }
         if (engine.getUnderruns())
             throw std::runtime_error("Falha na leitura das mídias durante a exportação.");
-        if (destination.exists() || !temporary.overwriteTargetFileWithTemporary())
-            throw std::runtime_error("Não foi possível concluir o arquivo de saída.");
-        published.push_back(destination);
+        update.completed = int(jobIndex + 1);
+        if (preview) preview(update);
+        }
+        // Finish every render before publishing. Keep originals for rollback
+        // if cancellation or a later output fails, including secondary formats.
+        if (cancel.load()) throw std::runtime_error("Exportação cancelada.");
+        for (size_t i = 0; i < request.jobs.size(); ++i) {
+            const auto &job = request.jobs[i];
+            const auto destination = request.directory.getChildFile(job.name);
+            if (destination.exists()) {
+                if (!request.replaceExistingFiles.count(job.name) || !destination.existsAsFile())
+                    throw std::runtime_error("O arquivo de saída já existe. Confirme a substituição.");
+                const auto backup = request.directory.getChildFile(".catlive-export-backup-" + text(uuid()));
+                if (!destination.copyFileTo(backup))
+                    throw std::runtime_error("Não foi possível preservar o arquivo existente.");
+                backups.emplace_back(destination, backup);
+            }
+            if (!staged[i]->overwriteTargetFileWithTemporary())
+                throw std::runtime_error("Não foi possível concluir o arquivo de saída.");
+            published.push_back(destination);
         }
     } catch (...) {
-        for (const auto &file : published)
-            file.deleteFile();
+        for (const auto &file : published) file.deleteFile();
+        // If restoration fails (e.g. disk removed), retain the backup on disk.
+        for (const auto &backup : backups) backup.second.moveFileTo(backup.first);
         throw;
     }
+    for (const auto &backup : backups) backup.second.deleteFile();
     if (progress)
         progress(1);
 }
