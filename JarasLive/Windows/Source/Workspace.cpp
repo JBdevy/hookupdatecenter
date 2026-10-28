@@ -3930,8 +3930,13 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["metronome"]->setColour(TextButton::textColourOnId, Colours::black);
     controls["metronome"]->setColour(TextButton::buttonColourId, theme::panel);
     controls["remote"]->setColour(TextButton::textColourOffId, Colours::black);
-    controls["record"]->setColour(TextButton::textColourOffId, Colours::white);
-    controls["record"]->setColour(TextButton::textColourOnId, Colours::white);
+    for(auto id:{"record","tp1","tp2","notices","preview","video"}) {
+        controls[id]->setColour(TextButton::buttonColourId,theme::liveOffRed);
+        controls[id]->setColour(TextButton::textColourOffId,Colours::black);
+        controls[id]->setColour(TextButton::textColourOnId,Colours::black);
+    }
+    for(auto id:{"advanced","grandma2","resolume","export"})
+        controls[id]->setColour(TextButton::buttonColourId,Colour(0xff454545));
     controls["record"]->setColour(TextButton::buttonColourId, theme::liveOffRed);
     controls["record"]->setButtonText("REC");
     for (auto spec : std::initializer_list<std::pair<const char *, const char *>>{
