@@ -126,6 +126,9 @@ struct TransportView: View {
                             #endif
                         } label: {
                             Text(verbatim: "Advanced").font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 68, height: 25).contentShape(Rectangle())
+                                #if os(macOS)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x454545)))
+                                #endif
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
                         }.buttonStyle(.plain).accessibilityLabel("Advanced").jarasHelp("Advanced")
                         #if os(macOS)
@@ -133,6 +136,7 @@ struct TransportView: View {
                         ForEach(["Resolume"], id: \.self) { title in
                             Button { showingResolume = true } label: {
                                 Text(verbatim: title).font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 64, height: 25).contentShape(Rectangle())
+                                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x454545)))
                                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.6)))
                             }.buttonStyle(.plain).accessibilityLabel(title).jarasHelp(title)
                         }
@@ -140,6 +144,9 @@ struct TransportView: View {
                         #endif
                         Button { showingExport = true } label: {
                             Text("Export").font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 82, height: 25).contentShape(Rectangle())
+                                #if os(macOS)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x454545)))
+                                #endif
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.8)))
                         }.buttonStyle(.plain).jarasHelp("Export").accessibilityLabel("Export")
                         Button(action: openSettings) {
@@ -1124,7 +1131,7 @@ private struct VideoToggleButton: View {
             .font(.jarasSystem(size: TransportControlMetrics.font, weight: .semibold))
             .lineLimit(1)
             .frame(width: buttonWidth, height: TransportControlMetrics.height)
-            .foregroundStyle(video.visible ? Color.black : JarasTheme.text)
+            .foregroundStyle(Color.black)
             .background(RoundedRectangle(cornerRadius: 5).fill(video.visible ? JarasTheme.green : JarasTheme.liveOffRed))
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(video.visible ? JarasTheme.green : JarasTheme.liveOffRed))
             .contentShape(Rectangle())

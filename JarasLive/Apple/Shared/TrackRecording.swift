@@ -1101,7 +1101,11 @@ private struct RecordingButtonStyle: ButtonStyle {
             .font(.jarasSystem(size: fontSize, weight: .semibold))
             .lineLimit(1).minimumScaleFactor(0.75)
             .frame(width: width, height: height)
+            #if os(macOS)
+            .foregroundStyle(transport || active ? Color.black : Color.red)
+            #else
             .foregroundStyle(transport ? Color.white : active ? Color.black : Color.red)
+            #endif
             .background(transport ? (active ? JarasTheme.transportRed : JarasTheme.liveOffRed).opacity(configuration.isPressed ? 0.85 : 1) :
                 active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
                 (configuration.isPressed ? Color(hex: 0x565656) : JarasTheme.trackButton))

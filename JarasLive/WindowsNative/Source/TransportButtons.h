@@ -132,7 +132,7 @@ class TransportButtons final {
         t->FillRoundedRectangle(bounds,brush.Get());
         brush->SetColor(s.accent&&s.active?colour(s.accent):D2D1::ColorF(1,1,1,.45f));t->DrawRoundedRectangle(bounds,brush.Get(),.8f);
         auto fg=colour(s.foreground);if(!s.enabled&&!s.accent)fg.a*=.35f;brush->SetColor(fg);
-        const bool text=!s.text.empty();float iconSize=s.icon.empty()?0.f:(text?14.f:17.f),textWidth=0;
+        const bool text=!s.text.empty();float iconSize=s.icon.empty()?0.f:12.f,textWidth=0;
         const float gap=iconSize>0 && text?3.f:0.f;
         Ptr<IDWriteTextLayout> layout;
         if(text) {

@@ -573,7 +573,7 @@ struct TeleprompterToggleButton: View {
             Label("TP-\(index)",systemImage: "text.alignleft").font(.jarasSystem(size: TransportControlMetrics.font,weight: .semibold))
                     .lineLimit(1).minimumScaleFactor(0.8)
                     .frame(width: buttonWidth, height: TransportControlMetrics.height)
-                .foregroundStyle(controller.visible ? Color.black : JarasTheme.text)
+                .foregroundStyle(Color.black)
                 .background(RoundedRectangle(cornerRadius: 5).fill(controller.visible ? JarasTheme.green : JarasTheme.liveOffRed))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(controller.visible ? JarasTheme.green : JarasTheme.liveOffRed))
                 .contentShape(Rectangle())
@@ -594,7 +594,7 @@ struct TeleprompterPreviewButton: View {
         Button { controller.togglePreview() } label: {
             Text("Preview").font(.jarasSystem(size: TransportControlMetrics.font,weight: .semibold))
                 .frame(width: buttonWidth, height: TransportControlMetrics.height)
-                .foregroundStyle(controller.previewActive ? Color.black : JarasTheme.text)
+                .foregroundStyle(Color.black)
                 .background(RoundedRectangle(cornerRadius: 5).fill(controller.previewActive ? JarasTheme.green : JarasTheme.liveOffRed))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(controller.previewActive ? JarasTheme.green : JarasTheme.liveOffRed))
                 .contentShape(Rectangle())
@@ -782,7 +782,7 @@ struct TPNoticeButton: View {
                 Text("Messages")
             }
         }
-            .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: false, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
+            .buttonStyle(TransportButtonStyle(color: JarasTheme.liveOffRed, active: true, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
             .jarasHelp("Messages")
     }
 }
