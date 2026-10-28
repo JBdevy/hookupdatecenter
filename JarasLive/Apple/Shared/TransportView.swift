@@ -872,6 +872,7 @@ struct TransportButtonStyle: ButtonStyle {
     var fontSize: CGFloat = 12
     var width: CGFloat? = nil
     var height: CGFloat = 32
+    var bordered = true
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.jarasSystem(size: fontSize, weight: .semibold, design: .rounded))
@@ -888,7 +889,9 @@ struct TransportButtonStyle: ButtonStyle {
             .background(active ? color : color.opacity(configuration.isPressed ? max(0.7, inactiveOpacity) : inactiveOpacity))
             #endif
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(active ? color : Color.white.opacity(0.45)))
+            .overlay {
+                if bordered { RoundedRectangle(cornerRadius: 6).stroke(active ? color : Color.white.opacity(0.45)) }
+            }
             .contentShape(Rectangle())
     }
 }
@@ -921,7 +924,11 @@ private struct MetronomeControl: View {
     }
     private var control: some View {
         Button { settings.enabled.toggle() } label: { Image(systemName: "metronome") }
+            #if os(macOS)
+            .buttonStyle(TransportButtonStyle(color: settings.enabled ? JarasTheme.yellow : Color(hex: 0x454545), active: settings.enabled, inactiveOpacity: 1, fontSize: TransportControlMetrics.font, width: max(30, (buttonWidth / 2).rounded()), height: 35, bordered: false))
+            #else
             .buttonStyle(TransportButtonStyle(color: settings.enabled ? JarasTheme.yellow : JarasTheme.panel, active: settings.enabled, fontSize: TransportControlMetrics.font, width: max(30, (buttonWidth / 2).rounded()), height: 35))
+            #endif
             #if !os(macOS)
             .opacity(!settings.enabled || pulse ? 1 : 0.45)
             .onReceive(show.$snapshot.map { pulse(for: $0) }.removeDuplicates()) { pulse = $0 }

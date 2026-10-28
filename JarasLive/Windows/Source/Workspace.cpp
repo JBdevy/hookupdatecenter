@@ -3931,7 +3931,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["metronome"]->setColour(TextButton::buttonOnColourId, theme::yellow);
     controls["metronome"]->setColour(TextButton::textColourOffId, Colours::white);
     controls["metronome"]->setColour(TextButton::textColourOnId, Colours::black);
-    controls["metronome"]->setColour(TextButton::buttonColourId, theme::panel);
+    controls["metronome"]->setColour(TextButton::buttonColourId, Colour(0xff454545));
     controls["remote"]->setColour(TextButton::textColourOffId, Colours::black);
     for(auto id:{"record","tp1","tp2","notices","preview","video"}) {
         controls[id]->setColour(TextButton::buttonColourId,theme::liveOffRed);
