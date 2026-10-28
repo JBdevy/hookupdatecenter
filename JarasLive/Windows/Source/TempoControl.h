@@ -77,16 +77,16 @@ class TempoControl final : public Component {
         }
         g.setColour(theme::secondary);
         g.setFont(theme::font(8));
-        g.drawText("BPM", signatureWidth(), getHeight() - 14, roundToInt(58 * getWidth() / 171.f),
-                   11, Justification::centred);
+        g.drawText("BPM", signatureWidth(), getHeight() / 2 + 3, roundToInt(58 * getWidth() / 171.f),
+                   10, Justification::centred);
     }
     void resized() override {
         const float scale = getWidth() / 171.f;
-        beats.setBounds(roundToInt(4 * scale), 8, roundToInt(30 * scale), getHeight() - 16);
-        unit.setBounds(roundToInt(48 * scale), 8, roundToInt(30 * scale), getHeight() - 16);
-        bpm.setBounds(signatureWidth(), 3, roundToInt(58 * scale), getHeight() - 16);
-        up.setBounds(roundToInt(142 * scale), 4, roundToInt(25 * scale), 16);
-        down.setBounds(roundToInt(142 * scale), getHeight() - 20, roundToInt(25 * scale), 16);
+        beats.setBounds(roundToInt(4 * scale), (getHeight() - 23) / 2, roundToInt(30 * scale), 23);
+        unit.setBounds(roundToInt(48 * scale), (getHeight() - 23) / 2, roundToInt(30 * scale), 23);
+        bpm.setBounds(signatureWidth(), getHeight() / 2 - 15, roundToInt(58 * scale), 20);
+        up.setBounds(roundToInt(142 * scale), 2, roundToInt(25 * scale), 14);
+        down.setBounds(roundToInt(142 * scale), getHeight() - 16, roundToInt(25 * scale), 14);
     }
 
   private:

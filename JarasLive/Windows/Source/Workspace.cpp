@@ -162,8 +162,10 @@ void MacLook::drawButtonBackground(Graphics &g, Button &b, const Colour &colour,
         const auto bounds = b.getLocalBounds().toFloat().reduced(.5f);
         g.setColour(active ? base : base.withAlpha(down ? .7f : .45f));
         g.fillRoundedRectangle(bounds, 6);
-        g.setColour(active ? base : Colours::white.withAlpha(.45f));
-        g.drawRoundedRectangle(bounds, 6, 1);
+        if (!(bool)b.getProperties()["flat"]) {
+            g.setColour(active ? base : Colours::white.withAlpha(.45f));
+            g.drawRoundedRectangle(bounds, 6, 1);
+        }
         return;
     }
     if ((bool)b.getProperties()["macMasterControl"]) {
@@ -3893,8 +3895,9 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     for (auto id : {"menu", "mixer", "railMixer", "railKeyboard", "railParts", "railVinhetas", "settings",
                     "railTeleprompt", "railTeleprompt2"})
         controls[id]->getProperties().set("plain", true);
-    for (auto id : {"play", "subplay", "record", "video", "tp1", "tp2", "masterMute", "masterSolo",
-                    "masterMono", "masterFX"})
+    for (auto id : {"play", "pause", "subplay", "loop", "record", "metronome", "video", "tp1", "tp2",
+                    "notices", "preview", "remote", "save", "setlist", "export", "resolume", "grandma2", "advanced",
+                    "masterMute", "masterSolo", "masterMono", "masterFX"})
         controls[id]->getProperties().set("flat", true);
     for (auto id : {"railTeleprompt", "railTeleprompt2"})
         controls[id]->setColour(TextButton::textColourOffId, Colour(0xffff5555));
@@ -4854,9 +4857,9 @@ void Workspace::resized() {
             x += item.width * fit + item.stretch * extra;
             const int width = roundToInt(x) - leftEdge;
             if (String(item.id) == "tempo")
-                tempoControl->setBounds(leftEdge, y - 9, width, 43);
+                tempoControl->setBounds(leftEdge, y - 4, width, 35);
             else if (String(item.id) == "tuner")
-                tuner->setBounds(leftEdge, y - 9, width, 43);
+                tuner->setBounds(leftEdge, y + 1, width, 25);
             else
                 controls[item.id]->setBounds(leftEdge, String(item.id) == "metronome" ? y - 5 : y,
                                               width, String(item.id) == "metronome" ? 35 : 26);
@@ -4869,8 +4872,8 @@ void Workspace::resized() {
     if (narrowTransport) {
         const int available = std::max(1, toolsLeft - 40 - 13);
         const int tempoWidth = roundToInt(available * 171.f / 328.f);
-        tempoControl->setBounds(40, 111, tempoWidth, 43);
-        tuner->setBounds(45 + tempoWidth, 111, available - tempoWidth, 43);
+        tempoControl->setBounds(40, 115, tempoWidth, 35);
+        tuner->setBounds(45 + tempoWidth, 120, available - tempoWidth, 25);
     }
     stageTimer->setVisible(false);stageTimer->setBounds({});
     tempo.setVisible(false);
