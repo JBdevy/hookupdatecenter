@@ -11,7 +11,8 @@ let mappingTestApplicationActive = true
 // production MIDI learner, conflict detection, latch and continuous routing.
 enum ShowCommand: String { case mute, solo, volume, pan }
 enum Project { static let maximumTrackCount = 1000 }
-struct MappingTestTrack { let id: UUID; let name: String }
+enum MappingTestTrackKind { case standard, programChange }
+struct MappingTestTrack { let id: UUID; let name: String; var kind: MappingTestTrackKind = .standard; var midiInput: Int? }
 struct MappingTestSong { var tracks: [MappingTestTrack] = [] }
 struct MappingTestProject { var id = UUID(); var songs: [MappingTestSong] = [] }
 struct MappingTestSnapshot { var project = MappingTestProject() }
@@ -19,6 +20,14 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
     @Published var snapshot = MappingTestSnapshot()
     var commands: [(ShowCommand, UUID?, Double)] = []
     var previews: [(UUID?, Double)] = []
+    var selectedProgramChange: UUID?
+    var hasProgramChangeClipboard = false
+    var pastedProgramChanges = 0
+    func copyProgramChange() -> Bool {
+        guard selectedProgramChange != nil else { return false }
+        hasProgramChangeClipboard = true; return true
+    }
+    func pasteProgramChange() { pastedProgramChanges += 1 }
     var nativeFX = NativeFXSettings()
     func fxSettings(_ track: UUID?) -> NativeFXSettings { nativeFX }
     func clipFXSettings(_ clip: UUID) -> NativeFXSettings { nativeFX }
@@ -353,6 +362,10 @@ enum ProjectError: Error { case invalid(String) }
         precondition(mappings.handleKey(key(53, in: parent)) && mappings.editing == nil, "the shortcut learner retains its explicit Escape priority")
         RegionShortcutView.editingEnvelope = false
         print("ENVELOPE_DELETE_ESCAPE_KEYS_BEFORE_GLOBAL_MAPPINGS_OK")
+        show.selectedProgramChange = UUID()
+        precondition(mappings.handleHardwareKey(HardwareKeyboardEvent(keyCode: 8, modifiers: .command)) && show.hasProgramChangeClipboard)
+        precondition(mappings.handleHardwareKey(HardwareKeyboardEvent(keyCode: 9, modifiers: .command)) && show.pastedProgramChanges == 1)
+        show.selectedProgramChange = nil; show.hasProgramChangeClipboard = false
         parent.orderOut(nil)
         print("DIALOG_ENTER_ESCAPE_PRIORITY_AND_TRANSPORT_RESTORATION_OK")
         }
@@ -517,6 +530,22 @@ enum ProjectError: Error { case invalid(String) }
         mappings.receive(endpoint: 100, status: 0x92, number: 112, value: 100)
         precondition(show.focusedBlocks.last == 12, "A transferred note selects its block on a fresh press")
         print("SETLIST_BLOCK_VINHETAS_CC_NOTE_OMNI_CHANNEL_CANCEL_TRANSFER_PERSISTENCE_AND_STALE_CONFIRMATION_OK")
+
+        mappings.sources[100] = (123, "Test MIDI")
+        let pcTrack = UUID()
+        show.snapshot.project.songs[0].tracks.append(MappingTestTrack(id: pcTrack, name: "Program Change", kind: .programChange, midiInput: 6))
+        AudioDeviceSettings.shared.midiSlots = [0, 0, 0, 0, 0, 123]
+        precondition(mappings.scanProgramChange(pcTrack) == nil && mappings.programChangeScanTrack == pcTrack)
+        precondition(mappings.scanProgramChange(pcTrack) == nil && mappings.programChangeScanTrack == nil, "Apply without a captured command cancels Scan")
+        _ = mappings.scanProgramChange(pcTrack)
+        mappings.receive(endpoint: 100, status: 0xc2, number: 7, value: 0)
+        mappings.receive(endpoint: 100, status: 0xc3, number: 42, value: 0)
+        precondition(mappings.programChangeScanTrack == pcTrack, "Receiving a PC keeps Scan active until Apply")
+        let scanned = mappings.scanProgramChange(pcTrack)
+        precondition(scanned?.program == 42 && scanned?.channel == 4, "Apply uses the latest PC from the sixth MIDI input")
+        mappings.cancelProgramChangeScan()
+        precondition(mappings.scannedProgramChange == nil)
+        print("PROGRAM_CHANGE_SCAN_LATEST_VALUE_EXPLICIT_APPLY_CANCEL_AND_KEYBOARD_CLIPBOARD_OK")
 
     }
 }
