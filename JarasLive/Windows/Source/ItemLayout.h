@@ -112,7 +112,7 @@ struct ItemHeader {
         const float x = visible.getX() + 2.6f, y = bounds.getY(), width = visible.getWidth();
         titleLeft = visible.getX() + 6;
         if (!editable) return;
-        if (width < 26.7f) { titleLeft = visible.getRight(); return; }
+        if (width < 21.7f) { titleLeft = visible.getRight(); return; }
         float next = x;
         auto append = [&](juce::Rectangle<float>& target, float w, float gap = 1.f) {
             if (next + w + 2 > visible.getRight()) return false;
@@ -122,17 +122,17 @@ struct ItemHeader {
         };
         const auto readoutFont = theme::semiboldFont(9);
         const float nameWidth = std::max(24.f, std::ceil(GlyphArrangement::getStringWidth(readoutFont, title.isNotEmpty() ? title : text(clip.name)))) + 3.f;
-        const float gainThreshold = 4.6f + 19.7f + nameWidth + 16.5f + 1.f;
-        const float fxThreshold = gainThreshold + ((!midi || clip.fxJSON) ? 23.f : 0.f);
+        const float gainThreshold = 4.6f + 14.7f + nameWidth + 16.5f + 1.f;
+        const float fxThreshold = gainThreshold + ((!midi || clip.fxJSON) ? 18.f : 0.f);
         const float panThreshold = fxThreshold + (!midi ? 17.5f : 0.f);
         if (width >= gainThreshold) {
             append(gainRect,16.5f);
-        } else if (width >= 2.6f + 19.7f + nameWidth + 16.5f + 1.f) {
+        } else if (width >= 2.6f + 14.7f + nameWidth + 16.5f + 1.f) {
             append(gainRect,16.5f);
         }
-        if (!append(muteRect,18.7f)) return;
+        if (!append(muteRect,13.7f)) return;
         if (width < fxThreshold) return;
-        if ((!midi || clip.fxJSON) && !append(fxRect,22)) return;
+        if ((!midi || clip.fxJSON) && !append(fxRect,17)) return;
         if (!midi) {
             if (width < panThreshold || !append(panRect,16.5f)) return;
         }
@@ -207,7 +207,7 @@ struct ItemHeader {
         g.saveState(); g.reduceClipRegion(visible.getSmallestIntegerContainer());
         auto button = [&](juce::Rectangle<float> r, String caption, bool active, bool bypass = false) {
             if (r.isEmpty()) return;
-            r=r.reduced(0,1.5f);
+            r=r.withSizeKeepingCentre(r.getWidth(),std::min(9.f,r.getHeight()));
             g.setColour(bypass ? Colour(0xffff453a) : Colours::white.withAlpha(.10f)); g.fillRect(r);
             g.setColour(active ? Colour(0xff33ff8c) : Colours::white); g.setFont(theme::semiboldFont(8.5f)); g.drawText(caption,r,Justification::centred);
         };

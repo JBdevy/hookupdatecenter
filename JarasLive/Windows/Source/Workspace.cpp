@@ -3912,10 +3912,11 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["subplay"]->setColour(TextButton::textColourOffId, Colours::black);
     controls["subplay"]->setColour(TextButton::textColourOnId, Colours::black);
     controls["subplay"]->getProperties().set("solidTransportColour", true);
-    for (auto id : {"play", "pause", "subplay"}) {
-        const auto colour = String(id) == "play" ? theme::transportPlay : String(id) == "subplay" ? Colour(0xffffff00) : theme::panel;
+    for (auto id : {"play", "subplay"}) {
+        const auto colour = String(id) == "play" ? theme::transportPlay : Colour(0xffffff00);
         controls[id]->getProperties().set("transportColour", (int64)colour.getARGB());
     }
+    controls["pause"]->setColour(TextButton::buttonColourId, Colour(0xff454545));
     for (auto id : {"masterMono", "masterFX", "masterMute", "masterSolo"}) {
         auto &control = *controls[id];
         const bool compact = String(id) == "masterMute" || String(id) == "masterSolo";
@@ -4857,7 +4858,7 @@ void Workspace::resized() {
             x += item.width * fit + item.stretch * extra;
             const int width = roundToInt(x) - leftEdge;
             if (String(item.id) == "tempo")
-                tempoControl->setBounds(leftEdge, y - 4, width, 35);
+                tempoControl->setBounds(leftEdge, y - 8, width, 43);
             else if (String(item.id) == "tuner")
                 tuner->setBounds(leftEdge, y + 1, width, 25);
             else
@@ -4872,7 +4873,7 @@ void Workspace::resized() {
     if (narrowTransport) {
         const int available = std::max(1, toolsLeft - 40 - 13);
         const int tempoWidth = roundToInt(available * 171.f / 328.f);
-        tempoControl->setBounds(40, 115, tempoWidth, 35);
+        tempoControl->setBounds(40, 111, tempoWidth, 43);
         tuner->setBounds(45 + tempoWidth, 120, available - tempoWidth, 25);
     }
     stageTimer->setVisible(false);stageTimer->setBounds({});

@@ -167,7 +167,7 @@ struct TransportView: View {
                         .contextMenu { Button("Fadeout…") { showingFadeout = true } }
                         #endif
                     Button { show.send(.pause) } label: { Image(systemName: "pause.fill") }
-                        .buttonStyle(TransportButtonStyle(fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height))
+                        .buttonStyle(TransportButtonStyle(color: Color(hex: 0x454545), inactiveOpacity: 1, fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height, bordered: false))
                         .accessibilityLabel("Pause").jarasHelp("Pause").disabled(!transport.playing)
                     Button { show.send(transport.subPlay.playing ? .subStop : .subPlay) } label: {
                         HStack(spacing: 2) {
