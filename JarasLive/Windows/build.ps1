@@ -23,11 +23,6 @@ if (Test-Path (Join-Path $juceCache 'CMakeLists.txt')) { $cmakeArgs+="-DCATLIVE_
 if ($LASTEXITCODE) { throw 'Falha na configuração do CMake.' }
 & $catCmake --build $BuildDirectory --config $Configuration --parallel 4
 if ($LASTEXITCODE) { throw 'Falha na compilação do CatLive.' }
-if (-not $SkipTests) {
-    $catCtest=Join-Path (Split-Path $catCmake) 'ctest.exe'
-    & $catCtest --test-dir $BuildDirectory -C $Configuration --output-on-failure
-    if ($LASTEXITCODE) { throw 'Os testes falharam. O pacote não foi gerado.' }
-}
 $binary=Join-Path $BuildDirectory "CatLive_artefacts/$Configuration/CatLive.exe"
 if ($Configuration -eq 'Release') {
     $applicationOutput=(Get-Content -LiteralPath (Join-Path $BuildDirectory 'CMakeCache.txt') |
@@ -38,12 +33,21 @@ if ($Configuration -eq 'Release') {
         $binary=Join-Path $applicationOutput 'CatLive.exe'
     }
 }
+$runtimeDirectory=Split-Path -Parent $binary
+# The projection regression loads the shipped DLLs relative to CatLive.exe.
+# Prepare them before CTest, including on a clean GitHub runner.
+& (Join-Path $sourceDirectory 'scripts/prepare-ffmpeg-runtime.ps1') -BuildDirectory $BuildDirectory -PackageDirectory $runtimeDirectory -SourceDirectory $sourceDirectory
+if($LASTEXITCODE){throw 'Falha ao preparar o runtime FFmpeg do vídeo.'}
+if (-not $SkipTests) {
+    $catCtest=Join-Path (Split-Path $catCmake) 'ctest.exe'
+    & $catCtest --test-dir $BuildDirectory -C $Configuration --output-on-failure
+    if ($LASTEXITCODE) { throw 'Os testes falharam. O pacote não foi gerado.' }
+}
 $packageDirectory=Join-Path $BuildDirectory "package/CatLive-Windows-x64"
 New-Item -ItemType Directory -Force $packageDirectory | Out-Null
 Copy-Item -LiteralPath $binary -Destination (Join-Path $packageDirectory 'CatLive.exe') -Force
 # The encoder is a replaceable shared library. Package the runtime and its
 # complete rebuild materials from the same tested build output as CatLive.exe.
-$runtimeDirectory=Split-Path -Parent $binary
 $requiredRuntimeFiles=@(
     'CatLiveLame.dll',
     'CatLiveVST3Probe.exe',
@@ -63,8 +67,13 @@ foreach ($relativePath in $requiredRuntimeFiles) {
     New-Item -ItemType Directory -Force (Split-Path -Parent $packageFile) | Out-Null
     Copy-Item -LiteralPath $runtimeFile -Destination $packageFile -Force
 }
-& (Join-Path $sourceDirectory 'scripts/prepare-ffmpeg-runtime.ps1') -BuildDirectory $BuildDirectory -PackageDirectory $packageDirectory -SourceDirectory $sourceDirectory
-if($LASTEXITCODE){throw 'Falha ao preparar o runtime FFmpeg do vídeo.'}
+$ffmpegPackage=Join-Path $packageDirectory 'CatLiveRuntime/FFmpeg'
+New-Item -ItemType Directory -Force (Split-Path -Parent $ffmpegPackage) | Out-Null
+if(Test-Path -LiteralPath $ffmpegPackage){Remove-Item -LiteralPath $ffmpegPackage -Recurse -Force}
+Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'CatLiveRuntime/FFmpeg') -Destination $ffmpegPackage -Recurse -Force
+$ffmpegLicense=Join-Path $packageDirectory 'Licenses/FFmpeg'
+New-Item -ItemType Directory -Force $ffmpegLicense | Out-Null
+Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'Licenses/FFmpeg/COPYING.LGPLv2.1') -Destination $ffmpegLicense -Force
 # This payload is mandatory for both ZIP and installer. Preparation is isolated
 # in the build directory and verifies the same pinned checkpoint used on Mac.
 $stemPreparation=Join-Path $sourceDirectory '../WindowsNative/StemSeparation/prepare.py'
