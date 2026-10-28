@@ -309,6 +309,42 @@ struct WorkspaceLayoutTests {
         directory.getChildFile("setlist-ui-profile.json").replaceWithText(JSON::toString(report,true));
         session.command(jaras::CommandKind::stopAll);
     }
+    static void tempoResponsiveness(const File &directory) {
+        using floatingControlTests::require;
+        const auto source=SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_PROJECT",{});
+        auto project=floatingControlTests::fixture();
+        if(source.isNotEmpty())project=ProjectCodec::decode(ProjectCodec::read(File(source)));
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);
+        session.core.loadProject(project);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("tempo-ui-preferences",".json"));
+        w.setSize(1366,900);w.projectOpened(false);w.pixelsPerSecond=4;w.rebuild();
+        require(session.song()&&!session.song()->parts.empty(),"Tempo profile needs a region");
+        const auto region=session.song()->parts.front().id;
+        session.command(jaras::CommandKind::selectRegion,region);
+        const auto initial=session.tempoBPM();
+        w.createComponentSnapshot(w.getLocalBounds());
+        Array<var> measurements;
+        const int edits=source.isEmpty()?44:4;
+        for(int step=0;step<edits;++step) {
+            const auto start=Time::getMillisecondCounterHiRes();session.setTempo(initial+(step%2?0:1));
+            const auto changed=Time::getMillisecondCounterHiRes();
+            const auto image=w.createComponentSnapshot(w.getLocalBounds());require(image.isValid(),"Tempo update did not paint");
+            auto row=object();put(row,"handler",changed-start);put(row,"paint",Time::getMillisecondCounterHiRes()-changed);measurements.add(row);
+        }
+        require(std::abs(session.tempoBPM()-initial)<.00001,"Tempo did not return to its original value");
+        session.undo();require(std::abs(session.tempoBPM()-initial-1)<.00001,"Tempo undo did not restore preceding edit");
+        session.redo();require(std::abs(session.tempoBPM()-initial)<.00001,"Tempo redo did not restore original BPM");
+        if(source.isEmpty()) {
+            for(int step=0;step<40;++step) {
+                require(session.canUndo(),"Tempo history lost a retained edit");session.undo();
+                require(std::abs(session.tempoBPM()-initial-(step%2?0:1))<.00001,"Tempo history order changed at capacity");
+            }
+            require(!session.canUndo(),"Tempo history exceeded the forty-edit limit");
+            for(int step=0;step<40;++step)session.redo();
+            require(std::abs(session.tempoBPM()-initial)<.00001&&!session.canRedo(),"Tempo redo did not restore full history");
+        }
+        directory.getChildFile("tempo-ui-profile.json").replaceWithText(JSON::toString(measurements,true));
+    }
     static void immediateTrackScroll(const File &directory) {
         using floatingControlTests::require;
         auto project=floatingControlTests::fixture();auto &tracks=project.songs.front().tracks;
@@ -629,6 +665,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Item context unifies the full selection per track with audio, MIDI, result selection and Undo; LR swap preserves unselected items",[&]{WorkspaceLayoutTests::unifyItems(directory);});
     test("Generated MIDI and text items advance edit cursor without seeking playback",[&]{WorkspaceLayoutTests::generatedItems(directory);});
     test("Setlist transport gestures retain grid geometry and avoid workspace rebuilds",[&]{WorkspaceLayoutTests::setlistResponsiveness(directory);});
+    test("Tempo gestures update grid and preserve Undo and Redo",[&]{WorkspaceLayoutTests::tempoResponsiveness(directory);});
     test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
     test("Empty track tail matches Mac and appending preserves vertical scroll",[&]{WorkspaceLayoutTests::trackTail(directory);});
     test("Setlist block Delete and drag follow last area, keep songs and media, support cancel and Undo, and reject stale confirmations",[&]{WorkspaceLayoutTests::setlistBlockDeletion(directory);});

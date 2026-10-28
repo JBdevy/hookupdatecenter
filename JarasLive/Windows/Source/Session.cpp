@@ -346,7 +346,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
         var raw;
         File document,mediaDirectory;
         std::set<std::string> observedMedia;
-        std::vector<HistoryEntry> undoHistory,redoHistory;
+        std::deque<HistoryEntry> undoHistory,redoHistory;
         ID song;
         String warning;
     };
@@ -1883,11 +1883,16 @@ void Session::setTempo(double value) {
     if (jaras::projectSync::readOnly()) return;
     if (busy || !song() || !std::isfinite(value)) return;
     if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de alterar o andamento.");
-    syncClock();
+    const auto profile=SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_TEMPO",{});
+    auto measurements=object();auto stage=Time::getMillisecondCounterHiRes();
+    const auto mark=[&](const char* name){if(profile.isNotEmpty()){const auto now=Time::getMillisecondCounterHiRes();put(measurements,name,now-stage);stage=now;}};
+    syncClock();mark("clock");
     value = jlimit(60., 300., value);
     if (std::abs(value - tempoBPM()) < .0000001) return;
-    const TimelineHistory before{project(), true};
-    const auto oldSong = *song();
+    TimelineHistory before{project(), true};
+    // The undo snapshot already owns the previous song, including its peaks.
+    const auto &oldSong = *std::find_if(before.project.songs.begin(), before.project.songs.end(),
+                                     [&](const auto &candidate) { return candidate.id == song()->id; });mark("historyAndSongCopy");
     if (const auto *part = tempoEditing::region(oldSong, transport())) {
         const auto targets = tempoEditing::regionChange(oldSong, *part, value - tempoBPM());
         if (targets.empty()) return;
@@ -1896,17 +1901,19 @@ void Session::setTempo(double value) {
         auto marker = *active; marker.tempoBPM = value;
         core.setMarkers({marker}, {}, true);
     } else core.setProjectTiming(value, oldSong.beatsPerBar, oldSong.beatUnit, oldSong.timeSettings);
+    mark("coreTiming");
     const auto &updated = *song();
     // A structural edit in flight still owns a graph replacement. Otherwise
     // retime the running voices without recreating readers, FX or FFT state.
     if (graphCancellation) prepareLiveGraph();
     else {
-        audio.refreshTempo(oldSong, updated);
-        publishTransport(true, true);
+        audio.refreshTempo(oldSong, updated);mark("audioTiming");
+        publishTransport(true, true);mark("publishTransport");
     }
-    undoHistory.emplace_back(before);
+    undoHistory.emplace_back(std::move(before));
     if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
-    redoHistory.clear(); dirty = true; message.clear(); notify();
+    redoHistory.clear(); dirty = true; message.clear();mark("historyCommit");notify();mark("workspace");
+    if(profile.isNotEmpty())File(profile).appendText(JSON::toString(measurements,true)+"\n");
 }
 void Session::configureTiming(double bpm, int beats, int unit,
                               jaras::ProjectTimeSettings settings) {

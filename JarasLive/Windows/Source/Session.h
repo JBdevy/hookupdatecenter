@@ -4,6 +4,7 @@
 #include "ProjectCodec.h"
 #include "AudioExport.h"
 #include "TransportPresentation.h"
+#include <deque>
 namespace catlive {
 class Session final : private Timer {
   public:
@@ -184,7 +185,8 @@ class Session final : private Timer {
         HistoryEntry(ItemHistory value) : items(std::move(value)) {}
         HistoryEntry(TrackHierarchyHistory value) : hierarchy(std::move(value)) {}
     };
-    std::vector<HistoryEntry> undoHistory, redoHistory;
+    // Appending an edit must not copy every prior project snapshot.
+    std::deque<HistoryEntry> undoHistory, redoHistory;
     std::map<ID, var> currentEffects(const std::map<ID, var> &) const;
     void applyEffects(const std::map<ID, var> &, bool recordHistory);
     std::set<std::string> observedMedia;
