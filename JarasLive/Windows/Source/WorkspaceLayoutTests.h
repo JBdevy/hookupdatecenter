@@ -632,14 +632,20 @@ struct WorkspaceLayoutTests {
         const auto songsBefore = JSON::toString(get(session.snapshot(), "songs"));
         const auto request = [&] {
             w.keyPressed(KeyPress(KeyPress::deleteKey)); floatingControlTests::pump();
-            auto *alert = dynamic_cast<AlertWindow *>(Component::getCurrentlyModalComponent());
-            require(alert && alert->getName() == localization::translate("Delete selected blocks?"),
+            auto *alert = dynamic_cast<ModalSheet *>(Component::getCurrentlyModalComponent());
+            require(alert && uiFeatureTests::find(*alert, "confirmationPanel") &&
+                    alert->getName() == localization::translate("Delete selected blocks?"),
                     "Delete did not target the selected block or showed the region deletion warning");
             return alert;
         };
-        request()->exitModalState(0); floatingControlTests::pump();
+        const auto respond = [&](Component *sheet, bool accepted) {
+            auto *button = dynamic_cast<Button *>(uiFeatureTests::find(*sheet, accepted ? "confirmationAccept" : "confirmationCancel"));
+            require(button && button->onClick, "Confirmation choice is missing");
+            button->onClick(); for (int i=0;i<4;++i) floatingControlTests::pump();
+        };
+        respond(request(), false);
         require(JSON::toString(session.snapshot()) == before && rows->getSelectedRows().contains(0), "Cancel removed the block or cleared its selection");
-        request()->exitModalState(1); floatingControlTests::pump();
+        respond(request(), true);
         require(session.project().regionSetlist->blocks->size() == 1 &&
                 session.project().regionSetlist->blocks->front().id == otherBlock, "Delete did not remove only the selected block");
         require(JSON::toString(get(session.snapshot(), "songs")) == songsBefore &&
@@ -653,7 +659,7 @@ struct WorkspaceLayoutTests {
         rows->selectRow(0); w.selectionAreas.activate(*panel);
         auto *pending = request();
         auto changed = *session.project().regionSetlist; changed.selectedId = other;
-        session.configureSetlist(changed); pending->exitModalState(1); floatingControlTests::pump();
+        session.configureSetlist(changed); respond(pending, true);
         require(session.project().regionSetlist->blocks->size() == 2, "A stale confirmation deleted a block after switching playlists");
     }
     static void setlistBlockMIDI(const File &directory) {

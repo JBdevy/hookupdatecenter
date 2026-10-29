@@ -17,6 +17,9 @@ function document(file) {
   decipher.setAAD(header); decipher.setAuthTag(bytes.subarray(-16));
   return JSON.parse(Buffer.concat([decipher.update(bytes.subarray(header.length + 12, -16)), decipher.final()]).toString());
 }
+// The headless importer uses the application's default Portuguese catalog.
+const messages = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../Assets/Localization/Portuguese.json'), 'utf8'));
+const warningPrefix = key => { assert.equal(typeof messages[key], 'string', key); return messages[key]; };
 const parityCases = [];
 function migrate(source, name, success = true) {
   const caseRoot=path.join(root,'parity',name);fs.mkdirSync(caseRoot,{recursive:true});
@@ -121,7 +124,7 @@ for (const [diskForm, projectForm] of [['NFC','NFD'], ['NFD','NFC']]) {
   fs.writeFileSync(input, fs.readFileSync(reaper,'utf8').replace('FILE "Guitar.wav"',
     `FILE "${folder.normalize(projectForm)}/${name.normalize(projectForm)}"`));
   const imported = migrate(input, `Unicode-${diskForm}`);
-  assert(!imported.warnings.some(w => w.includes('Missing media')), imported.warnings.join('\n'));
+  assert(!imported.warnings.some(w => w.startsWith(warningPrefix('Missing media: '))), imported.warnings.join('\n'));
   const clip = imported.project.songs[0].tracks[1].clips[0];
   assert.deepEqual(fs.readFileSync(path.join(path.dirname(imported.file), clip.audioFile.path)), audio);
 }
@@ -221,8 +224,8 @@ NAME After
 MARKER bad
 MARKER 1 1 Good 0`);
 assert.deepEqual(recoveredItems.project.songs[0].tracks[0].clips.map(c=>c.name),['Before','After']);
-assert(recoveredItems.warnings.some(w=>w.includes('item ignored')));
-assert(recoveredItems.warnings.some(w=>w.includes('marker ignored')));
+assert(recoveredItems.warnings.some(w=>w.startsWith(warningPrefix('REAPER item ignored: '))));
+assert(recoveredItems.warnings.some(w=>w.startsWith(warningPrefix('REAPER marker ignored: '))));
 console.log('DAW imports passed: independent REAPER and binary Logic fixtures, audio copy, MIDI, tempo, regions, folder routing and malformed inputs.');
 fs.writeFileSync(path.join(root,'parity-cases.json'),JSON.stringify(parityCases,null,2));
 const exchange=path.join(output,'parity-fixtures');fs.mkdirSync(exchange,{recursive:true});

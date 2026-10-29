@@ -2138,7 +2138,9 @@ int runTests(const File &directory) {
             const auto before=JSON::toString(ProjectCodec::encode(session.project()));button->onClick();floatingControlTests::pump();
             expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Folder changed before confirmation");
             auto *modal=Component::getCurrentlyModalComponent();expect(modal!=nullptr,"Folder action must ask before changing hierarchy");
-            modal->exitModalState(result);for(int i=0;i<4;++i)floatingControlTests::pump();
+            auto *choice=dynamic_cast<Button*>(uiFeatureTests::find(*modal,result?"confirmationAccept":"confirmationCancel"));
+            expect(choice && choice->onClick,"Folder confirmation choice missing");
+            choice->onClick();for(int i=0;i<4;++i)floatingControlTests::pump();
         };
         const auto baseline=JSON::toString(ProjectCodec::encode(session.project()));
         press(0,0);expect(JSON::toString(ProjectCodec::encode(session.project()))==baseline,"Cancel changed the group");
