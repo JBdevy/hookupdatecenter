@@ -32,6 +32,7 @@
 #include "RemoteProjectOpeningTests.h"
 #include "LicenseProof.h"
 #include "TimelineGrid.h"
+#include "DottedGridPaint.h"
 #include "TimelineBulkEditing.h"
 #include "WaveformRenderer.h"
 #include "RegionEditing.h"
@@ -1746,6 +1747,30 @@ int runTests(const File &directory) {
             expect(pixels.getPixelAt(16,y)==primary,"Primary grid colour must remain unchanged");
         }
         expect(sameBlend(pixels.getPixelAt(48,8),base.overlaidWith(secondary)),"Unselected secondary grid colour must remain unchanged");
+    });
+    test("Dotted grid retains ruler phase, colour and thin width across partial paints", [&] {
+        for (const float density : {1.f, 1.5f, 2.f}) {
+            DottedGridPaint pattern;
+            auto render = [&](float top, Colour colour) {
+                Image image(Image::ARGB, roundToInt(32*density), roundToInt(80*density), true, SoftwareImageType());
+                Graphics g(image); g.addTransform(AffineTransform::scale(density));
+                pattern.draw(g, colour, 12, top, 80, 1/density, 3);
+                return image;
+            };
+            const auto full=render(3,Colours::green), partial=render(19,Colours::green);
+            for (int y=roundToInt(21*density); y<roundToInt(78*density); ++y)
+                for(int x=0;x<full.getWidth();++x)
+                    expect(full.getPixelAt(x,y)==partial.getPixelAt(x,y),"Partial track repaint must not restart the dotted pattern");
+            const auto changed=render(3,Colours::red);
+            bool dot=false, gap=false;
+            for (int y=roundToInt(4*density); y<roundToInt(78*density); ++y) {
+                const auto c=changed.getPixelAt(roundToInt(12*density),y);
+                dot |= c.getAlpha()>40; gap |= c.getAlpha()==0;
+                if(c.getAlpha()>40)expect(c.getRed()>c.getGreen(),"Grid colour changes must invalidate the cached tile");
+                expect(changed.getPixelAt(roundToInt(12*density)+2,y).getAlpha()==0,"Vertical dots must remain one physical pixel wide");
+            }
+            expect(dot&&gap,"Every scale must retain visible dots and empty gaps");
+        }
     });
     test("Timeline grid follows tempo markers, meter and visible subdivisions", [&] {
         jaras::Song song; song.duration = 60; song.bpm = 120;

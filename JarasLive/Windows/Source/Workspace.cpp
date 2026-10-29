@@ -67,6 +67,7 @@
 #include "RemotePresentation.h"
 #include "DesktopLayout.h"
 #include "TimelineGrid.h"
+#include "DottedGridPaint.h"
 #include "TimelineMarqueeIndex.h"
 #include "WindowControlButton.h"
 #include "WaveformRenderer.h"
@@ -2160,18 +2161,12 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 (!song->timeSettings || song->timeSettings->divisions != 0);
             const auto drawGrid = [&](float top, float bottom) {
                 if (!showGrid || bottom <= top) return;
+                Graphics::ScopedSaveState gridState(g);
                 const auto primary = t.w.appearance.colour("jaras.timeline.primaryGrid", 0x535250);
                 const auto secondary = t.w.appearance.colour("jaras.timeline.secondaryGrid", 0x333235).withAlpha(.85f);
                 for (const auto &tick : grid) {
-                    g.setColour(tick.primary ? primary : secondary);
-                    const float x=lineX(tick.time)+pixel*.5f, thickness=pixel*.75f;
-                    const float dash[]{1.f,3.f};
-                    // Anchor all vertical dots to the ruler, including selected-track
-                    // repaints, so scrolling never restarts their pattern.
-                    const float phase=std::fmod(std::max(0.f,top-headerHeight()),4.f);
-                    Graphics::ScopedSaveState clipped(g);
-                    g.reduceClipRegion(juce::Rectangle<float>(x-pixel,top,pixel*2,bottom-top).getSmallestIntegerContainer());
-                    g.drawDashedLine(Line<float>(x,top-phase,x,bottom),dash,2,thickness);
+                    auto &pattern=tick.primary?primaryGridPattern:secondaryGridPattern;
+                    pattern.draw(g,tick.primary?primary:secondary,lineX(tick.time),top,bottom,pixel,(float)headerHeight());
                 }
             };
             drawGrid((float)headerHeight(), (float)getHeight());
@@ -3079,6 +3074,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
 
       private:
         Timeline &t;
+        DottedGridPaint primaryGridPattern, secondaryGridPattern;
         String itemValueTooltip;
         struct ClipIntervalEntry { double start=0,end=0;size_t index=0; };
         struct TrackClipIndex { ID track;std::vector<ClipIntervalEntry> entries;std::vector<double> maximumEnds; };
