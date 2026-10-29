@@ -5365,6 +5365,17 @@ void Workspace::rebuild() {
     repaint();
 }
 void Workspace::updateState() {
+    const auto &t = session.transport();
+    const auto audible = session.presentationTransport();
+    stage.observe(audible);
+    for(int i=0;i<2;++i)if(teleprompterHTTP[(size_t)i]->enabled()) {
+        const auto content=StageContent::make(session,stage,i+1);
+        teleprompterHTTP[(size_t)i]->publish(content.payload,content.media);
+    }
+    // Hidden project tabs still advance transport, lighting and projections.
+    // Their controls and timeline need one refresh on activation, not 60 per
+    // second competing with the visible tab during an Auto transition.
+    if (!layoutActive) return;
     // Owned, non-topmost projection windows stay visible above the workspace,
     // while independent FX/plugin windows can take focus and move in front.
     // A sheet is painted inside this HWND, so temporarily drop the ownership
@@ -5418,13 +5429,6 @@ void Workspace::updateState() {
         recordVisualSelection = selectedTrack;
         for (auto *row : rows)
             row->refresh();
-    }
-    const auto &t = session.transport();
-    const auto audible = session.presentationTransport();
-    stage.observe(audible);
-    for(int i=0;i<2;++i)if(teleprompterHTTP[(size_t)i]->enabled()) {
-        const auto content=StageContent::make(session,stage,i+1);
-        teleprompterHTTP[(size_t)i]->publish(content.payload,content.media);
     }
     controls["preview"]->setToggleState(stage.preview, dontSendNotification);
     refreshMixerIndicator();

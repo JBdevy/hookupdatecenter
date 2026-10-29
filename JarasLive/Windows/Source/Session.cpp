@@ -2553,6 +2553,10 @@ void Session::timerCallback() {
             return;
         }
         syncClock();
+        // Auto/region endings can stop playback without going through command().
+        // Return those sessions to the idle rate, including hidden project tabs.
+        const int hz = transport().playing || transport().subPlay.playing ? 60 : 8;
+        if (getTimerInterval() != 1000 / hz) startTimerHz(hz);
         updateTransportFadeout();
         if (playbackUpdate)
             playbackUpdate(presentationTransport());
