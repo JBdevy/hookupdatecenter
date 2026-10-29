@@ -322,6 +322,54 @@ int main(int argc, char** argv) {
                 "A valid prefix could not be read after a rejected block.");
         compare(output.data(), fixture.expected.data(), 32 * fixture.channels);
     });
+    if (argc > 1) test("MP3 APE footer and optional header preserve complete PCM with or without ID3v1", [&] {
+        const auto source = std::filesystem::u8path(argv[1]);
+        std::ifstream stream(source, std::ios::binary);
+        const Bytes original((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        AudioFile reference(source);
+        const auto frames = reference.info().frameCount;
+        const auto channels = reference.info().channels;
+        require(frames <= 64000000/channels, "MP3 metadata fixture exceeds bounded memory.");
+        std::vector<float> baseline(static_cast<size_t>(frames)*channels);
+        reference.readInterleaved(0, baseline.data(), static_cast<size_t>(frames));
+        for (bool header : {false, true}) for (bool id3 : {false, true}) {
+            Bytes payload;
+            word(payload, 300, 4);word(payload, 0, 4);
+            const std::string key="Comment";payload.insert(payload.end(),key.begin(),key.end());payload.push_back(0);
+            payload.insert(payload.end(),300,'x');
+            const auto tagBlock=[&](bool isHeader) {
+                Bytes block;const std::string magic="APETAGEX";block.insert(block.end(),magic.begin(),magic.end());
+                word(block,2000,4);word(block,payload.size()+32,4);word(block,1,4);
+                word(block,(header?0x80000000U:0U)|(isHeader?0x20000000U:0U),4);word(block,0,8);
+                return block;
+            };
+            auto bytes=original;
+            if(header){const auto block=tagBlock(true);bytes.insert(bytes.end(),block.begin(),block.end());}
+            bytes.insert(bytes.end(),payload.begin(),payload.end());
+            const auto footer=tagBlock(false);bytes.insert(bytes.end(),footer.begin(),footer.end());
+            if(id3){bytes.insert(bytes.end(),{'T','A','G'});bytes.insert(bytes.end(),125,0);}
+            const auto file=temporary.write("ape-"+std::to_string(header)+"-"+std::to_string(id3)+".mp3",bytes);
+            AudioFile tagged(file);
+            drmp3 direct{};
+#if defined(_WIN32)
+            const bool opened=drmp3_init_file_w(&direct,file.c_str(),nullptr)!=0;
+#else
+            const bool opened=drmp3_init_file(&direct,file.c_str(),nullptr)!=0;
+#endif
+            require(opened,"Cannot open tagged MP3 without seeking.");
+            const std::unique_ptr<drmp3, void(*)(drmp3*)> directOwner(&direct,drmp3_uninit);
+            require(tagged.info().frameCount==frames,"APE tag changed MP3 timeline duration.");
+            std::vector<float> block(16384*channels);
+            for(uint64_t at=0;at<frames;at+=16384) {
+                const auto count=static_cast<size_t>(std::min<uint64_t>(16384,frames-at));
+                require(tagged.readInterleaved(at,block.data(),count)==count,"APE tag hid final audio frames.");
+                compare(block.data(),baseline.data()+at*channels,count*channels,0.f);
+                require(drmp3_read_pcm_frames_f32(&direct,count,block.data())==count,"APE tag hid audio on initial decode.");
+                compare(block.data(),baseline.data()+at*channels,count*channels,0.f);
+            }
+            seekChecks(tagged,baseline,0.f);
+        }
+    });
     for (int argument = 1; argument < argc; ++argument) test("real MP3 random seeking equals continuous decode including priming and EOF", [&] {
         const auto file = std::filesystem::u8path(argv[argument]);
         const auto started = std::chrono::steady_clock::now();

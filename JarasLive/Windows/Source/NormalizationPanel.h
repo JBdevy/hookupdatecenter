@@ -153,7 +153,8 @@ class NormalizationPanel final : public Component, private Timer {
                             }), target));
                     }
                 } catch (const std::exception &e) {
-                    failure = String::fromUTF8(e.what());
+                    const auto index = std::min(clips.size()-1, size_t(std::max(1, progressState->current.load())-1));
+                    failure = text(clips[index].audioFile->path).replaceCharacter('\\', '/').fromLastOccurrenceOf("/", false, false) + ": " + String::fromUTF8(e.what());
                 }
                 MessageManager::callAsync(
                     [safe, stop, clips, project, target, preference, results, failure] {

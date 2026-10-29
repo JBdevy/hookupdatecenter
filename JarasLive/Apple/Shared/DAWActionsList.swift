@@ -5,20 +5,38 @@ struct DAWActionsList: View {
     @ObservedObject private var mappings = ControlMappings.shared
     @State private var inputKind = "keyboard"
     @State private var category = DAWActionCategory.transport
+    @State private var searchText = ""
+    private var query: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var categories: [DAWActionCategory] { DAWActionCategory.allCases }
     private var categoryActions: [DAWAction] {
+        let actions = query.isEmpty ? category.actions : DAWAction.visible
         #if os(iOS)
         // Native iPad has a Track Mixer and teleprompter panel, but no separate
         // Hoz-Mixer/video windows or local project tabs to control.
-        category.actions.filter { ![.toggleBarMixer, .toggleVideo, .previousProjectTab, .nextProjectTab].contains($0) }
+        return actions.filter { ![.toggleBarMixer, .toggleVideo, .previousProjectTab, .nextProjectTab].contains($0) }
         #else
-        category.actions
+        return actions
         #endif
+    }
+    private var filteredActions: [DAWAction] {
+        categoryActions.filter { action in
+            (inputKind == "midi" ? action.supportsMIDI : !action.continuous) &&
+            (query.isEmpty || JarasLocalization.string(action.title).localizedStandardContains(query) ||
+             action.title.localizedStandardContains(query))
+        }
     }
     private struct ResetRequest { let action: DAWAction; let kind: String }
     @State private var resetRequest: ResetRequest?
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(JarasTheme.secondary)
+                TextField("Search actions", text: $searchText).textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).foregroundStyle(JarasTheme.secondary).accessibilityLabel("Clear search")
+                }
+            }.padding(8).background(JarasTheme.display).cornerRadius(6)
             categoryTabs
             Picker("Input", selection: $inputKind) {
                 Text("Keyboard").tag("keyboard")
@@ -26,7 +44,8 @@ struct DAWActionsList: View {
             }.pickerStyle(.segmented)
             Text("Actions are saved for all projects.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             if !mappings.error.isEmpty { Text(mappings.error).font(.jarasCaption).foregroundStyle(.red) }
-            ForEach(categoryActions.filter { inputKind == "midi" ? $0.supportsMIDI : !$0.continuous }, id: \.self) { action in
+            if filteredActions.isEmpty { Text("No actions found").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
+            ForEach(filteredActions, id: \.self) { action in
                 let binding = mappings.actions.binding(action)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -55,6 +74,7 @@ struct DAWActionsList: View {
             }
         }
         .onChange(of: category) { value in
+            searchText = ""
             if value == .volume { inputKind = "midi" }
             if value == .shortcuts { inputKind = "keyboard" }
         }
@@ -75,10 +95,10 @@ struct DAWActionsList: View {
                     Text(LocalizedStringKey(item.rawValue))
                         .font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: 30)
-                        .background(category == item ? JarasTheme.accent.opacity(0.18) : JarasTheme.panel)
+                        .background(query.isEmpty && category == item ? JarasTheme.accent.opacity(0.18) : JarasTheme.panel)
                         .clipShape(RoundedRectangle(cornerRadius: 5)).contentShape(Rectangle())
-                }.buttonStyle(.plain).foregroundStyle(category == item ? JarasTheme.accent : JarasTheme.text)
-                    .accessibilityAddTraits(category == item ? .isSelected : [])
+                }.buttonStyle(.plain).foregroundStyle(query.isEmpty && category == item ? JarasTheme.accent : JarasTheme.text)
+                    .accessibilityAddTraits(query.isEmpty && category == item ? .isSelected : [])
             }
         }
         #else

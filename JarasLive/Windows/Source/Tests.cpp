@@ -3169,12 +3169,26 @@ int runTests(const File &directory) {
         notes.addEvent(MidiMessage::noteOn(1, 69, .8f), 0);
         buffer.clear();
         piano.render(buffer, notes, 1024);
-        expect(buffer.getMagnitude(0, 1024) > .01f, "Live piano produced no audio");
+        expect(buffer.getMagnitude(0, 1024) == 0, "MIDI triggered an implicit instrument without a loaded bank");
         piano.stop();
         notes.clear();
         buffer.clear();
         piano.render(buffer, notes, 1024);
-        expect(buffer.getMagnitude(0, 1024) == 0, "Piano panic left stuck notes");
+        expect(buffer.getMagnitude(0, 1024) == 0, "Empty instrument panic emitted audio");
+    });
+    test("Live MIDI stays silent without an explicitly inserted instrument",[&] {
+        AudioEngine engine;engine.prepareOffline(48000);engine.instrumentAllowed=true;
+        jaras::Project project;auto song=Session::makeEmptyProject("MIDI silence").songs.front();
+        engine.prepareSong(song,directory,{},&project);engine.setMixer(project,song);
+        AudioBuffer<float> output(2,512);
+        for(int channel:{1,6,16}) {
+            engine.keyboardState.noteOn(channel,60+channel,.8f);
+            for(int block=0;block<4;++block) {
+                static_cast<AudioIODeviceCallback&>(engine).audioDeviceIOCallbackWithContext(nullptr,0,output.getArrayOfWritePointers(),2,512,{});
+                expect(output.getMagnitude(0,512)==0,"Unrouted MIDI sounded through a hidden instrument");
+            }
+            engine.keyboardState.noteOff(channel,60+channel,0);
+        }
     });
     test("Project tab sessions share one audio host but preserve independent edits undo and transport", [&] {
         Session first;
@@ -6239,6 +6253,22 @@ int runTests(const File &directory) {
         expect(std::abs(gain(-80, 12) - std::pow(10., 24. / 20)) < 1e-9 && gain(-200, -1) == 1,
                "Normalization gain limit or silence handling changed");
     });
+    if(const auto source=SystemStats::getEnvironmentVariable("CATLIVE_NORMALIZE_FILE",{});source.isNotEmpty())
+        test("External MP3 batch normalization reads complete source without audio devices",[&] {
+            AudioFormatManager formats;registerAudioFormats(formats);
+            const File file(source);std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
+            expect(reader!=nullptr,"Cannot open normalization fixture");
+            jaras::AudioClip clip;clip.id=uuid();clip.name="Batch MP3";clip.duration=reader->lengthInSamples/reader->sampleRate;
+            clip.audioFile=jaras::AudioFile{utf8(file.getFileName()),{}};
+            Array<var> measurements;
+            for(auto mode:{normalization::peak,normalization::rms,normalization::lufs}) {
+                double progress=0;
+                const auto value=normalization::measure(clip,file.getParentDirectory(),mode,{},[&](double p){progress=p;});
+                expect(std::isfinite(value)&&progress>.999,"Batch normalization did not finish the entire MP3");
+                measurements.add(value);
+            }
+            directory.getChildFile("normalization-mp3.json").replaceWithText(JSON::toString(measurements,true));
+        });
     test("Large timeline streams first and last files, independent heads and loop seeks with a bounded cache", [&] {
         const auto media = directory.getChildFile("large-streams"); media.createDirectory();
         const auto source = media.getChildFile("source.wav");

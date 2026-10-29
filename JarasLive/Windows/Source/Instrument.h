@@ -10,7 +10,7 @@ public:
     void configure(const var &,bool drums=false);
     void render(AudioBuffer<float>&,const MidiBuffer&,int samples,int start=0);
     void stop();
-    String name="Piano";
+    String name;
 private:
     struct Impl;std::unique_ptr<Impl> impl;
 };

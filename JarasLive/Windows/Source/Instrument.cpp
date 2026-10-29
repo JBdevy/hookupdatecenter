@@ -3,74 +3,16 @@
 #include "../../Core/ThirdParty/TinySoundFont/tsf.h"
 namespace catlive {
 #include "SoundFontRenderer.h"
-namespace {
-struct PianoSound final : SynthesiserSound {
-    bool appliesToNote(int) override { return true; }
-    bool appliesToChannel(int) override { return true; }
-};
-struct PianoVoice final : SynthesiserVoice {
-    double phase = 0, step = 0, age = 0;
-    float level = 0;
-    ADSR envelope;
-    bool canPlaySound(SynthesiserSound *sound) override {
-        return dynamic_cast<PianoSound *>(sound) != nullptr;
-    }
-    void startNote(int note, float velocity, SynthesiserSound *, int) override {
-        phase = age = 0;
-        level = velocity * .12f;
-        step =
-            MathConstants<double>::twoPi * MidiMessage::getMidiNoteInHertz(note) / getSampleRate();
-        envelope.setSampleRate(getSampleRate());
-        envelope.setParameters({.003f, .4f, .12f, .35f});
-        envelope.noteOn();
-    }
-    void stopNote(float, bool tail) override {
-        envelope.noteOff();
-        if (!tail) {
-            envelope.reset();
-            clearCurrentNote();
-        }
-    }
-    void pitchWheelMoved(int) override {}
-    void controllerMoved(int, int) override {}
-    void renderNextBlock(AudioBuffer<float> &output, int start, int count) override {
-        // Synthesiser calls every voice, including unused voices. Active release
-        // tails retain their note until the envelope finishes below.
-        if (!isVoiceActive())
-            return;
-        for (int n = 0; n < count; ++n) {
-            float sample =
-                (float)(std::sin(phase) + .33 * std::sin(2 * phase) * std::exp(-age * 3) +
-                        .1 * std::sin(3 * phase) * std::exp(-age * 5)) *
-                level * envelope.getNextSample();
-            phase += step;
-            age += 1 / getSampleRate();
-            for (int ch = 0; ch < output.getNumChannels(); ++ch)
-                output.addSample(ch, start + n, sample);
-        }
-        if (!envelope.isActive())
-            clearCurrentNote();
-    }
-};
-} // namespace
 struct Instrument::Impl {
-    Synthesiser synth;
     SoundFontRenderer sf;
     double rate = 48000;
     var parameters;
     bool drums = false;
 };
-Instrument::Instrument() : impl(std::make_unique<Impl>()) {
-    for (int i = 0; i < 24; ++i)
-        impl->synth.addVoice(new PianoVoice());
-    impl->synth.addSound(new PianoSound());
-    impl->synth.setNoteStealingEnabled(true);
-    prepare(48000);
-}
+Instrument::Instrument() : impl(std::make_unique<Impl>()) {}
 Instrument::~Instrument() = default;
 void Instrument::prepare(double rate) {
     impl->rate = rate;
-    impl->synth.setCurrentPlaybackSampleRate(rate);
     if (impl->sf.font)
         tsf_set_output(impl->sf.font, TSF_STEREO_INTERLEAVED, (int)rate, 0);
 }
@@ -147,7 +89,6 @@ void Instrument::configure(const var &parameters, bool drums) {
     sf.filterDepth = (float)jlimit(0., 10., num(cutoff, "depth"));
 }
 void Instrument::stop() {
-    impl->synth.allNotesOff(0, false);
     auto &sf = impl->sf;
     if (sf.font) {
         for (int i = 0; i < sf.font->voiceNum; ++i)
@@ -164,12 +105,9 @@ void Instrument::stop() {
 }
 void Instrument::render(AudioBuffer<float> &output, const MidiBuffer &midi, int samples,
                         int outputStart) {
-    if (!impl->sf.font) {
-        AudioBuffer<float> view(output.getArrayOfWritePointers(), output.getNumChannels(),
-                                outputStart, samples);
-        impl->synth.renderNextBlock(view, midi, 0, samples);
-        return;
-    }
+    // MIDI alone is not an instrument. Sound starts only after an explicit
+    // SoundFont load (or an inserted external instrument in the FX chain).
+    if (!impl->sf.font) return;
     auto &sf = impl->sf;
     sf.envelope();
     const bool mono = sf.monophonic.load();

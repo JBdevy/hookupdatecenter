@@ -3014,21 +3014,27 @@ static drmp3_bool32 drmp3_init_internal(drmp3* pMP3, drmp3_read_proc onRead, drm
                     if (onSeek(pUserData, streamEndOffset - 32, DRMP3_SEEK_END)) {
                         if (onRead(pUserData, ape, 32) == 32 && ape[0] == 'A' && ape[1] == 'P' && ape[2] == 'E' && ape[3] == 'T' && ape[4] == 'A' && ape[5] == 'G' && ape[6] == 'E' && ape[7] == 'X') {
                             /* We have an APE tag. */
+                            /* Size includes the footer, but not an optional APEv2 header.
+                               Bytes 24..31 are reserved, not the tag size. Leaving the
+                               tag payload in the audio stream can hide the last frame. */
                             drmp3_uint32 tagSize =
-                                ((drmp3_uint32)ape[24] << 0)  |
-                                ((drmp3_uint32)ape[25] << 8)  |
-                                ((drmp3_uint32)ape[26] << 16) |
-                                ((drmp3_uint32)ape[27] << 24);
+                                ((drmp3_uint32)(drmp3_uint8)ape[12] << 0)  |
+                                ((drmp3_uint32)(drmp3_uint8)ape[13] << 8)  |
+                                ((drmp3_uint32)(drmp3_uint8)ape[14] << 16) |
+                                ((drmp3_uint32)(drmp3_uint8)ape[15] << 24);
+                            drmp3_uint64 fullTagSize = (drmp3_uint64)tagSize +
+                                (((drmp3_uint8)ape[23] & 0x80) != 0 ? 32 : 0);
 
-                            if (32 + tagSize < streamLen) {
-                                streamEndOffset -= 32 + tagSize;
-                                streamLen       -= 32 + tagSize;
+                            if (tagSize >= 32 && fullTagSize < (drmp3_uint64)streamLen &&
+                                fullTagSize <= (drmp3_uint64)(0x7FFFFFFF + streamEndOffset)) {
+                                streamEndOffset -= (int)fullTagSize;
+                                streamLen       -= (drmp3_int64)fullTagSize;
 
                                 /* Fire a metadata callback for the APE data. Must include both the main content and footer. */
                                 if (onMeta != NULL) {
                                     /* We first need to seek to the start of the APE tag. */
                                     if (onSeek(pUserData, streamEndOffset, DRMP3_SEEK_END)) {
-                                        size_t apeTagSize = (size_t)tagSize + 32;
+                                        size_t apeTagSize = (size_t)fullTagSize;
                                         drmp3_uint8* pTagData = (drmp3_uint8*)drmp3_malloc(apeTagSize, pAllocationCallbacks);
                                         if (pTagData != NULL) {
                                             if (onRead(pUserData, pTagData, apeTagSize) == apeTagSize) {
@@ -3304,7 +3310,9 @@ static drmp3_bool32 drmp3_init_internal(drmp3* pMP3, drmp3_read_proc onRead, drm
 
                     /* The start offset needs to be moved to the end of this frame so it's not included in any audio processing after seeking. */
                     pMP3->streamStartOffset += (drmp3_uint32)(firstFrameInfo.frame_bytes);
-                    pMP3->streamCursor = pMP3->streamStartOffset;
+                    /* Decoding already advanced streamCursor and may have buffered
+                       later audio. Keep that byte position so the initial sequential
+                       read respects the same metadata-free EOF as a read after seek. */
 
                     /*
                     The internal decoder needs to be reset to clear out any state. If we don't reset this state, it's possible for

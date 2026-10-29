@@ -127,6 +127,13 @@ class ClipAudio {
         int done = 0;
         while (done < count) {
             const double now = local + done / sampleRate;
+            // Only the DSP's private lookahead may read past an edit boundary.
+            // The public output remains silent outside the item's interval.
+            if (now >= duration) {
+                output.clear(done, count - done);
+                break;
+            }
+            const int audibleFrames = boundedFrames((duration - now) * sampleRate, count - done);
             const Segment *segment = nullptr;
             for (const auto &s : segments)
                 if (now >= s.start - 1e-8 && now < s.end - 1e-8) {
@@ -135,8 +142,8 @@ class ClipAudio {
                 }
             const double pitch = segment ? segment->pitch : 0;
             const int frames =
-                segment ? boundedFrames((segment->end - now) * sampleRate, count - done)
-                        : count - done;
+                segment ? boundedFrames((segment->end - now) * sampleRate, audibleFrames)
+                        : audibleFrames;
             if (std::abs(pitch) < 1e-8 && head.next < 0) {
                 ok = read(reader, scratch, output, done, now, frames) && ok;
                 head.next = -1;

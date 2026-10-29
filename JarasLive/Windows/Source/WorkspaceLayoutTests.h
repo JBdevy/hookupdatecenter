@@ -298,6 +298,31 @@ struct WorkspaceLayoutTests {
             session.command(jaras::CommandKind::stopAll);
         }
     }
+    static void overviewProfile(const File &directory) {
+        using floatingControlTests::require;
+        const File source(SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_PROJECT",{}));
+        auto project=ProjectCodec::decode(ProjectCodec::read(source));
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);
+        session.mediaDirectory=source.getParentDirectory();session.core.loadProject(project);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("overview-ui",".json"));
+        w.setSize(1366,900);w.projectOpened(false);
+        auto *canvas=uiFeatureTests::find(w,"timelineCanvas");
+        require(canvas!=nullptr,"No grid canvas for overview profile");
+        Array<var> timings;
+        for(double scale:{.01,.04,.16,.663591698059409,2.5,10.}) {
+            w.pixelsPerSecond=scale;w.rebuild();
+            Image image(Image::RGB,canvas->getWidth(),canvas->getHeight(),true);
+            for(int frame=0;frame<70;++frame) {
+                Graphics g(image);canvas->paint(g);
+                if(frame>=65) {
+                    const auto state=get(w.diagnostics(),"timeline");
+                    auto row=object();put(row,"zoom",scale);put(row,"ms",get(state,"paintMilliseconds"));
+                    put(row,"stages",get(state,"paintStagesMilliseconds"));put(row,"waveforms",get(state,"waveforms"));timings.add(row);
+                } else {floatingControlTests::pump();Thread::sleep(30);}
+            }
+        }
+        directory.getChildFile("overview-profile.json").replaceWithText(JSON::toString(timings,true));
+    }
     static void setlistResponsiveness(const File &directory) {
         using floatingControlTests::require;
         const auto source=SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_PROJECT",{});
@@ -729,6 +754,8 @@ struct WorkspaceLayoutTests {
 };
 namespace workspaceLayoutTests {
 template<class Test> void registerTests(const File &directory,Test &test) {
+    if(SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_PROJECT",{}).isNotEmpty())
+        test("Overview zoom profile on an isolated real project",[&]{WorkspaceLayoutTests::overviewProfile(directory);});
     test("Project replacement saves edits before continuing and Cancel preserves them",[&]{WorkspaceLayoutTests::projectReplacement(directory);});
     test("Recording live waveform is visible in compact tracks before Stop",[&]{WorkspaceLayoutTests::liveRecordingWaveform(directory);});
     test("MIDI item export preserves trimmed notes and channels while muted",[&]{

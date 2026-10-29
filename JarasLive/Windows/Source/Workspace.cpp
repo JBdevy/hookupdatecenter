@@ -1935,6 +1935,63 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             }
             return at->second.timing;
         }
+        struct OverviewWaveform {
+            Image image;
+            const WaveformCache::Data *source=nullptr;
+            String version;
+            float width=0,height=0;
+            double gain=0;
+            uint32 colour=0;
+            uint64 used=0;
+            size_t bytes=0;
+        };
+        std::map<ID,OverviewWaveform> overviewWaveforms;
+        uint64 overviewRevision=~uint64(0),overviewClock=0;
+        double overviewZoom=0;
+        float overviewScale=0;
+        size_t overviewBytes=0;
+        bool drawOverviewWaveform(Graphics &g,const std::shared_ptr<const WaveformCache::Data> &data,
+            const jaras::AudioClip &clip,juce::Rectangle<float> rect,Colour ink,const jaras::Song &song) {
+            const float physical=jlimit(1.f,8.f,g.getInternalContext().getPhysicalPixelScaleFactor());
+            const int width=(int)std::ceil(rect.getWidth()*physical)+2;
+            const int height=(int)std::ceil(rect.getHeight()*physical)+2;
+            const size_t bytes=(size_t)std::max(0,width)*(size_t)std::max(0,height)*4;
+            constexpr size_t capacity=8*1024*1024;
+            if(width<=0 || height<=0 || bytes>capacity/4)return false;
+            if(overviewRevision!=t.w.session.revision || overviewZoom!=t.w.pixelsPerSecond || overviewScale!=physical) {
+                overviewWaveforms.clear();overviewBytes=0;overviewRevision=t.w.session.revision;
+                overviewZoom=t.w.pixelsPerSecond;overviewScale=physical;
+            }
+            const double gain=WaveformRenderer::gain(clip);
+            auto found=overviewWaveforms.find(clip.id);
+            if(found!=overviewWaveforms.end() && (found->second.source!=data.get() || found->second.version!=data->version ||
+                found->second.width!=rect.getWidth() || found->second.height!=rect.getHeight() ||
+                found->second.gain!=gain || found->second.colour!=ink.getARGB())) {
+                overviewBytes-=found->second.bytes;overviewWaveforms.erase(found);found=overviewWaveforms.end();
+            }
+            if(found==overviewWaveforms.end()) {
+                while(overviewBytes+bytes>capacity && !overviewWaveforms.empty()) {
+                    const auto oldest=std::min_element(overviewWaveforms.begin(),overviewWaveforms.end(),
+                        [](const auto &a,const auto &b){return a.second.used<b.second.used;});
+                    overviewBytes-=oldest->second.bytes;overviewWaveforms.erase(oldest);
+                }
+                OverviewWaveform entry;
+                entry.image=Image(Image::ARGB,width,height,true);entry.source=data.get();entry.version=data->version;
+                entry.width=rect.getWidth();entry.height=rect.getHeight();entry.gain=gain;entry.colour=ink.getARGB();entry.bytes=bytes;
+                Graphics thumbnail(entry.image);thumbnail.addTransform(AffineTransform::scale(physical));
+                const auto local=rect.withPosition(1.f/physical,1.f/physical);
+                WaveformRenderer::draw(thumbnail,t.waveforms,data,clip,local,
+                    {0,0,width/physical,height/physical},t.w.pixelsPerSecond,ink,false,{},&song,&waveformTiming(clip,song));
+                found=overviewWaveforms.emplace(clip.id,std::move(entry)).first;overviewBytes+=bytes;
+            }
+            found->second.used=++overviewClock;
+            // Only compact, unedited audio previews use this bounded raster cache.
+            // Keep device resolution and a fractional transform so Continuous Scroll
+            // moves the preview smoothly without rebuilding all peak paths each frame.
+            g.drawImageTransformed(found->second.image,AffineTransform::scale(1.f/physical)
+                .translated(rect.getX()-1.f/physical,rect.getY()-1.f/physical));
+            return true;
+        }
         void refreshClipIntervals(const jaras::Song &song) {
             const auto revision=t.w.session.revision;
             if(clipIndexSong==song.id && clipIndexRevision==revision && clipIndexes.size()==song.tracks.size())return;
@@ -2261,10 +2318,17 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     const bool compact=rect.getWidth()<20;
                     const auto outline=itemOutline(clip,rect,(float)getWidth(),t.w.pixelsPerSecond,
                         clip.loopLength?&waveformTiming(clip,*song):nullptr);
+                    // Overview items have square corners and no visible controls.
+                    // A path clip creates an alpha mask for every tiny item; avoid
+                    // hundreds of those masks while retaining shaped loop/fade edges.
+                    const bool simpleOverview=compact && (clip.audioFile || track.audioFile) && !clip.text && !clip.midi &&
+                        clip.fadeIn.value_or(0)<=0 && clip.fadeOut.value_or(0)<=0 &&
+                        (!clip.loopLength || itemLoopSeams(clip,rect,(float)getWidth(),t.w.pixelsPerSecond,&waveformTiming(clip,*song)).empty());
                     g.setColour(colour);
-                    g.fillPath(outline);
+                    if(simpleOverview)g.fillRect(rect);else g.fillPath(outline);
                     if(!selected && !compact) {g.setColour(colour.withAlpha(.75f));g.strokePath(outline,PathStrokeType(.6f));}
-                    g.saveState();g.reduceClipRegion(outline);
+                    g.saveState();
+                    if(simpleOverview)g.reduceClipRegion(rect.getSmallestIntegerContainer());else g.reduceClipRegion(outline);
                     const ItemHeader header(rect,(float)getWidth(),track,clip,t.w.itemTitle(clip));
                     if(!compact) {
                         g.setColour(Colour(0xff484848));g.fillRect(rect.withHeight(std::min(17.f,rect.getHeight())));
@@ -2310,8 +2374,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         const auto &source = clip.audioFile ? clip.audioFile : track.audioFile;
                         const auto data = source ? t.waveforms.request(t.waveformFile(source->path)) : nullptr;
                         if (data) {
-                            WaveformRenderer::draw(g, t.waveforms, data, clip, rect,
-                                getLocalBounds().toFloat(), t.w.pixelsPerSecond, Colour::greyLevel(waveGray), false, gainOverride,song,&waveformTiming(clip,*song));
+                            const auto ink=Colour::greyLevel(waveGray);
+                            const bool overview=simpleOverview && t.gestureMode==0 && !controlApplies && !movingClipPreview && !resizedClipPreview && !t.regionPreview;
+                            if(!overview || !drawOverviewWaveform(g,data,clip,rect,ink,*song))
+                                WaveformRenderer::draw(g, t.waveforms, data, clip, rect,
+                                    getLocalBounds().toFloat(), t.w.pixelsPerSecond, ink, false, gainOverride,song,&waveformTiming(clip,*song));
                         } else if (!source) {
                             // Legacy/generated items may contain their own overview.
                             // Never substitute these coarse peaks for pending real PCM.
@@ -2343,7 +2410,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             }
                         }
                     }
-                    header.drawFades(g,clip);
+                    if(!simpleOverview)header.drawFades(g,clip);
                     g.restoreState();
                     // Text goes directly onto the opaque canvas, outside the
                     // alpha geometry layer used to clip waveform/fade corners.

@@ -1,6 +1,7 @@
 #pragma once
 #include "ActionBindings.h"
 #include "Localization.h"
+#include "InterfaceIcons.h"
 namespace catlive {
 class ActionsPage final : public Component, private ChangeListener {
   public:
@@ -9,6 +10,11 @@ class ActionsPage final : public Component, private ChangeListener {
         : actions(value), describeTrack(std::move(trackDescription)), onlyMappings(mappingsOnly) {
         actions.addChangeListener(this);
         setWantsKeyboardFocus(true);
+        addAndMakeVisible(search);
+        search.setComponentID("actionSearch");
+        search.setFont(theme::font(13));
+        search.setTextToShowWhenEmpty(localization::translate("Search actions"), theme::secondary);
+        search.onTextChange = [this] { actions.cancel(); viewport.setViewPosition(0, 0); rebuild(); };
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&rows, false);
         viewport.setScrollBarsShown(true, false);
@@ -21,6 +27,7 @@ class ActionsPage final : public Component, private ChangeListener {
             b->setColour(TextButton::buttonOnColourId, theme::green.withAlpha(.18f));
             b->setColour(TextButton::textColourOnId, theme::green);
             b->onClick = [this, i] {
+                search.setText({}, false);
                 category = i;
                 if (i == 1)
                     kind = "midi";
@@ -59,30 +66,37 @@ class ActionsPage final : public Component, private ChangeListener {
     }
     void showAction(const String &id, String inputKind = "keyboard") {
         selectedAction = id;
+        search.clear();
         kind = std::move(inputKind);
         category = 0;
         rebuild();
     }
     bool keyPressed(const KeyPress &key) override { return actions.captureKey(key); }
     void paint(Graphics &g) override {
+        if (search.isVisible()) {
+            g.setColour(theme::secondary);
+            drawInterfaceIcon(g, "search", {2.f, 5.f, 20.f, 20.f});
+        }
         if (!onlyMappings) {
             g.setFont(theme::font(13));
             g.setColour(Colours::white);
-            g.drawText(localization::translate("Input"), 0, 44, 52, 24, Justification::centredLeft);
+            g.drawText(localization::translate("Input"), 0, 88, 52, 24, Justification::centredLeft);
         }
     }
     void resized() override {
+        search.setVisible(!onlyMappings && selectedAction.isEmpty());
+        search.setBounds(30, 0, std::max(1, getWidth() - 30), 30);
         const int column = (getWidth() - 30) / 6;
         for (int i = 0; i < tabs.size(); ++i) {
-            tabs[i]->setBounds(i * (column + 6), 0, column, 30);
+            tabs[i]->setBounds(i * (column + 6), 44, column, 30);
             tabs[i]->setVisible(!onlyMappings && selectedAction.isEmpty());
         }
-        keyboard.setBounds(56, 44, 72, 24);
-        midi.setBounds(128, 44, 72, 24);
+        keyboard.setBounds(56, 88, 72, 24);
+        midi.setBounds(128, 88, 72, 24);
         keyboard.setVisible(!onlyMappings);
         midi.setVisible(!onlyMappings);
-        information.setBounds(0, onlyMappings ? 0 : 78, getWidth(), 22);
-        const int top = onlyMappings ? 40 : 110;
+        information.setBounds(0, onlyMappings ? 0 : 122, getWidth(), 22);
+        const int top = onlyMappings ? 40 : 154;
         viewport.setBounds(0, top, getWidth(), std::max(1, getHeight() - top));
         rows.setSize(std::max(200, viewport.getWidth() - 10), contentHeight);
         int y = 0;
@@ -211,14 +225,16 @@ class ActionsPage final : public Component, private ChangeListener {
     OwnedArray<TextButton> tabs;
     TextButton keyboard{localization::translate("Teclado")}, midi{"MIDI"};
     Label information;
+    TextEditor search;
     Viewport viewport;
     Component rows;
     OwnedArray<Card> cards;
     void changeListenerCallback(ChangeBroadcaster *) override { rebuild(); }
     void rebuild() {
         cards.clear();
+        const auto query = search.getText().trim();
         for (int i = 0; i < tabs.size(); ++i)
-            tabs[i]->setToggleState(i == category, dontSendNotification);
+            tabs[i]->setToggleState(query.isEmpty() && i == category, dontSendNotification);
         keyboard.setToggleState(kind == "keyboard", dontSendNotification);
         midi.setToggleState(kind == "midi", dontSendNotification);
         contentHeight = 0;
@@ -235,8 +251,17 @@ class ActionsPage final : public Component, private ChangeListener {
                         add(definition, inputKind);
                 continue;
             }
-            if (!onlyMappings && definition.category != category)
+            if (query.isEmpty() && selectedAction.isEmpty() && definition.category != category)
                 continue;
+            if (query.isNotEmpty()) {
+                const auto title = localization::translate(definition.title);
+                const auto matches = [&](const String &value) {
+                    return FindNLSStringEx(LOCALE_NAME_INVARIANT, FIND_FROMSTART | NORM_IGNORECASE | NORM_IGNORENONSPACE,
+                        value.toWideCharPointer(), value.length(), query.toWideCharPointer(), query.length(),
+                        nullptr, nullptr, nullptr, 0) >= 0;
+                };
+                if (!matches(title) && !matches(String::fromUTF8(definition.title))) continue;
+            }
             if (kind == "keyboard" && definition.continuous)
                 continue;
             if (kind == "midi" && !definition.supportsMIDI())
@@ -244,6 +269,7 @@ class ActionsPage final : public Component, private ChangeListener {
             add(definition, kind);
         }
         information.setText(actions.error.isNotEmpty() ? actions.error
+                            : query.isNotEmpty() && cards.isEmpty() ? localization::translate("No actions found")
                             : onlyMappings && cards.isEmpty()
                                 ? "Nenhum mapeamento ainda."
                                 : String::fromUTF8("As ações são salvas para todos os projetos."),

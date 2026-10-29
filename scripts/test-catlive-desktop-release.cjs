@@ -58,6 +58,8 @@ assert(publisher.includes(`$Version='${desktopVersion}'`) &&
        read('build catlive macos.command').includes('${VERSION:-' + desktopVersion + '}'),
        'Desktop launchers must default to the current public version.');
 if (yaml) assert.equal(yaml.load(workflow).on.workflow_dispatch.inputs.version.default, desktopVersion);
+assert(read('JarasLive/Windows/build.ps1').includes(`$Version='${desktopVersion}'`),
+       'The local Windows builder must default to the current public version.');
 for (const entry of [publisher, read('build catlive macos.command')]) {
     for (const file of ['scripts/codesign-with-retry.py', 'scripts/test-codesign-retry.py'])
         assert(entry.includes(file) && fs.existsSync(path.join(root, file)), 'Release entry points must include signing helpers.');
