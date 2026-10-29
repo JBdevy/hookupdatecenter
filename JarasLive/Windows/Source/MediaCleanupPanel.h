@@ -57,7 +57,7 @@ class MediaCleanupPanel final : public Component, private Timer {
             String::fromUTF8(
                 "Isso salva o projeto e exclui permanentemente das pastas Stems e Videos os "
                 "arquivos removidos da timeline. Arquivos ainda em uso são mantidos. Os backups de "
-                "recuperação conservam suas mídias. O histórico de desfazer será limpo. Esta "
+                "recuperação deste projeto também serão excluídos. O histórico de desfazer será limpo. Esta "
                 "limpeza não pode ser desfeita."),
             24, 14, getWidth() - 48, 132, Justification::topLeft, 7, 1.f);
         g.setFont(theme::font(11));
@@ -65,7 +65,7 @@ class MediaCleanupPanel final : public Component, private Timer {
         g.drawFittedText(session.document.getParentDirectory().getFullPathName(), 24, 156,
                          getWidth() - 48, 40, Justification::topLeft, 2, 1.f);
         g.setColour(failure.isNotEmpty() ? Colour(0xffff7777) : theme::green);
-        g.drawFittedText(working ? String::fromUTF8("Preservando backups e limpando mídias… ") +
+        g.drawFittedText(working ? String::fromUTF8("Excluindo backups antigos e mídias sem uso… ") +
                                        String((int)(session.importProgress * 100)) + "%"
                                  : failure,
                          24, 204, getWidth() - 48, 42, Justification::topLeft, 2, 1.f);

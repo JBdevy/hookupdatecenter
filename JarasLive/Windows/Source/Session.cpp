@@ -760,7 +760,7 @@ void Session::cleanTimelineMedia(std::function<void(String)> completed) {
             importProgress = 0;
             message = failure.isEmpty()
                           ? String(removed) +
-                                String::fromUTF8(" arquivo(s) removido(s). Backups preservados.")
+                                String::fromUTF8(" arquivo(s) removido(s). Backups antigos excluídos.")
                           : failure;
             notify();
             if (completed)

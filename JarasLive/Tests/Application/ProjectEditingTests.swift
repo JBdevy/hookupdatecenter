@@ -367,7 +367,7 @@ final class ProjectEditingTests: XCTestCase {
         XCTAssertEqual(project.songs[0].tracks[0].clips.flatMap(\.waveform), original.waveform)
         try project.validate()
     }
-    func testManualCleanupKeepsRecoverableBackups() throws {
+    func testManualCleanupDeletesOldBackupsAfterSavingCurrentProject() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         var project = fixture(); let document = root.appendingPathComponent("Show.jl")
@@ -381,10 +381,10 @@ final class ProjectEditingTests: XCTestCase {
         try ProjectBackups.save(project, to: document)
         try ProjectMediaCleanup.removeDeletedFiles(project: project, document: document, knownPaths: known)
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
-        let backup = try ProjectDocumentCodec.decode(Data(contentsOf: ProjectBackups.files(for: document)[0]))
-        let archived = try XCTUnwrap(backup.mediaPaths.first)
-        XCTAssertTrue(archived.hasPrefix("backups/Media/"))
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(archived)), Data([1,2,3,4]))
+        XCTAssertTrue(try ProjectBackups.files(for: document).isEmpty)
+        let saved = try ProjectDocumentCodec.decode(Data(contentsOf: document))
+        XCTAssertEqual(saved.id, project.id)
+        XCTAssertEqual(saved.mediaPaths, project.mediaPaths)
     }
     func testBypassRetainsInstrumentAndEffectParameters() throws {
         var fx = NativeFXSettings(); fx.inserted = ["Instruments", "EQ"]; fx.instrumentID = "Piano"; fx.eqEnabled = true

@@ -95,7 +95,7 @@ final class ProjectCleanupProgressTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("Stems/shared.wav").path))
         for path in paths where path != "Stems/shared.wav" { XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path)) }
     }
-    func testBatchArchivesManySourcesAndPreservesAllBackupStatesAndDates() throws {
+    func testCleanupDeletesOwnBackupsAndTheirUnusedSources() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? fm.removeItem(at: root) }
@@ -122,25 +122,70 @@ final class ProjectCleanupProgressTests: XCTestCase {
         var current = original
         current.songs[0].tracks[0].clips = [track.clips[0]]
         try ProjectMediaCleanup.removeDeletedFiles(project: current, document: root.appendingPathComponent("Many sources.jl"), knownPaths: original.mediaPaths)
-        var archivedPaths: Set<String>?
-        for url in backupURLs {
-            let recovered = try ProjectDocumentCodec.decode(Data(contentsOf: url))
-            XCTAssertEqual(recovered.songs[0].tracks[0].clips.count, 32)
-            if let archivedPaths { XCTAssertEqual(recovered.mediaPaths, archivedPaths) }
-            archivedPaths = recovered.mediaPaths
-            for (index, clip) in recovered.songs[0].tracks[0].clips.enumerated() {
-                let path = try XCTUnwrap(clip.audioFile?.path)
-                XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(path)), Data([UInt8(index), 42]))
-                XCTAssertEqual(clip.gain, 0.5); XCTAssertEqual(clip.fadeIn, 0.25)
-                XCTAssertEqual(clip.muted, index.isMultiple(of: 2))
-                if index > 0 {
-                    XCTAssertTrue(path.hasPrefix("backups/Media/"))
-                    XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("Stems/take-\(index).wav").path))
-                }
-            }
-            XCTAssertEqual(try fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date, date)
+        for url in backupURLs { XCTAssertFalse(fm.fileExists(atPath: url.path)) }
+        for index in 1..<32 {
+            XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("Stems/take-\(index).wav").path))
         }
+        XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("backups/Media").path))
         XCTAssertTrue(fm.fileExists(atPath: root.appendingPathComponent("Stems/take-0.wav").path))
+    }
+    func testCleanupWithoutUnusedGridMediaDeletesOnlyOwnBackupsAndArchivedSources() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: root.appendingPathComponent("backups/Media/old"), withIntermediateDirectories: true)
+        let current = Project.empty(name: "Current")
+        var old = current
+        var track = Track(id: UUID(), name: "Audio", role: .keys)
+        track.clips = [AudioClip(id: UUID(), name: "Old", startTime: 0, duration: 1, audioFile: AudioFile(path: "backups/Media/old/take.wav"))]
+        old.songs[0].tracks = [track]
+        let archived = root.appendingPathComponent("backups/Media/old/take.wav")
+        try Data([42]).write(to: archived)
+        let ownBackup = root.appendingPathComponent("backups/Current.bkjl")
+        let foreignBackup = root.appendingPathComponent("backups/Other.bkjl")
+        try ProjectDocumentCodec.write(old, to: ownBackup)
+        var other = Project.empty(name: "Other")
+        other.songs[0].tracks = [track]
+        try ProjectDocumentCodec.write(other, to: foreignBackup)
+        let unrelated = root.appendingPathComponent("backups/notes.txt")
+        try Data([1]).write(to: unrelated)
+        try ProjectMediaCleanup.removeDeletedFiles(project: current, document: root.appendingPathComponent("Current.jl"), knownPaths: [])
+        XCTAssertFalse(fm.fileExists(atPath: ownBackup.path))
+        XCTAssertTrue(fm.fileExists(atPath: foreignBackup.path))
+        XCTAssertTrue(fm.fileExists(atPath: archived.path), "Another project's backup still uses this source")
+        XCTAssertTrue(fm.fileExists(atPath: unrelated.path))
+        try fm.removeItem(at: foreignBackup)
+        try ProjectDocumentCodec.write(old, to: ownBackup)
+        try ProjectMediaCleanup.removeDeletedFiles(project: current, document: root.appendingPathComponent("Current.jl"), knownPaths: [])
+        XCTAssertFalse(fm.fileExists(atPath: archived.path))
+    }
+    func testCurrentMediaCaseAliasesAndUnreadableBackupFailClosed() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: root.appendingPathComponent("Stems"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appendingPathComponent("backups"), withIntermediateDirectories: true)
+        var current = Project.empty(name: "Current")
+        var track = Track(id: UUID(), name: "Audio", role: .keys)
+        track.clips = [AudioClip(id: UUID(), name: "Used", startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/USED.wav"))]
+        current.songs[0].tracks = [track]
+        let used = root.appendingPathComponent("Stems/used.wav")
+        let deleted = root.appendingPathComponent("Stems/deleted.wav")
+        try Data([1]).write(to: used); try Data([2]).write(to: deleted)
+        let ownBackup = root.appendingPathComponent("backups/Current.bkjl")
+        try ProjectDocumentCodec.write(current, to: ownBackup)
+        let broken = root.appendingPathComponent("backups/Broken.bkjl")
+        try Data([0]).write(to: broken)
+        let document = root.appendingPathComponent("Current.jl")
+        let known: Set<String> = ["Stems/used.wav", "Stems/deleted.wav"]
+        XCTAssertThrowsError(try ProjectMediaCleanup.removeDeletedFiles(project: current, document: document, knownPaths: known))
+        XCTAssertTrue(fm.fileExists(atPath: ownBackup.path))
+        XCTAssertTrue(fm.fileExists(atPath: deleted.path))
+        try fm.removeItem(at: broken)
+        try ProjectMediaCleanup.removeDeletedFiles(project: current, document: document, knownPaths: known)
+        XCTAssertTrue(fm.fileExists(atPath: used.path))
+        XCTAssertFalse(fm.fileExists(atPath: deleted.path))
+        XCTAssertFalse(fm.fileExists(atPath: ownBackup.path))
     }
     func testUnreadableSiblingDoesNotDeleteMediaOrReportSuccess() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

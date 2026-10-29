@@ -16,93 +16,66 @@ public enum ProjectMediaCleanup {
         guard paths != previous else { return }
         try JSONEncoder().encode(paths).write(to: inventoryURL(project: project, document: document), options: .atomic)
     }
-    /// Only files previously owned by this document can become candidates.
-    /// Other documents are protected. Backup-only sources are kept with backups,
-    /// so manual cleanup does not make recovery saves unusable.
+    /// Cleanup is called only after saving the current document successfully.
+    /// Remove its old backups first, then unused owned media. Other projects,
+    /// their backups and active readers keep their sources.
     public static func removeDeletedFiles(project: Project, document: URL, knownPaths: Set<String>, protectedURLs: Set<URL> = [], progress: @Sendable (Double) -> Void = { _ in }) throws {
         progress(0)
         let fm = FileManager.default
         let root = document.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
-        var candidates = try rememberedPaths(project: project, document: document).union(knownPaths).subtracting(project.mediaPaths)
-        let protected = Set(protectedURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
-        candidates = candidates.filter { !protected.contains(root.appendingPathComponent($0).standardizedFileURL.resolvingSymlinksInPath()) }
-        guard !candidates.isEmpty else { progress(1); return }
+        guard fm.fileExists(atPath: root.path) else { progress(1); return }
+        func key(_ path: String) -> String { path.precomposedStringWithCanonicalMapping.lowercased() }
+        var owned = try rememberedPaths(project: project, document: document).union(knownPaths)
+        var protectedPaths = Set(project.mediaPaths.map(key))
+        let protected = Set(protectedURLs.map { key($0.standardizedFileURL.resolvingSymlinksInPath().path) })
         let siblings = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         for url in siblings where url.pathExtension.lowercased() == "jl" && url.standardizedFileURL != document.standardizedFileURL {
-            // An unreadable sibling fails closed: never guess whether its audio is unused.
             let other = try ProjectDocumentCodec.decode(Data(contentsOf: url))
-            candidates.subtract(other.mediaPaths)
+            protectedPaths.formUnion(other.mediaPaths.map(key))
         }
         progress(0.1)
         let backupRoot = root.appendingPathComponent("backups", isDirectory: true)
-        var backups: [(URL, Project)] = []
+        var backups: [URL] = []
         if fm.fileExists(atPath: backupRoot.path) {
+            guard backupRoot.standardizedFileURL == backupRoot.resolvingSymlinksInPath() else {
+                throw CocoaError(.fileReadNoPermission)
+            }
             for url in try fm.contentsOfDirectory(at: backupRoot, includingPropertiesForKeys: nil) where url.pathExtension.lowercased() == "bkjl" {
-                backups.append((url, try ProjectDocumentCodec.decode(Data(contentsOf: url))))
-            }
-        }
-        progress(0.2)
-        // Index backup references once. Re-encoding every complete backup for
-        // every removed stem made a large project take minutes to close.
-        var referencedPaths = Set<String>()
-        for (_, backup) in backups { referencedPaths.formUnion(backup.mediaPaths) }
-        let paths = candidates.sorted()
-        var replacements: [String: String] = [:]
-        var removable: [(source: URL, mediaRoot: URL)] = []
-        var reportedPercent = 20
-        func report(_ percent: Int) {
-            if percent > reportedPercent { reportedPercent = percent; progress(Double(percent) / 100) }
-        }
-        for (index, path) in paths.enumerated() {
-            defer { report(20 + (index + 1) * 35 / paths.count) }
-            let components = path.split(separator: "/", omittingEmptySubsequences: false)
-            guard components.count > 1, ["Stems", "Videos"].contains(String(components[0])),
-                  components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }), !path.contains("\\") else { continue }
-            let source = root.appendingPathComponent(path)
-            guard source.standardizedFileURL == source.resolvingSymlinksInPath(), fm.fileExists(atPath: source.path),
-                  try source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
-            if referencedPaths.contains(path) {
-                let relative = "backups/Media/" + UUID().uuidString + "/" + source.lastPathComponent
-                let archived = root.appendingPathComponent(relative)
-                try fm.createDirectory(at: archived.deletingLastPathComponent(), withIntermediateDirectories: true)
-                do { try fm.linkItem(at: source, to: archived) }
-                catch { try fm.copyItem(at: source, to: archived) }
-                replacements[path] = relative
-            }
-            removable.append((source, root.appendingPathComponent(String(components[0]))))
-        }
-        report(55)
-        // Commit every replacement before removing any source. If a backup
-        // cannot be written, all originals remain available for recovery.
-        for (index, entry) in backups.enumerated() {
-            defer { report(55 + (index + 1) * 20 / backups.count) }
-            let (url, original) = entry
-            var backup = original, changed = false
-            for song in backup.songs.indices {
-                for track in backup.songs[song].tracks.indices {
-                    if let path = backup.songs[song].tracks[track].audioFile?.path, let relative = replacements[path] {
-                        backup.songs[song].tracks[track].audioFile?.path = relative; changed = true
-                    }
-                    if let path = backup.songs[song].tracks[track].clickSound?.path, let relative = replacements[path] {
-                        backup.songs[song].tracks[track].clickSound?.path = relative; changed = true
-                    }
-                    for clip in backup.songs[song].tracks[track].clips.indices {
-                        if let path = backup.songs[song].tracks[track].clips[clip].audioFile?.path, let relative = replacements[path] {
-                            backup.songs[song].tracks[track].clips[clip].audioFile?.path = relative; changed = true
-                        }
-                    }
+                guard url.standardizedFileURL == url.resolvingSymlinksInPath() else { throw CocoaError(.fileReadNoPermission) }
+                // Decode all before deleting anything; an unreadable backup fails closed.
+                let backup = try ProjectDocumentCodec.decode(Data(contentsOf: url))
+                if backup.id == project.id {
+                    backups.append(url)
+                    owned.formUnion(backup.mediaPaths)
+                } else {
+                    protectedPaths.formUnion(backup.mediaPaths.map(key))
                 }
             }
-            if !backup.mediaPaths.intersection(replacements.keys).isEmpty {
-                backup.remapFXSamples(replacements); changed = true
-            }
-            if changed {
-                let dates = try fm.attributesOfItem(atPath: url.path).filter { $0.key == .creationDate || $0.key == .modificationDate }
-                try ProjectDocumentCodec.writeEncoded(ProjectDocumentCodec.encode(backup), to: url)
-                try fm.setAttributes(dates, ofItemAtPath: url.path)
-            }
         }
-        report(75)
+        var removable: [(source: URL, mediaRoot: URL)] = []
+        var seen = Set<String>()
+        for path in owned.sorted() {
+            let components = path.split(separator: "/", omittingEmptySubsequences: false)
+            let archive = components.count > 2 && components[0] == "backups" && components[1] == "Media"
+            guard components.count > 1, (["Stems", "Videos"].contains(String(components[0])) || archive),
+                  components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }), !path.contains("\\"),
+                  !protectedPaths.contains(key(path)), seen.insert(key(path)).inserted else { continue }
+            let source = root.appendingPathComponent(path)
+            guard !protected.contains(key(source.standardizedFileURL.resolvingSymlinksInPath().path)),
+                  source.standardizedFileURL == source.resolvingSymlinksInPath(), fm.fileExists(atPath: source.path),
+                  try source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { continue }
+            removable.append((source, archive ? backupRoot.appendingPathComponent("Media") : root.appendingPathComponent(String(components[0]))))
+        }
+        // Keep ownership across a partial failure so a later cleanup can retry.
+        try remember(project: project, document: document, knownPaths: owned)
+        progress(0.2)
+        // No source is deleted until every obsolete backup has been removed.
+        // A failure leaves the remaining backups' media intact.
+        for (index, url) in backups.enumerated() {
+            try fm.removeItem(at: url)
+            progress(0.2 + 0.3 * Double(index + 1) / Double(backups.count))
+        }
+        progress(0.5)
         for (index, item) in removable.enumerated() {
             try fm.removeItem(at: item.source)
             var directory = item.source.deletingLastPathComponent()
@@ -110,8 +83,7 @@ public enum ProjectMediaCleanup {
                 guard try fm.contentsOfDirectory(atPath: directory.path).isEmpty else { break }
                 try fm.removeItem(at: directory); directory.deleteLastPathComponent()
             }
-            // Reserve 100% for successful completion of the entire cleanup.
-            report(75 + (index + 1) * 24 / removable.count)
+            progress(0.5 + 0.49 * Double(index + 1) / Double(removable.count))
         }
         progress(1)
     }

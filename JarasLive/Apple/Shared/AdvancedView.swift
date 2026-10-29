@@ -364,7 +364,7 @@ private struct TimelineMediaCleanupConfirmation: View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Clean up files deleted from the timeline", systemImage: "trash")
                 .font(.jarasHeadline).foregroundStyle(.red)
-            Text("This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Recovery backups retain their media. The editing undo history will be cleared. This cleanup cannot be undone.")
+            Text("This saves the project and permanently removes audio and video files deleted from the timeline from its Stems and Videos folders. Files still in use are kept. Old recovery backups of this project will also be deleted. The editing undo history will be cleared. This cleanup cannot be undone.")
             if let url = documents.currentURL {
                 Text(verbatim: url.deletingLastPathComponent().path).font(.jarasCaption)
                     .textSelection(.disabled).foregroundStyle(JarasTheme.secondary)

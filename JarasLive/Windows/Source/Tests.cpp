@@ -6053,7 +6053,7 @@ int runTests(const File &directory) {
             portablePackage::exportPackage(ProjectCodec::read(local),local.getParentDirectory(),root.getChildFile("Mac-Windows.ziplive"));
         }
     });
-    test("Media cleanup preserves ownership, sibling projects and encrypted recovery backups", [&] {
+    test("Media cleanup deletes own backups and preserves live shared and foreign media", [&] {
         const auto root = directory.getNonexistentChildFile("media-cleanup", {}, false);
         expect(root.getChildFile("Stems").createDirectory().wasOk() &&
                    root.getChildFile("backups").createDirectory().wasOk(),
@@ -6096,11 +6096,35 @@ int runTests(const File &directory) {
         expect(!root.getChildFile("Stems/deleted.wav").exists() &&
                    !root.getChildFile("Stems/recovery.wav").exists(),
                "Owned deleted media remained in Stems");
-        auto restored = ProjectCodec::decode(ProjectCodec::read(backupFile));
-        const auto path = text(restored.songs[0].tracks[0].clips[0].audioFile->path);
-        expect(path.startsWith("backups/Media/") &&
-                   root.getChildFile(path).loadFileAsString() == "fixture Stems/recovery.wav",
-               "Recovery backup lost its media");
+        expect(!backupFile.exists(), "Cleanup retained obsolete project backup");
+        // Cleanup also removes old backups when there are no unused grid sources.
+        // Archived media shared by another backup must remain intact.
+        make("backups/Media/old/take.wav");
+        backup.songs[0].tracks[0].clips[0].audioFile->path = "backups/Media/old/take.wav";
+        ProjectCodec::write(backupFile, ProjectCodec::encode(backup, {}));
+        auto foreign = backup; foreign.id = uuid();
+        const auto foreignFile = root.getChildFile("backups/Other.bkjl");
+        ProjectCodec::write(foreignFile, ProjectCodec::encode(foreign, {}));
+        expect(mediaCleanup::removeDeleted(current, currentRaw, doc, {}) == 0 &&
+               !backupFile.exists() && foreignFile.existsAsFile() &&
+               root.getChildFile("backups/Media/old/take.wav").existsAsFile(),
+               "Cleanup removed another project's backup or archived source");
+        foreignFile.deleteFile();
+        ProjectCodec::write(backupFile, ProjectCodec::encode(backup, {}));
+        expect(mediaCleanup::removeDeleted(current, currentRaw, doc, {}) == 1 &&
+               !backupFile.exists() && !root.getChildFile("backups/Media/old/take.wav").exists(),
+               "Cleanup left obsolete archived sources behind");
+        ProjectCodec::write(backupFile, ProjectCodec::encode(backup, {}));
+        const auto broken = root.getChildFile("backups/Broken.bkjl");
+        broken.replaceWithText("unreadable");
+        make("Stems/retained.wav");
+        bool invalidBackupRejected = false;
+        try { mediaCleanup::removeDeleted(current, currentRaw, doc, {"Stems/retained.wav"}); }
+        catch (...) { invalidBackupRejected = true; }
+        expect(invalidBackupRejected && backupFile.existsAsFile() &&
+               root.getChildFile("Stems/retained.wav").existsAsFile(),
+               "An unreadable backup must stop cleanup before any deletion");
+        broken.deleteFile();
         make("Stems/retained.wav");
         mediaCleanup::remember(current, doc, {"Stems/retained.wav"});
         expect(siblingFile.replaceWithText("unreadable"),
