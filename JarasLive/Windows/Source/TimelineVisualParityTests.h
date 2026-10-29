@@ -53,6 +53,63 @@ inline void fit(Workspace &workspace) {
 }
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Timeline item edge guides follow drag and resize across the cached grid", [&] {
+        auto project=floatingControlTests::fixture();
+        jaras::AudioClip clip; clip.id="guide-visual-item"; clip.name="Moving item";
+        clip.startTime=3; clip.duration=8;
+        project.songs[0].tracks[0].clips={clip};
+        Session session; session.inspection=true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session);
+        Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("timeline-item-guides",".json"));
+        workspace.setSize(1366,768); fit(workspace);
+        auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");
+        require(canvas && canvas->getParentComponent(),"Item guide fixture canvas is missing");
+        // Do not force a repaint here: that would hide stale columns in the
+        // real buffered canvas when only the dragged item's row is dirty.
+        auto &timelineComponent=*canvas->getParentComponent();
+        auto capture=[&] { return timelineComponent.createComponentSnapshot(canvas->getBounds()); };
+        const auto timeline=get(workspace.diagnostics(),"timeline");
+        const double zoom=num(timeline,"zoom"),offset=num(timeline,"horizontal");
+        const int y=canvas->getHeight()-24; // Well below the item's row.
+        auto xAt=[&](double time) {return roundToInt(time*zoom-offset);};
+        auto yellowAt=[&](const Image &image,int x) {
+            for(int dx=-1;dx<=1;++dx) {
+                const auto pixel=image.getPixelAt(x+dx,y);
+                if(pixel.getRed()>240 && pixel.getGreen()>240 && pixel.getBlue()<20)return true;
+            }
+            return false;
+        };
+        for (const bool resize : {false,true}) {
+            const auto current=session.song()->tracks[0].clips[0];
+            const auto bounds=localRect(workspace,get(itemState(workspace,clip.id),"bounds"));
+            const Point<float> anchor{resize ? bounds.getRight()-1 : bounds.getCentreX(),bounds.getCentreY()};
+            capture();
+            canvas->mouseDown(mouse(*canvas,anchor,anchor,true));
+            auto image=capture();
+            require(yellowAt(image,xAt(current.startTime)) && yellowAt(image,xAt(current.startTime+current.duration)),
+                    "Item edge guides are missing before dragging");
+            double lastStart=current.startTime,lastEnd=current.startTime+current.duration;
+            for(const double delta : {2.,4.,1.}) {
+                const auto point=anchor+Point<float>((float)(delta*zoom),0);
+                canvas->mouseDrag(mouse(*canvas,point,anchor,true,true));
+                image=capture();
+                const double from=current.startTime+(resize ? 0 : delta),to=current.startTime+current.duration+delta;
+                require(yellowAt(image,xAt(from)) && yellowAt(image,xAt(to)),
+                        "Item guides did not follow the preview across the full grid while held");
+                if(std::abs(from-lastStart)>1e-6)require(!yellowAt(image,xAt(lastStart)),"Old start guide remained in the cached grid");
+                require(!yellowAt(image,xAt(lastEnd)),"Old end guide remained in the cached grid");
+                require(session.song()->tracks[0].clips[0].startTime==current.startTime && session.song()->tracks[0].clips[0].duration==current.duration,
+                        "Guide movement committed the item before mouse release");
+                lastStart=from;lastEnd=to;
+            }
+            save(directory,resize?"item-resize-guides.png":"item-drag-guides.png",image);
+            const auto point=anchor+Point<float>((float)zoom,0);
+            canvas->mouseUp(mouse(*canvas,point,anchor,false,true));
+            image=capture();
+            require(!yellowAt(image,xAt(lastStart)) && !yellowAt(image,xAt(lastEnd)),"Item guides remained after release");
+        }
+    });
     test("Timeline time selection and active loop have equivalent ruler-down pixels including cursor Heads", [&] {
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture())); session.audio.setOffline(true);

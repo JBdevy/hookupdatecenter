@@ -3395,7 +3395,18 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             return !subplay && song ? timelineGrid::snapCursor(time,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(modifiers)) : time;
         }
         void updateDrag(const MouseEvent &e) { updateDrag(e.position,e.mods); }
+        void repaintItemEdgeGuides() {
+            if (dragClip.empty()) return;
+            const double from=dragPreview ? previewStart : originalStart;
+            const double to=dragPreview ? previewEnd : originalStart+clipLength;
+            // These guides span every track, while the item preview only
+            // invalidates its affected rows. Clear both old and new columns
+            // in the buffered canvas without redrawing the entire grid.
+            for (const auto time : {from,to})
+                repaint(roundToInt(t.xAt(time))-2,headerHeight(),5,std::max(0,getHeight()-headerHeight()));
+        }
         void updateDrag(Point<float> point, ModifierKeys modifiers) {
+            repaintItemEdgeGuides();
             double edge = (resizeEdge > 0 ? originalStart + clipLength : originalStart) +
                           t.timeAt(point.x) - startTime;
             edge = std::max(0., edge);
@@ -3442,6 +3453,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 previewPlacements.clear();
             }
             dragPreview = true;
+            repaintItemEdgeGuides();
         }
     } canvas;
     class Heads final : public Component {
