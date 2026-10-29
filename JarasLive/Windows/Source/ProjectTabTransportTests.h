@@ -32,10 +32,10 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         Auth auth; Lighting lighting(session);
         Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("hidden-tab", ".json"));
         workspace.setSize(1366,768);
-        auto *play=dynamic_cast<Button *>(uiFeatureTests::find(workspace,"play"));
-        require(play,"Play control missing");
+        // Native transport buttons are not children in the JUCE component tree.
+        const auto playState=[&] { return get(get(workspace.diagnostics(),"controls"),"play"); };
         workspace.deactivateProjectTab();
-        const auto before=play->getButtonText();
+        const auto before=str(playState(),"text");
         session.command(jaras::CommandKind::selectRegion,"first");
         session.command(jaras::CommandKind::play);
         AudioBuffer<float> pcm(2,480);
@@ -46,9 +46,9 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         }
         require(session.transport().playing && session.transport().regionId==ID("second"),
                 "Hidden project stopped advancing its Auto queue");
-        require(play->getButtonText()==before,"Hidden tab refreshed transport controls every tick");
+        require(str(playState(),"text")==before && !flag(playState(),"active"),"Hidden tab refreshed transport controls every tick");
         workspace.activateProjectTab();
-        require(play->getToggleState(),"Reactivated tab did not refresh the running transport");
+        require(flag(playState(),"active"),"Reactivated tab did not refresh the running transport");
         session.command(jaras::CommandKind::stop);
     });
     test("Project tabs return to idle timer cadence after an automatic region stop", [&] {

@@ -7925,6 +7925,8 @@ var Workspace::diagnostics() const {
         put(bounds, "y", entry.second->getY());
         put(bounds, "width", entry.second->getWidth());
         put(bounds, "height", entry.second->getHeight());
+        put(bounds, "text", entry.second->getButtonText());
+        put(bounds, "active", entry.second->getToggleState());
         put(layout, Identifier(entry.first), bounds);
         if (StringArray{"play", "subplay", "record"}.contains(entry.first)) {
             if (GlyphArrangement::getStringWidth(transportFont, entry.second->getButtonText()) + 18.f > entry.second->getWidth() + .5f)
