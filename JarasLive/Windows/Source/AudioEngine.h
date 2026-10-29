@@ -1,4 +1,5 @@
 #pragma once
+#include "SystemAudioDefaults.h"
 #include "VinhetasAudio.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 #include "Common.h"
@@ -37,6 +38,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     ~AudioEngine() override;
     std::shared_ptr<AudioDeviceManager> deviceHost;
     AudioDeviceManager &devices;
+    SystemAudioDefaults systemDefaults;
     AudioCallbackMetrics callbackMetrics;
     AudioFormatManager formats;
     MidiKeyboardState keyboardState;

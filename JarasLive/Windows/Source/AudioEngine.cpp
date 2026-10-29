@@ -2,6 +2,7 @@
 #include "ProjectionSelection.h"
 #include "MeterDisplay.h"
 #include "AudioEngine.h"
+#include "AudioDeviceChannels.h"
 #include "ProjectCodec.h"
 #include "ClipAudio.h"
 #include "WaveformCache.h"
@@ -16,7 +17,8 @@ struct AudioEngine::ReaderContext {
     ~ReaderContext() { streams.stop(); thread.stopThread(5000); }
 };
 AudioEngine::AudioEngine(double preparationRate, bool preparingOffline, std::shared_ptr<AudioDeviceManager> host)
-    : deviceHost(host ? std::move(host) : std::make_shared<AudioDeviceManager>()), devices(*deviceHost) {
+    : deviceHost(host ? std::move(host) : std::make_shared<AudioDeviceManager>()), devices(*deviceHost),
+      systemDefaults(devices, [this] { return !isRecording(); }) {
     rate = preparationRate;
     offlineMode = preparingOffline;
     for (int i = 0; i < 128; ++i)
@@ -164,11 +166,15 @@ String AudioEngine::outputAvailabilityError() const {
 String AudioEngine::openDevice() {
     deviceSessionRequested = true;
     if (attached)
-        return {};
+        return audioDeviceChannels::enableAvailable(devices);
     auto preferences = File::getSpecialLocation(File::userApplicationDataDirectory)
                            .getChildFile("Hook Developer/CatLive/audio-device.xml");
     auto saved = XmlDocument::parse(preferences);
+    systemDefaults.read(saved.get());
     auto error = devices.getCurrentAudioDevice() ? String{} : devices.initialise(0, 2, saved.get(), saved == nullptr);
+    if (error.isEmpty()) error = systemDefaults.start(saved.get());
+    if (error.isEmpty())
+        error = audioDeviceChannels::enableAvailable(devices);
     if (error.isEmpty()) {
         devices.addAudioCallback(this);
         devices.removeMidiInputDeviceCallback({}, this);
@@ -556,6 +562,7 @@ void AudioEngine::refreshTempo(const jaras::Song &before, const jaras::Song &aft
     if (mtc) timecodeMIDI.updateProgram(timecodeProgram, after.duration, mtcMuted);
 }
 void AudioEngine::closeDevice() {
+    systemDefaults.stop();
     cancelTransportPreparation();
     timecodeMIDI.stop();
     if (attached)
@@ -2246,7 +2253,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             for (auto &v : voices)
                 if (sourceAudible(v->bus) && trackScope(current,head,v->bus).allows(v->playbackStart,v->regionOwnerIndex)) {
                     if (v->source && v->start > cursor && v->start <= cursor + 2)
-                        v->source->readers[readerHeads[size_t(head)].load()]->request((int64)std::floor((v->clipAudio ? v->clipAudio->sourcePosition(0) : v->offset) * v->source->readers[readerHeads[size_t(head)].load()]->sampleRate));
+                        v->source->readers[readerHeads[size_t(head)].load()]->requestUpcoming((int64)std::floor((v->clipAudio ? v->clipAudio->sourcePosition(0) : v->offset) * v->source->readers[readerHeads[size_t(head)].load()]->sampleRate), v->start-cursor, renderClock+done);
                     mixVoice(*v, head, cursor, (v->frozen ? buses[v->bus]->frozen[head] : buses[v->bus]->clips[head]).getArrayOfWritePointers(), 2, done, count);
                 } else if (v->midiItem)
                     mixMIDIVoice(*v,head,cursor,nullptr,0,done,count,false);

@@ -82,4 +82,33 @@ inline void glueUndoRealtime(const File& directory) {
     require(num(independent.streamDiagnostics(),"primedSources")==2,"Different source trim incorrectly skipped future prefetch");
     state.playing=false;independent.transportAsync(state);
 }
+inline void continuousCutsRealtime(const File &directory) {
+    const auto folder=directory.getNonexistentChildFile("continuous-cut","");folder.createDirectory();
+    const auto file=folder.getChildFile("signal.wav");
+    {auto stream=file.createOutputStream();WavAudioFormat wav;std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.release(),48000,2,24,{},0));
+     require(writer!=nullptr,"Cannot create cut fixture");AudioBuffer<float> pcm(2,48000*9);for(int c=0;c<2;++c)for(int n=0;n<pcm.getNumSamples();++n)pcm.setSample(c,n,.1f*std::sin(float(2*MathConstants<double>::pi*800*n/48000)));writer->writeFromAudioSampleBuffer(pcm,0,pcm.getNumSamples());}
+    for(int scenario=0;scenario<3;++scenario) {
+        const double speed=scenario==1?.8:1.;
+        jaras::Song song;song.id=uuid();song.duration=8;
+        jaras::Track track;track.id=uuid();track.name="Cut source";
+        jaras::AudioClip clip;clip.id=uuid();clip.duration=8;clip.playbackRate=speed;clip.audioFile=jaras::AudioFile{"signal.wav",{}};track.clips={clip};song.tracks={track};
+        std::set<ID> ids{clip.id};clipEditing::splitSelected(song,ids,2.00321);
+        const auto right=song.tracks[0].clips[1].id;clipEditing::splitSelected(song,{right},4.01234);
+        if(scenario==2)for(size_t i=1;i<song.tracks[0].clips.size();++i)song.tracks[0].clips[i].sourceOffset+=3;
+        AudioEngine engine(44100);engine.prepareSong(song,folder);
+        AudioEngine::State state;state.playing=true;engine.transportAsync(state);
+        const auto deadline=Time::getMillisecondCounterHiRes()+10000;
+        while(engine.preparingTransport()&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        require(!engine.preparingTransport(),"Cut test Play never became ready");
+        AudioBuffer<float> pcm(2,512);float minimum=1;double worstAt=0;
+        for(int block=0;block<440;++block) {
+            engine.render(pcm.getArrayOfWritePointers(),2,512);
+            for(int n=0;n<512;n+=128){double at=(block*512+n)/44100.;const float rms=pcm.getRMSLevel(0,n,128);if(at>.5&&at<5&&rms<minimum){minimum=rms;worstAt=at;}}
+            Thread::sleep(12);
+        }
+        state.playing=false;engine.transportAsync(state);
+        if(minimum<.04f)throw std::runtime_error("Cut gap at "+std::to_string(worstAt)+" scenario="+std::to_string(scenario)+" speed="+std::to_string(speed)+" minimum="+std::to_string(minimum)+" underruns="+std::to_string(engine.getUnderruns()));
+    }
+}
+
 }

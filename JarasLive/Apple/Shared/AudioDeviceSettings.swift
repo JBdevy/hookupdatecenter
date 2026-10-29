@@ -60,6 +60,11 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
 #endif
 @MainActor final class AudioDeviceSettings: ObservableObject {
     static let shared = AudioDeviceSettings()
+    static let systemDefaultUID = "catlive.system-default"
+    @Published private(set) var followsSystemInput = UserDefaults.standard.bool(forKey: "catlive.followSystemInput")
+    @Published private(set) var followsSystemOutput = UserDefaults.standard.bool(forKey: "catlive.followSystemOutput")
+    var inputSelection: String { followsSystemInput ? Self.systemDefaultUID : inputUID }
+    var outputSelection: String { followsSystemOutput ? Self.systemDefaultUID : (selectedUID.isEmpty ? "none" : selectedUID) }
     @Published private(set) var inputDevices: [OutputDevice] = []
     @Published private(set) var inputUID = UserDefaults.standard.string(forKey: "catlive.audioInputUID") ?? ""
     var inputDeviceChanged: (() -> Void)?
@@ -159,6 +164,34 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     private var deviceListener: AudioObjectPropertyListenerBlock?
     private var listeningAddresses: [AudioObjectPropertyAddress] = []
     private var observedOutputUnit: AudioUnit?
+    private var defaultRefreshPending = false
+    private func systemDefaultDevice(input: Bool) -> OutputDevice? {
+        var id: AudioDeviceID = 0, bytes = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: input ? kAudioHardwarePropertyDefaultInputDevice : kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &bytes, &id) == noErr else { return nil }
+        return (input ? inputDevices : devices).first { $0.hardwareID == id }
+    }
+    private func refreshSystemDefaults() {
+        let input = systemDefaultDevice(input: true)?.id ?? ""
+        let output = systemDefaultDevice(input: false)?.id ?? "none"
+        guard (followsSystemInput && inputUID != input) || (followsSystemOutput && selectedUID != output) else { return }
+        // Recording owns its route until the take finishes. Catalog events are
+        // coalesced and the latest OS choice is resolved again afterwards.
+        guard canChangeConfiguration() else {
+            if !defaultRefreshPending {
+                defaultRefreshPending = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self else { return }
+                    self.defaultRefreshPending = false; self.refresh()
+                }
+            }
+            return
+        }
+        if followsSystemInput && inputUID != input { bindInput(input) }
+        if followsSystemOutput && selectedUID != output { bindOutput(output) }
+    }
     #endif
     var deviceName: String { devices.first { $0.id == selectedUID }?.name ?? JarasLocalization.string("No output device") }
     private init() {
@@ -173,7 +206,7 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         #if os(macOS)
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in Task { @MainActor [weak self] in self?.refresh() } }
         deviceListener = listener
-        for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice] {
+        for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultInputDevice] {
             var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
             if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener) == noErr { listeningAddresses.append(address) }
         }
@@ -268,6 +301,7 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         if #available(macOS 14.2, *) {
             inputDevices.append(OutputDevice(id: Self.loopbackUID, name: "Loopback — áudio do Mac", channels: 2, hardwareID: loopbackHardwareID))
         }
+        refreshSystemDefaults()
         // A catalog notification must not restart an armed recording input.
         let newInputHardwareID = inputDevice?.hardwareID
         if newInputHardwareID != configuredInputHardwareID {
@@ -318,6 +352,16 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     }
     func selectInput(_ uid: String) {
         guard permitConfigurationChange() else { return }
+        #if os(macOS)
+        guard uid.isEmpty || uid == Self.systemDefaultUID || inputDevices.contains(where: { $0.id == uid }) else { return }
+        followsSystemInput = uid == Self.systemDefaultUID
+        UserDefaults.standard.set(followsSystemInput, forKey: "catlive.followSystemInput")
+        bindInput(followsSystemInput ? (systemDefaultDevice(input: true)?.id ?? "") : uid)
+        #else
+        bindInput(uid)
+        #endif
+    }
+    private func bindInput(_ uid: String) {
         guard uid.isEmpty || inputDevices.contains(where: { $0.id == uid }) else { return }
         #if os(iOS)
         let previous = inputUID
@@ -437,7 +481,14 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     #endif
     func select(_ uid: String) {
         guard permitConfigurationChange() else { return }
+        #if os(macOS)
+        guard uid == "none" || uid == Self.systemDefaultUID || devices.contains(where: { $0.id == uid }) else { return }
+        followsSystemOutput = uid == Self.systemDefaultUID
+        UserDefaults.standard.set(followsSystemOutput, forKey: "catlive.followSystemOutput")
+        bindOutput(followsSystemOutput ? (systemDefaultDevice(input: false)?.id ?? "none") : uid)
+        #else
         bindOutput(uid)
+        #endif
     }
     // Recovery rebinds the existing UID even while the transport is active.
     // It must never use the public, user-initiated device-change path.

@@ -663,6 +663,11 @@ public struct ShowTimelinePresentationState: Equatable {
     @Published public private(set) var setlistNavigationRequest: SetlistNavigationRequest?
     @Published public private(set) var splitItemsRequest: UInt64 = 0
     @Published public private(set) var normalizeItemsRequest: UInt64 = 0
+    public struct ItemProcessingRequest: Equatable {
+        public let id: UUID
+        public let action: DAWAction
+    }
+    @Published public private(set) var itemProcessingRequest: ItemProcessingRequest?
     @Published public var detectBPMRegion: UUID?
     @Published public var detectBPMRegions: [UUID] = []
     @Published public private(set) var tempoMarkerRequest: UInt64 = 0
@@ -736,6 +741,7 @@ public struct ShowTimelinePresentationState: Equatable {
         case .cancelSection: send(.cancelSection)
         case .splitItems: splitItemsRequest &+= 1
         case .normalizeItems: normalizeItemsRequest &+= 1
+        case .reRenderItems, .unifyAudioItems: itemProcessingRequest = .init(id: UUID(), action: action)
         case .createTempoMarker: tempoMarkerRequest &+= 1
         case .toggleVideo: toggleVideoWindow()
         case .toggleTeleprompter: toggleTeleprompterWindow()
@@ -973,6 +979,16 @@ public struct ShowTimelinePresentationState: Equatable {
     public func setResolume(_ settings: ResolumeSettings) {
         do { try settings.validate(); editProject { $0.resolume = settings } }
         catch { message = error.localizedDescription }
+    }
+    public func setReductionDraft(_ draft: PortableProjectJSON) {
+        guard canControl(), !finishing, snapshot.project.reductionDraft != draft else { return }
+        var project = snapshot.project; project.reductionDraft = draft
+        do {
+            try executor.applyProjectEdit(project)
+            snapshot = try executor.snapshot()
+            projectRevision &+= 1; hasUnsavedChanges = true
+            onProjectEdited()
+        } catch { message = error.localizedDescription }
     }
     private func editProject(_ edit: (inout Project) -> Void) {
         guard canControl(), !finishing else { return }
@@ -3447,7 +3463,7 @@ public struct ShowTimelinePresentationState: Equatable {
         mixerTrackSelection = []; selectedTrackForActions = nil; trackSelectionRequest = nil
         lastSetlistNavigationID = nil
         setlistNavigationRequest = nil; setlistFocusRequest = UUID(); timelineNavigationCache = nil
-        splitItemsRequest = 0; normalizeItemsRequest = 0; tempoMarkerRequest = 0; addTrackRequest = 0
+        splitItemsRequest = 0; normalizeItemsRequest = 0; itemProcessingRequest = nil; tempoMarkerRequest = 0; addTrackRequest = 0
         detectBPMRegion = nil; detectBPMRegions = []; modalNotice = nil
         resetTapTempo()
         pendingFXEdit = false; clipFXDefaults.removeAll()

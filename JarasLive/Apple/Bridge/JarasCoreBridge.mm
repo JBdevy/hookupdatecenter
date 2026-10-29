@@ -360,6 +360,7 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
     if(p.masterSolo) result[@"masterSolo"]=@YES;
     if(p.masterColor) result[@"masterColor"]=@(*p.masterColor);
     if(p.masterAutomationJSON) result[@"masterAutomation"]=[NSJSONSerialization JSONObjectWithData:[text(*p.masterAutomationJSON) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    if(p.reductionDraftJSON) result[@"reductionDraft"]=[NSJSONSerialization JSONObjectWithData:[text(*p.reductionDraftJSON) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     if(p.resolumeJSON) result[@"resolume"]=[NSJSONSerialization JSONObjectWithData:[text(*p.resolumeJSON) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     if(p.masterFXJSON) result[@"masterFX"]=[NSJSONSerialization JSONObjectWithData:[text(*p.masterFXJSON) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     if(p.masterPatch) result[@"masterPatch"]=patchJSON(*p.masterPatch);
@@ -454,6 +455,7 @@ static Project readProject(NSDictionary* d) {
         p.masterColor=(unsigned)color;
     }
     if(d[@"masterAutomation"] && d[@"masterAutomation"]!=NSNull.null) p.masterAutomationJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(d[@"masterAutomation"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
+    if(d[@"reductionDraft"] && d[@"reductionDraft"]!=NSNull.null) p.reductionDraftJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(d[@"reductionDraft"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
     if(d[@"resolume"] && d[@"resolume"]!=NSNull.null) p.resolumeJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(d[@"resolume"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
     if(d[@"masterFX"] && d[@"masterFX"]!=NSNull.null) p.masterFXJSON=str([[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:object(d[@"masterFX"]) options:0 error:nil] encoding:NSUTF8StringEncoding]);
     if(d[@"masterPatch"] && d[@"masterPatch"] != NSNull.null) p.masterPatch=readPatch(d[@"masterPatch"]);

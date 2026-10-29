@@ -8,6 +8,26 @@ using floatingControlTests::require;
 using floatingControlTests::pump;
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("UTF8 interface literals preserve accents and punctuation before translation", [] {
+        const ScopedValueSetter<bool> language(localization::english, false);
+        const auto pt = JSON::parse(String::fromUTF8(BinaryData::Portuguese_json, BinaryData::Portuguese_jsonSize));
+        const auto en = JSON::parse(String::fromUTF8(BinaryData::English_json, BinaryData::English_jsonSize));
+        for (bool english : {false, true}) {
+            localization::english = english;
+            require(localization::translate("Salvando…") == String::fromUTF8(english ? "Saving…" : "Salvando…"),
+                    "Saving label contains broken ellipsis or failed to translate");
+            require(localization::translate("Ação inédita: São João — 🎹") == String::fromUTF8("Ação inédita: São João — 🎹"),
+                    "Uncatalogued UTF8 text was corrupted");
+            for (const auto &catalog : {pt, en}) {
+                require(catalog.getDynamicObject() != nullptr, "Missing translation catalog");
+                for (const auto &entry : catalog.getDynamicObject()->getProperties()) {
+                    for (const auto &value : {entry.name.toString(), entry.value.toString()})
+                        require(localization::translate(value.toRawUTF8()) == localization::translate(value),
+                                "Narrow UTF8 catalog text differs from decoded Unicode");
+                }
+            }
+        }
+    });
     test("REC can run with no armed tracks and missing media or effects remain nonblocking", [&] {
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture())); session.audio.setOffline(true);

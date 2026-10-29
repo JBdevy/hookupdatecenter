@@ -1,8 +1,73 @@
 #pragma once
 #include "ProjectReduction.h"
+#include "ProjectReductionPanel.h"
 #include "PortablePackage.h"
 namespace catlive::projectReductionTests {
 template<class Test,class Fixture> void run(const File &directory,Test &&test,Fixture fixture){
+ test("Reduction UTF8 Save gate displays a clean saving label in both languages",[&]{
+    const auto require=recordingCaptureTests::require;
+    const ScopedValueSetter<bool> language(localization::english,false);
+    auto project=fixture();project.songs[0].tracks.clear();
+    const auto root=directory.getNonexistentChildFile("reduction-save-label","");root.createDirectory();
+    const auto file=root.getChildFile("Save.jl");ProjectCodec::write(file,ProjectCodec::encode(project));
+    Session session;session.load(file);
+    for(bool english:{false,true}){
+        localization::english=english;session.dirty=true;
+        String error;session.saveAsync(file,[&](String failure){error=failure;});
+        require(session.isSaving(),"Save did not enter its asynchronous state");
+        ProjectReductionPanel panel(session,[](std::function<void()> callback){callback();});
+        auto *save=dynamic_cast<TextButton*>(panel.findChildWithID("reductionSave"));
+        require(save&&save->isVisible()&&!save->isEnabled(),"Save gate did not show pending persistence");
+        require(save->getButtonText()==String::fromUTF8(english?"Saving…":"Salvando…"),
+                "Reduction Save button contains corrupted characters");
+        const auto deadline=Time::getMillisecondCounterHiRes()+10000;
+        while(session.isSaving()&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        require(!session.isSaving()&&error.isEmpty(),"Save fixture failed");
+    }
+ });
+ test("Reduction draft requires a saved project and persists unchecked render work across reopen",[&]{
+    const auto require=recordingCaptureTests::require;
+    auto project=fixture();project.songs[0].tracks.clear();
+    for(const auto name:{"Voz","Base","Click"}){jaras::Track track;track.id=uuid();track.name=name;project.songs[0].tracks.push_back(track);}
+    const auto root=directory.getNonexistentChildFile("reduction-draft","");root.createDirectory();
+    const auto file=root.getChildFile("Draft.jl");ProjectCodec::write(file,ProjectCodec::encode(project));
+    Session session;session.load(file);session.dirty=true;
+    bool asked=false;
+    {
+        ProjectReductionPanel gate(session,[&](std::function<void()>){asked=true;});gate.setSize(760,206);
+        auto *save=dynamic_cast<Button*>(gate.findChildWithID("reductionSave"));
+        require(save&&save->isVisible(),"Unsaved project did not require Save before editing");
+        require(!gate.findChildWithID("reductionSources")->isVisible(),"Source selection was visible before Save");
+        save->onClick();require(asked,"Save action was not connected");
+    }
+    session.dirty=false;
+    {
+        ProjectReductionPanel panel(session,[](std::function<void()> callback){callback();});panel.setSize(760,560);
+        auto *sources=dynamic_cast<ListBox*>(panel.findChildWithID("reductionSources"));
+        auto *create=dynamic_cast<Button*>(panel.findChildWithID("reductionCreate"));
+        require(sources&&create&&sources->getModel()->getNumRows()==3,"Reduction source rows are missing");
+        sources->selectRow(0);
+        require(session.project().reductionDraftJSON.has_value(),"Checking a source did not save its draft in the project");
+        create->onClick();
+        auto *dialog=dynamic_cast<AlertWindow*>(Component::getCurrentlyModalComponent());
+        require(dialog&&dialog->getTextEditorContents("name")=="Voz","Single source did not prefill the destination name");
+        dialog->exitModalState(1);
+        floatingControlTests::pump();
+        const auto draft=JSON::parse(text(*session.project().reductionDraftJSON));
+        require(list(get(draft,"groups")).size()==1&&str(list(get(draft,"groups"))[0],"name")=="Voz","Created destination did not persist");
+        sources->selectRow(1);
+    }
+    const auto deadline=Time::getMillisecondCounterHiRes()+10000;
+    while(session.isSaving()&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+    require(!session.isSaving()&&!session.dirty,"Closing reduction did not save unfinished selections");
+    const auto saved=ProjectCodec::decode(ProjectCodec::read(file));
+    require(saved.reductionDraftJSON.has_value(),"Saved project lost the reduction draft");
+    Session reopened;reopened.load(file);
+    ProjectReductionPanel panel(reopened,[](std::function<void()> callback){callback();});panel.setSize(760,560);
+    auto *left=dynamic_cast<ListBox*>(panel.findChildWithID("reductionDestinations"));
+    auto *right=dynamic_cast<ListBox*>(panel.findChildWithID("reductionSources"));
+    require(left&&left->getModel()->getNumRows()==1&&right&&right->isRowSelected(1),"Unfinished draft did not restore after reopening the project");
+ });
  test("Reduction splits by region, keeps only chosen tracks and preserves actual gain",[&]{
     const auto root=directory.getNonexistentChildFile("reduction","");root.createDirectory();
     auto p=fixture();auto &song=p.songs[0];song.tracks.clear();song.parts.clear();song.markers.reset();song.duration=4;

@@ -1440,5 +1440,7 @@
   "Replace existing files?": "Substituir arquivos existentes?",
   "Replace": "Substituir",
   "Only six Program Change markers are allowed at the same position.": "O limite é de 6 marcadores de timbre no mesmo ponto.",
-  "Choose a MIDI output in Patch.": "Escolha uma saída MIDI no Patch."
+  "Choose a MIDI output in Patch.": "Escolha uma saída MIDI no Patch.",
+  "Re-render selected items": "Re-render dos itens selecionados",
+  "Unify selected audio items": "Unificar itens de áudio selecionados"
 }

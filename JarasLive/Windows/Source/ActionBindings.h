@@ -44,7 +44,9 @@ struct ActionDefinition {
     const char *defaultKey;
     bool track = false, continuous = false;
     bool supportsMIDI() const {
-        return String(id) != "normalizeItems" && String(id) != "createTempoMarker";
+        const String action(id);
+        return action != "normalizeItems" && action != "reRenderItems" &&
+               action != "unifyAudioItems" && action != "createTempoMarker";
     }
     bool fixedKeyboard() const { return String(id) == "setlistUp" || String(id) == "setlistDown"; }
     bool repeats() const {
@@ -98,6 +100,8 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"toggleVideo", "Video window on/off", 5, "alt + shift + V"},
         {"toggleTeleprompter", "Teleprompter window on/off", 5, "alt + shift + T"},
         {"normalizeItems", "Normalize selected items", 5, "N"},
+        {"reRenderItems", "Re-render selected items", 5, ""},
+        {"unifyAudioItems", "Unify selected audio items", 5, ""},
         {"createTempoMarker", "Create tempo marker", 5, "ctrl + shift + T"},
         {"previousProjectTab", "Previous project tab", 5, ""},
         {"nextProjectTab", "Next project tab", 5, ""},

@@ -60,6 +60,17 @@ class StreamingReader final : public AudioFormatReader {
         requested.store(jlimit(int64(0), std::max(int64(0), lengthInSamples - 1), position));
         lastDemand.store(Time::getMillisecondCounter());
     }
+    // Audio callback: reserve the nearest upcoming edit independently of the
+    // forward decoder. A trimmed half can jump far ahead in the same MP3.
+    void requestUpcoming(int64 position, double distance, uint64 block) noexcept {
+        if (offline.load(std::memory_order_relaxed)) return;
+        if (upcomingBlock != block) { upcomingBlock = block; upcomingDistance = std::numeric_limits<double>::infinity(); }
+        if (distance >= upcomingDistance) return;
+        upcomingDistance = distance;
+        upcomingPosition.store(std::max<int64>(0, position));
+        upcomingDemand.store(Time::getMillisecondCounter());
+        request(position);
+    }
     bool ready(int64 position, int count = 4096) {
         ReadAccess access(*this);
         return access.current && probeAt(*access.current, position, count);
@@ -85,12 +96,13 @@ class StreamingReader final : public AudioFormatReader {
     // Control thread only. Decode the destination independently: probing the
     // active forward reader here would evict audio still being played before
     // the seek is committed. Two slots keep a loop start pinned across seeks.
-    bool prepareTransition(int64 at, int count, bool loop = false) {
-        keepTransitionWarm(loop);
+    bool prepareTransition(int64 at, int count, bool loop = false, int reserve = -1) {
+        if (reserve >= 2 && reserve < 4) pinnedDemand[reserve] = Time::getMillisecondCounter();
+        else keepTransitionWarm(loop);
         if (loop) keepLoopReserve.store(true);
         at = std::max<int64>(0, at);
         if (at >= lengthInSamples) return true;
-        const int slot = loop ? 1 : 0;
+        const int slot = reserve >= 2 && reserve < 4 ? reserve : loop ? 1 : 0;
         // Include the zero-padded tail: the last device block can cross EOF.
         const auto wanted = int(std::max<int64>(count, int64(sampleRate)));
         const ScopedLock guard(lock);
@@ -201,10 +213,10 @@ class StreamingReader final : public AudioFormatReader {
         Pinned(int64 start, int channels, int count) : first(start), pcm(channels, count) {}
         bool contains(int64 at, int count) const { return at >= first && at - first + count <= pcm.getNumSamples(); }
     };
-    std::unique_ptr<Pinned> pinned[2];
-    std::atomic<Pinned *> publishedPinned[2]{};
+    std::unique_ptr<Pinned> pinned[4];
+    std::atomic<Pinned *> publishedPinned[4]{};
     std::atomic<bool> keepLoopReserve{false};
-    std::atomic<uint32> pinnedDemand[2]{};
+    std::atomic<uint32> pinnedDemand[4]{};
     std::vector<std::unique_ptr<Pinned>> retiredPinned;
     // Ownership is only touched under lock, outside the device callback.
     std::unique_ptr<BufferingAudioReader> reader;
@@ -232,7 +244,12 @@ class StreamingReader final : public AudioFormatReader {
         StreamingReader& owner;
         BufferingAudioReader* current = nullptr;
     };
-    std::atomic<int64> requested{-1};
+    std::atomic<int64> requested{-1}, upcomingPosition{-1};
+    std::atomic<uint32> upcomingDemand{0};
+    int64 preparedUpcomingPosition = -1; // service-thread only
+    int upcomingSlot = 3;
+    uint64 upcomingBlock = std::numeric_limits<uint64>::max(); // callback-owned
+    double upcomingDistance = std::numeric_limits<double>::infinity();
     std::atomic<uint32> lastDemand{0};
     std::atomic<bool> offline{false}, directOffline{false}, resident{false};
     uint32 lastOpenAttempt = 0;
@@ -259,6 +276,15 @@ class StreamingReader final : public AudioFormatReader {
         if (!guard.isLocked()) return;
         if (activeReads.load(std::memory_order_seq_cst) == 0) { retired.clear(); retiredPinned.clear(); }
         const auto at = requested.load();
+        const auto future = upcomingPosition.load();
+        const bool upcoming = future >= 0 && uint32(Time::getMillisecondCounter() - upcomingDemand.load()) < 2000;
+        if (!upcoming) {
+            for (int slot=2; slot<4; ++slot) {
+                publishedPinned[slot].store(nullptr, std::memory_order_seq_cst);
+                if (pinned[slot]) retiredPinned.push_back(std::move(pinned[slot]));
+            }
+            preparedUpcomingPosition = -1;
+        }
         if (at < 0 || uint32(Time::getMillisecondCounter() - lastDemand.load()) > 2000) {
             if(uint32(Time::getMillisecondCounter()-pinnedDemand[0].load())>2000) {
                 if (!keepLoopReserve.load()) transitionDecoder.reset();
@@ -283,6 +309,15 @@ class StreamingReader final : public AudioFormatReader {
             lastOpenAttempt = now;
             ensureReader();
             if (reader) probeAt(*reader, at);
+        }
+        if (upcoming) {
+            // The previous onset is now audible. Keep it pinned while preparing
+            // the following cut, until the forward decoder catches up.
+            if (future != preparedUpcomingPosition) {
+                upcomingSlot = upcomingSlot == 2 ? 3 : 2;
+                preparedUpcomingPosition = future;
+            }
+            prepareTransition(future, 4096, false, upcomingSlot);
         }
     }
 };

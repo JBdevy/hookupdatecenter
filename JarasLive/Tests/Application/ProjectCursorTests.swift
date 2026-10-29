@@ -616,6 +616,10 @@ final class ProjectCursorTests: XCTestCase {
         let executor = CursorExecutor()
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: .empty(name: "Window actions"))
         show.performAction(.normalizeItems); XCTAssertEqual(show.normalizeItemsRequest, 1)
+        show.performAction(.reRenderItems); XCTAssertEqual(show.itemProcessingRequest?.action, .reRenderItems)
+        let firstRequest = show.itemProcessingRequest?.id
+        show.performAction(.reRenderItems); XCTAssertNotEqual(show.itemProcessingRequest?.id, firstRequest)
+        show.performAction(.unifyAudioItems); XCTAssertEqual(show.itemProcessingRequest?.action, .unifyAudioItems)
         show.performAction(.createTempoMarker); XCTAssertEqual(show.tempoMarkerRequest, 1)
         var videoVisible = false, teleprompterVisible = false, tracksVisible = true, setlistVisible = true, barVisible = false, audioUpdates = 0
         show.toggleVideoWindow = { videoVisible.toggle() }

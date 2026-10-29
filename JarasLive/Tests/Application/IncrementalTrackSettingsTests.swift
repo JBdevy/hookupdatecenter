@@ -902,9 +902,21 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         let project = fixture(), (show, executor) = try show(project)
         let clips = project.songs[0].tracks[1].clips
         let ids = Set(clips.map(\.id))
+        for mode in [1, 2, 3, 4] {
+            let fullEdits = executor.fullEdits, reads = executor.snapshotReads
+            XCTAssertTrue(show.convertItems(ids, mode: mode))
+            XCTAssertEqual(executor.fullEdits, fullEdits); XCTAssertEqual(executor.snapshotReads, reads)
+            XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == mode })
+            XCTAssertEqual(show.current!.tracks[0], project.songs[0].tracks[0], "Unselected tracks must not be converted")
+            show.undo(); XCTAssertEqual(show.snapshot.project, project)
+            show.redo(); XCTAssertTrue(show.current!.tracks[1].clips.allSatisfy { $0.channelMode == mode })
+            XCTAssertTrue(show.convertItems(ids, mode: 0))
+            XCTAssertEqual(show.current!.tracks[1].clips, clips)
+        }
+        let fullEdits = executor.fullEdits, reads = executor.snapshotReads
         XCTAssertTrue(show.convertItems(ids, mode: 3))
-        XCTAssertEqual(executor.fullEdits, 0)
-        XCTAssertEqual(executor.snapshotReads, 0)
+        XCTAssertEqual(executor.fullEdits, fullEdits)
+        XCTAssertEqual(executor.snapshotReads, reads)
         var converted = show.current!.tracks[1].clips
         XCTAssertTrue(converted.allSatisfy { $0.channelMode == 3 })
         for index in converted.indices { converted[index].channelMode = nil }

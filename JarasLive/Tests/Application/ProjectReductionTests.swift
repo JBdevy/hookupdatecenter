@@ -1,6 +1,27 @@
 import XCTest
 @testable import JarasApplication
 final class ProjectReductionTests: XCTestCase {
+    func testUnfinishedDraftSurvivesProjectSaveAndReorder() throws {
+        var project = Project.empty(name: "Draft")
+        let a = Track(id: UUID(), name: "Voz", role: .other)
+        let b = Track(id: UUID(), name: "Base", role: .other)
+        let c = Track(id: UUID(), name: "Click", role: .other)
+        project.songs[0].tracks = [a,b,c]
+        var groups = [ProjectReductionTrack(name: "Voz", sources: [a.id]), ProjectReductionTrack(name: "Base", sources: [b.id])]
+        let first = groups[0].id
+        ProjectReduction.move(first, to: 2, in: &groups)
+        XCTAssertEqual(groups.map(\.name), ["Base", "Voz"])
+        groups[1].name = "Voz principal"
+        let draft = ProjectReduction.Draft(groups: groups, checked: [c.id])
+        project.reductionDraft = try draft.encoded()
+        let restored = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project))
+        XCTAssertEqual(ProjectReduction.Draft.read(from: restored), draft)
+        XCTAssertEqual(ProjectReduction.Draft.read(from: restored)?.cleaned(for: restored), draft)
+        let selected = ProjectReduction.Draft(groups: groups, checked: [c.id], selected: first).cleaned(for: project)
+        XCTAssertEqual(selected.checked, [a.id])
+        project.songs[0].tracks.removeAll { $0.id == a.id }
+        XCTAssertTrue(selected.cleaned(for: project).checked.isEmpty)
+    }
     func testVerticalOverlapKeepsTouchingItemsAndGapsSeparate() {
         var a = Track(id: UUID(), name: "A", role: .other)
         var b = Track(id: UUID(), name: "B", role: .other)

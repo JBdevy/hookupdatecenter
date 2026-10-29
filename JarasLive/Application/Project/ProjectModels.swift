@@ -539,6 +539,8 @@ public indirect enum PortableProjectJSON: Codable, Equatable, Sendable {
 }
 
 public struct Project: Codable, Identifiable, Equatable, Sendable {
+    /// Unfinished Reduce Project choices travel with the saved document.
+    public var reductionDraft: PortableProjectJSON? = nil
     /// Permanent identity shared by copies used for redundant playback. Assigned by Save.
     public var projectSyncID: UUID? = nil
     /// Protect timeline positions and boundaries; nil keeps older projects unlocked.

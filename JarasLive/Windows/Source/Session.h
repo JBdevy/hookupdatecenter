@@ -54,6 +54,8 @@ class Session final : private Timer {
     void saveAsync(const File &, std::function<void(String)> completed = {});
     bool isSaving() const { return activeSave != nullptr; }
     void waitForSave(std::function<void(String)> completed);
+    void setReductionDraft(const var &);
+    void saveReductionDraft();
     void renameProject(String);
     void cleanTimelineMedia(std::function<void(String)> completed);
     jaras::projectSync::Frame projectSyncFrame() { syncClock(); return core.projectSyncFrame(); }

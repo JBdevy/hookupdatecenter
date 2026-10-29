@@ -1893,3 +1893,7 @@
 "%lld days remaining — Free trial" = "%lld dias restantes — Teste grátis";
 
 "Free trial ended" = "Teste grátis encerrado";
+
+"System default" = "Padrão do sistema";
+"Re-render selected items" = "Re-render dos itens selecionados";
+"Unify selected audio items" = "Unificar itens de áudio selecionados";

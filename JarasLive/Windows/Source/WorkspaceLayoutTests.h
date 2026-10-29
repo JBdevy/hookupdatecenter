@@ -223,11 +223,32 @@ struct WorkspaceLayoutTests {
                 mediaImportTests::require(session.message.isEmpty(),"Item menu action failed: "+session.message);
             };
             if(!midi){
-                choose(clicked,24);
-                for(const auto &track:session.song()->tracks)for(const auto &clip:track.clips)require(clip.channelMode.value_or(0)==(selected.count(clip.id)?4:0),"Swap LR did not apply exactly to the selection");
-                session.undo();require(JSON::toString(session.snapshot())==before,"Swap LR Undo changed other item data");
+                for(int mode:{1,2,3,4,0}){
+                    if(mode==0)choose(clicked,21);
+                    const auto previous=JSON::toString(session.snapshot());
+                    choose(clicked,20+mode);
+                    for(const auto &track:session.song()->tracks)for(const auto &clip:track.clips)
+                        require(clip.channelMode.value_or(0)==(selected.count(clip.id)?mode:0),"Channel conversion skipped selection or changed an unselected item");
+                    session.undo();require(JSON::toString(session.snapshot())==previous,"Channel conversion Undo changed other item data");
+                    if(mode==0)session.undo();
+                }
+                w.performAction("normalizeItems",1,0);
+                auto *level=dynamic_cast<TextEditor*>(uiFeatureTests::find(w,"normalizationTarget"));
+                auto *apply=dynamic_cast<Button*>(uiFeatureTests::find(w,"normalizationApply"));
+                require(level&&apply,"Normalize Action did not open the selected-item panel");
+                level->setText("-6");apply->onClick();
+                const auto deadline=Time::getMillisecondCounterHiRes()+10000;
+                while(!session.song()->tracks[1].clips[1].normalizationGain&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+                for(const auto &track:session.song()->tracks)for(const auto &clip:track.clips)
+                    require(clip.normalizationGain.has_value()==(selected.count(clip.id)>0),"Normalize Action did not process exactly the full selection");
+                ModalSheet::dismiss(w);floatingControlTests::pump();session.undo();
+                require(JSON::toString(session.snapshot())==before,"Normalize Action was not one Undo");
+                w.performAction("reRenderItems",1,0);mediaImportTests::wait(session,60000);floatingControlTests::pump();
+                require(session.message.isEmpty()&&w.selectedClips.size()==selected.size(),"Re-render Action skipped selected audio items");
+                session.undo();require(JSON::toString(session.snapshot())==before,"Re-render Action was not one Undo");
+                w.selectedClips=selected;w.selectedClip=clicked;
             }
-            choose(clicked,14);
+            w.performAction("unifyAudioItems",1,0);mediaImportTests::wait(session,60000);floatingControlTests::pump();
             require(w.selectedClips.size()==2,"Unify did not select one resulting item per track");
             for(int ti=0;ti<2;++ti){const auto &track=session.song()->tracks[(size_t)ti];require(track.clips.size()==2,"Unify processed only the right-clicked item or removed unrelated items");
                 const auto &clip=track.clips.front();require(clip.startTime==0&&clip.duration==3&&w.selectedClips.count(clip.id),"Unified range or result selection is wrong");
@@ -726,7 +747,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Workspace divider margins match Mac without shrinking track controls",[&]{WorkspaceLayoutTests::dividerMargins(directory);});
     test("Track icon column extends the mixer without moving group or child controls; hiding and removal restore width",[&]{WorkspaceLayoutTests::trackIconWidth(directory);});
     test("Deleting another recent project during playback preserves the current dirty project and audio clock",[&]{WorkspaceLayoutTests::deleteRecentWhilePlaying(directory);});
-    test("Item context unifies the full selection per track with audio, MIDI, result selection and Undo; LR swap preserves unselected items",[&]{WorkspaceLayoutTests::unifyItems(directory);});
+    test("Item context and Actions process full audio selections with channel conversion, Re-render, Normalize, Unify and Undo",[&]{WorkspaceLayoutTests::unifyItems(directory);});
     test("Generated MIDI and text items advance edit cursor without seeking playback",[&]{WorkspaceLayoutTests::generatedItems(directory);});
     test("Setlist transport gestures retain grid geometry and avoid workspace rebuilds",[&]{WorkspaceLayoutTests::setlistResponsiveness(directory);});
     test("Tuner gestures retain the project and audio graph while playing and stopped",[&]{WorkspaceLayoutTests::pitchResponsiveness(directory);});

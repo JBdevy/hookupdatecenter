@@ -191,14 +191,14 @@ class ClipAudio {
         int done = 0;
         while (done < count) {
             const double now = local + done / sampleRate;
-            if (now >= duration) {
-                output.clear(target + done, count - done);
-                break;
-            }
+            // The audible interval is clipped by mixVoice. Spectral lookahead
+            // must keep reading the original source beyond the edit boundary;
+            // padding at the cut makes the last FFT window fade to silence.
             const auto *span = timing ? timing->at(start + now) : nullptr;
             const double rate = span ? span->rate : speed;
             const double step = reader.sampleRate / sampleRate * rate;
-            const double boundary = span ? std::min(duration, span->end - start) : duration;
+            const double boundary = span && span != &timing->spans.back()
+                ? span->end - start : std::numeric_limits<double>::infinity();
             const int limit = std::min(512, count - done);
             const int capacity = (int)jlimit(1., double(limit),
                                              std::floor((scratch.getNumSamples() - 2) / step));

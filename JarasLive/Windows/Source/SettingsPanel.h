@@ -315,6 +315,7 @@ class SettingsPanel final : public Component, private Timer {
     }
     void saveAudio() {
         if (auto xml = session.audio.devices.createStateXml()) {
+            session.audio.systemDefaults.write(*xml);
             auto file = auth.dataDirectory().getChildFile("audio-device.xml");
             file.getParentDirectory().createDirectory();
             if (!xml->writeTo(file))
@@ -460,8 +461,10 @@ class SettingsPanel final : public Component, private Timer {
                [this, types](int id) {
                    if (audioConfigurationLocked())
                        return;
+                   session.audio.systemDefaults.input = session.audio.systemDefaults.output = false;
                    session.audio.devices.setCurrentAudioDeviceType(types[id - 1], true);
-                   saveAudio();
+                   const auto opened = session.audio.openDevice();
+                   if (opened.isNotEmpty()) error(opened); else saveAudio();
                    refreshLater();
                })
             .setEnabled(!audioConfigurationLocked());
@@ -478,32 +481,42 @@ class SettingsPanel final : public Component, private Timer {
         // Hardware enumeration belongs to the explicit refresh action; rescanning
         // every page rebuild can stall device notifications during playback.
         auto inputNames = type->getDeviceNames(true), outputNames = type->getDeviceNames(false);
+        const bool offersDefault = session.audio.systemDefaults.supported();
+        if (offersDefault) {
+            const auto title = localization::english ? String("System default") : String::fromUTF8("Padrão do sistema");
+            inputNames.insert(0, title); outputNames.insert(0, title);
+        }
         inputNames.insert(0, "None");
         outputNames.insert(0, "None");
         const bool loopback = manager.getCurrentAudioDeviceType() == "Windows Audio (Loopback)";
         label(String::fromUTF8(loopback ? "Capturar áudio da saída do Windows" : "Dispositivo de áudio — Entrada"), 172, 26, true);
         choice("Entrada", inputNames,
-               setup.inputDeviceName.isEmpty() ? 1 : inputNames.indexOf(setup.inputDeviceName) + 1,
+               offersDefault && session.audio.systemDefaults.input ? 2 : setup.inputDeviceName.isEmpty() ? 1 : inputNames.indexOf(setup.inputDeviceName) + 1,
                290, 210, 290,
-               [this, inputNames](int id) {
-                   applyAudio([id, inputNames](auto &s) {
-                       s.inputDeviceName = id == 1 ? String() : inputNames[id - 1];
+               [this, inputNames, offersDefault](int id) {
+                   session.audio.systemDefaults.input = offersDefault && id == 2;
+                   const auto name = session.audio.systemDefaults.input ? session.audio.systemDefaults.deviceName(true) : id == 1 ? String() : inputNames[id - 1];
+                   applyAudio([name](auto &s) {
+                       s.inputDeviceName = name;
                        s.useDefaultInputChannels = false;
                        s.inputChannels.clear();
-                       if (id != 1)
-                           s.inputChannels.setRange(0, 2, true);
+                       if (name.isNotEmpty())
+                           s.inputChannels.setBit(0);
                    });
                })
             .setEnabled(!audioConfigurationLocked());
         label(String::fromUTF8("Dispositivo de áudio — Saída"), 256, 26, true);
         choice(String::fromUTF8("Saída"), outputNames,
-               setup.outputDeviceName.isEmpty() ? 1
+               offersDefault && session.audio.systemDefaults.output ? 2 : setup.outputDeviceName.isEmpty() ? 1
                                                 : outputNames.indexOf(setup.outputDeviceName) + 1,
                290, 294, 290,
-               [this, outputNames](int id) {
-                   applyAudio([id, outputNames](auto &s) {
-                       s.outputDeviceName = id == 1 ? String() : outputNames[id - 1];
-                       s.useDefaultOutputChannels = true;
+               [this, outputNames, offersDefault](int id) {
+                   session.audio.systemDefaults.output = offersDefault && id == 2;
+                   const auto name = session.audio.systemDefaults.output ? session.audio.systemDefaults.deviceName(false) : id == 1 ? String() : outputNames[id - 1];
+                   applyAudio([name](auto &s) {
+                       s.outputDeviceName = name;
+                       s.useDefaultOutputChannels = false; s.outputChannels.clear();
+                       if (name.isNotEmpty()) s.outputChannels.setBit(0);
                    });
                })
             .setEnabled(!audioConfigurationLocked());

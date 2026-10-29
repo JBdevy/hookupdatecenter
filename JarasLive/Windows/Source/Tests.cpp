@@ -1,3 +1,4 @@
+#include "SystemAudioDefaultsTests.h"
 #include "ItemLayout.h"
 #include "native_video_decoder.h"
 #include <charconv>
@@ -17,6 +18,7 @@
 #include "LightingRegionTests.h"
 #include "ClipEditing.h"
 #include "Normalization.h"
+#include "AudioDeviceChannels.h"
 #include "MIDIEditing.h"
 #include "MediaCleanup.h"
 #include "RemoteCipher.h"
@@ -1269,6 +1271,7 @@ int runTests(const File &directory) {
         session.command(jaras::CommandKind::play);AudioBuffer<float> output(2,480);session.audio.render(output.getArrayOfWritePointers(),2,480);
         expect(std::abs(output.getSample(0,100)-.1f)<.004f,"Restored region has no audio");session.command(jaras::CommandKind::stopAll);
     });
+    test("Continuous cut boundaries preserve realtime audio at original and stretched rates", [&] { splitPlaybackTests::continuousCutsRealtime(directory); });
     test("Streaming split glue Undo preserves both halves", [&] { splitPlaybackTests::glueUndoRealtime(directory); });
     test("Split glue Undo restores audible audio on both sides of the cut", [&] {
         Session session;session.inspection=true;session.mediaDirectory=itemDeletionAudio();
@@ -1497,6 +1500,20 @@ int runTests(const File &directory) {
         const auto before=session.transport();session.core.advance(2.1);session.reconcileSetlistSelectionAfterAdvance(before);
         expect(!session.transport().playing && session.transport().regionId==ID("second") && std::abs(session.transport().position-2)<.001,"Finished playback did not prepare browsed song");
         session.command(jaras::CommandKind::play);expect(session.transport().regionId==ID("second"),"Play ignored prepared song");session.command(jaras::CommandKind::stop);
+    });
+    test("Setlist arrows move the cursor only after navigation rests", [&] {
+        auto p=projectFixture();auto &song=p.songs[0];song.tracks.clear();song.markers.reset();p.savedCursor.reset();
+        song.parts={{"first","First",0,2},{"second","Second",2,4},{"third","Third",4,6}};song.duration=6;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(p));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("rested-setlist",".json"));workspace.setSize(1366,768);
+        session.command(jaras::CommandKind::selectRegion,"first");
+        workspace.keyPressed(KeyPress(KeyPress::downKey));workspace.keyStateChanged(false);
+        expect(session.focusedRegion==ID("second")&&session.transport().position==0,"Arrow sought before navigation rested");
+        workspace.keyPressed(KeyPress(KeyPress::downKey));workspace.keyStateChanged(false);
+        expect(session.focusedRegion==ID("third")&&session.transport().position==0,"Rapid navigation sought an intermediate song");
+        const auto deadline=Time::getMillisecondCounterHiRes()+1000;
+        while(session.transport().position==0&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        expect(std::abs(session.transport().position-4)<.001,"Rested navigation did not prepare the final song");
     });
     test("Finished song clears only its own setlist selection", [&] {
         auto p=projectFixture();auto &song=p.songs[0];
@@ -3474,17 +3491,18 @@ int runTests(const File &directory) {
             expect(std::abs(measured-(gains[0]+gains[1]+gains[2]))<.01,
                    "Track/group/master faders must apply the displayed dB to rendered audio");
         }
-        {
+        for(int channelMode:{0,1,2,3,4}) {
+            const auto expected=std::array<std::array<double,2>,5>{{{.1,.2},{.1,.1},{.2,.2},{.15,.15},{.2,.1}}}[(size_t)channelMode];
             auto p=projectFixture();auto &song=p.songs[0];song.duration=1;song.parts.clear();song.markers.reset();p.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
             auto &track=song.tracks[0];track.volume=1;track.pan=0;track.phaseInverted=false;track.fxJSON.reset();track.automationJSON.reset();track.patch=jaras::OutputPatch{1,2};track.outputs.reset();
-            jaras::AudioClip clip;clip.id=uuid();clip.duration=1;clip.audioFile=jaras::AudioFile{"signal.wav",{}};clip.channelMode=4;track.clips={clip};
-            jaras::validate(p);auto decoded=ProjectCodec::decode(ProjectCodec::encode(p));expect(decoded.songs[0].tracks[0].clips[0].channelMode==4,"Swap LR did not survive project roundtrip");
+            jaras::AudioClip clip;clip.id=uuid();clip.duration=1;clip.audioFile=jaras::AudioFile{"signal.wav",{}};clip.channelMode=channelMode;track.clips={clip};
+            jaras::validate(p);auto decoded=ProjectCodec::decode(ProjectCodec::encode(p));expect(decoded.songs[0].tracks[0].clips[0].channelMode==channelMode,"Channel mode did not survive project roundtrip");
             auto engine=std::make_unique<AudioEngine>();engine->prepareOffline(48000);engine->prepareSong(song,folder,{},&p);engine->setOffline(true);engine->setMixer(p,song);
             AudioBuffer<float> output(2,512);AudioEngine::State state;state.playing=true;state.position=.25;engine->transport(state);engine->render(output.getArrayOfWritePointers(),2,512);
-            expect(std::abs(output.getSample(0,100)-.2)<.0001&&std::abs(output.getSample(1,100)-.1)<.0001,"Swap LR did not exchange actual playback samples");
+            expect(std::abs(output.getSample(0,100)-expected[0])<.0001&&std::abs(output.getSample(1,100)-expected[1])<.0001,"L/R/Mix/Stereo conversion changed the wrong playback channel");
             std::atomic<bool> cancel{false};auto rendered=itemRender::render(p,song,folder,{clip.id},false,0,cancel,{});
             AudioFormatManager formats;registerAudioFormats(formats);std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(rendered[0].generated));expect(reader!=nullptr,"Cannot read swapped output");AudioBuffer<float> printed(2,512);reader->read(&printed,0,512,12000,true,true);
-            expect(std::abs(printed.getSample(0,100)-.2)<.0001&&std::abs(printed.getSample(1,100)-.1)<.0001,"Re-render/export did not bake LR swap");
+            expect(std::abs(printed.getSample(0,100)-expected[0])<.0001&&std::abs(printed.getSample(1,100)-expected[1])<.0001,"Re-render/export did not bake the channel conversion");
         }
     });
     test("WASAPI-independent stereo render, mixer, Sub Play, seek and sample loop", [&] {
@@ -4556,6 +4574,24 @@ int runTests(const File &directory) {
         }
         expect(running.blocks.load()>10&&running.finite.load()&&session.audio.state().playing,"Live FX stalled crashed or emitted nonfinite samples");
     });
+    test("System defaults follow endpoint changes across project tabs and preserve explicit choices and recording", [&] { systemAudioDefaultsTests::run(); });
+    test("Audio device configuration enables all hardware channels without changing rate buffer or disabled inputs", [&] {
+        AudioDeviceManager::AudioDeviceSetup setup;
+        setup.outputDeviceName="Focusrite USB ASIO";setup.sampleRate=44100;setup.bufferSize=512;
+        setup.outputChannels.setRange(0,2,true);
+        audioDeviceChannels::enableAvailable(setup,18,8);
+        expect(setup.outputChannels.countNumberOfSetBits()==8 && setup.outputChannels[7],"Output stayed limited to the stereo startup mask");
+        expect(setup.inputChannels.isZero(),"Disabled inputs were enabled unexpectedly");
+        expect(!setup.useDefaultOutputChannels && !setup.useDefaultInputChannels,"DeviceManager can reset physical channels to stereo defaults");
+        expect(setup.sampleRate==44100 && setup.bufferSize==512,"Channel activation changed device timing");
+        setup.inputDeviceName="Focusrite USB ASIO";
+        audioDeviceChannels::enableAvailable(setup,18,8);
+        expect(setup.inputChannels.countNumberOfSetBits()==18 && setup.inputChannels[17],"Inputs stayed limited to a stereo pair");
+        audioDeviceChannels::enableAvailable(setup,2,2);
+        expect(setup.outputChannels.countNumberOfSetBits()==2 && !setup.outputChannels[7],"Switching to stereo retained unavailable channels");
+        setup.outputDeviceName.clear();audioDeviceChannels::enableAvailable(setup,2,8);
+        expect(setup.outputChannels.isZero(),"Disabled output was enabled unexpectedly");
+    });
     test("Physical channel gaps preserve inputs nested groups and direct hardware outputs", [&] {
         AudioEngine engine;engine.prepareOffline(48000);engine.instrumentAllowed=true;
         jaras::Project project;project.masterMute=true;
@@ -4848,12 +4884,18 @@ int runTests(const File &directory) {
         bindings.begin("playStop", "keyboard");
         expect(bindings.captureKey(KeyPress(KeyPress::escapeKey)) && bindings.learning.isEmpty(),
                "Escape did not cancel learning");
+        expect(bindings.assign("reRenderItems", "keyboard", "F9") && bindings.assign("unifyAudioItems", "keyboard", "F10"),
+               "Audio processing shortcuts could not be mapped");
+        expect(!bindings.assign("reRenderItems", "midi", midiInput) && !bindings.assign("unifyAudioItems", "midi", midiInput),
+               "Keyboard-only audio processing accepted MIDI");
         Appearance reloaded(file);
         ActionBindings restored(reloaded, devices);
         restored.invoke = [&](const String &id, float, int) { invoked = id; };
         invoked.clear();
         expect(restored.key(KeyPress(KeyPress::F8Key)) && invoked == "muteTrack",
                "Mapping was lost on restart");
+        expect(restored.key(KeyPress(KeyPress::F9Key)) && invoked == "reRenderItems", "Re-render shortcut did not survive restart");
+        expect(restored.key(KeyPress(KeyPress::F10Key)) && invoked == "unifyAudioItems", "Unify audio shortcut did not survive restart");
         expect(restored.assign("muteTrack", "keyboard", {}), "Unbinding failed");
         invoked.clear();
         restored.key(KeyPress('M'));

@@ -1859,3 +1859,7 @@
 "%lld days remaining — Free trial" = "%lld days remaining — Free trial";
 
 "Free trial ended" = "Free trial ended";
+
+"System default" = "System default";
+"Re-render selected items" = "Re-render selected items";
+"Unify selected audio items" = "Unify selected audio items";

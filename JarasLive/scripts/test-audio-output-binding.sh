@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 source = Path('Apple/Shared/AudioDeviceSettings.swift').read_text()
-names = ['permitConfigurationChange', 'selectInput', 'select', 'bindOutput',
+names = ['permitConfigurationChange', 'selectInput', 'bindInput', 'select', 'bindOutput', 'systemDefaultDevice', 'refreshSystemDefaults',
          'suspendOutput', 'outputDeviceDidChange', 'validateOutputBinding',
          'outputIsBound', 'requireSelectedOutput', 'applyBuffer']
 methods = []
@@ -44,6 +44,9 @@ startup_source = Path('Apple/Shared/StemAudioPlayback.swift').read_text()
 startup_start = startup_source.index('    private func startEngineIfNeeded()')
 startup_end = startup_source.index('    private func prepareDevice()', startup_start)
 startup = startup_source[startup_start:startup_end].replace('private func ', 'func ')
+route_start = startup_source.index('    private func requireSelectedOutput()')
+route_end = startup_source.index('    #endif', route_start)
+startup += startup_source[route_start:route_end].replace('private func ', 'func ')
 license_start = startup_source.index('    func setLicenseAllowed(')
 license_end = startup_source.index('    // An independent silent source', license_start)
 startup += startup_source[license_start:license_end]

@@ -167,12 +167,13 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         auto selection = selectedClips;
         if (selection.empty() && !selectedClip.empty()) selection.insert(selectedClip);
         session.splitClips(selection, session.transport().editPosition);
-    } else if (action == "normalizeItems") {
-        if (selectedClip.empty())
-            return;
-        ModalSheet::open(*this, "Normalizar",
-                         std::make_unique<NormalizationPanel>(session, appearance, selectedClip),
-                         360, 230);
+    } else if (action == "normalizeItems" || action == "reRenderItems" || action == "unifyAudioItems") {
+        auto anchor = selectedClip;
+        if (!selectedClips.empty() && !selectedClips.count(anchor)) anchor = *selectedClips.begin();
+        if (anchor.empty() || session.busy) return;
+        // Reuse the menu callback so keyboard and mouse share the full selection,
+        // progress, cancellation and single-transaction Undo behavior.
+        clipMenuAction(anchor)(action == "normalizeItems" ? 11 : action == "reRenderItems" ? 13 : 14);
     } else if (action == "createTempoMarker") {
         editTempoMarker({},session.transport().editPosition);
     }

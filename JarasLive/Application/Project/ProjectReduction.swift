@@ -7,6 +7,41 @@ public struct ProjectReductionTrack: Identifiable, Codable, Equatable, Sendable 
     public init(name: String, sources: Set<UUID>) { self.name = name; self.sources = sources }
 }
 public enum ProjectReduction {
+    public struct Draft: Codable, Equatable, Sendable {
+        public var groups: [ProjectReductionTrack] = []
+        public var checked: Set<UUID> = []
+        public var selected: UUID?
+        public init(groups: [ProjectReductionTrack] = [], checked: Set<UUID> = [], selected: UUID? = nil) {
+            self.groups = groups; self.checked = checked; self.selected = selected
+        }
+        public func encoded() throws -> PortableProjectJSON {
+            try JSONDecoder().decode(PortableProjectJSON.self, from: JSONEncoder().encode(self))
+        }
+        public static func read(from project: Project) -> Self? {
+            guard let value = project.reductionDraft, let data = try? JSONEncoder().encode(value) else { return nil }
+            return try? JSONDecoder().decode(Self.self, from: data)
+        }
+        public func cleaned(for project: Project) -> Self {
+            let available = Set(ProjectReduction.sourceTracks(in: project).map(\.id))
+            var result = self, used = Set<UUID>(), groupIDs = Set<UUID>()
+            result.groups = groups.compactMap { group in
+                guard groupIDs.insert(group.id).inserted else { return nil }
+                var copy = group
+                copy.sources.formIntersection(available.subtracting(used)); used.formUnion(copy.sources)
+                return copy
+            }
+            if let group = result.groups.first(where: { $0.id == selected }) { result.checked = group.sources }
+            else { result.selected = nil; result.checked.formIntersection(available.subtracting(used)) }
+            return result
+        }
+    }
+    public static func move(_ id: UUID, to offset: Int, in groups: inout [ProjectReductionTrack]) {
+        guard let from = groups.firstIndex(where: { $0.id == id }) else { return }
+        let boundary = max(0, min(offset, groups.count))
+        let to = boundary - (from < boundary ? 1 : 0)
+        guard to != from else { return }
+        let moved = groups.remove(at: from); groups.insert(moved, at: to)
+    }
     public struct Span: Equatable, Sendable { public var start: Double; public var end: Double }
     public static func sourceTracks(in project: Project) -> [Track] {
         let parents = Set(project.songs.flatMap(\.tracks).compactMap(\.parentTrackID))

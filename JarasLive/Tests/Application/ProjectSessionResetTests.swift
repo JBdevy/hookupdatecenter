@@ -110,6 +110,7 @@ final class ProjectSessionResetTests: XCTestCase {
             show.sendMixerControl(.pan, target: tracks[0].id, value: 0.4, preview: true)
             show.performAction(.setlistDown)
             show.performAction(.splitItems); show.performAction(.normalizeItems)
+            show.performAction(.reRenderItems)
             show.performAction(.createTempoMarker); show.performAction(.addTrack)
             show.detectBPMRegion = region; show.detectBPMRegions = [region]
             show.modalNotice = "Old modal"
@@ -127,6 +128,7 @@ final class ProjectSessionResetTests: XCTestCase {
             XCTAssertNil(show.modalNotice); XCTAssertFalse(show.subCursorPreview)
             XCTAssertNil(show.selectedTimelineRegion); XCTAssertFalse(show.timelineFollowPaused)
             XCTAssertEqual(show.splitItemsRequest, 0); XCTAssertEqual(show.normalizeItemsRequest, 0)
+            XCTAssertNil(show.itemProcessingRequest)
             XCTAssertEqual(show.tempoMarkerRequest, 0); XCTAssertEqual(show.addTrackRequest, 0)
             show.sendMixerControl(.volume, target: tracks[0].id, value: 0.4)
             XCTAssertEqual(show.current?.tracks[0].volume, 0.4)

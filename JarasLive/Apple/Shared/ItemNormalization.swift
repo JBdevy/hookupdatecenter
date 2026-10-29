@@ -20,7 +20,7 @@ enum NormalizationTargetPreferences {
 enum ItemNormalization {
     /// Read bounded chunks on a worker. Analyse the item's source interval,
     /// independent of transport and mixer effects. Never rewrite the source.
-    static func measure(_ clip: AudioClip, directory: URL, mode: NormalizationMode) throws -> Double {
+    static func measure(_ clip: AudioClip, directory: URL, mode: NormalizationMode, progress: (Double) -> Void = { _ in }) throws -> Double {
         guard let source = clip.audioFile else { throw ProjectError.invalid("Item has no audio file.") }
         let file = try AVAudioFile(forReading: directory.appendingPathComponent(source.path))
         let rate = file.processingFormat.sampleRate, channels = Int(file.processingFormat.channelCount)
@@ -39,6 +39,8 @@ enum ItemNormalization {
         file.framePosition = first
         var interleaved = [Float](repeating: 0, count: 16384 * channels)
         var squareSum = 0.0, frames = 0
+        var lastProgress = -1.0
+        progress(0)
         while frames < wanted {
             try Task.checkCancellation()
             if looping && file.framePosition >= loopEnd { file.framePosition = loopFirst }
@@ -55,6 +57,8 @@ enum ItemNormalization {
                 throw ProjectError.invalid("Could not measure audio level.")
             }
             frames += count
+            let fraction = Double(frames) / Double(wanted)
+            if fraction >= 1 || fraction-lastProgress >= 0.005 { progress(fraction); lastProgress = fraction }
         }
         switch mode {
         case .rms: return 10 * log10(max(1e-20, squareSum / Double(max(1, frames * channels))))
@@ -100,32 +104,37 @@ struct ItemNormalizationEditor: View {
     @State private var invalid = false
     @State private var shake = 0.0
     @State private var progress = ""
+    @State private var fraction = 0.0
+    @State private var progressJob: UUID?
     @State private var error = ""
     @State private var worker: Task<Void, Never>?
     private func finish() { if let close { close() } else { dismiss() } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Normalize").font(.jarasHeadline)
-            Picker("Mode", selection: $mode) { ForEach(NormalizationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+            Picker("Mode", selection: $mode) { ForEach(NormalizationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.disabled(worker != nil)
             HStack {
                 Text("Target")
                 TextField("dB", text: $target).textFieldStyle(.roundedBorder).onSubmit(apply)
                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(invalid ? Color.red : .clear))
-                    .modifier(NormalizeShake(value: shake))
+                    .modifier(NormalizeShake(value: shake)).disabled(worker != nil)
                 Text(mode == .lufs ? "LUFS" : mode == .truePeak ? "dBTP" : "dB")
             }
             Text("Independent normalization gain: up to +24 dB").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
-            if !progress.isEmpty { HStack { ProgressView().controlSize(.small); Text(progress).font(.jarasCaption).lineLimit(1) } }
+            if !progress.isEmpty {
+                HStack { ProgressView(value: fraction).tint(JarasTheme.green); Text("\(Int(fraction * 100))%").monospacedDigit().frame(width: 44) }
+                Text(progress).font(.jarasCaption).lineLimit(1)
+            }
             if !error.isEmpty { Text(error).foregroundStyle(.red).font(.jarasCaption) }
             HStack {
-                Button("Cancel") { worker?.cancel(); finish() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { progressJob = nil; worker?.cancel(); finish() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Normalize", action: apply).keyboardShortcut(.defaultAction).disabled(worker != nil)
             }
         }.padding(22).frame(width: 360).background(JarasTheme.panel)
             .onAppear { restoreTarget() }
             .onChange(of: mode) { _ in restoreTarget() }
-            .onDisappear { worker?.cancel() }
+            .onDisappear { progressJob = nil; worker?.cancel() }
     }
     private func restoreTarget() {
         target = NormalizationTargetPreferences.formatted(NormalizationTargetPreferences.target(for: mode))
@@ -145,13 +154,20 @@ struct ItemNormalizationEditor: View {
         let project = show.snapshot.project.id
         let clips = show.snapshot.project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.flatMap(\.clips).filter { items.contains($0.id) && $0.audioFile != nil }
         guard !clips.isEmpty else { error = "No audio items selected."; return }
-        let selectedMode = mode
+        let selectedMode = mode, job = UUID()
+        progressJob = job; fraction = 0
         worker = Task {
             do {
                 var gains: [UUID: Double] = [:]
                 for (index, clip) in clips.enumerated() {
                     try Task.checkCancellation(); progress = "\(index + 1)/\(clips.count) · \(clip.name)"
-                    let analysis = Task.detached(priority: .utility) { try ItemNormalization.measure(clip, directory: directory, mode: selectedMode) }
+                    let count = clips.count
+                    let analysis = Task.detached(priority: .utility) {
+                        try ItemNormalization.measure(clip, directory: directory, mode: selectedMode) { value in
+                            let total = (Double(index) + value) / Double(count)
+                            Task { @MainActor in if progressJob == job && worker != nil { fraction = max(fraction, total) } }
+                        }
+                    }
                     let level = try await withTaskCancellationHandler { try await analysis.value } onCancel: { analysis.cancel() }
                     gains[clip.id] = ItemNormalization.gain(measured: level, target: value)
                 }
@@ -161,7 +177,7 @@ struct ItemNormalizationEditor: View {
                     finish()
                 }
             } catch is CancellationError {} catch { self.error = error.localizedDescription }
-            progress = ""; worker = nil
+            progressJob = nil; progress = ""; worker = nil
         }
     }
 }

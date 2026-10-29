@@ -12,7 +12,10 @@ for rate in [44100.0, 48000.0] {
         try file.write(from: buffer)
     }
     let clip = AudioClip(id: UUID(), name: "Tone", startTime: 30, duration: 3, audioFile: AudioFile(path: name))
-    let peak = try ItemNormalization.measure(clip, directory: directory, mode: .peak)
+    var reported: [Double] = []
+    let peak = try ItemNormalization.measure(clip, directory: directory, mode: .peak) { reported.append($0) }
+    precondition(reported.first == 0 && reported.last == 1 && reported.count > 2, "Normalization must report measured progress")
+    precondition(zip(reported, reported.dropFirst()).allSatisfy { $0 <= $1 }, "Normalization progress went backwards")
     let rms = try ItemNormalization.measure(clip, directory: directory, mode: .rms)
     let lufs = try ItemNormalization.measure(clip, directory: directory, mode: .lufs)
     let tp = try ItemNormalization.measure(clip, directory: directory, mode: .truePeak)

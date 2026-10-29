@@ -53,7 +53,11 @@ const publication = workflow.slice(workflow.indexOf('      - name: Publish both 
 assert(publication.includes('token: ${{ secrets.CATLIVE_RELEASE_TOKEN }}') &&
        publication.includes('github-token: ${{ secrets.CATLIVE_RELEASE_TOKEN }}'),
        'Release replacement and tag updates must use the publication credential with workflow permission.');
-assert(publisher.includes("$Version='1.16'") && read('build catlive macos.command').includes('${VERSION:-1.16}'));
+const desktopVersion = read('JarasLive/Windows/CMakeLists.txt').match(/set\(CATLIVE_VERSION "([0-9]+\.[0-9]{2})"/)[1];
+assert(publisher.includes(`$Version='${desktopVersion}'`) &&
+       read('build catlive macos.command').includes('${VERSION:-' + desktopVersion + '}'),
+       'Desktop launchers must default to the current public version.');
+if (yaml) assert.equal(yaml.load(workflow).on.workflow_dispatch.inputs.version.default, desktopVersion);
 for (const entry of [publisher, read('build catlive macos.command')]) {
     for (const file of ['scripts/codesign-with-retry.py', 'scripts/test-codesign-retry.py'])
         assert(entry.includes(file) && fs.existsSync(path.join(root, file)), 'Release entry points must include signing helpers.');

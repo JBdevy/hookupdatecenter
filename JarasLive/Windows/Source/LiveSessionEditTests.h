@@ -238,6 +238,34 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
                 "Normalized gain was lost from the saved document");
         session->command(jaras::CommandKind::stopAll);
     });
+    test("Normalization processes the entire selected batch with visible progress and one Undo",[&] {
+        const auto folder=directory.getNonexistentChildFile("normalization-selection","");
+        auto project=liveItemResizeTests::fixture(folder);
+        project.songs.front().duration=11;
+        auto &track=project.songs.front().tracks.front();
+        auto second=track.clips.front();second.id=uuid();second.startTime=5;
+        auto third=second;third.id=uuid();third.startTime=10;
+        track.clips.push_back(second);track.clips.push_back(third);
+        const auto first=track.clips.front().id;
+        auto session=std::make_unique<Session>();liveItemResizeTests::initialise(*session,project,folder);
+        Appearance appearance(folder.getChildFile("appearance.json"));
+        NormalizationPanel panel(*session,appearance,std::set<ID>{first,second.id});panel.setSize(380,260);
+        auto *level=dynamic_cast<TextEditor*>(panel.findChildWithID("normalizationTarget"));
+        auto *apply=dynamic_cast<Button*>(panel.findChildWithID("normalizationApply"));
+        auto *progress=panel.findChildWithID("normalizationProgress");
+        require(level&&apply&&progress,"Batch normalization controls are missing");
+        level->setText("-6");apply->onClick();
+        require(progress->isVisible()&&!apply->isEnabled(),"Normalization has no progress feedback while analysing");
+        const auto deadline=Time::getMillisecondCounterHiRes()+10000;
+        while(!session->song()->tracks.front().clips[1].normalizationGain&&Time::getMillisecondCounterHiRes()<deadline)dispatch();
+        const auto expected=std::pow(10.,-6./20.)/.125;
+        const auto verify=[&](bool normalized){
+            const auto &items=session->song()->tracks.front().clips;
+            for(int i=0;i<2;++i)require(std::abs(items[i].normalizationGain.value_or(1)-(normalized?expected:1))<1e-5,"Batch normalization skipped a selected item");
+            require(!items[2].normalizationGain,"Batch normalization changed an unselected item");
+        };
+        verify(true);session->undo();verify(false);session->redo();verify(true);
+    });
     test("Coalesced Session edits publish only the latest graph without stopping either transport",[&] {
         Fixture fixture(directory);auto &session=*fixture.session;
         fixture.add(.5);fixture.add(.25);

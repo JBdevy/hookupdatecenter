@@ -545,6 +545,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
     const auto root = canonicalIDs(input);
     require(root.isObject(), "Expected project object.");
     jaras::Project p;
+    optionalJSON(root, "reductionDraft", p.reductionDraftJSON);
     p.id = s(root, "id");
     p.name = s(root, "name");
     if (get(root, "projectSyncID").isString()) p.projectSyncID = s(root, "projectSyncID");
@@ -841,6 +842,8 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
     auto root = merged(original);
     put(root, "id", text(p.id));
     put(root, "name", text(p.name));
+    if (p.reductionDraftJSON) put(root, "reductionDraft", JSON::parse(text(*p.reductionDraftJSON)));
+    else root.getDynamicObject()->removeProperty("reductionDraft");
     emit(root, "timelineMovementLocked", p.timelineMovementLocked);
     if (p.projectSyncID) put(root, "projectSyncID", text(*p.projectSyncID));
     else root.getDynamicObject()->removeProperty("projectSyncID");

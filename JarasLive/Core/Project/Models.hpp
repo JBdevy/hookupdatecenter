@@ -30,6 +30,7 @@ struct SetlistBlock { ID id; ID songId; std::optional<ID> playlistId; std::strin
 struct RegionSetlist { std::vector<RegionPlaylist> playlists; std::optional<ID> selectedId; bool autoAdvance = false; std::optional<std::vector<SetlistBlock>> blocks; std::optional<bool> stopAtRegionEnd; std::optional<bool> prepareWithoutPlayback; std::optional<bool> automaticSubplay; std::optional<double> automaticSubplaySeconds; std::optional<bool> liveEnabled; std::optional<std::vector<ID>> playedLiveRegionIDs; bool autoUntilBlockEnd = false; std::optional<int> automaticSubplayBars; std::optional<bool> automaticSubplayNext; std::optional<std::vector<ID>> subplayExclusiveTrackIDs; };
 struct SavedProjectCursor { ID songID; double position = 0; };
 struct Project {
+    std::optional<std::string> reductionDraftJSON;
     std::optional<ID> projectSyncID;
     std::optional<SavedProjectCursor> savedCursor;
     ID id; std::string name;

@@ -935,6 +935,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     var openMasterDetails: (() -> Void)? = nil
     var openItemMenu: ((UUID) -> Void)? = nil
     var openSelectedItemMenu: ((UUID, Set<UUID>) -> Void)? = nil
+    var processSelectedItems: ((Set<UUID>, DAWAction) -> Void)? = nil
     var openItemFX: ((UUID) -> Void)? = nil
     var addTrack: (() -> Void)? = nil
     var addTrackAudio: ((UUID) -> Void)? = nil
@@ -1427,6 +1428,10 @@ private struct RemoteSidebarRail<Content: View>: View {
         .onReceive(localShow?.$splitItemsRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in beginNativeSplit() }
         .onReceive(localShow?.$normalizeItemsRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
             if nativeInputEnabled, !trackScrolling.itemSelection.items.isEmpty { nativeNormalization = true }
+        }
+        .onReceive(localShow?.$itemProcessingRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { request in
+            guard nativeInputEnabled, let request, !trackScrolling.itemSelection.items.isEmpty else { return }
+            processSelectedItems?(trackScrolling.itemSelection.items, request.action)
         }
         .onReceive(localShow?.$tempoMarkerRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in beginNativeMarker(tempo: true) }
     }

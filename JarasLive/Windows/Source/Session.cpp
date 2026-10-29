@@ -646,6 +646,29 @@ void Session::waitForSave(std::function<void(String)> completed) {
     if (activeSave) activeSave->completions.push_back(std::move(completed));
     else completed({});
 }
+void Session::setReductionDraft(const var &draft) {
+    const auto encoded = utf8(JSON::toString(draft, true));
+    if (project().reductionDraftJSON == encoded) return;
+    auto next = project(); next.reductionDraftJSON = encoded;
+    core.applyProjectEdit(std::move(next));
+    dirty = true; ++revision;
+    // Reduction preferences do not alter the playback graph or timeline.
+    if (tick) tick();
+}
+void Session::saveReductionDraft() {
+    if (!dirty || !document.existsAsFile()) return;
+    if (isSaving()) {
+        const auto weak = std::weak_ptr<int>(alive);
+        const auto projectID = project().id; const auto file = document;
+        waitForSave([this, weak, projectID, file](String error) {
+            if (weak.expired() || error.isNotEmpty() || project().id != projectID || document != file) return;
+            saveReductionDraft();
+        });
+        return;
+    }
+    try { saveAsync(document); }
+    catch (const std::exception &error) { message = String::fromUTF8(error.what()); }
+}
 void Session::saveAsync(const File &file, std::function<void(String)> completed) {
     const auto target = file.withFileExtension("jl");
     if (activeSave) {

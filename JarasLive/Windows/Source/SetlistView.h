@@ -189,12 +189,14 @@ class Workspace::Setlist final : public Component,
         int index = found == ids.end() ? (direction > 0 ? 0 : (int)ids.size()-1)
             : jlimit(0,(int)ids.size()-1,(int)std::distance(ids.begin(),found)+direction);
         keyboardTarget = ids[(size_t)index];
-        if (w.session.transport().playing) w.session.focusSetlistRegion(keyboardTarget,true);
-        else w.session.command(jaras::CommandKind::selectRegion,*keyboardTarget);
+        w.session.focusSetlistRegion(keyboardTarget,true);
+        finishKeyboardNavigation(++navigationSerial, *keyboardTarget, w.session.project().id,
+                                 w.session.setlistFocusRevision);
         w.selectionAreas.activate(*this);
         refresh();
     }
     bool activateSelection() {
+        ++navigationSerial;
         auto target = w.session.focusedRegion ? w.session.focusedRegion : keyboardTarget;
         if (!target || w.session.busy) return false;
         if (std::none_of(entries.begin(),entries.end(),[&](const auto &entry){return !entry.block && entry.id==*target;})) return false;
@@ -692,6 +694,18 @@ class Workspace::Setlist final : public Component,
     std::set<ID> selection;
     ID selectedEntry;
     std::optional<ID> keyboardTarget;
+    uint64 navigationSerial = 0;
+    void finishKeyboardNavigation(uint64 serial, ID target, ID project, uint64 focusRevision) {
+        Timer::callAfterDelay(200, [safe=SafePointer<Setlist>(this),serial,target,project,focusRevision] {
+            if (!safe || safe->navigationSerial!=serial || safe->w.session.project().id!=project ||
+                safe->w.session.setlistFocusRevision!=focusRevision || safe->w.session.focusedRegion!=target) return;
+            if (KeyPress::isKeyCurrentlyDown(KeyPress::upKey) || KeyPress::isKeyCurrentlyDown(KeyPress::downKey)) {
+                safe->finishKeyboardNavigation(serial,target,project,focusRevision);return;
+            }
+            if (!safe->w.session.transport().playing && !safe->w.session.busy)
+                safe->w.session.command(jaras::CommandKind::selectRegion,target);
+        });
+    }
     int regionCount = 0;
     double totalDuration = 0;
     void setSearching(bool value) {

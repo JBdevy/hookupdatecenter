@@ -3845,7 +3845,8 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
                 [safe](std::function<void()> saved) { if(safe) safe->chooseSave(false,std::move(saved)); }),540,376);
         }, [safe] {
             if(safe) safe->showPanel("Reduzir projeto",std::make_unique<ProjectReductionPanel>(safe->session,
-                [safe](std::function<void()> saved){if(safe)safe->chooseSave(false,std::move(saved));}),760,560);
+                [safe](std::function<void()> saved){if(safe)safe->chooseSave(false,std::move(saved));}),760,
+                safe->session.dirty||safe->session.isSaving()||!safe->session.document.existsAsFile()?206:560);
         });
         CallOutBox::launchAsynchronously(std::move(panel),controls["save"]->getScreenBounds(),nullptr);
     };
@@ -7074,7 +7075,7 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                 }
                 if(action==13 || action==14 || action==31 || action==32) {
                     if(w.session.project().id!=projectID || !w.session.song() || w.session.song()->id!=songID)return;
-                    w.session.renderItems(action==14 ? targets : std::set<ID>{id},action==14,action>=31?action-30:0,
+                    w.session.renderItems(targets,action==14,action>=31?action-30:0,
                         [safe,projectID,songID](std::set<ID> rendered) {
                             if(!safe || safe->session.project().id!=projectID || !safe->session.song() || safe->session.song()->id!=songID)return;
                             safe->selectedClips=std::move(rendered);
@@ -7120,8 +7121,8 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                 if (action == 11) {
                     ModalSheet::open(
                         w, "Normalizar",
-                        std::make_unique<NormalizationPanel>(w.session, w.appearance, id), 360,
-                        230);
+                        std::make_unique<NormalizationPanel>(w.session, w.appearance, targets), 380,
+                        260);
                     return;
                 }
                 if (action == 9) {
@@ -7594,6 +7595,11 @@ var Workspace::diagnostics() const {
     if (auto *device = session.audio.devices.getCurrentAudioDevice()) {
         auto audioDevice = object();
         put(audioDevice, "driver", session.audio.devices.getCurrentAudioDeviceType());
+        put(audioDevice, "name", device->getName());
+        put(audioDevice, "inputChannels", var(device->getInputChannelNames()));
+        put(audioDevice, "outputChannels", var(device->getOutputChannelNames()));
+        put(audioDevice, "activeInputs", device->getActiveInputChannels().countNumberOfSetBits());
+        put(audioDevice, "activeOutputs", device->getActiveOutputChannels().countNumberOfSetBits());
         Array<var> rates, buffers;
         for (auto rate : device->getAvailableSampleRates()) rates.add(rate);
         for (auto size : device->getAvailableBufferSizes()) buffers.add(size);

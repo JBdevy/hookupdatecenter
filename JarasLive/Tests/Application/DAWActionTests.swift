@@ -179,7 +179,7 @@ final class DAWActionTests: XCTestCase {
     func testNormalizationAndTempoMarkersAreKeyboardOnly() {
         var bindings = DAWActionBindings()
         XCTAssertEqual(bindings.matching(ControlInput(kind: "keyboard", label: "N", key: 45, modifiers: 0)), .normalizeItems)
-        for action in [DAWAction.normalizeItems, .createTempoMarker] {
+        for action in [DAWAction.normalizeItems, .reRenderItems, .unifyAudioItems, .createTempoMarker] {
             XCTAssertFalse(action.supportsMIDI); XCTAssertFalse(action.repeats)
             let midi = ControlInput(kind: "midi", label: "CC 50", device: 2, channel: 0, status: 0xb0, number: 50)
             XCTAssertFalse(bindings.setInput(midi, action: action, kind: "midi"))
@@ -192,6 +192,18 @@ final class DAWActionTests: XCTestCase {
         XCTAssertTrue(bindings.setInput(replacement, action: .normalizeItems, kind: "keyboard"))
         XCTAssertNil(bindings.matching(ControlInput(kind: "keyboard", label: "N", key: 45, modifiers: 0)))
         XCTAssertEqual(bindings.matching(replacement), .normalizeItems)
+    }
+    func testAudioProcessingActionsCanBeMappedAndPersistWithoutTakingExistingShortcuts() throws {
+        var bindings = DAWActionBindings()
+        for (action, key) in [(DAWAction.reRenderItems, UInt16(101)), (.unifyAudioItems, 109)] {
+            XCTAssertTrue(DAWActionCategory.shortcuts.actions.contains(action))
+            XCTAssertNil(action.defaultKeyboard)
+            let input = ControlInput(kind: "keyboard", label: "Custom", key: key, modifiers: 0)
+            XCTAssertTrue(bindings.setInput(input, action: action, kind: "keyboard"))
+            let restored = try JSONDecoder().decode(DAWActionBindings.self, from: JSONEncoder().encode(bindings))
+            XCTAssertEqual(restored.matching(input), action)
+        }
+        XCTAssertEqual(bindings.matching(ControlInput(kind: "keyboard", label: "N", key: 45, modifiers: 0)), .normalizeItems)
     }
     func testProjectionWindowShortcutsCanBeRemappedAndNeverRepeat() {
         var bindings = DAWActionBindings()

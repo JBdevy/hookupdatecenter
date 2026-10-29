@@ -33,6 +33,12 @@ inline String translate(const String &original) {
     const auto found = map.find(original);
     return found == map.end() ? original : found->second;
 }
+// Source literals and narrow strings in this application are UTF-8 (/utf-8).
+// JUCE's implicit String(const char*) conversion is ASCII, so it corrupts
+// accents/ellipsis before lookup and also prevents the translation from matching.
+inline String translate(const char *original) {
+    return localization::translate(String::fromUTF8(original));
+}
 // Apply only to interface-owned panels, never to song/track names or media fields.
 inline void panel(Component &component) {
     if (auto *label = dynamic_cast<Label *>(&component))

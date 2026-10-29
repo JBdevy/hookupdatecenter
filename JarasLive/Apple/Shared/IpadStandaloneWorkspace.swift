@@ -208,7 +208,12 @@ import Combine
                         trackEdit = .init(project: show.snapshot.project.id, tracks: [], name: "Master",
                             color: show.snapshot.project.masterColor ?? 0x414141, nameEditable: false)
                     },
-                    openItemMenu: { presentItemMenu($0, targets: [$0]) }, openSelectedItemMenu: { presentItemMenu($0, targets: $1) }, openItemFX: { fx = .init(clip: $0) }, addTrack: { addingTrack = true }, addTrackAudio: { documents.chooseNativeTrackAudio($0) },
+                    openItemMenu: { presentItemMenu($0, targets: [$0]) }, openSelectedItemMenu: { presentItemMenu($0, targets: $1) },
+                    processSelectedItems: { ids, action in
+                        guard let id = show.current?.tracks.filter({ $0.kind == .standard }).flatMap(\.clips).first(where: { ids.contains($0.id) })?.id else { return }
+                        itemMenuTargets = ids; itemMenuAction = action == .reRenderItems ? "render" : "glue"; itemMenu = .init(clip: id)
+                    },
+                    openItemFX: { fx = .init(clip: $0) }, addTrack: { addingTrack = true }, addTrackAudio: { documents.chooseNativeTrackAudio($0) },
                     addTrackText: { editingTextItem = show.addTextItem(track: $0) }, addTrackMedia: { documents.chooseNativeTrackMedia($0) },
                     createPlaylist: { show.createRegionPlaylist(name: $0, selected: $1) },
                     addBlock: { show.addSetlistBlock(namePrefix: JarasLocalization.string("Bloco")) },

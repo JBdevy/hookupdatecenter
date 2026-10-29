@@ -5,11 +5,16 @@
 #include "Appearance.h"
 #include "ModalSheet.h"
 namespace catlive {
-class NormalizationPanel final : public Component {
+class NormalizationPanel final : public Component, private Timer {
   public:
     NormalizationPanel(Session &owner, Appearance &preferences, ID target)
-        : session(owner), appearance(preferences), id(std::move(target)) {
+        : NormalizationPanel(owner, preferences, std::set<ID>{std::move(target)}) {}
+    NormalizationPanel(Session &owner, Appearance &preferences, std::set<ID> targets)
+        : session(owner), appearance(preferences), ids(std::move(targets)) {
         addAndMakeVisible(mode);
+        addChildComponent(progressBar);
+        progressBar.setComponentID("normalizationProgress");
+        progressBar.setColour(ProgressBar::foregroundColourId, theme::green);
         addAndMakeVisible(level);
         addAndMakeVisible(cancel);
         addAndMakeVisible(applyButton);
@@ -36,6 +41,7 @@ class NormalizationPanel final : public Component {
     void resized() override {
         mode.setBounds(86, 18, getWidth() - 108, 26);
         level.setBounds(86, 62, getWidth() - 156, 26);
+        progressBar.setBounds(22, 133, getWidth() - 44, 18);
         cancel.setBounds(22, getHeight() - 48, 86, 26);
         applyButton.setBounds(getWidth() - 118, getHeight() - 48, 96, 26);
     }
@@ -54,13 +60,23 @@ class NormalizationPanel final : public Component {
         g.drawFittedText(String::fromUTF8("Ganho de normalização independente: até +24 dB"), 22,
                          101, getWidth() - 44, 30, Justification::topLeft, 2);
         g.setColour(failed ? Colour(0xffff5b5b) : theme::secondary);
-        g.drawFittedText(status, 22, 135, getWidth() - 44, 40, Justification::topLeft, 3);
+        g.drawFittedText(status, 22, 158, getWidth() - 44, 30, Justification::topLeft, 3);
     }
 
   private:
     Session &session;
     Appearance &appearance;
-    ID id;
+    std::set<ID> ids;
+    struct Progress { std::atomic<double> fraction{0}; std::atomic<int> current{0}; };
+    std::shared_ptr<Progress> progress = std::make_shared<Progress>();
+    int total = 0;
+    double displayedProgress = 0;
+    ProgressBar progressBar{displayedProgress};
+    void timerCallback() override {
+        displayedProgress = progress->fraction.load();
+        status = localization::translate(String::fromUTF8("Analisando áudio…")) + " " + String(progress->current.load()) + "/" + String(total);
+        repaint();
+    }
     ComboBox mode;
     TextEditor level;
     TextButton cancel{localization::translate("Cancelar")}, applyButton{localization::translate("Normalizar")};
@@ -80,6 +96,9 @@ class NormalizationPanel final : public Component {
     }
     void setBusy(bool value) {
         busy = value;
+        progressBar.setVisible(value);
+        ModalSheet::blockDismiss(*this, value);
+        if (value) { timerCallback(); startTimerHz(20); } else stopTimer();
         mode.setEnabled(!value);
         level.setEnabled(!value);
         applyButton.setEnabled(!value);
@@ -97,18 +116,18 @@ class NormalizationPanel final : public Component {
                 throw std::runtime_error("Informe um alvo entre -60 e +12.");
             if (session.busy || session.audio.isRecording())
                 throw std::runtime_error("Conclua a gravação e aguarde as operações antes de normalizar.");
-            std::optional<jaras::AudioClip> selected;
+            std::vector<jaras::AudioClip> selected;
             if (auto *song = session.song())
                 for (const auto &track : song->tracks)
                     if (jaras::fixedTrackName(track.role).empty())
                         for (const auto &clip : track.clips)
-                            if (clip.id == id && !clip.midi &&
+                            if (ids.count(clip.id) && !clip.midi &&
                                 (clip.audioFile || track.audioFile)) {
-                                selected = clip;
-                                if (!selected->audioFile)
-                                    selected->audioFile = track.audioFile;
+                                selected.push_back(clip);
+                                if (!selected.back().audioFile)
+                                    selected.back().audioFile = track.audioFile;
                             }
-            if (!selected)
+            if (selected.empty())
                 throw std::runtime_error("O item selecionado não tem arquivo de áudio.");
             const auto project = session.project().id;
             const auto preference = key();
@@ -118,22 +137,26 @@ class NormalizationPanel final : public Component {
             auto stop = cancelled;
             level.setText(String(target, 2));
             failed = false;
-            status = String::fromUTF8("Analisando áudio…");
+            total = (int)selected.size(); progress->fraction = 0; progress->current = 1;
+            auto progressState = progress;
             setBusy(true);
-            worker.addJob([safe, stop, clip = *selected, project, directory, selectedMode, target,
-                           preference] {
+            worker.addJob([safe, stop, clips = std::move(selected), project, directory, selectedMode, target,
+                           preference, progressState] {
                 String failure;
-                double result = 1;
+                std::vector<double> results;
                 try {
-                    result =
-                        normalization::gain(normalization::measure(clip, directory, selectedMode,
-                                                                   [stop] { return stop->load(); }),
-                                            target);
+                    for (size_t index=0; index<clips.size(); ++index) {
+                        progressState->current = (int)index+1;
+                        results.push_back(normalization::gain(normalization::measure(clips[index], directory, selectedMode,
+                            [stop] { return stop->load(); }, [progressState,index,count=clips.size()](double fraction) {
+                                progressState->fraction = (index+fraction)/count;
+                            }), target));
+                    }
                 } catch (const std::exception &e) {
                     failure = String::fromUTF8(e.what());
                 }
                 MessageManager::callAsync(
-                    [safe, stop, clip, project, target, preference, result, failure] {
+                    [safe, stop, clips, project, target, preference, results, failure] {
                         if (!safe || stop->load())
                             return;
                         safe->setBusy(false);
@@ -147,6 +170,10 @@ class NormalizationPanel final : public Component {
                             if (safe->session.project().id != project || safe->session.busy)
                                 throw std::runtime_error("O projeto mudou durante a análise.");
                             safe->session.editItemControls([&](jaras::Project &p) {
+                                size_t applied = 0;
+                                for (size_t index=0; index<clips.size(); ++index) {
+                                const auto &clip = clips[index];
+                                bool found = false;
                                 for (auto &song : p.songs)
                                     for (auto &track : song.tracks)
                                         for (auto &item : track.clips)
@@ -162,10 +189,13 @@ class NormalizationPanel final : public Component {
                                                     item.loopLength != clip.loopLength)
                                                     throw std::runtime_error(
                                                         "O item mudou durante a análise.");
-                                                item.normalizationGain = result;
-                                                return;
+                                                item.normalizationGain = results[index];
+                                                found = true;
                                             }
-                                throw std::runtime_error("O item não existe mais.");
+                                if (!found) throw std::runtime_error("O item não existe mais.");
+                                ++applied;
+                                }
+                                if (applied != clips.size()) throw std::runtime_error("A seleção mudou durante a análise.");
                             });
                             auto saved = safe->appearance.set(preference, target);
                             if (saved.failed())

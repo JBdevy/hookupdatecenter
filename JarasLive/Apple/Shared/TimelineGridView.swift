@@ -149,8 +149,8 @@ private struct TimelineGridContent: View, Equatable {
     @State private var hostedItemsGate = TimelineHostedItemsGate()
     @State private var rowLayoutCache = TrackLayoutCache()
     @State private var renderMetadataCache = TimelineRenderMetadataCache()
-    #if os(macOS)
     @State private var selectionLayoutCache = TimelineSelectionLayoutCache()
+    #if os(macOS)
     @State private var itemSourceCache = TimelineItemSourceCache()
     @State private var nativeBase = NativeTimelineBaseController()
     @State private var nativeBodyCache = NativeTimelineAudioBodyCache()
@@ -384,9 +384,9 @@ private struct TimelineGridContent: View, Equatable {
                             } divider: {
                                 JarasTheme.mixer.frame(width: dividerWidth)
                             } timeline: {
-                    #if os(macOS)
                     let selectionLayout = makeSelectionLayout(song: song, rows: rows, renderKey: renderKey,
                         renderMetadata: renderMetadata, rulerHeight: rulerHeight)
+                    #if os(macOS)
                     let selectionInput = makeSelectionInput(originalSong: originalSong, song: song, rows: rows,
                         rulerHeight: rulerHeight, extent: extent, selectionLayout: selectionLayout, renderKey: renderKey)
                     #endif
@@ -850,6 +850,11 @@ private struct TimelineGridContent: View, Equatable {
         .onReceive(show.$tempoMarkerRequest.dropFirst()) { request in if request > 0 { beginTempoMarker() } }
         .sheet(item: $editingTempoMarker) { marker in TempoMarkerEditor(marker: marker, save: { show.setMarker($0) }).environment(\.locale, locale) }
         .onReceive(show.$normalizeItemsRequest.dropFirst()) { request in if request > 0 { beginNormalize(selectedClips) } }
+        .onReceive(show.$itemProcessingRequest.dropFirst()) { request in
+            guard let request, !selectedClips.isEmpty else { return }
+            if request.action == .reRenderItems { reRenderItems(selectedClips) }
+            else if request.action == .unifyAudioItems { glueItems(selectedClips) }
+        }
         .onChange(of: show.splitItemsRequest) { request in if request > 0 { confirmSplit(selectedClips) } }
         .onChange(of: show.addTrackRequest) { request in if request > 0 { addingTrack = true } }
         .onChange(of: show.timelineMovementLocked) { locked in
@@ -895,7 +900,6 @@ private struct TimelineGridContent: View, Equatable {
         show.setItemsMix(itemMixTargets(id), muted: clip.muted != true)
     }
 
-    #if os(macOS)
     private func makeSelectionLayout(song: Song, rows: TrackRowLayout, renderKey: TimelineRenderKey,
                                      renderMetadata: TimelineRenderMetadata, rulerHeight: CGFloat) -> GridSelectionLayout {
         let row = rows.baseHeight
@@ -909,6 +913,7 @@ private struct TimelineGridContent: View, Equatable {
             }
             }
     }
+    #if os(macOS)
     private func makeNativeBaseConfiguration(song: Song, originalSong: Song, rows: TrackRowLayout,
                                              metadata: TimelineRenderMetadata, selectionInput: GridSelectionInput, selectionLayout: GridSelectionLayout,
                                              extent: Double, rulerHeight: CGFloat, regionLanes: RegionLanes,
@@ -5974,7 +5979,6 @@ final class RegionShortcutView: NSView {
 }
 #endif
 
-#if os(macOS)
 @MainActor private final class TimelineSelectionLayoutCache {
     private var key: TimelineContentKey?
     // Retain the exact snapshot, so a later allocation cannot impersonate an
@@ -6002,7 +6006,6 @@ final class RegionShortcutView: NSView {
         return value
     }
 }
-#endif
 
 @MainActor private final class TrackLayoutCache {
     private var regionKey: TimelineRenderKey?
