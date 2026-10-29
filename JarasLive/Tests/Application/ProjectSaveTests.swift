@@ -152,7 +152,7 @@ final class ProjectSaveTests: XCTestCase {
         project.songs[0].markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0, color: 0, tempoBPM: 120, tempoTimebase: .free)]
         return project
     }
-    @MainActor func testCreatedMarkersAreDeletedWithAllRegionsAndRestoredByUndo() throws {
+    @MainActor func testAllRegionsDeletionPreservesCreatedMarkersAndUndoRestoresOwnership() throws {
         var project = markerOwnershipProject()
         let first = project.songs[0].parts[0], next = project.songs[0].parts[1]
         let loose = TimelineMarker(id: UUID(), name: "Loose", position: 21, color: 0)
@@ -180,9 +180,11 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(restored.songs[0].markers, beforeDelete.songs[0].markers)
         XCTAssertTrue(show.deleteSetlistEntries([first.id]))
         XCTAssertEqual(show.current?.parts.map(\.id), [next.id])
-        XCTAssertEqual(Set(show.current?.markers?.map(\.id) ?? []), Set(project.songs[0].markers!.map(\.id) + [boundary.id]))
+        XCTAssertEqual(Set(show.current?.markers?.map(\.id) ?? []), Set(beforeDelete.songs[0].markers!.map(\.id)))
+        XCTAssertFalse(show.current?.markers?.contains { $0.regionOwnerID == first.id } ?? true)
         show.undo(); XCTAssertEqual(show.current?.markers, beforeDelete.songs[0].markers)
-        show.redo(); XCTAssertFalse(show.current?.markers?.contains { placed.map(\.id).contains($0.id) } ?? true)
+        show.redo(); XCTAssertEqual(Set(show.current?.markers?.map(\.id) ?? []), Set(beforeDelete.songs[0].markers!.map(\.id)))
+        XCTAssertFalse(show.current?.markers?.contains { $0.regionOwnerID == first.id } ?? true)
     }
     @MainActor func testTempoAdjustmentAttachesNewBoundariesToCorrectSongs() throws {
         var project = markerOwnershipProject()
@@ -199,7 +201,8 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertNil(show.current?.markers?.first { $0.id == loose.id }?.regionOwnerID)
         XCTAssertEqual(executor.project.songs[0].markers, show.current?.markers)
         XCTAssertTrue(show.deleteSetlistEntries([first.id]))
-        XCTAssertEqual(Set(show.current?.markers?.map(\.position) ?? []), [0, 30])
+        XCTAssertEqual(Set(show.current?.markers?.map(\.position) ?? []), [0, 10, 20, 22, 30])
+        XCTAssertFalse(show.current?.markers?.contains { $0.regionOwnerID == first.id } ?? true)
     }
     @MainActor func testRedetectedTempoReplacesOldMarkersAndAssignsRegionOwnership() throws {
         var project = markerOwnershipProject()
@@ -219,7 +222,8 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(show.current?.markers?.first { $0.position == 30 }?.regionOwnerID, next.id)
         XCTAssertEqual(executor.project.songs[0].markers?.sorted { $0.position < $1.position }, show.current?.markers?.sorted { $0.position < $1.position })
         XCTAssertTrue(show.deleteSetlistEntries([first.id]))
-        XCTAssertEqual(Set(show.current?.markers?.map(\.position) ?? []), [0, 30])
+        XCTAssertEqual(Set(show.current?.markers?.map(\.position) ?? []), [0, 10, 15, 20, 22, 30])
+        XCTAssertFalse(show.current?.markers?.contains { $0.regionOwnerID == first.id } ?? true)
     }
     @MainActor func testMovingMarkerAttachesItButEditingInPlaceDoesNotCaptureLooseMaterial() throws {
         var project = markerOwnershipProject()
@@ -232,7 +236,8 @@ final class ProjectSaveTests: XCTestCase {
         loose.position = 16; show.setMarker(loose)
         XCTAssertEqual(show.current?.markers?.first { $0.id == loose.id }?.regionOwnerID, first.id)
         XCTAssertTrue(show.deleteSetlistEntries([first.id]))
-        XCTAssertFalse(show.current?.markers?.contains { $0.id == loose.id } ?? true)
+        XCTAssertEqual(show.current?.markers?.first { $0.id == loose.id }?.position, 16)
+        XCTAssertNil(show.current?.markers?.first { $0.id == loose.id }?.regionOwnerID)
     }
     @MainActor func testRegionFromTimeSelectionPreservesExactBoundsAndSupportsUndo() throws {
         let project = Project.empty(name: "Time selection")
@@ -847,7 +852,8 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(executor.projectEditCount, 0)
         XCTAssertTrue(show.deleteSetlistEntries([block, group, third.id, first.id]))
         XCTAssertEqual(executor.projectEditCount, 1, "one project update for the whole mixed selection")
-        XCTAssertTrue(show.current!.parts.isEmpty, "All Regions deletes the wrapper and its drawer songs")
+        XCTAssertEqual(Set(show.current!.parts.map(\.id)), [first.id, second.id], "Deleting the wrapper preserves its songs")
+        XCTAssertTrue(show.current!.parts.allSatisfy { $0.parentRegionID == nil })
         XCTAssertTrue(show.listedBlocks.isEmpty)
         XCTAssertEqual(show.current!.tracks, before.songs[0].tracks)
         show.undo()

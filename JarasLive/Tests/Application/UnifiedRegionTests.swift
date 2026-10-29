@@ -167,7 +167,7 @@ final class UnifiedRegionTests: XCTestCase {
         XCTAssertEqual(restored.color, 0xff8040)
     }
 
-    func testDeletingSpecialRegionFromAllRegionsDeletesDrawerAndKeepsOutsideMarkers() throws {
+    func testDeletingSpecialRegionFromAllRegionsPreservesDrawerSongsAndAudio() throws {
         var project = fixture()
         let original = project
         let first = project.songs[0].parts[0].id
@@ -178,9 +178,12 @@ final class UnifiedRegionTests: XCTestCase {
         let manual = TimelineMarker(id: UUID(), name: "Manual", position: 90, color: 0x123456)
         project.songs[0].markers!.append(manual)
         project.deleteSetlistEntries([group], song: project.songs[0].id, playlist: nil)
-        XCTAssertEqual(project.songs[0].parts, [original.songs[0].parts[2]])
-        XCTAssertEqual(project.regionSetlist?.playlists[0].regionIds, [original.songs[0].parts[2].id])
-        XCTAssertTrue(project.songs[0].tracks[0].clips.isEmpty)
+        XCTAssertEqual(project.songs[0].parts.map(\.id), original.songs[0].parts.map(\.id))
+        XCTAssertTrue(project.songs[0].parts.allSatisfy { $0.parentRegionID == nil })
+        XCTAssertEqual(project.songs[0].parts[0].name, "Edited name (Original)")
+        XCTAssertEqual(project.songs[0].parts[0].color, 0xff8040)
+        XCTAssertEqual(project.regionSetlist?.playlists[0].regionIds, original.regionSetlist?.playlists[0].regionIds)
+        XCTAssertEqual(project.songs[0].tracks[0].clips, original.songs[0].tracks[0].clips)
         XCTAssertEqual(project.songs[0].markers, [manual])
         try project.validate()
     }
