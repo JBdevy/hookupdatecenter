@@ -4,6 +4,8 @@
 #include <windowsx.h>
 #include <d2d1.h>
 #include <dwrite_3.h>
+#include "SavePulseComposition.h"
+#include <chrono>
 #include <wrl/client.h>
 #include <algorithm>
 #include <cmath>
@@ -19,14 +21,14 @@ class TransportButtons final {
     struct State {
         RECT rect{};
         float scale = 1, dimming = 0, fontSize = 9;
-        bool active = false, enabled = true, visible = true, blocked = false;
+        bool active = false, enabled = true, visible = true, blocked = false, savePulse = false;
         unsigned background = 0xff252525, foreground = 0xffffffff, activeBackground = 0xff6cbd4b, surface = 0xff1d1d1d;
         unsigned accent = 0;
         // `tooltip` is retained as the native accessibility/window description;
         // CatLive does not create hover tooltip windows.
         std::wstring text, icon, tooltip;
         bool operator==(const State &b) const {
-            return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && surface==b.surface && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
+            return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && savePulse==b.savePulse && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && surface==b.surface && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
         }
     };
     using Click = std::function<void(bool)>;
@@ -76,6 +78,7 @@ class TransportButtons final {
             ShowWindow(button.window,state.visible?SW_SHOWNOACTIVATE:SW_HIDE);
             EnableWindow(button.window,state.enabled && !state.blocked);
             SetWindowTextW(button.window,state.tooltip.c_str());
+            updatePulse(button);
             InvalidateRect(button.window,nullptr,FALSE);
         }
     }
@@ -83,16 +86,41 @@ class TransportButtons final {
         for(auto &button:buttons)if(button->window && button->state.visible)
             RedrawWindow(button->window,nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW);
     }
-    void hide() { for(auto &b:buttons) { if(b->window) ShowWindow(b->window,SW_HIDE);b->state.visible=false; } }
+    void hide() { for(auto &b:buttons) { if(b->window) ShowWindow(b->window,SW_HIDE);b->state.visible=false; updatePulse(*b); } }
   private:
     static void check(HRESULT result) { if(FAILED(result)) throw std::runtime_error("Não foi possível inicializar o desenho nativo do transporte."); }
     struct Button {
         explicit Button(TransportButtons &v):owner(v){}
         ~Button(){destroy();}
-        void destroy(){target.Reset();if(window&&IsWindow(window))DestroyWindow(window);window=nullptr;}
+        void destroy(){pulse.reset();target.Reset();if(window&&IsWindow(window)){KillTimer(window,1);DestroyWindow(window);}window=nullptr;}
         TransportButtons &owner; HWND window=nullptr; State state; Click click;
         bool pressed=false,hover=false; Ptr<ID2D1HwndRenderTarget> target;
+        std::unique_ptr<SavePulseComposition> pulse;
+        bool pulseUnavailable=false, fallbackPulse=false; double pulseStart=0;
     };
+    static double clock() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+    static void updatePulse(Button &button) {
+        if (!button.window) return;
+        const auto &s = button.state;
+        const bool active = s.savePulse && s.visible;
+        if (active && !button.pulse && !button.pulseUnavailable) {
+            try { button.pulse = std::make_unique<SavePulseComposition>(button.window); }
+            catch (...) { button.pulseUnavailable = true; }
+        }
+        if (button.pulse) {
+            unsigned background = 0xff000000;
+            for (int shift : {0, 8, 16}) background |= unsigned(((s.surface >> shift) & 255) * (1.f - s.dimming)) << shift;
+            if (!button.pulse->update(active, s.rect.right - s.rect.left, s.rect.bottom - s.rect.top, background)) {
+                button.pulse.reset(); button.pulseUnavailable = true;
+            }
+        }
+        const bool fallback = active && !button.pulse;
+        if (fallback != button.fallbackPulse) {
+            button.fallbackPulse = fallback;
+            if (fallback) { button.pulseStart = clock(); SetTimer(button.window, 1, 16, nullptr); }
+            else KillTimer(button.window, 1);
+        }
+    }
     Ptr<ID2D1Factory> factory;
     Ptr<IDWriteFactory3> write;
     Ptr<IDWriteFontCollection1> fonts;
@@ -105,6 +133,7 @@ class TransportButtons final {
         if(!b)return DefWindowProcW(h,m,w,l);
         switch(m){
         case WM_ERASEBKGND:return 1;
+        case WM_TIMER:if(w==1 && b->fallbackPulse)InvalidateRect(h,nullptr,FALSE);return 0;
         case WM_PAINT:{PAINTSTRUCT ps{};BeginPaint(h,&ps);b->owner.paint(*b);EndPaint(h,&ps);return 0;}
         case WM_MOUSEMOVE:if(!b->hover){b->hover=true;TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,h,0};TrackMouseEvent(&t);InvalidateRect(h,nullptr,FALSE);}return 0;
         case WM_MOUSELEAVE:b->hover=false;InvalidateRect(h,nullptr,FALSE);return 0;
@@ -219,7 +248,12 @@ class TransportButtons final {
         } else if(s.icon==L"check") {line(1,6,5,10);line(5,10,11,2);}
         t->SetTransform(D2D1::Matrix3x2F::Identity());
         if(layout)t->DrawTextLayout(D2D1::Point2F(x+iconSize+gap,0),layout.Get(),brush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
-        if(s.dimming>0){brush->SetColor(D2D1::ColorF(0,0,0,s.dimming));t->FillRectangle(D2D1::RectF(0,0,width,height),brush.Get());}
+        float dimming=s.dimming;
+        if(b.fallbackPulse) {
+            const float alpha=float(.74+.26*std::cos((clock()-b.pulseStart)*3.141592653589793/.9));
+            dimming=1.f-(1.f-dimming)*alpha;
+        }
+        if(dimming>0){brush->SetColor(D2D1::ColorF(0,0,0,dimming));t->FillRectangle(D2D1::RectF(0,0,width,height),brush.Get());}
         if(t->EndDraw()==D2DERR_RECREATE_TARGET)b.target.Reset();
     }
 };

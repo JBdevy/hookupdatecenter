@@ -157,7 +157,7 @@ set(CATLIVE_FFMPEG_PUBLIC_HEADERS "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-include")
 catlive_prepare_ffmpeg_headers("${CATLIVE_FFMPEG_INCLUDE_DIR}" "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
 target_include_directories(CatLive PRIVATE ThirdParty/FFmpeg/include "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
 target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets CatLiveVST3 juce::juce_audio_utils
-    juce::juce_dsp juce::juce_osc juce::juce_cryptography d2d1 dwrite bcrypt crypt32 normaliz dnsapi iphlpapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32
+    juce::juce_dsp juce::juce_osc juce::juce_cryptography d2d1 dwrite dcomp bcrypt crypt32 normaliz dnsapi iphlpapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="CatLive" JUCE_APPLICATION_VERSION_STRING="${CATLIVE_VERSION}"
@@ -169,6 +169,10 @@ add_executable(Direct2DTextTests "${CATLIVEROOT}/WindowsNative/Tests/Direct2DTex
 target_compile_definitions(Direct2DTextTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(Direct2DTextTests PRIVATE /utf-8)
 target_link_libraries(Direct2DTextTests PRIVATE d3d11 dxgi d2d1 dwrite windowscodecs ole32)
+add_executable(SavePulseTests "${CATLIVEROOT}/WindowsNative/Tests/SavePulseTests.cpp")
+target_compile_definitions(SavePulseTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(SavePulseTests PRIVATE /utf-8)
+target_link_libraries(SavePulseTests PRIVATE d3d11 dxgi d2d1 dcomp dwmapi ole32)
 # Requires a usable Windows graphics adapter, but creates no visible window and
 # never takes keyboard focus. Run explicitly on the validation PC, not CI VMs.
 foreach(name ProjectSync Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership TempoOwnership Timecode TimecodePlayback ClickTrack)

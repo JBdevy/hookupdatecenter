@@ -4745,6 +4745,7 @@ void Workspace::syncNativeTransport() {
         state.rect = {area.getX(), area.getY(), area.getRight(), area.getBottom()};
         state.scale = scaleY;
         state.dimming=1.f-model->getAlpha();
+        state.savePulse=String(id)=="save" && session.dirty;
         state.fontSize = theme::semiboldFont((float)model->getProperties().getWithDefault("fontSize", 10.f)).getHeightInPoints();
         state.active = model->getToggleState() || (bool)model->getProperties()["solidTransportColour"]; state.enabled = model->isEnabled();
         state.blocked = Component::getCurrentlyModalComponent() != nullptr;
@@ -5126,7 +5127,7 @@ void Workspace::resized() {
     const auto padWindow=floatingWindows.find("Vinhetas");
     const bool padsOpen=vinhetasDetached?padWindow!=floatingWindows.end()&&padWindow->second->isVisible():vinhetasVisible;
     controls["railVinhetas"]->setColour(TextButton::textColourOffId,padsOpen?theme::green:Colours::white);
-    controls["setlist"]->setColour(TextButton::buttonColourId, setlistVisible ? theme::green : theme::panel);
+    controls["setlist"]->setColour(TextButton::buttonColourId, setlistVisible ? theme::green : Colour(0xff454545));
     controls["setlist"]->setColour(TextButton::textColourOffId, setlistVisible ? Colours::black : Colours::white);
     controls["mixer"]->setColour(TextButton::textColourOffId, mixerVisible ? theme::green : Colour(0xffc44545));
     if (!partsLeftDetached) {
@@ -5436,9 +5437,9 @@ void Workspace::updateState() {
     controls["save"]->setEnabled(!session.isSaving());
     controls["save"]->getProperties().set("leadingIcon", session.dirty ? "save" : "check");
     controls["save"]->setColour(TextButton::buttonColourId,
-                                session.dirty ? theme::green.withAlpha(.16f) : theme::panel);
+                                session.dirty ? theme::green.withAlpha(.16f) : Colour(0xff454545));
     controls["save"]->setColour(TextButton::textColourOffId,
-                                session.dirty ? theme::green : theme::secondary);
+                                session.dirty ? theme::green : Colours::white);
     controls["railUndo"]->setEnabled(session.canUndo());
     controls["railRedo"]->setEnabled(session.canRedo());
     masterVolume.setValue(session.project().masterVolume, dontSendNotification);
@@ -5575,14 +5576,6 @@ void Workspace::timerCallback() {
             if(profile.isNotEmpty())File(profile).appendText(JSON::toString(timeline->paintProfile(),true)+"\n");
         }
     }
-    if (session.dirty) {
-        if (!savePulseStarted) savePulseStarted = now;
-        const float alpha = (float)(.74 + .26 * std::cos((now - *savePulseStarted) * MathConstants<double>::pi / .9));
-        controls["save"]->setAlpha(alpha);
-    } else {
-        savePulseStarted.reset();
-        controls["save"]->setAlpha(1.f);
-    }
     // Live edits keep the previous graph running until the replacement is
     // ready. Covering the workspace here hid native transport buttons and
     // blocked interaction during Patch changes and recording finalization.
@@ -5594,7 +5587,7 @@ void Workspace::timerCallback() {
     repaint(44, 43, 14, 64);
     for (auto *row : rows) if (row->isShowing()) row->repaint(0, 0, 22 + row->groupIndent(), row->getHeight());
     controls["remote"]->setColour(TextButton::buttonColourId, remoteHost->enabled() ? theme::green : theme::liveOffRed);
-    controls["remote"]->setColour(TextButton::textColourOffId, remoteHost->enabled() ? Colours::black : Colours::white);
+    controls["remote"]->setColour(TextButton::textColourOffId, Colours::black);
     if(!scrollingTrackDrag.empty()) {
         if(!isDragAndDropActive() || !ModifierKeys::getCurrentModifiersRealtime().isAnyMouseButtonDown()) scrollingTrackDrag.clear();
         else if(const auto *song=session.song()) {
