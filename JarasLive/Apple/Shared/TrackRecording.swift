@@ -1087,8 +1087,8 @@ struct TrackRecordingSettings: View {
         }
     }
 }
-/// Armed and recording controls remain solid red throughout recording.
-private struct RecordingButtonStyle: ButtonStyle {
+/// Track arming stays solid; the transport pulses only its background while recording.
+struct RecordingButtonStyle: ButtonStyle {
     let active: Bool
     var width: CGFloat = 22
     var height: CGFloat = 21
@@ -1096,7 +1096,18 @@ private struct RecordingButtonStyle: ButtonStyle {
     var cornerRadius: CGFloat = 3
     var transport = false
     private let red = Color(red: 1, green: 0.12, blue: 0.12)
+    @State private var pulseStart = Date()
     func makeBody(configuration: Configuration) -> some View {
+        if transport {
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !active)) { context in
+                let grey = active ? 0.5 - 0.5 * cos(max(0, context.date.timeIntervalSince(pulseStart)) * .pi / 0.6) : 0
+                label(configuration: configuration, grey: grey)
+            }.onChange(of: active) { _ in pulseStart = Date() }
+        } else {
+            label(configuration: configuration, grey: 0)
+        }
+    }
+    private func label(configuration: Configuration, grey: Double) -> some View {
         configuration.label
             .font(.jarasSystem(size: fontSize, weight: .semibold))
             .lineLimit(1).minimumScaleFactor(0.75)
@@ -1104,13 +1115,17 @@ private struct RecordingButtonStyle: ButtonStyle {
             #if os(macOS)
             .foregroundStyle(transport || active ? Color.black : Color.red)
             #else
-            .foregroundStyle(transport ? Color.white : active ? Color.black : Color.red)
+            .foregroundStyle(transport || active ? Color.black : Color.red)
             #endif
-            .background(transport ? (active ? JarasTheme.transportRed : JarasTheme.liveOffRed).opacity(configuration.isPressed ? 0.85 : 1) :
-                active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
-                (configuration.isPressed ? Color(hex: 0x565656) : JarasTheme.trackButton))
+            .background {
+                ZStack {
+                    transport ? JarasTheme.liveOffRed.opacity(configuration.isPressed ? 0.85 : 1) :
+                        active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
+                        (configuration.isPressed ? Color(hex: 0x565656) : JarasTheme.trackButton)
+                    Color(hex: 0x454545).opacity(grey)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius).stroke(transport ? (active ? JarasTheme.transportRed : Color.white.opacity(0.45)) : .clear))
             .contentShape(Rectangle())
             .transaction { $0.animation = nil }
     }

@@ -6,7 +6,8 @@ trap 'rm -rf "$test_dir"' EXIT
 python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys
-cache = Path('Apple/Shared/SongListView.swift').read_text().split('struct SongListView: View {')[0]
+source = Path('Apple/Shared/SongListView.swift').read_text()
+cache = 'import SwiftUI\n' + source[source.index('@MainActor private final class SetlistEntryCache'):source.index('struct SongListView: View {')]
 test = Path('Tests/Apple/SetlistEntryCacheTests.swift').read_text()
 Path(sys.argv[1]).write_text(cache + '\n' + test)
 PY

@@ -469,6 +469,10 @@ void NativeFX::applyAutomation(const AutomationProgram &program, double time) {
             effect->pluginID == curve.plugin)
             effect->plugin->automate(curve.parameter, curve.value(time));
 }
+void NativeFX::processIdleEditors(int samples,double seconds,bool playing) {
+    native::vst3::Transport transport;transport.seconds=seconds;transport.quarterNotes=seconds*2;transport.playing=playing;
+    for(auto &effect:effects)if(effect->plugin)effect->plugin->processEditorSilence(samples,transport);
+}
 void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds) {
     ScopedNoDenormals noDenormals;
     for (auto &e : effects) {

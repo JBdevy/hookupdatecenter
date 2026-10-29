@@ -1,5 +1,6 @@
 #pragma once
 #include "ProjectCodec.h"
+#include "Localization.h"
 namespace catlive {
 struct MigratedProject {
     jaras::Project project;
@@ -17,6 +18,8 @@ MigratedProject readReaperProject(const File &, const ReaperVST3Resolver & = {})
 MigratedProject readLogicProject(const File &);
 File saveMigratedProject(const MigratedProject &, const File &selection);
 namespace migration {
+// Translate only diagnostic literals, before adding user-owned paths/names.
+inline String message(const char *key) { return localization::translate(key); }
 jaras::Project emptyProject(const String &);
 void finish(MigratedProject &, bool createDefaultRegion = true);
 void require(bool, const String &);

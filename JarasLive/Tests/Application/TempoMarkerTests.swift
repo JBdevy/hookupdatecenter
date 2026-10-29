@@ -493,8 +493,13 @@ final class TempoMarkerTests: XCTestCase {
         let normal = TimelineMarker(id: UUID(), name: "Manual", position: 4, color: 0)
         XCTAssertEqual(song.markerDragPosition(normal, to: 4.23, pixelsPerSecond: 100, free: false), 4)
         XCTAssertEqual(song.markerDragPosition(normal, to: 4.23, pixelsPerSecond: 100, free: true), 4.23)
+        XCTAssertEqual(song.markerDragPosition(normal, to: 4.23, pixelsPerSecond: 100, free: false, cursor: 4.27), 4.27)
+        XCTAssertEqual(song.markerDragPosition(normal, to: 4.23, pixelsPerSecond: 100, free: true, cursor: 4.27), 4.23)
         var tempo = TimelineMarker(id: UUID(), name: "Tempo", position: 5, color: 0, tempoBPM: 120)
         XCTAssertEqual(song.markerDragPosition(tempo, to: 6.231, pixelsPerSecond: 100, free: false), 6.231)
+        XCTAssertEqual(song.markerDragPosition(tempo, to: 6.231, pixelsPerSecond: 100, free: false, cursor: 6.27), 6.27)
+        XCTAssertEqual(song.markerDragPosition(tempo, to: 6.231, pixelsPerSecond: 100, free: true, cursor: 6.27), 6.231)
+        XCTAssertEqual(song.markerDragPosition(tempo, to: 6.231, pixelsPerSecond: 100, free: false, cursor: 8), 6.231)
         XCTAssertLessThan(song.markerDragPosition(tempo, to: 15, pixelsPerSecond: 100, free: true), 10)
         tempo.position = 25
         XCTAssertEqual(song.markerDragPosition(tempo, to: 15, pixelsPerSecond: 100, free: false), 20)

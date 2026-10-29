@@ -95,20 +95,22 @@ void AudioEngine::startTrackRecording(const std::vector<TrackCapture::Target> &t
     if (recording.load())
         throw std::runtime_error("Recording already in progress.");
     auto *device = devices.getCurrentAudioDevice();
-    if (!device && !targets.empty())
+    if (!device && !offlineMode && !targets.empty())
         throw std::runtime_error(
             "Selecione uma interface de áudio nas configurações antes de gravar.");
     for (const auto &target : targets)
         if (!target.bus && !target.midi) {
             for (int channel = 0; channel < target.channels; ++channel)
-                if (!device->getActiveInputChannels()[target.input - 1 + channel])
+                if (!offlineMode && (!device || !device->getActiveInputChannels()[target.input - 1 + channel]))
                     throw std::runtime_error(
                         "Ative as entradas escolhidas no Patch antes de gravar.");
         }
+    auto outputs = prepareRecordingOutputs(targets);
     auto prepared = std::make_unique<TrackCapture>(targets, rate.load(), bits, bpm);
     {
         const ScopedLock lock(devices.getAudioCallbackLock());
         trackCapture.swap(prepared);
+        recordingOutputs.swap(outputs);
         recordedFrames = 0;
         recordingDrops = 0;
         recording = true;
@@ -116,15 +118,51 @@ void AudioEngine::startTrackRecording(const std::vector<TrackCapture::Target> &t
 }
 std::vector<TrackCapture::Take> AudioEngine::stopTrackRecording() {
     std::unique_ptr<TrackCapture> captured;
+    std::vector<RecordingOutput> outputs;
     {
         const ScopedLock lock(devices.getAudioCallbackLock());
         recording = false;
         captured.swap(trackCapture);
+        outputs.swap(recordingOutputs);
     }
     if (!captured)
         return {};
     auto result = captured->finish();
     recordingDrops = captured->overflows();
+    return result;
+}
+double AudioEngine::changeRecordingTargets(const std::vector<TrackCapture::Target> &targets,
+                                           const std::set<ID> &active, int bits) {
+    if (!trackCapture) throw std::runtime_error("Recording is not active.");
+    auto *device = devices.getCurrentAudioDevice();
+    for (const auto &target : targets) if (!target.bus && !target.midi)
+        for (int channel = 0; channel < target.channels; ++channel)
+            if (!offlineMode && (!device || !device->getActiveInputChannels()[target.input - 1 + channel]))
+                throw std::runtime_error("Ative as entradas escolhidas no Patch antes de gravar.");
+    auto outputs = prepareRecordingOutputs(targets);
+    outputs.reserve(outputs.size() + recordingOutputs.size());
+    auto change = trackCapture->prepareTargets(targets, active, bits);
+    int64 frame = 0;
+    {
+        const ScopedLock lock(devices.getAudioCallbackLock());
+        frame = trackCapture->applyTargets(change);
+        for (auto &output : recordingOutputs) if (active.count(output.track)) outputs.push_back(std::move(output));
+        recordingOutputs.swap(outputs);
+    }
+    return (double)frame / rate.load();
+}
+std::vector<AudioEngine::RecordingOutput> AudioEngine::prepareRecordingOutputs(const std::vector<TrackCapture::Target> &targets) {
+    std::vector<RecordingOutput> result;
+    for (const auto &target : targets) if (target.output && !target.midi) {
+        RecordingOutput output{target.track, {}};
+        if (target.outputPostFX) {
+            auto settings = target.effects.clone();
+            captureExternalEffects(target.track, settings);
+            output.fx = std::make_unique<NativeFX>();
+            output.fx->prepare(settings, rate.load(), nullptr, offlineMode, true, {}, instrumentDirectory);
+        }
+        result.push_back(std::move(output));
+    }
     return result;
 }
 void AudioEngine::startTrackFadeout(const std::set<ID> &selected, double seconds) {
@@ -775,6 +813,7 @@ void AudioEngine::previewDynamics(const ID &id, const String &key, const var &se
     if (trackCapture) trackCapture->previewDynamics(id, key, snapshot);
     const ScopedLock lock(devices.getAudioCallbackLock());
     for (int head = 0; head < (id.empty() ? 1 : 2); ++head) if (auto *fx = effects(id, head)) fx->previewDynamics(key, snapshot);
+    for (auto &output : recordingOutputs) if (output.track == id && output.fx) output.fx->previewDynamics(key, snapshot);
 }
 void AudioEngine::previewNativeParameters(const ID &id, const String &key, const String &kind, const var &settings, const var &chainSettings) {
     if (kind == "Instruments") {
@@ -788,8 +827,12 @@ void AudioEngine::previewNativeParameters(const ID &id, const String &key, const
     if (trackCapture) trackCapture->previewNativeParameters(id,key,snapshot);
     const ScopedLock lock(devices.getAudioCallbackLock());
     for (int head=0;head<(id.empty()?1:2);++head) if (auto *fx=effects(id,head)) fx->previewParameters(key,snapshot);
+    for (auto &output : recordingOutputs) if (output.track == id && output.fx) output.fx->previewParameters(key,snapshot);
 }
-void AudioEngine::previewStemMix(const ID &id,const String &key,const native::stem::Mix &mix){for(int h=0;h<(id.empty()?1:2);h++)if(auto *fx=effects(id,h))fx->previewStemMix(key,mix);}
+void AudioEngine::previewStemMix(const ID &id,const String &key,const native::stem::Mix &mix){
+    for(int h=0;h<(id.empty()?1:2);h++)if(auto *fx=effects(id,h))fx->previewStemMix(key,mix);
+    for(auto &output:recordingOutputs)if(output.track==id && output.fx)output.fx->previewStemMix(key,mix);
+}
 void AudioEngine::waitForStems(){masterFX.waitForStems();for(auto &bus:buses)bus->fx[0].waitForStems();for(auto &voice:voices)voice->fx[0].waitForStems();}
 void AudioEngine::checkStemErrors()const{masterFX.checkStemErrors();for(auto &bus:buses)bus->fx[0].checkStemErrors();for(auto &voice:voices)voice->fx[0].checkStemErrors();}
 unsigned AudioEngine::exportLatencyFrames()const {
@@ -818,6 +861,14 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
     if (!id.empty())
         prepared[1].prepare(saved, sampleRate, effects(id,1),offlineMode,false,{},instrumentDirectory);
     if (trackCapture) trackCapture->updateEffects(id, saved);
+    std::unique_ptr<NativeFX> captureEffects;
+    RecordingOutput *captureTarget = nullptr;
+    for (auto &output : recordingOutputs) if (output.track == id && output.fx) {
+        captureTarget = &output;
+        captureEffects = std::make_unique<NativeFX>();
+        captureEffects->prepare(saved, sampleRate, output.fx.get(), offlineMode, true, {}, instrumentDirectory);
+        break;
+    }
     const bool running=playing.load()||subPlaying.load()||presentationTailing.load();
     for(int h=0;h<(id.empty()?1:2);h++){
         if(running){if(auto *old=effects(id,h))prepared[h].holdRemovedStems(*old);}
@@ -881,6 +932,10 @@ void AudioEngine::setEffects(const ID &id, const var &settings) {
     {
         const ScopedLock lock(devices.getAudioCallbackLock());
         if(preparedLatency)installLatencyPlan(preparedLatency,running);
+        if (captureTarget) {
+            captureEffects->adoptDynamicsState(*captureTarget->fx);
+            captureTarget->fx.swap(captureEffects);
+        }
         if (id.empty()) {
             prepared[0].adoptDynamicsState(masterFX);
             masterFX.swap(prepared[0]);
@@ -2345,6 +2400,11 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         if(auto delay=latencyPlan->clips.find(voice->clipID);delay!=latencyPlan->clips.end())delay->second[0].process(buffer.getWritePointer(0),buffer.getWritePointer(1),samples,clock,active);
         for(int ch=0;ch<2;ch++)buses[voice->bus]->clips[head].addFrom(ch,0,buffer,ch,0,samples);
     }
+    // Only the item editor left open needs idle DSP. Never mix this output:
+    // stopping or reaching the item boundary must still cut its audio/tails.
+    for(auto &voice:voices)for(int head=0;head<2;++head)
+        voice->fx[head].processIdleEditors(samples,head==0?current.position:current.subPosition,
+                                           head==0?current.playing:current.subPlaying);
     renderProfile.mark();
     for (int index : busOrder)
         if (buses[(size_t)index]->renderRouteAudible) {
@@ -2464,6 +2524,21 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 buffer.setSample(0,n,buffer.getSample(0,n)*left);buffer.setSample(1,n,buffer.getSample(1,n)*right);
             }
         };
+        // Capture the live source independently of the arrangement. Existing
+        // items remain in the playback mix, but never feed the new output take.
+        if (captureActive) for (auto &capture : recordingOutputs) if (capture.track == bus.id) {
+            trackCapture->bus(bus.id, liveRecordBuffer, samples, true, false, false);
+            for (int ch=0; ch<2; ++ch) outputRecordScratch.copyFrom(ch,0,liveRecordBuffer,ch,0,samples);
+            applyGain(outputRecordScratch,0);
+            trackCapture->bus(bus.id, outputRecordScratch, samples, true, false, true);
+            if (capture.fx) {
+                capture.fx->applyAutomation(bus.automation, current.position);
+                capture.fx->process(liveRecordBuffer,samples,current.position,current.playing,&bus.midiMessages,blockClock/sr);
+                trackCapture->bus(bus.id, liveRecordBuffer, samples, true, true, false);
+                applyGain(liveRecordBuffer,0);
+                trackCapture->bus(bus.id, liveRecordBuffer, samples, true, true, true);
+            }
+        }
         // Prepare each head independently before a CatStem bus merges them.
         // A normal chain keeps its existing per-head processing behavior.
         for(int head=0;head<2;head++) {
@@ -2478,7 +2553,6 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             }
             if(perHeadAutomation){applyGain(buffer,head,true);applyGain(bus.frozen[head],head,true,true);}
         }
-        if(captureActive)for(auto &capture:outputRecordBuffers)capture.clear(0,samples);
         if(combined) {
             const int other=1-combinedHead;for(int ch=0;ch<2;ch++){
                 bus.head(combinedHead).addFrom(ch,0,bus.head(other),ch,0,samples);
@@ -2491,21 +2565,11 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             if(combined&&head!=combinedHead)continue;
             auto &buffer=bus.head(head);const auto clock=blockClock;
             const bool moving=combined?active:renderingHead[head];
-            if(captureActive) {
-                for(int ch=0;ch<2;ch++) {
-                    outputRecordScratch.copyFrom(ch,0,buffer,ch,0,samples);
-                    outputRecordScratch.addFrom(ch,0,bus.frozen[head],ch,0,samples);
-                    outputRecordBuffers[0].addFrom(ch,0,outputRecordScratch,ch,0,samples);
-                }
-                applyGain(outputRecordScratch,head);
-                for(int ch=0;ch<2;ch++)outputRecordBuffers[1].addFrom(ch,0,outputRecordScratch,ch,0,samples);
-            }
             fxInput=std::max(fxInput,buffer.getMagnitude(0,samples));
             bus.fx[combined?0:head].applyAutomation(bus.automation,automationTime(head,0,compensation?compensation->input:0));
             bus.fx[combined?0:head].process(buffer,samples,timelinePositions[size_t(head)][0],moving,&bus.externalMIDI[head],blockClock/sr);
             for(int ch=0;ch<2;ch++)buffer.addFrom(ch,0,bus.frozen[head],ch,0,samples);
             fxOutput=std::max(fxOutput,buffer.getMagnitude(0,samples));
-            if(captureActive)for(int ch=0;ch<2;ch++)outputRecordBuffers[2].addFrom(ch,0,buffer,ch,0,samples);
             if(!perHeadAutomation)applyGain(buffer,head);
             else for(int ch=0;ch<2;ch++) {
                 // Trim/read gain decomposes without division, so even a fader
@@ -2517,7 +2581,6 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 FloatVectorOperations::multiply(buffer.getWritePointer(ch),gain,samples);
                 if(fadeSelected)FloatVectorOperations::multiply(buffer.getWritePointer(ch),trackFadeoutGains.data(),samples);
             }
-            if(captureActive)for(int ch=0;ch<2;ch++)outputRecordBuffers[3].addFrom(ch,0,buffer,ch,0,samples);
             const bool silent = !buses[(size_t)index]->renderRouteAudible;
             peak = std::max(peak, silent ? 0.f : buffer.getMagnitude(0, samples));
             if (!silent) for (int ch = 0; ch < 2; ++ch)
@@ -2551,8 +2614,6 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 }
             }
         }
-        if(captureActive)for(int stage=0;stage<4;++stage)
-            trackCapture->bus(bus.id,outputRecordBuffers[stage],samples,true,stage>=2,stage%2==1);
         // An armed track indicates its selected input even with transport and
         // audible monitoring off. This does not route that signal to the master.
         if (bus.armed.load() && liveInputEnabled.load() && bus.inputFirst > 0 && input)

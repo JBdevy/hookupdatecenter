@@ -2,6 +2,7 @@
 #include "Session.h"
 #include "PlaylistOccurrences.h"
 #include "Localization.h"
+#include "SetlistSearch.h"
 namespace catlive {
 class PlaylistEditor final : public Component, private ListBoxModel {
   public:
@@ -18,6 +19,8 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         addAndMakeVisible(list);
         list.setRowHeight(34);
         list.setMultipleSelectionEnabled(true);
+        list.setClickingTogglesRowSelection(true);
+        list.setComponentID("playlistSongs");
         list.setColour(ListBox::backgroundColourId, theme::panel);
         addAndMakeVisible(name);
         name.setFont(theme::font(13));
@@ -25,20 +28,29 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         name.setText(text(playlist.name));
         name.setComponentID("playlistName");
         setComponentID("playlistEditor");
+        addAndMakeVisible(search);
+        search.setFont(theme::font(13));
+        search.setTextToShowWhenEmpty(localization::translate("Search songs"),theme::secondary);
+        search.setComponentID("playlistSearch");
+        search.onTextChange=[this]{filterRows();};
+        addAndMakeVisible(searchIcon);
+        searchIcon.getProperties().set("icon","search");
+        searchIcon.getProperties().set("plain",true);
+        searchIcon.onClick=[this]{search.grabKeyboardFocus();};
         for (auto *b : {&all, &clear, &saveButton, &closeButton}) {
             addAndMakeVisible(b);
             b->getProperties().set("plain", true);
         }
+        saveButton.setComponentID("playlistSave");
         saveButton.getProperties().set("plain", false);
         saveButton.setColour(TextButton::buttonColourId, Colour(0xff3d7d56));
         saveButton.setButtonText(editing ? localization::translate("Salvar") : localization::translate("Criar"));
         closeButton.getProperties().set("icon", "close");
         all.onClick = [this] {
-            SparseSet<int> rows;
-            rows.addRange({0, (int)regions.size()});
-            list.setSelectedRows(rows);
+            for(auto index:visibleRows)choose(regions[index].id);
+            syncSelection();
         };
-        clear.onClick = [this] { list.deselectAllRows(); };
+        clear.onClick = [this] { chosen.clear();syncSelection(); };
         closeButton.onClick = this->close;
         saveButton.onClick = [this] {
             const auto title = name.getText().trim();
@@ -48,30 +60,20 @@ class PlaylistEditor final : public Component, private ListBoxModel {
             }
             auto result = playlist;
             result.name = utf8(title);
-            std::set<ID> chosen;
-            for (int i = 0; i < (int)regions.size(); ++i)
-                if (list.isRowSelected(i))
-                    chosen.insert(regions[(size_t)i].id);
             if(!adding) result.regionIds.erase(std::remove_if(result.regionIds.begin(), result.regionIds.end(),
-                                                  [&](const ID &id) { return !chosen.count(result.resolvedRegionId(id)); }),
+                                                  [&](const ID &id) { return !isChosen(result.resolvedRegionId(id)); }),
                                    result.regionIds.end());
-            for (const auto &region : regions)
-                if (chosen.count(region.id) &&
-                    std::none_of(result.regionIds.begin(), result.regionIds.end(), [&](const auto &entry){return result.resolvedRegionId(entry)==region.id;}))
-                    result.regionIds.push_back(region.id);
+            for (const auto &id : chosen)
+                if (std::none_of(result.regionIds.begin(), result.regionIds.end(), [&](const auto &entry){return result.resolvedRegionId(entry)==id;}))
+                    result.regionIds.push_back(id);
             playlistOccurrences::prune(result);
             commit(std::move(result));
         };
         name.onTextChange = [this] { update(); };
         name.onReturnKey = [this] { saveButton.triggerClick(); };
-        list.updateContent();
-        SparseSet<int> selection;
-        for (int i = 0; i < (int)regions.size(); ++i)
-            if (std::any_of(playlist.regionIds.begin(), playlist.regionIds.end(),
-                          [&](const auto &entry){return playlist.resolvedRegionId(entry)==regions[(size_t)i].id;}))
-                selection.addRange({i, i + 1});
-        list.setSelectedRows(selection);
-        update();
+        for(const auto &region:regions)
+            if(std::any_of(playlist.regionIds.begin(),playlist.regionIds.end(),[&](const auto &entry){return playlist.resolvedRegionId(entry)==region.id;}))choose(region.id);
+        filterRows();
     }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
@@ -81,9 +83,7 @@ class PlaylistEditor final : public Component, private ListBoxModel {
                    Justification::centredLeft);
         g.setColour(theme::secondary);
         g.setFont(theme::font(10));
-        g.drawText(String::fromUTF8("Ctrl: múltiplos · Shift: intervalo"), 12, 122, getWidth() - 24,
-                   20, Justification::centredLeft);
-        g.drawText(String(list.getNumSelectedRows()), 12, getHeight() - 42, 80, 30,
+        g.drawText(String((int)chosen.size()), 12, getHeight() - 42, 80, 30,
                    Justification::centredLeft);
     }
     void resized() override {
@@ -91,7 +91,9 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         name.setBounds(12, 46, getWidth() - 24, 26);
         all.setBounds(12, 84, 64, 28);
         clear.setBounds(80, 84, 64, 28);
-        list.setBounds(8, 148, getWidth() - 16, std::max(1, getHeight() - 204));
+        searchIcon.setBounds(12,120,24,26);
+        search.setBounds(40,120,getWidth()-52,26);
+        list.setBounds(8, 154, getWidth() - 16, std::max(1, getHeight() - 210));
         saveButton.setBounds(getWidth() - 78, getHeight() - 48, 66, 38);
     }
     bool keyPressed(const KeyPress &key) override {
@@ -109,18 +111,46 @@ class PlaylistEditor final : public Component, private ListBoxModel {
     std::vector<jaras::Part> regions;
     bool editing = false, adding = false;
     ListBox list;
-    TextEditor name;
+    TextEditor name,search;
+    TextButton searchIcon;
+    std::vector<size_t> visibleRows;
+    std::vector<ID> chosen;
+    bool isChosen(const ID &id) const { return std::find(chosen.begin(),chosen.end(),id)!=chosen.end(); }
+    void choose(const ID &id) { if(!isChosen(id))chosen.push_back(id); }
+    bool filtering=false;
     TextButton all{localization::translate("Todas")}, clear{localization::translate("Limpar")}, saveButton{localization::translate("Criar")}, closeButton;
-    int getNumRows() override { return (int)regions.size(); }
-    void selectedRowsChanged(int) override { update(); }
+    int getNumRows() override { return (int)visibleRows.size(); }
+    void selectedRowsChanged(int) override {
+        if(filtering)return;
+        for(size_t row=0;row<visibleRows.size();++row) {
+            const auto &id=regions[visibleRows[row]].id;
+            if(list.isRowSelected((int)row))choose(id);else chosen.erase(std::remove(chosen.begin(),chosen.end(),id),chosen.end());
+        }
+        update();
+    }
+    void syncSelection() {
+        SparseSet<int> rows;
+        for(int row=0;row<(int)visibleRows.size();++row)
+            if(isChosen(regions[visibleRows[(size_t)row]].id))rows.addRange({row,row+1});
+        list.setSelectedRows(rows,dontSendNotification);
+        update();
+    }
+    void filterRows() {
+        const ScopedValueSetter<bool> guard(filtering,true);
+        visibleRows.clear();
+        const auto query=search.getText().trim();
+        for(size_t index=0;index<regions.size();++index)
+            if(setlistSearch::nameContains(text(regions[index].name),query))visibleRows.push_back(index);
+        list.updateContent();syncSelection();
+    }
     void update() {
-        saveButton.setEnabled(name.getText().trim().isNotEmpty() && list.getNumSelectedRows() > 0);
+        saveButton.setEnabled(name.getText().trim().isNotEmpty() && !chosen.empty());
         repaint();
     }
     void paintListBoxItem(int row, Graphics &g, int width, int height, bool selected) override {
-        if (row < 0 || row >= (int)regions.size())
+        if (row < 0 || row >= (int)visibleRows.size())
             return;
-        const auto &p = regions[(size_t)row];
+        const auto &p = regions[visibleRows[(size_t)row]];
         g.setColour(selected ? Colour(0xff214e70) : theme::background);
         g.fillRect(0, 1, width, height - 2);
         g.setColour(Colours::white);
@@ -128,7 +158,14 @@ class PlaylistEditor final : public Component, private ListBoxModel {
         auto title = text(p.name);
         if (p.uppercaseName.value_or(true))
             title = unicodeCase(title);
-        g.drawFittedText(title, 8, 0, width - 66, height, Justification::centredLeft, 1);
+        const auto order=std::find(chosen.begin(),chosen.end(),p.id);
+        const int nameLeft=order==chosen.end()?8:34;
+        if(order!=chosen.end()) {
+            g.setColour(theme::green);
+            g.drawText(String((int)std::distance(chosen.begin(),order)+1),8,0,22,height,Justification::centredLeft);
+            g.setColour(Colours::white);
+        }
+        g.drawFittedText(title, nameLeft, 0, width-nameLeft-58, height, Justification::centredLeft, 1);
         const int seconds = (int)(p.endTime - p.startTime);
         g.setFont(theme::semiboldFont(9));
         g.drawText((seconds >= 60 ? String(seconds / 60) + "m " : "") + String(seconds % 60) + "s",

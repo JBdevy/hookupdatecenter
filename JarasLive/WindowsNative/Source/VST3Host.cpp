@@ -281,6 +281,9 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
     std::vector<std::vector<float>> storage;
     std::vector<std::vector<float *>> pointers;
     std::atomic<bool> edited{false},parametersChanged{false};
+    std::atomic<unsigned> visibleEditors{0};
+    bool renderedSinceEditorIdle = false, editorIdle = false; // Audio-thread owned.
+    std::vector<float> idleLeft, idleRight;
     std::atomic<unsigned> latencySamples{0};
     std::atomic<int32> restartFlags{0};
     FIXED_REF
@@ -318,6 +321,7 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         : maximumFrames(maxFrames),rate(sampleRate) {try {
         if(!std::isfinite(rate)||rate<8000||rate>384000||maxFrames<1||maxFrames>32768)
             throw std::runtime_error("Invalid VST3 audio format.");
+        idleLeft.resize(maxFrames); idleRight.resize(maxFrames);
         instrument=description.category.find("Instrument")!=std::string::npos;
         module=loadModule(description.path);
         FUID uid;
@@ -497,7 +501,17 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
 Processor::Processor(const Description &d,const State &s,double rate,int frames):impl(std::make_unique<Impl>(d,s,rate,frames)){}
 Processor::~Processor()=default;
 bool Processor::process(float *l,float *r,int n,const Transport &t,const MIDIEvent *events,int count)noexcept {
+    impl->renderedSinceEditorIdle=true; impl->editorIdle=false;
     try{return impl->render(l,r,n,t,events,count);}catch(...){return false;}
+}
+bool Processor::processEditorSilence(int frames,const Transport &transport)noexcept {
+    const bool rendered=impl->renderedSinceEditorIdle;impl->renderedSinceEditorIdle=false;
+    if(rendered || !impl->visibleEditors.load(std::memory_order_relaxed) || frames<1 || frames>impl->maximumFrames)return false;
+    std::fill_n(impl->idleLeft.data(),frames,0.f);std::fill_n(impl->idleRight.data(),frames,0.f);
+    MIDIEvent stopNotes[16];
+    for(int channel=0;channel<16;++channel)stopNotes[channel]={0,std::uint8_t(0xb0|channel),123,0};
+    const int count=impl->editorIdle?0:16;impl->editorIdle=true;
+    try{return impl->render(impl->idleLeft.data(),impl->idleRight.data(),frames,transport,stopNotes,count);}catch(...){return false;}
 }
 bool Processor::automate(std::uint32_t parameter, double value) noexcept {
     return impl->performEdit(parameter,value)==kResultOk;
@@ -532,7 +546,14 @@ bool Processor::isInstrument()const noexcept{return impl->instrument;}
 struct Editor::Impl final: IPlugFrame {
     IPlugView *view=nullptr;
     std::function<void(int,int)> resizeOwner;
-    int w=0,h=0;bool attached=false,resizing=false;
+    int w=0,h=0;bool attached=false,resizing=false,visible=false;
+    std::atomic<unsigned> *visibleEditors=nullptr;
+    void setVisible(bool value){
+        if(visible==value||!visibleEditors)return;
+        visible=value;
+        if(value)visibleEditors->fetch_add(1,std::memory_order_relaxed);
+        else visibleEditors->fetch_sub(1,std::memory_order_relaxed);
+    }
     FIXED_REF
     tresult PLUGIN_API queryInterface(const TUID id,void **out)override{
         if(!out)return kInvalidArgument;*out=nullptr;
@@ -542,12 +563,13 @@ struct Editor::Impl final: IPlugFrame {
         if(request!=view||!rect||rect->getWidth()<=0||rect->getHeight()<=0||resizing)return kResultFalse;
         resizing=true;w=rect->getWidth();h=rect->getHeight();resizeOwner(w,h);view->onSize(rect);resizing=false;return kResultOk;
     }
-    ~Impl(){if(view){if(attached)view->removed();view->setFrame(nullptr);view->release();}}
+    ~Impl(){setVisible(false);if(view){if(attached)view->removed();view->setFrame(nullptr);view->release();}}
 };
 Editor::Editor(std::unique_ptr<Impl> value):impl(std::move(value)){}
 Editor::~Editor()=default;
 int Editor::width()const noexcept{return impl->w;}
 int Editor::height()const noexcept{return impl->h;}
+void Editor::setVisible(bool value){impl->setVisible(value);}
 void Editor::resize(int w,int h){
     if(w<=0||h<=0||impl->resizing)return;
     ViewRect bounds{0,0,w,h};impl->view->checkSizeConstraint(&bounds);
@@ -569,6 +591,7 @@ std::unique_ptr<Editor> Processor::openEditor(void *parent,std::function<void(in
     editor->attached=true;
     if(editor->view->getSize(&rect)==kResultOk&&rect.getWidth()>0&&rect.getHeight()>0){editor->w=rect.getWidth();editor->h=rect.getHeight();}
     editor->resizeOwner(editor->w,editor->h);
+    editor->visibleEditors=&impl->visibleEditors;editor->setVisible(true);
     return std::unique_ptr<Editor>(new Editor(std::move(editor)));
 }
 std::shared_ptr<void> retainModule(const std::filesystem::path &path){ return loadModule(path); }

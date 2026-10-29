@@ -21,6 +21,9 @@ parts = [between('/// The closed header owns no SwiftUI zoom graph.', '@MainActo
 item_source = Path('Apple/Shared/GridSelectionInput.swift').read_text()
 item_constants = item_source[item_source.index('struct GridSelectionItem {'):item_source.index('    let id: UUID', item_source.index('struct GridSelectionItem {'))]
 parts.append(item_constants + '}')
+environment = Path('Apple/Shared/FXWindows.swift').read_text()
+start = environment.index('private struct WorkspaceEditorDismissKey: EnvironmentKey')
+parts.append(environment[start:environment.index('extension View {', start)])
 parts.append(between('enum TimelineSnapPreference {', 'struct TimelineMagnetIcon'))
 conversion = Path('Application/Project/ProjectEditing.swift').read_text()
 parts.append(conversion[conversion.index('public struct MarkerRegionConversion {'):conversion.index('public extension Project {')])

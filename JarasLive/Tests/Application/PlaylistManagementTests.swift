@@ -1,6 +1,17 @@
 import XCTest
 @testable import JarasApplication
 final class PlaylistManagementTests: XCTestCase {
+    func testAllRegionsPresentationOrderUsesNaturalNamesWithoutChangingSource() {
+        let parts = [Part(id: UUID(), name: "Song 10", startTime: 0, endTime: 10),
+                     Part(id: UUID(), name: "Song 2", startTime: 20, endTime: 30),
+                     Part(id: UUID(), name: "Árvore", startTime: 10, endTime: 20)]
+        let entries = parts.enumerated().map { SetlistEntry.region($0.element, number: $0.offset + 1) }
+        XCTAssertEqual(SetlistDisplayOrder.entries(entries, mode: 0).map(\.name), ["Song 10", "Árvore", "Song 2"])
+        XCTAssertEqual(SetlistDisplayOrder.entries(entries, mode: 1).map(\.name), ["Árvore", "Song 2", "Song 10"])
+        XCTAssertEqual(SetlistDisplayOrder.entries(entries, mode: 2).map(\.name), ["Song 10", "Song 2", "Árvore"])
+        XCTAssertEqual(entries.map(\.name), ["Song 10", "Song 2", "Árvore"])
+    }
+
     func testCloneKeepsOrderAndIndependentBlocks() throws {
         let song = UUID(), first = UUID(), second = UUID(), original = UUID()
         var state = RegionSetlist()

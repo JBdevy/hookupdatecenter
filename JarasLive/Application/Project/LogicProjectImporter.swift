@@ -44,7 +44,8 @@ public enum LogicProjectImporter {
     }
     private static func invalid(_ detail: String) -> ProjectError { .invalid("Logic: " + detail) }
 
-    public static func read(_ bundle: URL) throws -> Result {
+    public static func read(_ bundle: URL, localizeWarning: @escaping (String) -> String = { $0 }) throws -> Result {
+        func describe(_ error: Error) -> String { ProjectMigration.errorDescription(error, localize: localizeWarning) }
         let fm = FileManager.default
         var warnings: [String] = []
         guard bundle.pathExtension.lowercased() == "logicx" else { throw invalid("Select a .logicx project.") }
@@ -54,7 +55,7 @@ public enum LogicProjectImporter {
         catch {
             let failure = error as NSError
             if failure.domain != NSCocoaErrorDomain || (failure.code != NSFileReadNoSuchFileError && failure.code != NSFileNoSuchFileError) {
-                warnings.append("Logic project information ignored: " + error.localizedDescription)
+                warnings.append(localizeWarning("Logic project information ignored: ") + describe(error))
             }
             information = [:]
         }
@@ -87,7 +88,7 @@ public enum LogicProjectImporter {
         }
         } catch {
             alternative = available[0]
-            warnings.append("Logic: " + error.localizedDescription + " Recovered alternative: " + alternative.lastPathComponent)
+            warnings.append("Logic: " + describe(error) + localizeWarning(" Recovered alternative: ") + alternative.lastPathComponent)
         }
         var decoded: [Record]?
         for candidate in [alternative] + available.filter({ $0 != alternative }) {
@@ -95,18 +96,18 @@ public enum LogicProjectImporter {
                 let url = candidate.appendingPathComponent("ProjectData")
                 let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                 guard size >= 24, size <= 512 * 1024 * 1024 else { throw invalid("Invalid project data size.") }
-                decoded = try parse(Data(contentsOf: url, options: .mappedIfSafe), report: { warnings.append("Logic: " + $0.localizedDescription) })
+                decoded = try parse(Data(contentsOf: url, options: .mappedIfSafe), report: { warnings.append("Logic: " + describe($0)) })
                 alternative = candidate
                 break
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append("Logic alternative " + candidate.lastPathComponent + " ignored: " + error.localizedDescription) }
+            catch { warnings.append(localizeWarning("Logic alternative ") + candidate.lastPathComponent + localizeWarning(" ignored: ") + describe(error)) }
         }
         guard let records = decoded else { throw invalid("No readable arrangement data was found.") }
         let metadata: [String: Any]
         do { metadata = try plist(alternative.appendingPathComponent("MetaData.plist")) }
-        catch { metadata = [:]; warnings.append("Logic metadata ignored: " + error.localizedDescription) }
+        catch { metadata = [:]; warnings.append(localizeWarning("Logic metadata ignored: ") + describe(error)) }
         func readEvents(_ body: Bytes) throws -> [Bytes] {
-            try events(body, report: { warnings.append("Logic: " + $0.localizedDescription) })
+            try events(body, report: { warnings.append("Logic: " + describe($0)) })
         }
         let name = bundle.deletingPathExtension().lastPathComponent
         var project = Project.empty(name: name)
@@ -115,8 +116,8 @@ public enum LogicProjectImporter {
         song.name = name; song.tracks = []; song.parts = []; song.markers = []; song.timeSettings = ProjectTimeSettings()
         var rate = (metadata["SampleRate"] as? NSNumber)?.doubleValue ?? 44100
         var defaultBPM = (metadata["BeatsPerMinute"] as? NSNumber)?.doubleValue ?? 120
-        if !(8000...768000).contains(rate) { rate = 44100; warnings.append("Logic: invalid sample rate ignored; 44100 Hz was used.") }
-        if !(1...1000).contains(defaultBPM) { defaultBPM = 120; warnings.append("Logic: invalid tempo ignored; 120 BPM was used.") }
+        if !(8000...768000).contains(rate) { rate = 44100; warnings.append(localizeWarning("Logic: invalid sample rate ignored; 44100 Hz was used.")) }
+        if !(1...1000).contains(defaultBPM) { defaultBPM = 120; warnings.append(localizeWarning("Logic: invalid tempo ignored; 120 BPM was used.")) }
         song.bpm = defaultBPM
         song.beatsPerBar = (metadata["SongSignatureNumerator"] as? NSNumber)?.intValue ?? 4
         song.beatUnit = (metadata["SongSignatureDenominator"] as? NSNumber)?.intValue ?? 4
@@ -139,12 +140,12 @@ public enum LogicProjectImporter {
                     tempos.append(Tempo(tick: Double(try event.int(4)) - 38400, bpm: bpm))
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append("Logic tempo point ignored: \(error.localizedDescription)") }
+            catch { warnings.append(localizeWarning("Logic tempo point ignored: ") + describe(error)) }
 }
             }
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append("Logic record ignored: \(error.localizedDescription)") }
+            catch { warnings.append(localizeWarning("Logic record ignored: ") + describe(error)) }
 }
         tempos.sort { $0.tick < $1.tick }
         if tempos.isEmpty { tempos = [Tempo(tick: 0, bpm: defaultBPM)] }
@@ -234,7 +235,7 @@ public enum LogicProjectImporter {
             }
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append("Logic media or mixer setting ignored: \(error.localizedDescription)") }
+            catch { warnings.append(localizeWarning("Logic media or mixer setting ignored: ") + describe(error)) }
 }
         // The arrangement is a sequence with an ordered row list. Automation,
         // trash and the media bin have other owners and must never be imported.
@@ -263,7 +264,7 @@ public enum LogicProjectImporter {
                 track.volume = settings.volume; track.pan = settings.pan; track.mute = settings.mute
             } else { missingMixerSettings = true }
             if depth > 0 {
-                if group == nil { warnings.append("Logic: invalid group ignored for " + title) }
+                if group == nil { warnings.append(localizeWarning("Logic: invalid group ignored for ") + title) }
                 track.parentTrackID = group
                 if depth > 1 { nestedGroups = true }
             } else { group = track.id }
@@ -271,7 +272,7 @@ public enum LogicProjectImporter {
             song.tracks.append(track)
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append("Logic track ignored: \(error.localizedDescription)") }
+            catch { warnings.append(localizeWarning("Logic track ignored: ") + describe(error)) }
 }
         guard !song.tracks.isEmpty else { throw invalid("No arrangement tracks were found.") }
         var media: [String: Media] = [:]
@@ -331,7 +332,7 @@ public enum LogicProjectImporter {
                                         length: noteLength, pitch: pitch, velocity: velocity, channel: Int(status & 15) + 1))
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append("Logic MIDI note ignored: \(error.localizedDescription)") }
+            catch { warnings.append(localizeWarning("Logic MIDI note ignored: ") + describe(error)) }
 }
                             }
                             noteCache[owner] = decoded
@@ -400,7 +401,7 @@ public enum LogicProjectImporter {
                 if event.count > 80 { extendedItems += 1 }
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append("Logic item ignored: \(error.localizedDescription)") }
+            catch { warnings.append(localizeWarning("Logic item ignored: ") + describe(error)) }
 }
         }
         var markers: [(name: String, start: Double, end: Double)] = []
@@ -415,7 +416,7 @@ public enum LogicProjectImporter {
                 markers.append((title, max(0, seconds(tick)), max(0, seconds(tick + length))))
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append("Logic marker ignored: \(error.localizedDescription)") }
+            catch { warnings.append(localizeWarning("Logic marker ignored: ") + describe(error)) }
 }
         }
         markers.sort { $0.start < $1.start }
@@ -440,13 +441,13 @@ public enum LogicProjectImporter {
         if song.parts.isEmpty { song.parts = [Part(id: UUID(), name: name, startTime: 0, endTime: song.duration)] }
         for index in song.tracks.indices { song.tracks[index].clips.sort { $0.startTime < $1.startTime } }
         project.songs = [song]
-        if unsupportedItemPitch { warnings.append("Item pitch outside the supported ±12 semitone range was not converted.") }
-        if missingMixerSettings { warnings.append("Some Logic mixer channels use an unsupported layout. Their volume, pan and mute were left at defaults; review those tracks.") }
-        if midiItems > 0 { warnings.append("MIDI notes were imported. Choose an instrument in CatLive; Logic instruments and plug-ins are not migrated.") }
-        if unsupportedMIDIEvents { warnings.append("Logic MIDI controller, expression and nested sequence events are not migrated; review those regions.") }
-        if trimmedMIDINotes { warnings.append("Only MIDI notes within each region's visible bounds were imported.") }
-        if extendedItems > 0 { warnings.append("Logic Flex processing and region automation are not applied. Audio items retain their source bounds.") }
-        if nestedGroups { warnings.append("Nested Logic groups were placed inside their top-level group.") }
+        if unsupportedItemPitch { warnings.append(localizeWarning("Item pitch outside the supported ±12 semitone range was not converted.")) }
+        if missingMixerSettings { warnings.append(localizeWarning("Some Logic mixer channels use an unsupported layout. Their volume, pan and mute were left at defaults; review those tracks.")) }
+        if midiItems > 0 { warnings.append(localizeWarning("MIDI notes were imported. Choose an instrument in CatLive; Logic instruments and plug-ins are not migrated.")) }
+        if unsupportedMIDIEvents { warnings.append(localizeWarning("Logic MIDI controller, expression and nested sequence events are not migrated; review those regions.")) }
+        if trimmedMIDINotes { warnings.append(localizeWarning("Only MIDI notes within each region's visible bounds were imported.")) }
+        if extendedItems > 0 { warnings.append(localizeWarning("Logic Flex processing and region automation are not applied. Audio items retain their source bounds.")) }
+        if nestedGroups { warnings.append(localizeWarning("Nested Logic groups were placed inside their top-level group.")) }
         try project.validate()
         return Result(project: project, media: media.values.filter { entry in song.tracks.contains { track in track.clips.contains { $0.audioFile?.path == entry.relativePath } } }.sorted { $0.relativePath < $1.relativePath }, warnings: warnings)
     }

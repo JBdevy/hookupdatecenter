@@ -241,10 +241,12 @@ public extension Song {
         guard marker.sourceRegionID == nil, marker.unifiedRegionID == nil else { return false }
         return !marker.isTempo || !parts.contains { marker.position >= $0.startTime && marker.position < $0.endTime }
     }
-    func markerDragPosition(_ marker: TimelineMarker, to value: Double, pixelsPerSecond: Double, free: Bool) -> Double {
+    func markerDragPosition(_ marker: TimelineMarker, to value: Double, pixelsPerSecond: Double, free: Bool, cursor: Double? = nil) -> Double {
         guard canDragMarker(marker), value.isFinite else { return marker.position }
-        let target = max(0, value)
-        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, excludingMarker: marker.id) }
+        var target = max(0, value)
+        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, cursor: cursor, excludingMarker: marker.id) }
+        if !free, let cursor, cursor.isFinite, cursor >= 0, pixelsPerSecond.isFinite, pixelsPerSecond > 0,
+           abs(cursor - target) * pixelsPerSecond <= 12 + 1e-9 { target = cursor }
         var intervals: [(Double, Double)] = []
         for part in parts.sorted(by: { $0.startTime < $1.startTime }) {
             if let last = intervals.last, part.startTime <= last.1 {

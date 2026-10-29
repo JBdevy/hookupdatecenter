@@ -115,7 +115,7 @@ void Session::newProject(String name) {
     mediaDirectory.createDirectory();
     undoHistory.clear();
     redoHistory.clear();
-    recordingItems.clear();
+    recordingItems.clear(); recordingActiveTracks.clear(); recordingFinalizing = false; recordingResume = RecordingResume::none;
     recordArms.clear();
     recordSelections.clear(); endMixerGesture();
     dirty = false;
@@ -313,9 +313,14 @@ void Session::prepareLiveGraph() {
                 if (song()) audio.setMixer(project(), *song());
                 updateRecordArms();
                 publishTransport(true, true);
-            } catch (const std::exception &e) { message = String::fromUTF8(e.what()); }
+            } catch (const std::exception &e) {
+                message = String::fromUTF8(e.what());
+                recordingFinalizing = false; recordingResume = RecordingResume::none;
+            }
             if (graphCancellation == cancellation) graphCancellation.reset();
+            if (error.isNotEmpty()) { recordingFinalizing = false; recordingResume = RecordingResume::none; }
             notify();
+            resumeAfterRecordingPreparation();
         };
         MessageManager::callAsync([commit] { (*commit)(); });
     });
@@ -995,6 +1000,11 @@ bool Session::controlAllowedDuringSave(jaras::CommandKind kind) const {
 }
 void Session::command(jaras::CommandKind kind, const ID &target, double value) {
     if (jaras::projectSync::readOnly()) return;
+    if (recordingFinalizing) {
+        if (kind == jaras::CommandKind::play) { recordingResume = RecordingResume::play; return; }
+        if (kind == jaras::CommandKind::stop || kind == jaras::CommandKind::stopAll || kind == jaras::CommandKind::pause)
+            recordingResume = RecordingResume::none;
+    }
     if (fadeoutRequested && kind == jaras::CommandKind::subPlay) {
         warnTransportFadeout(String::fromUTF8("Subplay indisponível enquanto o Fadeout está acontecendo.")); return;
     }
@@ -1150,23 +1160,25 @@ void Session::updateRecordArms() {
             audio.armTrack(track.id, recordingArmed(track.id));
 }
 void Session::setRecordingSelection(const ID &id, const std::set<ID> &targets) {
-    if (audio.isRecording())
-        return;
     const auto selected = id.empty() ? std::set<ID>{} : targets.count(id) ? targets : std::set<ID>{id};
     if (recordSelections == selected)
         return;
+    const auto previous = recordSelections;
     recordSelections = selected;
+    try { if (audio.isRecording()) updateRecordingTargets(); }
+    catch (const std::exception &failure) { recordSelections = previous; message = String::fromUTF8(failure.what()); }
     updateRecordArms();
 }
 void Session::cycleRecordArm(const ID &id, const std::set<ID> &targets) {
     if (jaras::projectSync::readOnly()) return;
-    if (audio.isRecording())
-        throw std::runtime_error("Conclua a gravação antes de alterar as pistas armadas.");
+    const auto previous = recordArms;
     const int next = (recordArm(id) + 1) % 3;
     if (const auto *current = song()) {
         for (const auto &track : current->tracks)
             if ((targets.count(id) ? targets.count(track.id) != 0 : track.id == id) && jaras::fixedTrackName(track.role).empty())
                 recordArms[track.id] = next;
+        try { if (audio.isRecording()) updateRecordingTargets(); }
+        catch (...) { recordArms = previous; throw; }
         updateRecordArms(); notify();
     }
 }
@@ -1202,8 +1214,13 @@ void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set
 }
 void Session::toggleRecording() {
     if (jaras::projectSync::readOnly()) return;
+    if (!audio.isRecording() && (recordingFinalizing || graphCancellation)) {
+        recordingResume = recordingResume == RecordingResume::record ? RecordingResume::none : RecordingResume::record;
+        return;
+    }
     if (audio.isRecording()) {
         auto takes = audio.stopTrackRecording();
+        recordingActiveTracks.clear();
         core.execute({jaras::CommandKind::stopAll});
         publishTransport();
         const auto directory = mediaDirectory;
@@ -1213,6 +1230,7 @@ void Session::toggleRecording() {
         const auto drops = audio.recordingOverflows();
         const std::weak_ptr<int> lifetime = alive;
         busy = true;
+        recordingFinalizing = true;
         message = String::fromUTF8("Finalizando gravação…");
         notify();
         worker.addJob([this, lifetime, directory, projectID, songID, start, drops, previews,
@@ -1233,13 +1251,13 @@ void Session::toggleRecording() {
                 }
                 jaras::AudioClip clip;
                 clip.id = uuid();
-                for (const auto &item : previews) if (item.track == take.track) {
+                for (const auto &item : previews) if (item.clip.id == take.clip) {
                     clip.id = item.clip.id;
                     clip.recordingLane = item.clip.recordingLane;
                     clip.name = item.clip.name;
                     break;
                 }
-                clip.startTime = start;
+                clip.startTime = start + take.startOffset;
                 clip.duration = take.duration;
                 if (clip.name.empty()) clip.name = utf8(take.file == File() ? String("MIDI take")
                                                      : take.file.getFileNameWithoutExtension());
@@ -1262,7 +1280,7 @@ void Session::toggleRecording() {
                 if (lifetime.expired()) return;
                 busy = false;
                 recordingItems.clear(); ++revision;
-                if (project().id != projectID) { notify(); return; }
+                if (project().id != projectID) { recordingFinalizing = false; recordingResume = RecordingResume::none; notify(); return; }
                 try {
                     if (!clips.empty()) editTimeline([&](jaras::Project &project) {
                         for (auto &song : project.songs) if (song.id == songID)
@@ -1277,8 +1295,12 @@ void Session::toggleRecording() {
                         : drops ? String::fromUTF8("Gravação concluída com perda de blocos. Verifique os takes antes de usar.")
                                 : clips.empty() ? String::fromUTF8("Gravação encerrada.") : String::fromUTF8("Gravação adicionada às pistas armadas.");
                     if (!failures.isEmpty()) message += " " + failures.joinIntoString(String::fromUTF8(" · "));
-                } catch (const std::exception &failure) { message = String::fromUTF8(failure.what()); }
+                } catch (const std::exception &failure) {
+                    message = String::fromUTF8(failure.what());
+                    recordingFinalizing = false; recordingResume = RecordingResume::none;
+                }
                 notify();
+                resumeAfterRecordingPreparation();
             });
         });
         return;
@@ -1296,15 +1318,41 @@ void Session::toggleRecording() {
     syncClock();
     recordingStart = transport().playing ? transport().position : transport().editPosition;
     recordingSong = song()->id;
+    updateRecordingTargets(true);
+    try {
+        if (!transport().playing) command(jaras::CommandKind::play);
+    } catch (...) {
+        audio.stopTrackRecording(); recordingItems.clear(); recordingActiveTracks.clear(); ++revision;
+        throw;
+    }
+    message = String::fromUTF8("Gravando áudio · clique em REC ou Stop para concluir");
+    notify();
+}
+void Session::resumeAfterRecordingPreparation() {
+    if (busy || graphCancellation || audio.isRecording()) return;
+    recordingFinalizing = false;
+    const auto resume = std::exchange(recordingResume, RecordingResume::none);
+    try {
+        if (resume == RecordingResume::play) command(jaras::CommandKind::play);
+        else if (resume == RecordingResume::record) toggleRecording();
+    } catch (const std::exception &failure) { message = String::fromUTF8(failure.what()); notify(); }
+}
+void Session::updateRecordingTargets(bool starting) {
+    if (!song()) return;
     Appearance settings;
     const auto advancedFormat = utf8(settings.value("jaras.media.record.format", "WAV").toString());
     const int bits = (int)settings.value("jaras.media.record.bits", 24);
     const int bitrate = (int)settings.value("jaras.media.record.bitrate", 320);
+    std::set<ID> active;
+    for (const auto &track : song()->tracks)
+        if (recordingArmed(track.id) && jaras::fixedTrackName(track.role).empty()) active.insert(track.id);
+    if (!starting && active == recordingActiveTracks) return;
     std::vector<TrackCapture::Target> targets;
     std::vector<RecordingItem> previews;
     std::set<String> recordingNames;
     for (const auto &s : project().songs) for (const auto &t : s.tracks) for (const auto &clip : t.clips)
         recordingNames.insert(text(clip.name).toLowerCase());
+    for (const auto &item : recordingItems) recordingNames.insert(text(item.clip.name).toLowerCase());
     const auto stemsFolder = mediaDirectory.getChildFile("Stems");
     const auto nameExists = [&](const String &name) {
         if (recordingNames.count(name.toLowerCase())) return true;
@@ -1320,7 +1368,7 @@ void Session::toggleRecording() {
         recordingNames.insert(name.toLowerCase()); return name;
     };
     for (const auto &track : song()->tracks)
-        if (recordingArmed(track.id) && jaras::fixedTrackName(track.role).empty()) {
+        if (active.count(track.id) && (starting || !recordingActiveTracks.count(track.id))) {
             TrackCapture::Target target;
             target.track = track.id;
             target.output = track.role.id == "vinhetas" || track.recordingOutput.value_or(false);
@@ -1353,29 +1401,30 @@ void Session::toggleRecording() {
             RecordingItem item;
             item.track = track.id;
             item.clip.id = uuid();
+            target.clip = item.clip.id;
             item.clip.name = utf8(takeName);
             item.clip.startTime = recordingStart;
-            // Reserve a lane for the whole remaining recording, without adding
-            // placeholder clips to the audio graph or reallocating it each frame.
-            double end = std::max(recordingStart + 1., song()->duration);
-            for (const auto &clip : track.clips) end = std::max(end, clip.startTime + clip.duration);
-            item.clip.duration = end - recordingStart;
-            item.clip.recordingLane = ItemLanes(track).count;
+            // Start at the actual capture length. A later item must not shrink
+            // this take until recording really reaches it.
+            item.clip.duration = 1. / audio.sampleRate();
+            int lane = ItemLanes(track).count;
+            for (const auto &previous : recordingItems) if (previous.track == track.id)
+                lane = std::max(lane, previous.clip.recordingLane.value_or(0) + 1);
+            item.clip.recordingLane = lane;
             item.preview = std::make_shared<RecordingPreview>(audio.sampleRate(), target.channels);
             target.preview = item.preview;
             previews.push_back(std::move(item));
             targets.push_back(std::move(target));
         }
-    audio.startTrackRecording(targets, bits, song()->bpm);
-    recordingItems = std::move(previews); ++revision;
-    try {
-        if (!transport().playing) command(jaras::CommandKind::play);
-    } catch (...) {
-        audio.stopTrackRecording(); recordingItems.clear(); ++revision;
-        throw;
+    double offset = 0;
+    if (starting) { audio.startTrackRecording(targets, bits, song()->bpm); recordingItems.clear(); }
+    else offset = audio.changeRecordingTargets(targets, active, bits);
+    for (auto &item : previews) {
+        item.clip.startTime = recordingStart + offset;
+        recordingItems.push_back(std::move(item));
     }
-    message = String::fromUTF8("Gravando áudio · clique em REC ou Stop para concluir");
-    notify();
+    recordingActiveTracks = std::move(active);
+    ++revision;
 }
 void Session::cancelBPMDetection() {
     if (!bpmCancellation) return;

@@ -254,7 +254,7 @@ final class ProjectEditingTests: XCTestCase {
         XCTAssertEqual(project.songs[0].tracks[0].clips.count, 1)
         try project.validate()
     }
-    func testAllRegionsDeleteRemovesOwnedContentOfEveryKindAndPreservesOverlaps() throws {
+    func testAllRegionsDeletePreservesOwnedItemsAndAudioWithUndo() throws {
         var project = Project.empty(name: "Delete region contents")
         let songID = project.songs[0].id
         let first = Part(id: UUID(), name: "Delete", startTime: 10, endTime: 20)
@@ -291,14 +291,18 @@ final class ProjectEditingTests: XCTestCase {
         project.deleteSetlistEntries([first.id], song: songID, playlist: nil)
         history.record(project)
         XCTAssertEqual(project.songs[0].parts, [other])
-        XCTAssertEqual(project.songs[0].tracks[0].clips, [foreign, loose])
-        XCTAssertTrue(project.songs[0].tracks.dropFirst().allSatisfy { $0.clips.isEmpty })
-        XCTAssertEqual(project.songs[0].markers, [otherMarker, looseMarker, boundary])
+        for (index, track) in project.songs[0].tracks.enumerated() where track.kind != .timecode {
+            XCTAssertEqual(track.clips.map(\.id), before.songs[0].tracks[index].clips.map(\.id))
+            XCTAssertEqual(track.clips.map(\.startTime), before.songs[0].tracks[index].clips.map(\.startTime))
+            XCTAssertFalse(track.clips.contains { $0.regionOwnerID == first.id })
+        }
+        XCTAssertEqual(project.songs[0].markers?.map(\.id), before.songs[0].markers?.map(\.id))
+        XCTAssertEqual(project.songs[0].markers?.map(\.position), before.songs[0].markers?.map(\.position))
         XCTAssertEqual(project.regionSetlist?.playlists[0].regionIds, [other.id])
         XCTAssertEqual(history.undo(), before)
         XCTAssertEqual(history.redo(), project)
     }
-    func testAllRegionsImportedContentUsesHalfOpenRegionBoundaries() throws {
+    func testAllRegionsPreservesImportedItemsAndMarkers() throws {
         var project = fixture()
         let first = Part(id: UUID(), name: "First", startTime: 30, endTime: 50)
         let next = Part(id: UUID(), name: "Next", startTime: 50, endTime: 70)
@@ -307,13 +311,14 @@ final class ProjectEditingTests: XCTestCase {
         let cue = TimelineMarker(id: UUID(), name: "Cue", position: 40, color: 0, section: true)
         let boundary = TimelineMarker(id: UUID(), name: "Next tempo", position: 50, color: 0, tempoBPM: 140)
         project.songs[0].markers = [tempo, cue, boundary]
+        let clips = project.songs[0].tracks[0].clips
         project.deleteSetlistEntries([first.id], song: project.songs[0].id, playlist: nil)
-        XCTAssertTrue(project.songs[0].tracks[0].clips.isEmpty)
-        XCTAssertEqual(project.songs[0].markers, [boundary])
+        XCTAssertEqual(project.songs[0].tracks[0].clips, clips)
+        XCTAssertEqual(project.songs[0].markers, [tempo, cue, boundary])
         XCTAssertEqual(project.songs[0].parts, [next])
         try project.validate()
     }
-    func testAllRegionsClearsPreviouslyUnownedTempoWithoutCapturingItDuringRegionMoves() throws {
+    func testAllRegionsPreservesTempoAfterRegionMoves() throws {
         var project = fixture()
         let first = Part(id: UUID(), name: "Moving", startTime: 0, endTime: 10)
         let next = Part(id: UUID(), name: "Next", startTime: 30, endTime: 40)
@@ -333,7 +338,7 @@ final class ProjectEditingTests: XCTestCase {
         let original = project
         project.deleteSetlistEntries([first.id], song: project.songs[0].id, playlist: nil)
         history.record(project)
-        XCTAssertEqual(project.songs[0].markers, [before, foreign, boundary, after])
+        XCTAssertEqual(project.songs[0].markers, [before, start, inside, foreign, boundary, after])
         XCTAssertEqual(history.undo(), original)
         XCTAssertEqual(history.redo(), project)
         try project.validate()

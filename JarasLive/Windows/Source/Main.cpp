@@ -1,3 +1,4 @@
+#include "ConfirmationPanel.h"
 #include "Workspace.h"
 #include "RemoteProtocol.h"
 #include "RemoteHost.h"
@@ -539,7 +540,7 @@ class CatLiveApplication final : public JUCEApplication {
         sync.resetApplied=[this]{syncApplied.clear();};
         sync.confirm=[this](String message,std::function<void(bool)> reply) {
             auto *owner=tabHost?tabHost->current:nullptr;
-            AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon,"Project Sync",message,
+            ConfirmationPanel::show(MessageBoxIconType::QuestionIcon,"Project Sync",message,
                 "Aceitar","Cancelar",owner,ModalCallbackFunction::create([reply](int result){reply(result!=0);}));
         };
         sync.audioIdentity=[this] {

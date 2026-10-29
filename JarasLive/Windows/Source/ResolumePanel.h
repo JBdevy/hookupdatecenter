@@ -1,4 +1,5 @@
 #pragma once
+#include "ConfirmationPanel.h"
 #include "Localization.h"
 #include "ResolumeComposition.h"
 #include "ModalSheet.h"
@@ -136,19 +137,12 @@ class ResolumePanel final : public Component {
         if (busy || !saveMap())
             return;
         auto safe = SafePointer<ResolumePanel>(this);
-        AlertWindow::showAsync(MessageBoxOptions()
-                                   .withIconType(MessageBoxIconType::QuestionIcon)
-                                   .withTitle(String::fromUTF8("Criar composição do Resolume? "))
-                                   .withMessage(String::fromUTF8(
-                                       "Abra uma composição nova e vazia no Resolume primeiro. "
-                                       "Composições que contêm mídia não serão substituídas."))
-                                   .withButton("Criar")
-                                   .withButton("Cancelar")
-                                   .withAssociatedComponent(this),
-                               [safe](int result) {
-                                   if (safe && result == 1)
-                                       safe->chooseDestination();
-                               });
+        ConfirmationPanel::show(MessageBoxIconType::QuestionIcon,
+            String::fromUTF8("Criar composição do Resolume?"),
+            String::fromUTF8("Abra uma composição nova e vazia no Resolume primeiro. Composições que contêm mídia não serão substituídas."),
+            "Criar", "Cancelar", this, ModalCallbackFunction::create([safe](int result) {
+                if(safe && result) safe->chooseDestination();
+            }));
     }
     void chooseDestination() {
         chooser = std::make_unique<FileChooser>(

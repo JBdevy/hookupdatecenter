@@ -1258,10 +1258,18 @@ public struct ShowTimelinePresentationState: Equatable {
             return false
         }
     }
-    private var itemClipboard: GridItemClipboard?
+    @Published public private(set) var cutGridItems: Set<UUID> = []
+    private var itemClipboard: GridItemClipboard? {
+        didSet {
+            cutGridItems = itemClipboard.flatMap { $0.moving ? Set($0.entries.map { $0.clip.id }) : nil } ?? []
+        }
+    }
+    public func cancelGridCut() {
+        if itemClipboard?.moving == true { itemClipboard = nil }
+    }
     @discardableResult public func copyItems(_ ids: Set<UUID>, moving: Bool = false) -> Bool {
         if ids.isEmpty, selectedProgramChange != nil { return !moving && copyProgramChange() }
-        guard canControl(), !finishing, let song = current?.id,
+        guard canControl(), !finishing, !moving || !timelineMovementLocked, let song = current?.id,
               let copied = GridItemClipboard(project: snapshot.project, song: song, selected: ids, moving: moving) else { return false }
         if pendingFXEdit { commitFX() }
         itemClipboard = copied; programChangeClipboard = nil; programChangePasteReady = false

@@ -1,3 +1,4 @@
+#include "ConfirmationPanel.h"
 #include "AudioPreparationOverlay.h"
 #include "StemFolderImportPanel.h"
 #include "Localization.h"
@@ -902,7 +903,7 @@ class LoginPanel final : public Panel {
                         if (!safe || id <= 0 || id > values.size())
                             return;
                         auto installation = str(values[id - 1], "installationId");
-                        AlertWindow::showOkCancelBox(
+                        ConfirmationPanel::show(
                             MessageBoxIconType::QuestionIcon, "Remover dispositivo?",
                             str(values[id - 1], "deviceName"), "Remover", "Cancelar",
                             safe.getComponent(),
@@ -1563,14 +1564,25 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         canvas.repaint();heads.repaint();
     }
     void refreshWaveforms() {
+        bool layoutChanged = false;
         if (const auto *song = w.session.song())
             for (auto &item : w.session.recordingItems) {
                 item.preview->drain();
-                for (size_t row = 0; row < song->tracks.size(); ++row)
-                    if (song->tracks[row].id == item.track && !w.rowHidden((int)row))
+                const double duration = std::max(1., (double)item.preview->frames.load(std::memory_order_acquire)) / item.preview->rate;
+                for (size_t row = 0; row < song->tracks.size(); ++row) if (song->tracks[row].id == item.track) {
+                    auto others = ItemLanes::references(song->tracks[row]);
+                    for (const auto &take : w.session.recordingItems)
+                        if (take.track == item.track) others.push_back(&take.clip);
+                    layoutChanged |= ItemLanes::growRecordingClip(item.clip, duration, others);
+                    if (!w.rowHidden((int)row))
                         canvas.repaint(0, headerHeight() + w.rowTop((int)row) - w.verticalOffset,
                                        canvas.getWidth(), w.rowBodyHeight((int)row));
+                }
             }
+        if (layoutChanged) {
+            w.itemLayoutRevision = ~uint64(0);
+            w.resized(); updateRanges(); w.repaint();
+        }
         const auto current = waveforms.revision();
         if (current != waveformRevision) { waveformRevision = current; canvas.repaint(); }
     }
@@ -2113,11 +2125,17 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             const ScopeGuard measure{measurePaint};
             auto stageStart=started;int stageIndex=0;
             auto stage=[&]{const auto now=Time::getMillisecondCounterHiRes();if(!t.w.capturingSnapshot && stageIndex<(int)t.paintStages.size())t.paintStages[(size_t)stageIndex]=now-stageStart;++stageIndex;stageStart=now;};
-            g.fillAll(t.w.appearance.colour("jaras.timeline.background", 0x161616));
+            const auto gridBackground = t.w.appearance.colour("jaras.timeline.background", 0x161616);
+            g.fillAll(gridBackground);
             const auto *song = t.displaySong();
             if (!song)
                 return;
             refreshClipIntervals(*song);
+            std::set<ID> cutItems;
+            if (t.w.itemClipboard && t.w.itemClipboard->moving && t.w.itemClipboard->song == song->id &&
+                gridMediaClipboard::ownsItems(true, t.w.itemClipboardSequence, GetClipboardSequenceNumber()))
+                for (const auto &track : t.w.itemClipboard->tracks)
+                    for (const auto &clip : track.clips) cutItems.insert(clip.id);
             const auto viewStart = t.timeAt(0), viewEnd = t.timeAt((float)getWidth());
             g.setColour(theme::panel);
             g.fillRect(0, 0, getWidth(), headerHeight());
@@ -2146,7 +2164,14 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 const auto secondary = t.w.appearance.colour("jaras.timeline.secondaryGrid", 0x333235).withAlpha(.85f);
                 for (const auto &tick : grid) {
                     g.setColour(tick.primary ? primary : secondary);
-                    g.fillRect(lineX(tick.time), top, pixel, bottom - top);
+                    const float x=lineX(tick.time)+pixel*.5f, thickness=pixel*.75f;
+                    const float dash[]{1.f,3.f};
+                    // Anchor all vertical dots to the ruler, including selected-track
+                    // repaints, so scrolling never restarts their pattern.
+                    const float phase=std::fmod(std::max(0.f,top-headerHeight()),4.f);
+                    Graphics::ScopedSaveState clipped(g);
+                    g.reduceClipRegion(juce::Rectangle<float>(x-pixel,top,pixel*2,bottom-top).getSmallestIntegerContainer());
+                    g.drawDashedLine(Line<float>(x,top-phase,x,bottom),dash,2,thickness);
                 }
             };
             drawGrid((float)headerHeight(), (float)getHeight());
@@ -2232,7 +2257,13 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 // Unselected rows already have this background and grid from the
                 // canvas pass. Only the selected row needs a different fill.
                 if(t.w.trackSelected(track.id)) {
-                    g.setColour(theme::panel);
+                    // Match the Mac's 0x16 -> 0x1d highlight, relative to the
+                    // chosen grid colour. A fixed panel colour disappears when
+                    // the user sets the grid itself to (or near) 0x1d1d1d.
+                    const int step = gridBackground.getPerceivedBrightness() > .8f ? -7 : 7;
+                    const auto channel = [step](uint8 value) { return (uint8)jlimit(0, 255, (int)value + step); };
+                    g.setColour(Colour(channel(gridBackground.getRed()), channel(gridBackground.getGreen()),
+                                       channel(gridBackground.getBlue())));
                     g.fillRect(0,y,getWidth(),height);
                     drawGrid((float)y,(float)(y+height));
                 }
@@ -2446,6 +2477,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     if(selected) {
                         g.setColour(Colours::black);g.strokePath(outline,PathStrokeType(.8f));
                         g.setColour(Colour(0xff80ff9c));g.strokePath(outline,PathStrokeType(.7f));
+                    }
+                    if (cutItems.count(clip.id)) {
+                        g.setColour(t.w.appearance.colour("jaras.timeline.background", 0x161616).withAlpha(.55f));
+                        g.fillRoundedRectangle(rect, 3.f);
                     }
                 }
                 for (const auto &item : t.w.session.recordingItems) if (item.track == track.id) {
@@ -2763,9 +2798,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                 else if(control==ItemHeader::pan)setItemValueTooltip("Pan: "+ItemHeader::panText(c.pan.value_or(0)),e.position);
                                 else setItemValueTooltip({},e.position);
                             } else {
-                                // Shift keeps the cursor at the exact pointer time,
-                                // including clicks over items, just as on empty grid.
-                                if (!e.mods.isCtrlDown())
+                                // Preserve the existing edit cursor as a drag magnet.
+                                // A plain click seeks on release; Shift still seeks
+                                // immediately to the exact pointer time.
+                                if (e.mods.isShiftDown() && !e.mods.isCtrlDown())
                                     t.w.perform([&] { t.w.session.command(e.mods.isAltDown() ? jaras::CommandKind::subSeek : jaras::CommandKind::editSeek, {}, pointerPosition(startTime,e.mods,e.mods.isAltDown())); });
                                 dragClip = c.id;
                                 itemDragSong=s->id;
@@ -2978,6 +3014,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         t.w.selectedTrack = destinationTrack;
                 });
             }
+            if (!dragClip.empty() && e.getDistanceFromDragStart() <= 4 && !e.mods.isCtrlDown() && !e.mods.isShiftDown())
+                t.w.perform([&] { t.w.session.command(e.mods.isAltDown() ? jaras::CommandKind::subSeek : jaras::CommandKind::editSeek,
+                    {}, pointerPosition(startTime,e.mods,e.mods.isAltDown())); });
             dragClip.clear();
             dragPreview = false; resizedClipPreview.reset(); movingClipPreview.reset();
             dragOriginalClip.reset();dragOriginalValid=false;previewPlacements.clear();dragSelectionPreviews.clear();
@@ -3081,7 +3120,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         double markerEditPosition(const MouseEvent &e) const {
             const double at=std::max(0.,originalStart+(e.position.x-startPosition.x)/t.w.pixelsPerSecond);
             const auto *song=t.w.session.song();
-            return song?timelineGrid::snap(at,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(e.mods),false,nullptr,false,nullptr,nullptr,&dragMarker):at;
+            return song?timelineGrid::snap(at,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(e.mods),false,&t.w.session.transport(),false,nullptr,nullptr,&dragMarker):at;
         }
         std::pair<double,double> regionEditBounds(const MouseEvent &e) const {
             const double delta=(e.position.x-startPosition.x)/t.w.pixelsPerSecond;
@@ -4162,7 +4201,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
                 });
             });
         const int height=panel->preferredHeight();
-        ModalSheet::open(*safe,localization::translate("Relative timebase"),std::move(panel),416,height);
+        ModalSheet::open(*safe,localization::translate("Relative timebase"),std::move(panel),confirmationStyle::width,height);
     };
     addAndMakeVisible(timelineSnap);
     timelineSnap.setComponentID("timelineSnap");
@@ -4626,6 +4665,7 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
             panel->setSize(width, height);
             it->second->setContentOwned(panel.release(), true);
         }
+        it->second->setMinimised(false);
         it->second->toFront(true);
         return;
     }
@@ -4768,6 +4808,7 @@ void Workspace::syncNativeTransport() {
         state.scale = scaleY;
         state.dimming=1.f-model->getAlpha();
         state.savePulse=String(id)=="save" && session.dirty;
+        state.recordPulse=String(id)=="record" && session.audio.isRecording();
         state.fontSize = theme::semiboldFont((float)model->getProperties().getWithDefault("fontSize", 10.f)).getHeightInPoints();
         state.active = model->getToggleState() || (bool)model->getProperties()["solidTransportColour"]; state.enabled = model->isEnabled();
         state.blocked = Component::getCurrentlyModalComponent() != nullptr;
@@ -4821,7 +4862,12 @@ void Workspace::syncNativeTransport() {
                 if (action) action();
             }
             if (safe) {
-                if (!Component::getCurrentlyModalComponent()) safe->grabKeyboardFocus();
+                // A transport action can open a floating editor (Advanced,
+                // Settings, FX). Do not raise the workspace over that editor
+                // again when this native button's mouse-up finishes.
+                if (!Component::getCurrentlyModalComponent())
+                    if (auto *peer=safe->getPeer();peer && GetForegroundWindow()==(HWND)peer->getNativeHandle())
+                        safe->grabKeyboardFocus();
                 safe->syncNativeTransport();
             }
         });
@@ -5224,7 +5270,7 @@ ItemLanes::Geometry Workspace::itemGeometry(int index, const ID &clip, const Ite
     const bool recording=song && index>=0 && index<(int)song->tracks.size() &&
         std::any_of(session.recordingItems.begin(),session.recordingItems.end(),[&](const auto &item){return item.track==song->tracks[(size_t)index].id;});
     const auto &layout=preview && !recording?*preview:itemLanes(index);
-    return layout.geometry(clip,(float)rowBodyHeight(index),recording);
+    return layout.geometry(clip,(float)rowBodyHeight(index));
 }
 void Workspace::openTrackVisibility() {
     if(session.busy)return;
@@ -5458,7 +5504,7 @@ void Workspace::updateState() {
     controls["record"]->setToggleState(session.audio.isRecording(), dontSendNotification);
     controls["metronome"]->setToggleState(session.audio.metronomeEnabled.load(),
                                           dontSendNotification);
-    controls["record"]->setColour(TextButton::buttonOnColourId, theme::transportRed);
+    controls["record"]->setColour(TextButton::buttonOnColourId, theme::liveOffRed);
     controls["save"]->setButtonText(session.isSaving() ? "Salvando..." : session.dirty ? localization::translate("Salvar") : localization::translate("Salvo"));
     controls["save"]->setEnabled(!session.isSaving());
     controls["save"]->getProperties().set("leadingIcon", session.dirty ? "save" : "check");
@@ -5789,6 +5835,9 @@ bool Workspace::keyPressed(const KeyPress &key) {
     }
     if (code == KeyPress::escapeKey) {
         if (isRepeat) return true;
+        if (itemClipboard && itemClipboard->moving) {
+            itemClipboard.reset(); timeline->invalidate(); return true;
+        }
         timeline->cancelInteraction();
         ++shortcutCount;
         perform([&] { session.command(jaras::CommandKind::escape); });
@@ -5985,16 +6034,13 @@ void Workspace::confirmTrackDeletion(const std::set<ID> &ids, std::function<void
     ModalSheet::open(*this, localization::translate("Delete selected tracks and their items?"),
         std::make_unique<TrackDeletionConfirmationPanel>(std::move(remove)), confirmationStyle::width, 138);
 }
-void Workspace::confirm(const String &title, const String &message, std::function<void()> done, std::function<void()> cancelled) {
-    AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon, title, message, "Continuar",
-                                 "Cancelar", this,
-                                 ModalCallbackFunction::create([done, cancelled](int result) {
-                                     if (result)
-                                         done();
-                                     else if (cancelled)
-                                         cancelled();
-                                 }));
+void Workspace::confirm(const String &title, const String &message, std::function<void()> done, std::function<void()> cancelled, String action, bool destructive, bool vertical) {
+    if(action.isEmpty())action=localization::translate("Continuar");
+    auto panel=std::make_unique<ConfirmationPanel>(localization::translate(title),localization::translate(message),action,destructive,vertical,std::move(done),std::move(cancelled));
+    const int height=panel->getHeight();
+    ModalSheet::open(*this,title,std::move(panel),confirmationStyle::width,height);
 }
+
 void Workspace::confirmProjectReplacement(const String &name, std::function<void()> action, std::function<void()> cancelled, bool confirmedRemotely) {
     auto proceed = [safe = SafePointer<Workspace>(this), action] {
         if (!safe) return;
@@ -6637,6 +6683,7 @@ void Workspace::openAdvanced() {
     const auto name = String::fromUTF8("Avançado");
     if (auto it = floatingWindows.find(name);
         it != floatingWindows.end() && it->second->isVisible()) {
+        it->second->setMinimised(false);
         it->second->toFront(true);
         return;
     }
@@ -6658,6 +6705,7 @@ void Workspace::openSettingsPage(int initial) {
         it != floatingWindows.end() && it->second->isVisible()) {
         if (auto *settings = dynamic_cast<SettingsPanel *>(it->second->getContentComponent()))
             settings->selectPage(initial);
+        it->second->setMinimised(false);
         it->second->toFront(true);
         return;
     }
@@ -6780,7 +6828,7 @@ void Workspace::deleteRegions(std::set<ID> ids, bool withContents) {
         safe->perform([&] { safe->session.editTimeline([&](jaras::Project &project) {
             regionEditing::erase(project, songID, ids, withContents);
         }); });
-    });
+    }, {}, localization::translate("Delete"), true);
 }
 void Workspace::editRegion(ID id) {
     if (!session.song()) return;
@@ -7404,12 +7452,13 @@ void Workspace::copyGridItems(bool moving) {
         if(!moving && session.copyProgramChange()){itemClipboard.reset();itemClipboardSequence=GetClipboardSequenceNumber();}
         return;
     }
-    if (!session.song()) return;
+    if (!session.song() || session.busy || (moving && timelineGrid::movementLocked(session.project()))) return;
     const auto selection = selectedClips.empty() ? std::set<ID>{selectedClip} : selectedClips;
     if (auto copied = GridItemClipboard::copy(session.project(), session.song()->id, selection, moving)) {
         session.programChangeClipboard.reset();session.programChangePasteReady=false;
         itemClipboard = std::move(copied);
         itemClipboardSequence = GetClipboardSequenceNumber();
+        timeline->invalidate();
     }
 }
 void Workspace::pasteGridItems(bool duplicate) {
@@ -7431,7 +7480,8 @@ void Workspace::pasteGridItems(bool duplicate) {
     }
     const auto selection = selectedClips.empty() ? std::set<ID>{selectedClip} : selectedClips;
     const auto clipboard = duplicate ? GridItemClipboard::copy(session.project(), session.song()->id, selection) : itemClipboard;
-    if (!clipboard || clipboard->song != session.song()->id) return;
+    if (!clipboard || clipboard->song != session.song()->id ||
+        (clipboard->moving && timelineGrid::movementLocked(session.project()))) return;
     perform([&] {
         const auto entries = clipboard->items(session.project(), duplicate ? clipboard->endPosition() : session.transport().editPosition);
         session.edit([&](auto &project) {

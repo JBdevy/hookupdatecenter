@@ -46,6 +46,8 @@ struct PluginScanRecord: Codable, Sendable {
     static let shared = PluginCatalog()
     @Published private(set) var paths: [String]
     @Published private(set) var plugins: [RecognizedPlugin]
+    @Published private(set) var favorites: Set<String>
+    static let favoritesType = "__favorites__"
     @Published private(set) var scanning = false
     @Published private(set) var status = ""
     @Published private(set) var scanProgress: Double? = nil
@@ -61,10 +63,26 @@ struct PluginScanRecord: Codable, Sendable {
     var hasFailedPlugins: Bool { scanCache.values.contains { !($0.error ?? "").isEmpty } }
     init(defaults: UserDefaults = .standard, executable: URL? = Bundle.main.executableURL,
          timeout: TimeInterval = PluginCatalog.pluginTimeout) {
+        favorites = Set(defaults.stringArray(forKey: "jaras.plugins.favorites") ?? [])
         self.defaults = defaults; scannerExecutable = executable; scanTimeout = max(0.05, timeout)
         scanCache = defaults.data(forKey: "jaras.plugins.scanCache").flatMap { try? JSONDecoder().decode([String: PluginScanRecord].self, from: $0) } ?? [:]
         paths = defaults.stringArray(forKey: "jaras.plugins.paths") ?? ["/Library/Audio/Plug-Ins/VST3", NSHomeDirectory() + "/Library/Audio/Plug-Ins/VST3"]
         plugins = defaults.data(forKey: "jaras.plugins.catalog").flatMap { try? JSONDecoder().decode([RecognizedPlugin].self, from: $0) } ?? []
+    }
+    func isFavorite(_ plugin: RecognizedPlugin) -> Bool { favorites.contains(plugin.id) }
+    func toggleFavorite(_ plugin: RecognizedPlugin) {
+        if !favorites.insert(plugin.id).inserted { favorites.remove(plugin.id) }
+        defaults.set(favorites.sorted(), forKey: "jaras.plugins.favorites")
+    }
+    func matchingPlugins(query: String, type: String, vendor: String, allowsInstruments: Bool) -> [RecognizedPlugin] {
+        plugins.filter {
+            (type != Self.favoritesType || isFavorite($0)) &&
+            $0.matches(query: query, type: type == Self.favoritesType ? "" : type, vendor: vendor, allowsInstruments: allowsInstruments)
+        }.sorted {
+            if isFavorite($0) != isFavorite($1) { return isFavorite($0) }
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+        }
     }
     private func saveScanCache() { defaults.set(try? JSONEncoder().encode(scanCache), forKey: "jaras.plugins.scanCache") }
     func cancelScan() { scanTask?.cancel() }
@@ -309,9 +327,7 @@ struct ExternalPluginBrowser: View {
     @FocusState private var searching: Bool
     private var matches: [RecognizedPlugin] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return catalog.plugins.filter {
-            $0.matches(query: query, type: selectedType, vendor: selectedVendor, allowsInstruments: allowsInstruments)
-        }
+        return catalog.matchingPlugins(query: query, type: selectedType, vendor: selectedVendor, allowsInstruments: allowsInstruments)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -330,6 +346,7 @@ struct ExternalPluginBrowser: View {
             HStack(spacing: 16) {
                 Picker("Type", selection: $selectedType) {
                     Text(verbatim: "All").tag("")
+                    Text("Favorites").tag(PluginCatalog.favoritesType)
                     ForEach(types, id: \.self) { Text(verbatim: $0).tag($0) }
                 }
                 Picker("Company", selection: $selectedVendor) {
@@ -345,11 +362,20 @@ struct ExternalPluginBrowser: View {
                                 Text(verbatim: plugin.name).font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(2)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Text(verbatim: plugin.vendor).font(.jarasSystem(size: 10)).foregroundStyle(JarasTheme.secondary).lineLimit(1)
-                            }.padding(6).frame(maxWidth: .infinity).frame(height: 56)
+                            }.padding(.trailing, 24).padding(6).frame(maxWidth: .infinity).frame(height: 56)
                                 .background(selected == plugin.id ? JarasTheme.green.opacity(0.16) : JarasTheme.display, in: RoundedRectangle(cornerRadius: 6))
                                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected == plugin.id ? JarasTheme.green : JarasTheme.line))
                                 .contentShape(Rectangle())
                         }.buttonStyle(.plain).jarasHelp(plugin.name + " · " + plugin.vendor)
+                            .overlay(alignment: .topTrailing) {
+                                Button { catalog.toggleFavorite(plugin) } label: {
+                                    Image(systemName: catalog.isFavorite(plugin) ? "star.fill" : "star")
+                                        .font(.jarasSystem(size: 14))
+                                        .foregroundStyle(catalog.isFavorite(plugin) ? Color.yellow : JarasTheme.secondary)
+                                        .frame(width: 26, height: 26).contentShape(Rectangle())
+                                }.buttonStyle(.plain).padding(3)
+                                    .accessibilityLabel(Text(catalog.isFavorite(plugin) ? "Remove from favorites" : "Add to favorites"))
+                            }
                     }
                 }
             }.frame(height: 248)
@@ -364,7 +390,7 @@ struct ExternalPluginBrowser: View {
             }
         }.padding(20).frame(width: 680).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear { searching = true }
-            .onChange(of: types) { values in if !selectedType.isEmpty && !values.contains(selectedType) { selectedType = "" } }
+            .onChange(of: types) { values in if !selectedType.isEmpty && selectedType != PluginCatalog.favoritesType && !values.contains(selectedType) { selectedType = "" } }
             .onChange(of: vendors) { values in if !selectedVendor.isEmpty && !values.contains(selectedVendor) { selectedVendor = "" } }
     }
 }

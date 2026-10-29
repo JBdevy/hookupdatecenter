@@ -137,6 +137,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void startRecording(const File &, int channels = 2, int bits = 24);
     void stopRecording();
     void startTrackRecording(const std::vector<TrackCapture::Target> &, int bits, double bpm);
+    double changeRecordingTargets(const std::vector<TrackCapture::Target> &, const std::set<ID> &, int bits);
     std::vector<TrackCapture::Take> stopTrackRecording();
     uint64 recordingOverflows() const { return recordingDrops.load(); }
     uint64 recordedSamples() const { return recordedFrames.load(); }
@@ -424,7 +425,6 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     AudioBuffer<float> masterBuffer{2, 4096};
     AudioBuffer<float> readScratch[2]{{2, 131080}, {2, 131080}};
     AudioBuffer<float> liveRecordBuffer{2, 4096};
-    AudioBuffer<float> outputRecordBuffers[4]{{2,4096},{2,4096},{2,4096},{2,4096}};
     AudioBuffer<float> outputRecordScratch{2,4096};
     std::array<std::array<double, 4096>, 2> timelinePositions{};
     std::array<std::array<bool,4096>,2> timelineRunning{};
@@ -481,6 +481,9 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     TimeSliceThread recordingThread{"CatLive recording"};
     std::unique_ptr<AudioFormatWriter::ThreadedWriter> recorder;
     std::unique_ptr<TrackCapture> trackCapture;
+    struct RecordingOutput { ID track; std::unique_ptr<NativeFX> fx; };
+    std::vector<RecordingOutput> recordingOutputs;
+    std::vector<RecordingOutput> prepareRecordingOutputs(const std::vector<TrackCapture::Target> &);
     std::atomic<uint64> recordedFrames{0};
     std::array<int, 128> inputMapping{};
     std::atomic<bool> recording{false};

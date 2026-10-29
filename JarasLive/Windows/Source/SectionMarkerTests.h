@@ -90,6 +90,9 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         jaras::validate(recovered.project);
     });
     test("REAPER recovery keeps valid items and markers around malformed elements", [&] {
+        const ScopedValueSetter<bool> restoreLanguage(localization::english, localization::english);
+        for (const bool english : {false, true}) {
+        localization::english = english;
         auto recovered=read(directory,
             "<TRACK {RECOVER}\nNAME Recover\n"
             "<ITEM\nPOSITION 0\nLENGTH 2\nNAME Before\n>\n"
@@ -99,8 +102,11 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         const auto &song=recovered.project.songs.front();
         require(song.tracks.size()==1 && song.tracks.front().clips.size()==2,"Bad item discarded valid neighbors");
         require(song.tracks.front().clips[0].name=="Before" && song.tracks.front().clips[1].name=="After","Recovered item order changed");
-        require(recovered.warnings.joinIntoString(" ").contains("item ignored") && recovered.warnings.joinIntoString(" ").contains("marker ignored"),"Skipped elements were not reported");
+        const auto warnings = recovered.warnings.joinIntoString(" ");
+        require(warnings.contains(migration::message("REAPER item ignored: ")) && warnings.contains(migration::message("REAPER marker ignored: ")),"Skipped elements were not reported in the app language");
+        require(warnings.contains(english ? "item ignored" : "ignorado"), "Import diagnostics ignored the selected language");
         jaras::validate(recovered.project);
+        }
     });
     test("Typed section prefixes populate Parts, persist clean names and drive real queued section jumps", [&] {
         auto project = floatingControlTests::fixture();

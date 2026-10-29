@@ -43,7 +43,7 @@ private final class TestRows {
     var lastQuery: String?
     var lastExpanded: Set<UUID>?
     init(values: [TestEntry]) { self.values = values }
-    func entries(in state: TestState, expanded: Set<UUID>, query: String) -> [TestEntry] {
+    func entries(in state: TestState, expanded: Set<UUID>, query: String, order: Int? = nil) -> [TestEntry] {
         lastQuery = query; lastExpanded = expanded
         return query.isEmpty ? values : []
     }
@@ -60,6 +60,7 @@ private final class TestScrolling {
 }
 private final class WorkspaceProbe {
     var local = true
+    var allRegionsOrder = 0
     var nativeKeyboardBrowsing = false
     var observer = false
     var controlsEnabled = true

@@ -28,6 +28,22 @@ Task { @MainActor in
             while catalog.scanning && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
             precondition(!catalog.scanning, "Catalog did not finish")
         }
+        let favoritesSuite = suite + ".favorites"
+        let favoritesDefaults = UserDefaults(suiteName: favoritesSuite)!
+        defer { favoritesDefaults.removePersistentDomain(forName: favoritesSuite) }
+        let favoriteCatalog = PluginCatalog(defaults: favoritesDefaults, executable: nil)
+        let alpha = RecognizedPlugin(classID: "alpha", name: "Alpha", path: "/Alpha.vst3", vendor: "Acme", category: "Fx|EQ")
+        let zebra = RecognizedPlugin(classID: "zebra", name: "Zebra", path: "/Zebra.vst3", vendor: "Acme", category: "Instrument|Synth")
+        favoriteCatalog.acceptImportedPlugins([zebra, alpha])
+        favoriteCatalog.toggleFavorite(zebra)
+        precondition(favoriteCatalog.matchingPlugins(query: "", type: "", vendor: "", allowsInstruments: true).map(\.id) == [zebra.id, alpha.id])
+        let favoriteReload = PluginCatalog(defaults: favoritesDefaults, executable: nil)
+        precondition(favoriteReload.isFavorite(zebra), "Favorite did not survive reopening")
+        precondition(favoriteReload.matchingPlugins(query: "", type: PluginCatalog.favoritesType, vendor: "", allowsInstruments: true).map(\.id) == [zebra.id])
+        precondition(favoriteReload.matchingPlugins(query: "alpha", type: PluginCatalog.favoritesType, vendor: "", allowsInstruments: true).isEmpty)
+        precondition(favoriteReload.matchingPlugins(query: "", type: PluginCatalog.favoritesType, vendor: "", allowsInstruments: false).isEmpty)
+        favoriteReload.toggleFavorite(zebra)
+        precondition(PluginCatalog(defaults: favoritesDefaults, executable: nil).favorites.isEmpty)
         let catalog = PluginCatalog(defaults: defaults, executable: executable)
         catalog.scan(); catalog.scan()
         precondition(catalog.scanning)

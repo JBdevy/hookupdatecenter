@@ -1,4 +1,5 @@
 #pragma once
+#include "ConfirmationPanel.h"
 #include "ActionBindings.h"
 #include "ModalSheet.h"
 
@@ -66,7 +67,7 @@ class SetlistBlockMIDIPanel final : public Component, private ChangeListener {
             if (at >= 0) message = message.replaceSection(at, 2, value);
         }
         confirming = true;
-        AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon,
+        ConfirmationPanel::show(MessageBoxIconType::QuestionIcon,
             localization::translate("This control is already mapped."), message,
             localization::translate("Transfer mapping"), localization::translate("Cancel"), this,
             ModalCallbackFunction::create([self=SafePointer<SetlistBlockMIDIPanel>(this)](int result) {

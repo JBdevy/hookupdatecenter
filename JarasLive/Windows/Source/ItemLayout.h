@@ -63,6 +63,17 @@ struct ItemLanes {
             first=last;
         }
     }
+    // During capture, layout changes only when the growing take crosses the
+    // start of another item. Waveform growth alone does not rebuild track rows.
+    static bool growRecordingClip(jaras::AudioClip &clip, double duration,
+                                  const std::vector<const jaras::AudioClip *> &others) {
+        const double before = clip.startTime + clip.duration;
+        const double after = clip.startTime + duration;
+        clip.duration = duration;
+        return std::any_of(others.begin(), others.end(), [&](const auto *other) {
+            return other->id != clip.id && before <= other->startTime + 1e-9 && after > other->startTime + 1e-9;
+        });
+    }
     int lane(const ID &id) const { const auto at = lanes.find(id); return at == lanes.end() ? 0 : at->second; }
     Placement placement(const ID &id) const { const auto at=placements.find(id);return at==placements.end()?Placement{}:at->second; }
     struct Geometry { float top, height; };

@@ -21,6 +21,14 @@ class ExternalEffectEditor final : public Component, private AsyncUpdater, priva
         if (!isShowing() || !getPeer()) return;
         if (attempted) { reportPreferredSize(); return; }
         attempted = true;
+        // The external plug-in renders its own HWND. The surrounding manager
+        // needs no GPU swap chain competing with that child window.
+        if(auto *peer=getPeer()) {
+            const auto engines=peer->getAvailableRenderingEngines();
+            for(int i=0;i<engines.size();++i)if(engines[i].containsIgnoreCase("Software")) {
+                peer->setCurrentRenderingEngine(i);break;
+            }
+        }
         try {
             auto parent = static_cast<HWND>(getPeer()->getNativeHandle());
             auto hwnd = CreateWindowExW(0,L"STATIC",L"CatLive FX editor",WS_CHILD|WS_CLIPCHILDREN|WS_CLIPSIBLINGS,
@@ -65,9 +73,10 @@ public:
     ~ExternalEffectEditor() override {
         cancelPendingUpdate();shortcuts.reset();editor.reset();host.setHWND(nullptr);
     }
+    void syncVisibility(){if(editor)editor->setVisible(isShowing());}
     bool uses(const std::shared_ptr<native::vst3::Processor> &plugin)const{return processor==plugin;}
     void parentHierarchyChanged() override {triggerAsyncUpdate();}
-    void visibilityChanged() override {triggerAsyncUpdate();}
+    void visibilityChanged() override {syncVisibility();triggerAsyncUpdate();}
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         if(failure.isNotEmpty()){g.setColour(theme::secondary);g.setFont(theme::font(12));g.drawFittedText(failure,getLocalBounds().reduced(20),Justification::centred,4);}

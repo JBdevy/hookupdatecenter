@@ -67,7 +67,7 @@ class MissingMediaPanel final : public Component {
         if (done) MessageManager::callAsync([done, proceed] { done(proceed); });
     }
     void chooseFolder() {
-        chooser = std::make_unique<FileChooser>(String::fromUTF8("Localizar arquivos ausentes"),
+        chooser = std::make_unique<FileChooser>(localization::translate("Locate missing files"),
                                                 document.getParentDirectory(), "", true);
         chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
             [safe = SafePointer<MissingMediaPanel>(this)](const FileChooser &fc) {

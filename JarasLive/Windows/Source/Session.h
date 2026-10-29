@@ -103,6 +103,7 @@ class Session final : private Timer {
     void cancelBPMDetection();
     void cancelExport() { exportCancelled = true; if(loadCancellation)loadCancellation->store(true); }
     void toggleRecording();
+    void updateRecordingTargets(bool starting = false);
     int recordArm(const ID &id) const {
         auto at = recordArms.find(id);
         return at == recordArms.end() ? 0 : at->second;
@@ -248,6 +249,10 @@ class Session final : private Timer {
     File recordingFile;
     std::map<ID, int> recordArms;
     std::set<ID> recordSelections;
+    std::set<ID> recordingActiveTracks;
+    bool recordingFinalizing = false;
+    enum class RecordingResume { none, play, record } recordingResume = RecordingResume::none;
+    void resumeAfterRecordingPreparation();
     ID recordingSong;
     ID mixerGestureSource, mixerGestureProject;
     jaras::CommandKind mixerGestureKind = jaras::CommandKind::volume;

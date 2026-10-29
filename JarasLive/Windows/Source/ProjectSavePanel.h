@@ -18,10 +18,10 @@ public:
       : rename(std::move(commit)), exportAction(std::move(exportProject)), reduceAction(std::move(reduceProject)) {
         title.setText(localization::translate("Project name"),dontSendNotification);
         name.setText(current,false); name.onReturnKey=[this]{saveName();};
-        save.setButtonText("Save"); save.onClick=[this]{saveName();};
+        save.setButtonText(localization::translate("Save")); save.onClick=[this]{saveName();};
         portable.setButtonText(localization::translate(String::fromUTF8("Exportar para CatLive iPadOS")));
         portable.onClick=[this]{auto action=exportAction; dismiss(); MessageManager::callAsync(std::move(action));};
-        reduce.setButtonText(String::fromUTF8("Reduzir projeto"));
+        reduce.setButtonText(localization::translate(String::fromUTF8("Reduzir projeto")));
         reduce.onClick=[this]{auto action=reduceAction;dismiss();MessageManager::callAsync(std::move(action));};
         error.setColour(Label::textColourId, Colours::indianred);
         for(Component *c : std::initializer_list<Component*>{&title,&name,&save,&portable,&reduce,&error})addAndMakeVisible(c);

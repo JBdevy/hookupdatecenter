@@ -1,4 +1,5 @@
 #pragma once
+#include "ConfirmationPanel.h"
 #include "Appearance.h"
 #include "Localization.h"
 namespace catlive {
@@ -164,7 +165,7 @@ class StageTimerControl final : public Component, private Timer {
         start.onClick = [this] {
             if (state.running) {
                 const auto safe = Component::SafePointer<StageTimerControl>(this);
-                AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon, String::fromUTF8("Cronômetro"),
+                ConfirmationPanel::show(MessageBoxIconType::QuestionIcon, String::fromUTF8("Cronômetro"),
                                              String::fromUTF8("Parar e reiniciar o cronômetro?"), "Parar", "Cancelar",
                                              this,
                                              ModalCallbackFunction::create([safe](int result) {

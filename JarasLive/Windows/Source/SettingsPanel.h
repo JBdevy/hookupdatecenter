@@ -1,4 +1,5 @@
 #pragma once
+#include "ConfirmationPanel.h"
 #include "Localization.h"
 #include "ActionsPage.h"
 #include "Auth.h"
@@ -254,7 +255,7 @@ class SettingsPanel final : public Component, private Timer {
             const bool current = installation.equalsIgnoreCase(auth.installationId);
             auto *card = new DeviceAccountCard(device, current, [safe = SafePointer<SettingsPanel>(this), installation, current, name = str(device, "deviceName")] {
                 if (!safe) return;
-                AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon, "Remover dispositivo?", current
+                ConfirmationPanel::show(MessageBoxIconType::QuestionIcon, "Remover dispositivo?", current
                     ? String::fromUTF8("Você sairá da conta neste computador e a licença ficará disponível.")
                     : "Remover " + name + " e liberar sua licença para outro computador?", "Remover", "Cancelar",
                     safe.getComponent(), ModalCallbackFunction::create([safe, installation](int accepted) { if (safe && accepted) safe->auth.removeDevice(installation); }));

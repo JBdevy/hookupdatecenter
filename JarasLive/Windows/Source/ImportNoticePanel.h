@@ -28,7 +28,7 @@ class ImportNoticePanel final : public Component {
                         20, 6, getWidth() - 40, 36, Justification::centredLeft, 2);
         g.setColour(theme::background); g.fillRoundedRectangle(viewport.getBounds().toFloat(), 6);
         g.setColour(theme::secondary); g.setFont(theme::font(12));
-        g.drawText(String::fromUTF8("Avisos da importação: ") + String(notes.size()),
+        g.drawText(localization::translate("Import notes: %ld").replace("%ld",String(notes.size())),
                    20, getHeight() - 48, getWidth() - 140, 28, Justification::centredLeft);
     }
     void resized() override {

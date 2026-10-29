@@ -551,7 +551,17 @@ public extension Project {
             return
         }
         for song in songs.indices { songs[song].markers?.removeAll { $0.unifiedRegionID == id } }
-        for song in songs.indices { songs[song].parts.removeAll { $0.id == id } }
+        for song in songs.indices {
+            songs[song].parts.removeAll { $0.id == id }
+            for track in songs[song].tracks.indices {
+                for clip in songs[song].tracks[track].clips.indices where songs[song].tracks[track].clips[clip].regionOwnerID == id {
+                    songs[song].tracks[track].clips[clip].regionOwnerID = nil
+                }
+            }
+            for marker in (songs[song].markers ?? []).indices where songs[song].markers?[marker].regionOwnerID == id {
+                songs[song].markers?[marker].regionOwnerID = nil
+            }
+        }
         if var state = regionSetlist {
             for index in state.playlists.indices { Self.removeRegion(id, from: &state, playlist: state.playlists[index].id, includingDuplicates: true) }
             if var blocks = state.blocks {
@@ -585,7 +595,7 @@ public extension Project {
         regionSetlist?.blocks?.removeAll { ids.contains($0.id) && $0.songId == songID && $0.playlistId == playlist }
         for id in regions {
             if let playlist { removeRegion(id, from: playlist) }
-            else { deleteRegionWithContents(id, song: songID) }
+            else { deleteRegion(id) }
         }
     }
     /// All Regions deletes the song and its owned timeline content together.

@@ -95,6 +95,22 @@ struct VinhetasPanelProbe {
             "Remote leaked sample paths or MIDI mappings");
         const auto stored=preferences.value("jaras.vinhetas");const auto mappings=get(stored,"padMappings");
         recordingCaptureTests::require(mappings.isArray()&&mappings.size()==16,"Pad mappings were duplicated per preset");
+        using recordingCaptureTests::require;
+        panel.learning=1;panel.learningPreset=false;panel.midi(0xb0,20,127,1);
+        require(panel.padMappingLabel(1)=="CC 20" && panel.padMappingLabel(0)=="Note 60" && panel.padMappingLabel(2).isEmpty(),
+            "Pad footer must show the mapped number and distinguish CC from notes");
+        require(audio.handlesMIDI(MidiMessage::controllerEvent(1,20,127)),"Learned CC was not reserved");
+        const auto contentBefore=JSON::toString(get(preferences.value("jaras.vinhetas"),"presets"));
+        panel.unlearnPad(1);
+        require(panel.padMappingLabel(1).isEmpty() && !panel.midi(0xb0,20,127,1) &&
+            !audio.handlesMIDI(MidiMessage::controllerEvent(1,20,127)),"Unlearn kept consuming the pad CC");
+        require(audio.handlesMIDI(MidiMessage::noteOn(1,60,(uint8)100)) &&
+            audio.handlesMIDI(MidiMessage::controllerEvent(1,32,127)),"Unlearn removed an unrelated pad or preset mapping");
+        const auto after=preferences.value("jaras.vinhetas");
+        require(!get(after,"padMappings")[1].isObject() && JSON::toString(get(after,"presets"))==contentBefore,
+            "Unlearn failed to persist or changed the pad content");
+        panel.loadState(after);
+        require(panel.padMappingLabel(1).isEmpty() && panel.padMappingLabel(0)=="Note 60","Unlearn did not survive reload");
     }
 };
 }

@@ -1044,6 +1044,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         } catch (const std::exception &e) { error(String::fromUTF8(e.what())); }
     }
     void timerCallback() override {
+        if(externalEditor)externalEditor->syncVisibility();
         if (isShowing() && graph.isVisible()) graph.updateAnalysis(session.audio.eqAnalysis(track, key()));
         else graph.clearAnalysis();
         if(externalEditor&&!externalEditor->uses(session.audio.externalEffect(track,externalEditorKey))) {externalEditor.reset();openExternalEditor();}
@@ -1062,7 +1063,9 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             }
         }
         if (++presetPoll % 10 == 0 && isShowing() && fxpresets::Store().revision() != presetRevision) refreshPresets(true);
-        if (isShowing())
+        // The native editor owns its paint cadence; do not repaint its parent
+        // twenty times per second over an independently animated child HWND.
+        if (isShowing() && !externalEditor)
             repaint();
     }
     void paintMeters(Graphics &g) {

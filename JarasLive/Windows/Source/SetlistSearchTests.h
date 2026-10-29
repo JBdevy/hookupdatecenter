@@ -1,5 +1,6 @@
 #pragma once
 #include "FloatingControlTests.h"
+#include "PlaylistEditor.h"
 
 namespace catlive::setlistSearchTests {
 inline void require(bool value,const char *message) { if (!value) throw std::runtime_error(message); }
@@ -29,6 +30,57 @@ inline void click(Workspace &workspace,int row) {
     floatingControlTests::pump();
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Playlist chooser toggles plain clicks and retains selections across searches",[&] {
+        const auto project=fixture();jaras::RegionPlaylist saved;bool committed=false;
+        PlaylistEditor editor(project.songs[0],nullptr,[&](auto result){saved=std::move(result);committed=true;},[]{});
+        editor.setSize(360,500);
+        auto *rows=dynamic_cast<ListBox*>(uiFeatureTests::find(editor,"playlistSongs"));
+        auto *query=dynamic_cast<TextEditor*>(uiFeatureTests::find(editor,"playlistSearch"));
+        auto *name=dynamic_cast<TextEditor*>(uiFeatureTests::find(editor,"playlistName"));
+        auto *save=dynamic_cast<TextButton*>(uiFeatureTests::find(editor,"playlistSave"));
+        require(rows&&query&&name&&save,"Playlist search controls missing");
+        const auto search=[&](const String &value){query->setText(value,false);query->onTextChange();};
+        const auto click=[&](int row){rows->selectRowsBasedOnModifierKeys(row,ModifierKeys{},false);};
+        require(rows->getModel()->getNumRows()==4,"Playlist chooser included drawer children");
+        click(0);click(1);
+        require(rows->isRowSelected(0)&&rows->isRowSelected(1),"Plain click cleared another selected song");
+        click(1);require(rows->isRowSelected(0)&&!rows->isRowSelected(1),"Clicking selected song did not toggle it off");
+        search("CANCAO");require(rows->getModel()->getNumRows()==2&&rows->isRowSelected(0),"Search lost accents or the selected song");
+        click(1);search("no matching song");require(rows->getModel()->getNumRows()==0,"Search did not filter songs");
+        name->setText("Test",false);name->onTextChange();require(save->isEnabled(),"Hidden selections cannot be saved");
+        search("");require(rows->isRowSelected(0)&&rows->isRowSelected(2)&&!rows->isRowSelected(1),"Clearing search changed selected songs");
+        search("Final");save->onClick();
+        require(committed&&saved.regionIds==std::vector<ID>{"early","outside"},"Playlist omitted hidden selected songs or added unselected results");
+    });
+    test("Playlist chooser saves songs in click order including reselected and filtered songs",[&] {
+        const auto project=fixture();jaras::RegionPlaylist saved;
+        PlaylistEditor editor(project.songs[0],nullptr,[&](auto result){saved=std::move(result);},[]{});
+        auto *rows=dynamic_cast<ListBox*>(uiFeatureTests::find(editor,"playlistSongs"));
+        auto *query=dynamic_cast<TextEditor*>(uiFeatureTests::find(editor,"playlistSearch"));
+        auto *name=dynamic_cast<TextEditor*>(uiFeatureTests::find(editor,"playlistName"));
+        auto *save=dynamic_cast<TextButton*>(uiFeatureTests::find(editor,"playlistSave"));
+        rows->selectRowsBasedOnModifierKeys(3,ModifierKeys{},false);
+        rows->selectRowsBasedOnModifierKeys(0,ModifierKeys{},false);
+        rows->selectRowsBasedOnModifierKeys(3,ModifierKeys{},false);
+        rows->selectRowsBasedOnModifierKeys(3,ModifierKeys{},false);
+        query->setText("CANCAO",false);query->onTextChange();
+        rows->selectRowsBasedOnModifierKeys(1,ModifierKeys{},false);
+        name->setText("Ordered",false);name->onTextChange();save->onClick();
+        require(saved.regionIds==std::vector<ID>{"early","late","outside"},"Playlist used timeline order instead of selection order");
+    });
+    test("Playlist chooser search adds songs without removing existing entries",[&] {
+        const auto project=fixture();jaras::RegionPlaylist saved;
+        PlaylistEditor editor(project.songs[0],&project.regionSetlist->playlists[0],[&](auto result){saved=std::move(result);},[]{},true);
+        auto *rows=dynamic_cast<ListBox*>(uiFeatureTests::find(editor,"playlistSongs"));
+        auto *query=dynamic_cast<TextEditor*>(uiFeatureTests::find(editor,"playlistSearch"));
+        auto *save=dynamic_cast<TextButton*>(uiFeatureTests::find(editor,"playlistSave"));
+        require(rows&&query&&save&&!save->isEnabled(),"Existing songs counted as new selections");
+        query->setText("CANCAO",false);query->onTextChange();
+        rows->selectRowsBasedOnModifierKeys(0,ModifierKeys{},false);
+        query->setText("Medley",false);query->onTextChange();save->onClick();
+        require(saved.regionIds==std::vector<ID>{"late","early"},"Filtered addition replaced existing songs");
+    });
+
     test("Setlist search Tab reopens after every popup close without a workspace key-up",[&] {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(fixture()));session.audio.setOffline(true);

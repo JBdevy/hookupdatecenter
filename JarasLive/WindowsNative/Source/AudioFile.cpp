@@ -6,6 +6,9 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <map>
+#include <mutex>
+#include <tuple>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -56,7 +59,44 @@ struct AudioFile::Impl {
         int reservoir = 0, freeFormatBytes = 0;
         unsigned char header[4]{}, reservoirBytes[511]{};
     };
+    struct MP3SeekIndex {
+        std::mutex mutex;
+        std::vector<MP3Checkpoint> points;
+    };
+    std::shared_ptr<MP3SeekIndex> mp3SharedIndex;
     std::vector<MP3Checkpoint> mp3Checkpoints;
+    void shareMP3Index() {
+        // Decoder workers may share exact synthesis checkpoints, never stream
+        // handles or mutable decoding state. Lifetime follows open readers, so
+        // closing a project releases its index rather than retaining song PCM.
+        using Key = std::tuple<std::filesystem::path, std::uint64_t, std::filesystem::file_time_type>;
+        static std::mutex mutex;
+        static std::map<Key, std::weak_ptr<MP3SeekIndex>> indices;
+        std::error_code error;
+        const auto canonical = std::filesystem::weakly_canonical(path, error);
+        if (error) return;
+        const auto modified = std::filesystem::last_write_time(path, error);
+        if (error) return;
+        {
+            std::lock_guard<std::mutex> guard(mutex);
+            for (auto it=indices.begin(); it!=indices.end();)
+                if (it->second.expired()) it=indices.erase(it); else ++it;
+            auto &cached = indices[Key{canonical, info.encodedBytes, modified}];
+            mp3SharedIndex = cached.lock();
+            if (!mp3SharedIndex) {
+                mp3SharedIndex = std::make_shared<MP3SeekIndex>();
+                mp3SharedIndex->points = mp3Checkpoints;
+                cached = mp3SharedIndex;
+            }
+        }
+        refreshMP3Index();
+    }
+    void refreshMP3Index() {
+        if (!mp3SharedIndex) return;
+        std::lock_guard<std::mutex> guard(mp3SharedIndex->mutex);
+        if (mp3SharedIndex->points.size() > mp3Checkpoints.size())
+            mp3Checkpoints = mp3SharedIndex->points;
+    }
     std::uint64_t mp3Position = 0, checkpointSpacing = 0;
     std::vector<float> scratch;
     std::vector<unsigned char> pcm8;
@@ -165,8 +205,14 @@ struct AudioFile::Impl {
             // first Play only decodes the required prefix, not the entire song.
             if (got && checkpointSpacing && mp3.pcmFramesRemainingInMP3Frame == 0 &&
                 mp3Checkpoints.size() < 4096 &&
-                mp3Position >= mp3Checkpoints.back().frame + checkpointSpacing)
+                mp3Position >= mp3Checkpoints.back().frame + checkpointSpacing) {
                 mp3Checkpoints.push_back(checkpoint(mp3Position));
+                if (mp3SharedIndex) {
+                    std::lock_guard<std::mutex> guard(mp3SharedIndex->mutex);
+                    if (mp3SharedIndex->points.size() < 4096 && mp3Checkpoints.back().frame > mp3SharedIndex->points.back().frame)
+                        mp3SharedIndex->points.push_back(mp3Checkpoints.back());
+                }
+            }
             if (got != request) break;
         }
         return count;
@@ -196,6 +242,7 @@ struct AudioFile::Impl {
         checkpointSpacing = std::max<std::uint64_t>(2 * info.sampleRate, expected / 4095 + 1);
         mp3Checkpoints.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(4096, expected / checkpointSpacing + 2)));
         mp3Checkpoints.push_back(checkpoint(0));
+        shareMP3Index();
     }
 
     void openFlac() {
@@ -238,6 +285,7 @@ struct AudioFile::Impl {
         if (wavOpen) ok = drwav_seek_to_pcm_frame(&wav, frame) != 0;
         else if (flac) ok = drflac_seek_to_pcm_frame(flac, frame) != 0;
         else if (mp3Open) {
+            refreshMP3Index();
             const auto after = std::upper_bound(mp3Checkpoints.begin(), mp3Checkpoints.end(), frame,
                 [](std::uint64_t at, const MP3Checkpoint& point) { return at < point.frame; });
             const auto& point = *std::prev(after);

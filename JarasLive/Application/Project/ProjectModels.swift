@@ -1297,3 +1297,30 @@ public enum ItemTextColors {
         return prefix + json
     }
 }
+
+/// Presentation only: never changes the project timeline or a saved playlist.
+public enum SetlistDisplayOrder {
+    public static func sorted<T>(_ values: [T], mode: Int, name: (T) -> String, start: (T) -> Double) -> [T] {
+        values.enumerated().sorted { a, b in
+            if mode != 0 {
+                let result = name(a.element).compare(name(b.element), options: [.numeric, .caseInsensitive, .diacriticInsensitive], locale: .current)
+                if result != .orderedSame { return mode == 1 ? result == .orderedAscending : result == .orderedDescending }
+            }
+            if start(a.element) != start(b.element) { return start(a.element) < start(b.element) }
+            return a.offset < b.offset
+        }.map(\.element)
+    }
+    public static func entries(_ entries: [SetlistEntry], mode: Int) -> [SetlistEntry] {
+        var groups: [(part: Part, blocks: [SetlistEntry])] = []
+        var pending: [SetlistEntry] = []
+        for entry in entries {
+            switch entry {
+            case .block: pending.append(entry)
+            case .region(let part, _): groups.append((part, pending)); pending = []
+            }
+        }
+        return sorted(groups, mode: mode, name: { $0.part.name }, start: { $0.part.startTime }).enumerated().flatMap {
+            $0.element.blocks + [.region($0.element.part, number: $0.offset + 1)]
+        } + pending
+    }
+}

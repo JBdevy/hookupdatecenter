@@ -106,9 +106,11 @@ final class GridItemClipboardTests: XCTestCase {
         let original = project.songs[0].tracks[0].clips[0]
         let reads = executor.reads
         XCTAssertTrue(show.copyItems([original.id], moving: true))
+        XCTAssertEqual(show.cutGridItems, [original.id])
         XCTAssertEqual(show.snapshot.project, project); XCTAssertFalse(show.hasUnsavedChanges)
         let ids = show.pasteItems()
         XCTAssertEqual(ids, [original.id])
+        XCTAssertTrue(show.cutGridItems.isEmpty)
         XCTAssertEqual(show.current?.tracks[0].clips[0].startTime, 100, "paste follows editPosition, independently of playback position")
         XCTAssertEqual(executor.loads, 1); XCTAssertEqual(executor.reads, reads); XCTAssertEqual(executor.pastes, 1)
         show.undo(); XCTAssertEqual(show.snapshot.project, project)
@@ -116,4 +118,21 @@ final class GridItemClipboardTests: XCTestCase {
         let copies = show.pasteItems()
         XCTAssertEqual(copies.count, 1); XCTAssertFalse(copies.contains(original.id), "the completed move becomes a reusable copy")
     }
+    @MainActor func testCancelCutAndReplacingItWithCopyLeaveArrangementIntact() throws {
+        let project = fixture(), executor = ClipboardExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let ids = Set(project.songs[0].tracks.flatMap(\.clips).map(\.id))
+        XCTAssertTrue(show.copyItems(ids, moving: true))
+        XCTAssertEqual(show.cutGridItems, ids)
+        show.cancelGridCut()
+        XCTAssertTrue(show.cutGridItems.isEmpty)
+        XCTAssertTrue(show.pasteItems().isEmpty)
+        XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertTrue(show.copyItems(ids, moving: true))
+        XCTAssertTrue(show.copyItems(ids))
+        XCTAssertTrue(show.cutGridItems.isEmpty)
+        XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertFalse(show.hasUnsavedChanges)
+    }
+
 }

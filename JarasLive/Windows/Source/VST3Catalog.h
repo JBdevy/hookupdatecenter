@@ -8,6 +8,13 @@ class VST3Catalog final {
     static VST3Catalog &shared() { static VST3Catalog value; return value; }
     StringArray paths;
     Array<var> plugins;
+    bool isFavorite(const var &plugin) const { return favorites.contains(favoriteID(plugin)); }
+    void toggleFavorite(const var &plugin) {
+        const auto id = favoriteID(plugin);
+        if (favorites.contains(id)) favorites.removeString(id); else favorites.add(id);
+        save(); ++revision;
+    }
+    static String favoriteID(const var &plugin) { return str(plugin,"path").toLowerCase()+"|"+str(plugin,"classID"); }
     String status;
     bool scanning = false;
     double scanProgress = -1.0;
@@ -167,6 +174,7 @@ class VST3Catalog final {
     }
   private:
     File file;
+    StringArray favorites;
     ThreadPool worker{1};
     std::shared_ptr<int> alive = std::make_shared<int>(0);
     std::atomic<bool> stopping{false}, cancelRequested{false};
@@ -181,6 +189,7 @@ class VST3Catalog final {
         else { paths.add("C:\\Program Files\\Common Files\\VST3");
             paths.add(File::getSpecialLocation(File::windowsLocalAppData).getChildFile("Programs/Common/VST3").getFullPathName()); }
         plugins = list(get(saved,"plugins"));
+        for (const auto &id : list(get(saved,"favorites"))) favorites.addIfNotAlreadyThere(id.toString());
         for (const auto &record : list(get(saved,"scanCache")))
             if (get(record,"plugins").isArray() && str(record,"fingerprint").isNotEmpty()) cache[str(record,"path").toLowerCase()]=record;
     }
@@ -191,6 +200,7 @@ class VST3Catalog final {
     void save() {
         auto saved = object(); Array<var> values; for (const auto &path : paths) values.add(path);
         put(saved,"paths",values); put(saved,"plugins",plugins);
+        Array<var> preferred; for (const auto &id : favorites) preferred.add(id); put(saved,"favorites",preferred);
         Array<var> records; for (const auto &entry : cache) records.add(entry.second); put(saved,"scanCache",records);
         file.getParentDirectory().createDirectory();
         if (!file.replaceWithText(JSON::toString(saved))) status = String::fromUTF8("Não foi possível salvar o catálogo de plugins.");
@@ -204,6 +214,18 @@ inline bool pluginMatches(const var &plugin,const String &query,const String &ty
     if (!instrumentsAllowed && str(plugin,"category").containsIgnoreCase("Instrument")) return false;
     if (query.trim().isNotEmpty()) return (str(plugin,"name")+" "+str(plugin,"vendor")+" "+str(plugin,"category")).containsIgnoreCase(query.trim());
     return (type.isEmpty() || pluginTypes(plugin).contains(type)) && (vendor.isEmpty() || str(plugin,"vendor")==vendor);
+}
+inline Array<var> favoritePluginMatches(const VST3Catalog &catalog, const String &query,
+                                        const String &type, const String &vendor, bool instrumentsAllowed,
+                                        bool favoritesOnly) {
+    Array<var> result;
+    for (const auto &plugin : catalog.plugins)
+        if ((!favoritesOnly || catalog.isFavorite(plugin)) && pluginMatches(plugin,query,type,vendor,instrumentsAllowed)) result.add(plugin);
+    std::stable_sort(result.begin(),result.end(),[&](const var &a,const var &b) {
+        if(catalog.isFavorite(a)!=catalog.isFavorite(b))return catalog.isFavorite(a);
+        return str(a,"name").compareNatural(str(b,"name"))<0;
+    });
+    return result;
 }
 class ExternalPluginBrowser final : public Component, private ListBoxModel, private Timer {
   public:
@@ -247,11 +269,13 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
     bool instrumentsAllowed = true;
     void refresh() {
         auto &catalog = VST3Catalog::shared(); matches.clear();
-        auto rebuild=[](ComboBox &box,StringArray options) {
+        auto rebuild=[](ComboBox &box,StringArray options,bool withFavorites) {
+            const bool selectedFavorite=withFavorites && box.getSelectedId()==2;
             const auto selected=box.getSelectedId()>1?box.getText():String{};
             options.removeDuplicates(false); options.removeEmptyStrings(); options.sort(true);
             box.clear(dontSendNotification); box.addItem("All",1); int id=2,selection=1;
-            for (const auto &option : options) { box.addItem(option,id); if(option==selected)selection=id; ++id; }
+            if(withFavorites) {box.addItem(localization::translate("Favoritos"),id++);if(selectedFavorite)selection=2;}
+            for (const auto &option : options) { box.addItem(option,id); if(!selectedFavorite && option==selected)selection=id; ++id; }
             box.setSelectedId(selection,dontSendNotification);
         };
         if (revision != catalog.revision) {
@@ -260,13 +284,14 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
                 if (!instrumentsAllowed && str(plugin,"category").containsIgnoreCase("Instrument")) continue;
                 types.addArray(pluginTypes(plugin)); vendors.add(str(plugin,"vendor"));
             }
-            rebuild(typeFilter,types); rebuild(vendorFilter,vendors);
+            rebuild(typeFilter,types,true); rebuild(vendorFilter,vendors,false);
         }
         const auto query=search.getText().trim();
-        const auto type=typeFilter.getSelectedId()>1?typeFilter.getText():String{};
+        const bool favoritesOnly=typeFilter.getSelectedId()==2;
+        const auto type=typeFilter.getSelectedId()>2?typeFilter.getText():String{};
         const auto vendor=vendorFilter.getSelectedId()>1?vendorFilter.getText():String{};
         typeFilter.setEnabled(query.isEmpty()); vendorFilter.setEnabled(query.isEmpty());
-        for (auto plugin : catalog.plugins) if(pluginMatches(plugin,query,type,vendor,instrumentsAllowed)) matches.add(plugin);
+        matches=favoritePluginMatches(catalog,query,type,vendor,instrumentsAllowed,favoritesOnly);
         list.updateContent(); list.repaint();
         message.setText(catalog.scanning ? catalog.status : String(matches.size()) + " plugins",dontSendNotification);
         scan.setButtonText(catalog.scanning?localization::translate("Cancelar escaneamento"):localization::translate("Escanear plugins")); revision=catalog.revision;
@@ -290,15 +315,24 @@ class ExternalPluginBrowser final : public Component, private ListBoxModel, priv
             const auto id=str(p,"classID")+str(p,"path");const auto bounds=juce::Rectangle<float>((float)(col*cell+4),4,(float)(cell-8),56);
             g.setColour(selected==id?theme::green.withAlpha(.16f):theme::display);g.fillRoundedRectangle(bounds,6);
             g.setColour(selected==id?theme::green:theme::line);g.drawRoundedRectangle(bounds,6,1);
-            g.setColour(Colours::white);g.setFont(theme::font(12,true));g.drawFittedText(str(p,"name"),bounds.reduced(8).withHeight(28).toNearestInt(),Justification::topLeft,2);
+            g.setColour(Colours::white);g.setFont(theme::font(12,true));g.drawFittedText(str(p,"name"),bounds.reduced(8).withTrimmedRight(22).withHeight(28).toNearestInt(),Justification::topLeft,2);
             g.setColour(theme::secondary);g.setFont(theme::font(10));g.drawText(str(p,"vendor"),bounds.reduced(8).withTrimmedTop(28),Justification::topLeft,true);
+            Path star;star.addStar({bounds.getRight()-14,bounds.getY()+14},5,3.8f,8.f);
+            const bool favorite=VST3Catalog::shared().isFavorite(p);
+            g.setColour(favorite?theme::yellow:theme::secondary);
+            if(favorite)g.fillPath(star);else g.strokePath(star,PathStrokeType(1.2f));
         }
     }
     void listBoxItemClicked(int row,const MouseEvent &event) override {
         if(!event.mods.isLeftButtonDown())return;
-        const int width=std::max(1,list.getWidth()-list.getVerticalScrollBar().getWidth());
+        const int width=std::max(1,list.getVisibleContentWidth());
         const int index=row*4+jlimit(0,3,event.x/(std::max(1,width/4)));
-        if(index>=matches.size())return;const auto plugin=matches[index];selected=str(plugin,"classID")+str(plugin,"path");list.repaint();picked(plugin);
+        if(index>=matches.size())return;const auto plugin=matches[index];
+        const int cell=std::max(1,width/4), column=index%4;
+        if(juce::Rectangle<int>((column+1)*cell-32,5,28,28).contains(event.x,event.y)) {
+            VST3Catalog::shared().toggleFavorite(plugin);refresh();return;
+        }
+        selected=str(plugin,"classID")+str(plugin,"path");list.repaint();picked(plugin);
     }
 };
 }

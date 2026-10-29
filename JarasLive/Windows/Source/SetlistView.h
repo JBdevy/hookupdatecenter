@@ -115,8 +115,12 @@ class Workspace::Setlist final : public Component,
         };
         automatic.context = [this](Point<int>) { autoOptions(); };
         blocks.setTooltip("Add a setlist block");
-        blocks.onClick = [this] { addBlock(); };
-        blocks.context = [this](Point<int>) { blockDefaults(); };
+        blocks.setComponentID("setlistBlocks");
+        blocks.onClick = [this] {
+            if(selectedPlaylist()){addBlock();return;}
+            w.appearance.set("jaras.setlist.allRegionsOrder",(allRegionsOrder()+1)%3);refresh();
+        };
+        blocks.context = [this](Point<int>) { if(selectedPlaylist())blockDefaults(); };
         stop.setTooltip("Stop automatically at the end of each region");
         stop.onClick = [this] {
             auto state = currentState();
@@ -292,7 +296,9 @@ class Workspace::Setlist final : public Component,
         stop.setActive(state.stopAtRegionEnd.value_or(false));
         live.setToggleState(state.liveEnabled.value_or(false), dontSendNotification);
         const auto *playlist = selectedPlaylist();
-        blocks.setEnabled(playlist != nullptr);
+        blocks.setEnabled(true);
+        blocks.setButtonText(playlist?localization::translate("Blocks").toUpperCase():StringArray{"Timeline","A-Z","Z-A"}[allRegionsOrder()]);
+        blocks.setTooltip(playlist?localization::translate("Add a setlist block"):localization::translate("All regions"));
         entries.clear();
         regionCount = 0;
         totalDuration = 0;
@@ -318,7 +324,14 @@ class Workspace::Setlist final : public Component,
                     if (!part.parentRegionID)
                         roots.push_back({part.id, &part});
                 std::stable_sort(roots.begin(), roots.end(),
-                                 [](const auto &a, const auto &b) { return a.second->startTime < b.second->startTime; });
+                                 [order=allRegionsOrder()](const auto &a, const auto &b) {
+                                     if(order!=0) {
+                                         const auto left=text(a.second->name),right=text(b.second->name);
+                                         const int comparison=CompareStringEx(LOCALE_NAME_USER_DEFAULT,NORM_IGNORECASE|NORM_IGNORENONSPACE|SORT_DIGITSASNUMBERS,left.toWideCharPointer(),-1,right.toWideCharPointer(),-1,nullptr,nullptr,0);
+                                         if(comparison==CSTR_LESS_THAN||comparison==CSTR_GREATER_THAN)return order==1?comparison==CSTR_LESS_THAN:comparison==CSTR_GREATER_THAN;
+                                     }
+                                     return a.second->startTime < b.second->startTime;
+                                 });
             }
             auto addBlocks = [&](const std::optional<ID> &before) {
                 if (!state.blocks)
@@ -442,6 +455,8 @@ class Workspace::Setlist final : public Component,
         put(result, "fontFace", w.appearance.setlistFont().getTypefaceStyle());
         put(result, "regionIDs", w.appearance.regionIDs());
         put(result, "playlist", selectedPlaylist() != nullptr);
+        put(result,"orderButton",blocks.getButtonText());
+        put(result,"allRegionsOrder",allRegionsOrder());
         put(result, "playlistEditor", playlistEditor != nullptr);
         put(result, "playlistCount", (int)currentState().playlists.size());
         put(result, "playlistRegions",
@@ -706,6 +721,7 @@ class Workspace::Setlist final : public Component,
                 safe->w.session.command(jaras::CommandKind::selectRegion,target);
         });
     }
+    int allRegionsOrder() const { return jlimit(0,2,(int)w.appearance.value("jaras.setlist.allRegionsOrder",0)); }
     int regionCount = 0;
     double totalDuration = 0;
     void setSearching(bool value) {
@@ -778,7 +794,7 @@ class Workspace::Setlist final : public Component,
         const auto message = localization::translate(blocksOnly
             ? "Only the selected block headers will be removed. Songs and timeline items will be kept."
             : playlist ? "Remove selected items from this playlist?"
-            : "The selected regions, their items and markers will be removed from the timeline. Media files will remain in the project folder.");
+            : "Only the selected regions will be removed. Timeline items and their audio will be kept.");
         w.confirm(title, message, [self=SafePointer<Setlist>(this),projectID,songID,playlist,blocks,regions] {
             if (!self || self->w.session.project().id != projectID || !self->w.session.song() ||
                 self->w.session.song()->id != songID) return;
@@ -794,14 +810,14 @@ class Workspace::Setlist final : public Component,
                 } else {
                     self->w.session.editTimeline([&](jaras::Project &project) {
                         if (project.regionSetlist) playlistOccurrences::removeBlocks(*project.regionSetlist, songID, playlist, blocks);
-                        regionEditing::erase(project, songID, regions, true);
+                        regionEditing::erase(project, songID, regions, false);
                     });
                 }
                 for (const auto &id : blocks) self->selection.erase(id);
                 for (const auto &id : regions) self->selection.erase(id);
                 if (blocks.count(self->selectedEntry) || regions.count(self->selectedEntry)) self->selectedEntry.clear();
             });
-        });
+        }, {}, localization::translate(playlist&&!blocksOnly?"Remove from playlist":"Delete"), true, playlist.has_value()&&!blocksOnly);
     }
     jaras::RegionSetlist currentState() const {
         return w.session.project().regionSetlist.value_or(jaras::RegionSetlist{});
@@ -1048,7 +1064,7 @@ class Workspace::Setlist final : public Component,
                     state.playlists.erase(std::remove_if(state.playlists.begin(),state.playlists.end(),[&](const auto &p){return p.id==selected;}),state.playlists.end());
                     if(state.blocks)state.blocks->erase(std::remove_if(state.blocks->begin(),state.blocks->end(),[&](const auto &b){return b.playlistId==selected;}),state.blocks->end());
                     if(state.selectedId==selected)state.selectedId.reset();self->apply(state);
-                });
+                }, {}, localization::translate("Delete playlist"), true);
             });
     }
     var getDragSourceDescription(const SparseSet<int> &rows) override {
@@ -1381,14 +1397,7 @@ class Workspace::Setlist final : public Component,
                         if(!copy.empty()){self->selection={copy};self->selectedEntry=copy;self->refresh();}
                     });
                 }
-                if(action==5){
-                    if(playlist.empty()) self->w.deleteRegions({entry.id},true);
-                    else self->w.confirm("Remover da playlist", String::fromUTF8("Remover esta música da playlist?"), [self,entry,playlist] {
-                        if(!self)return;auto state=self->currentState();
-                        playlistOccurrences::remove(state,playlist,{entry.id});
-                        self->apply(state);
-                    });
-                }
+                if(action==5)self->requestEntryRemoval(targets);
             });
     }
     void editEntry(Entry entry, std::set<ID> targets = {}) {

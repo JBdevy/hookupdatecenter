@@ -53,6 +53,43 @@ inline void fit(Workspace &workspace) {
 }
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Timeline marker and item drags snap to the existing edit cursor", [&] {
+        for (const bool tempo : {false,true}) {
+            auto project=floatingControlTests::fixture();auto &song=project.songs[0];
+            song.duration=60;song.parts={jaras::Part{uuid(),"Song",20,60}};
+            jaras::AudioClip clip;clip.id="cursor-snap-item";clip.name="Item";clip.startTime=3;clip.duration=3;
+            song.tracks[0].clips={clip};
+            jaras::TimelineMarker marker{uuid(),"Marker",8.3,0xffffff};
+            if(tempo){marker.tempoBPM=120;marker.tempoBeats=4;marker.tempoUnit=4;}
+            song.markers=std::vector<jaras::TimelineMarker>{marker};
+            Session session;session.inspection=true;session.audio.prepareOffline(48000);
+            session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+            Auth auth;Lighting lighting(session);
+            Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("cursor-drag-snap",".json"));
+            workspace.setSize(1366,768);fit(workspace);
+            auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");require(canvas,"Missing timeline canvas");
+            session.command(jaras::CommandKind::editSeek,{},15.37);
+            const auto state=get(workspace.diagnostics(),"timeline");
+            const double zoom=num(state,"zoom"),offset=num(state,"horizontal");
+            auto event=[&](Point<float> point,Point<float> start,bool down,bool dragged) {
+                return MouseEvent(Desktop::getInstance().getMainMouseSource(),point,
+                    ModifierKeys(down?ModifierKeys::leftButtonModifier:0),1,0,0,0,0,canvas,canvas,
+                    Time::getCurrentTime(),start,Time::getCurrentTime(),1,dragged);
+            };
+            canvas->createComponentSnapshot(canvas->getLocalBounds());
+            Point<float> head{(float)(marker.position*zoom-offset+2),(float)(num(state,"headerHeight")-48+(tempo?22:6))};
+            auto target=head+Point<float>((float)((15.41-marker.position)*zoom),0);
+            canvas->mouseDown(event(head,head,true,false));canvas->mouseDrag(event(target,head,true,true));canvas->mouseUp(event(target,head,false,true));
+            auto found=std::find_if(session.song()->markers->begin(),session.song()->markers->end(),[&](const auto &value){return value.id==marker.id;});
+            require(found!=session.song()->markers->end() && std::abs(found->position-15.37)<1e-6,"Marker did not snap to edit cursor");
+            const auto bounds=localRect(workspace,get(itemState(workspace,clip.id),"bounds"));
+            const auto start=bounds.getCentre();target=start+Point<float>((float)((15.41-clip.startTime)*zoom),0);
+            canvas->mouseDown(event(start,start,true,false));
+            require(std::abs(session.transport().editPosition-15.37)<1e-6,"Picking up an item moved its cursor magnet");
+            canvas->mouseDrag(event(target,start,true,true));canvas->mouseUp(event(target,start,false,true));
+            require(std::abs(session.song()->tracks[0].clips[0].startTime-15.37)<1e-6,"Item did not snap to edit cursor");
+        }
+    });
     test("Timeline item edge guides follow drag and resize across the cached grid", [&] {
         auto project=floatingControlTests::fixture();
         jaras::AudioClip clip; clip.id="guide-visual-item"; clip.name="Moving item";

@@ -44,11 +44,7 @@ public enum ReaperProjectImporter {
         var values = Set<String>()
         let localize: (String) -> String
         func errorDescription(_ error: Error) -> String {
-            let message = error.localizedDescription, prefix = "REAPER: "
-            if message.hasPrefix(prefix) {
-                return prefix + localize(String(message.dropFirst(prefix.count)))
-            }
-            return localize(message)
+            ProjectMigration.errorDescription(error, localize: localize)
         }
         mutating func insert(_ key: String, _ arguments: CVarArg...) {
             values.insert(arguments.isEmpty ? localize(key) : String(format: localize(key), arguments: arguments))
@@ -434,7 +430,7 @@ public enum ReaperProjectImporter {
         let data = try Data(contentsOf: source, options: .mappedIfSafe)
         guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1252) else { throw invalid("Invalid text encoding.") }
         var warnings = Warnings(localize: localizeWarning)
-        let root = try parse(text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{feff}")), report: { warnings.insert("%@", $0.localizedDescription) })
+        let root = try parse(text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{feff}")), report: { warnings.insert("%@", warnings.errorDescription($0)) })
         // REAPER POSITION values are seconds from the physical start of the
         // arrangement. PROJOFFS/measure numbering label the ruler; they do not
         // move that boundary. Keep this start at CatLive 00:00.
@@ -452,7 +448,7 @@ public enum ReaperProjectImporter {
         func recovered<T>(_ description: String, _ fallback: T, _ operation: () throws -> T) throws -> T {
             do { return try operation() }
             catch is CancellationError { throw CancellationError() }
-            catch { warnings.insert("%@: %@", description, warnings.errorDescription(error)); return fallback }
+            catch { warnings.insert("%@: %@", warnings.localize(description), warnings.errorDescription(error)); return fallback }
         }
         var hook = VSHookProjectMigration(state: hookState)
         var project = Project.empty(name: source.deletingPathExtension().lastPathComponent)
@@ -467,7 +463,7 @@ public enum ReaperProjectImporter {
             warnings.insert("Invalid REAPER time signature ignored; 4/4 was used."); song.beatsPerBar = 4; song.beatUnit = 4
         }
         var ignoredItems = 0
-        let midiTempo = try MIDITempoMap(root, report: { warnings.insert("%@", $0.localizedDescription) })
+        let midiTempo = try MIDITempoMap(root, report: { warnings.insert("%@", warnings.errorDescription($0)) })
         var midiPools: [String: Chunk] = [:]
         func collectPools(_ chunk: Chunk) {
             if chunk.header == ["SOURCE", "MIDI"], let pool = chunk.value("POOLEDEVTS"), !chunk.midiEvents.isEmpty { midiPools[pool] = chunk }

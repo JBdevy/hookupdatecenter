@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <future>
 
 namespace {
 using namespace catlive::native;
@@ -412,6 +413,20 @@ int main(int argc, char** argv) {
                 "MP3 indexed length discarded audible frames.");
         require(std::any_of(baseline.begin(), baseline.end(), [](float value) { return std::abs(value) > .001f; }),
                 "MP3 fixture is not audible.");
+        // A newly opened seek decoder reuses the live reader's index while
+        // retaining an independent stream position and synthesis state.
+        std::vector<std::future<void>> readers;
+        for (int worker=0; worker<4; ++worker) readers.push_back(std::async(std::launch::async, [&, worker] {
+            AudioFile next(file);
+            std::vector<float> block(997 * channels);
+            for (int step=0; step<8; ++step) {
+                const auto at = (frames > 997 ? frames-997 : 0) * ((step*5+worker*3)%17) / 17;
+                const auto count = static_cast<std::size_t>(std::min<std::uint64_t>(997,frames-at));
+                require(next.readInterleaved(at,block.data(),count)==count,"Shared seek index lost frames.");
+                compare(block.data(),baseline.data()+at*channels,count*channels,0.f);
+            }
+        }));
+        for (auto &reader:readers) reader.get();
         seekChecks(random, baseline, 0.f);
         const auto tailFrames = static_cast<std::size_t>(std::min<std::uint64_t>(31, frames));
         std::vector<float> tail(1024 * channels, 1.f);

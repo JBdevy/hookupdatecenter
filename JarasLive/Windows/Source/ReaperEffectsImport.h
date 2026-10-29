@@ -8,7 +8,7 @@ inline double rppNumeric(const String &text) {
     const auto raw = utf8(text);
     char *end = nullptr;
     const auto n = std::strtod(raw.c_str(), &end);
-    require(end != raw.c_str() && *end == 0 && std::isfinite(n), "REAPER: invalid numeric value.");
+    require(end != raw.c_str() && *end == 0 && std::isfinite(n), migration::message("REAPER: invalid numeric value."));
     return n;
 }
 inline var rppEnvelope(const RppChunk &node, const var &target, const String &name,
@@ -16,7 +16,7 @@ inline var rppEnvelope(const RppChunk &node, const var &target, const String &na
     if (!node.line("POOLEDENVINST").isEmpty() || node.child("POOLEDENVINST") || node.child("AI"))
         warnings.addIfNotAlreadyThere(
             scope + ": " + name +
-            " contains automation items; pooled automation items were not imported.");
+            migration::message(" contains automation items; pooled automation items were not imported."));
     struct Point {
         double time, value, tension;
         int shape;
@@ -25,10 +25,10 @@ inline var rppEnvelope(const RppChunk &node, const var &target, const String &na
     for (const auto &row : node.lines)
         if (row[0] == "PT")
             try {
-                require(row.size() >= 3, "REAPER: invalid envelope point.");
+                require(row.size() >= 3, migration::message("REAPER: invalid envelope point."));
                 const double shape = row.size() > 3 ? rppNumeric(row[3]) : 0;
                 require(shape == std::floor(shape) && shape >= 0 && shape <= 5,
-                        "REAPER: invalid envelope point shape.");
+                        migration::message("REAPER: invalid envelope point shape."));
                 Point p{rppNumeric(row[1]), rppNumeric(row[2]), row.size() > 7 ? rppNumeric(row[7]) : 0,
                         (int)shape};
                 if (!points.empty() && points.back().time == p.time)
@@ -36,13 +36,13 @@ inline var rppEnvelope(const RppChunk &node, const var &target, const String &na
                 else
                     points.push_back(p);
             } catch (const std::exception &e) {
-                warnings.addIfNotAlreadyThere("REAPER envelope point ignored: " +
+                warnings.addIfNotAlreadyThere(migration::message("REAPER envelope point ignored: ") +
                                               String::fromUTF8(e.what()));
             }
     if (points.empty())
         return {};
     for (size_t i = 1; i < points.size(); ++i)
-        require(points[i - 1].time < points[i].time, "REAPER: unsorted envelope points.");
+        require(points[i - 1].time < points[i].time, migration::message("REAPER: unsorted envelope points."));
     const auto kind = str(target, "kind");
     const bool volume = kind == "volume", fader = volume && node.number("VOLTYPE") == 1;
     const double maximum = volume ? std::pow(10., .6) : 1., minimum = kind == "pan" ? -1. : 0.;
@@ -50,7 +50,7 @@ inline var rppEnvelope(const RppChunk &node, const var &target, const String &na
         if (p.value < minimum || p.value > maximum) {
             warnings.addIfNotAlreadyThere(
                 scope + ": " + name +
-                " envelope exceeds the CatLive parameter range and was not applied.");
+                migration::message(" envelope exceeds the CatLive parameter range and was not applied."));
             return {};
         }
     const auto normalize = [&](double v) {
@@ -148,7 +148,7 @@ inline var rppEnvelope(const RppChunk &node, const var &target, const String &na
                     refine(first, fv, mid, mv, depth + 1);
                     append(a.time + (b.time - a.time) * mid, mv, "linear");
                     require(imported.size() < 200000,
-                            "REAPER: envelope contains too many resampled points.");
+                            migration::message("REAPER: envelope contains too many resampled points."));
                     refine(mid, mv, last, lv, depth + 1);
                 }
             };
@@ -163,15 +163,15 @@ inline var rppAutomation(const RppChunk &node, Array<var> envelopes, bool take, 
     try {
         const auto raw = node.number("AUTOMODE");
         require(raw == std::floor(raw) && raw >= INT_MIN && raw <= INT_MAX,
-                "REAPER: invalid automation mode.");
+                migration::message("REAPER: invalid automation mode."));
         mode = (int)raw;
     } catch (const std::exception &e) {
-        warnings.addIfNotAlreadyThere("REAPER automation mode ignored: " + String::fromUTF8(e.what()));
+        warnings.addIfNotAlreadyThere(migration::message("REAPER automation mode ignored: ") + String::fromUTF8(e.what()));
     }
     static const char *modes[] = {"trimRead", "read", "touch", "write", "latch"};
     if (mode > 4)
         warnings.addIfNotAlreadyThere(scope +
-                                      ": unsupported REAPER automation mode was imported as Read.");
+                                      migration::message(": unsupported REAPER automation mode was imported as Read."));
     for (const auto &owned : node.children)
         try {
             const auto &child = *owned;
@@ -195,10 +195,10 @@ inline var rppAutomation(const RppChunk &node, Array<var> envelopes, bool take, 
                     count += row[0] == "PT";
                 if (count)
                     warnings.addIfNotAlreadyThere(scope + ": REAPER " + key +
-                                                  " automation is not supported and was not applied.");
+                                                  migration::message(" automation is not supported and was not applied."));
             }
         } catch (const std::exception &e) {
-            warnings.addIfNotAlreadyThere("REAPER envelope ignored: " + String::fromUTF8(e.what()));
+            warnings.addIfNotAlreadyThere(migration::message("REAPER envelope ignored: ") + String::fromUTF8(e.what()));
         }
     if (envelopes.isEmpty())
         return {};
@@ -248,28 +248,28 @@ inline std::pair<String, String> rppVST3States(const StringArray &lines) {
     MemoryOutputStream joined;
     for (const auto &line : lines) {
         MemoryOutputStream decoded;
-        require(Base64::convertFromBase64(decoded, line), "REAPER: invalid VST3 state encoding.");
+        require(Base64::convertFromBase64(decoded, line), migration::message("REAPER: invalid VST3 state encoding."));
         require(joined.getDataSize() + decoded.getDataSize() <= 64 * 1024 * 1024,
-                "REAPER: VST3 state too large.");
+                migration::message("REAPER: VST3 state too large."));
         joined.write(decoded.getData(), decoded.getDataSize());
     }
     const auto *data = (const uint8 *)joined.getData();
     const auto size = joined.getDataSize();
     const auto u32 = [&](size_t at) -> uint32 {
-        require(at <= size && size - at >= 4, "REAPER: truncated VST3 state.");
+        require(at <= size && size - at >= 4, migration::message("REAPER: truncated VST3 state."));
         return ByteOrder::littleEndianInt(data + at);
     };
-    require(u32(4) == 0xfeed5eee, "REAPER: unsupported VST3 routing-state format.");
+    require(u32(4) == 0xfeed5eee, migration::message("REAPER: unsupported VST3 routing-state format."));
     const auto inputs = u32(8);
-    require(inputs <= 4096, "REAPER: invalid VST3 input count.");
+    require(inputs <= 4096, migration::message("REAPER: invalid VST3 input count."));
     const size_t output = 12 + 8 * size_t(inputs);
     const auto outputs = u32(output);
-    require(outputs <= 4096, "REAPER: invalid VST3 output count.");
+    require(outputs <= 4096, migration::message("REAPER: invalid VST3 output count."));
     const size_t lengthOffset = output + 4 + 8 * size_t(outputs);
     const auto length = u32(lengthOffset);
     size_t cursor = lengthOffset + 12;
     require(length <= 64 * 1024 * 1024 && cursor <= size && length <= size - cursor,
-            "REAPER: truncated VST3 processor state.");
+            migration::message("REAPER: truncated VST3 processor state."));
     const size_t end = cursor + length;
     String component, controller;
     bool haveComponent = false, haveController = false;
@@ -277,10 +277,10 @@ inline std::pair<String, String> rppVST3States(const StringArray &lines) {
         const auto count = u32(cursor), kind = u32(cursor + 4);
         cursor += 8;
         require(cursor <= end && count <= end - cursor && kind <= 1,
-                "REAPER: unsupported VST3 state record.");
+                migration::message("REAPER: unsupported VST3 state record."));
         if (count) {
             auto &have = kind == 1 ? haveComponent : haveController;
-            require(!have, "REAPER: duplicate VST3 state.");
+            require(!have, migration::message("REAPER: duplicate VST3 state."));
             have = true;
             (kind == 1 ? component : controller) = Base64::toBase64(data + cursor, count);
         }
@@ -300,8 +300,7 @@ inline RppEffects rppImportFX(const RppChunk *chain, const ReaperVST3Resolver &r
         const auto &h = node.header;
         const auto type = h[0];
         if (type == "CONTAINER") {
-            warnings.addIfNotAlreadyThere(scope + ": REAPER FX containers are not supported; effects "
-                                                  "inside containers were not imported.");
+            warnings.addIfNotAlreadyThere(scope + migration::message(": REAPER FX containers are not supported; effects inside containers were not imported."));
             continue;
         }
         if (type != "VST" && type != "AU" && type != "JS" && type != "DX" && type != "CLAP" &&
@@ -310,12 +309,12 @@ inline RppEffects rppImportFX(const RppChunk *chain, const ReaperVST3Resolver &r
         try {
             require(type == "VST" && h.size() > 5 &&
                         (h[1].startsWith("VST3:") || h[1].startsWith("VST3i:")),
-                    scope + ": only VST3 effects are supported during REAPER migration.");
+                    scope + migration::message(": only VST3 effects are supported during REAPER migration."));
             const int open = h[5].indexOfChar('{'), close = h[5].indexOfChar('}');
-            require(open >= 0 && close > open, "REAPER: VST3 has no class ID.");
+            require(open >= 0 && close > open, migration::message("REAPER: VST3 has no class ID."));
             const auto classID = h[5].substring(open + 1, close).toUpperCase();
             require(classID.length() == 32 && classID.containsOnly("0123456789ABCDEF"),
-                    "REAPER: invalid VST3 class ID.");
+                    migration::message("REAPER: invalid VST3 class ID."));
             auto plugin = object();
             const auto id = text(uuid()), name = h[1].fromFirstOccurrenceOf(":", false, false).trim();
             put(plugin, "id", id);
@@ -335,7 +334,7 @@ inline RppEffects rppImportFX(const RppChunk *chain, const ReaperVST3Resolver &r
                 validState = false;
                 put(plugin, "bypassed", true);
                 warnings.addIfNotAlreadyThere(scope + ": " + name +
-                                              " state was not imported: " + String::fromUTF8(e.what()));
+                                              migration::message(" state was not imported: ") + String::fromUTF8(e.what()));
             }
             std::set<int> indices;
             for (const auto *envelope : node.effectEnvelopes) {
@@ -346,12 +345,12 @@ inline RppEffects rppImportFX(const RppChunk *chain, const ReaperVST3Resolver &r
                 require(indexText.isNotEmpty() && indexText.containsOnly("0123456789") &&
                             (separator < 0 ||
                              (parameterText.isNotEmpty() && parameterText.containsOnly("0123456789"))),
-                        "REAPER: invalid automation parameter identity.");
+                        migration::message("REAPER: invalid automation parameter identity."));
                 const auto index = rppNumeric(indexText);
-                require(index <= INT_MAX, "REAPER: invalid automation parameter index.");
+                require(index <= INT_MAX, migration::message("REAPER: invalid automation parameter index."));
                 if (separator >= 0)
                     require(rppNumeric(parameterText) <= UINT32_MAX,
-                            "REAPER: invalid automation parameter ID.");
+                            migration::message("REAPER: invalid automation parameter ID."));
                 indices.insert((int)index);
             }
             var resolved;
@@ -360,26 +359,24 @@ inline RppEffects rppImportFX(const RppChunk *chain, const ReaperVST3Resolver &r
                     resolved = resolve(plugin, indices);
                     if (resolved.isObject()) {
                         require(str(resolved, "classID").equalsIgnoreCase(classID),
-                                "REAPER: resolver returned a different plugin class.");
+                                migration::message("REAPER: resolver returned a different plugin class."));
                         put(plugin, "path", str(resolved, "path"));
                         put(plugin, "category", str(resolved, "category"));
                         available = validState;
                     }
                 } catch (const std::exception &e) {
                     warnings.addIfNotAlreadyThere(
-                        scope + ": " + name + " could not be restored: " + String::fromUTF8(e.what()));
+                        scope + ": " + name + migration::message(" could not be restored: ") + String::fromUTF8(e.what()));
                 }
             if (!available) {
                 put(plugin, "bypassed", true);
                 warnings.addIfNotAlreadyThere(scope + ": VST3 " + name +
-                                              " was not found or restored. Its saved state was "
-                                              "retained, but the effect was not inserted.");
+                                              migration::message(" was not found or restored. Its saved state was retained, but the effect was not inserted."));
             }
             if (str(plugin, "category").containsIgnoreCase("midi"))
                 warnings.addIfNotAlreadyThere(
                     scope + ": " + name +
-                    " is categorized as a MIDI effect; VST3 MIDI-output transformations are not "
-                    "supported and were not migrated.");
+                    migration::message(" is categorized as a MIDI effect; VST3 MIDI-output transformations are not supported and were not migrated."));
             plugins.add(plugin);
             if (available)
                 inserted.add("External:" + id);
@@ -390,14 +387,13 @@ inline RppEffects rppImportFX(const RppChunk *chain, const ReaperVST3Resolver &r
                     if (identity.size() == 2) {
                         const double n = rppNumeric(identity[1]);
                         require(n >= 0 && n <= UINT32_MAX && n == std::floor(n),
-                                "REAPER: invalid parameter ID.");
+                                migration::message("REAPER: invalid parameter ID."));
                         parameter = (int64)n;
                     } else
                         parameter = get(get(resolved, "parameterIDs"), identity[0]);
                     if (parameter.isVoid()) {
                         warnings.addIfNotAlreadyThere(scope + ": " + name +
-                                                      " automation parameter could not be identified; "
-                                                      "the envelope was not applied.");
+                                                      migration::message(" automation parameter could not be identified; the envelope was not applied."));
                         continue;
                     }
                     auto target = object();
@@ -410,11 +406,11 @@ inline RppEffects rppImportFX(const RppChunk *chain, const ReaperVST3Resolver &r
                     if (imported.isObject())
                         result.envelopes.add(imported);
                 } catch (const std::exception &e) {
-                    warnings.addIfNotAlreadyThere("REAPER FX envelope ignored: " +
+                    warnings.addIfNotAlreadyThere(migration::message("REAPER FX envelope ignored: ") +
                                                   String::fromUTF8(e.what()));
                 }
         } catch (const std::exception &e) {
-            warnings.addIfNotAlreadyThere("REAPER FX ignored: " + String::fromUTF8(e.what()));
+            warnings.addIfNotAlreadyThere(migration::message("REAPER FX ignored: ") + String::fromUTF8(e.what()));
         }
     }
     if (!plugins.isEmpty()) {

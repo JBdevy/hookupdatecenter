@@ -113,7 +113,7 @@ class VinhetasPanel final : public Component, private Timer {
         if(learning>=0&&down&&(channelFilter()==0||channelFilter()==channel)) {
             var mapping(new DynamicObject());put(mapping,"status",normalized);put(mapping,"number",number);put(mapping,"channel",channel);
             if(learningPreset)presetMappings[(size_t)learning]=mapping;else padMappings[(size_t)learning]=mapping;
-            learning=-1;audio.learningMIDI=false;save();repaint();return true;
+            learning=-1;audio.learningMIDI=false;save();refresh();return true;
         }
         if(!down) {
             pressedCC.erase(key);
@@ -177,7 +177,13 @@ class VinhetasPanel final : public Component, private Timer {
             const auto &data=owner->current(index);const Colour base(0xff000000|data.colour);const bool lit=isLit();
             g.setColour(lit?base.interpolatedWith(Colours::white,.18f):base.withAlpha(.45f));g.fillRoundedRectangle(getLocalBounds().toFloat(),5);
             if(lit){g.setColour(base.interpolatedWith(Colours::white,.6f));g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1),5,2);}
-            g.setColour(Colours::white);g.setFont(theme::font(11,true));g.drawFittedText(data.name,getLocalBounds().reduced(3),Justification::centred,2);
+            auto nameArea=getLocalBounds().reduced(3);
+            const auto mapping=owner->padMappingLabel(index);
+            if(mapping.isNotEmpty()) {
+                auto footer=nameArea.removeFromBottom(14);
+                g.setColour(Colours::white);g.setFont(theme::font(10,true));g.drawFittedText(mapping,footer,Justification::centred,1);
+            }
+            g.setColour(Colours::white);g.setFont(theme::font(11,true));g.drawFittedText(data.name,nameArea,Justification::centred,2);
         }
         void mouseDown(const MouseEvent &event) override {
             if(event.mods.isPopupMenu()){owner->menu(owner->selected,index);return;}
@@ -289,10 +295,23 @@ class VinhetasPanel final : public Component, private Timer {
         Array<var> presetMap;for(auto &v:presetMappings)presetMap.add(v);put(root,"presetMappings",presetMap);
         syncMIDIMappings();globalState=root.clone();revision=++globalRevision;appearance.set("jaras.vinhetas",root);
     }
+    String padMappingLabel(int pad) const {
+        const auto &mapping=padMappings[(size_t)pad];
+        if(!mapping.isObject())return {};
+        return String((int)get(mapping,"status")==0xb0?"CC ":"Note ")+String((int)get(mapping,"number"));
+    }
+    void unlearnPad(int pad) {
+        if(pad<0||pad>=16)return;
+        padMappings[(size_t)pad]=var{};
+        if(!learningPreset&&learning==pad){learning=-1;audio.learningMIDI=false;}
+        save();refresh();
+    }
     void menu(int preset,int pad) {
         PopupMenu menu;menu.addItem(1,localization::translate("Editar"));if(pad>=0)menu.addItem(2,"Inserir audio");menu.addItem(3,"Learn MIDI");
+        if(pad>=0&&padMappings[(size_t)pad].isObject())menu.addItem(4,(int)get(padMappings[(size_t)pad],"status")==0xb0?"Unlearn CC":"Unlearn MIDI");
         menu.showMenuAsync(PopupMenu::Options().withTargetComponent(pad>=0?static_cast<Component*>(&pads[(size_t)pad]):&presetButtons[(size_t)preset]),[safe=SafePointer<VinhetasPanel>(this),preset,pad](int action){
             if(!safe)return;
+            if(action==4&&pad>=0){safe->unlearnPad(pad);return;}
             if(action==3){safe->learning=pad>=0?pad:preset;safe->learningPreset=pad<0;safe->audio.learningMIDI=true;safe->repaint();return;}
             if(action==1&&safe->edit){auto &p=safe->presets[(size_t)preset];safe->edit(pad>=0?p.pads[(size_t)pad].name:p.name,pad>=0?p.pads[(size_t)pad].colour:p.colour,[safe,preset,pad](String name,unsigned colour){if(!safe)return;auto &p=safe->presets[(size_t)preset];if(pad>=0){p.pads[(size_t)pad].name=name;p.pads[(size_t)pad].colour=colour;}else{p.name=name;p.colour=colour;}safe->save();safe->refresh();});}
             if(action==2&&pad>=0){safe->chooser=std::make_unique<FileChooser>("Inserir audio",File{},"*.wav;*.wave;*.aif;*.aiff;*.mp3");safe->chooser->launchAsync(FileBrowserComponent::openMode|FileBrowserComponent::canSelectFiles,[safe,preset,pad](const FileChooser &chooser){if(!safe)return;const auto file=chooser.getResult();if(!file.existsAsFile())return;auto &data=safe->presets[(size_t)preset].pads[(size_t)pad];const auto folder=safe->mediaFolder();folder.createDirectory();const auto destination=folder.getChildFile(Uuid().toString()+file.getFileExtension());if(!file.hasFileExtension("wav;wave;aiff;aif;mp3")||!file.copyFileTo(destination))return;data.file=destination;data.sample=nullptr;safe->save();safe->refresh();safe->preload();});}

@@ -1030,6 +1030,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     @State private var keyboardVisible = false
+    @AppStorage("jaras.setlist.allRegionsOrder") private var allRegionsOrder = 0
     @State private var expandedRegions: Set<UUID> = []
     @State private var itemLayoutCache = DAWRemoteItemLayoutCache()
     @State private var setlistRowsCache = DAWRemoteSetlistRowsCache()
@@ -1284,7 +1285,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             if nativeSetlistRemoval?.blocksOnly == true {
                 Text("Delete selected blocks?") + Text("\n\n") + Text("Only the selected block headers will be removed. Songs and timeline items will be kept.")
             } else {
-                Text(removal?.action == .deletePlaylist ? "Delete playlist?" : (nativeSetlistRemoval?.playlist ?? removal?.playlist) == nil ? "Delete region and its contents?" : "Remove from playlist?")
+                Text(removal?.action == .deletePlaylist ? "Delete playlist?" : (nativeSetlistRemoval?.playlist ?? removal?.playlist) == nil ? "Only the selected regions will be removed. Timeline items and their audio will be kept." : "Remove from playlist?")
             }
         }
         .onChange(of: state.project) { _ in editingEntry = nil; removal = nil; nativeSetlistRemoval = nil; confirmingRemoval = false }
@@ -1351,7 +1352,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         .onReceive(localShow?.$setlistNavigationRequest.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { request in
             guard local, let request, let localShow, let song = localShow.current else { return }
             let parts = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
-            let entries: [SetlistEntry] = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search).compactMap { entry in
+            let entries: [SetlistEntry] = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search, order: local && state.selectedPlaylist == nil ? allRegionsOrder : nil).compactMap { entry in
                 guard case .region(let row) = entry, let part = localShow.playlistRegion(row.region.id) ?? parts[row.region.id] else { return nil }
                 return .region(part, number: row.number ?? 0)
             }
@@ -2764,7 +2765,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             remoteMIDIPlaylistID = ids[next]; remoteMIDISetlistID = nil
             action(.selectPlaylist, target: ids[next])
         case .setlistUp, .setlistDown:
-            let ids = setlistRowsCache.entries(in: state, expanded: [], query: "").compactMap { entry -> UUID? in
+            let ids = setlistRowsCache.entries(in: state, expanded: [], query: "", order: local && state.selectedPlaylist == nil ? allRegionsOrder : nil).compactMap { entry -> UUID? in
                 if case .region(let row) = entry, !row.child { return row.region.id }; return nil
             }
             guard !ids.isEmpty else { return }
@@ -2823,7 +2824,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         trackScrolling.selectionScope = .setlist
         let isBlock = local && (state.setlistBlocks?.contains { $0.id == id } == true)
         if local, hardwareModifiers.contains(.shift), let anchor = setlistSelectionAnchor {
-            let ids = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search).map { entry -> UUID in
+            let ids = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search, order: local && state.selectedPlaylist == nil ? allRegionsOrder : nil).map { entry -> UUID in
                 switch entry { case .region(let row): return row.region.id; case .block(let block): return block.id }
             }
             if let first = ids.firstIndex(of: anchor), let last = ids.firstIndex(of: id) {
@@ -2897,14 +2898,16 @@ private struct RemoteSidebarRail<Content: View>: View {
                 }.buttonStyle(RemoteFullAreaButtonStyle()).accessibilityLabel("AUTO").accessibilityValue(state.regionAuto == true ? "On" : "Off")
                     .contextMenu { if local { Button("Settings") { autoSettings = true } } }
                 if let addBlock {
-                    Button(action: addBlock) {
-                        Text(verbatim: JarasLocalization.string("Blocks").uppercased()).font(.jarasSystem(size: 9, weight: .bold))
-                            .foregroundStyle(JarasTheme.text).frame(width: 40, height: 30)
+                    Button {
+                        if state.selectedPlaylist == nil { allRegionsOrder = (allRegionsOrder + 1) % 3 }
+                        else { addBlock() }
+                    } label: {
+                        Text(verbatim: state.selectedPlaylist == nil ? ["Timeline", "A-Z", "Z-A"][min(2,max(0,allRegionsOrder))] : JarasLocalization.string("Blocks").uppercased()).font(.jarasSystem(size: 9, weight: .bold))
+                            .foregroundStyle(JarasTheme.text).frame(width: state.selectedPlaylist == nil ? 52 : 40, height: 30)
                             .modifier(RemoteControlSurface(color: nil, radius: 4))
                             .contentShape(Rectangle())
                     }.buttonStyle(RemoteFullAreaButtonStyle())
-                        .disabled(state.selectedPlaylist == nil)
-                        .opacity(state.selectedPlaylist == nil ? 0.35 : 1)
+
                 }
                 if let toggleRegionStop {
                     Button(action: toggleRegionStop) {
@@ -2929,7 +2932,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 }.buttonStyle(RemoteFullAreaButtonStyle())
                             }
                         } else {
-                            ForEach(setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search)) { entry in
+                            ForEach(setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search, order: local && state.selectedPlaylist == nil ? allRegionsOrder : nil)) { entry in
                                 switch entry {
                                 case .block(let block): setlistBlockRow(block)
                                 case .region(let row):
@@ -3520,6 +3523,7 @@ private struct RemoteNativeTimeline: View {
     @ObservedObject private var timeSelection = TimelineAreaSelection.shared
     @State private var rulerPointerViewport: IpadTimelineViewport?
     @State private var rulerSelectionAnchor: Double?
+    @GestureState private var markerPreview: (id: UUID, position: Double)?
     @State private var rulerSelectionEnd: Double?
     @State private var selectionResizeFixedEdge: Double?
     @State private var gestureControl = IpadTimelineGestureControl()
@@ -3549,6 +3553,9 @@ private struct RemoteNativeTimeline: View {
     private var presentationSong: Song? {
         guard let song = localShow?.current else { return nil }
         var preview = regionDrag.map { song.previewMovingRegion($0.id, to: $0.start) } ?? song
+        if let markerPreview, let index = preview.markers?.firstIndex(where: { $0.id == markerPreview.id }) {
+            preview.markers?[index].position = markerPreview.position
+        }
         if let move = scrolling.itemMove {
             preview = preview.movingItems(move.items, anchor: move.anchor, start: move.start, track: move.track) ?? preview
         }
@@ -3641,8 +3648,8 @@ private struct RemoteNativeTimeline: View {
                                 var line = Path(); line.move(to: CGPoint(x: x, y: 0)); line.addLine(to: CGPoint(x: x, y: size.height))
                                 if mark.primary { primary.addPath(line) } else { secondary.addPath(line) }
                             }
-                            context.stroke(primary, with: .color(remoteColor(state.gridPrimaryColor ?? UInt32(TimelineAppearanceDefaults.primaryGrid))), lineWidth: 1 / displayScale)
-                            context.stroke(secondary, with: .color(remoteColor(state.gridSecondaryColor ?? UInt32(TimelineAppearanceDefaults.secondaryGrid))), lineWidth: 1 / displayScale)
+                            context.stroke(primary, with: .color(remoteColor(state.gridPrimaryColor ?? UInt32(TimelineAppearanceDefaults.primaryGrid))), style: StrokeStyle(lineWidth: 0.75 / displayScale, dash: [1, 3]))
+                            context.stroke(secondary, with: .color(remoteColor(state.gridSecondaryColor ?? UInt32(TimelineAppearanceDefaults.secondaryGrid))), style: StrokeStyle(lineWidth: 0.75 / displayScale, dash: [1, 3]))
                         }.allowsHitTesting(false)
                     }
                 }
@@ -4031,7 +4038,7 @@ private struct RemoteNativeTimeline: View {
             }
             if local, let song {
                 ForEach((song.markers ?? []).filter { $0.isTempo && $0.position >= start && $0.position <= end }) { marker in
-                    markerTarget(marker, width: (TimelineStaticText.label(song.markerLabel(marker), style: .regionIdentifier, displayScale: displayScale)?.width ?? 24) + 6, height: 16)
+                    markerTarget(marker, width: (TimelineStaticText.label(song.markerLabel(marker), style: .regionIdentifier, displayScale: displayScale)?.width ?? 24) + 6, height: 16, pixelsPerSecond: width / span)
                         .offset(x: gridX(marker.position, width: width))
                 }
             }
@@ -4134,7 +4141,7 @@ private struct RemoteNativeTimeline: View {
                 let ends = Dictionary(uniqueKeysWithValues: markers.map { ($0.id, min(end, regionEnds[$0.id] ?? end)) })
                 let flags = TimelineMarker.flagWidths(markers, scale: width / span, widths: widths, regionEnds: ends)
                 ForEach(markers) { marker in
-                    markerTarget(marker, width: flags[marker.id] ?? 12, height: RemoteNativeGridMetrics.markerHeight(local: local))
+                    markerTarget(marker, width: flags[marker.id] ?? 12, height: RemoteNativeGridMetrics.markerHeight(local: local), pixelsPerSecond: width / span)
                         .offset(x: gridX(marker.position, width: width))
                 }
             }
@@ -4147,13 +4154,32 @@ private struct RemoteNativeTimeline: View {
             }
             .onTapGesture { if local { pauseFollowing() } }.accessibilityLabel("Marcadores da música")
     }
-    private func markerTarget(_ marker: TimelineMarker, width: CGFloat, height: CGFloat) -> some View {
+    private func markerTarget(_ marker: TimelineMarker, width: CGFloat, height: CGFloat, pixelsPerSecond: Double) -> some View {
         Color.clear.frame(width: max(1, width), height: height).contentShape(Rectangle())
             .onTapGesture(count: 2) { pauseFollowing(); openMarkerEditor?(marker) }
             .contextMenu {
                 Button("Editar marcador") { pauseFollowing(); openMarkerEditor?(marker) }
                 Button("Delete", role: .destructive) { localShow?.deleteManualMarker(marker.id) }
             }.accessibilityLabel(marker.name)
+            .gesture(DragGesture(minimumDistance: 3)
+                .updating($markerPreview) { value, preview, _ in
+                    guard let moved = draggedMarker(marker.id, translation: value.translation.width, pixelsPerSecond: pixelsPerSecond) else { return }
+                    preview = (moved.id, moved.position)
+                }
+                .onChanged { _ in if local { pauseFollowing() } }
+                .onEnded { value in
+                    guard let moved = draggedMarker(marker.id, translation: value.translation.width, pixelsPerSecond: pixelsPerSecond) else { return }
+                    localShow?.setMarker(moved)
+                })
+    }
+    private func draggedMarker(_ id: UUID, translation: Double, pixelsPerSecond: Double) -> TimelineMarker? {
+        guard local, editorEnabled, let show = localShow, !show.timelineMovementLocked,
+              let song = show.current, var marker = song.markers?.first(where: { $0.id == id }),
+              song.canDragMarker(marker), pixelsPerSecond > 0 else { return nil }
+        marker.position = song.markerDragPosition(marker, to: marker.position + translation / pixelsPerSecond,
+            pixelsPerSecond: pixelsPerSecond, free: !TimelineSnapPreference.enabled || scrolling.modifiers.contains(.shift),
+            cursor: show.snapshot.transport.editPosition ?? show.snapshot.transport.position)
+        return marker
     }
     private func createMarker(tempo: Bool = false) {
         guard let show = localShow, let song = show.current else { return }
@@ -4449,8 +4475,8 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                         line.move(to: CGPoint(x: x, y: 0)); line.addLine(to: CGPoint(x: x, y: size.height))
                         if mark.primary { primary.addPath(line) } else { secondary.addPath(line) }
                     }
-                    context.stroke(primary, with: .color(remoteColor(primaryColor)), lineWidth: 1 / displayScale)
-                    context.stroke(secondary, with: .color(remoteColor(secondaryColor).opacity(0.85)), lineWidth: 1 / displayScale)
+                    context.stroke(primary, with: .color(remoteColor(primaryColor)), style: StrokeStyle(lineWidth: 0.75 / displayScale, dash: [1, 3]))
+                    context.stroke(secondary, with: .color(remoteColor(secondaryColor).opacity(0.85)), style: StrokeStyle(lineWidth: 0.75 / displayScale, dash: [1, 3]))
                 }
             }.allowsHitTesting(false)
             ForEach(previewClips.filter { hasRegion && $0.start < end && $0.start + $0.duration > start && (!local || RecordingLaneLayout.shared.items[$0.id] == nil) }) { clip in
@@ -5065,19 +5091,36 @@ private struct IpadPlaylistCreator: View {
     let create: (String, [UUID]) -> Bool
     let close: () -> Void
     @State private var name = ""
-    @State private var selected: Set<UUID> = []
+    @State private var query = ""
+    private var filteredRegions: [DAWRemoteState.Region] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return regions.filter { term.isEmpty || $0.name.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+    }
+    @State private var selected: [UUID] = []
     var body: some View {
         VStack(spacing: 0) {
             IpadModalHeader(title: adding ? "Add regions" : "Create playlist", close: close)
             if !adding { TextField("Name", text: $name).textFieldStyle(.roundedBorder).padding(16) }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(JarasTheme.secondary)
+                TextField("Search songs", text: $query).textFieldStyle(.roundedBorder)
+                if !query.isEmpty {
+                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).accessibilityLabel("Clear")
+                }
+            }.padding(.horizontal, 16).padding(.vertical, 8)
             ScrollView {
                 LazyVStack(spacing: 5) {
-                    ForEach(regions) { region in
+                    ForEach(filteredRegions) { region in
                         Button {
-                            if !selected.insert(region.id).inserted { selected.remove(region.id) }
+                            if let index = selected.firstIndex(of: region.id) { selected.remove(at: index) }
+                            else { selected.append(region.id) }
                         } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: selected.contains(region.id) ? "checkmark.square.fill" : "square").foregroundStyle(JarasTheme.green)
+                                if let index = selected.firstIndex(of: region.id) {
+                                    Text(String(format: "%02d", index + 1)).monospacedDigit().foregroundStyle(JarasTheme.green)
+                                }
                                 Text(verbatim: region.name).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                             }.padding(12).contentShape(Rectangle()).background(JarasTheme.panel, in: RoundedRectangle(cornerRadius: 6))
                         }.buttonStyle(.plain)
@@ -5088,7 +5131,7 @@ private struct IpadPlaylistCreator: View {
             HStack {
                 Button("Cancel", action: close); Spacer()
                 Button(adding ? "Add regions" : "Create") {
-                    if create(name, regions.filter { selected.contains($0.id) }.map(\.id)) { close() }
+                    if create(name, selected) { close() }
                 }.disabled((!adding && name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || selected.isEmpty)
             }.padding(16)
         }

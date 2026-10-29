@@ -32,6 +32,10 @@ public struct VinhetasLibrary: Codable, Equatable {
         }
         colorDefaultsVersion = 1
     }
+    public func padMappingLabel(_ index: Int) -> String {
+        guard padMappings.indices.contains(index), let mapping = padMappings[index], let number = mapping.number else { return "" }
+        return "\(mapping.status.map { $0 & 0xf0 == 0xb0 } == true ? "CC" : "Note") \(number)"
+    }
     public mutating func select(_ index: Int) { selectedPreset = min(Self.presetCount - 1, max(0, index)) }
     public func acceptsChannel(_ input: ControlInput) -> Bool {
         midiChannel == nil || Int(input.channel ?? 0) + 1 == midiChannel

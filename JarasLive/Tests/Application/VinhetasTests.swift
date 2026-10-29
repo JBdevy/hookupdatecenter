@@ -1,6 +1,23 @@
 import XCTest
 @testable import JarasApplication
 final class VinhetasTests: XCTestCase {
+    func testPadMappingFooterAndRemovalPersistAcrossPresets() throws {
+        var library = VinhetasLibrary()
+        let cc = ControlInput(kind: "midi", label: "CC", channel: 0, status: 0xb0, number: 20)
+        let note = ControlInput(kind: "midi", label: "Note", channel: 0, status: 0x90, number: 60)
+        library.padMappings[0] = cc; library.padMappings[1] = note
+        XCTAssertEqual(library.padMappingLabel(0), "CC 20")
+        XCTAssertEqual(library.padMappingLabel(1), "Note 60")
+        XCTAssertEqual(library.padMappingLabel(2), "")
+        library.select(4)
+        XCTAssertEqual(library.padMappingLabel(0), "CC 20")
+        library.padMappings[0] = nil
+        let restored = try JSONDecoder().decode(VinhetasLibrary.self, from: JSONEncoder().encode(library))
+        XCTAssertEqual(restored.padMappingLabel(0), "")
+        XCTAssertFalse(restored.handles(cc)); XCTAssertTrue(restored.handles(note))
+        XCTAssertEqual(restored.presets, library.presets)
+    }
+
     func testMappingFollowsPresetAndNoteReleaseKeepsOriginalVoice() throws {
         var library = VinhetasLibrary(), triggers = VinhetasTriggers()
         let note = ControlInput(kind: "midi", label: "Note", device: 1, channel: 0, status: 0x90, number: 60)

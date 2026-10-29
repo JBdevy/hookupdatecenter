@@ -145,6 +145,7 @@ private struct TimelineGridContent: View, Equatable {
     @Environment(\.openClipFXChain) private var openClipFXChain
     @Environment(\.editTextItem) private var editTextItem
     @Environment(\.gridInteractionBlocked) private var gridInteractionBlocked
+    @State private var cutGridItems: Set<UUID> = []
     @State private var zoomState = TimelineZoomState()
     @State private var hostedItemsGate = TimelineHostedItemsGate()
     @State private var rowLayoutCache = TrackLayoutCache()
@@ -586,6 +587,19 @@ private struct TimelineGridContent: View, Equatable {
                                             .frame(width: layoutWidth, height: contentHeight, alignment: .topLeading)
                                     }
                                     #endif
+                                    .overlay(alignment: .topLeading) {
+                                        if !cutGridItems.isEmpty {
+                                            TimelineScaleLayer(state: zoomState, extent: extent) { _, width, pixelsPerSecond in
+                                                TimelineViewportLayer(horizontal: horizontalScroll, vertical: verticalScroll.tiles) { horizontalOffset, visibleY in
+                                                    GridCutItemsOverlay(song: song, rows: rows, items: cutGridItems,
+                                                        rulerHeight: rulerHeight, scale: pixelsPerSecond,
+                                                        viewport: CGRect(x: horizontalOffset, y: visibleY,
+                                                            width: documentViewportWidth, height: geometry.size.height))
+                                                        .frame(width: width, height: contentHeight, alignment: .topLeading)
+                                                }
+                                            }.allowsHitTesting(false)
+                                        }
+                                    }
                                     #if !os(macOS)
                                     .coordinateSpace(name: "timeline")
                                     #endif
@@ -715,15 +729,17 @@ private struct TimelineGridContent: View, Equatable {
             if show.hasProgramChangeClipboard { show.pasteProgramChange(); return }
             switch GridMediaClipboard.shared.source() {
             case .files(let urls):
+                show.cancelGridCut()
                 documents.pasteMedia(urls, track: selectedTrack)
             case .items:
                 let pasted = show.pasteItems()
                 if !pasted.isEmpty { selectedClips = pasted; selectedClip = pasted.first }
-            case .none: break
+            case .none: show.cancelGridCut()
             }
         }, createMarker: {
             beginMarker()
         }, createSectionMarker: { beginMarker(section: true) }, escape: {
+            if !show.cutGridItems.isEmpty { show.cancelGridCut(); return }
             if NativeTimelineInputGate.shared.cancelActiveResize(for: NSApp.currentEvent?.window) { return }
             let transport = show.snapshot.transport
             let cancellingTransport = transport.queuedSectionMarkerId != nil || transport.loop.enabled ||
@@ -836,6 +852,7 @@ private struct TimelineGridContent: View, Equatable {
         .onChange(of: show.trackSelectionRequest) { request in
             if let request { selectedTrack = request.track; selectedTracks = [request.track] }
         }
+        .onReceive(show.$cutGridItems.removeDuplicates()) { cutGridItems = $0 }
         .onReceive(show.$detectBPMRegion) { id in
             guard let id, bpmWorker == nil else { return }; bpmRegions = [id]; confirmingBPMDetection = true; show.detectBPMRegion = nil
         }
@@ -945,7 +962,8 @@ private struct TimelineGridContent: View, Equatable {
                 delete: { show.deleteManualMarker($0) }, convert: { show.modalNotice = show.convertMarkersToRegions(markerID: $0) }, seek: { show.send(.editSeek, value: $0.position) }, move: {
                     guard !show.timelineMovementLocked else { return }
                     show.setMarker($0)
-                }, movementLocked: show.timelineMovementLocked),
+                }, movementLocked: show.timelineMovementLocked,
+                editCursor: { show.snapshot.transport.editPosition ?? show.snapshot.transport.position }),
             rows: rows, sections: metadata.sections(until: extent),
             divisions: song.projectTime.divisions, bands: bands, audioBody: audioBody, input: selectionInput,
             hostedItemsGate: hostedItemsGate,
@@ -2336,6 +2354,7 @@ private struct TimelineGridContent: View, Equatable {
     let seek: (TimelineMarker) -> Void
     let move: (TimelineMarker) -> Void
     var movementLocked = false
+    var editCursor: (() -> Double)? = nil
 
     func hasSameContent(as other: Self) -> Bool {
         song == other.song && lanes == other.lanes && parentIDs == other.parentIDs && movementLocked == other.movementLocked &&
@@ -2916,7 +2935,8 @@ private final class NativeTimelineHeaderText: NSObject {
             guard let self, self.configuration?.movementLocked != true else { return }
             var moved = marker
             moved.position = value.song.markerDragPosition(marker, to: max(0, marker.position + Double(delta) / scale),
-                pixelsPerSecond: scale, free: !TimelineSnapPreference.enabled || NSEvent.modifierFlags.contains(.shift))
+                pixelsPerSecond: scale, free: !TimelineSnapPreference.enabled || NSEvent.modifierFlags.contains(.shift),
+                cursor: self.configuration?.editCursor?())
             if ended { self.preview = moved; value.move(moved) }
             else { self.preview = moved }
             self.prepareMarkers(); self.reproject()
@@ -4889,8 +4909,8 @@ private struct TimelineBackdrop: View {
                     line.addLine(to: CGPoint(x: x, y: size.height))
                     if mark.primary { primaryLines.addPath(line) } else { secondaryLines.addPath(line) }
                 }
-                context.stroke(primaryLines, with: .color(Color(hex: UInt32(primaryGridColor.value))), lineWidth: pixel)
-                context.stroke(secondaryLines, with: .color(Color(hex: UInt32(secondaryGridColor.value)).opacity(0.85)), lineWidth: pixel)
+                context.stroke(primaryLines, with: .color(Color(hex: UInt32(primaryGridColor.value))), style: StrokeStyle(lineWidth: pixel * 0.75, dash: [1, 3]))
+                context.stroke(secondaryLines, with: .color(Color(hex: UInt32(secondaryGridColor.value)).opacity(0.85)), style: StrokeStyle(lineWidth: pixel * 0.75, dash: [1, 3]))
             }
         }
     }
@@ -4983,7 +5003,9 @@ private final class TimelineNativeGridView: NSView {
             }
             layer.frame = local
             layer.contentsScale = scale
-            layer.lineWidth = pixel
+            layer.lineWidth = pixel * 0.75
+            layer.lineDashPattern = [1, 3]
+            layer.lineDashPhase = max(0, tile.minY - content.rulerHeight).truncatingRemainder(dividingBy: 4)
             layer.strokeColor = color
             layer.path = path
         }
@@ -7170,5 +7192,31 @@ private struct ItemTunerEditor: View {
             }.frame(height: min(300, CGFloat(max(1, clips.count)) * 58))
             HStack { Spacer(); Button("Close") { dismiss() }.keyboardShortcut(.defaultAction) }
         }.padding(20).frame(width: 440).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+    }
+}
+
+/// Pending cuts are UI state only: audio and the arrangement stay intact until paste succeeds.
+private struct GridCutItemsOverlay: View {
+    let song: Song
+    let rows: TrackRowLayout
+    let items: Set<UUID>
+    let rulerHeight: CGFloat
+    let scale: Double
+    let viewport: CGRect
+    var body: some View {
+        Canvas { context, _ in
+            context.translateBy(x: -viewport.minX, y: -viewport.minY)
+            for (index, track) in song.tracks.enumerated() {
+                for clip in track.clips where items.contains(clip.id) {
+                    let rect = CGRect(x: clip.startTime * scale + 1,
+                        y: rulerHeight + rows.offsets[index] + rows.itemLaneOffset(clip.id, track: index) + 3,
+                        width: max(2, clip.duration * scale - 2), height: max(0, rows.itemLaneHeight(clip.id, track: index) - 6))
+                    guard rect.intersects(viewport) else { continue }
+                    context.fill(Path(roundedRect: rect, cornerRadius: 3), with: .color(JarasTheme.background.opacity(0.55)))
+                }
+            }
+        }.frame(width: viewport.width, height: viewport.height).clipped()
+            .offset(x: viewport.minX, y: viewport.minY)
+            .allowsHitTesting(false).accessibilityHidden(true)
     }
 }

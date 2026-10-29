@@ -187,11 +187,11 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.lineTo(2, 23);
         p.closeSubPath();
     } else if (name == "notice") {
-        p.addRoundedRectangle(2, 3, 20, 14, 3);
-        line(6, 17, 5, 22);
-        line(5, 22, 11, 17);
+        p.addRoundedRectangle(2, 2, 20, 16, 4);
+        line(6, 18, 6, 24);
+        line(6, 24, 12, 18);
         line(6, 8, 18, 8);
-        line(6, 12, 14, 12);
+        line(6, 12, 16, 12);
     } else if (name == "clock") {
         p.addEllipse(2, 2, 20, 20);
         line(12, 5, 12, 12);
@@ -206,10 +206,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.addTriangle(6, 3, 21, 12, 6, 21);
         fill = true;
     } else if (name == "teleprompter") {
-        line(3, 4, 21, 4);
-        line(3, 9, 21, 9);
-        line(3, 14, 16, 14);
-        line(3, 19, 12, 19);
+        p.addRoundedRectangle(2, 2, 20, 18, 2);
+        line(6, 8, 18, 8); line(6, 12, 16, 12);
+        line(8, 24, 16, 24); line(12, 20, 12, 24);
     } else if (name == "remote") {
         p.addEllipse(2, 2, 20, 20);
         p.addEllipse(7, 2, 10, 20);

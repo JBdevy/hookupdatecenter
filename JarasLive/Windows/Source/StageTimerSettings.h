@@ -1,4 +1,5 @@
 #pragma once
+#include "ConfirmationPanel.h"
 #include "Localization.h"
 #include "StageState.h"
 #include "ModalSheet.h"
@@ -28,7 +29,7 @@ class StageTimerSettings final : public Component, private Timer {
             if (!state.running) { state.start(); refresh(); return; }
             const auto runStarted = state.started;
             const SafePointer<StageTimerSettings> safe(this);
-            AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon,
+            ConfirmationPanel::show(MessageBoxIconType::QuestionIcon,
                 String::fromUTF8("Parar o cronômetro?"),
                 String::fromUTF8("O cronômetro será parado e a contagem atual será zerada."),
                 "Parar", "Cancelar", this, ModalCallbackFunction::create([safe, runStarted](int result) {

@@ -120,6 +120,11 @@ import AVFoundation
         }
         catch { self.error = error.localizedDescription }
     }
+    func unlearnPad(_ index: Int) {
+        guard library.padMappings.indices.contains(index) else { return }
+        if learningPad == index { learningPad = nil }
+        update { $0.padMappings[index] = nil }
+    }
     func select(_ index: Int) { update { $0.select(index) }; preload() }
     func volume(preset: Int, pad: Int, value: Double) {
         update { $0.presets[preset].pads[pad].volume = value }
@@ -319,6 +324,8 @@ struct VinhetasPanel: View {
     private func pad(_ index: Int) -> some View {
         let preset = selected, item = model.library.presets[preset].pads[index]
         let active = model.voices.values.contains { $0.preset == preset && $0.pad == index }
+        let mappingLabel = model.library.padMappingLabel(index)
+        let unlearnTitle = mappingLabel.hasPrefix("CC ") ? "Unlearn CC" : "Unlearn MIDI"
         return VStack(spacing: 4) {
             HStack(spacing: 4) {
                 Button { model.gate(preset: preset, pad: index, enabled: !item.gate) } label: {
@@ -329,19 +336,24 @@ struct VinhetasPanel: View {
                     .background(item.gate ? JarasTheme.yellow : Color.clear).cornerRadius(4)
                 #if os(macOS)
                 VinhetasPadSurface(name: item.name, color: item.color, active: active,
-                    down: { model.down(index) }, up: { model.up(index) })
+                    down: { model.down(index) }, up: { model.up(index) }, mappingLabel: mappingLabel)
                     .frame(maxWidth: .infinity, minHeight: 58)
                     .contextMenu {
                         Button("Edit") { edit = Edit(preset: preset, pad: index) }
                         Button("Insert audio") { model.insert(preset: preset, pad: index) }
                         Button("Learn MIDI") { model.learningPreset = nil; model.learningPad = index }
+                        if model.library.padMappings[index] != nil {
+                            Button(unlearnTitle) { model.unlearnPad(index) }
+                        }
                     }
                 #else
                 VinhetasPadSurface(name: item.name, color: item.color, active: active,
                     down: { model.down(index) }, up: { model.up(index) }, touchMenusEnabled: touchMenusEnabled,
                     edit: { edit = Edit(preset: preset, pad: index) },
                     insert: { importTarget = (preset, index); importing = true },
-                    learn: { model.learningPreset = nil; model.learningPad = index })
+                    learn: { model.learningPreset = nil; model.learningPad = index },
+                    mappingLabel: mappingLabel, unlearnTitle: unlearnTitle,
+                    unlearn: model.library.padMappings[index] == nil ? nil : { model.unlearnPad(index) })
                     .frame(maxWidth: .infinity, minHeight: 44)
                 #endif
             }
@@ -385,13 +397,14 @@ private struct VinhetasFader: NSViewRepresentable {
 private struct VinhetasPadSurface: NSViewRepresentable {
     let name: String; let color: UInt32; let active: Bool
     let down: () -> Void; let up: () -> Void
+    var mappingLabel = ""
     func makeNSView(context: Context) -> Pad { Pad() }
     func updateNSView(_ view: Pad, context: Context) {
-        view.name = name; view.color = NSColor(Color(hex: color)); view.active = active
+        view.name = name; view.mappingLabel = mappingLabel; view.color = NSColor(Color(hex: color)); view.active = active
         view.down = down; view.up = up; view.needsDisplay = true
     }
     final class Pad: NSView {
-        var name = "", color = NSColor.gray
+        var name = "", mappingLabel = "", color = NSColor.gray
         var active = false, pressed = false
         var down: (() -> Void)?, up: (() -> Void)?
         override func mouseDown(with event: NSEvent) { pressed = true; needsDisplay = true; down?() }
@@ -406,7 +419,10 @@ private struct VinhetasPadSurface: NSViewRepresentable {
                 edge.lineWidth = 2; edge.stroke()
             }
             let style = NSMutableParagraphStyle(); style.alignment = .center
-            (name as NSString).draw(in: NSRect(x: 3, y: (bounds.height - 16) / 2, width: bounds.width - 6, height: 18), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.white, .paragraphStyle: style])
+            (name as NSString).draw(in: NSRect(x: 3, y: (bounds.height - 16 + (mappingLabel.isEmpty ? 0 : 14)) / 2, width: bounds.width - 6, height: 18), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.white, .paragraphStyle: style])
+            if !mappingLabel.isEmpty {
+                (mappingLabel as NSString).draw(in: NSRect(x: 3, y: 3, width: bounds.width - 6, height: 14), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 10), .foregroundColor: NSColor.white, .paragraphStyle: style])
+            }
         }
     }
 }
@@ -449,9 +465,12 @@ struct VinhetasPadSurface: UIViewRepresentable {
     let touchMenusEnabled: Bool
     var contextMenusEnabled = true
     let edit: () -> Void; let insert: () -> Void; let learn: () -> Void
+    var mappingLabel = ""
+    var unlearnTitle = "Unlearn CC"
+    var unlearn: (() -> Void)? = nil
     func makeUIView(context: Context) -> Pad { Pad() }
     func updateUIView(_ view: Pad, context: Context) {
-        view.name = name; view.color = UIColor(Color(hex: color)); view.active = active
+        view.name = name; view.mappingLabel = mappingLabel; view.unlearnTitle = unlearnTitle; view.unlearn = unlearn; view.color = UIColor(Color(hex: color)); view.active = active
         view.down = down; view.up = up; view.accessibilityLabel = name
         view.touchMenusEnabled = touchMenusEnabled; view.contextMenusEnabled = contextMenusEnabled
         view.edit = edit; view.insert = insert; view.learn = learn
@@ -459,7 +478,8 @@ struct VinhetasPadSurface: UIViewRepresentable {
     }
     static func dismantleUIView(_ view: Pad, coordinator: ()) { view.release() }
     final class Pad: UIView, UIContextMenuInteractionDelegate {
-        var name = "", color = UIColor.gray, active = false, pressed = false
+        var name = "", mappingLabel = "", unlearnTitle = "Unlearn CC", color = UIColor.gray, active = false, pressed = false
+        var unlearn: (() -> Void)?
         var down: (() -> Void)?, up: (() -> Void)?
         var touchMenusEnabled = false, secondaryMenu = false, contextMenusEnabled = true
         var edit: (() -> Void)?, insert: (() -> Void)?, learn: (() -> Void)?
@@ -480,11 +500,15 @@ struct VinhetasPadSurface: UIViewRepresentable {
                                     configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
             guard contextMenusEnabled && (touchMenusEnabled || secondaryMenu) else { return nil }
             return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-                UIMenu(children: [
+                var actions: [UIMenuElement] = [
                     UIAction(title: JarasLocalization.string("Edit")) { [weak self] _ in self?.edit?() },
                     UIAction(title: JarasLocalization.string("Insert audio")) { [weak self] _ in self?.insert?() },
                     UIAction(title: "Learn MIDI") { [weak self] _ in self?.learn?() }
-                ])
+                ]
+                if let self, self.unlearn != nil {
+                    actions.append(UIAction(title: self.unlearnTitle) { [weak self] _ in self?.unlearn?() })
+                }
+                return UIMenu(children: actions)
             }
         }
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -507,8 +531,11 @@ struct VinhetasPadSurface: UIViewRepresentable {
                 border.lineWidth = 2; border.stroke()
             }
             let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
-            (name as NSString).draw(in: CGRect(x: 3, y: (bounds.height - 18) / 2, width: bounds.width - 6, height: 18),
+            (name as NSString).draw(in: CGRect(x: 3, y: (bounds.height - 18 - (mappingLabel.isEmpty ? 0 : 14)) / 2, width: bounds.width - 6, height: 18),
                 withAttributes: [.font: UIFont.boldSystemFont(ofSize: 11), .foregroundColor: UIColor.white, .paragraphStyle: style])
+            if !mappingLabel.isEmpty {
+                (mappingLabel as NSString).draw(in: CGRect(x: 3, y: bounds.height - 17, width: bounds.width - 6, height: 14), withAttributes: [.font: UIFont.boldSystemFont(ofSize: 10), .foregroundColor: UIColor.white, .paragraphStyle: style])
+            }
         }
     }
 }

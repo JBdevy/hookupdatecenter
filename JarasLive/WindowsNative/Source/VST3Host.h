@@ -35,6 +35,9 @@ public:
     Processor &operator=(const Processor &) = delete;
     bool process(float *left, float *right, int frames, const Transport &,
                  const MIDIEvent *events = nullptr, int eventCount = 0) noexcept;
+    // Audio-thread only, once after the normal item render for this callback.
+    // Advances a visible, otherwise idle editor with silence; output is discarded.
+    bool processEditorSilence(int frames, const Transport &) noexcept;
     State state() const;
     std::map<int, std::uint32_t> parameterIDs() const;
     // Audio/control safe: queues atomics only; no controller calls or allocations.
@@ -56,6 +59,7 @@ public:
     int width() const noexcept;
     int height() const noexcept;
     void resize(int width, int height);
+    void setVisible(bool);
 private:
     struct Impl;
     explicit Editor(std::unique_ptr<Impl>);

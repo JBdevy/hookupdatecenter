@@ -1,6 +1,7 @@
 #pragma once
 #include "TrackCapture.h"
 #include "AudioExport.h"
+#include "FloatingControlTests.h"
 
 namespace catlive::recordingCaptureTests {
 inline void require(bool passed, const String &message) {
@@ -191,10 +192,141 @@ inline void stages(const File &directory) {
                 "Live recording preview differs from processed recorded PCM");
     }
 }
+inline void liveArming(const File &directory) {
+    TrackCapture::Target first{uuid(), directory.getChildFile(text(uuid()) + ".wav"), 1, 2};
+    first.postFX=first.postFader=false;first.clip=uuid();
+    first.preview=std::make_shared<RecordingPreview>(48000,2);
+    TrackCapture capture({},48000,24,120);
+    capture.advance(480);
+    auto add=capture.prepareTargets({first},{first.track},24);
+    require(capture.applyTargets(add)==480,"Late arm did not use the live sample clock");
+    AudioBuffer<float> input(2,480);input.clear();
+    FloatVectorOperations::fill(input.getWritePointer(0),.25f,480);
+    FloatVectorOperations::fill(input.getWritePointer(1),-.125f,480);
+    std::array<int,128> mapping;mapping.fill(-1);mapping[0]=0;mapping[1]=1;
+    capture.input(input.getArrayOfReadPointers(),2,480,mapping);capture.advance(480);
+    TrackCapture::Target second=first;second.track=uuid();second.clip=uuid();second.file=directory.getChildFile(text(uuid())+".wav");
+    second.preview=std::make_shared<RecordingPreview>(48000,2);
+    auto both=capture.prepareTargets({second},{first.track,second.track},24);capture.applyTargets(both);
+    capture.input(input.getArrayOfReadPointers(),2,480,mapping);capture.advance(480);
+    auto remove=capture.prepareTargets({}, {second.track},24);capture.applyTargets(remove);
+    capture.input(input.getArrayOfReadPointers(),2,480,mapping);capture.advance(480);
+    TrackCapture::Target again=first;again.clip=uuid();again.file=directory.getChildFile(text(uuid())+".wav");
+    again.preview=std::make_shared<RecordingPreview>(48000,2);
+    auto rearm=capture.prepareTargets({again},{first.track,second.track},24);capture.applyTargets(rearm);
+    capture.input(input.getArrayOfReadPointers(),2,480,mapping);capture.advance(480);
+    auto takes=capture.finish();
+    require(takes.size()==3,"Rearming must retain the prior take and create a new one");
+    const double starts[]{.01,.02,.04}, lengths[]{.02,.03,.01};
+    const ID ids[]{first.clip,second.clip,again.clip};
+    for(size_t i=0;i<takes.size();++i) {
+        require(takes[i].clip==ids[i] && std::abs(takes[i].startOffset-starts[i])<1e-9 &&
+                std::abs(takes[i].duration-lengths[i])<1e-9,"Arming another track moved or truncated a take");
+        auto reader=read(takes[i].file);AudioBuffer<float> pcm(2,int(reader->lengthInSamples));
+        reader->read(&pcm,0,pcm.getNumSamples(),0,true,true);
+        require(reader->lengthInSamples==int64(lengths[i]*48000) && std::abs(pcm.getSample(0,pcm.getNumSamples()-1)-.25f)<.0001f,
+                "Dynamic capture has missing samples");
+    }
+    require(first.preview->frames.load()==960 && second.preview->frames.load()==1440 && again.preview->frames.load()==480,
+            "Disarmed take kept growing or another track reset its waveform");
+}
+inline void outputExcludesItems(const File &directory) {
+    const auto source=directory.getChildFile("existing-playback.wav");
+    auto stream=source.createOutputStream();WavAudioFormat wav;
+    std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(),48000,2,24,{},0));
+    require(writer!=nullptr,"Cannot create playback fixture");stream.release();
+    AudioBuffer<float> pcm(2,48000);for(int ch=0;ch<2;++ch)FloatVectorOperations::fill(pcm.getWritePointer(ch),.125f,48000);
+    writer->writeFromAudioSampleBuffer(pcm,0,pcm.getNumSamples());writer.reset();
+    for(bool live:{false,true})for(bool fx:{false,true})for(bool postFader:{false,true}) {
+        auto project=Session::makeEmptyProject("Overdub");auto &song=project.songs.front();song.duration=1;
+        jaras::Track track;track.id=uuid();track.name="Overdub";track.role.id=live?"vinhetas":"other";track.volume=.5;
+        const auto effects=JSON::parse(R"({"inserted":["Compressor"],"compressorEnabled":true,"ratio":1,"makeup":6})");
+        track.fxJSON=utf8(JSON::toString(effects));
+        jaras::AudioClip clip;clip.id=uuid();clip.duration=1;clip.audioFile=jaras::AudioFile{utf8(source.getFileName()),{}};
+        track.clips={clip};song.tracks={track};
+        AudioEngine engine;engine.prepareOffline(48000);engine.prepareSong(song,directory,{},&project);engine.setOffline(true);engine.setMixer(project,song);
+        TrackCapture::Target target{track.id,directory.getChildFile(text(uuid())+".wav"),1,2};
+        target.bus=target.output=true;target.postFX=target.postFader=false;target.outputPostFX=fx;target.outputPostFader=postFader;target.effects=effects;
+        if(live) {
+            auto sample=std::make_shared<VinhetasAudio::Sample>();sample->rate=48000;sample->pcm.setSize(2,48000);
+            for(int ch=0;ch<2;++ch)FloatVectorOperations::fill(sample->pcm.getWritePointer(ch),.25f,48000);
+            const auto *retained=engine.vinhetas.retain(sample);engine.vinhetas.setOutputAvailable(true);
+            require(engine.vinhetas.enqueue({VinhetasAudio::Kind::start,1,0,0,1,retained}),"Live capture fixture did not start");
+        }
+        engine.armTrack(track.id,true);engine.startTrackRecording({target},24,120);
+        AudioEngine::State state;state.playing=true;engine.transport(state);
+        AudioBuffer<float> output(2,480);
+        for(int block=0;block<10;++block) {
+            engine.render(output.getArrayOfWritePointers(),2,480);
+            require(output.getMagnitude(0,480)>.06f,"Armed recording silenced the existing item");
+        }
+        const auto takes=engine.stopTrackRecording();require(takes.size()==1,"Output recording lost its take");
+        auto reader=read(takes.front().file);AudioBuffer<float> recorded(2,int(reader->lengthInSamples));
+        reader->read(&recorded,0,recorded.getNumSamples(),0,true,true);
+        const float expected=live?.25f*(fx?std::pow(10.f,6.f/20):1.f)*(postFader?.5f:1.f):0.f;
+        require(std::abs(recorded.getMagnitude(0,recorded.getNumSamples())-expected)<.0001f,
+                "Output capture lost live audio/FX/fader or included an existing item");
+    }
+}
+inline void immediateReplay(const File &directory) {
+    Session session;session.inspection=true;session.audio.prepareOffline(48000);
+    auto project=Session::makeEmptyProject("Recording readiness");auto &song=project.songs.front();song.duration=20;
+    jaras::Track track;track.id=uuid();track.name="Output";track.role.id="other";track.recordingOutput=true;song.tracks={track};
+    session.restoreSnapshot(ProjectCodec::encode(project));session.mediaDirectory=directory;session.audio.setOffline(true);
+    session.cycleRecordArm(track.id);session.toggleRecording();
+    AudioBuffer<float> output(2,480);
+    for(int i=0;i<4;++i)session.audio.render(output.getArrayOfWritePointers(),2,480);
+    session.toggleRecording();session.command(jaras::CommandKind::play);
+    require(!session.transport().playing,"Play started before the captured file was published");
+    const auto deadline=Time::getMillisecondCounterHiRes()+10000;
+    while((session.busy||session.preparingLiveAudio()||!session.transport().playing)&&Time::getMillisecondCounterHiRes()<deadline)
+        floatingControlTests::pump();
+    require(!session.busy&&!session.preparingLiveAudio()&&session.transport().playing,"Queued Play did not resume after capture preparation");
+    require(session.song()->tracks[0].clips.size()==1,"Captured item was lost");
+    const auto &clip=session.song()->tracks[0].clips[0];
+    require(clip.audioFile && session.audio.activeMediaPaths().count(unicodeCase(directory.getChildFile(text(clip.audioFile->path)).getFullPathName(),false)),
+            "Play resumed with a graph that did not contain the recorded item");
+    session.command(jaras::CommandKind::stopAll);
+    // Starting a second take immediately must first publish the previous take
+    // into playback; otherwise graph adoption is deferred for all of REC.
+    session.toggleRecording();
+    for(int i=0;i<4;++i)session.audio.render(output.getArrayOfWritePointers(),2,480);
+    session.toggleRecording();session.toggleRecording();
+    const auto recordDeadline=Time::getMillisecondCounterHiRes()+10000;
+    while(!session.audio.isRecording() && Time::getMillisecondCounterHiRes()<recordDeadline)floatingControlTests::pump();
+    require(session.audio.isRecording() && session.song()->tracks[0].clips.size()==2,"Immediate re-recording lost the completed take");
+    const auto &prior=session.song()->tracks[0].clips.back();
+    require(prior.audioFile && session.audio.activeMediaPaths().count(unicodeCase(directory.getChildFile(text(prior.audioFile->path)).getFullPathName(),false)),
+            "Overdub started before the previous item entered the playback graph");
+    session.command(jaras::CommandKind::stopAll);
+    const auto stopDeadline=Time::getMillisecondCounterHiRes()+10000;
+    while((session.busy||session.preparingLiveAudio()) && Time::getMillisecondCounterHiRes()<stopDeadline)floatingControlTests::pump();
+}
 template <typename Register>
 void registerTests(const File &directory, Register &&test) {
     const auto folder = directory.getChildFile("recording-encoding-" + text(uuid()));
     folder.createDirectory();
+    test("Recording height only divides when the growing take overlaps another item", [] {
+        jaras::Track track;
+        jaras::AudioClip earlier; earlier.id="earlier"; earlier.duration=4;
+        auto stacked=earlier;stacked.id="stacked";stacked.recordingLane=0;
+        auto later=earlier;later.id="later";later.startTime=20;
+        track.clips={earlier,stacked,later};
+        jaras::AudioClip take;take.id="live";take.startTime=10;take.duration=1./48000;take.recordingLane=2;
+        auto refs=ItemLanes::references(track);refs.push_back(&take);
+        auto height=[&]{return ItemLanes(refs).geometry(take.id,120).height;};
+        require(height()==120,"Unrelated overlapping items shrank a new recording");
+        require(!ItemLanes::growRecordingClip(take,10,refs) && height()==120,"Touching a future item prematurely divided height");
+        require(ItemLanes::growRecordingClip(take,10.1,refs),"Entering an existing item did not invalidate layout");
+        const auto overlap=ItemLanes(refs);
+        require(height()==60 && overlap.geometry(take.id,120).top==60,"Overdub did not appear below the original during capture");
+        require(!ItemLanes::growRecordingClip(take,11,refs),"Every audio frame rebuilt the lane layout");
+        take.startTime=1;take.duration=1./48000;
+        require(height()==40,"Recording directly over two takes did not divide immediately");
+    });
+    test("Recording live arming preserves existing takes and timestamps", [=] { liveArming(folder); });
+    test("Recording output excludes existing items while keeping them audible", [=] { outputExcludesItems(folder); });
+    test("Recording immediate Play waits for the completed take and prepared graph", [=] { immediateReplay(folder); });
     test("Recording preview tolerates stalled UI without dropping captured time", [] { previewBackpressure(); });
     test("Recording pre/post fader and FX print only input with matching live waveform", [=] { stages(folder); });
     test("Recording format defaults and track overrides match Mac", [] { rules(); });

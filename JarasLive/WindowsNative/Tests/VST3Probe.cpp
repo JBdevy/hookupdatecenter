@@ -82,10 +82,11 @@ int wmain(int argc, wchar_t **argv) {
         if(argc>3&&(std::wstring(argv[3])==L"--process"||std::wstring(argv[3])==L"--validate")){
             const bool validate=std::wstring(argv[3])==L"--validate";
             if(descriptions.empty())throw std::runtime_error("No VST3 audio classes.");
-            auto selected=descriptions.begin();bool showEditor=false,freshEditor=false;
+            auto selected=descriptions.begin();bool showEditor=false,freshEditor=false,editorSilence=false;
             for(int arg=4;arg<argc;++arg){
                 const std::wstring option=argv[arg];
                 if(option==L"--editor")showEditor=true;
+                if(option==L"--editor-silence")editorSilence=showEditor=true;
                 if(option==L"--fresh-editor")freshEditor=showEditor=true;
                 if(option.rfind(L"--class-id=",0)==0){
                     const auto value=option.substr(11);const std::string id(value.begin(),value.end());
@@ -141,7 +142,9 @@ int wmain(int argc, wchar_t **argv) {
                         }
                     }){}
                     ~AudioLoop(){stop=true;if(thread.joinable())thread.join();}
-                } audio(*plugin);
+                };
+                std::unique_ptr<AudioLoop> audio;
+                if(!editorSilence)audio=std::make_unique<AudioLoop>(*plugin);
                 auto window=CreateWindowExW(0,L"STATIC",L"CatLive native VST3 validation",WS_OVERLAPPEDWINDOW,
                     0,0,800,600,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
                 if(!window)throw std::runtime_error("Could not create editor validation HWND.");
@@ -151,13 +154,31 @@ int wmain(int argc, wchar_t **argv) {
                     RECT bounds{0,0,width,height};AdjustWindowRect(&bounds,WS_OVERLAPPEDWINDOW,FALSE);
                     SetWindowPos(window,nullptr,0,0,bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
                 });
-                const auto until=GetTickCount64()+1000;
+                if(editorSilence) {
+                    left.fill(.2f);right.fill(.2f);transport.playing=true;
+                    if(!plugin->process(left.data(),right.data(),512,transport))throw std::runtime_error("Editor active block failed.");
+                    if(plugin->processEditorSilence(512,transport))throw std::runtime_error("Active editor processed twice in one callback.");
+                    transport.playing=false;
+                    for(int block=0;block<120;++block) {
+                        if(!plugin->processEditorSilence(512,transport))throw std::runtime_error("Stopped item editor stopped receiving silence.");
+                        MSG message;while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}
+                        Sleep(11);
+                    }
+                    editor->setVisible(false);
+                    if(plugin->processEditorSilence(512,transport))throw std::runtime_error("Hidden editor kept processing idle blocks.");
+                    editor->setVisible(true);
+                    if(!plugin->processEditorSilence(512,transport))throw std::runtime_error("Reopened editor did not resume idle blocks.");
+                    editor.reset();
+                    if(plugin->processEditorSilence(512,transport))throw std::runtime_error("Closed editor kept processing idle blocks.");
+                    report["editorSilence"]={{"blocks",120},{"skipsActive",true},{"skipsHidden",true},{"skipsClosed",true}};
+                }
+                const auto until=GetTickCount64()+(editorSilence?0:1000);
                 while(GetTickCount64()<until){
                     MSG message;while(PeekMessageW(&message,nullptr,0,0,PM_REMOVE)){TranslateMessage(&message);DispatchMessageW(&message);}
-                    if(!audio.okay.load())throw std::runtime_error("VST3 editor playback failed.");
+                    if(audio&&!audio->okay.load())throw std::runtime_error("VST3 editor playback failed.");
                     Sleep(5);
                 }
-                report["nativeEditor"]={{"width",editor->width()},{"height",editor->height()}};
+                if(editor)report["nativeEditor"]={{"width",editor->width()},{"height",editor->height()}};
             }
             stage("close-processor");
         }

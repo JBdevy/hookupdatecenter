@@ -3,6 +3,34 @@ import XCTest
 @testable import JarasApplication
 
 final class LogicProjectImportTests: XCTestCase {
+    func testImportDiagnosticsFollowAppLanguageAndPreserveMediaNames() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = try fixture(folder, corruptLink: true)
+        let resources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Apple/Resources")
+        for language in ["pt-BR", "en"] {
+            let bundle = try XCTUnwrap(Bundle(path: resources.appendingPathComponent(language + ".lproj").path))
+            let translate: (String) -> String = { bundle.localizedString(forKey: $0, value: $0, table: nil) }
+            let imported = try LogicProjectImporter.read(source, localizeWarning: translate)
+            XCTAssertTrue(imported.warnings.contains { $0.contains(language == "pt-BR" ? "Item do Logic ignorado" : "Logic item ignored") }, imported.warnings.description)
+            XCTAssertFalse(imported.warnings.contains { $0.contains(language == "pt-BR" ? "unsupported file" : "não compatível") })
+            let error = ProjectMigration.errorDescription(ProjectError.invalid("Logic: Truncated Logic data."), localize: translate)
+            XCTAssertEqual(error, language == "pt-BR" ? "Logic: Dados do Logic incompletos." : "Logic: Truncated Logic data.")
+            let reaper = ProjectMigration.errorDescription(ProjectError.invalid("REAPER: Invalid integer value."), localize: translate)
+            XCTAssertEqual(reaper, language == "pt-BR" ? "REAPER: Valor inteiro inválido." : "REAPER: Invalid integer value.")
+            let filename = "Stems/Órgão % Lead.mid"
+            let missing = ProjectMigration.errorDescription(ProjectError.invalid("REAPER: Missing MIDI source: " + filename + ". Locate it before importing the project."), localize: translate)
+            XCTAssertEqual(missing, language == "pt-BR"
+                ? "REAPER: Fonte MIDI ausente: " + filename + ". Localize-a antes de importar o projeto."
+                : "REAPER: Missing MIDI source: " + filename + ". Locate it before importing the project.")
+            let parameter = ProjectMigration.errorDescription(ProjectError.invalid("REAPER: Invalid VST3 automation parameter identity: Filter-Á%"), localize: translate)
+            XCTAssertEqual(parameter, language == "pt-BR"
+                ? "REAPER: Identificador de parâmetro de automação VST3 inválido: Filter-Á%"
+                : "REAPER: Invalid VST3 automation parameter identity: Filter-Á%")
+        }
+    }
+
     func testMigrationCreatesIndependentFoldersForRepeatedImportsAndEmptyProjects() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)

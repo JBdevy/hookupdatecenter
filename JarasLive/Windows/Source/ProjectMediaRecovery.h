@@ -1,5 +1,6 @@
 #pragma once
 #include "ProjectCodec.h"
+#include "Localization.h"
 #include "CatDynamicsAssets.h"
 namespace catlive::projectMediaRecovery {
 inline StringArray missingPaths(const jaras::Project &project, const File &directory) {
@@ -43,14 +44,14 @@ inline Result restore(const StringArray &missing, const File &directory, const F
         const auto source = exact.size() == 1 ? exact[0] : matches.size() == 1 ? matches[0] : File();
         if (source == File()) { result.remaining.add(path); continue; }
         if (!target.isAChildOf(directory)) {
-            result.errors.add(path + ": invalid project media path.");
+            result.errors.add(path + localization::translate(": invalid project media path."));
             result.remaining.add(path); continue;
         }
         TemporaryFile temporary(target);
         if (target.getParentDirectory().createDirectory().failed() ||
             !source.copyFileTo(temporary.getFile()) ||
             !temporary.overwriteTargetFileWithTemporary()) {
-            result.errors.add(path + ": " + String::fromUTF8("Não foi possível recuperar o arquivo."));
+            result.errors.add(path + ": " + localization::translate("Could not recover the file."));
             result.remaining.add(path);
         } else result.recovered.add(path);
     }

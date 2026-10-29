@@ -32,63 +32,111 @@ class TrackCapture {
         float gain = 1;
         var effects;
         File mediaDirectory;
+        ID clip;
     };
     struct Take {
         ID track;
         File file;
-        double duration = 0;
+        double duration = 0, startOffset = 0;
         std::optional<jaras::MIDIItem> midi;
         // MP3 is finalized on Session's worker after capture is detached. Keep
         // file pointing to recoverable PCM until encoding succeeds completely.
         File encodedFile;
         int bitrate = 320;
         int encoderDelaySamples = -1;
+        ID clip;
+    };
+  private:
+    struct ProcessingState {
+        std::mutex mutex;
+        std::unique_ptr<NativeFX> pending;
+        std::map<String, NativeFX::DynamicsPreview> dynamics;
+        std::map<String, NativeFX::ParameterPreview> parameters;
+        std::atomic<bool> failed{false};
+    };
+    struct Entry {
+        Target target;
+        File captureFile;
+        float gain = 1;
+        bool active = true;
+        int64 startFrame = 0, frames = 0;
+        std::shared_ptr<ProcessingState> processing;
+        std::unique_ptr<AudioFormatWriter::ThreadedWriter> writer;
+    };
+  public:
+    struct PreparedTargets {
+        std::vector<Entry> additions, next;
+        std::set<ID> active;
     };
     TrackCapture(const std::vector<Target> &specs, double sampleRate, int bits, double tempo)
         : rate(sampleRate), bpm(tempo) {
         if (specs.size() > 512 || rate <= 0 || bpm <= 0)
             throw std::runtime_error("Invalid recording configuration.");
-        if (specs.empty()) return; // REC may run with no armed tracks, as on Mac.
         silence.fill(0);
         events.reserve(65536);
         thread.startThread(Thread::Priority::high);
-        for (const auto &spec : specs) {
-            if (spec.channels < 1 || spec.channels > 2 || spec.input < 1 || spec.input > 128)
-                throw std::runtime_error("Invalid recording patch.");
-            Entry entry;
-            entry.target = spec;
-            entry.gain = spec.gain;
-            entry.processing = std::make_shared<ProcessingState>();
-            if (!spec.midi) {
-                const bool mp3 = spec.file.hasFileExtension("mp3");
-                entry.captureFile = mp3 ? spec.file.withFileExtension(".capture.wav") : spec.file;
-                if (spec.file.exists())
-                    throw std::runtime_error("Recording file already exists.");
-                if (entry.captureFile.exists())
-                    throw std::runtime_error("Recording capture file already exists.");
-                entry.captureFile.getParentDirectory().createDirectory();
-                std::unique_ptr<OutputStream> stream = entry.captureFile.createOutputStream();
-                if (!stream)
-                    throw std::runtime_error("Unable to create recording.");
-                WavAudioFormat wav;
-                RecordingAiffFormat aiff;
-                AudioFormat &format = entry.captureFile.hasFileExtension("aif;aiff")
-                                          ? static_cast<AudioFormat &>(aiff)
-                                          : static_cast<AudioFormat &>(wav);
-                const auto options = AudioFormatWriterOptions{}.withSampleRate(rate)
-                    .withNumChannels(spec.channels).withBitsPerSample(mp3 ? 32 : spec.bits ? spec.bits : bits)
-                    .withSampleFormat(mp3 || spec.floatingPoint
-                        ? AudioFormatWriterOptions::SampleFormat::floatingPoint
-                        : AudioFormatWriterOptions::SampleFormat::integral);
-                auto writer = format.createWriterFor(stream, options);
-                if (!writer)
-                    throw std::runtime_error("Invalid recording encoding.");
-                entry.writer =
-                    std::make_unique<AudioFormatWriter::ThreadedWriter>(new InputWriter(std::move(writer), spec, rate, entry.processing), thread, 131072);
-            }
-            entries.push_back(std::move(entry));
-        }
+        for (const auto &spec : specs) entries.push_back(prepareTarget(spec, bits));
     }
+    // File opening, writer setup and capacity allocation happen outside the
+    // device callback lock. Applying a change only moves prepared entries.
+    PreparedTargets prepareTargets(const std::vector<Target> &specs, const std::set<ID> &active, int bits) {
+        PreparedTargets change;
+        change.active = active;
+        change.additions.reserve(specs.size());
+        change.next.reserve(entries.size() + specs.size());
+        for (const auto &spec : specs) change.additions.push_back(prepareTarget(spec, bits));
+        return change;
+    }
+    int64 applyTargets(PreparedTargets &change) {
+        for (auto &entry : entries) {
+            entry.active = entry.active && change.active.count(entry.target.track) != 0;
+            change.next.push_back(std::move(entry));
+        }
+        for (auto &entry : change.additions) {
+            entry.startFrame = frames;
+            change.next.push_back(std::move(entry));
+        }
+        entries.swap(change.next);
+        return frames;
+    }
+  private:
+    Entry prepareTarget(const Target &spec, int bits) {
+        if (spec.channels < 1 || spec.channels > 2 || spec.input < 1 || spec.input > 128)
+            throw std::runtime_error("Invalid recording patch.");
+        Entry entry;
+        entry.target = spec;
+        entry.gain = spec.gain;
+        entry.processing = std::make_shared<ProcessingState>();
+        if (!spec.midi) {
+            const bool mp3 = spec.file.hasFileExtension("mp3");
+            entry.captureFile = mp3 ? spec.file.withFileExtension(".capture.wav") : spec.file;
+            if (spec.file.exists())
+                throw std::runtime_error("Recording file already exists.");
+            if (entry.captureFile.exists())
+                throw std::runtime_error("Recording capture file already exists.");
+            entry.captureFile.getParentDirectory().createDirectory();
+            std::unique_ptr<OutputStream> stream = entry.captureFile.createOutputStream();
+            if (!stream)
+                throw std::runtime_error("Unable to create recording.");
+            WavAudioFormat wav;
+            RecordingAiffFormat aiff;
+            AudioFormat &format = entry.captureFile.hasFileExtension("aif;aiff")
+                                      ? static_cast<AudioFormat &>(aiff)
+                                      : static_cast<AudioFormat &>(wav);
+            const auto options = AudioFormatWriterOptions{}.withSampleRate(rate)
+                .withNumChannels(spec.channels).withBitsPerSample(mp3 ? 32 : spec.bits ? spec.bits : bits)
+                .withSampleFormat(mp3 || spec.floatingPoint
+                    ? AudioFormatWriterOptions::SampleFormat::floatingPoint
+                    : AudioFormatWriterOptions::SampleFormat::integral);
+            auto writer = format.createWriterFor(stream, options);
+            if (!writer)
+                throw std::runtime_error("Invalid recording encoding.");
+            entry.writer =
+                std::make_unique<AudioFormatWriter::ThreadedWriter>(new InputWriter(std::move(writer), spec, rate, entry.processing), thread, 131072);
+        }
+        return entry;
+    }
+  public:
     ~TrackCapture() {
         entries.clear();
         thread.stopThread(5000);
@@ -96,7 +144,7 @@ class TrackCapture {
     void input(const float *const *data, int channels, int count,
                const std::array<int, 128> &mapping) {
         for (auto &entry : entries)
-            if (!entry.target.bus && !entry.target.midi) {
+            if (entry.active && !entry.target.bus && !entry.target.midi) {
                 const float *pointers[3]{silence.data(), silence.data(), nullptr};
                 for (int ch = 0; ch < entry.target.channels; ++ch) {
                     const int physical = entry.target.input - 1 + ch;
@@ -112,7 +160,7 @@ class TrackCapture {
     }
     void bus(const ID &id, const AudioBuffer<float> &buffer, int count, bool output = false, bool postFX = true, bool postFader = true) {
         for (auto &entry : entries)
-            if (entry.target.bus && !entry.target.midi && entry.target.track == id && entry.target.output == output &&
+            if (entry.active && entry.target.bus && !entry.target.midi && entry.target.track == id && entry.target.output == output &&
                 (!output || (entry.target.outputPostFX == postFX && entry.target.outputPostFader == postFader))) {
                 const float *pointers[3]{buffer.getReadPointer(0), buffer.getReadPointer(1), nullptr};
                 if (entry.target.channels == 1) {
@@ -128,7 +176,7 @@ class TrackCapture {
     }
     void midi(const ID &id, const MidiBuffer &messages, int count, int channelFilter = 0) {
         for (size_t target = 0; target < entries.size(); ++target)
-            if (entries[target].target.midi && entries[target].target.track == id)
+            if (entries[target].active && entries[target].target.midi && entries[target].target.track == id)
                 for (const auto metadata : messages) {
                     const auto message = metadata.getMessage();
                     if (message.getRawDataSize() > 3 || !message.getChannel() ||
@@ -141,7 +189,7 @@ class TrackCapture {
                     Event event;
                     event.target = (int)target;
                     event.frame =
-                        frames + jlimit(0, std::max(0, count - 1), metadata.samplePosition);
+                        entries[target].frames + jlimit(0, std::max(0, count - 1), metadata.samplePosition);
                     event.length = message.getRawDataSize();
                     std::copy_n(message.getRawData(), event.length, event.bytes.begin());
                     events.push_back(event);
@@ -177,8 +225,11 @@ class TrackCapture {
     }
     void advance(int count) {
         frames += count;
-        for (auto &entry : entries) if (entry.target.preview)
-            entry.target.preview->frames.store(frames, std::memory_order_release);
+        for (auto &entry : entries) if (entry.active) {
+            entry.frames += count;
+            if (entry.target.preview)
+                entry.target.preview->frames.store(entry.frames, std::memory_order_release);
+        }
     }
     int64 sampleCount() const { return frames; }
     uint64 overflows() const {
@@ -193,12 +244,14 @@ class TrackCapture {
             entry.writer.reset();
             Take take;
             take.track = entry.target.track;
+            take.clip = entry.target.clip;
+            take.startOffset = (double)entry.startFrame / rate;
             take.file = entry.target.midi ? File() : entry.captureFile;
             if (entry.target.file.hasFileExtension("mp3")) {
                 take.encodedFile = entry.target.file;
                 take.bitrate = recordingEncoding::normalizedBitrate(entry.target.bitrate);
             }
-            take.duration = (double)frames / rate;
+            take.duration = (double)entry.frames / rate;
             if (entry.target.midi) {
                 jaras::MIDIItem item;
                 item.sourceBPM = bpm;
@@ -247,7 +300,7 @@ class TrackCapture {
                                 finishNote(channel * 128 + note, event.frame);
                     }
                 for (int key = 0; key < 2048; ++key)
-                    finishNote(key, frames);
+                    finishNote(key, entry.frames);
                 take.midi = std::move(item);
             }
             takes.push_back(std::move(take));
@@ -299,13 +352,6 @@ class TrackCapture {
     }
 
   private:
-    struct ProcessingState {
-        std::mutex mutex;
-        std::unique_ptr<NativeFX> pending;
-        std::map<String, NativeFX::DynamicsPreview> dynamics;
-        std::map<String, NativeFX::ParameterPreview> parameters;
-        std::atomic<bool> failed{false};
-    };
     // Only the disk worker invokes this processor. The callback enqueues the
     // new input plus its fader value; no playback bus enters this writer.
     class InputWriter final : public AudioFormatWriter {
@@ -379,13 +425,6 @@ class TrackCapture {
         AudioBuffer<float> block;
         std::deque<float> gains;
         std::shared_ptr<ProcessingState> state;
-    };
-    struct Entry {
-        Target target;
-        File captureFile;
-        float gain = 1;
-        std::shared_ptr<ProcessingState> processing;
-        std::unique_ptr<AudioFormatWriter::ThreadedWriter> writer;
     };
     struct Event {
         int target = 0, length = 0;

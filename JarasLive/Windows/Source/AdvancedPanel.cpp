@@ -1,3 +1,4 @@
+#include "ConfirmationPanel.h"
 #include "Localization.h"
 #include "AdvancedPanel.h"
 #include "MediaCleanupPanel.h"
@@ -239,7 +240,7 @@ void AdvancedPanel::select(int index) {
                     : kind==timelineBulk::Kind::tempo ? String::fromUTF8("Deletar todos os marcadores de tempo desta timeline? Você pode desfazer com Ctrl+Z.")
                     : String::fromUTF8("Deletar todos os marcadores comuns desta timeline? Os marcadores de tempo e das regiões unificadas serão mantidos. Você pode desfazer com Ctrl+Z.");
                 const SafePointer<AdvancedPanel> safe(this);
-                AlertWindow::showOkCancelBox(MessageBoxIconType::QuestionIcon,title,message,"Deletar","Cancelar",this,
+                ConfirmationPanel::show(MessageBoxIconType::QuestionIcon,title,message,"Deletar","Cancelar",this,
                     ModalCallbackFunction::create([safe,kind,projectID,songID](int result) {
                         if(safe)safe->grabKeyboardFocus();
                         if(!safe || result!=1 || safe->session.project().id!=projectID || !safe->session.song() || safe->session.song()->id!=songID)return;

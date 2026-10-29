@@ -964,7 +964,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
             error = "Save the CatLive project outside the Logic package."; return
         }
         do { try ProjectDirectoryPolicy.validate(destination) }
-        catch { self.error = error.localizedDescription; return }
+        catch { self.error = ProjectMigration.errorDescription(error, localize: { JarasLocalization.string($0) }); return }
         busy = true; error = ""; warnings = []; migrationNotice = ""
         status = isReaper ? "Importing REAPER project…" : "Importing Logic project…"
         let pluginImport = isReaper ? Bundle.main.executableURL.map {
@@ -975,7 +975,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
             defer { busy = false }
             do {
                 let (result, teleprompter) = try await Task.detached(priority: .userInitiated) {
-                    let result = try isReaper ? ReaperProjectImporter.read(source, resolveVST3: pluginImport.map { session in { try session.resolve($0) } }, localizeWarning: { warningBundle.localizedString(forKey: $0, value: $0, table: nil) }) : LogicProjectImporter.read(source)
+                    let result = try isReaper ? ReaperProjectImporter.read(source, resolveVST3: pluginImport.map { session in { try session.resolve($0) } }, localizeWarning: { warningBundle.localizedString(forKey: $0, value: $0, table: nil) }) : LogicProjectImporter.read(source, localizeWarning: { warningBundle.localizedString(forKey: $0, value: $0, table: nil) })
                     try ProjectMigration.save(result, to: destination)
                     return (result, isReaper ? VSHookTeleprompterMigration.read(for: source) : nil)
                 }.value
@@ -992,7 +992,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
                     try await finishOpening(result.project, at: destination)
                     migrationNotice = warnings.joined(separator: "\n\n")
                 }
-            } catch { self.error = error.localizedDescription }
+            } catch { self.error = ProjectMigration.errorDescription(error, localize: { JarasLocalization.string($0) }) }
         }
     }
     #endif

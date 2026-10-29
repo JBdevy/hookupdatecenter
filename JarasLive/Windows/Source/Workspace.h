@@ -310,7 +310,7 @@ class Workspace final : public Component,
     TapTempo tempoTaps;
     bool lastSubCursorVisible = false;
     void prompt(const String &, const String &, const String &, std::function<void(String)>);
-    void confirm(const String &, const String &, std::function<void()>, std::function<void()> cancelled = {});
+    void confirm(const String &, const String &, std::function<void()>, std::function<void()> cancelled = {}, String action = {}, bool destructive = false, bool vertical = false);
     void confirmTrackDeletion(const std::set<ID> &, std::function<void()>);
     void newProject();
     void deleteRecentProject(const File &);

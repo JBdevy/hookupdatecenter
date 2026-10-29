@@ -135,7 +135,7 @@ extension NativeTimelineHeaderView {
     precondition(header.identifiersForTest == ["0st  01", JarasLocalization.string("Special")])
     precondition(header.colorsForTest == [0x705264, 0x885965])
     let labels = Dictionary(uniqueKeysWithValues: header.markersForTest.map { ($0.0, $0.2) })
-    precondition(labels[section.id] == "CHORUS" && labels[linked.id] == "0st  Source" && labels[tempo.id] == "128  3/4",
+    precondition(labels[section.id] == "CHORUS" && labels[linked.id] == "0st  VERSO ÁÉÇÃO" && labels[tempo.id] == "128  3/4",
         "section casing, source pitch and tempo formatting remain model-defined")
     // Draw the real native implementation into a bitmap, including every flag
     // shape and label path. Sample interiors independently of antialiasing.
@@ -155,7 +155,7 @@ extension NativeTimelineHeaderView {
     }
     precondition(pixel(200, 8) == 0x705264 && pixel(470, 8) == 0x885965,
         "region fills retain their exact chosen colors")
-    precondition(pixel(62, 28) == 0x4080c0 && pixel(343, 40) == 0x141414,
+    precondition(pixel(62, 28) == 0x4080c0 && pixel(343, 40) == 0x101010,
         "normal flags and BPM display retain their original fills and lane positions")
     try! pixels.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "/tmp/catlive-native-header-fixture.png"))
     func compareRetainedPixels(scale: CGFloat, offset: CGFloat, backing: CGFloat, name: String) {
