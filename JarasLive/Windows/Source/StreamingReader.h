@@ -11,15 +11,19 @@ class StreamingReader final : public AudioFormatReader {
       public:
         Service(AudioFormatManager& manager, TimeSliceThread& worker)
             : Thread("CatLive media activation"), formats(manager), fillThread(worker) {
+            preparedFill.startThread(Priority::high);
             startThread(Priority::normal);
         }
         ~Service() override { stop(); }
-        // The owner stops this worker before shutting down the fill thread.
-        void stop() { signalThreadShouldExit(); notify(); stopThread(-1); }
+        // The source context outlives its readers. Stop activation before either
+        // fill worker, so no new delegates can be added during shutdown.
+        void stop() { signalThreadShouldExit(); notify(); stopThread(-1); preparedFill.stopThread(-1); }
       private:
         friend class StreamingReader;
         AudioFormatManager& formats;
         TimeSliceThread& fillThread;
+        // Cold fallback seeks must not stall already prepared playback sources.
+        TimeSliceThread preparedFill{"CatLive prepared media read-ahead"};
         CriticalSection clientsLock;
         std::vector<StreamingReader*> clients;
         void add(StreamingReader* reader) {
@@ -73,6 +77,11 @@ class StreamingReader final : public AudioFormatReader {
     }
     bool ready(int64 position, int count = 4096) {
         ReadAccess access(*this);
+        for (auto &slot : publishedPinned) {
+            const auto *cache = slot.load(std::memory_order_seq_cst);
+            if (cache && cache->contains(position, count))
+                return probeAt(*cache->forward, position, count);
+        }
         return access.current && probeAt(*access.current, position, count);
     }
     bool cached() const noexcept { return resident.load(); }
@@ -106,33 +115,40 @@ class StreamingReader final : public AudioFormatReader {
         // Include the zero-padded tail: the last device block can cross EOF.
         const auto wanted = int(std::max<int64>(count, int64(sampleRate)));
         const ScopedLock guard(lock);
-        // Prepare the ongoing decoder as part of a cold Play, not only its
-        // pinned onset. A slow file in the serial activation queue can otherwise
-        // leave this source silent when that one-second reserve runs out.
-        // Never reposition an existing reader: it may still serve the outgoing
-        // head while a seek/queue destination is being prepared independently.
-        if (!reader) {
-            request(at);
-            ensureReader();
-            if (reader) probeAt(*reader, at);
-        }
         if (pinned[slot] && pinned[slot]->contains(at, count)) return true;
-        // Retain the decoder's exact MP3 checkpoints while this source is
-        // active. Opening a new decoder for every cursor move throws away its
-        // seek history and decodes the whole prefix again on the first Play.
+        // Decode the onset on the preparation worker, then transfer that same
+        // decoder and its exact MP3 checkpoints to the forward stream. Creating
+        // another cold decoder would repeat the prefix on the serial fill queue
+        // and could leave the source silent when its onset reserve expires.
         if (!transitionDecoder) transitionDecoder.reset(service.formats.createReaderFor(file));
         if (!transitionDecoder) return false;
         auto next = std::make_unique<Pinned>(at, int(numChannels), wanted);
         if (!transitionDecoder->read(&next->pcm, 0, wanted, at, true, true)) return false;
+        next->forward = std::make_unique<BufferingAudioReader>(transitionDecoder.release(), service.preparedFill, 131072);
+        next->forward->setReadTimeout(0);
+        probeAt(*next->forward, at);
         if (pinned[slot]) retiredPinned.push_back(std::move(pinned[slot]));
         pinned[slot] = std::move(next);
         publishedPinned[slot].store(pinned[slot].get(), std::memory_order_seq_cst);
+        BufferingAudioReader *empty = nullptr;
+        if (published.compare_exchange_strong(empty, pinned[slot]->forward.get(), std::memory_order_seq_cst)) {
+            request(at);
+            resident.store(true);
+        }
         return true;
     }
     void clearLoopReserve() {
         // The old loop may still render while the next destination is being
         // prepared. Retire its reserve only after that source becomes idle.
         keepLoopReserve.store(false);
+    }
+    // Demand is published by the callback while the service examines it. A
+    // newer timestamp must remain recent even if it crosses the service's
+    // clock snapshot; unsigned subtraction alone makes it appear ~49 days old.
+    // The half-range comparison also preserves normal millisecond-counter wrap.
+    static bool demandExpired(uint32 timestamp, uint32 now) noexcept {
+        const auto age = uint32(now - timestamp);
+        return age > 2000 && age < 0x80000000u;
     }
     std::atomic<uint64> cacheMisses{0}, inactiveMisses{0};
     bool readSamples(int* const* destination, int channels, int offset, int64 at, int count) override {
@@ -167,9 +183,13 @@ class StreamingReader final : public AudioFormatReader {
         if (!exporting) for (auto &slot : publishedPinned) {
             const auto *cache = slot.load(std::memory_order_seq_cst);
             if (!cache || !cache->contains(at, count)) continue;
-            // Hint the normal read-ahead worker without copying missing data
-            // over the reserved PCM. It catches up before the reserve ends.
-            if (access.current) access.current->readSamples(nullptr, 0, 0, at, count);
+            // Enter this prepared stream only when its reserved PCM is actually
+            // consumed. Preparing a future seek must not move the outgoing head.
+            // Its owner remains alive even after the onset slot is replaced.
+            access.current = cache->forward.get();
+            published.store(access.current, std::memory_order_seq_cst);
+            resident.store(true);
+            access.current->readSamples(nullptr, 0, 0, at, count);
             for (int c = 0; c < channels; ++c) if (destination[c]) {
                 auto *out = reinterpret_cast<float *>(destination[c]) + offset;
                 if (c < cache->pcm.getNumChannels())
@@ -186,7 +206,7 @@ class StreamingReader final : public AudioFormatReader {
             // Opening a slow file can outlast the idle deadline. Acquire its
             // pointer while still holding the owner lock; the read guard is
             // already active if the service withdraws it immediately after.
-            access.current = reader.get();
+            access.current = published.load(std::memory_order_seq_cst);
         }
         // MSVC's atomic shared_ptr functions use a process-wide lock. Publish a
         // raw pointer instead; the worker owns all delegates and only reclaims
@@ -210,6 +230,7 @@ class StreamingReader final : public AudioFormatReader {
     struct Pinned {
         int64 first;
         AudioBuffer<float> pcm;
+        std::unique_ptr<BufferingAudioReader> forward;
         Pinned(int64 start, int channels, int count) : first(start), pcm(channels, count) {}
         bool contains(int64 at, int count) const { return at >= first && at - first + count <= pcm.getNumSamples(); }
     };
@@ -255,29 +276,58 @@ class StreamingReader final : public AudioFormatReader {
     uint32 lastOpenAttempt = 0;
     bool attemptedOpen = false;
     void ensureReader() {
-        if (reader) return;
-        std::unique_ptr<AudioFormatReader> source(service.formats.createReaderFor(file));
-        if (source) {
+        if (published.load(std::memory_order_seq_cst)) return;
+        const auto at = requested.load();
+        for (const auto &cache : pinned) if (cache && cache->contains(at, 1)) {
+            BufferingAudioReader *empty = nullptr;
+            published.compare_exchange_strong(empty, cache->forward.get(), std::memory_order_seq_cst);
+            resident.store(true);
+            return;
+        }
+        if (!reader) {
+            std::unique_ptr<AudioFormatReader> source(service.formats.createReaderFor(file));
+            if (!source) return;
             reader = std::make_unique<BufferingAudioReader>(source.release(), service.fillThread, 131072);
             reader->setReadTimeout(0);
-            published.store(reader.get(), std::memory_order_seq_cst);
-            resident.store(true);
+            probeAt(*reader, std::max<int64>(0, at));
         }
+        // Opening a cold file may overlap adoption of a prepared stream. Never
+        // overwrite that selection or hint it with this fallback's old position.
+        BufferingAudioReader *empty = nullptr;
+        published.compare_exchange_strong(empty, reader.get(), std::memory_order_seq_cst);
+        resident.store(true);
     }
     bool probeAt(BufferingAudioReader& current, int64 at, int count = 1) {
         // Updating the delegate's read position also schedules its next block.
         AudioBuffer<float> probe(2, count);
         return current.read(&probe, 0, count, at, true, true);
     }
+    static bool demandExpired(const std::atomic<uint32>& timestamp) noexcept {
+        // Read publication first so a simultaneous callback cannot give this
+        // check a timestamp from after its own clock snapshot.
+        const auto demandedAt = timestamp.load(std::memory_order_relaxed);
+        return demandExpired(demandedAt, Time::getMillisecondCounter());
+    }
     void serviceDemand() {
         if (directOffline.load(std::memory_order_relaxed)) return;
         if (directOffline.load()) return;
         const ScopedTryLock guard(lock);
         if (!guard.isLocked()) return;
-        if (activeReads.load(std::memory_order_seq_cst) == 0) { retired.clear(); retiredPinned.clear(); }
+        // Capture selection before checking guards: an intervening callback may
+        // still hold this reader while selecting a different prepared stream.
+        const auto *selected = published.load(std::memory_order_seq_cst);
+        if (activeReads.load(std::memory_order_seq_cst) == 0) {
+            retired.erase(std::remove_if(retired.begin(), retired.end(), [=](const auto& old) {
+                return old.get() != selected;
+            }), retired.end());
+            retiredPinned.erase(std::remove_if(retiredPinned.begin(), retiredPinned.end(), [=](const auto& old) {
+                return old->forward.get() != selected;
+            }), retiredPinned.end());
+            if (reader && reader.get() != selected) retired.push_back(std::move(reader));
+        }
         const auto at = requested.load();
         const auto future = upcomingPosition.load();
-        const bool upcoming = future >= 0 && uint32(Time::getMillisecondCounter() - upcomingDemand.load()) < 2000;
+        const bool upcoming = future >= 0 && !demandExpired(upcomingDemand);
         if (!upcoming) {
             for (int slot=2; slot<4; ++slot) {
                 publishedPinned[slot].store(nullptr, std::memory_order_seq_cst);
@@ -285,8 +335,8 @@ class StreamingReader final : public AudioFormatReader {
             }
             preparedUpcomingPosition = -1;
         }
-        if (at < 0 || uint32(Time::getMillisecondCounter() - lastDemand.load()) > 2000) {
-            if(uint32(Time::getMillisecondCounter()-pinnedDemand[0].load())>2000) {
+        if (at < 0 || demandExpired(lastDemand)) {
+            if(demandExpired(pinnedDemand[0])) {
                 if (!keepLoopReserve.load()) transitionDecoder.reset();
                 publishedPinned[0].store(nullptr, std::memory_order_seq_cst);
                 if (pinned[0]) retiredPinned.push_back(std::move(pinned[0]));
@@ -295,20 +345,17 @@ class StreamingReader final : public AudioFormatReader {
                 publishedPinned[1].store(nullptr, std::memory_order_seq_cst);
                 if (pinned[1]) retiredPinned.push_back(std::move(pinned[1]));
             }
-            if (reader) {
-                published.store(nullptr, std::memory_order_seq_cst);
-                retired.push_back(std::move(reader));
-            }
+            published.store(nullptr, std::memory_order_seq_cst);
+            if (reader) retired.push_back(std::move(reader));
             resident.store(false);
             return;
         }
-        if (!reader) {
+        if (!published.load(std::memory_order_seq_cst)) {
             const auto now = Time::getMillisecondCounter();
             if (attemptedOpen && uint32(now - lastOpenAttempt) < 100) return;
             attemptedOpen = true;
             lastOpenAttempt = now;
             ensureReader();
-            if (reader) probeAt(*reader, at);
         }
         if (upcoming) {
             // The previous onset is now audible. Keep it pinned while preparing

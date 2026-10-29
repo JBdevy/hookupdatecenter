@@ -7704,6 +7704,9 @@ var Workspace::diagnostics() const {
         put(audioDevice, "sampleRate", device->getCurrentSampleRate());
         put(audioDevice, "bufferSize", device->getCurrentBufferSizeSamples());
         put(audioDevice, "xruns", device->getXRunCount());
+        // Fraction of the callback budget (0..1), including every project tab
+        // sharing this device manager, rather than this session's render alone.
+        put(audioDevice, "callbackCpuUsage", session.audio.devices.getCpuUsage());
         put(audioDevice, "open", device->isOpen());
         put(audioDevice, "running", device->isPlaying());
         put(value, "audioDevice", audioDevice);

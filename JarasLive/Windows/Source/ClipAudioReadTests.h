@@ -27,6 +27,41 @@ class Reader final : public AudioFormatReader {
         return true;
     }
 };
+class PartialReader final : public AudioFormatReader {
+  public:
+    bool writePartial;
+    PartialReader(int channels, bool writes, bool fixed = false)
+        : AudioFormatReader(nullptr,"Partial PCM fixture"), writePartial(writes) {
+        sampleRate=48000;numChannels=(unsigned)channels;lengthInSamples=480000;
+        usesFloatingPointData=!fixed;bitsPerSample=32;
+    }
+    bool readSamples(int *const *dest,int channels,int offset,int64,int count) override {
+        if(writePartial)for(int channel=0;channel<channels;++channel)if(dest[channel]) {
+            auto *data=reinterpret_cast<float *>(dest[channel])+offset;
+            FloatVectorOperations::clear(data,count);
+            if(usesFloatingPointData)FloatVectorOperations::fill(data,.25f,std::min(count,128));
+            else std::fill_n(dest[channel]+offset,std::min(count,128),0x20000000);
+        }
+        return false;
+    }
+};
+class PausedFillReader final : public AudioFormatReader {
+  public:
+    std::atomic<int64> firstEnd{0};
+    std::atomic<bool> paused{false};
+    WaitableEvent release{true};
+    PausedFillReader() : AudioFormatReader(nullptr,"Partial cache fixture") {
+        sampleRate=48000;numChannels=2;lengthInSamples=480000;
+        usesFloatingPointData=true;bitsPerSample=32;
+    }
+    bool readSamples(int *const *dest,int channels,int offset,int64 at,int count) override {
+        if(firstEnd.load()==0)firstEnd=at+count;
+        else {paused=true;release.wait(8000);}
+        for(int channel=0;channel<channels;++channel)if(dest[channel])
+            FloatVectorOperations::fill(reinterpret_cast<float *>(dest[channel])+offset,.25f,count);
+        return true;
+    }
+};
 inline AudioBuffer<float> samples(int channels,int frames) {
     AudioBuffer<float> result(channels,frames);
     for(int channel=0;channel<channels;++channel)for(int n=0;n<frames;++n)
@@ -43,6 +78,43 @@ inline float expected(const AudioBuffer<float> &source,double rate,const jaras::
     return sample(first)+float(frame-first)*(sample(first+1)-sample(first));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+
+    test("Read-ahead cache misses retain the available PCM before the missing range",[&] {
+        TimeSliceThread fill("Partial PCM fill test");
+        require(fill.startThread(),"Cannot start partial PCM fill thread");
+        auto *source=new PausedFillReader();
+        auto buffered=std::make_unique<BufferingAudioReader>(source,fill,131072);
+        buffered->setReadTimeout(0);
+        const auto began=Time::getMillisecondCounter();
+        while(!source->paused.load()&&uint32(Time::getMillisecondCounter()-began)<4000)Thread::sleep(2);
+        const bool paused=source->paused.load();
+        AudioBuffer<float> output(2,256);output.clear();
+        const bool readOK=buffered->read(&output,0,256,std::max<int64>(0,source->firstEnd.load()-128),true,true);
+        source->release.signal();buffered.reset();fill.stopThread(3000);
+        require(paused&&!readOK,"Did not reproduce the partial cache miss");
+        for(int channel=0;channel<2;++channel)for(int n=0;n<256;++n)
+            require(output.getSample(channel,n)==(n<128?.25f:0.f),"Cache miss discarded valid PCM or left stale samples");
+    });
+    test("ClipAudio incomplete reads preserve partial PCM without stale mono channels or integer bits",[&] {
+        for(int channels:{1,2})for(bool writes:{false,true})for(bool fixed:{false,true})for(bool fractional:{false,true}) {
+            jaras::Song song;song.id=uuid();song.duration=10;
+            jaras::Track track;track.id=uuid();track.role.id="other";
+            jaras::AudioClip clip;clip.id=uuid();clip.duration=10;clip.sourceOffset=fractional?1.25/48000:0;
+            PartialReader reader(channels,writes,fixed);
+            ClipAudio processor(song,track,clip,48000);
+            AudioBuffer<float> scratch(2,4096),output(2,1040);
+            for(int channel=0;channel<2;++channel)FloatVectorOperations::fill(output.getWritePointer(channel),123.f,1040);
+            require(!processor.render(reader,scratch,output,0,0,1024),"Incomplete read was not reported");
+            int audible=0;
+            for(int n=0;n<1024;++n) {
+                const float left=output.getSample(0,n),right=output.getSample(1,n);
+                require(std::isfinite(left)&&left>=0&&left<=.25f&&left==right,"Partial read replayed stale/unconverted PCM");
+                if(left>0)++audible;
+            }
+            require(writes&&!fixed?audible>0:audible==0,"Partial read dropped available PCM or invented audio");
+            require(output.getSample(0,1024)==123.f&&output.getSample(1,1024)==123.f,"Partial read exceeded its output range");
+        }
+    });
 
     test("Playback from Stop smooths file starts and seeks without changing exports or future attacks",[&] {
         const auto folder=directory.getNonexistentChildFile("play-onset","");folder.createDirectory();

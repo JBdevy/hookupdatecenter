@@ -16,7 +16,9 @@ bool until(Predicate&& ready, int milliseconds = 3000) {
     return ready();
 }
 struct Fixture {
-    std::atomic<int> opened{0}, closed{0};
+    std::atomic<int> opened{0}, closed{0}, deepSeeks{0};
+    std::atomic<bool> holdColdFill{false}, coldFillEntered{false};
+    WaitableEvent releaseColdFill{true};
     std::atomic<bool> holdSlow{false}, slowEntered{false}, holdRead{false}, readEntered{false};
     std::atomic<bool> destroyedOnReader{false};
     std::atomic<Thread::ThreadID> readingThread{nullptr};
@@ -35,6 +37,15 @@ class Reader final : public AudioFormatReader {
     }
     static float sample(int64 at) { return .1f + float(at) / 10000000.f; }
     bool readSamples(int* const* output, int channels, int offset, int64 at, int count) override {
+        if (at >= 48000 * 6 && !deepPrepared) {
+            deepPrepared = true;
+            ++fixture.deepSeeks;
+            auto* worker = Thread::getCurrentThread();
+            if (fixture.holdColdFill.load() && worker && worker->getThreadName() == "Test cold prefix fill") {
+                fixture.coldFillEntered = true;
+                fixture.releaseColdFill.wait(8000);
+            }
+        }
         if (fixture.holdRead.load()) {
             fixture.readEntered = true;
             fixture.releaseRead.wait(8000);
@@ -48,6 +59,7 @@ class Reader final : public AudioFormatReader {
     }
   private:
     Fixture& fixture;
+    bool deepPrepared = false;
 };
 class Format final : public AudioFormat {
   public:
@@ -203,6 +215,83 @@ void registerTests(const File& directory, Register&& test) {
         StreamingReader reader(file,metadata,service);reader.setOffline(true,true);
         for(int64 at : {int64(0),int64(70000),int64(3000),int64(400000)})verifyPCM(reader,at);
         require(fill.getNumClients()==0 && fixture.opened==1,"Offline export waited on the realtime reader service");
+    });
+    test("Stream demand remains fresh across concurrent clock publication and timer wrap", [&] {
+        // The callback published at 10001 after the service sampled 10000.
+        // Treating the unsigned age as elapsed used to withdraw active readers,
+        // causing silent blocks while the transport continued moving.
+        require(!StreamingReader::demandExpired(10001, 10000),
+                "A newer callback demand expired against an older service clock");
+        require(!StreamingReader::demandExpired(10000, 10000), "Current demand expired");
+        require(!StreamingReader::demandExpired(10000, 12000), "Demand retired before the idle deadline");
+        require(StreamingReader::demandExpired(10000, 12001), "Idle demand never retired");
+        const auto lastTick = std::numeric_limits<uint32>::max();
+        require(!StreamingReader::demandExpired(lastTick - 10, 20),
+                "Counter wrap retired a recently used reader");
+        require(StreamingReader::demandExpired(lastTick - 1000, 1001),
+                "Counter wrap prevented normal idle retirement");
+        require(!StreamingReader::demandExpired(0, lastTick),
+                "Concurrent demand across counter wrap expired");
+    });
+    test("Prepared streams keep PCM through cold service, loop and active seek handoffs", [&] {
+        const auto folder = directory.getChildFile("prepared-forward-handoffs");
+        require(folder.createDirectory().wasOk(), "Cannot create prepared handoff fixtures");
+        const auto file = folder.getChildFile("normal.sched");
+        require(file.replaceWithText("fixture"), "Cannot write prepared handoff fixture");
+        for (int mode = 0; mode < 5; ++mode) {
+            Fixture fixture; fixture.holdColdFill = true;
+            AudioFormatManager formats; formats.registerFormat(new Format(fixture), true);
+            TimeSliceThread fill("Test cold prefix fill"); fill.startThread(Thread::Priority::high);
+            StreamingReader::Service service(formats, fill);
+            StreamingReader::Metadata meta; meta.format="Scheduling fixture"; meta.sampleRate=48000;
+            meta.frames=48000*16; meta.channels=2;
+            const auto source = mode == 4 ? folder.getChildFile("slow.sched") : file;
+            require(source.replaceWithText("fixture"), "Cannot write handoff source");
+            StreamingReader reader(source,meta,service);
+            struct Release { Fixture& value; ~Release() { value.releaseColdFill.signal(); value.releaseSlow.signal(); } } release{fixture};
+            const int64 destination = 48000 * 8;
+            if (mode == 0) {
+                // Existing decoder is stuck decoding a cold MP3-like prefix.
+                // Prepared audio must not queue behind it on the same worker.
+                reader.request(destination);
+                require(until([&]{return fixture.coldFillEntered.load();}), "Cold fill fixture did not block");
+            } else {
+                require(reader.prepareTransition(0,4096,mode==1), "Old onset was not prepared");
+                verifyPCM(reader,0);
+            }
+            require(reader.prepareTransition(destination,4096), "New onset was not prepared");
+            if (mode != 0) {
+                // Reserving a new destination cannot replace the audible head.
+                // In mode 2 this also replaces slot 0 while its old forward
+                // remains selected, requiring safe retired ownership.
+                Thread::sleep(50);
+                require(until([&]{return reader.ready(48000,512);}), "Old forward was retired before the seek");
+                verifyPCM(reader,48000);
+            }
+            if (mode >= 3) {
+                const auto start = Time::getMillisecondCounter();
+                while (uint32(Time::getMillisecondCounter()-start) < 2200) {
+                    reader.keepTransitionWarm(); Thread::sleep(10);
+                }
+                require(!reader.cached(), "Old published reader did not retire while the queued reserve stayed warm");
+                if (mode == 4) {
+                    fixture.holdSlow=true; reader.request(0);
+                    require(until([&]{return fixture.slowEntered.load();}), "Fallback opening did not overlap queued playback");
+                }
+            }
+            verifyPCM(reader,destination);
+            require(until([&]{return reader.ready(destination+60000,512);}), "Prepared forward stalled beyond onset reserve");
+            verifyPCM(reader,destination+60000);
+            require(reader.cacheMisses.load()==0 && reader.inactiveMisses.load()==0,
+                    "Prepared handoff dropped audio after the reserve");
+            fixture.releaseColdFill.signal();
+            fixture.releaseSlow.signal();
+            if (mode == 4) {
+                Thread::sleep(50);
+                verifyPCM(reader,destination+61024);
+            }
+            require(until([&]{return !reader.cached();},4000), "Selected prepared forward never retired when idle");
+        }
     });
     test("Prepared Play activates forward streaming before the onset reserve runs out", [&] {
         const auto folder = directory.getChildFile("play-forward-handoff");

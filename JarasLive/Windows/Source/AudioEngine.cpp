@@ -2038,7 +2038,6 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
         if (!v.clipAudio->render(reader, scratch, v.processed[head], head,
                                  at + begin / sr - v.start, end - begin)) {
             underruns.fetch_add(1);
-            return;
         }
     } else {
         const double source =
@@ -2052,8 +2051,10 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
         scratch.clear(0, needed);
         if (!reader.read(&scratch, 0, needed, first, true, true)) {
             underruns.fetch_add(1);
-            return;
         }
+        // A cache miss can leave valid PCM before its zero-filled remainder.
+        // Keep those samples and advance the effects with the complete block;
+        // dropping the whole voice amplifies a short miss into a full dropout.
         for (int ch = 0; ch < 2; ++ch) {
             auto *output = v.processed[head].getWritePointer(ch);
             auto *input = scratch.getReadPointer(reader.numChannels > 1 ? ch : 0);

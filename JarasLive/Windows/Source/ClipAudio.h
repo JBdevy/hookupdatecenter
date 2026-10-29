@@ -195,6 +195,9 @@ class ClipAudio {
     bool read(AudioFormatReader &reader, AudioBuffer<float> &scratch, AudioBuffer<float> &output,
               int target, double local, int count) {
         bool ok = true;
+        // A failing reader may leave part (or all) of its destination untouched.
+        // Retain valid floating-point PCM without replaying the preceding block.
+        output.clear(target, count);
         int done = 0;
         while (done < count) {
             const double now = local + done / sampleRate;
@@ -223,7 +226,15 @@ class ClipAudio {
             // Exact equality leaves every fractional source position on the
             // established interpolation path (including rounding near an edge).
             if (step == 1 && frame == (double)first) {
-                ok = reader.read(&output, target + done, frames, first, true, true) && ok;
+                const bool readOK = reader.read(&output, target + done, frames, first, true, true);
+                if (!readOK) {
+                    // JUCE returns before fixed-to-float conversion and mono
+                    // duplication when its reader reports an incomplete read.
+                    if (!reader.usesFloatingPointData) output.clear(target + done, frames);
+                    else if (reader.numChannels == 1)
+                        output.copyFrom(1, target + done, output, 0, target + done, frames);
+                }
+                ok = readOK && ok;
                 done += frames;
                 continue;
             }
@@ -236,8 +247,10 @@ class ClipAudio {
             }
             const int needed = (int)required;
             scratch.clear(0, needed);
-            if (!reader.read(&scratch, 0, needed, first, true, true))
+            if (!reader.read(&scratch, 0, needed, first, true, true)) {
+                if (!reader.usesFloatingPointData) scratch.clear(0, needed);
                 ok = false;
+            }
             for (int ch = 0; ch < 2; ++ch) {
                 auto *dest = output.getWritePointer(ch, target + done);
                 const auto *data = scratch.getReadPointer(reader.numChannels > 1 ? ch : 0);
