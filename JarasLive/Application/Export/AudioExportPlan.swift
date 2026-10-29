@@ -51,6 +51,7 @@ public struct AudioExportJob: Identifiable, Equatable, Sendable {
     public var track: UUID?
     public var clip: UUID?
     public var output = 0
+    public var fileNameStem: String? = nil
     /// A drawer song starts a fresh musical entry; preceding overlapping stems
     /// are excluded, while exports of its parent retain the complete mix.
     public var minimumClipStart: Double? = nil
@@ -71,9 +72,9 @@ public struct AudioExportPlan: Sendable {
     public static func combining(primary: Self, secondary: Self) -> Self {
         var result = primary.jobs, names = Set(primary.jobs.map { $0.fileName.lowercased() })
         for var job in secondary.jobs {
-            let base = (job.fileName as NSString).deletingPathExtension, ext = (job.fileName as NSString).pathExtension
-            var suffix = 2
-            while !names.insert(job.fileName.lowercased()).inserted { job.fileName = "\(base) (\(suffix)).\(ext)"; suffix += 1 }
+            let base = job.fileNameStem ?? (job.fileName as NSString).deletingPathExtension, ext = (job.fileName as NSString).pathExtension
+            var suffix = 1
+            while !names.insert(job.fileName.lowercased()).inserted { job.fileName = "\(base) - \(String(format: "%03d", suffix)).\(ext)"; suffix += 1 }
             job.id = "secondary-" + job.id; job.output = 1
             result.append(job)
         }
@@ -103,14 +104,14 @@ public struct AudioExportPlan: Sendable {
             if track == nil, source == .masterAndTracks, stem != "Master", !stem.hasSuffix(" Master") { stem += " Master" }
             // Leave room for a duplicate suffix within the filesystem byte limit.
             while stem.utf8.count > 220 { stem.removeLast() }
-            var name = stem + "." + format.fileExtension, suffix = 2
-            while !used.insert(name.lowercased()).inserted { name = "\(stem) (\(suffix))." + format.fileExtension; suffix += 1 }
+            var name = stem + "." + format.fileExtension, suffix = 1
+            while !used.insert(name.lowercased()).inserted { name = "\(stem) - \(String(format: "%03d", suffix))." + format.fileExtension; suffix += 1 }
             jobs.append(AudioExportJob(id: "\(jobs.count)", fileName: name, start: start, end: end, track: track?.id, clip: clip?.id,
-                                       minimumClipStart: region?.parentRegionID == nil ? nil : region?.startTime))
+                                       fileNameStem: stem, minimumClipStart: region?.parentRegionID == nil ? nil : region?.startTime))
         }
         if source == .stems {
             for track in song.tracks where track.kind == .standard {
-                for clip in track.clips where selectedClips.contains(clip.id) && (clip.audioFile != nil || track.audioFile != nil) {
+                for clip in track.clips where selectedClips.contains(clip.id) && clip.midi == nil && (clip.audioFile != nil || track.audioFile != nil) {
                     append(track: track, clip: clip, region: song.parts.first { clip.startTime >= $0.startTime && clip.startTime < $0.endTime }, start: clip.startTime, end: clip.startTime + clip.duration)
                 }
             }

@@ -3770,8 +3770,9 @@ int runTests(const File &directory) {
         expect(jobs.size() == 2 && jobs[0].start == 10 && jobs[0].end == 20,
                "Export region bounds were lost");
         auto secondary = audioExport::plan(p, song, 0, 3, "Same", {}, {}, {}, {}, encoding);
-        expect(secondary[1].name == "Same (2).wav", "Duplicate export names collided");
+        expect(secondary[0].name == "Same.wav" && secondary[1].name == "Same - 001.wav", "Duplicate export names lost their padded numbering");
         audioExport::appendSecondary(secondary, secondary);
+        expect(secondary[2].name == "Same - 002.wav" && secondary[3].name == "Same - 003.wav", "Secondary numbering restarted or nested its suffix");
         std::set<String> names;
         for (const auto &job : secondary)
             expect(names.insert(job.name.toLowerCase()).second,

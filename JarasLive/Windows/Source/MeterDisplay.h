@@ -63,7 +63,7 @@ inline void bar(Graphics &g, juce::Rectangle<float> bounds, float amplitude) {
     const float fraction = amplitude > 0 && std::isfinite(amplitude)
         ? jlimit(0.f, 1.f, (20 * std::log10(amplitude) + 60) / 60) : 0;
     if (fraction <= 0) return;
-    ColourGradient gradient(Colour(0xffbf5af2), bounds.getX(), bounds.getBottom(),
+    ColourGradient gradient(Colour(0xff0a84ff), bounds.getX(), bounds.getBottom(),
                             Colour(0xffff4245), bounds.getX(), bounds.getY(), false);
     gradient.addColour(.5,Colour(0xffffd600));
     g.setGradientFill(gradient);

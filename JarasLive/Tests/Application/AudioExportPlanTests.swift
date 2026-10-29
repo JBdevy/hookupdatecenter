@@ -70,6 +70,9 @@ final class AudioExportPlanTests: XCTestCase {
         var inherited = Track(id: UUID(), name: "Inherited", role: .other)
         inherited.audioFile = AudioFile(path: "track.wav")
         inherited.clips = [AudioClip(id: UUID(), name: "Same.wav", startTime: 35, duration: 4)]
+        var midi = AudioClip(id: UUID(), name: "MIDI", startTime: 40, duration: 2)
+        midi.midi = MIDIItem()
+        inherited.clips.append(midi)
         tracks.append(inherited)
         project.songs[0].tracks = tracks
         let original = project
@@ -77,7 +80,7 @@ final class AudioExportPlanTests: XCTestCase {
         for format in AudioExportFormat.allCases {
             let plan = AudioExportPlan(project: project, song: project.songs[0], source: .stems, bounds: .project, template: "%stem", tracks: [], clips: selection, regions: [], format: format)
             XCTAssertEqual(plan.jobs.count, 2)
-            XCTAssertEqual(plan.jobs.map(\.fileName), ["Same." + format.fileExtension, "Same (2)." + format.fileExtension])
+            XCTAssertEqual(plan.jobs.map(\.fileName), ["Same." + format.fileExtension, "Same - 001." + format.fileExtension])
             XCTAssertEqual(plan.jobs.map(\.start), [10, 35])
             XCTAssertEqual(plan.jobs.map(\.duration), [2, 4])
             XCTAssertTrue(plan.jobs.allSatisfy { job in tracks.first { $0.id == job.track }?.kind == .standard })
@@ -98,7 +101,9 @@ final class AudioExportPlanTests: XCTestCase {
         XCTAssertEqual(plan.jobs.first?.start,30)
         XCTAssertTrue(AudioExportPlan(project:project,song:project.songs[0],source:.tracks,bounds:.project,template:"%track",tracks:[],clips:[],regions:[]).jobs.isEmpty)
         let stems = AudioExportPlan(project:project,song:project.songs[0],source:.stems,bounds:.area,template:"%stem",tracks:[],clips:[one.id,two.id],regions:[],area:0...1)
-        XCTAssertEqual(stems.jobs.map(\.fileName),["Count.wav","Count (2).wav"])
+        XCTAssertEqual(stems.jobs.map(\.fileName),["Count.wav","Count - 001.wav"])
+        XCTAssertEqual(AudioExportPlan.combining(primary: stems, secondary: stems).jobs.map(\.fileName),
+                       ["Count.wav", "Count - 001.wav", "Count - 002.wav", "Count - 003.wav"])
         XCTAssertEqual(stems.jobs.map(\.duration),[5,5],"Stems ignores global bounds")
         XCTAssertEqual(stems.jobs.map(\.start),[30,60])
     }

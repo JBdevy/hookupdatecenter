@@ -2753,7 +2753,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                 else if(control==ItemHeader::pan)setItemValueTooltip("Pan: "+ItemHeader::panText(c.pan.value_or(0)),e.position);
                                 else setItemValueTooltip({},e.position);
                             } else {
-                                if (!e.mods.isCtrlDown() && !e.mods.isShiftDown())
+                                // Shift keeps the cursor at the exact pointer time,
+                                // including clicks over items, just as on empty grid.
+                                if (!e.mods.isCtrlDown())
                                     t.w.perform([&] { t.w.session.command(e.mods.isAltDown() ? jaras::CommandKind::subSeek : jaras::CommandKind::editSeek, {}, pointerPosition(startTime,e.mods,e.mods.isAltDown())); });
                                 dragClip = c.id;
                                 itemDragSong=s->id;
@@ -7177,11 +7179,19 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                     return;
                 }
                 if (action == 12) {
+                    if(w.session.project().id!=projectID || !w.session.song() || w.session.song()->id!=songID)return;
+                    std::set<ID> audioTargets;
+                    for(const auto &track:w.session.song()->tracks)if(jaras::fixedTrackName(track.role).empty())
+                        for(const auto &clip:track.clips)if(targets.count(clip.id) && !clip.midi && (clip.audioFile || track.audioFile))
+                            audioTargets.insert(clip.id);
+                    if(audioTargets.empty())return;
                     ModalSheet::open(w, "Exportar",
-                        std::make_unique<ItemExportProcessingPanel>([safe,ownerID,id,projectID,songID](bool preProcessing) {
+                        std::make_unique<ItemExportProcessingPanel>([safe,audioTargets,projectID,songID](bool preProcessing) {
                             if(!safe || safe->session.project().id!=projectID || !safe->session.song() || safe->session.song()->id!=songID)return;
-                            ModalSheet::open(*safe,"Exportar",std::make_unique<ExportPanel>(
-                                safe->session,ownerID,id,[safe](String message){if(safe)safe->showError(message);},true,preProcessing),860,510);
+                            auto panel=std::make_unique<ExportPanel>(safe->session,ID{},ID{},
+                                [safe](String message){if(safe)safe->showError(message);},true,preProcessing,safe->appearance.storageFile());
+                            panel->selectItems(audioTargets);
+                            ModalSheet::open(*safe,"Exportar",std::move(panel),860,510);
                         }),confirmationStyle::width,186);
                     return;
                 }

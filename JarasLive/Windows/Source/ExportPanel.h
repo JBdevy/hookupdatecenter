@@ -193,6 +193,15 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         bounds.setSelectedId(3, dontSendNotification);
         pattern.setText(str(preferences.value("catlive.export.options"), "regionFileName", "%region"), false); rebuild();
     }
+    void selectItems(std::set<ID> ids) {
+        clips = std::move(ids); tracks.clear(); regions.clear(); area.reset();
+        itemMode = true;
+        source.setSelectedId(4, dontSendNotification);
+        bounds.setSelectedId(1, dontSendNotification);
+        source.setEnabled(false); bounds.setEnabled(false);
+        pattern.setText(str(preferences.value("catlive.export.options"), "itemFileName", "%stem"), false);
+        rebuild();
+    }
     ~ExportPanel() override {
         stopTimer();
         rememberPreferences();
@@ -206,6 +215,13 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         put(value,"primaryBitrate",encodings[0].bitrate);put(value,"secondaryBitrate",encodings[1].bitrate);
         put(value,"sampleRate",encodings[0].rate);put(value,"channels",encodings[0].channels);
         put(value,"outputTab",selectedOutput);put(value,"fileName",pattern.getText());put(value,"directory",directory.getText());
+        put(value,"boundsEnabled",bounds.isEnabled());
+        Array<var> planned;
+        for (const auto &job : jobs) {
+            auto item=object();put(item,"name",job.name);put(item,"track",text(job.track));put(item,"clip",text(job.clip));
+            put(item,"start",job.start);put(item,"end",job.end);planned.add(item);
+        }
+        put(value,"plannedFiles",planned);
         return value;
     }
     void paint(Graphics &g) override {
@@ -275,7 +291,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
   private:
     Session &session;
     std::function<void(String)> error;
-    bool preProcessing = false, regionMode = false;
+    bool preProcessing = false, regionMode = false, itemMode = false;
     Appearance preferences;
     std::set<ID> tracks, clips, regions;
     std::optional<std::pair<double, double>> area;
@@ -346,12 +362,16 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
     }
     void rememberPreferences() {
         auto saved=diagnostics();
-        if(regionMode) {
-            const auto previous=preferences.value("catlive.export.options");
-            put(saved,"regionFileName",pattern.getText());
+        saved.getDynamicObject()->removeProperty("plannedFiles");
+        saved.getDynamicObject()->removeProperty("boundsEnabled");
+        const auto previous=preferences.value("catlive.export.options");
+        put(saved,"regionFileName",get(previous,"regionFileName","%region"));
+        put(saved,"itemFileName",get(previous,"itemFileName","%stem"));
+        if(regionMode || itemMode) {
+            put(saved,regionMode ? "regionFileName" : "itemFileName",pattern.getText());
             put(saved,"fileName",get(previous,"fileName","%project"));
             put(saved,"source",get(previous,"source",1));put(saved,"bounds",get(previous,"bounds",1));
-        } else put(saved,"regionFileName",get(preferences.value("catlive.export.options"),"regionFileName","%region"));
+        }
         preferences.set("catlive.export.options",saved);
         rememberDirectory();
     }
@@ -473,7 +493,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
             for (auto *c : std::initializer_list<Component *>{
                      &source, &bounds, &format, &quality, &rate, &channels, &directory, &pattern,
                      &browse, &primary, &secondary, &enableSecondary})
-                c->setEnabled(!rendering);
+                c->setEnabled(!rendering && (!itemMode || (c != &source && c != &bounds)));
             for (auto *button : tokens)
                 button->setEnabled(!rendering);
             renderButton.setButtonText(rendering ? localization::translate("Cancelar") : localization::translate("Renderizar"));

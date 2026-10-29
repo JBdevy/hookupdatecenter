@@ -6,6 +6,7 @@
 #include "ProjectDeletionPanel.h"
 #include "ProjectOpenConfirmationPanel.h"
 #include "SetlistRows.h"
+#include "ExportPanel.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
     static void tabbedPatchWindow(const File &directory) {
@@ -262,6 +263,54 @@ struct WorkspaceLayoutTests {
             session.undo();w.selectedClips=selected;w.selectedClip=clicked;choose(unselected,14);
             require(session.song()->tracks.front().clips.size()==3&&session.song()->tracks[1].clips.size()==3,"Unify outside selection modified selected items");
         }
+    }
+    static void exportItems(const File &directory) {
+        using floatingControlTests::require;
+        const auto folder=directory.getNonexistentChildFile("export-selection","");folder.createDirectory();
+        mediaImportTests::source(folder,"source.wav",48000);
+        auto project=floatingControlTests::fixture();auto &song=project.songs.front();song.parts.clear();song.duration=60;
+        for(auto &track:song.tracks)track.clips.clear();
+        std::set<ID> selected,audio;ID clicked,unselected;
+        for(int i=0;i<2;++i) {
+            auto &track=song.tracks[size_t(i)];
+            jaras::AudioClip clip;clip.id=uuid();clip.name="Same.wav";clip.startTime=10+i*20;clip.duration=.25+i*.25;
+            clip.audioFile=jaras::AudioFile{"source.wav",{}};track.clips.push_back(clip);
+            audio.insert(clip.id);selected.insert(clip.id);clicked=clip.id;
+            clip.id=uuid();clip.startTime+=2;track.clips.push_back(clip);unselected=clip.id;
+        }
+        auto midi=song.tracks.front().clips.front();midi.id=uuid();midi.midi.emplace();
+        midi.audioFile.reset();song.tracks.front().audioFile=jaras::AudioFile{"source.wav",{}};
+        song.tracks.front().clips.push_back(midi);selected.insert(midi.id);
+        auto video=song.tracks.front().clips.front();video.id=uuid();song.tracks[2].role.id="video";
+        song.tracks[2].name=jaras::fixedTrackName(song.tracks[2].role);
+        song.tracks[2].clips.push_back(video);selected.insert(video.id);
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.mediaDirectory=folder;
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,folder.getChildFile("layout.json"));
+        w.setSize(1366,900);w.projectOpened(false);
+        const auto before=JSON::toString(session.snapshot());
+        auto choose=[&](const ID &item,bool pre) {
+            w.clipMenuAction(item)(12);floatingControlTests::pump();
+            auto *button=dynamic_cast<Button*>(uiFeatureTests::find(w,pre?"itemExportPreProcessing":"itemExportPostProcessing"));
+            require(button!=nullptr,"Item export skipped the processing choice");button->onClick();floatingControlTests::pump();
+            ExportPanel *panel=nullptr;
+            std::function<void(Component &)> find=[&](Component &view){if(auto *p=dynamic_cast<ExportPanel*>(&view))panel=p;for(auto *child:view.getChildren())find(*child);};
+            find(w);require(panel!=nullptr,"Item export panel did not open");return panel->diagnostics();
+        };
+        for(bool pre:{true,false}) {
+            w.selectedClips=selected;w.selectedClip=clicked;
+            const auto state=choose(clicked,pre);const auto jobs=list(get(state,"plannedFiles"));
+            require(jobs.size()==2,"Context export skipped selected audio or included MIDI/video/unselected items");
+            require(!flag(state,"boundsEnabled",true)&&num(state,"source")==4,"Item export permits changing global bounds or source");
+            require(str(jobs[0],"name")=="Same.wav"&&str(jobs[1],"name")=="Same - 001.wav","Batch filenames lost the original name and padded suffix");
+            for(const auto &job:jobs)require(audio.count(utf8(str(job,"clip")))!=0,"Export changed the captured selection");
+            require(num(jobs[0],"start")==10&&num(jobs[0],"end")==10.25&&num(jobs[1],"start")==30&&num(jobs[1],"end")==30.5,"Item export used project/region bounds");
+            ModalSheet::dismiss(w);floatingControlTests::pump();
+        }
+        const auto state=choose(unselected,true);
+        require(num(state,"jobs")==1&&str(list(get(state,"plannedFiles"))[0],"clip")==text(unselected),"Export outside the selection included selected items");
+        ModalSheet::dismiss(w);floatingControlTests::pump();
+        require(JSON::toString(session.snapshot())==before,"Opening or cancelling export changed the project");
     }
     static void generatedItems(const File &directory) {
         using floatingControlTests::require;
@@ -775,6 +824,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Track icon column extends the mixer without moving group or child controls; hiding and removal restore width",[&]{WorkspaceLayoutTests::trackIconWidth(directory);});
     test("Deleting another recent project during playback preserves the current dirty project and audio clock",[&]{WorkspaceLayoutTests::deleteRecentWhilePlaying(directory);});
     test("Item context and Actions process full audio selections with channel conversion, Re-render, Normalize, Unify and Undo",[&]{WorkspaceLayoutTests::unifyItems(directory);});
+    test("Item context export includes selected audio across tracks, ignores non-audio and locks bounds",[&]{WorkspaceLayoutTests::exportItems(directory);});
     test("Generated MIDI and text items advance edit cursor without seeking playback",[&]{WorkspaceLayoutTests::generatedItems(directory);});
     test("Setlist transport gestures retain grid geometry and avoid workspace rebuilds",[&]{WorkspaceLayoutTests::setlistResponsiveness(directory);});
     test("Tuner gestures retain the project and audio graph while playing and stopped",[&]{WorkspaceLayoutTests::pitchResponsiveness(directory);});

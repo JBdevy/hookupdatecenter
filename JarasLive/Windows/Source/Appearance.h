@@ -31,6 +31,7 @@ class Appearance final : public ChangeBroadcaster {
     }
     bool gridlines() const { return flag(values, "jaras.timeline.gridlines", true); }
     var value(const String &key, var fallback = {}) const { return get(values, Identifier(key), fallback); }
+    File storageFile() const { return location; }
     void preview(const String &key,var value) { put(previews,Identifier(key),value);sendChangeMessage(); }
     void clearPreview(const String &key) { if(auto *p=previews.getDynamicObject())p->removeProperty(Identifier(key));sendChangeMessage(); }
     void reload() { auto loaded = JSON::parse(location); if (loaded.isObject()) values = std::move(loaded); }

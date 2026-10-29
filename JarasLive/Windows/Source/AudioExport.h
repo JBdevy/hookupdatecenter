@@ -15,6 +15,7 @@ struct ExportJob {
     ID track, clip;
     int output = 0;
     std::optional<double> minimumClipStart;
+    String fileNameStem;
 };
 struct ExportRequest {
     File directory;
@@ -96,11 +97,12 @@ inline std::vector<ExportJob> plan(const jaras::Project &project, const jaras::S
         if (!track && source == 2 && base != "Master" && !base.endsWith(" Master"))
             base += " Master";
         auto name = base + "." + encoding.format.toLowerCase();
-        int suffix = 2;
+        int suffix = 1;
         while (!used.insert(name.toLowerCase()).second)
-            name = base + " (" + String(suffix++) + ")." + encoding.format.toLowerCase();
+            name = base + " - " + String(suffix++).paddedLeft('0', 3) + "." + encoding.format.toLowerCase();
         ExportJob job;
         job.name = name;
+        job.fileNameStem = base;
         job.start = start;
         job.end = end;
         if (track)
@@ -115,7 +117,7 @@ inline std::vector<ExportJob> plan(const jaras::Project &project, const jaras::S
         for (const auto &track : song.tracks)
             if (jaras::fixedTrackName(track.role).empty())
                 for (const auto &clip : track.clips)
-                    if (clips.count(clip.id) && (clip.audioFile || track.audioFile)) {
+                    if (clips.count(clip.id) && !clip.midi && (clip.audioFile || track.audioFile)) {
                         const jaras::Part *region = nullptr;
                         for (const auto &part : song.parts)
                             if (clip.startTime >= part.startTime && clip.startTime < part.endTime) {
@@ -157,10 +159,11 @@ inline void appendSecondary(std::vector<ExportJob> &primary, std::vector<ExportJ
         names.insert(job.name.toLowerCase());
     for (auto &job : secondary) {
         const auto file = File(job.name);
-        const auto base = file.getFileNameWithoutExtension(), extension = file.getFileExtension();
-        int suffix = 2;
+        const auto base = job.fileNameStem.isNotEmpty() ? job.fileNameStem : file.getFileNameWithoutExtension();
+        const auto extension = file.getFileExtension();
+        int suffix = 1;
         while (!names.insert(job.name.toLowerCase()).second)
-            job.name = base + " (" + String(suffix++) + ")" + extension;
+            job.name = base + " - " + String(suffix++).paddedLeft('0', 3) + extension;
         job.output = 1;
         primary.push_back(std::move(job));
     }
