@@ -5,7 +5,7 @@ namespace catlive::systemAudioDefaultsTests {
 class Device final : public AudioIODevice {
   public:
     String inputName, outputName;
-    Device(String output, String input) : AudioIODevice(output.isEmpty() ? input : output, "Windows Audio (Default test)"), inputName(input), outputName(output) {}
+    Device(String output, String input, String driver = "Windows Audio (Default test)") : AudioIODevice(output.isEmpty() ? input : output, driver), inputName(input), outputName(output) {}
     StringArray getOutputChannelNames() override { return outputName.isEmpty() ? StringArray{} : StringArray{"1","2","3","4","5","6","7","8"}; }
     StringArray getInputChannelNames() override { return inputName.isEmpty() ? StringArray{} : StringArray{"1","2","3","4"}; }
     Array<double> getAvailableSampleRates() override { return {44100.,48000.}; }

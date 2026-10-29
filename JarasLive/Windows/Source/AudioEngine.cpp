@@ -2702,6 +2702,8 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
 void AudioEngine::audioDeviceIOCallbackWithContext(const float *const *input, int inputs,
                                                    float *const *out, int channels, int samples,
                                                    const AudioIODeviceCallbackContext &) {
+    if (asioCallbackScheduling)
+        callbackMetrics.scheduling(AudioThreadScheduling::asioCallback());
     AudioCallbackMetrics::Scope callbackScope(callbackMetrics, samples, rate.load());
     if (recording.load(std::memory_order_relaxed) && recorder && inputs > 0) {
         if (!recorder->write(input, samples))
@@ -2731,6 +2733,7 @@ void AudioEngine::configureDeviceChannels(const BigInteger &inputs, const BigInt
     }
 }
 void AudioEngine::audioDeviceAboutToStart(AudioIODevice *d) {
+    asioCallbackScheduling = d->getTypeName() == "ASIO";
     callbackMetrics.deviceStarted();
     cancelTrackFadeout();
     rate = d->getCurrentSampleRate();

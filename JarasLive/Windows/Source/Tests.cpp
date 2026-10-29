@@ -1,5 +1,6 @@
 #include "SystemAudioDefaultsTests.h"
 #include "ProjectTabTransportTests.h"
+#include "AudioThreadSchedulingTests.h"
 #include "ItemLayout.h"
 #include "native_video_decoder.h"
 #include <charconv>
@@ -438,6 +439,7 @@ int runTests(const File &directory) {
     gridMediaClipboardTests::registerTests(test);
     floatingControlTests::registerTests(directory,test);
     projectTabTransportTests::registerTests(directory,test);
+    audioThreadSchedulingTests::registerTests(directory,test);
     projectOpenTests::registerTests(directory,test);
     saveAsyncTests::registerTests(directory,test);
     test("Mixer changes update colours without rebuilding the arrangement", [&] { mixerFeedbackTests::controlsWithoutArrangementRebuild(); });

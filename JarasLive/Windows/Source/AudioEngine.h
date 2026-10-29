@@ -498,6 +498,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void audioDeviceIOCallbackWithContext(const float *const *, int, float *const *, int, int,
                                           const AudioIODeviceCallbackContext &) override;
     void audioDeviceAboutToStart(AudioIODevice *) override;
+    bool asioCallbackScheduling = false; // configured before the driver starts callbacks
     void audioDeviceStopped() override;
 };
 } // namespace catlive

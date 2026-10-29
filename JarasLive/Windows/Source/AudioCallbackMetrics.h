@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "AudioThreadScheduling.h"
 namespace catlive {
 // Timing only: no logging, allocations or device/UI calls on the audio thread.
 // Read on demand from the diagnostic snapshot, outside the device callback.
@@ -77,6 +78,15 @@ public:
     void deviceStarted() noexcept { starts.fetch_add(1); lastStart.store(0); lastBudget.store(0); }
     void deviceStopped() noexcept { stops.fetch_add(1); lastStart.store(0); }
     void renderedSegment() noexcept { segments.fetch_add(1, std::memory_order_relaxed); }
+    void scheduling(const AudioThreadScheduling::Status& state) noexcept {
+        schedulingThread.store(state.threadID, std::memory_order_relaxed);
+        schedulingPriority.store(state.priority, std::memory_order_relaxed);
+        mmcssRegistered.store(state.mmcss, std::memory_order_relaxed);
+        mmcssCritical.store(state.critical, std::memory_order_relaxed);
+        schedulingFallback.store(state.fallback, std::memory_order_relaxed);
+        mmcssError.store(state.registrationError, std::memory_order_relaxed);
+        mmcssPriorityError.store(state.priorityError, std::memory_order_relaxed);
+    }
     var snapshot() const {
         auto result = object();
         const double ms = 1000. / Time::getHighResolutionTicksPerSecond();
@@ -105,6 +115,15 @@ public:
         }
         put(result, "deviceStarts", (int64)starts.load());
         put(result, "deviceStops", (int64)stops.load());
+        auto scheduler = object();
+        put(scheduler,"threadID",(int64)schedulingThread.load());
+        put(scheduler,"priority",schedulingPriority.load());
+        put(scheduler,"mmcss",mmcssRegistered.load());
+        put(scheduler,"critical",mmcssCritical.load());
+        put(scheduler,"fallback",schedulingFallback.load());
+        put(scheduler,"registrationError",(int64)mmcssError.load());
+        put(scheduler,"priorityError",(int64)mmcssPriorityError.load());
+        put(result,"asioScheduling",scheduler);
         return result;
     }
 private:
@@ -124,6 +143,9 @@ private:
     std::atomic<int64> renderTicks{0};
     std::atomic<uint64> cpuTicks{0}, threadID{0};
     std::atomic<int> threadPriority{0};
+    std::atomic<DWORD> schedulingThread{0}, mmcssError{0}, mmcssPriorityError{0};
+    std::atomic<int> schedulingPriority{THREAD_PRIORITY_NORMAL};
+    std::atomic<bool> mmcssRegistered{false}, mmcssCritical{false}, schedulingFallback{false};
     std::array<std::atomic<int64>,5> stageTicks{}, stageMaxTicks{};
     std::array<std::atomic<int64>,5> detailTicks{}, detailMaxTicks{};
 };
