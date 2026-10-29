@@ -12,8 +12,8 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         setComponentID("effectInsertPanel");
         addAndMakeVisible(effect); effect.setComponentID("effectKind");
         effect.addItem(localization::translate("Externo (VST3)"), 8);
-        effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter"}, 1);
         if (allowInstruments) effect.addItem(localization::translate(String::fromUTF8("Instrumentos")), 7);
+        effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "CatLive Limiter"}, 1);
         (void)allowStemSeparator; // Separation is an offline item action.
         effect.addItem("CatLive Trigger", 10);
         effect.addItem("Cat Gate", 11);

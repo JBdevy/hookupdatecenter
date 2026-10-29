@@ -9,6 +9,7 @@
 #include "FXSchema.h"
 #include "CatStemEditor.h"
 #include "CatDynamicsEditor.h"
+#include "InstrumentParameterEditor.h"
 namespace catlive {
 namespace fxui {
 inline String enabledKey(const String &kind) {
@@ -533,7 +534,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         if (kind() == "External") openExternalEditor();
     }
     void paint(Graphics &g) override {
-        g.fillAll(Colour(0xff242424));
+        g.fillAll(instrumentEditor ? theme::panel : Colour(0xff242424));
         g.setColour(Colour(0xff181818));
         g.fillRect(0, 0, 190, getHeight());
         g.setColour(Colour(0xff202020));
@@ -559,7 +560,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             g.drawText(String::fromUTF8(
                            "Clique com o botão direito na linha central para adicionar uma banda."),
                        r.getX(), getHeight() - 31, r.getWidth(), 20, Justification::centred);
-        } else {
+        } else if (!instrumentEditor) {
             g.setColour(theme::display);
             g.fillRoundedRectangle(r.getX(), rackY, (float)r.getWidth(), (float)rackHeight, 10);
             paintMeters(g);
@@ -571,18 +572,19 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         remove.setBounds(96, getHeight() - 32, 88, 24);
         auto r = content();
         const bool eq = kind() == "EQ",
-                   compressor = kind() == "Compressor" || kind() == "Instruments";
+                   compressor = kind() == "Compressor";
         rackHeight = compressor ? 308 : 180;
         presets.setBounds(r.getX(), 8, std::max(100, r.getWidth() - 268), 24);
         savePreset.setBounds(r.getRight() - 258, 8, 114, 24);
         defaultPreset.setBounds(r.getRight() - 140, 8, 140, 24);
-        headerY = eq ? 60 : std::max(60, (getHeight() - (rackHeight + 124)) / 2);
+        headerY = (eq || instrumentEditor) ? 52 : std::max(60, (getHeight() - (rackHeight + 124)) / 2);
         rackY = headerY + 118;
         removeEffect.setBounds(r.getRight() - 100, headerY + 42, 100, 22);
         enabled.setBounds(eq ? r.getX() : r.getCentreX() - 55, headerY + 76, 110, 24);
         if(externalEditor)externalEditor->setBounds(190,40,std::max(1,getWidth()-190),std::max(1,getHeight()-40));
         if(stemEditor)stemEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
         if(dynamicsEditor)dynamicsEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
+        if(instrumentEditor)instrumentEditor->setBounds(r.getX(),headerY+88,r.getWidth(),std::max(1,getHeight()-headerY-104));
         graph.setBounds(r.getX(), headerY + 102, r.getWidth(),
                         std::max(40, getHeight() - headerY - 141));
         for (int i = 0; i < rooms.size(); ++i)
@@ -608,6 +610,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     ListBox chain;
     TextButton add, remove, removeEffect, savePreset, defaultPreset;
     std::unique_ptr<CatDynamicsEditor> dynamicsEditor;
+    std::unique_ptr<InstrumentParameterEditor> instrumentEditor;
     std::unique_ptr<ExternalEffectEditor> externalEditor;
     String externalEditorKey;
     void openExternalEditor() {
@@ -746,12 +749,13 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     void show() {
         stemEditor.reset();
         dynamicsEditor.reset();
+        instrumentEditor.reset();
         knobs.clear();
         refreshPresets();
         const auto k = kind();
         if(k=="External")openExternalEditor();else externalEditor.reset();
         const bool available = k.isNotEmpty() && fxui::enabledKey(k).isNotEmpty();
-        enabled.setVisible(available&&k!="CatStemSeparation 5"&&k!="External"&&k!="CatLive Trigger"&&k!="Cat Gate");
+        enabled.setVisible(available&&k!="Instruments"&&k!="CatStemSeparation 5"&&k!="External"&&k!="CatLive Trigger"&&k!="Cat Gate");
         removeEffect.setVisible(k.isNotEmpty()&&k!="External"&&k!="CatLive Trigger"&&k!="Cat Gate");
         remove.setEnabled(k.isNotEmpty());
         for (int i = 0; i < rooms.size(); ++i) {
@@ -812,25 +816,11 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         if (k == "Pitch")
             knob("Semitons", "pitchSemitones", -12, 12, 1, " st");
         if (k == "Instruments") {
-            auto parameters = get(s, "instrumentParameters");
-            if (!parameters.isObject()) {
-                parameters = object();
-                put(s, "instrumentParameters", parameters);
-            }
-            for (const auto &item : std::map<String, double>{{"gain", 0},
-                                                             {"attack", 0},
-                                                             {"hold", 10},
-                                                             {"decay", 10},
-                                                             {"sustain", 1},
-                                                             {"release", .3}})
-                if (get(parameters, Identifier(item.first)).isVoid())
-                    put(parameters, Identifier(item.first), item.second);
-            knob("Gain", "gain", -24, 12, .1, " dB", 1, "instrumentParameters");
-            knob("Attack", "attack", 0, 10000, 1, " ms", 1000, "instrumentParameters");
-            knob("Hold", "hold", 0, 10000, 1, " ms", 1000, "instrumentParameters");
-            knob("Decay", "decay", 1, 10000, 1, " ms", 1000, "instrumentParameters");
-            knob("Sustain", "sustain", 0, 100, .1, " %", 100, "instrumentParameters");
-            knob("Release", "release", 1, 20000, 1, " ms", 1000, "instrumentParameters");
+            instrumentEditor = std::make_unique<InstrumentParameterEditor>(str(current(), "instrumentID"),
+                [this] { return current(); },
+                [this] { session.audio.previewNativeParameters(track, key(), kind(), current(), settings); },
+                [this] { commit(); });
+            addAndMakeVisible(*instrumentEditor);
         }
         resized();
         repaint();

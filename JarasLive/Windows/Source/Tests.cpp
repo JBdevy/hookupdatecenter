@@ -101,6 +101,7 @@
 #include "HozMixerFocusTests.h"
 #include "CompactTextBaselineTests.h"
 #include "InstrumentRenderTests.h"
+#include "InstrumentEditorTests.h"
 namespace catlive {
 namespace {
 void expect(bool condition, const String &message) {
@@ -432,6 +433,7 @@ int runTests(const File &directory) {
     itemLocalGeometryTests::registerTests(directory, test);
     hozMixerFocusTests::registerTests(directory, test);
     instrumentRenderTests::registerTests(test);
+    instrumentEditorTests::run(test, expect, directory);
     gridMediaClipboardTests::registerTests(test);
     floatingControlTests::registerTests(directory,test);
     projectOpenTests::registerTests(directory,test);
