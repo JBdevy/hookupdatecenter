@@ -1086,9 +1086,13 @@ private struct TimelineGridContent: View, Equatable {
             }
         }, phase: { show.toggleItemPhase($0) }, pan: { id, value, ended in
             let targets = itemMixTargets(id)
+            let original = sourceItem(id)?.clip
+            itemWaveformPreview.updatePan(id: id, pan: value, targets: targets)
             if ended {
                 if targets.count > 1 { show.setItemsMix(targets, pan: value) }
                 else { show.setItemPan(id, pan: value) }
+                if targets.count == 1 && original?.pan == value { itemWaveformPreview.clear() }
+                else { itemWaveformPreview.finish(committed: show.current?.tracks.lazy.flatMap(\.clips).first { $0.id == id }) }
             } else { for target in targets { show.previewItemPan(target, pan: value) } }
         }, fx: { id, bypass in
             if bypass { show.toggleClipFXAllBypass(id) }
@@ -5325,7 +5329,7 @@ private func drawTimelineAudioWaveform(_ clip: AudioClip, url: URL, rect: CGRect
                 }
             }
             let middle = waveTop + height * (CGFloat(channel) + 0.5)
-            let amplitude = WaveformAmplitude.fullScale(channelHeight: height) * WaveformAmplitude.gain(item: clip.gain, normalization: clip.normalizationGain, inverted: clip.phaseInverted == true)
+            let amplitude = WaveformAmplitude.fullScale(channelHeight: height) * WaveformAmplitude.gain(item: clip.gain, normalization: clip.normalizationGain, inverted: clip.phaseInverted == true) * WaveformAmplitude.panGain(clip.pan, channel: channel, channels: displayChannels)
             var waveContext = drawingContext
             waveContext.clip(to: Path(roundedRect: localRect, cornerRadius: 3))
             waveContext.clip(to: Path(channelRect.offsetBy(dx: -tile.minX, dy: 0)))
@@ -5366,7 +5370,7 @@ private func drawTimelineAudioWaveform(_ clip: AudioClip, url: URL, rect: CGRect
                     let channelRect = CGRect(x: rect.minX, y: waveTop + height * CGFloat(channel) + 0.5, width: rect.width, height: max(0, height - 1))
                     guard channelRect.intersects(visibleTile) else { continue }
                     let middle = waveTop + height * (CGFloat(channel) + 0.5)
-                    let amplitude = WaveformAmplitude.fullScale(channelHeight: height) * WaveformAmplitude.gain(item: clip.gain, normalization: clip.normalizationGain, inverted: clip.phaseInverted == true)
+                    let amplitude = WaveformAmplitude.fullScale(channelHeight: height) * WaveformAmplitude.gain(item: clip.gain, normalization: clip.normalizationGain, inverted: clip.phaseInverted == true) * WaveformAmplitude.panGain(clip.pan, channel: channel, channels: displayChannels)
                     var waveContext = drawingContext
                     waveContext.clip(to: Path(roundedRect: localRect, cornerRadius: 3))
                     waveContext.clip(to: Path(segment.offsetBy(dx: -tile.minX, dy: 0)))
@@ -5524,7 +5528,7 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
         drawTimelineItemReadout(controls.gainLabel, in: gainLabel, context: &titleContext)
     }
     let titleInset = controls.titleInset
-    drawTimelineName(title, in: CGRect(x: rect.minX + titleInset, y: rect.minY, width: max(0, rect.width - titleInset), height: min(GridSelectionItem.headerHeight, rect.height)), visibleRect: tile, fontSize: GridSelectionItem.headerFontSize, context: &context)
+    drawTimelineName(title, in: CGRect(x: rect.minX + titleInset, y: rect.minY, width: max(0, rect.width - titleInset), height: min(GridSelectionItem.headerHeight, rect.height)), color: selected ? JarasTheme.yellow : JarasTheme.text, visibleRect: tile, fontSize: GridSelectionItem.headerFontSize, context: &context)
     #endif
     }
     if rect.height <= 26 { return } // Collapsed tracks show only the item bar.
@@ -5603,7 +5607,7 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
     for (channel, peaks) in channels.enumerated() {
     var wave = Path()
     // Full-scale PCM reaches this channel’s boundary; gain is not normalized visually.
-    let middle = waveTop + channelHeight * (CGFloat(channel) + 0.5), amplitude = WaveformAmplitude.fullScale(channelHeight: channelHeight) * WaveformAmplitude.gain(item: clip.gain, normalization: clip.normalizationGain, inverted: clip.phaseInverted == true)
+    let middle = waveTop + channelHeight * (CGFloat(channel) + 0.5), amplitude = WaveformAmplitude.fullScale(channelHeight: channelHeight) * WaveformAmplitude.gain(item: clip.gain, normalization: clip.normalizationGain, inverted: clip.phaseInverted == true) * WaveformAmplitude.panGain(clip.pan, channel: channel, channels: channels.count)
     wave.move(to: CGPoint(x: max(rect.minX, tile.minX), y: middle))
     wave.addLine(to: CGPoint(x: min(rect.maxX, tile.maxX), y: middle))
     if !peaks.isEmpty, let loopLength = clip.loopLength, loopLength > 0 {

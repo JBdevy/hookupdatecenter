@@ -117,6 +117,17 @@ namespace theme {
 inline const Colour background{0xff161616}, panel{0xff1d1d1d}, line{0xff444444},
     secondary{0xffb9b9b9}, display{0xff101010}, titlebar{0xff222222}, green{0xff69ed91},
     yellow{0xffffdc52}, accent{0xff79f59a}, transportPlay{0xff24f06a}, transportRed{0xff8f2847}, liveOffRed{0xffff3030};
+inline void progressBar(Graphics &g, juce::Rectangle<float> bounds, double fraction) {
+    const auto bar = bounds.withSizeKeepingCentre(bounds.getWidth(), std::min(6.f, bounds.getHeight()));
+    g.setColour(Colour(0xff121212)); g.fillRoundedRectangle(bar, 3.f);
+    g.setColour(green);
+    if (fraction >= 0 && fraction <= 1) g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * (float)fraction), 3.f);
+    else {
+        const auto phase = std::fmod(Time::getMillisecondCounterHiRes() / 1400., 1.);
+        Graphics::ScopedSaveState state(g); g.reduceClipRegion(bar.getSmallestIntegerContainer());
+        g.fillRoundedRectangle(bar.withX(bar.getX() + (float)(phase * 1.3 - .3) * bar.getWidth()).withWidth(bar.getWidth() * .3f), 3.f);
+    }
+}
 inline Colour role(const std::string &id) {
     static const std::map<std::string, uint32> colours{
         {"click", 0x77d18b}, {"generatedClick", 0x77d18b}, {"guide", 0x8ed2e1},

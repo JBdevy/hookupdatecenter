@@ -110,8 +110,7 @@ import UniformTypeIdentifiers
                 }.frame(height: 340).disabled(busy)
                 if busy {
                     HStack {
-                        ProgressView(value: progress).tint(JarasTheme.green)
-                        Text("\(Int(progress * 100))%").monospacedDigit().frame(width: 44, alignment: .trailing)
+                        ProgressView(value: progress).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
                     }
                     Text(verbatim: progressMessage).font(.jarasCaption)
                         .frame(maxWidth: .infinity, alignment: .leading).lineLimit(3)

@@ -1016,6 +1016,34 @@ int runTests(const File &directory) {
         const auto saved=std::find_if(savedTracks.begin(),savedTracks.end(),[&](const auto &value){return value.id==track.id;});
         expect(saved!=savedTracks.end() && text(*saved->clips.front().text)==encoded,"Project save lost selected word colors");
     });
+    test("Waveform pan attenuates only the opposite channel, including uncommitted drags", [&] {
+        auto data=std::make_shared<WaveformCache::Data>();
+        data->duration=1;data->sampleRate=48000;data->frames=48000;data->sourceChannels=2;data->storedChannels=3;
+        data->levels.push_back({256,0,188});data->owned.setSize(188*3*4,true);
+        auto *bytes=(uint8*)data->owned.getData();
+        const auto high=(uint16)WaveformCache::encode(.8f),low=(uint16)WaveformCache::encode(-.8f);
+        for(int i=0;i<188*3;++i){bytes[i*4]=(uint8)high;bytes[i*4+1]=(uint8)(high>>8);bytes[i*4+2]=(uint8)low;bytes[i*4+3]=(uint8)(low>>8);}
+        WaveformCache cache;jaras::AudioClip clip;clip.duration=1;
+        const auto render=[&](std::optional<double> preview={}) {
+            Image image(Image::ARGB,200,120,true,SoftwareImageType());Graphics g(image);
+            WaveformRenderer::draw(g,cache,data,clip,{0,0,200,120},{0,0,200,120},200,Colours::white,true,{},nullptr,nullptr,preview);
+            return image;
+        };
+        const auto extent=[](const Image &image,int channel) {
+            int count=0;for(int y=18+channel*50;y<68+channel*50;++y)count+=image.getPixelAt(100,y).getAlpha()>100;return count;
+        };
+        const auto center=render();const auto original=data->owned;
+        expect(extent(center,0)>35 && extent(center,1)>35,"Stereo fixture is empty");
+        clip.pan=1;auto right=render();
+        expect(extent(right,0)<=2 && extent(right,1)==extent(center,1),"Full right did not flatten only left waveform");
+        clip.pan=-1;auto left=render();
+        expect(extent(left,1)<=2 && extent(left,0)==extent(center,0),"Full left did not flatten only right waveform");
+        clip.pan=0;auto half=render(.5);
+        expect(extent(half,0)>=18 && extent(half,0)<=21 && extent(half,1)==extent(center,1),"Pan drag is not reflected before commit");
+        expect(data->owned==original && clip.pan==0,"Pan changed source peaks or committed a drag");
+        clip.channelMode=1;auto mono=render(1);
+        expect(extent(mono,0)>25,"Panning a mono waveform must not erase its source lane");
+    });
     test("Waveform physical columns retain transients and scroll without repartitioning", [&] {
         auto data=std::make_shared<WaveformCache::Data>();
         data->duration=200;data->sampleRate=48000;data->frames=9600000;data->sourceChannels=data->storedChannels=1;
@@ -4183,6 +4211,28 @@ int runTests(const File &directory) {
             expect(str(saved,"fileName")=="%project - %track" && str(saved,"directory")==directory.getFullPathName(),"Export filename/directory were reset");
             expect(str(saved,"secondaryFormat")=="MP3","Secondary output default must match Mac");
         }
+    });
+    test("Export context overrides stored source bounds and names but preserves output encodings", [&] {
+        const auto settings=directory.getNonexistentChildFile("export-context", ".json");
+        Appearance prefs(settings);auto saved=object();
+        put(saved,"source",3);put(saved,"bounds",4);put(saved,"fileName","old full project");
+        put(saved,"regionFileName","old region");put(saved,"itemFileName","old item");
+        put(saved,"primaryFormat","AIFF");put(saved,"primaryBits",32);put(saved,"secondaryFormat","MP3");
+        put(saved,"secondaryBitrate",192);put(saved,"secondary",true);put(saved,"sampleRate",44100);put(saved,"channels",1);
+        prefs.set("catlive.export.options",saved);prefs.set("jaras.export.directory",directory.getFullPathName());
+        Session session;
+        for(bool items:{false,true}) {
+            ExportPanel panel(session,{}, {}, {},false,false,settings);
+            if(items)panel.selectItems({});else panel.selectRegions({});
+            const auto state=panel.diagnostics();
+            expect((int)get(state,"source")== (items?4:1) && (int)get(state,"bounds")== (items?1:3),"Export ignored invocation context");
+            expect(str(state,"fileName")== (items?"%stem":"%region"),"Previous template replaced selected file names");
+            expect(str(state,"primaryFormat")=="AIFF" && (int)get(state,"primaryBits")==32 && str(state,"secondaryFormat")=="MP3" && (int)get(state,"secondaryBitrate")==192 && flag(state,"secondary"),"Context reset primary/secondary encodings");
+            expect(str(state,"directory")==directory.getFullPathName() && (int)get(state,"sampleRate")==44100,"Context reset destination or sample rate");
+            if(items)expect(!flag(state,"boundsEnabled"),"Item export bounds must remain locked");
+        }
+        ExportPanel general(session,{}, {}, {},false,false,settings);const auto restored=general.diagnostics();
+        expect((int)get(restored,"source")==3 && (int)get(restored,"bounds")==4 && str(restored,"fileName")=="old full project","Context polluted general export defaults");
     });
     test("New standard tracks inherit the selected position and group output", [&] {
         auto project=projectFixture();auto &song=project.songs.front(); song.tracks.resize(3);

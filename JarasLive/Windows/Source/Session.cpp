@@ -1913,6 +1913,34 @@ void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory)
     dirty = true;
     notify();
 }
+Session::ItemPitchHistory Session::itemPitchHistory(const ID &id) const {
+    for (const auto &song : project().songs) for (const auto &track : song.tracks)
+        for (const auto &clip : track.clips) if (clip.id == id) return {song.id, id, clip.pitchSemitones};
+    throw std::runtime_error("Unknown item");
+}
+void Session::applyItemPitchHistory(ItemPitchHistory state, bool recordHistory) {
+    syncClock();
+    const auto before = itemPitchHistory(state.item);
+    if (before.semitones == state.semitones) return;
+    core.setClipPitchState(state.item, state.semitones);
+    try {
+        if (song() && song()->id == state.song) {
+            if (graphCancellation) prepareLiveGraph();
+            else audio.refreshItemPitch(*song(), state.item);
+        }
+    } catch (...) { core.setClipPitchState(before.item, before.semitones); throw; }
+    if (recordHistory) {
+        undoHistory.emplace_back(before);
+        if (undoHistory.size() > 40) undoHistory.pop_front();
+        redoHistory.clear();
+    }
+    dirty = true; message.clear(); notifyTiming(false);
+}
+void Session::setItemPitch(const ID &id, double semitones) {
+    if (busy || jaras::projectSync::readOnly()) return;
+    auto state = itemPitchHistory(id); state.semitones = semitones;
+    applyItemPitchHistory(std::move(state), true);
+}
 Session::PitchHistory Session::pitchHistory(const ID& id) const {
     if (song()) for (const auto& part : song()->parts) if (part.id == id)
         return {id, part.pitchSemitones, part.pitchTrackIDs, part.pitchGroupIDs};
@@ -2019,6 +2047,7 @@ void Session::undo() {
     auto value = undoHistory.back();
     if (value.timeline) redoHistory.emplace_back(TimelineHistory{value.timeline->tempo ? core.timingSnapshot() : project(), value.timeline->tempo, value.timeline->itemControls, value.timeline->mixerControls, value.timeline->routingControls});
     else if (value.pitch) redoHistory.emplace_back(pitchHistory(value.pitch->region));
+    else if (value.itemPitch) redoHistory.emplace_back(itemPitchHistory(value.itemPitch->item));
     else if (value.setlist) redoHistory.emplace_back(SetlistHistory{project().regionSetlist});
     else if (value.effects) redoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) redoHistory.emplace_back(markerHistory(value.markers->song));
@@ -2029,6 +2058,7 @@ void Session::undo() {
     undoHistory.pop_back();
     if (value.timeline) applyTimelineHistory(*value.timeline, false);
     else if (value.pitch) applyPitchHistory(*value.pitch, false);
+    else if (value.itemPitch) applyItemPitchHistory(*value.itemPitch, false);
     else if (value.setlist) applySetlistHistory(*value.setlist, false);
     else if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);
@@ -2046,6 +2076,7 @@ void Session::redo() {
     auto value = redoHistory.back();
     if (value.timeline) undoHistory.emplace_back(TimelineHistory{value.timeline->tempo ? core.timingSnapshot() : project(), value.timeline->tempo, value.timeline->itemControls, value.timeline->mixerControls, value.timeline->routingControls});
     else if (value.pitch) undoHistory.emplace_back(pitchHistory(value.pitch->region));
+    else if (value.itemPitch) undoHistory.emplace_back(itemPitchHistory(value.itemPitch->item));
     else if (value.setlist) undoHistory.emplace_back(SetlistHistory{project().regionSetlist});
     else if (value.effects) undoHistory.emplace_back(currentEffects(*value.effects));
     else if (value.markers) undoHistory.emplace_back(markerHistory(value.markers->song));
@@ -2056,6 +2087,7 @@ void Session::redo() {
     redoHistory.pop_back();
     if (value.timeline) applyTimelineHistory(*value.timeline, false);
     else if (value.pitch) applyPitchHistory(*value.pitch, false);
+    else if (value.itemPitch) applyItemPitchHistory(*value.itemPitch, false);
     else if (value.setlist) applySetlistHistory(*value.setlist, false);
     else if (value.effects) applyEffects(*value.effects, false);
     else if (value.markers) applyMarkerHistory(*value.markers, false);

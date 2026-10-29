@@ -104,7 +104,8 @@ struct ItemNormalizationEditor: View {
     @State private var invalid = false
     @State private var shake = 0.0
     @State private var progress = ""
-    @State private var fraction = 0.0
+    @State private var progressItems: [AudioClip] = []
+    @State private var itemProgress: [UUID: Double] = [:]
     @State private var progressJob: UUID?
     @State private var error = ""
     @State private var worker: Task<Void, Never>?
@@ -121,9 +122,23 @@ struct ItemNormalizationEditor: View {
                 Text(mode == .lufs ? "LUFS" : mode == .truePeak ? "dBTP" : "dB")
             }
             Text("Independent normalization gain: up to +24 dB").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
-            if !progress.isEmpty {
-                HStack { ProgressView(value: fraction).tint(JarasTheme.green); Text("\(Int(fraction * 100))%").monospacedDigit().frame(width: 44) }
-                Text(progress).font(.jarasCaption).lineLimit(1)
+            if !progressItems.isEmpty {
+                ScrollViewReader { reader in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(progressItems) { clip in
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(verbatim: clip.name).font(.jarasCaption).lineLimit(1)
+                                    ProgressView(value: itemProgress[clip.id] ?? 0).progressViewStyle(JarasProgressBarStyle()).accessibilityLabel(Text(verbatim: clip.name))
+                                }.id(clip.id)
+                            }
+                        }
+                    }.frame(height: min(200, CGFloat(progressItems.count) * 36))
+                        .onChange(of: progress) { _ in
+                            if let current = progressItems.first(where: { (itemProgress[$0.id] ?? 0) < 1 }) { reader.scrollTo(current.id, anchor: .center) }
+                        }
+                }
+                if !progress.isEmpty { Text(verbatim: progress).font(.jarasCaption).lineLimit(2) }
             }
             if !error.isEmpty { Text(error).foregroundStyle(.red).font(.jarasCaption) }
             HStack {
@@ -155,20 +170,21 @@ struct ItemNormalizationEditor: View {
         let clips = show.snapshot.project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.flatMap(\.clips).filter { items.contains($0.id) && $0.audioFile != nil }
         guard !clips.isEmpty else { error = "No audio items selected."; return }
         let selectedMode = mode, job = UUID()
-        progressJob = job; fraction = 0
+        progressJob = job; progressItems = clips; itemProgress = [:]
         worker = Task {
             do {
                 var gains: [UUID: Double] = [:]
                 for (index, clip) in clips.enumerated() {
                     try Task.checkCancellation(); progress = "\(index + 1)/\(clips.count) · \(clip.name)"
-                    let count = clips.count
                     let analysis = Task.detached(priority: .utility) {
                         try ItemNormalization.measure(clip, directory: directory, mode: selectedMode) { value in
-                            let total = (Double(index) + value) / Double(count)
-                            Task { @MainActor in if progressJob == job && worker != nil { fraction = max(fraction, total) } }
+                            Task { @MainActor in
+                                if progressJob == job && worker != nil { itemProgress[clip.id] = max(itemProgress[clip.id] ?? 0, value) }
+                            }
                         }
                     }
                     let level = try await withTaskCancellationHandler { try await analysis.value } onCancel: { analysis.cancel() }
+                    itemProgress[clip.id] = 1
                     gains[clip.id] = ItemNormalization.gain(measured: level, target: value)
                 }
                 try Task.checkCancellation()

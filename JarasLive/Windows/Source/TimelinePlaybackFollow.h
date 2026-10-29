@@ -1,8 +1,8 @@
 #pragma once
 #include "Common.h"
 namespace catlive {
-inline double timelineZoomPosition(const jaras::TransportState &state) {
-    const double position = state.subPlay.playing ? state.subPlay.position
+inline double timelineZoomPosition(const jaras::TransportState &state, bool manualPause = false) {
+    const double position = manualPause ? state.editPosition : state.subPlay.playing ? state.subPlay.position
                           : state.playing ? state.position : state.editPosition;
     return std::isfinite(position) ? std::max(0., position) : 0.;
 }

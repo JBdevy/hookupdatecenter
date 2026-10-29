@@ -372,7 +372,7 @@ struct MainView: View {
                     VStack(spacing: 14) {
                         Text(LocalizedStringKey(documents.status))
                             .font(.jarasCallout).multilineTextAlignment(.center).lineLimit(3)
-                        ProgressView(value: documents.audioImportProgress).progressViewStyle(.linear).tint(JarasTheme.green)
+                        ProgressView(value: documents.audioImportProgress).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
                     }
                     .padding(24).frame(width: 360)
                     .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 10))

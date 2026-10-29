@@ -11,6 +11,7 @@ class ItemTunerPanel final : public Component, private Timer {
             addAndMakeVisible(button);
             button->setWantsKeyboardFocus(false);
         }
+        minus.setComponentID("itemTunerDown"); plus.setComponentID("itemTunerUp");
         minus.onClick = [this] { change(-1); };
         plus.onClick = [this] { change(1); };
         close.onClick = [this] { ModalSheet::dismiss(*this); };
@@ -53,8 +54,7 @@ class ItemTunerPanel final : public Component, private Timer {
                         name = text(clip.name);
                         pitch = clip.pitchSemitones.value_or(0);
                     }
-        bool editable = found && !session.busy && !session.transport().playing &&
-                        !session.transport().subPlay.playing;
+        bool editable = found && !session.busy && !jaras::projectSync::readOnly();
         minus.setEnabled(editable && pitch > -12);
         plus.setEnabled(editable && pitch < 12);
         repaint();
@@ -62,18 +62,7 @@ class ItemTunerPanel final : public Component, private Timer {
     void timerCallback() override { refresh(); }
     void change(int step) {
         try {
-            session.edit([&](jaras::Project &project) {
-                for (auto &song : project.songs)
-                    for (auto &track : song.tracks)
-                        for (auto &clip : track.clips)
-                            if (clip.id == id && !clip.midi &&
-                                jaras::fixedTrackName(track.role).empty()) {
-                                clip.pitchSemitones =
-                                    jlimit(-12., 12., clip.pitchSemitones.value_or(0) + step);
-                                return;
-                            }
-                throw std::runtime_error("Este item não aceita transposição de áudio.");
-            });
+            session.setItemPitch(id, jlimit(-12., 12., pitch + step));
             refresh();
         } catch (const std::exception &e) {
             error(String::fromUTF8(e.what()));

@@ -35,6 +35,7 @@ class TransportFadeoutOverlay;
 class MacLook final : public MacPopupMenuLook {
   public:
     MacLook();
+    void drawProgressBar(Graphics &, ProgressBar &, int, int, double, const String &) override;
     void drawTooltip(Graphics &,const String &,int,int) override;
     void drawButtonBackground(Graphics &, Button &, const Colour &, bool, bool) override;
     void drawButtonText(Graphics &, TextButton &, bool, bool) override;

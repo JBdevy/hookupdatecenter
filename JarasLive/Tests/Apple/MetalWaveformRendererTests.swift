@@ -74,6 +74,25 @@ precondition(!linearFrame.hasSameContent(as: MetalWaveformFrame(size: size, stro
 precondition(engine.uploadedBufferCount == fadeUploads, "Dragging fades must reuse source audio vertices")
 print("METAL_WAVEFORM_FADE_IN_OUT_FINE_CURVES_AND_SPARSE_PCM_PIXELS_OK")
 
+// Per-channel pan changes presentation, retaining the original PCM buffers.
+let panBlock = TimelineAudioWaveform.VertexBlock(channels: [[SIMD2<Float>(0, -1), SIMD2<Float>(100, -1)],
+    [SIMD2<Float>(0, -1), SIMD2<Float>(100, -1)]], start: 0, end: 101, step: 1, rate: 1, key: "pan-stereo-pcm")
+func panStrokes(_ pan: Double) -> [MetalWaveformStroke] {
+    (0..<2).map { channel in
+        MetalWaveformStroke(block: panBlock, channel: channel,
+            scale: SIMD2(1, Float(20 * WaveformAmplitude.panGain(pan, channel: channel, channels: 2))),
+            translation: SIMD2(10, Float(40 + channel * 50)), clip: item, color: SIMD4(1,1,1,1), itemRect: item, lineWidth: 1)
+    }
+}
+let centerPan = render(panStrokes(0)), panUploads = engine.uploadedBufferCount
+let rightPan = render(panStrokes(1)), leftPan = render(panStrokes(-1)), halfPan = render(panStrokes(0.5))
+precondition(centerPan.maximumAlpha(60,20)>120 && centerPan.maximumAlpha(60,70)>120)
+precondition(rightPan.maximumAlpha(60,20)==0 && rightPan.maximumAlpha(60,40)>120 && rightPan.maximumAlpha(60,70)>120)
+precondition(leftPan.maximumAlpha(60,20)>120 && leftPan.maximumAlpha(60,70)==0 && leftPan.maximumAlpha(60,90)>120)
+precondition(halfPan.maximumAlpha(60,30)>120 && halfPan.maximumAlpha(60,70)>120)
+precondition(engine.uploadedBufferCount == panUploads, "Pan must reuse source waveform buffers")
+print("METAL_WAVEFORM_PAN_CHANNEL_ATTENUATION_WITHOUT_PCM_REUPLOAD_OK")
+
 func red(_ image: Pixels, _ x: Int, _ y: Int) -> Int { Int(image.bytes[(y * image.width + x) * 4 + 2]) }
 func green(_ image: Pixels, _ x: Int, _ y: Int) -> Int { Int(image.bytes[(y * image.width + x) * 4 + 1]) }
 var decoration = MetalTimelineItem(rect: CGRect(x: 10, y: 10, width: 100, height: 100),
@@ -82,7 +101,7 @@ var decoration = MetalTimelineItem(rect: CGRect(x: 10, y: 10, width: 100, height
 let bodyPixels = render([], items: [decoration])
 precondition(engine.lastEncodedItemCount == 1 && engine.lastEncodedStrokeCount == 0)
 precondition(red(bodyPixels, 50, 40) > red(bodyPixels, 50, 100), "GPU preserves vertical item gradient")
-precondition(abs(red(bodyPixels, 50, 20) - 48) <= 1 && red(bodyPixels, 50, 20) == green(bodyPixels, 50, 20), "item header is lighter gray, independent of track color")
+precondition(abs(red(bodyPixels, 50, 20) - 72) <= 1 && red(bodyPixels, 50, 20) == green(bodyPixels, 50, 20), "item header is lighter gray, independent of track color")
 precondition(bodyPixels.alpha(3, 20) == 0 && bodyPixels.alpha(10, 10) < 140, "rounded item must not fill outside its bounds")
 precondition(green(bodyPixels, 10, 50) > 80, "selected/item border must remain visible")
 let noWave = MetalWaveformFrame(size: size, strokes: [], items: [decoration])

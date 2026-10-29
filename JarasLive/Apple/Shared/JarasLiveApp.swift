@@ -217,7 +217,7 @@ struct RootView: View {
                 ZStack {
                     Color.black.opacity(0.45).ignoresSafeArea()
                     VStack(spacing: 16) {
-                        ProgressView(value: documents.audioImportProgress).tint(JarasTheme.green)
+                        ProgressView(value: documents.audioImportProgress).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
                         Text(LocalizedStringKey(documents.status)).font(.jarasCallout)
                         if documents.canCancelOpening { Button("Cancel") { documents.cancelOpening() } }
                     }.padding(28).frame(width: 360).background(JarasTheme.panel)
@@ -405,7 +405,7 @@ struct StartupView: View {
                                     .frame(width: geometry.size.width * min(1, max(0, progress)))
                             }.frame(height: 5)
                         } else {
-                            ProgressView().progressViewStyle(.linear).tint(JarasTheme.green)
+                            ProgressView().progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
                         }
                     }
                     .accessibilityLabel(LocalizedStringKey(stage))

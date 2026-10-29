@@ -78,7 +78,7 @@ struct AudioExportView: View {
     @AppStorage("jaras.export.secondaryBitrate") private var secondaryBitrate = 320
     @AppStorage("jaras.export.directory") private var directory = ""
     @AppStorage("jaras.export.fileName") private var fileName = "%project"
-    @AppStorage("catlive.export.regionFileName") private var regionFileName = "%region"
+    @State private var regionFileName = "%region"
     private var regionMode: Bool { regionSelection != nil }
     private var effectiveSource: AudioExportSource { regionMode ? .master : source }
     private var effectiveBounds: AudioExportBounds { regionMode ? .regions : bounds }
@@ -270,7 +270,7 @@ struct AudioExportView: View {
                         context.stroke(line,with: .color(progress.clipped[index] ? .red : JarasTheme.green),lineWidth: max(1,width))
                     }
                 }.frame(height: 180).background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 6))
-                ProgressView(value: progress.fraction).tint(JarasTheme.green)
+                ProgressView(value: progress.fraction).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
                 HStack {
                     Text("\(progress.completed) / \(progress.total) files")
                     Spacer()
@@ -377,7 +377,7 @@ struct ItemAudioExportView: View {
             }.frame(height: min(110, CGFloat(max(1, plan.jobs.count)) * 22 + 16))
                 .background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 6))
             if session.running {
-                ProgressView(value: session.progress.map { (Double($0.completed) + $0.fraction) / Double(max(1, $0.total)) } ?? 0)
+                ProgressView(value: session.progress.map { (Double($0.completed) + $0.fraction) / Double(max(1, $0.total)) } ?? 0).progressViewStyle(JarasProgressBarStyle())
             }
             if !session.error.isEmpty { Text(verbatim: session.error).font(.jarasCaption).foregroundStyle(.red).textSelection(.disabled) }
             if session.finished { Text("Render complete.").foregroundStyle(JarasTheme.green) }

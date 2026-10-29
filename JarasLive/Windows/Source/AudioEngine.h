@@ -77,6 +77,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void closeDevice();
     void refreshTiming(const jaras::Song &song);
     void refreshTempo(const jaras::Song &before, const jaras::Song &after);
+    void refreshItemPitch(const jaras::Song &, const ID &);
     void refreshRegionPitch(const jaras::Song &, const ID &);
     struct PreparationControl {
         std::function<void()> checkpoint;

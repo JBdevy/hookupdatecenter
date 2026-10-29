@@ -48,7 +48,7 @@ import UniformTypeIdentifiers
             if requiresSave {
                 Text("Save the project before exporting.").foregroundStyle(JarasTheme.yellow)
             }
-            if busy { ProgressView(value: progress).tint(JarasTheme.green); Text("Exporting project…").font(.jarasCaption) }
+            if busy { ProgressView(value: progress).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green); Text("Exporting project…").font(.jarasCaption) }
             if let exported {
                 Label("Project exported successfully.", systemImage: "checkmark.circle.fill").foregroundStyle(JarasTheme.green)
                 #if os(macOS)

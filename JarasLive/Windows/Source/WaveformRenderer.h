@@ -14,6 +14,10 @@ struct WaveformRenderer {
         const auto limit=std::pow(10.,24./20);
         return jlimit(0.,limit,itemGainOverride.value_or(clip.gain.value_or(1))) * jlimit(0.,limit,clip.normalizationGain.value_or(1)) * (clip.phaseInverted.value_or(false) ? -1 : 1);
     }
+    static double panGain(double pan, int channel, int channels) {
+        pan = jlimit(-1., 1., pan);
+        return channels < 2 ? 1. : channel == 0 && pan > 0 ? 1. - pan : channel == 1 && pan < 0 ? 1. + pan : 1.;
+    }
     struct FadeEnvelope {
         double origin, scale, duration, in, out;
         jaras::FadeCurve inCurve, outCurve;
@@ -35,7 +39,7 @@ struct WaveformRenderer {
                      const jaras::AudioClip &clip, juce::Rectangle<float> item,
                      juce::Rectangle<float> viewport, double pixelsPerSecond, Colour ink, bool clipToItem = true,
                      std::optional<double> itemGainOverride = std::nullopt, const jaras::Song *song = nullptr,
-                     const ClipTempo *preparedTiming = nullptr) {
+                     const ClipTempo *preparedTiming = nullptr, std::optional<double> itemPanOverride = std::nullopt) {
         if (!data || data->sourceChannels <= 0 || pixelsPerSecond <= 0) return;
         const int mode = clip.channelMode.value_or(0);
         const int channels = (mode == 0 || mode == 4) ? data->sourceChannels : 1;
@@ -48,13 +52,14 @@ struct WaveformRenderer {
         const double visibleEnd = std::min(clip.duration, (viewport.getRight() - item.getX()) / pixelsPerSecond);
         if (visibleEnd <= visibleStart) return;
         const double loop = clip.loopLength.value_or(0), loopStart = clip.loopStart.value_or(0);
-        const float amplitude = fullScale(height) * (float)gain(clip,itemGainOverride);
+        const float baseAmplitude = fullScale(height) * (float)gain(clip,itemGainOverride);
         const FadeEnvelope fade(clip, item.getX(), pixelsPerSecond);
         const float physical = jlimit(1.f, 8.f, g.getInternalContext().getPhysicalPixelScaleFactor());
         g.saveState();
         if (clipToItem) {Path outline;outline.addRoundedRectangle(item,3);g.reduceClipRegion(outline);}
         g.setColour(ink);
         for (int channel = 0; channel < channels; ++channel) {
+            const float amplitude = baseAmplitude * (float)panGain(itemPanOverride.value_or(clip.pan.value_or(0)), channel, channels);
             const int sourceChannel = mode == 1 ? 0 : mode == 2 ? std::min(1, data->sourceChannels - 1)
                 : mode == 3 && data->sourceChannels > 1 ? data->sourceChannels
                 : mode == 4 && data->sourceChannels > 1 && channel < 2 ? 1 - channel : channel;

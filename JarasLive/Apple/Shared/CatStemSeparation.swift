@@ -240,7 +240,7 @@ struct CatStemProgressView: View {
             Text(verbatim: session.status).fixedSize(horizontal: false, vertical: true)
             if !session.error.isEmpty { Text(verbatim: session.error).foregroundStyle(.red) }
             if session.running {
-                ProgressView(value: session.progress)
+                ProgressView(value: session.progress).progressViewStyle(JarasProgressBarStyle())
                 Button("Cancel") { session.cancel(); close() }.keyboardShortcut(.cancelAction)
             } else { Button("Close", action: close).keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 400).interactiveDismissDisabled(session.running)

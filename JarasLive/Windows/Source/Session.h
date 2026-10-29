@@ -152,6 +152,7 @@ class Session final : private Timer {
     }
     void removeTrack(ID);
     void removeTracks(const std::set<ID> &);
+    void setItemPitch(const ID &, double);
     void setRegionPitch(const ID &, int, std::vector<ID>, std::vector<ID>);
     void setMeter(int beats, int unit);
     void removeClip(ID);
@@ -176,6 +177,9 @@ class Session final : private Timer {
     struct PitchHistory { ID region; std::optional<int> semitones; std::optional<std::vector<ID>> tracks, groups; };
     PitchHistory pitchHistory(const ID&) const;
     void applyPitchHistory(PitchHistory, bool recordHistory);
+    struct ItemPitchHistory { ID song, item; std::optional<double> semitones; };
+    ItemPitchHistory itemPitchHistory(const ID &) const;
+    void applyItemPitchHistory(ItemPitchHistory, bool recordHistory);
     void notifyTiming(bool geometry);
     struct TimelineHistory { jaras::Project project; bool tempo = false, itemControls = false, mixerControls = false, routingControls = false; };
     void applyTimelineHistory(const TimelineHistory &, bool recordHistory);
@@ -201,12 +205,14 @@ class Session final : private Timer {
         var project;
         std::optional<TimelineHistory> timeline;
         std::optional<PitchHistory> pitch;
+        std::optional<ItemPitchHistory> itemPitch;
         std::optional<SetlistHistory> setlist;
         std::optional<MarkerHistory> markers;
         std::optional<std::map<ID, var>> effects;
         std::optional<ItemTimingHistory> itemTiming;
         std::optional<ItemHistory> items;
         std::optional<TrackHierarchyHistory> hierarchy;
+        HistoryEntry(ItemPitchHistory value) : itemPitch(std::move(value)) {}
         HistoryEntry(PitchHistory value) : pitch(std::move(value)) {}
         HistoryEntry(TimelineHistory value) : timeline(std::move(value)) {}
         HistoryEntry(SetlistHistory value) : setlist(std::move(value)) {}

@@ -142,17 +142,13 @@ class PortableExportPanel final : public Component, private Timer {
                                        : theme::green);
         const auto status =
             error.isNotEmpty() ? error
-            : work ? String::fromUTF8("Exportando projeto… ") + String((int)(work->progress * 100)) + "%"
+            : work ? String::fromUTF8("Exportando projeto…")
             : exported.existsAsFile() ? "Projeto exportado com sucesso."
             : requiresSave()          ? "Salve o projeto antes de exportar."
                                       : String{};
         g.drawFittedText(status, 24, 250, getWidth() - 48, 42, Justification::topLeft, 3, 1);
         if (work) {
-            const juce::Rectangle<float> bar(24.f, 298.f, (float)getWidth() - 48.f, 5.f);
-            g.setColour(theme::secondary.withAlpha(.2f));
-            g.fillRoundedRectangle(bar, 2.5f);
-            g.setColour(theme::green);
-            g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * (float)jlimit(0., 1., work->progress.load())), 2.5f);
+            theme::progressBar(g, {24.f, 298.f, (float)getWidth() - 48.f, 6.f}, work->progress.load());
         }
     }
     void resized() override {

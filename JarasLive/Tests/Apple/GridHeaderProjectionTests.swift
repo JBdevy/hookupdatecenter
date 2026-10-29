@@ -25,6 +25,15 @@ func pixels(scale: Int = 1) -> Data {
     grid.needsDisplay = false
     return Data(bytes: bitmap.bitmapData!, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
 }
+let deselectedPixels = pixels()
+let selectionInvalidations = HeaderProjectionProbe.invalidations
+grid.updateSelection([id])
+precondition(HeaderProjectionProbe.invalidations > selectionInvalidations, "Selecting an item must invalidate its native header immediately")
+let selectedPixels = pixels()
+precondition(deselectedPixels != selectedPixels, "Selected item title must visibly change color")
+grid.updateSelection([])
+precondition(pixels() == deselectedPixels, "Clearing selection must restore the original header")
+print("GRID_HEADER_SELECTION_INVALIDATION_AND_RESTORE_OK")
 for scale in [1, 2] {
     grid.timelineOrigin = CGPoint(x: 900, y: 0)
     let reference = pixels(scale: scale)

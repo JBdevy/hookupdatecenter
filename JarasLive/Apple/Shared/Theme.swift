@@ -278,6 +278,27 @@ enum TimelineAppearanceDefaults {
     static let subPlayCursor = 0xFF6F00
 }
 
+/// Shared operation progress: the same slim green bar used by audio separation.
+struct JarasProgressBarStyle: ProgressViewStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color(hex: 0x121212))
+                if let fraction = configuration.fractionCompleted {
+                    Capsule().fill(JarasTheme.green).frame(width: width * min(1, max(0, fraction)))
+                } else {
+                    TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+                        let phase = timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4
+                        Capsule().fill(JarasTheme.green).frame(width: width * 0.3)
+                            .offset(x: width * (phase * 1.3 - 0.3))
+                    }
+                }
+            }.clipShape(Capsule())
+        }.frame(height: 6)
+    }
+}
+
 // App-owned typography. Font files are registered only inside CatLive's process;
 // switching this family does not change macOS or external plug-in editors.
 #if os(macOS)

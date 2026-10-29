@@ -213,7 +213,7 @@ struct ItemReRenderProgressView: View {
                 Text(error).foregroundStyle(.red)
                 Button("Close", action: close).keyboardShortcut(.defaultAction)
             } else {
-                ProgressView(value: progress.fraction).progressViewStyle(.linear)
+                ProgressView(value: progress.fraction).progressViewStyle(JarasProgressBarStyle())
                 if let cancel { Button("Cancel", action: cancel).keyboardShortcut(.cancelAction) }
             }
         }.padding(24).frame(width: 420).interactiveDismissDisabled()

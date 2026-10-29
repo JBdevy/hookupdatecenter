@@ -148,6 +148,9 @@ MacLook::MacLook() {
     setColour(ToggleButton::textColourId, Colours::white);
     setColour(ToggleButton::tickColourId, theme::green);
 }
+void MacLook::drawProgressBar(Graphics &g, ProgressBar &, int width, int height, double fraction, const String &) {
+    theme::progressBar(g, {0.f, 0.f, float(width), float(height)}, fraction);
+}
 void MacLook::drawTooltip(Graphics &g,const String &text,int width,int height) {
     auto bounds=juce::Rectangle<float>(0,0,(float)width,(float)height).reduced(.5f);
     g.setColour(Colour(0xff353535)); g.fillRoundedRectangle(bounds,5);
@@ -1656,8 +1659,12 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         for (auto *lane : lanes) if (lane->isVisible()) lane->repaint();
         canvas.repaint(); heads.repaint();
     }
+    double zoomPosition() {
+        const auto state = w.session.presentationTransport();
+        return timelineZoomPosition(state, followPolicy.isPaused(state));
+    }
     void applyCursorZoom(double scale, std::optional<double> screenAnchor = {}) {
-        const double cursor = gestureZoomPosition.value_or(timelineZoomPosition(w.session.presentationTransport()));
+        const double cursor = gestureZoomPosition.value_or(zoomPosition());
         w.pixelsPerSecond = jlimit(timelineGrid::minimumZoom, timelineGrid::maximumZoom, scale);
         w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
         updateZoomRange();
@@ -1803,7 +1810,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         if (gestureMode != mode || direction != gestureDirection || now - lastGestureInput > 250) {
             stopGesture();
             gestureMode = mode;
-            if (!pan) gestureZoomPosition = timelineZoomPosition(w.session.presentationTransport());
+            if (!pan) gestureZoomPosition = zoomPosition();
             gestureTarget = pan ? horizontal.getCurrentRangeStart() : std::log(w.pixelsPerSecond);
         }
         gestureDirection = direction;
@@ -2378,16 +2385,19 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             const bool overview=simpleOverview && t.gestureMode==0 && !controlApplies && !movingClipPreview && !resizedClipPreview && !t.regionPreview;
                             if(!overview || !drawOverviewWaveform(g,data,clip,rect,ink,*song))
                                 WaveformRenderer::draw(g, t.waveforms, data, clip, rect,
-                                    getLocalBounds().toFloat(), t.w.pixelsPerSecond, ink, false, gainOverride,song,&waveformTiming(clip,*song));
+                                    getLocalBounds().toFloat(), t.w.pixelsPerSecond, ink, false, gainOverride,song,&waveformTiming(clip,*song),
+                                    controlApplies && controlKind==ItemHeader::pan ? controlClip->pan : std::nullopt);
                         } else if (!source) {
                             // Legacy/generated items may contain their own overview.
                             // Never substitute these coarse peaks for pending real PCM.
                             const int channels = std::max(1, (int)clip.waveformChannels.size());
                             const float top = rect.getY() + 18.f;
                             const float laneHeight = std::max(1.f, rect.getBottom() - top - 2.f) / channels;
-                            const float amplitude = WaveformRenderer::fullScale(laneHeight) * (float)WaveformRenderer::gain(clip,gainOverride);
+                            const float baseAmplitude = WaveformRenderer::fullScale(laneHeight) * (float)WaveformRenderer::gain(clip,gainOverride);
                             g.setColour(Colour::greyLevel(waveGray));
                             for (int channel = 0; channel < channels; ++channel) {
+                                const auto pan = controlApplies && controlKind==ItemHeader::pan ? controlClip->pan : clip.pan;
+                                const float amplitude = baseAmplitude * (float)WaveformRenderer::panGain(pan.value_or(0), channel, channels);
                                 const auto &embedded = clip.waveformChannels.empty() ? clip.waveform : clip.waveformChannels[(size_t)(clip.channelMode.value_or(0)==4 && channels>1 && channel<2 ? 1-channel : channel)];
                                 if (embedded.empty()) continue;
                                 const float middle = top + laneHeight * (channel + .5f);
@@ -2421,7 +2431,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         header.draw(g,clip,gainOverride,controlApplies && controlKind==ItemHeader::pan ? controlClip->pan : std::nullopt);
                         const float headerRight=header.visible.getRight(),nameLeft=header.titleLeft;
                         if(headerRight-nameLeft>=12) {
-                            g.setFont(theme::semiboldFont(9));g.setColour(Colours::white.withAlpha(track.mute?.5f:.95f));
+                            g.setFont(theme::semiboldFont(9));g.setColour(selected ? theme::yellow : Colours::white.withAlpha(track.mute?.5f:.95f));
                             g.drawText(t.w.itemTitle(clip),juce::Rectangle<float>(nameLeft,rect.getY(),headerRight-nameLeft-3,17),Justification::centredLeft,true);
                         }
                         if(clip.text && !clip.text->empty() && right-left>=24) {
@@ -7191,8 +7201,8 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                 if (action == 11) {
                     ModalSheet::open(
                         w, "Normalizar",
-                        std::make_unique<NormalizationPanel>(w.session, w.appearance, targets), 380,
-                        260);
+                        std::make_unique<NormalizationPanel>(w.session, w.appearance, targets), 440,
+                        256 + std::min(5, (int)targets.size()) * 36);
                     return;
                 }
                 if (action == 9) {

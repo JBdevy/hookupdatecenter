@@ -6,6 +6,11 @@ enum WaveformAmplitude {
     /// ±1 (0 dBFS) reaches the lane border, after its half-point clipping inset.
     static func fullScale(channelHeight: Double) -> Double { max(0, channelHeight - 1) / 2 }
 
+    static func panGain(_ pan: Double?, channel: Int, channels: Int) -> Double {
+        let pan = min(1, max(-1, pan ?? 0))
+        guard channels > 1 else { return 1 }
+        return channel == 0 && pan > 0 ? 1 - pan : channel == 1 && pan < 0 ? 1 + pan : 1
+    }
     static func gain(item: Double?, normalization: Double?, inverted: Bool = false) -> Double {
         let limit = pow(10.0, 24.0 / 20)
         return min(limit, max(0, item ?? 1)) * min(limit, max(0, normalization ?? 1)) * (inverted ? -1 : 1)

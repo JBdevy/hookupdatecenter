@@ -711,6 +711,17 @@ void Engine::setClipFXBypass(const ID& id, bool bypassed) {
     }
     throw std::invalid_argument("Unknown FX item");
 }
+void Engine::setClipPitchState(const ID& id, std::optional<double> semitones) {
+    projectSync::requireWritable();
+    if (semitones && (!std::isfinite(*semitones) || *semitones < -12 || *semitones > 12))
+        throw std::invalid_argument("Invalid item pitch");
+    for (auto& song : project_.songs) for (auto& track : song.tracks) for (auto& clip : track.clips) if (clip.id == id) {
+        if (!fixedTrackName(track.role).empty() || clip.midi || (!clip.audioFile && !track.audioFile))
+            throw std::invalid_argument("Item pitch requires an audio item");
+        clip.pitchSemitones = semitones; return;
+    }
+    throw std::invalid_argument("Unknown item");
+}
 void Engine::setClipName(const ID& id, std::string name) {
     projectSync::requireWritable();
     if (name.empty()) throw std::invalid_argument("Item name cannot be empty");

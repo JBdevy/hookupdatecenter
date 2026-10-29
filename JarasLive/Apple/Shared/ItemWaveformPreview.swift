@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Transient gain and fade changes are observed only by the affected items' drawing layers.
+/// Transient gain, pan and fade changes are observed only by the affected items' drawing layers.
 /// They never mutate project arrays, waveform storage or structural layout keys.
 @MainActor final class ItemWaveformPreview: ObservableObject {
     struct State: Equatable {
@@ -9,6 +9,7 @@ import SwiftUI
         var ids: Set<UUID> { targets.isEmpty ? [id] : targets }
         enum Adjustment: Equatable {
             case gain(Double)
+            case pan(Double)
             case fade(fadeIn: Bool, seconds: Double)
             case shape(fadeIn: Bool, sCurve: Bool, value: Double)
         }
@@ -17,6 +18,7 @@ import SwiftUI
             var clip = source
             switch adjustment {
             case .gain(let gain): clip.gain = gain
+            case .pan(let pan): clip.pan = pan
             case .fade(let fadeIn, let seconds):
                 if fadeIn { clip.fadeIn = seconds } else { clip.fadeOut = seconds }
             case .shape(let fadeIn, let sCurve, let value):
@@ -51,6 +53,11 @@ import SwiftUI
     func update(id: UUID, gain: Double, targets: Set<UUID> = []) {
         awaitingPresentation = false
         let next = State(id: id, targets: targets, adjustment: .gain(gain))
+        if state != next { state = next }
+    }
+    func updatePan(id: UUID, pan: Double, targets: Set<UUID> = []) {
+        awaitingPresentation = false
+        let next = State(id: id, targets: targets, adjustment: .pan(pan))
         if state != next { state = next }
     }
     func updateFade(_ source: AudioClip, fadeIn: Bool, seconds: Double) {

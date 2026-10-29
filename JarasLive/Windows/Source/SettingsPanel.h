@@ -229,7 +229,7 @@ class SettingsPanel final : public Component, private Timer {
             label->setText(catalog.progressText(),dontSendNotification); label->setFont(theme::font(12));
             label->setColour(Label::textColourId,theme::secondary); label->setBounds(24,y,580,26); y+=32;
             auto *bar = new ProgressBar(catalog.scanProgress); deviceFields.add(bar); page.addAndMakeVisible(bar);
-            bar->setBounds(24,y,580,16); bar->setPercentageDisplay(true); y+=36;
+            bar->setBounds(24,y,580,16); bar->setPercentageDisplay(false); y+=36;
         }
         contentHeight=y+36;localization::panel(page);resized();
     }

@@ -12,9 +12,12 @@ class NormalizationPanel final : public Component, private Timer {
     NormalizationPanel(Session &owner, Appearance &preferences, std::set<ID> targets)
         : session(owner), appearance(preferences), ids(std::move(targets)) {
         addAndMakeVisible(mode);
-        addChildComponent(progressBar);
-        progressBar.setComponentID("normalizationProgress");
-        progressBar.setColour(ProgressBar::foregroundColourId, theme::green);
+        addAndMakeVisible(itemView); itemView.setViewedComponent(&itemRows, false);
+        itemView.setScrollBarsShown(true, false); itemView.setScrollBarThickness(6);
+        itemView.setComponentID("normalizationProgress");
+        if (const auto *song = session.song()) for (const auto &track : song->tracks)
+            for (const auto &clip : track.clips) if (ids.count(clip.id) && !clip.midi && (clip.audioFile || track.audioFile))
+                itemRows.names.push_back(text(clip.name));
         addAndMakeVisible(level);
         addAndMakeVisible(cancel);
         addAndMakeVisible(applyButton);
@@ -37,11 +40,13 @@ class NormalizationPanel final : public Component, private Timer {
     ~NormalizationPanel() override {
         cancelled->store(true);
         worker.removeAllJobs(true, 10000);
+        itemView.setViewedComponent(nullptr, false);
     }
     void resized() override {
         mode.setBounds(86, 18, getWidth() - 108, 26);
         level.setBounds(86, 62, getWidth() - 156, 26);
-        progressBar.setBounds(22, 133, getWidth() - 44, 18);
+        itemView.setBounds(22, 133, getWidth() - 44, std::max(36, getHeight() - 244));
+        itemRows.setSize(itemView.getWidth() - 8, std::max(itemView.getHeight(), (int)itemRows.names.size() * 36));
         cancel.setBounds(22, getHeight() - 48, 86, 26);
         applyButton.setBounds(getWidth() - 118, getHeight() - 48, 96, 26);
     }
@@ -60,7 +65,7 @@ class NormalizationPanel final : public Component, private Timer {
         g.drawFittedText(String::fromUTF8("Ganho de normalização independente: até +24 dB"), 22,
                          101, getWidth() - 44, 30, Justification::topLeft, 2);
         g.setColour(failed ? Colour(0xffff5b5b) : theme::secondary);
-        g.drawFittedText(status, 22, 158, getWidth() - 44, 30, Justification::topLeft, 3);
+        g.drawFittedText(status, 22, getHeight() - 100, getWidth() - 44, 42, Justification::topLeft, 3);
     }
 
   private:
@@ -70,11 +75,27 @@ class NormalizationPanel final : public Component, private Timer {
     struct Progress { std::atomic<double> fraction{0}; std::atomic<int> current{0}; };
     std::shared_ptr<Progress> progress = std::make_shared<Progress>();
     int total = 0;
-    double displayedProgress = 0;
-    ProgressBar progressBar{displayedProgress};
+    struct ItemRows final : Component {
+        std::vector<String> names; double completed = 0; int current = -1;
+        void paint(Graphics &g) override {
+            g.setFont(theme::font(12));
+            for (size_t i = 0; i < names.size(); ++i) {
+                const auto y = float(i * 36);
+                g.setColour((int)i == current ? Colours::white : theme::secondary);
+                g.drawText(names[i], 0, (int)y, getWidth(), 22, Justification::centredLeft, true);
+                theme::progressBar(g, {0.f, y + 25, float(getWidth()), 6.f}, jlimit(0., 1., completed - i));
+            }
+        }
+    } itemRows;
+    Viewport itemView;
+    int lastCurrent = -1;
     void timerCallback() override {
-        displayedProgress = progress->fraction.load();
-        status = localization::translate(String::fromUTF8("Analisando áudio…")) + " " + String(progress->current.load()) + "/" + String(total);
+        itemRows.completed = total * progress->fraction.load();
+        itemRows.current = std::max(0, progress->current.load() - 1);
+        const auto name = itemRows.current < (int)itemRows.names.size() ? itemRows.names[(size_t)itemRows.current] : String{};
+        status = localization::translate(String::fromUTF8("Analisando áudio…")) + " " + name;
+        if (lastCurrent != itemRows.current) { lastCurrent = itemRows.current; itemView.setViewPosition(0, std::max(0, lastCurrent * 36 - itemView.getHeight() / 2)); }
+        itemRows.repaint();
         repaint();
     }
     ComboBox mode;
@@ -96,7 +117,7 @@ class NormalizationPanel final : public Component, private Timer {
     }
     void setBusy(bool value) {
         busy = value;
-        progressBar.setVisible(value);
+
         ModalSheet::blockDismiss(*this, value);
         if (value) { timerCallback(); startTimerHz(20); } else stopTimer();
         mode.setEnabled(!value);
@@ -137,7 +158,9 @@ class NormalizationPanel final : public Component, private Timer {
             auto stop = cancelled;
             level.setText(String(target, 2));
             failed = false;
-            total = (int)selected.size(); progress->fraction = 0; progress->current = 1;
+            itemRows.names.clear(); for (const auto &clip : selected) itemRows.names.push_back(text(clip.name));
+            total = (int)selected.size(); progress->fraction = 0; progress->current = 1; lastCurrent = -1;
+            resized();
             auto progressState = progress;
             setBusy(true);
             worker.addJob([safe, stop, clips = std::move(selected), project, directory, selectedMode, target,

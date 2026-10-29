@@ -190,6 +190,12 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         centered(24);
         state.playing = true; centered(60);
         state.subPlay.playing = true; centered(90);
+        TimelinePlaybackFollowPolicy follow;
+        follow.pause(state);
+        require(timelineZoomPosition(state, follow.isPaused(state)) == 24, "Manual browsing did not anchor zoom at edit cursor");
+        state.editPosition = 42;
+        require(timelineZoomPosition(state, follow.isPaused(state)) == 42, "Paused follow ignored the new edit cursor");
+        state.editPosition = 24;
         state.playing = false; centered(90);
         state.subPlay.playing = false; centered(24);
         require(timelineCenteredZoomOffset(1, 100, 20000, 800) == 0,

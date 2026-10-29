@@ -227,7 +227,7 @@ import UniformTypeIdentifiers
                 VStack(spacing: 16) {
                     Text(LocalizedStringKey(processing.title)).font(.jarasHeadline)
                     Text(verbatim: processing.fileName).lineLimit(2)
-                    ProgressView(value: processing.fraction)
+                    ProgressView(value: processing.fraction).progressViewStyle(JarasProgressBarStyle())
                     Button("Cancel") { processing.cancel() }
                 }.padding(24).frame(width: 380)
             }
@@ -361,7 +361,7 @@ import UniformTypeIdentifiers
                 Picker("Sample rate", selection: $rate) { Text(verbatim: "44.1 kHz").tag(44100.0); Text(verbatim: "48 kHz").tag(48000.0) }
                 Picker("Channels", selection: $channels) { Text("Original").tag(0); Text("Stereo").tag(2); Text("Mono").tag(1) }
             }.disabled(session.running)
-            if session.running { Text(verbatim: session.fileName).lineLimit(2); ProgressView(value: session.fraction) }
+            if session.running { Text(verbatim: session.fileName).lineLimit(2); ProgressView(value: session.fraction).progressViewStyle(JarasProgressBarStyle()) }
             if !session.error.isEmpty { Text(verbatim: session.error).foregroundStyle(.red).font(.jarasCaption) }
             HStack {
                 Button(session.running ? "Cancel" : "Close") { if session.running { session.cancel() } else { close() } }

@@ -384,6 +384,27 @@ void AudioEngine::refreshItemTiming(const jaras::Song &song, const jaras::AudioC
     }
     if (timecode) timecodeMIDI.updateProgram(timecodeProgram, song.duration, owner->mute);
 }
+void AudioEngine::refreshItemPitch(const jaras::Song &song, const ID &id) {
+    for (const auto &track : song.tracks) for (const auto &clip : track.clips) if (clip.id == id) {
+        for (const auto &voice : voices) if (voice->clipID == id) {
+            std::unique_ptr<ClipAudio> processor;
+            if (voice->clipAudio || ClipAudio::needed(song, track, clip))
+                processor = std::make_unique<ClipAudio>(song, track, clip, rate.load(),
+                    !voice->clipAudio || !voice->clipAudio->hasPreparedPitch());
+            if (voice->clipAudio && processor && voice->clipAudio->sameMapping(*processor)) return;
+            // Prepare FFT memory outside the callback, then retain the running
+            // heads, decoders and FX. Pitch edits do not seek either transport.
+            {
+                const ScopedLock lock(devices.getAudioCallbackLock());
+                if (voice->clipAudio && processor && voice->clipAudio->hasPreparedPitch())
+                    voice->clipAudio->adoptTiming(*processor);
+                else voice->clipAudio.swap(processor);
+            }
+            return;
+        }
+        return;
+    }
+}
 void AudioEngine::refreshRegionPitch(const jaras::Song &song, const ID &region) {
     const auto part = std::find_if(song.parts.begin(), song.parts.end(), [&](const auto &p) { return p.id == region; });
     if (part == song.parts.end()) return;

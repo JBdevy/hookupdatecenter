@@ -541,6 +541,7 @@ enum GridSelectionHeaderText {
         return [.font: font ?? Self.font, .foregroundColor: color, .paragraphStyle: paragraph.copy() as! NSParagraphStyle]
     }
     private static let titleAttributes = attributes()
+    private static let selectedTitleAttributes = attributes(color: NSColor(calibratedRed: 1, green: 220.0 / 255, blue: 82.0 / 255, alpha: 1))
     private static let gainAttributes = attributes(centered: false, font: readoutFont)
     private static let centeredAttributes = attributes(centered: true)
     private static let activeAttributes = attributes(centered: true, color: .systemGreen)
@@ -558,10 +559,11 @@ enum GridSelectionHeaderText {
     static let fx = Title(NSAttributedString(string: "FX", attributes: centeredAttributes))
     static let activeFX = Title(NSAttributedString(string: "FX", attributes: activeAttributes))
     static let edit = Title(NSAttributedString(string: "Edit", attributes: centeredAttributes))
-    static func title(_ name: String) -> Title {
-        if let cached = titles.object(forKey: name as NSString) { return cached }
-        let value = Title(NSAttributedString(string: name, attributes: titleAttributes), prepareTitle: true)
-        titles.setObject(value, forKey: name as NSString, cost: Int((ceil(value.width) + 4) * GridSelectionItem.headerHeight * 32) + name.utf8.count * 8 + 128)
+    static func title(_ name: String, selected: Bool = false) -> Title {
+        let key = (selected ? "selected:" : "normal:") + name
+        if let cached = titles.object(forKey: key as NSString) { return cached }
+        let value = Title(NSAttributedString(string: name, attributes: selected ? selectedTitleAttributes : titleAttributes), prepareTitle: true)
+        titles.setObject(value, forKey: key as NSString, cost: Int((ceil(value.width) + 4) * GridSelectionItem.headerHeight * 32) + name.utf8.count * 8 + 128)
         return value
     }
     static func gain(_ text: String) -> Title {
@@ -746,6 +748,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let id: UUID
         let rect: CGRect
         let name: String
+        let selected: Bool
         let gain: Double
         let pan: Double
         let phase: Bool
@@ -785,7 +788,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private var liveHeaderGain: (id: UUID, value: Double)?
     var itemGuide: CGRect? { didSet { if itemGuide != oldValue && heldItemGuide != nil { needsDisplay = true } } }
     private(set) var heldItemGuide: CGRect? { didSet { if heldItemGuide != oldValue { needsDisplay = true } } }
-    var selected = Set<UUID>()
+    var selected = Set<UUID>() {
+        didSet {
+            if selected != oldValue { preparedHeaderProjection = nil; invalidateHeaderProjectionIfNeeded() }
+        }
+    }
     var selectionChanged: ((Set<UUID>) -> Void)?
     var marqueeBegan: (() -> Void)?
     var itemMoveBegan: (() -> Void)?
@@ -974,7 +981,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             if let liveHeaderPan, liveHeaderPan.id == item.id || (selected.contains(liveHeaderPan.id) && selected.contains(item.id)) { item.pan = liveHeaderPan.value }
             let fadeRects = item.fadeDrawingRects(in: body)
             drawings.append(HeaderDrawing(item: item, gainLabel: gainLabel))
-            return HeaderPixels(id: item.id, rect: item.headerRect, name: item.name!, gain: item.gain, pan: item.pan,
+            return HeaderPixels(id: item.id, rect: item.headerRect, name: item.name!, selected: selected.contains(item.id), gain: item.gain, pan: item.pan,
                 phase: item.phaseInverted, muted: item.muted, hasFX: item.hasFX, bypass: item.fxBypassed,
                 editable: item.editable, midi: item.midiEditable, text: item.textEditable, fadeRects: fadeRects, fadeCurves: [item.fadeInCurve, item.fadeInSCurve, item.fadeOutCurve, item.fadeOutSCurve])
         }
@@ -1704,7 +1711,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 let titleInset = item.headerTitleInset(gainLabel: drawing.gainLabel)
                 let nameRect = CGRect(x: item.headerRect.minX + titleInset + 4, y: item.rect.minY + 1,
                                       width: max(0, item.headerRect.width - titleInset - 8), height: min(GridSelectionItem.headerHeight - 1, item.rect.height - 1))
-                if nameRect.width >= 10 { GridSelectionHeaderText.title(item.name ?? "").draw(in: nameRect) }
+                if nameRect.width >= 10 { GridSelectionHeaderText.title(item.name ?? "", selected: selected.contains(item.id)).draw(in: nameRect) }
                 drawItemFades(item)
         }
     }

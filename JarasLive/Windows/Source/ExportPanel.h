@@ -190,8 +190,9 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
     void selectRegions(std::set<ID> ids) {
         regions = std::move(ids); tracks.clear(); clips.clear();
         regionMode = true;
+        source.setSelectedId(1, dontSendNotification);
         bounds.setSelectedId(3, dontSendNotification);
-        pattern.setText(str(preferences.value("catlive.export.options"), "regionFileName", "%region"), false); rebuild();
+        pattern.setText("%region", false); rebuild();
     }
     void selectItems(std::set<ID> ids) {
         clips = std::move(ids); tracks.clear(); regions.clear(); area.reset();
@@ -199,7 +200,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         source.setSelectedId(4, dontSendNotification);
         bounds.setSelectedId(1, dontSendNotification);
         source.setEnabled(false); bounds.setEnabled(false);
-        pattern.setText(str(preferences.value("catlive.export.options"), "itemFileName", "%stem"), false);
+        pattern.setText("%stem", false);
         rebuild();
     }
     ~ExportPanel() override {
@@ -325,8 +326,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
             g.setColour(peak >= 1 ? Colours::red : theme::green);
             g.fillRect(wave.getX() + index * binWidth, wave.getCentreY() - amplitude, std::max(1.f, binWidth), std::max(1.f, 2 * amplitude));
         }
-        g.setColour(Colour(0xff3b3b3b)); g.fillRoundedRectangle(float(left), 310.f, float(width), 5.f, 2.5f);
-        g.setColour(theme::green); g.fillRoundedRectangle(float(left), 310.f, float(width * progress.fraction), 5.f, 2.5f);
+        theme::progressBar(g, {float(left), 310.f, float(width), 6.f}, progress.fraction);
         g.setColour(theme::secondary); g.setFont(theme::font(12));
         g.drawText(String(progress.completed) + " / " + String(progress.total) + " " + localization::translate("files"), left, 326, width / 2, 24, Justification::centredLeft);
         g.setColour(progress.peak >= 1 ? Colours::red : theme::secondary);

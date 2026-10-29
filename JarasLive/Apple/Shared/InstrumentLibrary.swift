@@ -416,7 +416,7 @@ struct InstrumentBrowser: View {
                                 HStack { Image(systemName: "pianokeys"); Text(instrument.name); Spacer() }.frame(maxWidth: .infinity).frame(height: max(32, touchHeight)).contentShape(Rectangle())
                             }.buttonStyle(.plain).disabled(!library.downloaded.contains(instrument.id))
                             if let progress = library.progress[instrument.id] {
-                                ProgressView(value: progress).frame(width: 90).tint(JarasTheme.green)
+                                ProgressView(value: progress).progressViewStyle(JarasProgressBarStyle()).frame(width: 90).tint(JarasTheme.green)
                                 Text("\(Int(progress*100))%").font(.jarasCaption.monospacedDigit()).frame(width: 32)
                             } else if library.downloaded.contains(instrument.id) {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(JarasTheme.green)

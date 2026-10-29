@@ -379,8 +379,8 @@ struct PluginScanProgress: View {
                 Spacer()
                 Text(verbatim: "\(catalog.completedPlugins) / \(catalog.totalPlugins)").monospacedDigit()
             }.font(.jarasCaption)
-            if let progress = catalog.scanProgress { ProgressView(value: progress).progressViewStyle(.linear) }
-            else { ProgressView().progressViewStyle(.linear) }
+            if let progress = catalog.scanProgress { ProgressView(value: progress).progressViewStyle(JarasProgressBarStyle()) }
+            else { ProgressView().progressViewStyle(JarasProgressBarStyle()) }
         }.frame(maxWidth: .infinity)
     }
 }

@@ -121,25 +121,12 @@ for (label, cached, centered, color) in labels {
             "control labels retain exact AppKit pixels: \(label)")
     } } }
 }
-// Readouts must fit completely in their compact reservations, including their
-// one-point drawing inset, without moving the controls or reducing title text.
-var compactItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 240, height: 50))
-precondition(GridSelectionItem.headerReadoutFontSize == GridSelectionItem.headerFontSize)
-precondition(compactItem.rect.width - compactItem.titleInset >= 40,
-    "a 240-point audio item leaves useful title space after all controls and readouts")
-precondition(compactItem.muteRect!.minX - compactItem.gainLabelRect!.maxX == 1,
-    "mute sits immediately after the complete volume readout")
-for percent in -100...100 {
-    compactItem.pan = Double(percent) / 100
-    precondition(GridSelectionHeaderText.gain(compactItem.panLabel).width <= compactItem.panLabelRect!.width - 2,
-        "every pan percentage fits without truncation")
-}
-for gain in [0.0] + (-600...240).map({ pow(10, Double($0) / 200) }) {
-    compactItem.gain = gain
-    precondition(GridSelectionHeaderText.gain(compactItem.gainLabel).width <= compactItem.gainLabelRect!.width - 2,
-        "every selectable gain, including silence and the range endpoints, fits without truncation")
-}
-print("GRID_HEADER_COMPACT_READOUTS_OK: all pan/gain values fit, title space retained, title/control fonts unchanged")
+// Current desktop headers keep readouts in tooltips, preserving title space.
+let compactItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 240, height: 50))
+precondition(compactItem.gainLabelRect == nil && compactItem.panLabelRect == nil && compactItem.phaseRect == nil)
+precondition(compactItem.muteRect != nil && compactItem.fxRect != nil && compactItem.gainKnobRect != nil && compactItem.panKnobRect != nil)
+precondition(compactItem.rect.width - compactItem.titleInset >= 40)
+print("GRID_HEADER_COMPACT_CONTROLS_AND_TOOLTIP_READOUTS_OK")
 for scale in [1, 2] { for flipped in [false, true] {
     let cached = GridSelectionHeaderText.title("Repeated Coração 🎸")
     let naturalWidth = ceil(cached.width) + 4
@@ -197,25 +184,24 @@ print("GRID_HEADER_GLYPH_CACHE_OK: 360 changing widths, fresh-pixel equivalence 
 
 // Zooming out sheds controls in priority order, never orphaning readouts.
 var priorityItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 600, height: 50))
-var previous = [true, true, true, true, true]
+var previous = [true, true, true, true]
 var transitions: [Int] = []
 for width in stride(from: 600, through: 1, by: -1) {
     priorityItem.rect.size.width = CGFloat(width)
-    let current = [priorityItem.panKnobRect != nil, priorityItem.phaseRect != nil,
-                   priorityItem.fxRect != nil, priorityItem.gainKnobRect != nil, priorityItem.muteRect != nil]
+    let current = [priorityItem.panKnobRect != nil, priorityItem.fxRect != nil, priorityItem.gainKnobRect != nil, priorityItem.muteRect != nil]
     for index in current.indices {
         precondition(!current[index] || previous[index], "hidden controls stay hidden while zooming out")
         if previous[index] && !current[index] { transitions.append(index) }
     }
     precondition(priorityItem.gainLabelRect == nil || priorityItem.gainKnobRect != nil)
-    precondition((priorityItem.panKnobRect == nil) == (priorityItem.panLabelRect == nil))
+    precondition(priorityItem.panLabelRect == nil && priorityItem.phaseRect == nil)
     previous = current
 }
-precondition(transitions == [0, 1, 2, 3, 4], "hide pan, phase, FX, gain, then M")
+precondition(transitions == [0, 1, 2, 3], "hide pan, FX, gain, then M")
 priorityItem.rect.size.width = 30
 precondition(priorityItem.muteRect != nil && priorityItem.rect.width - priorityItem.titleInset - 8 < 10,
              "M survives after the title becomes too narrow")
-print("GRID_HEADER_ZOOM_PRIORITY_OK: pan, phase, FX, volume, name, M")
+print("GRID_HEADER_ZOOM_PRIORITY_OK: pan, FX, volume, name, M")
 
 var namedPriority = GridSelectionItem(id: UUID(), rect: CGRect(x: 0, y: 0, width: 300, height: 50), name: "CLICK-ESCUDO - REGÊNCIA FINAL.wav")
 let fullNameWidth = GridSelectionHeaderText.title(namedPriority.name!).width
@@ -237,3 +223,13 @@ precondition(compactHeader.gainKnobRect != nil && compactHeader.gainLabelRect ==
              "retain the volume knob when the name and knob fit but the dB value does not")
 precondition(compactHeader.headerRect.width - compactHeader.titleInset - 8 >= compactNameWidth)
 print("GRID_HEADER_COMPACT_VOLUME_KNOB_OK")
+
+let normalTitle = GridSelectionHeaderText.title("Selected item")
+let selectedTitle = GridSelectionHeaderText.title("Selected item", selected: true)
+precondition(normalTitle !== selectedTitle && selectedTitle === GridSelectionHeaderText.title("Selected item", selected: true))
+precondition(normalTitle.width == selectedTitle.width, "Selection color must not change item layout")
+let normalRaster = bitmap(scale: 2, flipped: true) { normalTitle.draw(in: CGRect(x: 4, y: 7, width: 300, height: 17)) }
+let selectedRaster = bitmap(scale: 2, flipped: true) { selectedTitle.draw(in: CGRect(x: 4, y: 7, width: 300, height: 17)) }
+precondition(normalRaster.bytes != selectedRaster.bytes && normalRaster.extent == selectedRaster.extent,
+    "Selected item names must change color without changing glyph geometry")
+print("GRID_HEADER_SELECTED_TITLE_COLOR_AND_METRICS_OK")
