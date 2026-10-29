@@ -42,7 +42,7 @@ struct VinhetasPanelProbe {
         auto *pcm=audio.retain(sample);VinhetasPanel panel(audio,preferences);
         for(auto &preset:panel.presets)preset.pads[0].sample=pcm;
         AudioBuffer<float> output(2,512);
-        auto level=[&](float expected) { output.clear();audio.render(output,512,44100);recordingCaptureTests::require(std::abs(output.getSample(0,256)-expected)<.00001f,"MIDI pad playback or release used the wrong preset"); };
+        auto level=[&](float expected) { output.clear();audio.render(output,512,44100);recordingCaptureTests::require(std::abs(output.getSample(0,511)-expected)<.00001f,"MIDI pad playback or release used the wrong preset"); };
         panel.learning=0;panel.learningPreset=false;panel.midi(0xb0,20,127,1);
         panel.midi(0xb0,20,0,1);panel.midi(0xb0,20,127,1);level(.025f);
         panel.select(1);panel.midi(0xb0,20,0,1);panel.midi(0xb0,20,127,1);level(.05f);
@@ -129,13 +129,39 @@ template<class Test> void run(const File &directory, Test &&test) {
         sample->pcm.setSize(2,44100);
         for(int ch=0;ch<2;ch++)FloatVectorOperations::fill(sample->pcm.getWritePointer(ch),.025f,44100);
         const auto *pcm=audio.retain(sample);AudioBuffer<float> output(2,512);
-        auto level=[&](float wanted) {output.clear();audio.render(output,512,48000);recordingCaptureTests::require(std::abs(output.getSample(0,256)-wanted)<.00001f,"Vinhetas voice PCM changed");};
+        auto level=[&](float wanted) {output.clear();audio.render(output,512,48000);recordingCaptureTests::require(std::abs(output.getSample(0,511)-wanted)<.00001f,"Vinhetas voice PCM changed");};
         audio.enqueue({VinhetasAudio::Kind::start,1,0,0,1,pcm});level(.025f);
         audio.enqueue({VinhetasAudio::Kind::start,2,0,0,1,pcm});level(.05f);
         audio.enqueue({VinhetasAudio::Kind::stop,2});level(.025f);
         audio.enqueue({VinhetasAudio::Kind::volume,0,0,0,.5f});level(.0125f);
         audio.enqueue({VinhetasAudio::Kind::stop,1});level(0);
         recordingCaptureTests::require(!audio.active(0,0),"Pad remains highlighted after Gate release");
+    });
+    test("Vinhetas Gate releases over 10 ms across buffer sizes and leaves other voices untouched", [] {
+        using recordingCaptureTests::require;
+        for (const double rate : {44100.,48000.,96000.}) {
+            VinhetasAudio audio;audio.setOutputAvailable(true);
+            auto sample=std::make_shared<VinhetasAudio::Sample>();sample->rate=44100;sample->pcm.setSize(2,44100);
+            for(int ch=0;ch<2;++ch)FloatVectorOperations::fill(sample->pcm.getWritePointer(ch),.025f,44100);
+            const auto *pcm=audio.retain(sample);AudioBuffer<float> output(2,2048);
+            audio.enqueue({VinhetasAudio::Kind::start,1,0,0,1,pcm});
+            audio.enqueue({VinhetasAudio::Kind::start,2,0,1,1,pcm});
+            output.clear();audio.render(output,512,rate);
+            audio.enqueue({VinhetasAudio::Kind::stop,1});
+            const int releaseFrames=int(std::lround(rate*.010));int rendered=0;
+            for(int frames:{37,113,79,251,17,128,512,1024}) {
+                output.clear();audio.render(output,frames,rate);
+                for(int frame=0;frame<frames;++frame)for(int ch=0;ch<2;++ch) {
+                    const float expected=.025f*float(1+std::max(0.,1-double(rendered+frame)/releaseFrames));
+                    require(std::abs(output.getSample(ch,frame)-expected)<.00001f,"Gate release clicked, changed duration or cut another voice");
+                }
+                rendered+=frames;
+                audio.enqueue({VinhetasAudio::Kind::stop,1});
+            }
+            require(!audio.active(0,0)&&audio.active(0,1),"Gate completion left wrong pads active");
+            audio.enqueue({VinhetasAudio::Kind::panic});output.clear();audio.render(output,512,rate);
+            require(output.getMagnitude(0,512)==0&&!audio.active(0,1),"Panic must remain immediate");
+        }
     });
     test("Track output recording picks one stage without duplicating samples or gain", [&] {
         std::vector<TrackCapture::Target> targets;

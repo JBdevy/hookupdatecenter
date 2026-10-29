@@ -2,6 +2,7 @@
 #include "JarasOutputChannelMap.hpp"
 #include "JarasRealtimeClock.hpp"
 #include "../../Core/Include/CatDynamicsDSP.hpp"
+#include "../../Core/Audio/PadGateRelease.hpp"
 #include <TargetConditionals.h>
 #import <Accelerate/Accelerate.h>
 #if defined(__x86_64__)
@@ -390,6 +391,8 @@ struct ItemFadeKernel {
 static constexpr unsigned kSections=160;
 struct EQKernel {
     ItemFadeKernel fade;
+    jaras::PadGateRelease padRelease;
+    std::atomic<bool> padReleaseRequested{false}, padReleaseComplete{false};
     StereoLevelPeaks outputPeaks;
     std::unique_ptr<EffectAnalysis> inputStorage, outputStorage;
     std::atomic<EffectAnalysis*> inputAnalysis{nullptr}, outputAnalysis{nullptr};
@@ -419,6 +422,18 @@ struct EQKernel {
     double mix=0;
     EQKernel() { for(unsigned n=0;n<kSections;n++) for(unsigned j=0;j<5;j++) { pending[n][j].store(j==0?1:0); coefficients[n][j]=j==0?1:0; desired[n][j]=j==0?1:0; } }
     void process(AudioBufferList *buffers, unsigned frames) {
+        if (padReleaseRequested.exchange(false, std::memory_order_acq_rel)) padRelease.begin(sampleRate);
+        if (padRelease.started) {
+            for (unsigned frame=0; frame<frames; ++frame) {
+                const float gain=padRelease.next();
+                for (unsigned ch=0; ch<buffers->mNumberBuffers; ++ch) {
+                    auto &buffer=buffers->mBuffers[ch]; auto *data=static_cast<float *>(buffer.mData);
+                    if (data) for (unsigned channel=0; channel<buffer.mNumberChannels; ++channel)
+                        data[frame*buffer.mNumberChannels+channel]*=gain;
+                }
+            }
+            if (padRelease.finished()) padReleaseComplete.store(true, std::memory_order_release);
+        }
         if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
             for (unsigned ch=0; ch<2; ++ch) for (unsigned n=0; n<kSections; ++n) z1[ch][n]=z2[ch][n]=0;
             inputGainInitialized=false;
@@ -605,6 +620,12 @@ struct EQKernel {
 }
 + (void)setPlaybackBoundary:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime {
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.boundaryHost.store(hostTime,std::memory_order_relaxed);
+}
++ (void)beginPadRelease:(AVAudioUnitEffect *)node {
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.padReleaseRequested.store(true, std::memory_order_release);
+}
++ (BOOL)isPadReleaseComplete:(AVAudioUnitEffect *)node {
+    return ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.padReleaseComplete.load(std::memory_order_acquire);
 }
 + (void)setInputFade:(AVAudioUnitEffect *)node fadeIn:(double)fadeIn fadeOut:(double)fadeOut duration:(double)duration position:(double)position hostTime:(uint64_t)hostTime sampleTime:(double)sampleTime {
     if(!std::isfinite(fadeIn)||!std::isfinite(fadeOut)||!std::isfinite(duration)||!std::isfinite(position)||!std::isfinite(sampleTime)) return;

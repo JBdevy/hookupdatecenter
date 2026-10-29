@@ -16,6 +16,7 @@ import AVFoundation
     @Published var error = ""
     var startVoice: ((VinhetasTriggers.Voice, URL, Double) -> Void)?
     var stopVoice: ((UUID) -> Void)?
+    var releaseVoice: ((UUID) -> Void)?
     var changeVolume: ((Int, Int, Double) -> Void)?
     private var triggers = VinhetasTriggers()
     private var remotePresses: [UUID] = []
@@ -48,6 +49,7 @@ import AVFoundation
             } catch { self.error = error.localizedDescription; self.finished(voice.id) }
         }
         stopVoice = { [weak self] id in self?.voiceEngines[id]?.stopPad(id) }
+        releaseVoice = { [weak self] id in self?.voiceEngines[id]?.releasePad(id) }
         changeVolume = { [weak self] preset, pad, volume in
             guard let self else { return }
             for voice in self.voices.values where voice.preset == preset && voice.pad == pad {
@@ -126,7 +128,7 @@ import AVFoundation
     func gate(preset: Int, pad: Int, enabled: Bool) {
         if enabled && !library.presets[preset].pads[pad].gate {
             let ids = voices.values.filter { $0.preset == preset && $0.pad == pad }.map(\.id)
-            for id in ids { stopVoice?(id); finished(id) }
+            for id in ids { (releaseVoice ?? stopVoice)?(id); finished(id) }
         }
         update { $0.presets[preset].pads[pad].gate = enabled }
     }
@@ -203,7 +205,7 @@ import AVFoundation
         for event in events {
             switch event {
             case .select(let index): select(index)
-            case .stop(let id): stopVoice?(id); finished(id)
+            case .stop(let id): (releaseVoice ?? stopVoice)?(id); finished(id)
             case .start(let voice):
                 guard let path = library.presets[voice.preset].pads[voice.pad].audioFile else { continue }
                 voices[voice.id] = voice

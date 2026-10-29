@@ -30,9 +30,29 @@ import AVFoundation
     try audio.update(state, revision: 1)
     precondition(engine.isRunning, "Updating stopped transport paused a sounding pad")
     precondition(meter.levels.x > 0 && meter.levels.y > 0, "VINHETAS-FX meters ignored a sounding pad with stopped transport")
-    try audio.playPad(second, buffer: input, gain: 1, track: track.id, finished: {})
+    var releasedCompletions = 0
+    try audio.playPad(second, buffer: input, gain: 1, track: track.id, finished: { releasedCompletions += 1 })
     try expect(0.05, "Repeated pad triggers must overlap")
-    audio.stopPad(second); try expect(0.025, "Gate release stops only its voice")
+    audio.releasePad(second)
+    let releaseFrames = Int((rate * 0.010).rounded())
+    var rendered = 0
+    for frames in [37, 113, 79, 251, 17, 128, 512] {
+        let status = try engine.renderOffline(AVAudioFrameCount(frames), to: output)
+        precondition(status == .success)
+        for frame in 0..<frames {
+            let expected = Float(0.025 * (1 + max(0, 1 - Double(rendered + frame) / Double(releaseFrames))))
+            for channel in 0..<2 {
+                let value = output.floatChannelData![channel][frame]
+                precondition(abs(value - expected) < 0.0001, "Gate release must fade for exactly 10 ms: frame=\(rendered + frame) got=\(value) expected=\(expected)")
+            }
+        }
+        rendered += frames
+        audio.releasePad(second) // A repeated release must not restart its envelope.
+    }
+    audio.finishReleasedPads()
+    precondition(releasedCompletions == 1, "Gate cleanup must complete exactly once")
+    try expect(0.025, "Gate release stops only its voice")
+    print("VINHETAS_GATE_10MS_RELEASE_VARIABLE_BLOCKS_OK rate=\(rate)")
     audio.setPadGain(first, gain: 0.5); try expect(0.0125, "Live pad gain")
     audio.stopPad(first); try expect(0, "All pads stopped")
     var capturedState = state

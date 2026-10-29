@@ -546,6 +546,8 @@ struct TimecodePlaybackSpan {
     func detachOutputCapture(_ track: UUID) { recordingTaps.removeValue(forKey: track)?.removeTap(onBus: 0) }
     var outputCaptureFormat: AVAudioFormat { AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)! }
     private var padPlayers: [UUID: AVAudioPlayerNode] = [:]
+    private var padEnvelopes: [UUID: AVAudioUnitEffect] = [:]
+    private var releasingPads: Set<UUID> = []
     private var padTracks: [UUID: UUID] = [:]
     private var padCompletions: [UUID: @MainActor () -> Void] = [:]
     func playPad(_ id: UUID, buffer: AVAudioPCMBuffer, gain: Float, track: UUID?, finished: @escaping @MainActor () -> Void) throws {
@@ -553,9 +555,12 @@ struct TimecodePlaybackSpan {
               playback.snapshot.project.songs.first(where: { $0.id == playback.snapshot.transport.songId })?
                 .tracks.contains(where: { $0.id == track && $0.role.rawValue == "vinhetas" }) == true else { finished(); return }
         try prepareDevice()
-        let player = AVAudioPlayerNode(); engine.attach(player)
+        let player = AVAudioPlayerNode(), envelope = JarasEqualizer.makeNode()
+        engine.attach(player); engine.attach(envelope)
         let destination = trackBus(for: track).mix
-        engine.connect(player, to: destination, fromBus: 0, toBus: destination.nextAvailableInputBus, format: buffer.format)
+        engine.connect(player, to: envelope, format: buffer.format)
+        engine.connect(envelope, to: destination, fromBus: 0, toBus: destination.nextAvailableInputBus, format: buffer.format)
+        padEnvelopes[id] = envelope
         player.volume = gain; padPlayers[id] = player; padTracks[id] = track; padCompletions[id] = finished
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor in self?.stopPad(id) }
@@ -567,7 +572,23 @@ struct TimecodePlaybackSpan {
         guard let player = padPlayers.removeValue(forKey: id) else { return }
         padTracks[id] = nil
         let finished = padCompletions.removeValue(forKey: id)
-        player.stop(); engine.detach(player); startMeterClock(); finished?()
+        releasingPads.remove(id)
+        player.stop(); engine.detach(player)
+        if let envelope = padEnvelopes.removeValue(forKey: id) { engine.detach(envelope) }
+        startMeterClock(); finished?()
+    }
+    func releasePad(_ id: UUID) {
+        guard engine.isRunning, let envelope = padEnvelopes[id] else { stopPad(id); return }
+        guard releasingPads.insert(id).inserted else { return }
+        // The render thread owns the 10 ms fade. The UI clock only reclaims
+        // the silent player afterward, so a busy interface cannot step the gain.
+        JarasEqualizer.beginPadRelease(envelope)
+        startMeterClock()
+    }
+    func finishReleasedPads() {
+        for id in Array(releasingPads) {
+            if let envelope = padEnvelopes[id], JarasEqualizer.isPadReleaseComplete(envelope) { stopPad(id) }
+        }
     }
     func setPadGain(_ id: UUID, gain: Float) { padPlayers[id]?.volume = gain }
 
@@ -4321,6 +4342,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         if deviceSessionActive { startMeterClock() }
     }
     private func pollMeters(now: Double = ProcessInfo.processInfo.systemUptime) {
+        finishReleasedPads()
         #if os(iOS)
         guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
         #endif
