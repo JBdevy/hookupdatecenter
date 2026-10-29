@@ -188,6 +188,9 @@ class StreamingReader final : public AudioFormatReader {
             // Its owner remains alive even after the onset slot is replaced.
             access.current = cache->forward.get();
             published.store(access.current, std::memory_order_seq_cst);
+            // Complete publication before releasing ReadAccess. Reclamation
+            // detects a retired reserve adopted by an already active callback.
+            selectionRevision.fetch_add(1, std::memory_order_seq_cst);
             resident.store(true);
             access.current->readSamples(nullptr, 0, 0, at, count);
             for (int c = 0; c < channels; ++c) if (destination[c]) {
@@ -247,9 +250,10 @@ class StreamingReader final : public AudioFormatReader {
     int64 offlineStart = -1;
     std::vector<std::unique_ptr<BufferingAudioReader>> retired;
     std::atomic<BufferingAudioReader*> published{nullptr};
+    std::atomic<uint64> selectionRevision{0};
     std::atomic<uint32> activeReads{0};
     static_assert(std::atomic<BufferingAudioReader*>::is_always_lock_free &&
-                  std::atomic<uint32>::is_always_lock_free,
+                  std::atomic<uint32>::is_always_lock_free && std::atomic<uint64>::is_always_lock_free,
                   "Streaming reader publication must not take a library lock");
     struct ReadAccess {
         explicit ReadAccess(StreamingReader& value) noexcept : owner(value) {
@@ -313,10 +317,15 @@ class StreamingReader final : public AudioFormatReader {
         if (directOffline.load()) return;
         const ScopedTryLock guard(lock);
         if (!guard.isLocked()) return;
-        // Capture selection before checking guards: an intervening callback may
-        // still hold this reader while selecting a different prepared stream.
+        // Keep this exact order, paired with callback store -> revision -> guard
+        // release. A pre-existing callback may adopt a retired reserve after
+        // this selection snapshot; its revision must then invalidate cleanup.
+        // Readers entering after the zero check can only use this protected
+        // selection or still-published reserves, whose owners stay under lock.
+        const auto revision = selectionRevision.load(std::memory_order_seq_cst);
         const auto *selected = published.load(std::memory_order_seq_cst);
-        if (activeReads.load(std::memory_order_seq_cst) == 0) {
+        if (activeReads.load(std::memory_order_seq_cst) == 0 &&
+            selectionRevision.load(std::memory_order_seq_cst) == revision) {
             retired.erase(std::remove_if(retired.begin(), retired.end(), [=](const auto& old) {
                 return old.get() != selected;
             }), retired.end());
