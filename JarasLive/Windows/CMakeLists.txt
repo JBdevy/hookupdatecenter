@@ -183,7 +183,9 @@ add_executable(AudioFileTests "${CATLIVEROOT}/WindowsNative/Tests/AudioFileTests
 target_compile_options(AudioFileTests PRIVATE /utf-8)
 add_test(NAME AudioFileTests COMMAND AudioFileTests "${CATLIVEROOT}/Apple/Resources/Click.mp3")
 add_test(NAME WindowsIntegration COMMAND CatLive --self-test "${CMAKE_BINARY_DIR}/test-results")
-set_tests_properties(WindowsIntegration PROPERTIES TIMEOUT 90)
+# The integration suite covers more than 440 cases, including real-time tails
+# and disk streaming. Keep a finite budget with headroom on shared CI runners.
+set_tests_properties(WindowsIntegration PROPERTIES TIMEOUT 300)
 find_program(CATLIVE_NODE node)
 if(CATLIVE_NODE)
     add_test(NAME IndependentDocumentCodec COMMAND "${CATLIVE_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify-project-compatibility.cjs" "${CMAKE_BINARY_DIR}/test-results" "$<TARGET_FILE:CatLive>")
