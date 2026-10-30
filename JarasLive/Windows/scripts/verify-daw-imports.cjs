@@ -210,6 +210,9 @@ NAME Recover
 POSITION 0
 LENGTH 2
 NAME Before
+<SOURCE WAVE
+FILE Before.wav
+>
 >
 <ITEM
 POSITION nan
@@ -219,6 +222,9 @@ LENGTH 3
 POSITION 5
 LENGTH 2
 NAME After
+<SOURCE WAVE
+FILE After.wav
+>
 >
 >
 MARKER bad

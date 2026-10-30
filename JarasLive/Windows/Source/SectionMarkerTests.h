@@ -95,9 +95,9 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         localization::english = english;
         auto recovered=read(directory,
             "<TRACK {RECOVER}\nNAME Recover\n"
-            "<ITEM\nPOSITION 0\nLENGTH 2\nNAME Before\n>\n"
+            "<ITEM\nPOSITION 0\nLENGTH 2\nNAME Before\n<SOURCE WAVE\nFILE Before.wav\n>\n>\n"
             "<ITEM\nPOSITION nan\nLENGTH 3\n>\n"
-            "<ITEM\nPOSITION 5\nLENGTH 2\nNAME After\n>\n>\n"
+            "<ITEM\nPOSITION 5\nLENGTH 2\nNAME After\n<SOURCE WAVE\nFILE After.wav\n>\n>\n>\n"
             "MARKER invalid\nMARKER 1 1 Good 0\n");
         const auto &song=recovered.project.songs.front();
         require(song.tracks.size()==1 && song.tracks.front().clips.size()==2,"Bad item discarded valid neighbors");

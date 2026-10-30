@@ -182,7 +182,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
              StringArray{"", ":", "0:", "::", "0:invalid", "0:1:2", "-1", "invalid", "0:4294967296"}) {
             const auto result =
                 read(directory,
-                     "<TRACK\n<FXCHAIN\n" + effect(identity) + ">\n<ITEM\nPOSITION 0\nLENGTH 2\n>\n>\n",
+                     "<TRACK\n<FXCHAIN\n" + effect(identity) + ">\n<ITEM\nPOSITION 0\nLENGTH 2\n<SOURCE WAVE\nFILE neighbor.wav\n>\n>\n>\n",
                      restored);
             const auto &track = result.project.songs.front().tracks.front();
             require(track.clips.size() == 1 && !track.fxJSON && !result.warnings.isEmpty(),
