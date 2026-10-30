@@ -206,7 +206,7 @@ class Presentation final {
                     put(v, "name", text(block.name));
                     put(v, "nameColor", (int)(stage.preferences.colour("jaras.setlist.blockTextColor", 0x69ed91).getARGB() & 0xffffff));
                     put(v, "color", (int)block.color);
-                    put(v, "symbol", block.symbol.value_or(true));
+                    put(v, "symbol", (bool)stage.preferences.value("jaras.blocks.symbol", true));
                     if (block.beforeRegionId)
                         put(v, "beforeRegion", wireID(*block.beforeRegionId));
                     blocks.add(v);

@@ -976,18 +976,18 @@ struct TrackMixerRow: View, Equatable {
                     if track.kind == .standard {
                         Button("Patch") { patchTarget = editorTarget(project: project) }
                             .buttonStyle(CompactTrackButtonStyle(width: 34)).jarasHelp("Patch")
-                            .frame(width: 34).jarasPlaced(at: 0)
+                            .frame(width: 34).trackControlSelectionExclusion().jarasPlaced(at: 0)
                         TrackEnvelopeButton(show: show, track: track.id, visible: !(track.automation?.visibleEnvelopes.isEmpty ?? true))
-                            .frame(width: 28).jarasPlaced(at: 1)
+                            .frame(width: 28).trackControlSelectionExclusion().jarasPlaced(at: 1)
                         TrackFXButton(show: show, track: track.id, settings: track.fx ?? NativeFXSettings()).jarasHelp("Insert effect")
-                            .frame(width: 22).jarasPlaced(at: 2)
-                        TrackRecordButton(show: show, track: track).jarasPlaced(at: 3)
+                            .frame(width: 22).trackControlSelectionExclusion().jarasPlaced(at: 2)
+                        TrackRecordButton(show: show, track: track).trackControlSelectionExclusion().jarasPlaced(at: 3)
                         TrackPanFader(show: show, track: track.id, pan: track.pan)
-                            .frame(width: 42, height: 24).clipped().jarasPlaced(at: 4)
+                            .frame(width: 42, height: 24).clipped().trackControlSelectionExclusion().jarasPlaced(at: 4)
                     } else if track.kind == .click {
                         Button("Insert") { show.insertClickItems(track: track.id) }
                             .buttonStyle(CompactTrackButtonStyle(width: 47))
-                            .fixedSize(horizontal: true, vertical: false).jarasHelp("Insert click items in regions without a click")
+                            .fixedSize(horizontal: true, vertical: false).trackControlSelectionExclusion().jarasHelp("Insert click items in regions without a click")
                     } else {
                         HStack(spacing: 3) {
                             if track.kind == .timecode {
@@ -1004,19 +1004,19 @@ struct TrackMixerRow: View, Equatable {
                                 Button("Add text") { if let item = show.addTextItem(track: track.id) { editTextItem(item) } }
                             }
                         }.buttonStyle(TrackControlButtonStyle())
-                            .fixedSize()
+                            .fixedSize().trackControlSelectionExclusion()
                     }
                     if trackShowsMuteSolo(track.kind) {
                         Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }
                             .modifier(MappingRightClick(track: track.id, command: "mute"))
                             .buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
-                            .frame(width: 22).jarasPlaced(at: 5)
+                            .frame(width: 22).trackControlSelectionExclusion().jarasPlaced(at: 5)
                         Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }
                             .modifier(MappingRightClick(track: track.id, command: "solo"))
                             .buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
-                            .frame(width: 22).jarasPlaced(at: 6)
+                            .frame(width: 22).trackControlSelectionExclusion().jarasPlaced(at: 6)
                     }
-                }.buttonStyle(CompactTrackButtonStyle()).trackControlSelectionExclusion().clipped()
+                }.buttonStyle(CompactTrackButtonStyle()).clipped()
                     .modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
                 Group {
                     if showsFader && lowerTitle {
@@ -1140,12 +1140,25 @@ struct MasterStrip: View {
                         }.frame(minWidth: 40, minHeight: 14)
                     }
                         .fixedSize(horizontal: true, vertical: false)
+                        #if os(macOS)
+                        .buttonStyle(CompactTrackButtonStyle(width: 49))
+                        #endif
                         .foregroundStyle(show.snapshot.project.masterMono == true ? JarasTheme.green : JarasTheme.text)
                         .jarasHelp(show.snapshot.project.masterMono == true ? "Mono — switch to Stereo" : "Stereo — switch to Mono").accessibilityLabel("Master Stereo/Mono")
                         .accessibilityValue(show.snapshot.project.masterMono == true ? "Mono" : "Stereo")
+                    #if os(macOS)
+                    Button("Patch") { patchPresented = true }
+                        .buttonStyle(CompactTrackButtonStyle(width: 40))
+                        .fixedSize(horizontal: true, vertical: false)
+                        .accessibilityLabel("Master Patch")
+                    #endif
                     Spacer(minLength: 2)
                     TrackPanFader(show: show, track: nil, pan: show.snapshot.project.masterPan ?? 0, compact: true).frame(width: 42, height: 24)
                     TrackFXButton(show: show, track: nil, settings: show.snapshot.project.masterFX ?? NativeFXSettings()).jarasHelp("Insert effect")
+                        #if os(macOS)
+                        .buttonStyle(CompactTrackButtonStyle(width: 26))
+                        .fixedSize(horizontal: true, vertical: false)
+                        #endif
                     Button("M") { show.send(.mute) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterMute == true ? .red : nil)).jarasHelp("Mute")
                     Button("S") { show.send(.solo) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterSolo == true ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                 }.font(.jarasSystem(size: 10, weight: .semibold)).buttonStyle(.bordered).controlSize(.small).frame(height: 24)
@@ -1985,19 +1998,17 @@ private struct TrackInsertionDrop: DropDelegate {
         state.leave(track)
     }
     func performDrop(info: DropInfo) -> Bool {
-        guard state.active && allowed(info) else { state.finish(); return false }
+        guard state.active, allowed(info), let id = state.draggedTrack,
+              info.hasItemsConforming(to: [TrackReorderState.type]) else { state.finish(); return false }
         let before = after(info) ? nextTrack : track
         let outside = outsideGroup(info)
-        let project = show.snapshot.project.id, song = show.current?.id, session = show.projectSessionID
-        state.finish()
-        guard let provider = info.itemProviders(for: [TrackReorderState.type]).first else { return false }
-        _ = provider.loadObject(ofClass: String.self) { value, _ in
-            guard let value, value.hasPrefix("jaras-track:"), let id = UUID(uuidString: String(value.dropFirst(12))) else { return }
-            Task { @MainActor in
-                guard show.snapshot.project.id == project, show.current?.id == song, show.projectSessionID == session else { return }
-                show.dropTrack(id, on: track, before: before, outsideGroup: outside)
-            }
-        }
+        // This is an internal drag: its validated track is already available.
+        // Loading a String asynchronously from AppKit's pasteboard can fail
+        // silently after the drag source has been released, leaving an accepted
+        // insertion indicator with no model edit.
+        // Commit in this event, before clearing the local drag session.
+        defer { state.finish() }
+        show.dropTrack(id, on: track, before: before, outsideGroup: outside)
         return true
     }
 }
@@ -4235,15 +4246,28 @@ struct ProgramChangeMarkerLane: View {
     let pixelsPerSecond: Double
     let height: CGFloat
     var start: Double = 0
+    private func headWidth(_ marker: ProgramChangeMarker) -> CGFloat {
+        #if os(macOS)
+        let font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        #else
+        let font = UIFont.systemFont(ofSize: 10, weight: .semibold)
+        #endif
+        let natural = ceil((marker.title as NSString).size(withAttributes: [.font: font]).width) + 10
+        return CGFloat(show.current?.programChangeHeadWidth(at: marker.position,
+            naturalWidth: Double(natural), scale: pixelsPerSecond) ?? Double(natural))
+    }
     var body: some View {
         let layout = ProgramChangeLayout(track.programChanges ?? [])
         ZStack(alignment: .topLeading) {
             ForEach(track.programChanges ?? []) { marker in
+                let width = headWidth(marker)
                 VStack(alignment: .leading, spacing: 0) {
+                    if width > 0 {
                     Text(verbatim: marker.title)
                         .font(.jarasSystem(size: 10, weight: .semibold)).foregroundStyle(.black)
-                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
-                        .padding(.horizontal, 5).frame(height: 20, alignment: .leading)
+                        .lineLimit(1)
+                        .padding(.horizontal, 5).frame(width: width, height: 20, alignment: .leading)
+                        .clipped()
                         .background(show.selectedProgramChangeID == marker.id ? JarasTheme.green : Color(hex: 0x91a8ff), in: RoundedRectangle(cornerRadius: 3))
                         .contentShape(Rectangle())
                         #if os(macOS)
@@ -4260,6 +4284,9 @@ struct ProgramChangeMarkerLane: View {
                             Button("Delete", role: .destructive) { show.removeProgramChange(track: track.id, marker: marker.id) }
                         }
                         #endif
+                    } else {
+                        Color.clear.frame(width: 1, height: 20).allowsHitTesting(false)
+                    }
                     Color(hex: 0x91a8ff).frame(width: 1, height: max(0, height - 20 - CGFloat(layout.lanes[marker.id] ?? 0) * 24)).allowsHitTesting(false)
                 }.offset(x: (marker.position - start) * pixelsPerSecond, y: CGFloat(layout.lanes[marker.id] ?? 0) * 24)
             }

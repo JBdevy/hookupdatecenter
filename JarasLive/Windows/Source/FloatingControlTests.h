@@ -120,6 +120,11 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         for(int i=0;i<desktop.getNumComponents();++i)if(auto *candidate=dynamic_cast<DocumentWindow *>(desktop.getComponent(i)))
             if(candidate->getContentComponent() && candidate->getContentComponent()->getComponentID()=="effectsPanel")window=candidate;
         require(window && window->getPeer(),"FX window has no native peer");
+        auto *limits = window->getConstrainer();
+        require(limits && limits->getMinimumWidth() >= 840 && limits->getMinimumHeight() >= 632,
+                "FX manager allows shrinking below the complete instrument controls");
+        require(window->getContentComponent()->getHeight() >= 600, "FX manager initially clips its controls");
+
         auto *button=uiFeatureTests::find(*window,"saveFXPreset");require(button,"FX button missing");
         button->setEnabled(true);button->grabKeyboardFocus();pump();
         auto *peer=window->getPeer();

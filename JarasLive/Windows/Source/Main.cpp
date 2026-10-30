@@ -9,6 +9,11 @@
 #include "NativeWindowBounds.h"
 #if CATLIVE_NATIVE_FRONTEND
 #include "NativeFrontendHost.h"
+#endif
+#if CATLIVE_IMGUI_FRONTEND
+#include "ImGuiFrontendHost.h"
+#endif
+#if CATLIVE_NATIVE_FRONTEND || CATLIVE_IMGUI_FRONTEND
 #include "FrontendBridge.h"
 #endif
 #include <BinaryData.h>
@@ -247,7 +252,7 @@ class CatLiveApplication final : public JUCEApplication {
                 if (std::isfinite(requested) && requested > 0) scale = std::round(jlimit(.6f, 1.2f, requested) * 10) / 10;
             }
             Desktop::getInstance().setGlobalScaleFactor(scale);
-            if (!visualTest)
+            if (!visualTest && !args.contains("--imgui-ui"))
                 splash = std::make_unique<StartupSplash>();
             session = std::make_unique<Session>();
             auth = std::make_unique<Auth>();
@@ -285,6 +290,12 @@ class CatLiveApplication final : public JUCEApplication {
                 auth->restore();
             }
             if (!visualTest && !previewHome) { showMode = ShowMode::shared(); showMode->start(); }
+#if CATLIVE_IMGUI_FRONTEND
+            if (args.contains("--imgui-ui")) {
+                startImGuiFrontend(args);
+                return;
+            }
+#endif
 #if CATLIVE_NATIVE_FRONTEND
             if (args.contains("--native-ui")) {
                 startNativeFrontend(args);
@@ -367,8 +378,13 @@ class CatLiveApplication final : public JUCEApplication {
     void shutdown() override {
         if (showMode) { showMode->stop(); showMode.reset(); }
         splash.reset();
-#if CATLIVE_NATIVE_FRONTEND
+#if CATLIVE_NATIVE_FRONTEND || CATLIVE_IMGUI_FRONTEND
         nativeBridge.reset();
+#endif
+#if CATLIVE_IMGUI_FRONTEND
+        imguiFrontend.reset();
+#endif
+#if CATLIVE_NATIVE_FRONTEND
         nativeFrontend.reset();
 #endif
         window.reset();
@@ -381,7 +397,7 @@ class CatLiveApplication final : public JUCEApplication {
         setApplicationReturnValue(testResult);
     }
     void systemRequestedQuit() override {
-#if CATLIVE_NATIVE_FRONTEND
+#if CATLIVE_NATIVE_FRONTEND || CATLIVE_IMGUI_FRONTEND
         if (nativeBridge && !closing) { nativeBridge->requestClose(); return; }
 #endif
         if(jaras::projectSync::readOnly()) {
@@ -400,6 +416,18 @@ class CatLiveApplication final : public JUCEApplication {
         quit();
     }
     void anotherInstanceStarted(const String &arguments) override {
+#if CATLIVE_IMGUI_FRONTEND
+        if (!closing && imguiFrontend) {
+            imguiFrontend->show();
+            auto args = StringArray::fromTokens(arguments, true);
+            for (auto arg : args)
+                if (File::isAbsolutePath(arg.unquoted()) && File(arg.unquoted()).hasFileExtension("jl;bkjl;ziplive;zip")) {
+                    if (nativeBridge) nativeBridge->openProject(File(arg.unquoted()));
+                    break;
+                }
+            return;
+        }
+#endif
 #if CATLIVE_NATIVE_FRONTEND
         if (!closing && nativeFrontend) {
             nativeFrontend->show();
@@ -424,6 +452,65 @@ class CatLiveApplication final : public JUCEApplication {
     }
 
   private:
+#if CATLIVE_NATIVE_FRONTEND || CATLIVE_IMGUI_FRONTEND
+    std::unique_ptr<FrontendBridge> nativeBridge;
+#endif
+#if CATLIVE_IMGUI_FRONTEND
+    std::unique_ptr<ImGuiFrontendHost> imguiFrontend;
+    void startImGuiFrontend(const StringArray &args) {
+        tabSessions.push_back(session.get());
+        nativeBridge = std::make_unique<FrontendBridge>(*session, *auth, [this](const String &json) {
+            if (imguiFrontend) imguiFrontend->postJSON(utf8(json));
+        }, true);
+        nativeBridge->onCloseApproved = [this] {
+            if (closing) return;
+            closing = true;
+            session->command(jaras::CommandKind::stopAll);
+            session->audio.instrumentAllowed = false;
+            if (imguiFrontend) imguiFrontend->close();
+            quit();
+        };
+        ImGuiFrontendHost::Options options;
+        options.title = (String("CatLive Version ") + getApplicationVersion()).toWideCharPointer();
+        options.fontPath = File::getSpecialLocation(File::currentExecutableFile).getParentDirectory()
+            .getChildFile("fonts/Inter-Regular.ttf").getFullPathName().toWideCharPointer();
+        const auto diagnostics=args.indexOf("--ui-diagnostics");
+        if(diagnostics>=0&&diagnostics+1<args.size()&&File::isAbsolutePath(args[diagnostics+1]))
+            options.diagnosticsPath=args[diagnostics+1].toWideCharPointer();
+        ImGuiFrontendHost::Callbacks actions;
+        actions.message = [this](std::string json) {
+            if (nativeBridge && !closing) nativeBridge->receive(String::fromUTF8(json.data(), static_cast<int>(json.size())));
+        };
+        const auto initialOpen=std::make_shared<bool>(true);
+        actions.ready = [this, args, initialOpen] {
+            if (closing) return;
+            splash.reset();
+            if (imguiFrontend) imguiFrontend->show();
+            if (nativeBridge) nativeBridge->publishSnapshot();
+            if(!std::exchange(*initialOpen,false))return;
+            for (const auto &argument : args)
+                if (File::isAbsolutePath(argument) && File(argument).hasFileExtension("jl;bkjl;ziplive;zip")) {
+                    if (nativeBridge) nativeBridge->openProject(File(argument));
+                    break;
+                }
+        };
+        actions.closeRequested = [this] { systemRequestedQuit(); };
+        actions.error = [this](std::string error) {
+            MessageManager::callAsync([this, error = std::move(error)] {
+                if (closing) return;
+                splash.reset();
+                const auto message = String::fromUTF8(error.c_str());
+                if(nativeBridge)nativeBridge->recoverPresentation(message,[this] {
+                    if(!imguiFrontend)return;
+                    try {imguiFrontend->restart();nativeBridge->setOwnerWindow(imguiFrontend->handle());}
+                    catch(const std::exception &error){MessageBoxW(nullptr,String::fromUTF8(error.what()).toWideCharPointer(),L"CatLive",MB_OK|MB_ICONERROR);}
+                });
+            });
+        };
+        imguiFrontend = std::make_unique<ImGuiFrontendHost>(std::move(options), std::move(actions));
+        nativeBridge->setOwnerWindow(imguiFrontend->handle());
+    }
+#endif
 #if CATLIVE_NATIVE_FRONTEND
     void startNativeFrontend(const StringArray& args) {
         // Retain the shipping Session, authorization and audio device. Only the
@@ -480,7 +567,6 @@ class CatLiveApplication final : public JUCEApplication {
         nativeBridge->setOwnerWindow(nativeFrontend->handle());
     }
     std::unique_ptr<NativeFrontendHost> nativeFrontend;
-    std::unique_ptr<FrontendBridge> nativeBridge;
 #endif
     void beginClosing() {
         if (closing) return;

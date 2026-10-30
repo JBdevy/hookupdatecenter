@@ -5711,7 +5711,7 @@ final class MixerDividerView: NSView {
     private var startingWidth: CGFloat = 0
     private var startingX: CGFloat = 0
     private var startingY: CGFloat = 0
-    private var startingScroll: CGFloat = 0
+    private var startingScrollFraction: CGFloat = 0
     private var scrollPerPoint: CGFloat = 0
     private var mouseIsDown = false
     private enum DragAxis { case pending, resize, scroll }
@@ -5821,7 +5821,7 @@ final class MixerDividerView: NSView {
         startingY = event.locationInWindow.y
         scrollController?.refresh()
         let metrics = scrollController?.metrics ?? SidebarScrollMetrics()
-        startingScroll = metrics.offset
+        startingScrollFraction = metrics.maximumOffset > 0 ? metrics.offset / metrics.maximumOffset : 0
         let travel = max(0, bounds.height - 4 - scrollThumbRect.height)
         scrollPerPoint = metrics.canScroll && travel > 0 ? metrics.maximumOffset / travel : 0
     }
@@ -5830,6 +5830,13 @@ final class MixerDividerView: NSView {
         guard mouseIsDown else { return }
         let dx = (event.locationInWindow.x - startingX) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).width))
         let dy = (startingY - event.locationInWindow.y) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).height))
+        // Lazy Setlist rows can change the estimated document extent during
+        // a drag. Recompute the mapping instead of retaining the range from
+        // mouseDown, which could strand the thumb before the final songs.
+        scrollController?.refresh()
+        let metrics = scrollController?.metrics ?? SidebarScrollMetrics()
+        let travel = max(0, bounds.height - 4 - scrollThumbRect.height)
+        scrollPerPoint = metrics.canScroll && travel > 0 ? metrics.maximumOffset / travel : 0
         if dragAxis == .pending {
             guard max(abs(dx), abs(dy)) >= 3 else { return }
             if abs(dy) > abs(dx), scrollPerPoint > 0 { dragAxis = .scroll }
@@ -5839,7 +5846,7 @@ final class MixerDividerView: NSView {
         if dragAxis == .scroll {
             Self.resizeCursor.set()
             // Apply the pointer destination in this event; AppKit already coalesces drag events.
-            scrollController?.scroll(to: startingScroll + dy * scrollPerPoint)
+            scrollController?.scroll(to: startingScrollFraction * metrics.maximumOffset + dy * scrollPerPoint)
             return
         }
         Self.resizeCursor.set()

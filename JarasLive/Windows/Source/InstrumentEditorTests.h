@@ -10,6 +10,37 @@ inline Component *find(Component &parent, const String &id) {
 }
 template<class Test, class Require>
 void run(Test test, Require require, const File &directory) {
+    test("Instrument category artwork is bundled for all fifteen families", [&] {
+        StringArray categories;
+        for (auto entry : instrumentAssets::catalog()) categories.addIfNotAlreadyThere(str(entry, "category"));
+        require(categories.size() == 15, "Unexpected instrument family count");
+        const auto folder = File::getSpecialLocation(File::currentExecutableFile).getSiblingFile("InstrumentInterfaces");
+        for (const auto &category : categories) {
+            const auto image = ImageFileFormat::loadFrom(folder.getChildFile(category + ".png"));
+            require(image.isValid() && image.getWidth() >= 1000, "Missing or invalid instrument artwork: " + category);
+        }
+    });
+    test("Instrument editor fits every tab in the default FX manager and scrolls short windows", [&] {
+        auto settings = object();
+        InstrumentParameterEditor editor("astoria-grand", [&] { return settings; }, [] {}, [] {});
+        editor.setSize(690, 416);
+        auto *viewport = dynamic_cast<Viewport *>(find(editor, "instrumentParametersViewport"));
+        require(viewport != nullptr, "Instrument parameter viewport missing");
+        for (int page = 0; page < 4; ++page) {
+            editor.selectPage(page);
+            require(!viewport->getVerticalScrollBar().isVisible(), "Default FX window hides instrument controls below its bottom");
+            for (auto *child : viewport->getViewedComponent()->getChildren()) {
+                if (child->isVisible()) require(viewport->getViewArea().contains(child->getBounds()), "Instrument control is clipped in the default FX window");
+            }
+            auto stream = directory.getChildFile("instrument-default-" + String(page) + ".png").createOutputStream();
+            require(stream && PNGImageFormat().writeImageToStream(editor.createComponentSnapshot(editor.getLocalBounds()), *stream), "Cannot capture default instrument layout");
+        }
+        editor.setSize(690, 290); editor.selectPage(0);
+        require(viewport->getVerticalScrollBar().isVisible(), "Short FX window must keep controls reachable by scrolling");
+        viewport->setViewPosition(0, viewport->getViewedComponent()->getHeight());
+        auto *gain = find(editor, "instrumentKnob__gain");
+        require(gain && viewport->getViewArea().contains(gain->getBounds()), "Last instrument control cannot be reached in a short window");
+    });
     test("Instrument editor four tabs preview and persist the Mac parameter document", [&] {
         auto settings = object(); int previews = 0, commits = 0;
         InstrumentParameterEditor editor("astoria-grand", [&] { return settings; }, [&] { ++previews; }, [&] {

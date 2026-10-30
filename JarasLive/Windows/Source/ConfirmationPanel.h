@@ -10,7 +10,7 @@ class ConfirmationPanel final : public Component {
             auto fill=destructive?Colour(0xff693c3b):primary?theme::green:Colour(0xff444444);
             if(over)fill=fill.brighter(.08f);if(down)fill=fill.darker(.15f);
             g.setColour(fill);g.fillRoundedRectangle(getLocalBounds().toFloat(),getHeight()/2.f);
-            g.setColour(destructive?Colour(0xffff3b30):Colour(0xffdddddd));
+            g.setColour(destructive?Colour(0xffff3b30):primary?Colours::black:Colour(0xffdddddd));
             g.setFont(theme::mediumFont(confirmationStyle::buttonSize));
             g.drawFittedText(getButtonText(),getLocalBounds().reduced(8,0),Justification::centred,1);
         }

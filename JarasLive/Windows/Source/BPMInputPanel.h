@@ -14,7 +14,7 @@ class BPMInputPanel final : public Component {
             auto colour=primary?Colour(0xff60b746):Colour(0xff505050);
             if(hover)colour=colour.brighter(.08f);if(down)colour=colour.darker(.12f);
             g.setColour(colour);g.fillRoundedRectangle(getLocalBounds().toFloat(),8);
-            g.setColour(Colours::white);g.setFont(theme::font(18));
+            g.setColour(primary ? Colours::black : Colours::white);g.setFont(theme::font(18));
             g.drawText(getButtonText(),getLocalBounds(),Justification::centred);
         }
     } cancel,apply;

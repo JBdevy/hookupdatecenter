@@ -136,6 +136,15 @@ private final class TextItemNotepadView: NSTextView {
         textStorage?.addAttributes([.foregroundColor: NSColor(Color(hex: color)), Self.colorKey: NSNumber(value: color)], range: range)
         didChangeText()
     }
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        // Coloring a selection is not a persistent typing mode. AppKit inherits
+        // adjacent run attributes when the caret moves, so reset at insertion.
+        var attributes = typingAttributes
+        attributes.removeValue(forKey: Self.colorKey)
+        attributes[.foregroundColor] = NSColor(JarasTheme.text)
+        typingAttributes = attributes
+        super.insertText(insertString, replacementRange: replacementRange)
+    }
     override func menu(for event: NSEvent) -> NSMenu? {
         let selected = selectedRange()
         guard selected.length > 0, let parent = window, paletteWindow == nil else { return super.menu(for: event) }

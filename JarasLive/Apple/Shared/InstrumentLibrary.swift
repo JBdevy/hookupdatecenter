@@ -310,13 +310,17 @@ struct LibraryInstrument: Identifiable {
     static func displayName(_ id: String?) -> String { catalog.first { $0.id == id }?.name ?? "Instrument" }
     let directory: URL
     @Published private(set) var downloaded: Set<String> = []
+    @Published private(set) var installed: Set<String> = []
     @Published private(set) var progress: [String:Double] = [:]
     @Published private(set) var sources: [String:URL] = [:]
     @Published var error = ""
     private var jobs: [String:Task<Void,Never>] = [:]
     private var projectDirectory: URL?
-    private init() {
-        directory = FileManager.default.urls(for: .applicationSupportDirectory,in: .userDomainMask)[0].appendingPathComponent("JarasLive/Instruments",isDirectory: true)
+    private convenience init() {
+        self.init(directory: FileManager.default.urls(for: .applicationSupportDirectory,in: .userDomainMask)[0].appendingPathComponent("JarasLive/Instruments",isDirectory: true))
+    }
+    init(directory: URL) {
+        self.directory = directory
         try? FileManager.default.createDirectory(at: directory,withIntermediateDirectories: true)
         refresh()
     }
@@ -339,8 +343,23 @@ struct LibraryInstrument: Identifiable {
         refresh()
     }
     func refresh() {
+        installed = Set(Self.catalog.filter { FileManager.default.fileExists(atPath: file($0.id).path) }.map(\.id))
         downloaded = Set(Self.catalog.filter { resolvedFile($0.id, projectDirectory: projectDirectory) != nil }.map(\.id))
         sources = Dictionary(uniqueKeysWithValues: Self.catalog.map { ($0.id, $0.url) })
+    }
+
+    func uninstall(_ id: String) {
+        guard jobs[id] == nil, Self.catalog.contains(where: { $0.id == id }) else { return }
+        error = ""
+        do {
+            // Uninstall only the catalog download. Portable projects own their
+            // separate SF2 copies, and an already loaded synth stays intact.
+            let destination = file(id)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            refresh()
+        } catch { self.error = error.localizedDescription }
     }
 
     func download(_ id: String) {
@@ -358,7 +377,7 @@ struct LibraryInstrument: Identifiable {
                 let destination = file(id)
                 if FileManager.default.fileExists(atPath: destination.path) { _ = try FileManager.default.replaceItemAt(destination,withItemAt: temporary) }
                 else { try FileManager.default.moveItem(at: temporary,to: destination) }
-                downloaded.insert(id)
+                refresh()
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -418,8 +437,13 @@ struct InstrumentBrowser: View {
                             if let progress = library.progress[instrument.id] {
                                 ProgressView(value: progress).progressViewStyle(JarasProgressBarStyle()).frame(width: 90).tint(JarasTheme.green)
                                 Text("\(Int(progress*100))%").font(.jarasCaption.monospacedDigit()).frame(width: 32)
-                            } else if library.downloaded.contains(instrument.id) {
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(JarasTheme.green)
+                            } else if library.installed.contains(instrument.id) {
+                                Button {
+                                    library.uninstall(instrument.id)
+                                    if selected == instrument.id && !library.downloaded.contains(instrument.id) { selected = nil }
+                                } label: {
+                                    Text("Delete instrument").frame(minHeight: touchHeight)
+                                }
                             } else {
                                 Button { library.download(instrument.id) } label: {
                                     Text("Download").frame(minHeight: touchHeight)

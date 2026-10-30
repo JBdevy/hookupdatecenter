@@ -14,7 +14,7 @@ class CloseProjectSheet final : public Component {
             g.setColour(down ? colour.darker(.15f) : over ? colour.brighter(.1f) : colour);
             g.fillRoundedRectangle(getLocalBounds().toFloat(), getHeight() / 2.f);
             if (hasKeyboardFocus(false)) { g.setColour(Colours::white.withAlpha(.5f)); g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1), getHeight() / 2.f, 1); }
-            g.setColour(Colours::white); g.setFont(theme::mediumFont(confirmationStyle::buttonSize));
+            g.setColour(primary ? Colours::black : Colours::white); g.setFont(theme::mediumFont(confirmationStyle::buttonSize));
             g.drawText(getButtonText(), getLocalBounds(), Justification::centred);
         }
       private: bool primary;

@@ -11,7 +11,7 @@ class InstrumentParameterEditor final : public Component {
         void paintButton(Graphics &g, bool over, bool down) override {
             g.setColour(getToggleState() ? Colour(0xff63bb40) : Colour(over || down ? 0xff383838 : 0xff2c2c2c));
             g.fillRoundedRectangle(getLocalBounds().toFloat(), 6);
-            g.setColour(getToggleState() ? Colours::white : Colour(0xffdddddd));
+            g.setColour(getToggleState() ? Colours::black : Colour(0xffdddddd));
             g.setFont(theme::font(14));
             g.drawText(getButtonText(), getLocalBounds().reduced(3, 0), Justification::centred);
         }
@@ -41,6 +41,7 @@ public:
         setComponentID("instrumentParameterEditor");
         for (auto entry : instrumentAssets::catalog())
             if (str(entry, "id") == instrumentID) category = str(entry, "category");
+        artwork = ImageCache::getFromFile(File::getSpecialLocation(File::currentExecutableFile).getSiblingFile("InstrumentInterfaces").getChildFile((category.isEmpty() ? "keyboard" : category) + ".png"));
         const std::array<String, 4> names{"Envelope", "Velocity", "Cutoff", "Controller"};
         for (int i = 0; i < 4; ++i) {
             tabs[i].setButtonText(names[i]); tabs[i].setComponentID("instrumentTab" + names[i]);
@@ -64,6 +65,7 @@ public:
         modulation.onClick = [this] { edit("controllers", "modulation", modulation.getToggleState()); };
         pitchBend.onClick = [this] { edit("controllers", "pitchBend", pitchBend.getToggleState()); };
         body.addChildComponent(modulation); body.addChildComponent(pitchBend);
+        viewport.setComponentID("instrumentParametersViewport");
         viewport.setViewedComponent(&body, false); viewport.setScrollBarsShown(true, false);
         viewport.setScrollBarThickness(8); addAndMakeVisible(viewport);
         selectPage(0);
@@ -97,43 +99,53 @@ public:
     }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
-        g.setColour(theme::green);
-        for (int i = 0; i < 5; ++i) g.fillRoundedRectangle(float(i * 4), 8.f, 3.f, 14.f, 1.f);
-        g.setColour(theme::panel);
-        for (int i : {1, 2, 4}) g.fillRect(i * 4 - 1, 8, 2, 8);
-        g.setColour(Colours::white); g.setFont(theme::semiboldFont(19));
-        g.drawFittedText(instrumentAssets::name(instrumentID), 28, 0, std::max(1, tabs[0].getX() - 40), 30, Justification::centredLeft, 1);
+        if (artwork.isValid()) {
+            g.setImageResamplingQuality(Graphics::highResamplingQuality);
+            g.drawImage(artwork, getLocalBounds().toFloat(), RectanglePlacement::fillDestination);
+            g.setColour(Colours::black.withAlpha(.12f)); g.fillAll();
+        }
+        const auto title = juce::Rectangle<float>(float(getWidth() / 2 - std::min(220, getWidth()/2 - 16)), 16,
+                                                 float(std::min(440, getWidth() - 32)), 48);
+        g.setColour(Colours::black.withAlpha(.78f)); g.fillRoundedRectangle(title, 12);
+        g.setColour(Colours::white.withAlpha(.18f)); g.drawRoundedRectangle(title, 12, 1);
+        g.setColour(Colours::white); g.setFont(theme::semiboldFont(20));
+        g.drawFittedText(instrumentAssets::name(instrumentID), title.reduced(16, 4).toNearestInt(), Justification::centred, 1);
     }
     void resized() override {
-        const int tabWidth = std::min(380, roundToInt(getWidth() * .57f));
-        for (int i = 0; i < 4; ++i) tabs[i].setBounds(getWidth() - tabWidth + i * tabWidth / 4, 2, tabWidth / 4, 26);
-        viewport.setBounds(0, 54, getWidth(), std::max(1, getHeight() - 54));
-        const int minimum = page == 0 ? 324 : page == 1 ? 374 : page == 2 ? 350 : 442;
+        const int tabWidth = std::min(440, getWidth() - 32);
+        for (int i = 0; i < 4; ++i) tabs[i].setBounds((getWidth() - tabWidth) / 2 + i * tabWidth / 4, 80, tabWidth / 4, 28);
+        viewport.setBounds(16, 124, std::max(1, getWidth()-32), std::max(1, getHeight()-140));
+        // Shrink the artwork's empty space before hiding any controls. The standard
+        // 920 x 560 FX manager leaves 416 px here, not the 540 px preview canvas.
+        const int minimum = page == 2 ? 264 : page == 1 ? 262 : page == 3 ? 232 : 236;
         const int h = std::max(minimum, viewport.getHeight());
         const int w = std::max(1, viewport.getWidth() - (h > viewport.getHeight() ? 10 : 0));
         body.setSize(w, h); graphArea = {}; topRack = {}; bottomRack = {};
         if (page == 0) {
-            const int graphHeight = jlimit(130, 220, h - 190);
-            graphArea = {0, 0, w, graphHeight}; bottomRack = {0, graphHeight + 24, w, 166};
+            bottomRack = {0, h-124, w, 124}; graphArea = {0, h-224, w, 84};
             layoutKnobs(bottomRack, 0, 6);
         } else if (page == 1) {
-            const int graphHeight = jlimit(150, 240, h - 224);
-            for (int i = 0; i < 3; ++i) curveButtons[i].setBounds(w / 2 - 72 + i * 68, 0, 68, 26);
-            graphArea = {0, 46, w, graphHeight}; bottomRack = {0, graphArea.getBottom() + 20, w, 158};
-            knobs[0]->setBounds(18, bottomRack.getY() + 14, std::max(110, w / 2 - 40), 130);
+            const int y = h-250;
+            for (int i = 0; i < 3; ++i) curveButtons[i].setBounds(w / 2 - 72 + i * 68, y, 68, 26);
+            graphArea = {0, y+38, w, 88}; bottomRack = {0, h-112, w, 112};
+            knobs[0]->setBounds(18, bottomRack.getY()+8, 110, 96);
         } else if (page == 2) {
-            topRack = {0, 0, w, 162}; bottomRack = {0, 184, w, 166};
-            const int cell = std::min(150, w / 4);
-            knobs[0]->setBounds(18, 16, cell, 130); knobs[1]->setBounds(42 + cell, 16, cell, 130);
+            topRack = {0, h-252, w, 112}; bottomRack = {0, h-124, w, 124};
+            const int cell = std::min(110, w / 4);
+            knobs[0]->setBounds(12, topRack.getY()+8, cell, 96);
+            knobs[1]->setBounds(24+cell, topRack.getY()+8, cell, 96);
             layoutKnobs(bottomRack, 2, 5);
         } else {
-            topRack = {0, 0, w, h}; knobs[0]->setBounds(w / 2 - 65, 20, 130, 130);
-            for (int i = 0; i < 2; ++i) voices[i].setBounds(132 + i * 108, 174, 108, 26);
-            modulation.setBounds(24, 249, w - 48, 26); pitchBend.setBounds(24, 354, w - 48, 26);
+            topRack = {0, h-220, w, 220}; const int y = topRack.getY();
+            knobs[0]->setBounds(12, y+60, 96, 96);
+            for (int i = 0; i < 2; ++i) voices[i].setBounds(226 + i * 104, y+16, 104, 26);
+            modulation.setBounds(132, y+62, w-150, 26);
+            pitchBend.setBounds(132, y+140, w-150, 26);
         }
         body.repaint();
     }
 private:
+    Image artwork;
     String instrumentID, category;
     std::function<var()> read;
     std::function<void()> changed, commit;
@@ -171,6 +183,7 @@ private:
             .1, num(group(name), Identifier(key), reset) * multiplier, suffix,
             [this, name, key, multiplier](double value) { edit(name, key, value / multiplier, false); },
             [this] { if (commit) commit(); }));
+        control->setDiameter(52);
         control->setComponentID("instrumentKnob_" + name + "_" + key);
         control->slider.setComponentID("instrumentValue_" + name + "_" + key);
         control->slider.setDoubleClickReturnValue(true, reset * multiplier);
@@ -194,11 +207,11 @@ private:
         pitchBend.setToggleState(controller("pitchBend", category == "bass" || category == "lead"), dontSendNotification);
     }
     void layoutKnobs(juce::Rectangle<int> area, int first, int count) {
-        area = area.reduced(18); const int cell = area.getWidth() / count;
-        for (int i = 0; i < count; ++i) knobs[first + i]->setBounds(area.getX() + i * cell, area.getY(), cell, 130);
+        area = area.reduced(12); const int cell = area.getWidth() / count;
+        for (int i = 0; i < count; ++i) knobs[first + i]->setBounds(area.getX() + i * cell, area.getY(), cell, 96);
     }
     void paintPage(Graphics &g) {
-        g.setColour(Colour(0xff101010));
+        g.setColour(Colours::black.withAlpha(.76f));
         for (auto area : {graphArea, topRack, bottomRack}) if (!area.isEmpty()) g.fillRoundedRectangle(area.toFloat(), 10);
         if (page == 0) {
             const auto r = graphArea.toFloat().reduced(16); const auto p = parameters();
@@ -213,7 +226,7 @@ private:
             g.setGradientFill(ColourGradient(theme::green.withAlpha(.35f), 0, r.getY(), theme::green.withAlpha(.02f), 0, r.getBottom(), false));
             g.fillPath(fill); g.setColour(theme::green); g.strokePath(curve, PathStrokeType(2));
         } else if (page == 1) {
-            label(g, "Curve", {body.getWidth() / 2 - 126, 0, 48, 26}, 14);
+            label(g, "Curve", {body.getWidth() / 2 - 126, curveButtons[0].getY(), 48, 26}, 14);
             auto r = graphArea.toFloat().reduced(18); g.setColour(Colour(0xff454545));
             for (int i = 0; i <= 4; ++i) {
                 const float f = i / 4.f;
@@ -229,15 +242,14 @@ private:
             }
             g.setColour(theme::green); g.strokePath(curve, PathStrokeType(2));
             label(g, "Minimum cutoff for soft notes. Stronger notes open their own filter.",
-                  bottomRack.withTrimmedLeft(body.getWidth() / 2 + 12).reduced(10, 20), 12, true);
+                  bottomRack.withTrimmedLeft(146).reduced(10, 20), 12, true);
         } else if (page == 2) {
-            label(g, "Cutoff envelope", topRack.withTrimmedLeft(std::min(150, body.getWidth() / 4) * 2 + 66).reduced(0, 20), 16);
+            label(g, "Cutoff envelope", topRack.withTrimmedLeft(std::min(110, body.getWidth() / 4) * 2 + 48).reduced(0, 20), 16);
         } else {
-            label(g, "Voice mode", {24, 174, 104, 26}, 14);
-            g.setColour(Colour(0xff383838));
-            for (int y : {224, 330}) g.drawHorizontalLine(y, 24.f, float(body.getWidth() - 24));
-            label(g, "Modulation wheel controls the cutoff.", {24, 287, body.getWidth() - 48, 30}, 14, true);
-            label(g, "Pitch Bend controls vibrato depth at 6.85 Hz.", {24, 392, body.getWidth() - 48, 36}, 14, true);
+            const int y = topRack.getY();
+            label(g, "Voice mode", {132, y+16, 90, 26}, 12);
+            label(g, "Modulation wheel controls the cutoff.", {132, y+92, body.getWidth()-150, 36}, 12, true);
+            label(g, "Pitch Bend controls vibrato depth at 6.85 Hz.", {132, y+170, body.getWidth()-150, 36}, 12, true);
         }
     }
     static void label(Graphics &g, const char *text, juce::Rectangle<int> area, float size, bool secondary = false) {

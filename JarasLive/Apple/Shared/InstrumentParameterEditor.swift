@@ -19,26 +19,24 @@ struct InstrumentParameterEditor: View {
     }
     @ViewBuilder private func knobs<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         #if os(iOS)
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 12)], spacing: 18, content: content)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 80), spacing: 12)], spacing: 18, content: content)
         #else
         HStack(spacing: 8, content: content)
         #endif
     }
     var body: some View {
-        VStack(spacing: 24) {
-            #if os(iOS)
-            VStack(alignment: .leading, spacing: 14) {
-                Label(name, systemImage: "pianokeys").font(.jarasTitle2.weight(.semibold))
-                pagePicker
-            }
-            #else
-            HStack {
-                Image(systemName: "pianokeys").foregroundStyle(JarasTheme.green)
-                Text(name).font(.jarasTitle2.weight(.semibold))
-                Spacer()
-                pagePicker.frame(width: 380)
-            }
-            #endif
+        VStack(spacing: 16) {
+            Text(name)
+                .font(.jarasTitle2.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.7)
+                .foregroundStyle(Color.white)
+                .padding(.horizontal, 30).padding(.vertical, 12)
+                .frame(minWidth: 240, maxWidth: 440)
+                .background(Color.black.opacity(0.78))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.18), lineWidth: 1))
+                .cornerRadius(12)
+            pagePicker.frame(maxWidth: 440)
+            // Leave the centre of the category photograph visible on every page.
+            Spacer(minLength: 90)
             if page == "Envelope" {
             Canvas { context, size in
                 let inset = 16.0, height = size.height - inset * 2, width = size.width - inset * 2
@@ -59,7 +57,7 @@ struct InstrumentParameterEditor: View {
                 let color = JarasTheme.green
                 context.fill(area, with: .linearGradient(Gradient(colors: [color.opacity(0.35), color.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
                 context.stroke(curve, with: .color(color), lineWidth: 2)
-            }.frame(minHeight: 130, maxHeight: 220).background(JarasTheme.display).cornerRadius(8)
+            }.frame(height: 84).background(Color.black.opacity(0.66)).cornerRadius(8)
             knobs {
                 FXKnob("Attack", value: envelope(\.attack), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .instrumentAttack)
                 FXKnob("Hold", value: envelope(\.hold), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 10, parameter: .instrumentHold)
@@ -67,8 +65,41 @@ struct InstrumentParameterEditor: View {
                 FXKnob("Sustain", value: envelope(\.sustain), range: 0...1, unit: "%", multiplier: 100, reset: 1, parameter: .instrumentSustain)
                 FXKnob("Release", value: envelope(\.release), range: 0.001...20, unit: "ms", multiplier: 1000, logarithmic: true, reset: drums ? 20 : 0.3, parameter: .instrumentRelease)
                 FXKnob("Gain", value: $parameters.gain, range: -24...12, unit: "dB", reset: 0, parameter: .instrumentGain)
-            }.padding(18).background(JarasTheme.display).cornerRadius(10)
+            }.padding(12).background(Color.black.opacity(0.76)).cornerRadius(10)
             } else if page == "Velocity" { velocityPage } else if page == "Cutoff" { cutoffPage } else { controllerPage }
+        }
+        .environment(\.fxKnobDiameter, 52)
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 480)
+        .background {
+            GeometryReader { geometry in
+                Image("InstrumentArtwork_" + artworkCategory)
+                    .resizable().scaledToFill()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+                    .overlay(Color.black.opacity(0.12))
+            }.allowsHitTesting(false)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+    private var artworkCategory: String {
+        switch category {
+        case .pianos: return "pianos"
+        case .upright: return "upright"
+        case .electric: return "electric"
+        case .keyboard: return "keyboard"
+        case .organ: return "organ"
+        case .strings: return "strings"
+        case .guitar: return "guitar"
+        case .bass: return "bass"
+        case .synth: return "synth"
+        case .synthPad: return "synthPad"
+        case .lead: return "lead"
+        case .acordeon: return "acordeon"
+        case .brass: return "brass"
+        case .mallets: return "mallets"
+        case .drum: return "drum"
+        case nil: return "keyboard"
         }
     }
     private var velocity: InstrumentVelocityParameters { parameters.velocity ?? InstrumentVelocityParameters() }
@@ -99,11 +130,11 @@ struct InstrumentParameterEditor: View {
                     if step == 0 { curve.move(to: point) } else { curve.addLine(to: point) }
                 }
                 context.stroke(curve, with: .color(JarasTheme.green), lineWidth: 2)
-            }.frame(minHeight: 150, maxHeight: 240).background(JarasTheme.display).cornerRadius(8)
+            }.frame(height: 104).background(Color.black.opacity(0.66)).cornerRadius(8)
             HStack(spacing: 24) {
                 FXKnob("Cutoff", value: Binding(get: { velocity.cutoffMinimum }, set: { var value = velocity; value.cutoffMinimum = $0; parameters.velocity = value }), range: 20...20000, unit: "Hz", logarithmic: true, reset: 20000, parameter: .velocityCutoff)
                 Text("Minimum cutoff for soft notes. Stronger notes open their own filter.").font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
-            }.padding(18).background(JarasTheme.display).cornerRadius(10)
+            }.padding(12).background(Color.black.opacity(0.76)).cornerRadius(10)
         }
     }
     private var cutoffPage: some View {
@@ -113,14 +144,14 @@ struct InstrumentParameterEditor: View {
                 FXKnob("Depth", value: filter(\.depth), range: 0...10, unit: "oct", reset: 0, parameter: .cutoffDepth)
                 Text("Cutoff envelope").font(.jarasTitle3.weight(.semibold))
                 Spacer()
-            }.padding(18).background(JarasTheme.display).cornerRadius(10)
+            }.padding(12).background(Color.black.opacity(0.76)).cornerRadius(10)
             knobs {
                 FXKnob("Attack", value: filter(\.attack), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .cutoffAttack)
                 FXKnob("Hold", value: filter(\.hold), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .cutoffHold)
                 FXKnob("Decay", value: filter(\.decay), range: 0.001...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.3, parameter: .cutoffDecay)
                 FXKnob("Sustain", value: filter(\.sustain), range: 0...1, unit: "%", multiplier: 100, reset: 1, parameter: .cutoffSustain)
                 FXKnob("Release", value: filter(\.release), range: 0.001...20, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.3, parameter: .cutoffRelease)
-            }.padding(18).background(JarasTheme.display).cornerRadius(10)
+            }.padding(12).background(Color.black.opacity(0.76)).cornerRadius(10)
         }
     }
 
@@ -128,12 +159,12 @@ struct InstrumentParameterEditor: View {
         Binding(get: { (parameters.controllers ?? InstrumentLibrary.controllers(category))[keyPath: key] }, set: { var value = parameters.controllers ?? InstrumentLibrary.controllers(category); value[keyPath: key] = $0; parameters.controllers = value })
     }
     private var controllerPage: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        HStack(alignment: .center, spacing: 24) {
             FXKnob("Volume", value: Binding(get: { parameters.controllers?.volume ?? 0 }, set: { volume in
                 var value = parameters.controllers ?? InstrumentLibrary.controllers(category)
                 value.volume = min(0, max(-96, volume)); parameters.controllers = value
-            }), range: -96...0, unit: "dB", reset: 0, parameter: .instrumentVolume)
-
+            }), range: -96...0, unit: "dB", reset: 0, parameter: .instrumentVolume).frame(width: 90)
+            VStack(alignment: .leading, spacing: 10) {
             Picker("Voice mode", selection: Binding(get: {
                 parameters.controllers?.monophonic ?? (category == .lead)
             }, set: { mono in
@@ -149,8 +180,8 @@ struct InstrumentParameterEditor: View {
             Divider()
             Toggle("Pitch Bend", isOn: controller(\.pitchBend)).mapFXMIDI(.pitchBend, name: "Pitch Bend", range: 0...1)
             Text("Pitch Bend controls vibrato depth at 6.85 Hz.").foregroundStyle(JarasTheme.secondary)
-            Spacer(minLength: 20)
-        }.padding(24).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.display).cornerRadius(10)
+            }.font(.jarasCallout)
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Color.black.opacity(0.76)).cornerRadius(10)
     }
 
 }

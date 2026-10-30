@@ -1,4 +1,5 @@
 #include "NativeFX.h"
+#include <cassert>
 #include "Automation.h"
 #include "CatDynamicsAssets.h"
 #include "Include/CatDynamicsDSP.hpp"
@@ -455,6 +456,22 @@ void NativeFX::holdRemovedStems(const NativeFX &previous){
     }
 }
 void NativeFX::releaseRemovedStems(){effects.erase(std::remove_if(effects.begin(),effects.end(),[](const auto &e){return e->retiredStem;}),effects.end());}
+void NativeFX::prepareRetirement(NativeFX& destination) const {
+    destination.effects.reserve(destination.effects.size()+effects.size());
+}
+void NativeFX::retireRemovedStems(NativeFX& destination) noexcept {
+    assert(destination.effects.capacity()-destination.effects.size()>=effects.size());
+    size_t retained=0;
+    for(size_t index=0;index<effects.size();++index) {
+        if(effects[index]->retiredStem)destination.effects.push_back(std::move(effects[index]));
+        else {
+            if(retained!=index)effects[retained]=std::move(effects[index]);
+            ++retained;
+        }
+    }
+    // Every discarded tail slot is moved-from: shrinking deletes no effect.
+    effects.resize(retained);
+}
 void NativeFX::shareStems(const NativeFX &source){for(auto &e:effects)if(e->stem)for(const auto &other:source.effects)if(e->key==other->key&&other->stem)e->stem=other->stem;}
 bool NativeFX::hasActiveStem()const {for(const auto &e:effects)if(e->stem&&e->stem->availableLatency())return true;return false;}
 void NativeFX::resetStems(){for(auto &e:effects)if(e->stem)e->stem->reset();}

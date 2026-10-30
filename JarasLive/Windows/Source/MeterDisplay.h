@@ -1,17 +1,8 @@
 #pragma once
 #include "Common.h"
+#include "../../Core/Audio/MeterState.hpp"
 namespace catlive::meterDisplay {
-class PeakHold {
-    std::atomic<float> maximum{0};
-public:
-    void record(float amplitude) noexcept {
-        if(!std::isfinite(amplitude)||amplitude<std::pow(10.f,-24.f/20))return;
-        auto previous=maximum.load(std::memory_order_relaxed);
-        while(amplitude>previous&&!maximum.compare_exchange_weak(previous,amplitude,std::memory_order_relaxed)){}
-    }
-    float amplitude()const noexcept{return maximum.load(std::memory_order_relaxed);}
-    void clear()noexcept{maximum.store(0,std::memory_order_relaxed);}
-};
+using PeakHold = audio::PeakHold;
 class PeakReadout final : public Component, private Timer {
     std::function<float()> read;
     std::function<void()> clear;

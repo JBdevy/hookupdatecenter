@@ -11,6 +11,14 @@ struct Instrument::Impl {
 };
 Instrument::Instrument() : impl(std::make_unique<Impl>()) {}
 Instrument::~Instrument() = default;
+void Instrument::swap(Instrument& other)noexcept {impl.swap(other.impl);name.swapWith(other.name);}
+std::unique_ptr<Instrument> Instrument::prepareSoundFont(const File& file)const {
+    auto result=std::make_unique<Instrument>();
+    result->prepare(impl->rate);
+    result->configure(impl->parameters,impl->drums);
+    result->loadSoundFont(file);
+    return result;
+}
 void Instrument::prepare(double rate) {
     impl->rate = rate;
     if (impl->sf.font)

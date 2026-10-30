@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "RealtimeBufferedReader.h"
 namespace catlive {
 // A timeline can reference thousands of files without keeping every file open
 // or allocating read-ahead buffers for songs that are not playing. Disk access
@@ -120,17 +121,20 @@ class StreamingReader final : public AudioFormatReader {
         // decoder and its exact MP3 checkpoints to the forward stream. Creating
         // another cold decoder would repeat the prefix on the serial fill queue
         // and could leave the source silent when its onset reserve expires.
-        if (!transitionDecoder) transitionDecoder.reset(service.formats.createReaderFor(file));
+        if (!transitionDecoder) {
+            ++transitionOpens;
+            transitionDecoder.reset(service.formats.createReaderFor(file));
+        }
         if (!transitionDecoder) return false;
         auto next = std::make_unique<Pinned>(at, int(numChannels), wanted);
         if (!transitionDecoder->read(&next->pcm, 0, wanted, at, true, true)) return false;
-        next->forward = std::make_unique<BufferingAudioReader>(transitionDecoder.release(), service.preparedFill, 131072);
+        next->forward = std::make_unique<RealtimeBufferedReader>(transitionDecoder.release(), service.preparedFill, 131072);
         next->forward->setReadTimeout(0);
         probeAt(*next->forward, at);
         if (pinned[slot]) retiredPinned.push_back(std::move(pinned[slot]));
         pinned[slot] = std::move(next);
         publishedPinned[slot].store(pinned[slot].get(), std::memory_order_seq_cst);
-        BufferingAudioReader *empty = nullptr;
+        RealtimeBufferedReader *empty = nullptr;
         if (published.compare_exchange_strong(empty, pinned[slot]->forward.get(), std::memory_order_seq_cst)) {
             request(at);
             resident.store(true);
@@ -151,6 +155,7 @@ class StreamingReader final : public AudioFormatReader {
         return age > 2000 && age < 0x80000000u;
     }
     std::atomic<uint64> cacheMisses{0}, inactiveMisses{0};
+    std::atomic<uint64> fallbackOpens{0}, transitionOpens{0};
     bool readSamples(int* const* destination, int channels, int offset, int64 at, int count) override {
         if (at >= lengthInSamples) {
             for (int c = 0; c < channels; ++c) if (destination[c])
@@ -233,7 +238,7 @@ class StreamingReader final : public AudioFormatReader {
     struct Pinned {
         int64 first;
         AudioBuffer<float> pcm;
-        std::unique_ptr<BufferingAudioReader> forward;
+        std::unique_ptr<RealtimeBufferedReader> forward;
         Pinned(int64 start, int channels, int count) : first(start), pcm(channels, count) {}
         bool contains(int64 at, int count) const { return at >= first && at - first + count <= pcm.getNumSamples(); }
     };
@@ -243,16 +248,16 @@ class StreamingReader final : public AudioFormatReader {
     std::atomic<uint32> pinnedDemand[4]{};
     std::vector<std::unique_ptr<Pinned>> retiredPinned;
     // Ownership is only touched under lock, outside the device callback.
-    std::unique_ptr<BufferingAudioReader> reader;
+    std::unique_ptr<RealtimeBufferedReader> reader;
     std::unique_ptr<AudioFormatReader> transitionDecoder; // Worker-only, protected by lock.
     std::unique_ptr<AudioFormatReader> offlineDecoder;
     AudioBuffer<float> offlinePCM;
     int64 offlineStart = -1;
-    std::vector<std::unique_ptr<BufferingAudioReader>> retired;
-    std::atomic<BufferingAudioReader*> published{nullptr};
+    std::vector<std::unique_ptr<RealtimeBufferedReader>> retired;
+    std::atomic<RealtimeBufferedReader*> published{nullptr};
     std::atomic<uint64> selectionRevision{0};
     std::atomic<uint32> activeReads{0};
-    static_assert(std::atomic<BufferingAudioReader*>::is_always_lock_free &&
+    static_assert(std::atomic<RealtimeBufferedReader*>::is_always_lock_free &&
                   std::atomic<uint32>::is_always_lock_free && std::atomic<uint64>::is_always_lock_free,
                   "Streaming reader publication must not take a library lock");
     struct ReadAccess {
@@ -267,7 +272,7 @@ class StreamingReader final : public AudioFormatReader {
         ReadAccess(const ReadAccess&) = delete;
         ReadAccess& operator=(const ReadAccess&) = delete;
         StreamingReader& owner;
-        BufferingAudioReader* current = nullptr;
+        RealtimeBufferedReader* current = nullptr;
     };
     std::atomic<int64> requested{-1}, upcomingPosition{-1};
     std::atomic<uint32> upcomingDemand{0};
@@ -283,25 +288,26 @@ class StreamingReader final : public AudioFormatReader {
         if (published.load(std::memory_order_seq_cst)) return;
         const auto at = requested.load();
         for (const auto &cache : pinned) if (cache && cache->contains(at, 1)) {
-            BufferingAudioReader *empty = nullptr;
+            RealtimeBufferedReader *empty = nullptr;
             published.compare_exchange_strong(empty, cache->forward.get(), std::memory_order_seq_cst);
             resident.store(true);
             return;
         }
         if (!reader) {
+            ++fallbackOpens;
             std::unique_ptr<AudioFormatReader> source(service.formats.createReaderFor(file));
             if (!source) return;
-            reader = std::make_unique<BufferingAudioReader>(source.release(), service.fillThread, 131072);
+            reader = std::make_unique<RealtimeBufferedReader>(source.release(), service.fillThread, 131072);
             reader->setReadTimeout(0);
             probeAt(*reader, std::max<int64>(0, at));
         }
         // Opening a cold file may overlap adoption of a prepared stream. Never
         // overwrite that selection or hint it with this fallback's old position.
-        BufferingAudioReader *empty = nullptr;
+        RealtimeBufferedReader *empty = nullptr;
         published.compare_exchange_strong(empty, reader.get(), std::memory_order_seq_cst);
         resident.store(true);
     }
-    bool probeAt(BufferingAudioReader& current, int64 at, int count = 1) {
+    bool probeAt(RealtimeBufferedReader& current, int64 at, int count = 1) {
         // Updating the delegate's read position also schedules its next block.
         AudioBuffer<float> probe(2, count);
         return current.read(&probe, 0, count, at, true, true);

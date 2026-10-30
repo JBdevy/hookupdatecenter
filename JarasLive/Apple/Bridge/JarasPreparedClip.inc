@@ -6,6 +6,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <deque>
+#include "../../Core/Audio/SingleReaderSlots.hpp"
+#include "../../Core/Audio/RealtimeRunState.hpp"
 
 namespace {
 struct PreparedPCMPage {
@@ -23,10 +25,8 @@ struct PreparedPCMCache {
     int64_t length;
     double sampleRate;
     std::mutex decoder;
-    std::array<std::shared_ptr<PreparedPCMPage>, pageCount> pages;
-    // Keep retired pages alive until no render callback references them. Their
-    // storage is reclaimed on the decoder/control thread, never on audio.
-    std::deque<std::shared_ptr<PreparedPCMPage>> retired;
+    using Pages = catlive::audio::SingleReaderSlots<PreparedPCMPage, pageCount>;
+    Pages pages;
     std::atomic<double> requested{0}, loopStart{0}, loopEnd{0};
     std::atomic<bool> active{false};
 
@@ -36,12 +36,19 @@ struct PreparedPCMCache {
         if (end > start && frame >= start) return start + std::fmod(frame - start, end - start);
         return frame;
     }
-    std::shared_ptr<PreparedPCMPage> pageAt(int64_t first) const {
-        for (const auto &slot : pages) {
-            auto page = std::atomic_load(&slot);
-            if (page && page->first == first) return page;
+    const PreparedPCMPage* pageAt(int64_t first, const Pages::Lease& lease) const {
+        for (size_t i=0;i<pageCount;++i) {
+            const auto* page=lease.get(i);
+            if(page && page->first==first)return page;
         }
-        return {};
+        return nullptr;
+    }
+    const PreparedPCMPage* producerPageAt(int64_t first) const {
+        for(size_t i=0;i<pageCount;++i) {
+            const auto* page=pages.producerView(i);
+            if(page && page->first==first)return page;
+        }
+        return nullptr;
     }
     bool prefetch(int count, NSError **error = nullptr) {
         // Physical pages on opposite sides of a loop can have the same ring
@@ -59,14 +66,14 @@ struct PreparedPCMCache {
             frame = end > start && next >= end ? start : next;
         }
         for (const auto first : wanted) {
-            if (pageAt(first)) continue;
+            if (producerPageAt(first)) continue;
             size_t slot = 0;
-            for (; slot < pages.size(); ++slot) {
-                auto page = std::atomic_load(&pages[slot]);
+            for (; slot < pageCount; ++slot) {
+                const auto* page = pages.producerView(slot);
                 if (!page || std::find(wanted.begin(), wanted.end(), page->first) == wanted.end()) break;
             }
-            if (slot == pages.size()) return false;
-            auto page = std::make_shared<PreparedPCMPage>();
+            if (slot == pageCount) return false;
+            auto page = std::make_unique<PreparedPCMPage>();
             page->first = first;
             AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:file.processingFormat frameCapacity:pageSize];
             file.framePosition = first;
@@ -77,11 +84,9 @@ struct PreparedPCMCache {
                 page->samples[channel].resize(page->count);
                 for (int n = 0; n < page->count; ++n) page->samples[channel][n] = data[n * buffer.stride];
             }
-            if (auto old = std::atomic_exchange(&pages[slot], page)) retired.push_back(std::move(old));
+            pages.publish(slot, std::move(page));
         }
-        for (auto it = retired.begin(); it != retired.end();) {
-            if (it->use_count() == 1) it = retired.erase(it); else ++it;
-        }
+        pages.collectRetired();
         return true;
     }
 };
@@ -119,7 +124,7 @@ struct PreparedClipKernel {
     std::mutex preparation;
     signalsmith::stretch::SignalsmithStretch<float> pitch{0};
     std::array<std::vector<float>, 2> input, output;
-    std::atomic<bool> running{false};
+    catlive::audio::RealtimeRunState playback;
     std::atomic<uint64_t> startHost{0}, misses{0};
     std::atomic<double> rate{1}, semitones{0}, endFrame{0}, position{0};
     double source = 0, ahead = 0, preparedFrame = -1, preparedRate = 1, preparedPitch = 0;
@@ -133,14 +138,15 @@ struct PreparedClipKernel {
     }
     bool read(double first, double step, int frames, float *left, float *right) {
         if (!cache) return false;
-        std::array<std::shared_ptr<PreparedPCMPage>, PreparedPCMCache::pageCount> leases;
+        auto lease = cache->pages.read();
+        std::array<const PreparedPCMPage*, PreparedPCMCache::pageCount> leases{};
         bool ok = true;
         auto value = [&](int64_t frame, int channel) -> float {
             if (frame < 0 || frame >= cache->length) return 0;
             const int64_t pageFirst = frame / PreparedPCMCache::pageSize * PreparedPCMCache::pageSize;
             const int slot = int(frame / PreparedPCMCache::pageSize % PreparedPCMCache::pageCount);
             auto &page = leases[slot];
-            if (!page || page->first != pageFirst) page = cache->pageAt(pageFirst);
+            if (!page || page->first != pageFirst) page = cache->pageAt(pageFirst, lease);
             if (!page || page->first != pageFirst) { ok = false; return 0; }
             const auto index = frame - pageFirst;
             return index < page->count ? page->samples[channel][size_t(index)] : 0;
@@ -179,9 +185,9 @@ struct PreparedClipKernel {
     OSStatus render(const AudioTimeStamp *time, AVAudioFrameCount frames, AudioBufferList *buffers) {
         for (UInt32 ch = 0; ch < buffers->mNumberBuffers; ++ch)
             if (buffers->mBuffers[ch].mData) memset(buffers->mBuffers[ch].mData, 0, buffers->mBuffers[ch].mDataByteSize);
-        if (!running.load(std::memory_order_acquire)) return noErr;
-        std::unique_lock<std::mutex> lock(preparation, std::try_to_lock);
-        if (!lock.owns_lock() || !running.load() || !cache) return noErr;
+        if (!playback.enter()) return noErr;
+        struct Exit { catlive::audio::RealtimeRunState& state; ~Exit(){state.leave();} } exit{playback};
+        if (!cache) return noErr;
         const uint64_t start = startHost.load();
         int offset = 0;
         if (time->mFlags & kAudioTimeStampHostTimeValid) {
@@ -238,7 +244,7 @@ struct PreparedClipKernel {
         _kernel = std::make_shared<PreparedClipKernel>(format.sampleRate, int(format.channelCount));
         auto kernel = _kernel;
         _node = [[AVAudioSourceNode alloc] initWithFormat:format renderBlock:^OSStatus(BOOL *silent, const AudioTimeStamp *time, AVAudioFrameCount count, AudioBufferList *buffers) {
-            *silent = !kernel->running.load();
+            *silent = !kernel->playback.running();
             return kernel->render(time, count, buffers);
         }];
     }
@@ -246,7 +252,7 @@ struct PreparedClipKernel {
 }
 - (AVAudioSourceNode *)node { return _node; }
 - (double)sourcePosition { return _kernel->position.load() / _kernel->sampleRate; }
-- (BOOL)playing { return _kernel->running.load(); }
+- (BOOL)playing { return _kernel->playback.running(); }
 - (uint64_t)underruns { return _kernel->misses.load(); }
 - (BOOL)prepareURL:(NSURL *)url sourceFrame:(double)frame endFrame:(double)end rate:(double)rate pitch:(double)pitch loopStart:(double)loopStart loopEnd:(double)loopEnd error:(NSError **)error {
     if (!std::isfinite(frame) || !std::isfinite(end) || !std::isfinite(rate) || !std::isfinite(pitch) ||
@@ -254,8 +260,9 @@ struct PreparedClipKernel {
         if (error) *error = [NSError errorWithDomain:@"CatLive.PreparedAudio" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Invalid source playback range or rate"}];
         return NO;
     }
-    _kernel->running.store(false);
     std::lock_guard<std::mutex> lock(_kernel->preparation);
+    _kernel->playback.stop();
+    _kernel->playback.waitStopped();
     auto &cache = _kernel->cache;
     if (cache && [cache->url isEqual:url] && _kernel->source == frame && _kernel->preparedFrame == frame &&
         _kernel->preparedRate == rate && _kernel->preparedPitch == pitch && _kernel->endFrame.load() == end &&
@@ -285,10 +292,12 @@ struct PreparedClipKernel {
 }
 - (void)startAtHostTime:(uint64_t)host ramp:(BOOL)ramp {
     std::lock_guard<std::mutex> lock(_kernel->preparation);
+    _kernel->playback.stop();
+    _kernel->playback.waitStopped();
     _kernel->ramp = ramp; _kernel->rampFrame = 0;
     _kernel->startHost.store(host);
     if (_kernel->cache) _kernel->cache->active.store(true);
-    _kernel->running.store(true, std::memory_order_release);
+    _kernel->playback.start();
 }
 - (void)setRate:(double)rate pitch:(double)pitch {
     if (!std::isfinite(rate) || rate <= 0 || rate > 32 || !std::isfinite(pitch)) return;
@@ -296,7 +305,7 @@ struct PreparedClipKernel {
 }
 - (void)setEndFrame:(double)end { _kernel->endFrame.store(end); }
 - (void)stop {
-    _kernel->running.store(false, std::memory_order_release);
+    _kernel->playback.stop();
     if (_kernel->cache) _kernel->cache->active.store(false);
 }
 - (void)dealloc { [self stop]; }

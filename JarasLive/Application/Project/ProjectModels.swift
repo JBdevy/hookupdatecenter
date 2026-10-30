@@ -317,6 +317,15 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
         guard let id = marker.sourceRegionID, let region = parts.first(where: { $0.id == id }) else { return marker.isSection ? marker.name.uppercased() : marker.name }
         return "\(region.semitones)st  " + region.displayName
     }
+    /// Program Change heads share the normal marker boundary, while stacked
+    /// messages at the same position remain independent on their own lanes.
+    public func programChangeHeadWidth(at position: Double, naturalWidth: Double, scale: Double) -> Double {
+        let end = parts.lazy.filter {
+            $0.parentRegionID == nil && $0.startTime <= position && position < $0.endTime
+        }.map(\.endTime).min() ?? .infinity
+        let width = min(naturalWidth, (end - position) * scale)
+        return width >= 18 ? width : 0
+    }
     public var markerRegionEnds: [UUID: Double] {
         var result: [UUID: Double] = [:]
         let roots = parts.filter { $0.parentRegionID == nil }.sorted { $0.startTime < $1.startTime }

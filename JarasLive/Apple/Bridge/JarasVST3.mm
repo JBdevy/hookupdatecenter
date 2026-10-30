@@ -186,6 +186,44 @@ std::shared_ptr<Module> loadModule(NSString *path) {
     });
     slot->owner=loaded;slot->loaded=true;return loaded;
 }
+// Project paths belong to the machine that saved them. Resolve an unavailable
+// path locally without changing the serialized preset or trusting a display name.
+std::shared_ptr<Module> loadPluginModule(NSDictionary *spec) {
+    NSString *path=spec[@"path"];
+    auto files=NSFileManager.defaultManager;
+    if([files fileExistsAtPath:path])return loadModule(path);
+    FUID requested;
+    if(!requested.fromString([spec[@"classID"] UTF8String]))return loadModule(path);
+    NSMutableOrderedSet<NSString *> *candidates=[NSMutableOrderedSet orderedSet];
+    auto defaults=NSUserDefaults.standardUserDefaults;
+    NSData *catalogData=[defaults dataForKey:@"jaras.plugins.catalog"];
+    id catalog=catalogData?[NSJSONSerialization JSONObjectWithData:catalogData options:0 error:nil]:nil;
+    if([catalog isKindOfClass:NSArray.class])for(id entry in catalog) {
+        if(![entry isKindOfClass:NSDictionary.class])continue;
+        NSString *classID=entry[@"classID"],*candidate=entry[@"path"];
+        if([classID isKindOfClass:NSString.class]&&[candidate isKindOfClass:NSString.class]&&
+           [classID caseInsensitiveCompare:spec[@"classID"]]==NSOrderedSame)[candidates addObject:candidate];
+    }
+    NSString *basename=[[path stringByReplacingOccurrencesOfString:@"\\" withString:@"/"] lastPathComponent];
+    NSMutableArray<NSString *> *roots=[NSMutableArray arrayWithArray:[defaults stringArrayForKey:@"jaras.plugins.paths"]?:@[]];
+    [roots addObjectsFromArray:@[@"/Library/Audio/Plug-Ins/VST3",[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Audio/Plug-Ins/VST3"]]];
+    for(NSString *root in roots) {
+        NSString *expanded=root.stringByExpandingTildeInPath;
+        [candidates addObject:[expanded.pathExtension.lowercaseString isEqualToString:@"vst3"]?expanded:[expanded stringByAppendingPathComponent:basename]];
+    }
+    for(NSString *candidate in candidates) {
+        if(![files fileExistsAtPath:candidate])continue;
+        try {
+            auto module=loadModule(candidate);
+            for(int32 index=0;index<module->factory->countClasses();++index) {
+                PClassInfo info{};
+                if(module->factory->getClassInfo(index,&info)==kResultOk && FUID(info.cid)==requested &&
+                   strcmp(info.category,kVstAudioEffectClass)==0)return module;
+            }
+        } catch(const std::exception &) { /* Try the other local installation. */ }
+    }
+    return loadModule(path); // Preserve the existing failure when no matching installation exists.
+}
 struct Param { ParamID id=0; std::atomic<double> pending{0}; std::atomic<bool> dirty{false}; };
 class Queue final: public IParamValueQueue {
 public:
@@ -259,7 +297,7 @@ public:
         notifyEdit();return kResultOk;}
     tresult PLUGIN_API restartComponent(int32) override{return kResultFalse;}
     explicit Instance(NSDictionary *spec,double sampleRate,bool offline):rate(sampleRate),processMode(offline?kOffline:kRealtime) { try {
-        identifier=spec[@"id"];instrument=[spec[@"category"] containsString:@"Instrument"]; module=loadModule(spec[@"path"]); FUID uid;
+        identifier=spec[@"id"];instrument=[spec[@"category"] containsString:@"Instrument"]; module=loadPluginModule(spec); FUID uid;
         if(!uid.fromString([spec[@"classID"] UTF8String])||module->factory->createInstance(uid,IComponent::iid,(void **)&component)!=kResultOk||!component)throw std::runtime_error("Could not create this VST3 processor.");
         if(component->initialize(&host)!=kResultOk)throw std::runtime_error("VST3 processor initialization failed."); initialized=true;
         processor=query<IAudioProcessor>(component);if(!processor||processor->canProcessSampleSize(kSample32)!=kResultOk)throw std::runtime_error("This VST3 processor does not support 32-bit audio.");
@@ -635,6 +673,7 @@ static void replaceNativeEditors(std::shared_ptr<Instance> previous,std::shared_
 + (void)silence:(AVAudioUnitEffect *)node {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)i->midiPerformance->panic=true;}
 + (void)transport:(AVAudioUnitEffect *)node position:(double)position tempo:(double)tempo beats:(int)beats unit:(int)unit playing:(BOOL)playing {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;k.position=position;k.tempo=tempo;k.beats=beats;k.unit=unit;k.playing=playing;k.clockGeneration.fetch_add(1,std::memory_order_release);}
 + (void)onEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(void))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->edited=[action copy];}
++ (BOOL)isPluginLoaded:(AVAudioUnitEffect *)node identifier:(NSString *)id {return ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id)!=nullptr;}
 + (NSDictionary *)state:(AVAudioUnitEffect *)node identifier:(NSString *)id {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);return i?i->state():nil;}
 + (void)onParameterEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(unsigned int,double,BOOL))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->parameterEdited=[action copy];}
 + (NSArray<NSDictionary *> *)parameters:(AVAudioUnitEffect *)node identifier:(NSString *)id {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);NSMutableArray *result=[NSMutableArray array];if(i&&i->controller)for(int n=0;n<i->paramCount;n++){ParameterInfo p{};i->controller->getParameterInfo(n,p);if(p.flags&ParameterInfo::kIsReadOnly)continue;[result addObject:@{@"id":@(p.id),@"name":text(p.title),@"value":@(i->controller->getParamNormalized(p.id))}];}return result;}

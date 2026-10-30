@@ -103,16 +103,43 @@ if(CATLIVE_APP_OUTPUT_DIRECTORY)
     set_target_properties(CatLive PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CATLIVE_APP_OUTPUT_DIRECTORY}")
 endif()
 target_sources(CatLive PRIVATE Source/Main.cpp Source/Session.cpp Source/ProjectCodec.cpp Source/ProjectBrowser.cpp
+    Source/NativeAudioDeviceHost.cpp
     Source/ProjectMigration.cpp Source/LogicProjectImporter.cpp Source/Typography.cpp Source/AdvancedPanel.cpp
     Source/AudioEngine.cpp Source/Instrument.cpp Source/Projection.cpp Source/native_video_decoder_ffmpeg.cpp Source/NativeFX.cpp Source/Lighting.cpp Source/Auth.cpp Source/Workspace.cpp Source/Tests.cpp Source/MP3Writer.cpp Source/AudioFormats.cpp Source/MediaSource.cpp
     "${CATLIVEROOT}/WindowsNative/Source/AudioFile.cpp"
     "${CATLIVEROOT}/WindowsNative/Source/StemSeparator.cpp"
     ThirdParty/QRCode/qrcodegen.cpp
     ThirdParty/Monocypher/monocypher.c ThirdParty/Monocypher/monocypher-ed25519.c)
+option(CATLIVE_NATIVE_DEVICE_HOST "Use the CatLive native WASAPI/ASIO device host" OFF)
+set(CATLIVE_ASIO_SDK "" CACHE PATH "Externally supplied Steinberg ASIO SDK root")
+if(CATLIVE_NATIVE_DEVICE_HOST)
+    if(NOT EXISTS "${CATLIVE_ASIO_SDK}/common/iasiodrv.h")
+        message(FATAL_ERROR "Native device builds require CATLIVE_ASIO_SDK; ASIO must remain available.")
+    endif()
+    add_library(CatLiveDeviceIO STATIC NativeAudio/WasapiDevice.cpp NativeAudio/AsioDevice.cpp
+        NativeAudio/ClockedDuplexDevice.cpp NativeAudio/CallbackHub.cpp)
+    target_compile_features(CatLiveDeviceIO PRIVATE cxx_std_20)
+    target_include_directories(CatLiveDeviceIO PRIVATE "${CATLIVE_ASIO_SDK}/common")
+    target_compile_definitions(CatLiveDeviceIO PRIVATE CATLIVE_HAS_ASIO_SDK=1 NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_compile_options(CatLiveDeviceIO PRIVATE /utf-8 /W4)
+    target_link_libraries(CatLiveDeviceIO PRIVATE avrt ole32 uuid propsys winmm advapi32)
+    target_link_libraries(CatLive PRIVATE CatLiveDeviceIO)
+    set_source_files_properties(Source/NativeAudioDeviceHost.cpp PROPERTIES COMPILE_OPTIONS "/std:c++20")
+    target_compile_definitions(CatLive PRIVATE CATLIVE_NATIVE_DEVICE_HOST=1)
+else()
+    target_compile_definitions(CatLive PRIVATE CATLIVE_NATIVE_DEVICE_HOST=0)
+endif()
 option(CATLIVE_NATIVE_FRONTEND "Build the optional --native-ui Windows presentation" ON)
+option(CATLIVE_IMGUI_FRONTEND "Build the Win32/Dear ImGui/DirectX Windows presentation" ON)
+if(CATLIVE_IMGUI_FRONTEND)
+    include(cmake/ImGuiFrontend.cmake)
+endif()
+if(CATLIVE_NATIVE_FRONTEND OR CATLIVE_IMGUI_FRONTEND)
+    target_sources(CatLive PRIVATE Source/FrontendBridge.cpp)
+endif()
 if(CATLIVE_NATIVE_FRONTEND)
     include(cmake/WebView2.cmake)
-    target_sources(CatLive PRIVATE Source/NativeFrontendHost.cpp Source/FrontendBridge.cpp)
+    target_sources(CatLive PRIVATE Source/NativeFrontendHost.cpp)
     target_link_libraries(CatLive PRIVATE CatLiveWebView2Loader)
     target_compile_definitions(CatLive PRIVATE CATLIVE_NATIVE_FRONTEND=1)
     add_custom_command(TARGET CatLive POST_BUILD
@@ -200,6 +227,16 @@ if(CATLIVE_NODE)
     set_tests_properties(DAWImportCompatibility PROPERTIES TIMEOUT 120)
 endif()
 install(TARGETS CatLive RUNTIME DESTINATION . RESOURCE DESTINATION .)
+
+# Category artwork is decoded once per open editor, never in the audio callback.
+foreach(category pianos upright electric keyboard organ strings guitar bass synth synthPad lead acordeon brass mallets drum)
+    set(artwork "${CATLIVEROOT}/Apple/Assets.xcassets/InstrumentArtwork_${category}.imageset/${category}.png")
+    add_custom_command(TARGET CatLive POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/InstrumentInterfaces"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${artwork}" "$<TARGET_FILE_DIR:CatLive>/InstrumentInterfaces/${category}.png")
+    install(FILES "${artwork}" DESTINATION InstrumentInterfaces)
+endforeach()
+
 
 # Local validation output and installed product both carry the replaceable encoder,
 # license, exact upstream source and the build configuration needed to rebuild it.

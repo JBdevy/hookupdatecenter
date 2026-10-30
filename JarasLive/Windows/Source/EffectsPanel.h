@@ -459,6 +459,7 @@ class EQGraph final : public Component {
 } // namespace fxui
 class EffectsPanel final : public Component, private ListBoxModel, private Timer {
   public:
+    static constexpr int minimumContentWidth = 840, minimumContentHeight = 600;
     std::function<bool(const KeyPress &)> globalKey;
     std::function<void(bool)> globalKeyState;
     EffectsPanel(Session &s, ID target, std::function<void(String)> report, bool itemTarget = false, std::vector<ID> batchTargets = {})

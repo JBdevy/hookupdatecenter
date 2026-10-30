@@ -52,6 +52,14 @@ inline float markerHeadWidth(double position, double next, double regionEnd, flo
     return available>=18 ? (float)available : 0.f;
 }
 
+inline float programChangeHeadWidth(const jaras::Song &song, double position, float naturalWidth, double scale) {
+    double end=std::numeric_limits<double>::infinity();
+    for(const auto &part:song.parts)
+        if(!part.parentRegionID && part.startTime<=position && position<part.endTime)
+            end=std::min(end,part.endTime);
+    return markerHeadWidth(position,std::numeric_limits<double>::infinity(),end,naturalWidth,scale);
+}
+
 inline String marker(const jaras::Song &song, const jaras::TimelineMarker &value) {
     if (value.tempoBPM)
         return String::formatted("%g  %d/%d",*value.tempoBPM,value.tempoBeats.value_or(4),value.tempoUnit.value_or(4));

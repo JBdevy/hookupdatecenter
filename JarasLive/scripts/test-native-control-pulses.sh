@@ -70,6 +70,10 @@ struct ShowSnapshot { var project: Project; var transport: TransportState }
     static let shared = MetronomeSettings()
     @Published var enabled = true
 }
+// The fixture isolates control animation; editor presentation is tested separately.
+extension View {
+    func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) -> some View { sheet(isPresented: isPresented, content: content) }
+}
 struct ProjectDocuments {}
 struct MetronomeEditor: View {
     var body: some View { Text("Metronome settings").frame(width: 220, height: 100)

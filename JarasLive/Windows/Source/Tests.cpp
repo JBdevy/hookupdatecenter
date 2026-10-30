@@ -1,4 +1,5 @@
 #include "SystemAudioDefaultsTests.h"
+#include "NativeAudioDeviceHostTests.h"
 #include "ProjectTabTransportTests.h"
 #include "AudioThreadSchedulingTests.h"
 #include "ItemLayout.h"
@@ -51,7 +52,7 @@
 #include "EffectsPanel.h"
 #include "CatDynamicsTests.h"
 #include "NativeFXPreviewTests.h"
-#if CATLIVE_NATIVE_FRONTEND
+#if CATLIVE_NATIVE_FRONTEND || CATLIVE_IMGUI_FRONTEND
 #include "FrontendBridgeTests.h"
 #include "NativeFrontendWaveformsTests.h"
 #endif
@@ -67,6 +68,7 @@
 #include "TrackEditing.h"
 #include "TrackDuplicationTests.h"
 #include "RecordingCaptureTests.h"
+#include "BufferedAudioWriterTests.h"
 #include "VinhetasTests.h"
 #include "ProjectReductionTests.h"
 #include "TransportFadeoutTests.h"
@@ -398,9 +400,136 @@ int runTests(const File &directory) {
     trackDuplicationTests::run(test);
     trackDuplicationTests::runSession<Session>(test);
     recordingCaptureTests::registerTests(directory, test);
+    nativeAudioDeviceHostTests::run(test);
+    bufferedAudioWriterTests::run(test);
     vinhetasTests::run(directory,test);
     projectReductionTests::run(directory,test,projectFixture);
     audioSeparationTests::run(test,projectFixture);
+    test("Prepared native FX previews avoid the device lock and preserve commit ordering", [&] {
+        auto settings=object(); put(settings,"inserted",Array<var>{"Compressor"});
+        put(settings,"compressorEnabled",true);put(settings,"ratio",1.);put(settings,"threshold",0.);put(settings,"makeup",0.);
+        jaras::Project project;project.id=uuid();project.masterVolume=1;
+        jaras::Song song;song.id=uuid();song.duration=3;
+        jaras::Track track;track.id=uuid();track.role.id="other";track.volume=1;
+        track.inputPatch=jaras::OutputPatch{1,2};track.inputMonitoring=true;
+        track.outputs=std::vector<jaras::OutputPatch>{{0,2}};
+        track.fxJSON=utf8(JSON::toString(settings));song.tracks={track};
+        AudioEngine audio(48000,true);audio.prepareSong(song,directory,{},&project);
+        audio.armTrack(track.id,true);audio.instrumentAllowed=true;
+        auto preview=settings.clone();put(preview,"makeup",-6.020599913);
+        std::atomic<bool> held{false},release{false},timedOut{false};
+        std::thread device([&] {
+            const ScopedLock lock(audio.devices.getAudioCallbackLock());held.store(true);
+            const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+            while(!release.load() && std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+            timedOut.store(!release.load());
+        });
+        while(!held.load())std::this_thread::yield();
+        try {
+            audio.previewNativeParameters(track.id,"Compressor","Compressor",preview);
+            audio.previewDynamics(track.id,"Cat Gate",object());
+        } catch(...) {release.store(true);device.join();throw;}
+        release.store(true);device.join();
+        expect(!timedOut.load(),"Native FX preview waited for the device callback lock");
+        AudioBuffer<float> input(2,512),output(2,512);
+        for(int channel=0;channel<2;++channel)FloatVectorOperations::fill(input.getWritePointer(channel),.25f,512);
+        const auto render=[&]{audio.render(output.getArrayOfWritePointers(),2,512,input.getArrayOfReadPointers(),2);};
+        render();
+        expect(std::abs(output.getSample(0,511)-.125f)<.0001f,"Native FX preview was not audible on the next block");
+        put(preview,"makeup",-12.);
+        audio.previewNativeParameters(track.id,"Compressor","Compressor",preview);
+        audio.setEffects(track.id,settings);
+        render();
+        expect(std::abs(output.getSample(0,511)-.25f)<.0001f,"Queued preview overwrote a later committed FX change");
+    });
+    test("Prepared metronome edits avoid the device lock and survive project replacement", [&] {
+        jaras::Song song; song.id=uuid(); song.duration=3; song.bpm=120;
+        AudioEngine audio(48000,true); audio.prepareSong(song,directory);
+        auto settings=object(); put(settings,"preset","Wood"); put(settings,"mode",1);
+        put(settings,"gainA",0); put(settings,"gainB",0); put(settings,"enabled",true);
+        auto patch=object(); put(patch,"firstChannel",3); put(patch,"channelCount",2); put(settings,"output",patch);
+        std::atomic<bool> held{false},release{false},timedOut{false};
+        std::thread device([&] {
+            const ScopedLock lock(audio.devices.getAudioCallbackLock());
+            held.store(true);
+            const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+            while(!release.load() && std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+            timedOut.store(!release.load());
+        });
+        while(!held.load())std::this_thread::yield();
+        try {
+            audio.configureMetronome(settings);
+            song.bpm=80; audio.refreshTiming(song);
+        } catch(...) {release.store(true);device.join();throw;}
+        release.store(true);device.join();
+        expect(!timedOut.load(),"Prepared sound/timing publication waited for the device lock");
+        AudioEngine::State state; state.playing=true; state.position=.75;
+        audio.transport(state);
+        AudioBuffer<float> output(4,512);
+        audio.render(output.getArrayOfWritePointers(),4,512);
+        const auto wood=ClickProgram::tone("Wood",true);
+        expect(output.getMagnitude(0,0,512)==0 && output.getMagnitude(2,0,512)>.1f,
+               "Prepared metronome tempo/output patch was not applied before Play");
+        expect(std::abs(output.getSample(2,128)-wood.data[128])<.0001f,
+               "Prepared metronome used the old sound or gain");
+        // Configuring before a new graph must retain user preferences, even if
+        // no callback has consumed the edit when project loading begins.
+        put(settings,"preset","Clave"); audio.configureMetronome(settings);
+        audio.prepareSong(song,directory);
+        state.position=0; audio.transport(state);
+        audio.render(output.getArrayOfWritePointers(),4,512);
+        const auto clave=ClickProgram::tone("Clave",true);
+        expect(std::abs(output.getSample(2,128)-clave.data[128])<.0001f,
+               "Graph replacement lost an unconsumed metronome preference");
+    });
+    test("Audio command queue overflow keeps control off the callback lock and preserves offline mixer state", [&] {
+        for (bool offline : {false, true}) {
+            jaras::Project project; project.id=uuid();
+            jaras::Song song; song.id=uuid(); song.duration=60; song.bpm=120;
+            jaras::Track track; track.id=uuid(); track.role.id="other"; track.name="Queue input";
+            track.inputPatch=jaras::OutputPatch{1,2}; track.inputMonitoring=true;
+            track.outputs=std::vector<jaras::OutputPatch>{{0,2}};
+            song.tracks.push_back(track);
+            auto audio=std::make_unique<AudioEngine>(48000,offline);
+            audio->prepareSong(song,directory,{},&project); audio->armTrack(track.id,true);
+            audio->instrumentAllowed=true;
+            std::atomic<bool> held{false}, release{false}, timedOut{false};
+            std::thread device([&] {
+                const ScopedLock lock(audio->devices.getAudioCallbackLock());
+                held.store(true);
+                const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+                while(!release.load() && std::chrono::steady_clock::now()<deadline) std::this_thread::yield();
+                timedOut.store(!release.load());
+            });
+            while(!held.load()) std::this_thread::yield();
+            try {
+                for(int i=0;i<2500;++i) {
+                    project.masterMute=(i%2)==0; project.masterVolume=.9;
+                    song.tracks[0].volume=.75; audio->setMixer(project,song);
+                    // Mixer snapshots coalesce. Routing remains ordered and
+                    // deliberately fills the command stream for this test.
+                    audio->updateTransportRouting({});audio->updateTransportRouting({});
+                }
+                project.masterMute=false; project.masterVolume=.25; song.tracks[0].volume=.5;
+                audio->setMixer(project,song);
+            } catch(...) { release.store(true); device.join(); throw; }
+            release.store(true); device.join();
+            expect(!timedOut.load(),"Command overflow waited for the device callback lock");
+            AudioEngine::State state; state.playing=true; state.position=2; audio->transport(state);
+            state.playing=false; state.position=4; audio->transport(state);
+            state.playing=true; state.position=7; audio->transport(state);
+            AudioBuffer<float> input(2,128),output(2,128);
+            for(int ch=0;ch<2;++ch) FloatVectorOperations::fill(input.getWritePointer(ch),.5f,128);
+            const auto render=[&] { audio->render(output.getArrayOfWritePointers(),2,128,input.getArrayOfReadPointers(),2); };
+            render();
+            expect(audio->state().playing==offline,"Realtime command budget or complete offline drain was lost");
+            for(int block=0;block<8;++block) render();
+            expect(audio->state().playing && audio->state().position>=7 && audio->state().position<7.1,
+                   "Overflow lost/reordered Stop, seek or Play");
+            expect(std::abs(output.getSample(0,127)-.0625f)<.0001f,
+                   "Overflow failed to apply the final master/track gain and mute before rendering");
+        }
+    });
     test("Armed input meters work before REC with monitoring off and no master leakage", [&] {
         jaras::Song song; song.id = uuid(); song.duration = 60; song.bpm = 120;
         jaras::Track track; track.id = uuid(); track.role.id = "other"; track.name = "Input 3/4";
@@ -417,6 +546,55 @@ int runTests(const File &directory) {
         expect(levels[0] > .19f && levels[1] > .39f, "Stopped armed track did not meter its selected stereo input");
         expect(output.getMagnitude(0, 512) == 0 && audio.peak() == 0, "Input metering routed monitor-off audio to master");
         expect(!audio.state().playing && !audio.isRecording(), "Metering started playback or recording");
+    });
+    test("Track meter handles survive graph adoption, deletion and engine destruction", [&] {
+        jaras::Song song; song.id = uuid(); song.duration = 60; song.bpm = 120;
+        jaras::Track track; track.id = uuid(); track.role.id = "other"; track.name = "Meter lifetime";
+        track.inputPatch = jaras::OutputPatch{1, 2}; track.inputMonitoring = false;
+        track.outputs = std::vector<jaras::OutputPatch>{{0, 2}};
+        song.tracks.push_back(track);
+        auto audio = std::make_unique<AudioEngine>(48000, true);
+        audio->prepareSong(song, directory); audio->armTrack(track.id, true);
+        AudioBuffer<float> input(2, 512), output(2, 512);
+        FloatVectorOperations::fill(input.getWritePointer(0), .25f, 512);
+        FloatVectorOperations::fill(input.getWritePointer(1), -.5f, 512);
+        auto render = [&] { audio->render(output.getArrayOfWritePointers(), 2, 512,
+                                         input.getArrayOfReadPointers(), 2); };
+        render();
+        const auto original = audio->trackMeterState(track.id);
+        expect(original && original->levels[0].load() > .24f && original->levels[1].load() > .49f,
+               "Retained meter does not reflect callback input");
+        expect(original->held.amplitude() == audio->heldPeak(track.id), "Held peak payload differs");
+        expect(!audio->trackMeterState("missing"), "Unknown track acquired a meter");
+        const auto before = audio->meterLevels(track.id);
+        {
+            auto prepared = std::make_unique<AudioEngine>(48000, true);
+            prepared->prepareSong(song, directory);
+            audio->adoptPreparedSong(*prepared, true);
+            const auto current = audio->trackMeterState(track.id);
+            expect(current && current != original, "Graph did not publish its own meter generation");
+            expect(audio->meterLevels(track.id) == before && current->held.amplitude() == original->held.amplitude(),
+                   "Live graph adoption lost meter history");
+        } // Retired bus and its DSP are destroyed, while the UI retains telemetry.
+        FloatVectorOperations::fill(input.getWritePointer(0), .75f, 512);
+        render();
+        const auto retained = audio->trackMeterState(track.id);
+        expect(retained->levels[0].load() > .74f && original->levels[0].load() == before[0],
+               "New graph writes leaked into the retired meter generation");
+        audio->clearPeak(track.id);
+        expect(retained->held.amplitude() == 0 && original->held.amplitude() > 0,
+               "Peak reset affected the retired graph");
+        song.tracks.clear(); audio->prepareSong(song, directory);
+        expect(!audio->trackMeterState(track.id) && audio->trackPeak(track.id) == 0 &&
+               audio->meterLevels(track.id) == std::array<float, 2>{}, "Deleted track remains in meter registry");
+        expect(audio->fxLevels(track.id) == std::pair<float, float>{}, "Deleted FX meter remains visible");
+        audio.reset();
+        expect(retained->levels[0].load() > .74f && original->levels[0].load() == before[0],
+               "Retained meter lifetime depended on the DSP engine");
+        auto other = std::make_unique<AudioEngine>(48000, true);
+        song.id = uuid(); song.tracks.push_back(track); other->prepareSong(song, directory);
+        expect(other->heldPeak(track.id) == 0 && other->trackPeak(track.id) == 0,
+               "Another project inherited the old meter state");
     });
     transportFadeoutTests::registerTests(directory, test);
     addActionBindingsTests(directory, test);
@@ -1072,6 +1250,13 @@ int runTests(const File &directory) {
                 return image;
             };
             const auto original=draw(0),panned=draw(16);const int shift=roundToInt(16*density);
+            // Subpixel follow phases within one device column must not modulate
+            // the visible peaks (especially dense metronome/click waveforms).
+            const auto phaseA=draw(16.05f/density),phaseB=draw(16.40f/density);
+            for(int x=4;x<phaseA.getWidth()-4;++x)
+                for(int y=roundToInt(20*density);y<roundToInt(93*density);++y)
+                    expect(std::abs((int)phaseA.getPixelAt(x,y).getAlpha()-(int)phaseB.getPixelAt(x,y).getAlpha())<=2,
+                        "Fractional follow changed waveform brightness: density="+String(density));
             int tall=0;
             for(int x=4;x<original.getWidth()-shift-4;++x) {
                 int height=0;
@@ -3237,6 +3422,46 @@ int runTests(const File &directory) {
         piano.render(buffer, notes, 1024);
         expect(buffer.getMagnitude(0, 1024) == 0, "Empty instrument panic emitted audio");
     });
+    test("Realtime MIDI ingress preserves short events without growing callback buffers",[&] {
+        auto input=std::make_unique<RealtimeMIDIInput>();
+        MidiBuffer output;output.ensureSize(32768);output.addEvent(MidiMessage::noteOn(1,60,uint8(100)),0);
+        const auto *storage=(*output.begin()).data;output.clear();input->reset(48000);
+        input->removeNextBlockOfMessages(output,512);output.clear();
+        for(int cycle=0;cycle<50;++cycle) {
+            for(int i=0;i<512;++i){auto message=MidiMessage::noteOn(1,i%128,uint8(100));message.setTimeStamp(Time::getMillisecondCounterHiRes()*.001);input->addMessageToQueue(message);}
+            input->removeNextBlockOfMessages(output,512);
+            expect(output.getNumEvents()==512,"MIDI queue lost events below capacity");
+            expect((*output.begin()).data==storage,"MIDI callback destination reallocated");
+            for(const auto event:output)expect(event.samplePosition>=0&&event.samplePosition<512,"MIDI timestamp escaped the audio block");
+            output.clear();
+        }
+        expect(input->droppedCount()==0,"MIDI ingress unexpectedly overflowed");
+        for(int i=0;i<3000;++i)input->addMessageToQueue(MidiMessage::noteOn(1,60,uint8(100)));
+        input->removeNextBlockOfMessages(output,512);
+        int release=0;for(const auto event:output)if(event.getMessage().isAllNotesOff())++release;
+        expect(input->droppedCount()>0&&release==16,"Overflow could leave notes held on a MIDI channel");
+        expect((*output.begin()).data==storage,"Overflow recovery reallocated the MIDI destination");
+        output.clear();
+        auto fresh=MidiMessage::noteOn(3,72,uint8(110));
+        fresh.setTimeStamp(Time::getMillisecondCounterHiRes()*.001);
+        input->addMessageToQueue(fresh);
+        input->removeNextBlockOfMessages(output,512);
+        expect(output.getNumEvents()==1&&(*output.begin()).getMessage().getNoteNumber()==72,
+               "Discarded overflow events delayed fresh MIDI input");
+        output.clear();
+        for(int i=0;i<2048;++i)input->addMessageToQueue(MidiMessage::noteOn(1,60,uint8(100)));
+        input->reset(48000);
+        input->addMessageToQueue(fresh);
+        input->removeNextBlockOfMessages(output,0);
+        expect(output.isEmpty(),"Zero-length callback consumed pending recovery or MIDI");
+        input->removeNextBlockOfMessages(output,512);
+        int notes=0;release=0;
+        for(const auto event:output){if(event.getMessage().isNoteOn()){++notes;expect(event.getMessage().getNoteNumber()==72,"Old notes replayed after device restart");}if(event.getMessage().isAllNotesOff())++release;}
+        expect(notes==1&&release==16,"Restart did not release old notes and deliver new input in its first block");
+        expect((*output.begin()).data==storage,"Restart recovery reallocated the MIDI destination");
+        output.clear();input->removeNextBlockOfMessages(output,512);
+        expect(output.isEmpty(),"Recovery was repeated on the following empty block");
+    });
     test("Live MIDI stays silent without an explicitly inserted instrument",[&] {
         AudioEngine engine;engine.prepareOffline(48000);engine.instrumentAllowed=true;
         jaras::Project project;auto song=Session::makeEmptyProject("MIDI silence").songs.front();
@@ -3342,6 +3567,19 @@ int runTests(const File &directory) {
         track.clips[0].muted = false;
         track.clips[0].frozenMIDI = true;
         expect(playbackNotes(track).empty(), "Frozen MIDI was doubled with its audio render");
+    });
+    test("Instrument uninstall preserves project banks and rejects paths outside catalog", [&] {
+        const auto root=directory.getChildFile("UninstallInstruments");
+        const auto library=root.getChildFile("Library"), project=root.getChildFile("Project/Instruments");
+        library.createDirectory();project.createDirectory();
+        const auto installed=instrumentAssets::installedFile("astoria-grand",library);
+        const auto bundled=project.getChildFile("astoria-grand.sf2"),other=root.getChildFile("outside.sf2");
+        expect(installed.replaceWithText("RIFF0000sfbk")&&bundled.replaceWithText("RIFF0000sfbk")&&other.replaceWithText("keep"),"Fixture write");
+        instrumentAssets::uninstall("astoria-grand",library);
+        expect(!installed.existsAsFile()&&bundled.loadFileAsString()=="RIFF0000sfbk","Catalog removal touched project bank");
+        instrumentAssets::uninstall("astoria-grand",library);
+        bool rejected=false;try{instrumentAssets::uninstall("../outside",library);}catch(...){rejected=true;}
+        expect(rejected&&other.loadFileAsString()=="keep","Uninstall escaped catalog root");
     });
     const auto soundFontPath = SystemStats::getEnvironmentVariable("CATLIVE_TEST_SF2", {});
     if (soundFontPath.isNotEmpty())
@@ -4401,7 +4639,7 @@ int runTests(const File &directory) {
     });
     dynamicsTests::run(test, expect, directory);
     nativePreviewTests::run(test, expect, directory);
-#if CATLIVE_NATIVE_FRONTEND
+#if CATLIVE_NATIVE_FRONTEND || CATLIVE_IMGUI_FRONTEND
     frontendBridgeTests::run(test,expect,directory);
     frontendWaveformTests::run(test,expect,directory);
 #endif
@@ -4646,8 +4884,12 @@ int runTests(const File &directory) {
             put(plugin,"name",text(plugins[0].name));put(plugin,"path",pluginPath);put(plugin,"category",text(plugins[0].category));put(plugin,"bypassed",false);
             put(fx,"externalPlugins",Array<var>{plugin});put(fx,"inserted",Array<var>{"External:"+str(plugin,"id")});chains.push_back(fx);
         }
-        struct Running {std::atomic<bool> stop{false},finite{true};std::atomic<int> blocks{0};std::thread thread;
-            ~Running(){stop=true;if(thread.joinable())thread.join();}} running;
+        struct Running {
+            AudioEngine& audio;
+            explicit Running(AudioEngine& engine):audio(engine){audio.setExternalRenderDriven(true);}
+            std::atomic<bool> stop{false},finite{true};std::atomic<int> blocks{0};std::thread thread;
+            ~Running(){stop=true;if(thread.joinable())thread.join();audio.setExternalRenderDriven(false);}
+        } running(session.audio);
         running.thread=std::thread([&]{AudioBuffer<float> output(2,128);while(!running.stop.load()){
             {const ScopedLock lock(session.audio.devices.getAudioCallbackLock());session.audio.render(output.getArrayOfWritePointers(),2,128);}
             for(int ch=0;ch<2;++ch)for(int n=0;n<128;++n)if(!std::isfinite(output.getSample(ch,n)))running.finite=false;
@@ -6531,6 +6773,8 @@ int runTests(const File &directory) {
             while(audio.preparingTransport() && Time::getMillisecondCounterHiRes()-started<5000)
                 floatingControlTests::pump();
             expect(!audio.preparingTransport(),"Middle Play never finished preparation");
+            expect((int64)audio.streamDiagnostics()["fallbackDecoderOpens"]==0,
+                   "Preparing a stopped cold destination opened competing fallback decoders");
             const auto elapsed=Time::getMillisecondCounterHiRes()-started;
             auto measurement=object();put(measurement,"position",at);put(measurement,"milliseconds",elapsed);measurements.add(measurement);
             expect(reference->read(&expected,0,256,(int64)std::llround(at*44100),true,true),"Reference MP3 read failed");

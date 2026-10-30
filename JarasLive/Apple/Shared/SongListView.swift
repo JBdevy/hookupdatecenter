@@ -143,17 +143,12 @@ struct SongListView: View {
     // not rebuild every row in a large playlist.
     private final class EntryEditorState: ObservableObject {
         @Published var entry: EntryEdit?
-        @Published var blockSymbol = true
         @Published var uppercaseName = true
     }
     @State private var entryEditor = EntryEditorState()
     private var editingEntry: EntryEdit? {
         get { entryEditor.entry }
         nonmutating set { entryEditor.entry = newValue }
-    }
-    private var editingBlockSymbol: Bool {
-        get { entryEditor.blockSymbol }
-        nonmutating set { entryEditor.blockSymbol = newValue }
     }
     private var editingUppercaseName: Bool {
         get { entryEditor.uppercaseName }
@@ -180,9 +175,6 @@ struct SongListView: View {
     @ObservedObject private var unifiedTextColor = AppearanceColor.shared("jaras.setlist.unifiedTextColor", default: 0xffeb3b)
     @ObservedObject private var blockTextColor = AppearanceColor.shared("jaras.setlist.blockTextColor", default: 0x69ed91)
     @AppStorage("jaras.blocks.symbol") private var defaultBlockSymbol = true
-    @State private var blockSymbolTargets = Set<UUID>()
-    @State private var editingMultipleSymbols = false
-    @State private var multipleSymbolDraft = true
     @State private var showingBlockDefaults = false
     @State private var blockSymbolDraft = true
     @State private var createdBlock: UUID?
@@ -345,7 +337,7 @@ struct SongListView: View {
                         }
                     Button {
                         if playlist == nil { allRegionsOrder = (allRegionsOrder + 1) % 3 }
-                        else { createdBlock = show.addSetlistBlock(symbol: defaultBlockSymbol, namePrefix: JarasLocalization.string("Bloco")) }
+                        else { createdBlock = show.addSetlistBlock(namePrefix: JarasLocalization.string("Bloco")) }
                     } label: {
                         Text(verbatim: playlist == nil ? ["Timeline", "A-Z", "Z-A"][min(2,max(0,allRegionsOrder))] : JarasLocalization.string("Blocks").uppercased()).font(.jarasSystem(size: 9, weight: .bold)).frame(width: max(0, (geometry.size.width - 6) / 3), height: 26)
                             .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
@@ -403,17 +395,12 @@ struct SongListView: View {
                         ForEach(visible) { entry in
                             switch entry {
                             case .block(let block):
-                                SetlistBlockRow(block: block, nameColor: UInt32(blockTextColor.value), showSymbols: defaultBlockSymbol, fontStyle: fontStyle, selected: selectedEntries.contains(block.id))
+                                SetlistBlockRow(block: block, nameColor: UInt32(blockTextColor.value), showSymbols: showingBlockDefaults ? blockSymbolDraft : defaultBlockSymbol, fontStyle: fontStyle, selected: selectedEntries.contains(block.id))
                                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(selectedEntries.contains(block.id) ? JarasTheme.green : .clear, lineWidth: 1))
                                     .onTapGesture { selectEntry(block.id, visible: visible) }
                                     .contextMenu {
                                         Button("Edit block") {
-                                            let blocks = show.listedBlocks.filter { selectedEntries.contains($0.id) }
-                                            if selectedEntries.contains(block.id), blocks.count > 1, blocks.count == selectedEntries.count {
-                                                blockSymbolTargets = Set(blocks.map(\.id))
-                                                multipleSymbolDraft = blocks.allSatisfy(\.showsSymbol)
-                                                editingMultipleSymbols = true
-                                            } else { editingBlockSymbol = block.showsSymbol; editingEntry = EntryEdit(id: block.id, name: block.name, color: block.color, block: true) }
+                                            editingEntry = EntryEdit(id: block.id, name: block.name, color: block.color, block: true)
                                         }
                                         Button("Learn MIDI") {
                                             if let number = show.setlistBlockNumber(block.id) {
@@ -648,13 +635,6 @@ struct SongListView: View {
         }
         .sheet(item: $multiLoopRegion) { region in MultiLoopsEditor(show: show, regionID: region.id) }
         .background(EntryEditorHost(show: show, state: entryEditor))
-        .sheet(isPresented: $editingMultipleSymbols) {
-            VStack(alignment: .leading, spacing: 16) {
-                Toggle("SIMBOL", isOn: $multipleSymbolDraft)
-                    .onChange(of: multipleSymbolDraft) { enabled in show.setBlockSymbols(blockSymbolTargets, enabled: enabled) }
-                HStack { Spacer(); Button("Close") { editingMultipleSymbols = false }.keyboardShortcut(.cancelAction) }
-            }.padding(18).frame(width: 240).background(JarasTheme.panel)
-        }
         .sheet(isPresented: $showingBlockDefaults) {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Blocks").font(.jarasHeadline)
@@ -679,10 +659,10 @@ struct SongListView: View {
                 }.background(JarasTheme.panel)
             } else {
             NameColorEditor(title: edit.block ? "Edit block" : "Edit song", initialName: edit.name, initialColor: edit.color, save: { name, color in
-                if edit.block { show.editSetlistBlock(edit.id, name: name, color: color, symbol: state.blockSymbol) }
+                if edit.block { show.editSetlistBlock(edit.id, name: name, color: color) }
                 else if edit.regionTargets.count > 1 { show.editRegionColors(edit.regionTargets, color: color) }
                 else { show.editRegion(edit.id, name: name, color: color, uppercaseName: state.uppercaseName) }
-            }, symbol: edit.block ? $state.blockSymbol : nil, uppercaseName: edit.block || edit.regionTargets.count > 1 ? nil : $state.uppercaseName, nameEditable: edit.regionTargets.count <= 1, showsName: edit.regionTargets.count <= 1).background(JarasTheme.panel)
+            }, uppercaseName: edit.block || edit.regionTargets.count > 1 ? nil : $state.uppercaseName, nameEditable: edit.regionTargets.count <= 1, showsName: edit.regionTargets.count <= 1).background(JarasTheme.panel)
             }
         }
         }
@@ -1723,7 +1703,8 @@ private struct SetlistBlockRow: View {
     var selected = false
     var body: some View {
         HStack(spacing: 8) {
-            if showSymbols && block.showsSymbol {
+            // Visibility is global, including blocks saved with the former per-block flag.
+            if showSymbols {
                 Path { path in
                     path.move(to: CGPoint(x: 0, y: 6)); path.addLine(to: CGPoint(x: 62, y: 6))
                     path.move(to: CGPoint(x: 56, y: 0)); path.addLine(to: CGPoint(x: 62, y: 6)); path.addLine(to: CGPoint(x: 56, y: 12))

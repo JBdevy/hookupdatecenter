@@ -11,7 +11,7 @@ class ProjectOpenConfirmationPanel final : public Component {
             if (hover) colour = colour.brighter(.08f);
             if (down) colour = colour.darker(.12f);
             g.setColour(colour);g.fillRoundedRectangle(getLocalBounds().toFloat(), getHeight() * .5f);
-            g.setColour(Colours::white);g.setFont(theme::semiboldFont(confirmationStyle::buttonSize));
+            g.setColour(primary ? Colours::black : Colours::white);g.setFont(theme::semiboldFont(confirmationStyle::buttonSize));
             g.drawText(getButtonText(),getLocalBounds().reduced(10,0),Justification::centred);
         }
     } cancel, open;

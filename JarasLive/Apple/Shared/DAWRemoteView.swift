@@ -369,6 +369,7 @@ struct DAWRemoteClientView: View {
         var playlist: UUID?
         var regionColor: UInt32
         var unifiedColor: UInt32
+        var blockSymbols: Bool
     }
     private static var cachedPresentationKey: PresentationKey?
     private static var cachedRegions: [DAWRemoteState.Region] = []
@@ -425,7 +426,8 @@ struct DAWRemoteClientView: View {
             }
             let presentationKey = PresentationKey(project: snapshot.project.id, song: song?.id,
                 revision: show.projectRevision, setlistRevision: show.setlistRevision, playlist: selectedPlaylist?.id,
-                regionColor: regionTextColor, unifiedColor: unifiedTextColor)
+                regionColor: regionTextColor, unifiedColor: unifiedTextColor,
+                blockSymbols: UserDefaults.standard.object(forKey: "jaras.blocks.symbol") as? Bool ?? true)
             let presentationChanged = cachedPresentationKey != presentationKey
             if presentationChanged {
                 cachedPresentationKey = presentationKey
@@ -436,7 +438,7 @@ struct DAWRemoteClientView: View {
                         color: $0.color, section: $0.isSection, unifiedRegionID: $0.unifiedRegionID, sourceRegionID: $0.sourceRegionID)
                 }
                 cachedBlocks = show.listedBlocks.map {
-                    .init(id: $0.id, name: $0.name, color: $0.color, beforeRegion: $0.beforeRegionId, symbol: $0.showsSymbol)
+                    .init(id: $0.id, name: $0.name, color: $0.color, beforeRegion: $0.beforeRegionId, symbol: presentationKey.blockSymbols)
                 }
                 cachedPlaylistSeconds = cachedRegions.reduce(0) { $0 + max(0, $1.end - $1.start) }
                 cachedDuration = song?.duration ?? 0

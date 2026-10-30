@@ -226,8 +226,12 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
     const auto icon = b.getProperties().getWithDefault("icon", {}).toString();
     g.setFont((bool)b.getProperties()["boldWeight"] ? theme::font(size, true)
               : (bool)b.getProperties()["mediumWeight"] ? theme::mediumFont(size) : theme::semiboldFont(size));
+    const auto background=b.findColour(b.getToggleState()?TextButton::buttonOnColourId:TextButton::buttonColourId);
+    const bool greenAction=background==theme::green || background==Colour(0xff60b746) ||
+        background==Colour(0xff63b641) || background==Colour(0xff64b64a) ||
+        background==Colour(0xff69b83d) || background==Colour(0xff60b53d);
     g.setColour(
-        b.findColour(b.getToggleState() ? TextButton::textColourOnId : TextButton::textColourOffId)
+        (greenAction?Colours::black:b.findColour(b.getToggleState() ? TextButton::textColourOnId : TextButton::textColourOffId))
             .withMultipliedAlpha(b.isEnabled() || icon == "pause" || b.getProperties().contains("transportColour") ? 1.0f : .35f));
     const auto leading = b.getProperties().getWithDefault("leadingIcon", {}).toString();
     if (leading.isNotEmpty() && (bool)b.getProperties()["centredIconLabel"]) {
@@ -979,7 +983,7 @@ class Workspace::Caption final : public Component {
         if (w.browserVisible || w.loginPanel)
             return;
         auto saved = Time::fromISO8601(text(w.session.project().updatedAt));
-        auto project = text(w.session.project().name) + (w.session.dirty ? " *" : "");
+        auto project = text(w.session.project().name);
         g.setColour(Colours::white.withAlpha(.9f));
         g.setFont(theme::semiboldFont(11));
         const int accessWidth = std::min(440, std::max(80, getWidth() - 604));
@@ -1732,6 +1736,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         put(v, "horizontal", horizontal.getCurrentRangeStart());
         put(v, "horizontalScrollbarVisible", horizontal.isVisible());
         put(v, "waveforms", waveforms.diagnostics());
+        put(v,"waveformRasterBuilds",(int64)canvas.overviewBuilds);
+        put(v,"waveformRasterHits",(int64)canvas.overviewHits);
+        put(v,"waveformRasterBytes",(int64)canvas.overviewBytes);
         Array<var> recording;
         for(const auto &item:w.session.recordingItems) {
             auto take=object();put(take,"name",text(item.clip.name));put(take,"frames",item.preview->frames.load());
@@ -1966,18 +1973,30 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             size_t bytes=0;
         };
         std::map<ID,OverviewWaveform> overviewWaveforms;
-        uint64 overviewRevision=~uint64(0),overviewClock=0;
+        uint64 overviewRevision=~uint64(0),overviewClock=0,overviewBuilds=0,overviewHits=0;
         double overviewZoom=0;
         float overviewScale=0;
         size_t overviewBytes=0;
         bool drawOverviewWaveform(Graphics &g,const std::shared_ptr<const WaveformCache::Data> &data,
             const jaras::AudioClip &clip,juce::Rectangle<float> rect,Colour ink,const jaras::Song &song) {
+            // Derive width before the viewport subtraction. Subtracting two
+            // rounded screen endpoints changes it by fractions every scroll frame.
+            rect.setWidth(std::max(2.f,(float)(clip.duration*t.w.pixelsPerSecond)-2.f));
             const float physical=jlimit(1.f,8.f,g.getInternalContext().getPhysicalPixelScaleFactor());
+            // At close zoom a long item can span billions of offscreen pixels.
+            // Reject it before conversion/allocation and use the clipped live renderer.
+            if(!std::isfinite(rect.getWidth()) || rect.getWidth()*physical>16384 ||
+               !std::isfinite(rect.getHeight()) || rect.getHeight()*physical>4096)return false;
             const int width=(int)std::ceil(rect.getWidth()*physical)+2;
             const int height=(int)std::ceil(rect.getHeight()*physical)+2;
             const size_t bytes=(size_t)std::max(0,width)*(size_t)std::max(0,height)*4;
-            constexpr size_t capacity=8*1024*1024;
+            constexpr size_t capacity=16*1024*1024;
             if(width<=0 || height<=0 || bytes>capacity/4)return false;
+            // Detailed PCM pages arrive asynchronously; keep those live rather
+            // than retaining an envelope rendered before the samples arrive.
+            const auto &timing=waveformTiming(clip,song);
+            for(const auto &span:timing.spans)
+                if(data->sampleRate*std::max(.001,span.rate)/(t.w.pixelsPerSecond*physical)<=32)return false;
             if(overviewRevision!=t.w.session.revision || overviewZoom!=t.w.pixelsPerSecond || overviewScale!=physical) {
                 overviewWaveforms.clear();overviewBytes=0;overviewRevision=t.w.session.revision;
                 overviewZoom=t.w.pixelsPerSecond;overviewScale=physical;
@@ -1995,6 +2014,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         [](const auto &a,const auto &b){return a.second.used<b.second.used;});
                     overviewBytes-=oldest->second.bytes;overviewWaveforms.erase(oldest);
                 }
+                ++overviewBuilds;
                 OverviewWaveform entry;
                 entry.image=Image(Image::ARGB,width,height,true);entry.source=data.get();entry.version=data->version;
                 entry.width=rect.getWidth();entry.height=rect.getHeight();entry.gain=gain;entry.colour=ink.getARGB();entry.bytes=bytes;
@@ -2004,12 +2024,15 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     {0,0,width/physical,height/physical},t.w.pixelsPerSecond,ink,false,{},&song,&waveformTiming(clip,song));
                 found=overviewWaveforms.emplace(clip.id,std::move(entry)).first;overviewBytes+=bytes;
             }
+            else ++overviewHits;
             found->second.used=++overviewClock;
-            // Only compact, unedited audio previews use this bounded raster cache.
-            // Keep device resolution and a fractional transform so Continuous Scroll
-            // moves the preview smoothly without rebuilding all peak paths each frame.
+            // Stable audio previews of every width share this bounded raster cache.
+            // Keep each source pixel on a device pixel during Continuous Scroll.
+            // Resampling a dense click waveform at a different fractional phase
+            // every frame makes its lower/upper edges appear to pulse.
             g.drawImageTransformed(found->second.image,AffineTransform::scale(1.f/physical)
-                .translated(rect.getX()-1.f/physical,rect.getY()-1.f/physical));
+                .translated(WaveformRenderer::pixelAlignedPosition(rect.getX(),physical)-1.f/physical,
+                    WaveformRenderer::pixelAlignedPosition(rect.getY(),physical)-1.f/physical));
             return true;
         }
         void refreshClipIntervals(const jaras::Song &song) {
@@ -2267,10 +2290,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 const ProgramChangeLanes stacks(track);
                 if(track.role.id=="programChange")for(const auto &marker:track.programChanges) {
                     const float markerY=float(y+4+stacks.lanes.at(marker.id)*24);
-                    const float x=t.xAt(marker.position), headWidth=programHeadWidth(marker);
+                    const float x=t.xAt(marker.position), headWidth=timelineRegionLabels::programChangeHeadWidth(*song,marker.position,programHeadWidth(marker),t.w.pixelsPerSecond);
                     if(x+headWidth<0 || x>getWidth())continue;
                     const auto colour=trackMuted?theme::secondary:Colour(0xff91a8ff);
                     g.setColour(colour);g.fillRect(x,markerY,1.f,float(y+height-4)-markerY);
+                    if(headWidth<=0)continue;
                     const juce::Rectangle<float> head(x,markerY,headWidth,19);
                     if(t.w.session.selectedProgramChange==marker.id)g.setColour(theme::green);
                     g.fillRoundedRectangle(head,4);g.setColour(Colours::black);g.setFont(theme::semiboldFont(10));
@@ -2408,7 +2432,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         const auto data = source ? t.waveforms.request(t.waveformFile(source->path)) : nullptr;
                         if (data) {
                             const auto ink=Colour::greyLevel(waveGray);
-                            const bool overview=simpleOverview && t.gestureMode==0 && !controlApplies && !movingClipPreview && !resizedClipPreview && !t.regionPreview;
+                            const bool overview=t.gestureMode==0 && !controlApplies && !movingClipPreview && !resizedClipPreview && !t.regionPreview;
                             if(!overview || !drawOverviewWaveform(g,data,clip,rect,ink,*song))
                                 WaveformRenderer::draw(g, t.waveforms, data, clip, rect,
                                     getLocalBounds().toFloat(), t.w.pixelsPerSecond, ink, false, gainOverride,song,&waveformTiming(clip,*song),
@@ -2732,7 +2756,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 const float top=headerHeight()+t.w.rowTop(programRow)-t.w.verticalOffset+4;
                 ID markerID;const ProgramChangeLanes stacks(track);
                 for(const auto &m:track.programChanges)
-                    if(juce::Rectangle<float>(t.xAt(m.position),top+stacks.lanes.at(m.id)*24,programHeadWidth(m),19).contains(e.position)){markerID=m.id;break;}
+                    if(juce::Rectangle<float>(t.xAt(m.position),top+stacks.lanes.at(m.id)*24,timelineRegionLabels::programChangeHeadWidth(*song,m.position,programHeadWidth(m),t.w.pixelsPerSecond),19).contains(e.position)){markerID=m.id;break;}
                 if(!markerID.empty())t.w.selectProgramMarker(markerID);
                 if(e.mods.isPopupMenu()) {
                     PopupMenu menu;menu.addItem(1,localization::translate("Copy"),!markerID.empty());
@@ -3989,6 +4013,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     button("masterSolo", "S", [this] { session.command(jaras::CommandKind::solo); });
     button("masterMono", localization::translate(String::fromUTF8("Estéreo")),
            [this] { session.command(jaras::CommandKind::masterMono); });
+    button("masterPatch", "Patch", [this] { handleMasterMenu(1, false); });
     button("masterFX", "FX", [this] { openFX(); });
     fxchain::bind(static_cast<QuietButton &>(*controls["masterFX"]), session, {},
                   [this](bool remove) { changeMixerFX({}, remove); });
@@ -4104,7 +4129,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         controls[id]->getProperties().set("plain", true);
     for (auto id : {"play", "pause", "subplay", "loop", "record", "metronome", "video", "tp1", "tp2",
                     "notices", "preview", "remote", "save", "setlist", "export", "resolume", "grandma2", "advanced",
-                    "masterMute", "masterSolo", "masterMono", "masterFX"})
+                    "masterMute", "masterSolo", "masterMono", "masterPatch", "masterFX"})
         controls[id]->getProperties().set("flat", true);
     for (auto id : {"railTeleprompt", "railTeleprompt2"})
         controls[id]->setColour(TextButton::textColourOffId, Colour(0xffff5555));
@@ -4124,7 +4149,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         controls[id]->getProperties().set("transportColour", (int64)colour.getARGB());
     }
     controls["pause"]->setColour(TextButton::buttonColourId, Colour(0xff454545));
-    for (auto id : {"masterMono", "masterFX", "masterMute", "masterSolo"}) {
+    for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"}) {
         auto &control = *controls[id];
         const bool compact = String(id) == "masterMute" || String(id) == "masterSolo";
         control.getProperties().set("macMasterControl", true);
@@ -4729,6 +4754,11 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
             setVisible(false);
         }
     };
+    const bool effectsPanel = dynamic_cast<EffectsPanel *>(panel.get()) != nullptr;
+    if (effectsPanel) {
+        width = std::max(width, EffectsPanel::minimumContentWidth);
+        height = std::max(height, EffectsPanel::minimumContentHeight);
+    }
     const bool patchPanel = dynamic_cast<PatchPanel *>(panel.get()) != nullptr;
     auto window = std::make_unique<PanelWindow>(localization::translate(name == "Mixer" ? "Hoz-Mixer" : name), patchPanel);
     auto *settings = dynamic_cast<SettingsPanel *>(panel.get());
@@ -4756,9 +4786,11 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     };
     panel->setSize(width, height);
     window->setContentOwned(panel.release(), true);
-    window->setResizeLimits(preferencesPanel ? width : name.startsWith("Piano Roll") ? 760 : 360,
-                            preferencesPanel ? height + 32 : name.startsWith("Piano Roll") ? 440 : name == "Mixer" ? 305 : 240, 3840, 2160);
-    window->centreAroundComponent(this, width, height + (patchPanel ? 0 : 32));
+    const auto contentBorder = window->getContentComponentBorder();
+    window->setResizeLimits(effectsPanel ? EffectsPanel::minimumContentWidth + contentBorder.getLeftAndRight() : preferencesPanel ? width : name.startsWith("Piano Roll") ? 760 : 360,
+                            effectsPanel ? EffectsPanel::minimumContentHeight + contentBorder.getTopAndBottom() : preferencesPanel ? height + 32 : name.startsWith("Piano Roll") ? 440 : name == "Mixer" ? 305 : 240, 3840, 2160);
+    window->centreAroundComponent(this, effectsPanel ? width + contentBorder.getLeftAndRight() : width,
+                                  effectsPanel ? height + contentBorder.getTopAndBottom() : height + (patchPanel ? 0 : 32));
     if (savedPlacement.isNotEmpty()) window->restoreWindowStateFromString(savedPlacement);
     window->onClose = [safe = SafePointer<Workspace>(this), name, preferencesPanel,
                        closed = SafePointer<DocumentWindow>(window.get()),
@@ -4833,20 +4865,6 @@ void Workspace::syncNativeTransport() {
         state.icon = icon.toWideCharPointer();
         if (!StringArray{"pause", "loop", "metronome"}.contains(id)) state.text = model->getButtonText().toWideCharPointer();
         state.tooltip = localization::translate(model->getTooltip()).toWideCharPointer();
-        if (String(id) == "metronome" && state.active) {
-            const auto transport = session.presentationTransport();
-            if (transport.playing) if (const auto *song = session.song()) {
-                double start = 0, bpm = song->bpm; int unit = song->beatUnit;
-                const jaras::TimelineMarker *latest = nullptr;
-                if (song->markers) for (const auto &marker : *song->markers)
-                    if (marker.tempoBPM && marker.position <= transport.position &&
-                        (!latest || marker.position > latest->position ||
-                         (marker.position == latest->position && marker.id > latest->id))) latest = &marker;
-                if (latest) { start = latest->position; bpm = *latest->tempoBPM; unit = latest->tempoUnit.value_or(4); }
-                const double beat = std::max(0., transport.position - start) * bpm / 60. * unit / 4.;
-                if (std::fmod(beat, 1.) >= .35) state.dimming = 1.f - (1.f - state.dimming) * .45f;
-            }
-        }
         nativeTransport->update(index++, (HWND)peer->getNativeHandle(), state, [safe = SafePointer<Workspace>(this), id](bool right) {
             if (!safe || Component::getCurrentlyModalComponent()) return;
             auto *button = static_cast<QuietButton *>(safe->controls[id]);
@@ -4876,7 +4894,7 @@ void Workspace::paint(Graphics &g) {
         return;
     g.setColour(theme::panel);
     g.fillRect(transportBounds);
-    g.fillRect(0, 32, 32, getHeight() - 32);
+    g.fillRect(0, 32, getWidth(), 28);
     g.fillRect(footerBounds);
     g.fillRect(tracksViewport.getX(), workspaceBounds.getY(), tracksViewport.getWidth(), workspaceBounds.getHeight());
     {
@@ -4949,17 +4967,21 @@ void Workspace::paint(Graphics &g) {
     g.drawVerticalLine(transportInfo.getX() - 1, (float)displayFrame.getY(), (float)displayFrame.getBottom());
     g.drawVerticalLine(transportTime.getX() - 1, (float)displayFrame.getY(), (float)displayFrame.getBottom());
     g.setColour(theme::line);
-    g.drawVerticalLine(31, 32, (float)getHeight());
-    g.drawHorizontalLine(transportBounds.getBottom(), 32, (float)getWidth());
+    g.drawHorizontalLine(59, 0, (float)getWidth());
+    g.drawHorizontalLine(transportBounds.getBottom(), 0, (float)getWidth());
+    {
+    Graphics::ScopedSaveState masterState(g);
+    g.addTransform(AffineTransform::translation(0, 28));
     const auto masterColour = Colour(0xff000000 | session.project().masterColor.value_or(0x414141)).withAlpha(.5f);
     g.setColour(masterColour);
-    g.fillRoundedRectangle(40, 40, 230, 70, 5);
+    g.fillRoundedRectangle(4, 40, 266, 70, 5);
     const auto masterLevels = session.audio.meterLevels();
     for (int ch = 0; ch < 2; ++ch)
-        meterDisplay::bar(g, {45.f + ch * 6, 44, 5, 62}, masterLevels[(size_t)ch]);
+        meterDisplay::bar(g, {9.f + ch * 6, 44, 5, 62}, masterLevels[(size_t)ch]);
     g.setColour(theme::surfaceText(masterColour));
     g.setFont(theme::semiboldFont(11));
-    g.drawText("Master", 67, 69, 190, 18, Justification::centred);
+    g.drawText("Master", 31, 69, 226, 18, Justification::centred);
+    }
     if (mixerVisible) {
         g.setColour(theme::panel);
         g.fillRect(tracksViewport.getX(), workspaceBounds.getY(), tracksViewport.getWidth(), timeline->headerHeight());
@@ -4976,7 +4998,8 @@ void Workspace::resized() {
     if(audioPreparationOverlay)audioPreparationOverlay->setBounds(getLocalBounds());
     if (fadeoutOverlay) fadeoutOverlay->setBounds(getLocalBounds());
     const bool compactTransport = getWidth() < 1270, narrowTransport = getWidth() < 900;
-    const int rail = 32, title = 32, transport = narrowTransport ? 166 : compactTransport ? 126 : 86;
+    const int rail = 0, title = 32, toolBarHeight = 28;
+    const int transport = toolBarHeight + (narrowTransport ? 166 : compactTransport ? 126 : 86);
     const int footerHeight = jlimit(27, 161, footerHeightSetting);
     const int otherPanels=(keyboardVisible?108:0)+(vinhetasVisible&&!vinhetasDetached?240:0);
     const int mixerLimit=std::max(0,getHeight()-title-transport-footerHeight-128-otherPanels);
@@ -5017,7 +5040,7 @@ void Workspace::resized() {
             child->toFront(false);
     if (setlistWindow) setlistWindow->setVisible(layoutActive && editorVisible && setlistVisible && setlistPlacement==SetlistPlacement::detached);
     if (!editorVisible) { if (nativeTransport) nativeTransport->hide(); return; }
-    transportBounds = {rail, title, getWidth() - rail, transport};
+    transportBounds = {rail, title + toolBarHeight, getWidth() - rail, transport - toolBarHeight};
     footerBounds = {rail, getHeight() - footerHeight, getWidth() - rail, footerHeight};
     workspaceBounds = {rail, title + transport, getWidth() - rail,
                        std::max(1, getHeight() - title - transport - bottom)};
@@ -5046,10 +5069,11 @@ void Workspace::resized() {
     const int partsX = rail + leadingSetlist;
     const int mixerX = partsX + leftPartsWidth;
     // The master is independent of track mixer visibility, as in the Mac transport.
-    masterVolume.setBounds(64, 86, 196, 20);
-    if(masterPeakReadout)masterPeakReadout->setBounds(67,73,43,12);
-    masterPan.setBounds(114, 45, 60, 25);
-    controls["masterMono"]->setBounds(62, 46, 49, 20);
+    masterVolume.setBounds(28, 86, 232, 20);
+    if(masterPeakReadout)masterPeakReadout->setBounds(31,73,43,12);
+    masterPan.setBounds(128, 45, 46, 25);
+    controls["masterMono"]->setBounds(26, 46, 49, 20);
+    controls["masterPatch"]->setBounds(79, 46, 45, 20);
     controls["masterFX"]->setBounds(178, 46, 26, 20);
     controls["masterMute"]->setBounds(210, 46, 22, 20);
     controls["masterSolo"]->setBounds(240, 46, 22, 20);
@@ -5059,8 +5083,7 @@ void Workspace::resized() {
     controls["nextProjectTab"]->setBounds(304, 39, 26, 26);
     const int edge = getWidth() - 8, start = multipleProjects ? 336 : 276;
     int topRight = edge;
-    for (auto spec : std::initializer_list<std::pair<const char *, int>>{{"settings", 30},
-                                                                         {"export", 66},
+    for (auto spec : std::initializer_list<std::pair<const char *, int>>{{"export", 66},
                                                                          {"resolume", 58},
                                                                          {"grandma2", 62},
                                                                          {"advanced", 60}}) {
@@ -5072,7 +5095,7 @@ void Workspace::resized() {
     if (narrowTransport)
         topRight = edge;
     const int displayWidth = std::max(80, topRight - start - 4);
-    const int nameWidth = std::max(1, roundToInt((displayWidth - 102) * .75));
+    const int nameWidth = std::max(1, roundToInt((displayWidth - 102 - (narrowTransport ? 0 : 35)) * .75));
     songDisplay.setBounds(start, 39, nameWidth, 26);
     transportInfo.setBounds(start + nameWidth + 1, 39, std::max(1, displayWidth - 102 - nameWidth), 26);
     transportTime.setBounds(start + displayWidth - 100, 39, 100, 26);
@@ -5122,22 +5145,31 @@ void Workspace::resized() {
         tempoControl->setBounds(40, 111, tempoWidth, 43);
         tuner->setBounds(45 + tempoWidth, 120, available - tempoWidth, 25);
     }
+    // The tools occupy their own top row; retain the transport's internal layout.
+    for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo",
+                    "previousProjectTab", "nextProjectTab", "export", "resolume",
+                    "grandma2", "advanced", "play", "pause", "subplay", "loop", "record",
+                    "metronome", "tp1", "tp2", "notices", "preview", "video", "remote", "save", "setlist"})
+        controls[id]->setTopLeftPosition(controls[id]->getX(), controls[id]->getY() + toolBarHeight);
+    for (Component *component : std::initializer_list<Component *>{&masterVolume, &masterPan,
+            &songDisplay, &transportInfo, &transportTime, tempoControl.get(), tuner.get(), masterPeakReadout.get()})
+        if (component) component->setTopLeftPosition(component->getX(), component->getY() + toolBarHeight);
     stageTimer->setVisible(false);stageTimer->setBounds({});
     tempo.setVisible(false);
     // Commands not present in the Mac transport remain available through menus/shortcuts.
     for (auto id : {"stopall", "previous", "next", "audio", "soundfont", "railProjects",
                     "railImport", "railUndo", "railRedo", "railSettings", "railHelp"})
         controls[id]->setVisible(false);
-    controls["menu"]->setBounds(2, 40, 28, 28);
-    controls["mixer"]->setBounds(2, 80, 28, 28);
-    controls["railTeleprompt"]->setBounds(2, 118, 28, 28);
-    controls["railTeleprompt2"]->setBounds(2, 156, 28, 28);
-    controls["railNotice"]->setBounds(2, 194, 28, 28);
-    controls["railClock"]->setBounds(2, 232, 28, 28);
-    controls["railMixer"]->setBounds(2, getHeight() - 160, 28, 28);
-    controls["railKeyboard"]->setBounds(2, getHeight() - 120, 28, 28);
-    controls["railVinhetas"]->setBounds(2, getHeight() - 80, 28, 28);
-    controls["railParts"]->setBounds(2, getHeight() - 40, 28, 28);
+    controls["railTeleprompt"]->setVisible(false);
+    controls["railTeleprompt2"]->setVisible(false);
+    int toolX = 4;
+    for (auto id : {"menu", "mixer", "railMixer", "railParts", "railNotice", "railClock", "railKeyboard", "railVinhetas"}) {
+        controls[id]->setBounds(toolX, title + 2, 26, 24);
+        toolX += 32;
+    }
+    controls["settings"]->setBounds(getWidth() - 30, title + 2, 26, 24);
+    const int audioWidth = std::min(300, std::max(1, getWidth() - toolX - 40));
+    controls["audioStatus"]->setBounds(getWidth() - 36 - audioWidth, title + 2, audioWidth, 24);
     zoom.setVisible(false);
     for (auto id : {"zoomOut", "zoomIn", "zoomFit"}) controls[id]->setVisible(false);
     tracksViewport.setVisible(mixerVisible);
@@ -5211,9 +5243,7 @@ void Workspace::resized() {
     mixerHeightDivider.setVisible(footerMixerVisible);
     mixerHeightDivider.setBounds(rail, dockViewport.getY() - 3, getWidth() - rail, 6);
     mixerDivider.refreshScroll();setlistDivider.refreshScroll();partsRightDivider.refreshScroll();
-    footerSongBounds = footerBounds.withTrimmedLeft(std::min(footerLeftWidth, footerBounds.getWidth() / 3))
-                                   .withTrimmedRight(std::min(footerRightWidth, footerBounds.getWidth() / 3));
-    controls["audioStatus"]->setBounds(footerBounds.withLeft(footerSongBounds.getRight()));
+    footerSongBounds = footerBounds.withTrimmedLeft(std::min(footerLeftWidth, footerBounds.getWidth() / 3));
     trackHeightHandle->setBounds(tracksViewport.getBounds());
     trackHeightHandle->setVisible(projectReady && !browserVisible && mixerVisible);trackHeightHandle->toFront(false);
     for (auto *divider : {&mixerDivider, &setlistDivider, &partsLeftDivider, &partsRightDivider, &footerHeightDivider, &mixerHeightDivider}) divider->toFront(false);
@@ -5995,7 +6025,7 @@ void Workspace::mouseDown(const MouseEvent &event) {
         for (auto *row : rows) row->repaint();
         timeline->invalidate(); repaint();
     }
-    if (event.eventComponent == this && event.mods.isPopupMenu() && !browserVisible && juce::Rectangle<int>(40,40,230,70).contains(event.getPosition()))
+    if (event.eventComponent == this && event.mods.isPopupMenu() && !browserVisible && juce::Rectangle<int>(4,68,266,70).contains(event.getPosition()))
         showMasterMenu(event.getScreenPosition());
 }
 void Workspace::mouseWheelMove(const MouseEvent &event, const MouseWheelDetails &details) {
@@ -7752,7 +7782,8 @@ var Workspace::diagnostics() const {
         put(audioDevice, "xruns", device->getXRunCount());
         // Fraction of the callback budget (0..1), including every project tab
         // sharing this device manager, rather than this session's render alone.
-        put(audioDevice, "callbackCpuUsage", session.audio.devices.getCpuUsage());
+        put(audioDevice, "callbackCpuUsage", session.audio.cpu());
+        put(audioDevice, "nativeDeviceHost", usesNativeAudioDeviceHost(session.audio.devices));
         put(audioDevice, "open", device->isOpen());
         put(audioDevice, "running", device->isPlaying());
         put(value, "audioDevice", audioDevice);
@@ -7999,7 +8030,7 @@ var Workspace::diagnostics() const {
     bool overlaps = false, outside = false;
     std::vector<const Component *> transportItems{tempoControl.get(), tuner.get(), &songDisplay, &transportTime, &transportInfo};
     for (const auto &entry : controls)
-        if ((entry.second->isVisible() || nativeButtons.contains(entry.first)) && entry.second->getY() >= 32 &&
+        if ((entry.second->isVisible() || nativeButtons.contains(entry.first)) && entry.second->getY() >= transportBounds.getY() &&
             entry.second->getBottom() <= transportBounds.getBottom() && entry.second->getX() >= 40)
             transportItems.push_back(entry.second);
     for (size_t a = 0; a < transportItems.size(); ++a) {

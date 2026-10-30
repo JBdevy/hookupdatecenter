@@ -216,6 +216,7 @@
 "Effect" = "Effect";
 
 "Download" = "Download";
+"Delete instrument" = "Delete";
 
 "MIDI input" = "MIDI input";
 
@@ -2159,3 +2160,5 @@
 ": invalid project media path." = ": invalid project media path.";
 
 "Could not recover the file." = "Could not recover the file.";
+
+"Could not capture the current state of plugin %@. The operation was cancelled to preserve its settings." = "Could not capture the current state of plugin %@. The operation was cancelled to preserve its settings.";

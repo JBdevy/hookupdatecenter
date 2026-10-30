@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include "../Audio/PiecewiseTimeMap.hpp"
 namespace jaras {
 // Keep in step with TimelineTempo.swift. Detection batches intentionally bypass
 // this edit map: inserting a measured tempo must not move the source material.
@@ -189,6 +190,15 @@ public:
             }
     }
     bool changesTime() const {return std::any_of(spans.begin(),spans.end(),[](const auto& span){return std::abs(span.scale-1)>1e-12;});}
+    catlive::audio::PiecewiseTimeMap positionMap() const {
+        catlive::audio::PiecewiseTimeMap result;
+        for(const auto& span:spans)result.append(span.start,span.output,span.scale);
+        if(!spans.empty()) {
+            const auto& last=spans.back();
+            result.append(last.end,last.output+(last.end-last.start)*last.scale,1.);
+        }
+        return result;
+    }
     double position(double time) const {
         if(spans.empty() || !std::isfinite(time) || time<0) return time;
         auto span=std::upper_bound(spans.begin(),spans.end(),time,[](double time,const Span& span){return time<span.end;});

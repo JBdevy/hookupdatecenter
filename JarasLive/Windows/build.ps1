@@ -58,6 +58,10 @@ $requiredRuntimeFiles=@(
     'Licenses/LAME/BUILD.txt',
     'Licenses/dr_libs/LICENSE'
 )
+# Ship the exact artwork validated alongside the executable, including clean CI builds.
+foreach ($category in @('pianos','upright','electric','keyboard','organ','strings','guitar','bass','synth','synthPad','lead','acordeon','brass','mallets','drum')) {
+    $requiredRuntimeFiles += "InstrumentInterfaces/$category.png"
+}
 foreach ($relativePath in $requiredRuntimeFiles) {
     $runtimeFile=Join-Path $runtimeDirectory $relativePath
     if (-not (Test-Path -LiteralPath $runtimeFile -PathType Leaf) -or (Get-Item -LiteralPath $runtimeFile).Length -eq 0) {

@@ -876,7 +876,7 @@ class Workspace::Setlist final : public Component,
             g.drawRoundedRectangle(bounds.reduced(.5f), 4.f, 1.f);
             if (selected) { g.setColour(theme::green); g.drawRoundedRectangle(bounds.reduced(.5f), 4.f, 1.f); }
             float textX=10.f;
-            if (entry.blockSymbol && (bool)w.appearance.value("jaras.blocks.symbol", true)) {
+            if ((bool)w.appearance.value("jaras.blocks.symbol", true)) {
                 Path arrow;
                 arrow.startNewSubPath(10.f,12.f); arrow.lineTo(72.f,12.f);
                 arrow.startNewSubPath(66.f,6.f); arrow.lineTo(72.f,12.f); arrow.lineTo(66.f,18.f);
@@ -1162,7 +1162,7 @@ class Workspace::Setlist final : public Component,
         block.name = utf8(localization::translate("Bloco") + " " + String((int)count+1).paddedLeft('0',2));
         auto &random=Random::getSystemRandom();
         block.color = ((80+random.nextInt(151))<<16) | ((80+random.nextInt(151))<<8) | (80+random.nextInt(151));
-        block.symbol = (bool)w.appearance.value("jaras.blocks.symbol",true);
+        block.symbol = true;
         if (std::find(playlist->regionIds.begin(), playlist->regionIds.end(), selectedEntry) !=
             playlist->regionIds.end())
             block.beforeRegionId = selectedEntry;
@@ -1199,7 +1199,7 @@ class Workspace::Setlist final : public Component,
         };
         ModalSheet::open(w,localization::translate("Blocks"),std::make_unique<BlockDefaultsPanel>(
             (bool)w.appearance.value("jaras.blocks.symbol",true),
-            [self](bool enabled){if(self){auto result=self->w.appearance.set("jaras.blocks.symbol",enabled);if(result.failed())self->w.showError(result.getErrorMessage());}},close),280,118);
+            [self](bool enabled){if(self){auto result=self->w.appearance.set("jaras.blocks.symbol",enabled);if(result.failed())self->w.showError(result.getErrorMessage());self->list.repaint();}},close),280,118);
     }
     class SubplayTracksPanel final : public Component {
       public:

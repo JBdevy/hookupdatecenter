@@ -41,6 +41,11 @@ test='''
  let before=calls;router.handle(event(.leftMouseDown));router.handle(event(.leftMouseUp));check(calls==before,"control changed selection")
  area.selectsTrack=true;router.handle(event(.leftMouseDown));router.handle(event(.leftMouseUp));check(calls==before+1,"fader readout background cannot select")
  row.selected=true;router.handle(event(.leftMouseDown));router.resetProjectSession();router.handle(event(.leftMouseUp));check(calls==before+1,"old project released pending selection")
+ area.selectsTrack=false;area.frame=NSRect(x:100,y:20,width:60,height:60)
+ let nextControl=TrackControlSelectionExclusionView(frame:NSRect(x:200,y:20,width:60,height:60));row.addSubview(nextControl);router.addControl(nextControl)
+ let gapBefore=calls
+ router.handle(event(.leftMouseDown));router.handle(event(.leftMouseUp));check(calls==gapBefore+1,"empty gap between actual controls cannot select the track")
+ router.handle(event(.leftMouseDown,NSPoint(x:220,y:50)));router.handle(event(.leftMouseUp,NSPoint(x:220,y:50)));check(calls==gapBefore+1,"neighboring control lost its own interaction")
  print("TRACK_SELECTION_PRESS_RELEASE_DRAG_AND_CONTROL_ROUTING_OK")
  window.orderOut(nil);_ = app
 }

@@ -16,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)instrumentMIDIInput:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (void)transport:(AVAudioUnitEffect *)node position:(double)position tempo:(double)tempo beats:(int)beats unit:(int)unit playing:(BOOL)playing;
 + (void)onEdit:(AVAudioUnitEffect *)node identifier:(NSString *)identifier action:(void (^)(void))action;
++ (BOOL)isPluginLoaded:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (NSDictionary * _Nullable)state:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (void)onParameterEdit:(AVAudioUnitEffect *)node identifier:(NSString *)identifier action:(void (^)(unsigned int, double, BOOL))action;
 + (NSArray<NSDictionary *> *)parameters:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;

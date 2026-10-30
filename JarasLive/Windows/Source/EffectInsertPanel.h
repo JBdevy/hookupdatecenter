@@ -219,24 +219,21 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         g.fillRoundedRectangle(0, 1, (float)width, height - 5.f, 5);
         g.setColour(available ? Colours::white : theme::secondary);
         g.setFont(theme::semiboldFont(12));
-        g.drawFittedText(str(item, "name"), 34, 0, width - 112, height - 4,
+        g.drawFittedText(str(item, "name"), 34, 0, width - 144, height - 4,
                          Justification::centredLeft, 1);
         for (int i = 0; i < 5; ++i) {
             g.setColour(theme::secondary);
             g.fillRect(13 + i * 3, 14, 2, 10);
         }
-        if (!available) {
+        {
+            const bool installed=instrumentAssets::installedFile(id).existsAsFile();
             g.setColour(Colour(0xff505050));
-            g.fillRoundedRectangle(width - 72.f, 8, 62, 24, 5);
+            g.fillRoundedRectangle(width - 102.f, 8, 92, 24, 5);
             g.setColour(Colours::white);
             g.setFont(theme::semiboldFont(11));
             g.drawText(job && job->id == id ? String(job->progress.load() * 100, 0) + "%"
-                                            : "Baixar",
-                       width - 72, 8, 62, 24, Justification::centred);
-        } else if (chosen) {
-            g.setColour(theme::green);
-            g.setFont(theme::font(16));
-            g.drawText(String::fromUTF8("✓"), width - 32, 0, 24, height, Justification::centred);
+                                            : localization::translate(installed?"Delete instrument":"Download"),
+                       width - 102, 8, 92, 24, Justification::centred);
         }
     }
     void listBoxItemClicked(int row, const MouseEvent &e) override {
@@ -244,12 +241,22 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
             return;
         const auto item = items[(size_t)row];
         const auto id = str(item, "id");
-        if (instrumentAssets::resolve(id, projectDirectory).existsAsFile()) {
+        const int rowWidth=list.getViewport()->getViewWidth();
+        if(e.x>=rowWidth-102 && e.x<rowWidth-10 && e.y>=8 && e.y<32){
+            if(job&&job->id==id)return;
+            if(instrumentAssets::installedFile(id).existsAsFile()) {
+                try {
+                    instrumentAssets::uninstall(id);
+                    if(selected==id&&!instrumentAssets::resolve(id,projectDirectory).existsAsFile())selected.clear();
+                    status.setText({},dontSendNotification);
+                }catch(const std::exception &error){status.setText(localization::translate(String::fromUTF8(error.what())),dontSendNotification);}
+                list.repaint();updateConfirm();
+            }else download(item);
+        }else if (instrumentAssets::resolve(id, projectDirectory).existsAsFile()) {
             selected = id;
             list.repaint();
             updateConfirm();
-        } else if (e.x > list.getWidth() - 82)
-            download(item);
+        }
     }
     void download(var item) {
         if (job && job->state.load() == 0)

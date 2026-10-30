@@ -1,6 +1,7 @@
 #pragma once
 #include "Auth.h"
 #include "Session.h"
+#include "GridItemClipboard.h"
 
 namespace catlive {
 class NativeFrontendWaveforms;
@@ -10,25 +11,29 @@ class NativeFrontendWaveforms;
 class FrontendBridge final : private Timer {
   public:
     using Emit = std::function<void(const String &)>;
-    FrontendBridge(Session &, Auth &, Emit);
+    FrontendBridge(Session &, Auth &, Emit, bool compactPresentation = false);
     ~FrontendBridge() override;
     void setOwnerWindow(void *value) { ownerWindow = value; }
     void receive(const String &json);
     void publishSnapshot();
     void openProject(const File &);
     void requestClose();
+    void recoverPresentation(const String &, std::function<void()> retry);
     std::function<void()> onCloseApproved;
 
   private:
     Session &session;
     Auth &auth;
     Emit emit;
+    const bool compactPresentation;
     void *ownerWindow = nullptr;
     std::unique_ptr<NativeFrontendWaveforms> waveforms;
     struct RTAState;
     std::unique_ptr<RTAState> rta;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     std::set<ID> selectedTracks, selectedItems, selectedRegions, meterTracks;
+    std::optional<GridItemClipboard> itemClipboard;
+    std::optional<DWORD> itemClipboardSequence;
     uint64 lastRevision = std::numeric_limits<uint64>::max();
     String lastStatus, lastAuthStatus;
     ID lastProject;
@@ -47,6 +52,9 @@ class FrontendBridge final : private Timer {
     var transportJSON() const;
     void publishTelemetry();
     void validateProject(const var &, const var &) const;
+    void validateClipboardScope(const var &) const;
+    void refreshClipboard();
+    var clipboardJSON() const;
     void requireEditable() const;
     const jaras::Track &requireTrack(const ID &) const;
     void setSelection(const var &);
@@ -57,6 +65,6 @@ class FrontendBridge final : private Timer {
     void confirmLeaving(std::function<void(bool)>);
     void load(const File &, std::function<void(String)>);
     File chooseFile(bool saving, bool audioSample = false);
-    bool save(const File & = {});
+    void save(const File &, std::function<void(bool)>);
 };
 }

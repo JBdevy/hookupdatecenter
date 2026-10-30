@@ -2,6 +2,8 @@
 #include "TrackCapture.h"
 #include "AudioExport.h"
 #include "FloatingControlTests.h"
+#include <chrono>
+#include <thread>
 
 namespace catlive::recordingCaptureTests {
 inline void require(bool passed, const String &message) {
@@ -302,10 +304,90 @@ inline void immediateReplay(const File &directory) {
     const auto stopDeadline=Time::getMillisecondCounterHiRes()+10000;
     while((session.busy||session.preparingLiveAudio()) && Time::getMillisecondCounterHiRes()<stopDeadline)floatingControlTests::pump();
 }
+inline void preparedStart(const File& directory) {
+    AudioEngine engine(48000,true);
+    jaras::Song song;song.id=uuid();song.duration=3;
+    jaras::Track track;track.id=uuid();track.role.id="other";song.tracks={track};
+    engine.prepareSong(song,directory);
+    TrackCapture::Target target{track.id,directory.getChildFile(text(uuid())+".wav"),1,2};
+    std::atomic<bool> held{false},release{false},timedOut{false};
+    std::thread device([&] {
+        const ScopedLock lock(engine.devices.getAudioCallbackLock());held.store(true);
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(!release.load() && std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+        timedOut.store(!release.load());
+    });
+    while(!held.load())std::this_thread::yield();
+    try { engine.startTrackRecording({target},24,120); }
+    catch(...) {release.store(true);device.join();throw;}
+    release.store(true);device.join();
+    require(!timedOut.load(),"Prepared capture start waited for device callback lock");
+    require(engine.isRecording() && engine.recordedSamples()==0,"Capture start state/frame count");
+    AudioEngine::State state;state.playing=true;engine.transport(state);
+    AudioBuffer<float> input(2,512),output(2,512);
+    FloatVectorOperations::fill(input.getWritePointer(0),.25f,512);
+    FloatVectorOperations::fill(input.getWritePointer(1),-.5f,512);
+    for(int i=0;i<2;++i)engine.render(output.getArrayOfWritePointers(),2,512,input.getArrayOfReadPointers(),2);
+    held=false;release=false;timedOut=false;
+    std::thread stopDevice([&] {
+        const ScopedLock lock(engine.devices.getAudioCallbackLock());held.store(true);
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(!release.load() && std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+        timedOut.store(!release.load());
+    });
+    while(!held.load())std::this_thread::yield();
+    std::vector<TrackCapture::Take> takes;
+    try { takes=engine.stopTrackRecording(); }
+    catch(...) {release.store(true);stopDevice.join();throw;}
+    release.store(true);stopDevice.join();
+    require(!timedOut.load(),"Capture stop waited for device callback lock");
+    require(takes.size()==1 && engine.recordedSamples()==1024,"Prepared capture skipped its first block");
+    auto reader=read(takes[0].file);
+    require(reader->lengthInSamples==1024,"Capture finalization lost queued frames");
+    AudioBuffer<float> captured(2,1024);reader->read(&captured,0,1024,0,true,true);
+    require(std::abs(captured.getSample(0,0)-.25f)<.00001f && std::abs(captured.getSample(1,1023)+.5f)<.00001f,
+            "Prepared capture changed first/last PCM samples");
+    target.file=directory.getChildFile(text(uuid())+".wav");
+    engine.startTrackRecording({target},24,120);
+    const auto cancelled=engine.stopTrackRecording(); // No intervening callback.
+    require(cancelled.size()==1 && cancelled[0].duration==0,"Stop before first callback retained recording state");
+    engine.render(output.getArrayOfWritePointers(),2,512,input.getArrayOfReadPointers(),2);
+    require(!engine.isRecording() && engine.recordedSamples()==0,"Late start resurrected a completed capture");
+
+    target.file=directory.getChildFile(text(uuid())+".wav");
+    engine.startTrackRecording({target},24,120);
+    std::atomic<int> blocks{0};std::atomic<bool> finished{false};
+    engine.setExternalRenderDriven(true);
+    std::thread callback([&] {
+        while(!finished.load()) {
+            engine.render(output.getArrayOfWritePointers(),2,512,input.getArrayOfReadPointers(),2);
+            ++blocks;
+            Thread::sleep(1);
+        }
+    });
+    while(blocks.load()<4)Thread::sleep(1);
+    double targetOffset=0;
+    try {targetOffset=engine.changeRecordingTargets({}, {track.id},24);}
+    catch(...) {finished=true;callback.join();engine.setExternalRenderDriven(false);throw;}
+    auto detached=engine.detachTrackRecording();
+    const auto exactFrames=engine.recordedSamples();
+    Thread::sleep(5); // Playback callbacks continue after recording withdrawal.
+    const bool stable=engine.recordedSamples()==exactFrames;
+    finished=true;callback.join();
+    engine.setExternalRenderDriven(false);
+    require(targetOffset>=2048./48000 && targetOffset<=double(exactFrames)/48000,
+            "Prepared target edit was not acknowledged on the recording sample clock");
+    require(detached && stable && exactFrames>=2048 && exactFrames%512==0,"Recording withdrawal crossed a block or admitted a late writer");
+    const auto concurrentTakes=detached->finish();
+    require(concurrentTakes.size()==1 && detached->overflows()==0,"Concurrent recording stop lost its take");
+    auto concurrentReader=read(concurrentTakes[0].file);
+    require(concurrentReader->lengthInSamples==int64(exactFrames),"Detached recording was finalized at the wrong frame");
+}
 template <typename Register>
 void registerTests(const File &directory, Register &&test) {
     const auto folder = directory.getChildFile("recording-encoding-" + text(uuid()));
     folder.createDirectory();
+    test("Prepared recording start and Stop avoid device lock and preserve first and last blocks", [=] { preparedStart(folder); });
     test("Recording height only divides when the growing take overlaps another item", [] {
         jaras::Track track;
         jaras::AudioClip earlier; earlier.id="earlier"; earlier.duration=4;

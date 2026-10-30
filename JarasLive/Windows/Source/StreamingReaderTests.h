@@ -20,6 +20,7 @@ struct Fixture {
     std::atomic<bool> holdColdFill{false}, coldFillEntered{false};
     WaitableEvent releaseColdFill{true};
     std::atomic<bool> holdSlow{false}, slowEntered{false}, holdRead{false}, readEntered{false};
+    std::atomic<int64> holdReadAt{0};
     std::atomic<bool> destroyedOnReader{false};
     std::atomic<Thread::ThreadID> readingThread{nullptr};
     WaitableEvent releaseSlow{true};
@@ -46,7 +47,7 @@ class Reader final : public AudioFormatReader {
                 fixture.releaseColdFill.wait(8000);
             }
         }
-        if (fixture.holdRead.load()) {
+        if (fixture.holdRead.load() && at>=fixture.holdReadAt.load()) {
             fixture.readEntered = true;
             fixture.releaseRead.wait(8000);
         }
@@ -206,6 +207,119 @@ inline void retirementDuringRead(const File& directory, bool slowOpen = false) {
 }
 template <typename Register>
 void registerTests(const File& directory, Register&& test) {
+    test("Realtime PCM pages never wait for a blocked decoder", [&] {
+        Fixture fixture; TimeSliceThread worker("Blocked decoder fixture");worker.startThread();
+        fixture.holdReadAt=49152;fixture.holdRead=true;
+        RealtimeBufferedReader reader(new Reader(nullptr,fixture),worker,131072);
+        struct Release { Fixture &fixture; ~Release(){fixture.holdRead=false;fixture.releaseRead.signal();} } release{fixture};
+        AudioBuffer<float> pcm(2,512);
+        require(until([&]{return reader.read(&pcm,0,512,32768,true,true);}),"Initial PCM page did not become ready");
+        require(until([&]{return fixture.readEntered.load();}),"Worker never entered the blocked decoder");
+        const auto began=Time::getMillisecondCounterHiRes();
+        for(int block=0;block<40;++block) {
+            require(reader.read(&pcm,0,512,32768,true,true),"An unrelated blocked fill silenced a ready PCM page");
+            require(std::abs(pcm.getSample(0,0)-Reader::sample(32768))<1.e-6f,"Ready page was overwritten during read");
+        }
+        require(Time::getMillisecondCounterHiRes()-began<100,"Realtime reads waited for the decode worker");
+        fixture.holdRead=false;fixture.releaseRead.signal();
+        require(until([&]{return reader.read(&pcm,0,512,16384-128,true,true);}),"Read across PCM page boundaries failed");
+        for(int n=0;n<512;++n)require(std::abs(pcm.getSample(0,n)-Reader::sample(16384-128+n))<1.e-6f,"A page boundary changed the PCM");
+    });
+    test("Realtime PCM covers unaligned engine blocks and zero-padded EOF", [&] {
+        Fixture fixture; TimeSliceThread worker("PCM window fixture");worker.startThread();
+        RealtimeBufferedReader reader(new Reader(nullptr,fixture),worker,131072);
+        reader.setReadTimeout(1000);
+        // The engine reserves 131080 samples, including interpolation tails.
+        // Starting at the final sample of a page requires ten forward pages.
+        constexpr int count=131080;
+        AudioBuffer<float> pcm(2,count);
+        for(int64 at : {int64(0),int64(16383)}) {
+            require(reader.read(&pcm,0,count,at,true,true),"A full engine block exceeded the forward PCM window");
+            for(int n=0;n<count;++n) {
+                require(std::abs(pcm.getSample(0,n)-Reader::sample(at+n))<1.e-6f,"An unaligned PCM block changed samples");
+                require(std::abs(pcm.getSample(1,n)+2*Reader::sample(at+n))<1.e-6f,"An unaligned PCM block changed stereo samples");
+            }
+        }
+        const auto tail=reader.lengthInSamples-64;
+        require(reader.read(&pcm,0,512,tail,true,true),"The final partial PCM page failed");
+        for(int n=0;n<512;++n) {
+            const auto expected=n<64?Reader::sample(tail+n):0.f;
+            require(std::abs(pcm.getSample(0,n)-expected)<1.e-6f,"EOF padding changed the final PCM block");
+            require(std::abs(pcm.getSample(1,n)+2*expected)<1.e-6f,"EOF padding changed the final stereo block");
+        }
+        require(reader.read(&pcm,0,512,reader.lengthInSamples+17,true,true),"A read beyond EOF reported a cache miss");
+        require(pcm.getMagnitude(0,512)==0.f,"A read beyond EOF retained old PCM");
+    });
+    test("Concurrent PCM leases preserve ready pages and writer release", [&] {
+        for(bool blocked : {false,true}) {
+            Fixture fixture;fixture.holdRead=blocked;
+            TimeSliceThread worker("Concurrent PCM fixture");worker.startThread();
+            RealtimeBufferedReader reader(new Reader(nullptr,fixture),worker,131072);
+            struct Release { Fixture &fixture; ~Release(){fixture.holdRead=false;fixture.releaseRead.signal();} } release{fixture};
+            AudioBuffer<float> probe(2,64);
+            if(blocked)require(until([&]{return fixture.readEntered.load();}),"Writer did not acquire the initial page");
+            else require(until([&]{return reader.read(&probe,0,64,0,true,true);}),"Concurrent fixture did not warm its page");
+            std::atomic<bool> begin{false};
+            std::atomic<int> reads{0},successes{0},misses{0},invalid{0};
+            std::vector<std::thread> readers;
+            for(int lane=0;lane<8;++lane)readers.emplace_back([&] {
+                AudioBuffer<float> pcm(2,64);
+                while(!begin.load())std::this_thread::yield();
+                for(int block=0;block<20000;++block) {
+                    const bool ok=reader.read(&pcm,0,64,0,true,true);
+                    if(ok)++successes;else ++misses;
+                    for(int ch=0;ch<2;++ch)for(int n=0;n<64;++n) {
+                        const auto expected=ok?Reader::sample(n)*(ch==0?1.f:-2.f):0.f;
+                        if(pcm.getSample(ch,n)!=expected)++invalid;
+                    }
+                    ++reads;
+                }
+            });
+            begin=true;
+            if(blocked) {
+                while(reads.load()<1000)Thread::sleep(1);
+                fixture.holdRead=false;fixture.releaseRead.signal();
+            }
+            for(auto &thread:readers)thread.join();
+            require(invalid.load()==0,"Concurrent readers observed PCM before its writer published it");
+            require(successes.load()>0,"Rejected reader leases prevented the writer from publishing its page");
+            if(blocked)require(misses.load()>0,"The writer-contention fixture never exercised a rejected lease");
+            else require(misses.load()==0,"Concurrent readers caused a false miss on an immutable ready page");
+            require(reader.read(&probe,0,64,0,true,true),"Concurrent lease release left the ready page inaccessible");
+        }
+    });
+    test("Decoded failures return promptly and never expose fixed-point bytes as PCM", [&] {
+        class FailingReader final : public AudioFormatReader {
+          public:
+            explicit FailingReader(int failureMode) : AudioFormatReader(nullptr,"Failure fixture"),mode(failureMode) {
+                sampleRate=48000;numChannels=2;lengthInSamples=32768;bitsPerSample=32;
+                usesFloatingPointData=mode!=1;
+            }
+            bool readSamples(int* const* output,int channels,int offset,int64,int count)override {
+                for(int ch=0;ch<channels;++ch)if(output[ch]) {
+                    if(usesFloatingPointData)FloatVectorOperations::fill(reinterpret_cast<float*>(output[ch])+offset,.25f,count);
+                    else std::fill(output[ch]+offset,output[ch]+offset+count,0x7fffffff);
+                }
+                if(mode==2)throw std::runtime_error("Fixture decode failure");
+                return false;
+            }
+          private:
+            int mode;
+        };
+        for(int mode=0;mode<3;++mode) {
+            TimeSliceThread worker("PCM failure fixture");worker.startThread();
+            RealtimeBufferedReader reader(new FailingReader(mode),worker,131072);
+            reader.setReadTimeout(500);
+            AudioBuffer<float> pcm(2,512);
+            const auto began=Time::getMillisecondCounterHiRes();
+            require(!reader.read(&pcm,0,512,0,true,true),"A failed decode was reported as successful");
+            require(Time::getMillisecondCounterHiRes()-began<250,"A published decode failure waited for the offline timeout");
+            for(int ch=0;ch<2;++ch)for(int n=0;n<512;++n)
+                require(pcm.getSample(ch,n)==(mode==0?.25f:0.f),"Failed decode exposed invalid floating-point PCM");
+            require(reader.read(&pcm,0,512,reader.lengthInSamples,true,true),"A failed earlier page contaminated EOF success");
+            require(pcm.getMagnitude(0,512)==0.f,"EOF after a decode failure was not silent");
+        }
+    });
     test("Offline export reads PCM without a realtime fill worker", [&] {
         const auto file=directory.getChildFile("direct-offline.sched"); file.replaceWithText("fixture");
         Fixture fixture; AudioFormatManager formats; formats.registerFormat(new Format(fixture),true);

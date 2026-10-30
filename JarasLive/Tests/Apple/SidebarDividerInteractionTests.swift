@@ -135,6 +135,20 @@ listDivider.mouseDown(with: pointer(listDivider, .leftMouseDown, CGPoint(x: 3, y
 listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: -20, y: 50)))
 precondition(listWidth == 300, "leftward resize preserves the Setlist's reversed horizontal direction")
 
+// A lazy Setlist can revise its estimated height while its thumb is held.
+// The same drag must still reach the last song, without releasing/regrabbing.
+setlistController.scroll(to: 0)
+listDivider.mouseDown(with: pointer(listDivider, .leftMouseDown, CGPoint(x: 3, y: 30)))
+listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 70)))
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 4800))
+listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 398)))
+precondition(abs(setlistController.metrics.offset - setlistController.metrics.maximumOffset) < 0.1,
+             "Setlist thumb must reach the bottom after lazy content expands during the drag")
+listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: 3, y: 398)))
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 1200))
+setlistController.scroll(to: 0)
+print("SIDEBAR_LAZY_HEIGHT_CHANGE_DURING_THUMB_DRAG_OK")
+
 mixerController.scroll(to: 1_000_000)
 precondition(mixerController.metrics.offset == 1600 && abs(divider.scrollThumbRect.maxY - 398) < 0.001, "dragging clamps exactly at the content end and thumb reaches the rail bottom")
 mixerController.scroll(to: -500)

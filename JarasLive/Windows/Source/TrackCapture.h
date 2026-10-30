@@ -4,6 +4,7 @@
 #include "MP3Writer.h"
 #include "RecordingEncoding.h"
 #include "RecordingPreview.h"
+#include "BufferedAudioWriter.h"
 #include "NativeFX.h"
 #include <deque>
 #include <mutex>
@@ -61,7 +62,7 @@ class TrackCapture {
         bool active = true;
         int64 startFrame = 0, frames = 0;
         std::shared_ptr<ProcessingState> processing;
-        std::unique_ptr<AudioFormatWriter::ThreadedWriter> writer;
+        std::unique_ptr<BufferedAudioWriter> writer;
     };
   public:
     struct PreparedTargets {
@@ -131,8 +132,8 @@ class TrackCapture {
             auto writer = format.createWriterFor(stream, options);
             if (!writer)
                 throw std::runtime_error("Invalid recording encoding.");
-            entry.writer =
-                std::make_unique<AudioFormatWriter::ThreadedWriter>(new InputWriter(std::move(writer), spec, rate, entry.processing), thread, 131072);
+            entry.writer = std::make_unique<BufferedAudioWriter>(
+                std::make_unique<InputWriter>(std::move(writer), spec, rate, entry.processing), thread);
         }
         return entry;
     }
@@ -241,7 +242,11 @@ class TrackCapture {
         std::vector<Take> takes;
         for (size_t target = 0; target < entries.size(); ++target) {
             auto &entry = entries[target];
-            entry.writer.reset();
+            if (entry.writer) {
+                entry.writer->finish();
+                if (entry.writer->failed()) entry.processing->failed.store(true);
+                entry.writer.reset();
+            }
             Take take;
             take.track = entry.target.track;
             take.clip = entry.target.clip;
@@ -305,6 +310,9 @@ class TrackCapture {
             }
             takes.push_back(std::move(take));
         }
+        // Every writer has detached/drained. Join the idle disk worker here,
+        // on the finalization worker, rather than leaving it for UI retirement.
+        thread.stopThread(5000);
         return takes;
     }
 

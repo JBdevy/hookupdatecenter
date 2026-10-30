@@ -9,6 +9,16 @@ inline const Array<var> &catalog(){
 }
 inline bool validID(const String &id){return id.isNotEmpty()&&id.length()<120&&id.containsOnly("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_");}
 inline File library(){return File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/Instruments");}
+inline File installedFile(const String &id,const File &root=library()){
+    if(!validID(id)||std::none_of(catalog().begin(),catalog().end(),[&](const var &entry){return str(entry,"id")==id;}))
+        throw std::runtime_error("Invalid instrument identity.");
+    return root.getChildFile(id+".sf2");
+}
+inline void uninstall(const String &id,const File &root=library()){
+    const auto target=installedFile(id,root);
+    // Never resolve through a project's Instruments folder when uninstalling.
+    if(target.exists()&&!target.deleteFile())throw std::runtime_error("Could not uninstall the instrument.");
+}
 inline File resolve(const String &id,const File &project){
     if(!validID(id))throw std::runtime_error("Invalid instrument identity.");
     const auto local=project.getChildFile("Instruments/"+id+".sf2");

@@ -77,6 +77,7 @@ jobs:
           path: |
             ${{ runner.temp }}/catlive-windows/package/CatLive-Windows-x64/CatLive.exe
             ${{ runner.temp }}/catlive-windows/package/CatLive-Windows-x64/CatLiveLame.dll
+            ${{ runner.temp }}/catlive-windows/package/CatLive-Windows-x64/InstrumentInterfaces/
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:

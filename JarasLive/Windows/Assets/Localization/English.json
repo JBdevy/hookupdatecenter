@@ -188,6 +188,8 @@
   "Cancel": "Cancel",
   "Effect": "Effect",
   "Download": "Download",
+  "Delete instrument": "Delete",
+  "Could not uninstall the instrument.": "Could not uninstall the instrument.",
   "MIDI input": "MIDI input",
   "None": "None",
   "Disconnected": "Disconnected",

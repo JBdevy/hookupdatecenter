@@ -46,6 +46,17 @@ inline MouseEvent mouse(Component &canvas, Point<float> at, Point<float> anchor,
 }
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Program Change heads stay inside regions", [] {
+        auto song=fixture().songs.front();song.parts.clear();
+        jaras::Part root;root.id="root";root.startTime=10;root.endTime=20;song.parts.push_back(root);
+        auto child=root;child.id="child";child.startTime=12;child.endTime=15;child.parentRegionID=root.id;song.parts.push_back(child);
+        require(timelineRegionLabels::programChangeHeadWidth(song,19.5,120,100)==50,"PC head crossed its region end");
+        require(timelineRegionLabels::programChangeHeadWidth(song,19.5,120,20)==0,"Tiny PC head should hide like normal heads");
+        require(timelineRegionLabels::programChangeHeadWidth(song,14.5,120,100)==120,"PC head incorrectly used a child boundary");
+        require(timelineRegionLabels::programChangeHeadWidth(song,20,120,100)==120,"Unrelated region clipped an independent PC head");
+        auto overlap=root;overlap.id="overlap";overlap.startTime=18;overlap.endTime=19.75;song.parts.push_back(overlap);
+        require(timelineRegionLabels::programChangeHeadWidth(song,19.5,120,100)==25,"PC head crossed an overlapping region");
+    });
     test("Marker heads stay inside regions and thin monotonically when zooming out", [&] {
         auto song=fixture().songs.front();song.parts.clear();
         jaras::Part root;root.id="root";root.startTime=10;root.endTime=20;song.parts.push_back(root);

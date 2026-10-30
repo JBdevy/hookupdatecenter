@@ -92,6 +92,21 @@ try MainActor.assumeIsolated {
         precondition(diagnostic("catliveLastSetupMode") == expected && diagnostic("catliveProcessingSetups") == setups,
                      "realtime/offline transition requires fresh setupProcessing")
     }
+    var missing = plugin
+    missing.id = UUID().uuidString
+    missing.path = path + "/unavailable.vst3"
+    missing.componentState = "cHJlc2VydmVkLXN0YXRl"
+    var missingSettings = NativeFXSettings()
+    missingSettings.externalPlugins = [missing]; missingSettings.inserted = [missing.effectKey]
+    chain.apply(missingSettings)
+    precondition(chain.externalError != nil)
+    precondition(chain.externalNode(missing.id) == nil, "Failed wrappers must not participate in state capture, Save or removal")
+    precondition(missingSettings.externalPlugins?[0].componentState == missing.componentState)
+    missingSettings.removeEffect(missing.effectKey)
+    chain.apply(missingSettings)
+    precondition(chain.externalError == nil && chain.externalNode(missing.id) == nil,
+                 "Removing an unavailable insert clears its error and graph wrapper")
+    print("VST3_UNAVAILABLE_INSERT_IS_NOT_CAPTURED_AND_CAN_BE_REMOVED_OK")
     chain.detach(from: engine)
     print("VST3_OFFLINE_SETUP_BEFORE_ENGINE_PREPARE_PROCESS_MODE_MATCH_AND_LIVE_MODE_TRANSITIONS_OK")
 }

@@ -1,7 +1,15 @@
 import SwiftUI
 import Combine
 
+private struct FXKnobDiameterKey: EnvironmentKey { static let defaultValue: CGFloat = 76 }
+extension EnvironmentValues {
+    var fxKnobDiameter: CGFloat {
+        get { self[FXKnobDiameterKey.self] }
+        set { self[FXKnobDiameterKey.self] = newValue }
+    }
+}
 struct FXKnob: View {
+    @Environment(\.fxKnobDiameter) private var diameter
     let title: String
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -26,15 +34,15 @@ struct FXKnob: View {
         value = logarithmic ? (range.lowerBound+offset)*pow((range.upperBound+offset)/(range.lowerBound+offset),x)-offset : range.lowerBound+x*(range.upperBound-range.lowerBound)
     }
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: diameter < 76 ? 6 : 10) {
             Text(LocalizedStringKey(title)).font(.jarasSystem(size: 11, weight: .medium)).foregroundStyle(JarasTheme.secondary)
             ZStack {
                 Circle().trim(from: 0,to: 0.75).stroke(Color.white.opacity(0.08),style: StrokeStyle(lineWidth: 4,lineCap: .round)).rotationEffect(.degrees(135))
                 Circle().trim(from: 0,to: 0.75*fraction).stroke(AngularGradient(colors: [Color.cyan,JarasTheme.green],center: .center,startAngle: .degrees(135),endAngle: .degrees(405)),style: StrokeStyle(lineWidth: 4,lineCap: .round)).rotationEffect(.degrees(135))
                 Circle().fill(LinearGradient(colors: [Color(white: 0.27),Color(white: 0.10)],startPoint: .topLeading,endPoint: .bottomTrailing)).padding(7)
                     .overlay(Circle().stroke(Color.white.opacity(0.12),lineWidth: 1).padding(7)).shadow(color: .black.opacity(0.6),radius: 3,y: 3)
-                Capsule().fill(JarasTheme.green).frame(width: 3,height: 16).offset(y: -21).rotationEffect(.degrees(-135 + fraction*270))
-            }.frame(width: 76,height: 76).contentShape(Circle())
+                Capsule().fill(JarasTheme.green).frame(width: 3,height: diameter * 16 / 76).offset(y: -diameter * 21 / 76).rotationEffect(.degrees(-135 + fraction*270))
+            }.frame(width: diameter,height: diameter).contentShape(Circle())
                 #if os(macOS)
                 .overlay(FXKnobMouseInput(fraction: Binding(get: { fraction }, set: { set($0) }), reset: { value = reset }))
                 #else

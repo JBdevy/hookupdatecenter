@@ -229,7 +229,7 @@ struct MainView: View {
             toggleMixer: toggleMixer, toggleSetlist: toggleSetlist,
             setlistPlacement: setlistPlacement, placeSetlist: placeSetlist)
         #if os(macOS)
-        let tools = leftToolRail
+        let tools = desktopToolBar
         #else
         let tools = EmptyView()
         #endif
@@ -238,13 +238,17 @@ struct MainView: View {
                 #if os(macOS)
                 if desktopExtras && documents.projectTabCount > 1 { DesktopProjectTabBar().frame(height: 24) }
                 #endif
+                #if os(macOS)
+                workspace(height: max(0, geometry.size.height - 28 - (desktopExtras && documents.projectTabCount > 1 ? 24 : 0)), transport: transport, tools: tools)
+                #else
                 workspace(height: max(0, geometry.size.height - (desktopExtras && documents.projectTabCount > 1 ? 24 : 0)), transport: transport, tools: tools)
+                #endif
             }
         })
     }
     private func workspace<Transport: View, Tools: View>(height workspaceHeight: CGFloat,
                                                        transport: Transport, tools: Tools) -> some View {
-        HStack(spacing: 0) {
+        VStack(spacing: 0) {
             #if os(macOS)
             tools
             #endif
@@ -317,7 +321,6 @@ struct MainView: View {
                             FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true).frame(maxWidth: .infinity)
                                 .overlay(FooterDisplayResizeInput(height: geometry.size.height, maximum: maximumFooterHeight(workspaceHeight: workspaceHeight),
                                     changed: { _ in }, ended: { storedFooterHeight = $0 }))
-                            AudioStatusView { openSettings(.audio) }.fixedSize(horizontal: true, vertical: false)
                         }.buttonStyle(.plain).frame(height: geometry.size.height)
                     }.font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).padding(.horizontal, 14).background(JarasTheme.panel)
                 }
@@ -587,14 +590,14 @@ struct MainView: View {
             }
     }
     #if os(macOS)
-    private var leftToolRail: some View {
-        VStack(spacing: 8) {
+    private var desktopToolBar: some View {
+        HStack(spacing: 6) {
             Button {
                 withAnimation(.easeOut(duration: 0.16)) { navigationOpen.toggle() }
             } label: {
                 Image(systemName: "line.3.horizontal")
                     .font(.jarasSystem(size: 16))
-                    .frame(width: 30, height: 32)
+                    .frame(width: 26, height: 24)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Menu")
@@ -603,18 +606,16 @@ struct MainView: View {
                 Image(systemName: "slider.horizontal.3")
                     .font(.jarasSystem(size: 15, weight: .semibold))
                     .foregroundStyle(mixerWidth <= 0 ? Color(hex: 0xc44545) : JarasTheme.green)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 26, height: 24)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel(mixerWidth <= 0 ? "Expandir Track-Mixer" : "Recolher Track-Mixer")
             .jarasHelp(mixerWidth <= 0 ? "Restaurar largura anterior do Track-Mixer" : "Ocultar Track-Mixer")
-            MacProjectionRail(show: show)
-            Spacer(minLength: 0)
             if desktopExtras {
             Button(action: toggleBarMixer) {
                 Image(systemName: "slider.vertical.3")
                     .font(.jarasSystem(size: 16, weight: .semibold))
-                    .frame(width: 30, height: 32)
+                    .frame(width: 26, height: 24)
                     .contentShape(Rectangle())
             }
             .foregroundStyle((footerMixerOpen || detachedMixer.isVisible) ? JarasTheme.green : JarasTheme.text)
@@ -627,10 +628,30 @@ struct MainView: View {
                     } else { showDetachedMixer() }
                 }
             }
+            Button {
+                if detachedParts.isDetached {
+                    if detachedParts.isVisible { detachedParts.hide() }
+                    else { detachedParts.open(show: show) }
+                } else { partsLeftOpen.toggle() }
+            } label: {
+                PartsListIcon()
+                    .font(.jarasSystem(size: 16, weight: .semibold)).frame(width: 26, height: 24)
+                    .contentShape(Rectangle())
+            }.foregroundStyle((partsLeftOpen || detachedParts.isVisible) ? JarasTheme.green : JarasTheme.text)
+                .accessibilityLabel("Parts à esquerda").jarasHelp("Parts à esquerda")
+                .contextMenu {
+                    Button(LocalizedStringKey(detachedParts.isDetached ? "Dock Parts" : "Undock Parts")) {
+                        if detachedParts.isDetached { detachedParts.close(); partsLeftOpen = true }
+                        else { partsLeftOpen = false; detachedParts.open(show: show) }
+                    }
+                }
+            }
+            MacProjectionRail(show: show)
+            if desktopExtras {
             Button { keyboardOpen.toggle() } label: {
                 Image(systemName: "pianokeys")
                     .font(.jarasSystem(size: 16, weight: .semibold))
-                    .frame(width: 30, height: 32)
+                    .frame(width: 26, height: 24)
                     .contentShape(Rectangle())
             }
             .foregroundStyle(keyboardOpen ? JarasTheme.green : JarasTheme.text)
@@ -645,7 +666,7 @@ struct MainView: View {
             } label: {
                 Image(systemName: "square.grid.4x3.fill")
                     .font(.jarasSystem(size: 16, weight: .semibold))
-                    .frame(width: 30, height: 32)
+                    .frame(width: 26, height: 24)
                     .contentShape(Rectangle())
             }.foregroundStyle((vinhetasOpen || vinhetasWindow.visible) ? JarasTheme.green : JarasTheme.text)
                 .accessibilityLabel("Vinhetas").contextMenu {
@@ -655,31 +676,24 @@ struct MainView: View {
                     }
                 }
 
-            Button {
-                if detachedParts.isDetached {
-                    if detachedParts.isVisible { detachedParts.hide() }
-                    else { detachedParts.open(show: show) }
-                } else { partsLeftOpen.toggle() }
-            } label: {
-                PartsListIcon()
-                    .font(.jarasSystem(size: 16, weight: .semibold)).frame(width: 30, height: 32)
-                    .contentShape(Rectangle())
-            }.foregroundStyle((partsLeftOpen || detachedParts.isVisible) ? JarasTheme.green : JarasTheme.text)
-                .accessibilityLabel("Parts à esquerda").jarasHelp("Parts à esquerda")
-                .contextMenu {
-                    Button(LocalizedStringKey(detachedParts.isDetached ? "Dock Parts" : "Undock Parts")) {
-                        if detachedParts.isDetached { detachedParts.close(); partsLeftOpen = true }
-                        else { partsLeftOpen = false; detachedParts.open(show: show) }
-                    }
-                }
+
             }
+            Spacer(minLength: 0)
+            AudioStatusView { openSettings(.audio) }
+                .font(.jarasSystem(size: 9, weight: .medium, design: .monospaced))
+                .fixedSize(horizontal: true, vertical: false)
+            Button { openSettings() } label: {
+                Image(systemName: "gearshape")
+                    .font(.jarasSystem(size: 16))
+                    .frame(width: 26, height: 24).contentShape(Rectangle())
+            }.accessibilityLabel("Configurações").jarasHelp("Configurações")
+
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 7)
-        .frame(width: 32)
-        .frame(maxHeight: .infinity)
+        .padding(.horizontal, 4)
+        .frame(height: 28)
         .background(JarasTheme.panel)
-        .overlay(alignment: .trailing) { Rectangle().fill(JarasTheme.secondary.opacity(0.2)).frame(width: 1) }
+        .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.secondary.opacity(0.2)).frame(height: 1) }
     }
     #endif
     private var navigationLayer: some View {

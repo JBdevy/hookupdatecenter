@@ -205,6 +205,8 @@
   "Cancel": "Cancelar",
   "Effect": "Efeito",
   "Download": "Baixar",
+  "Delete instrument": "Deletar",
+  "Could not uninstall the instrument.": "Não foi possível desinstalar o instrumento.",
   "MIDI input": "Entrada MIDI",
   "None": "Nenhum",
   "Disconnected": "Desconectado",

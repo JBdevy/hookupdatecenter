@@ -1,5 +1,6 @@
 #pragma once
 #include "InstrumentAssets.h"
+#include "BoundedMIDIBuffer.h"
 #include "Instrument.h"
 #include "RegionPitch.h"
 #include "ClipTempo.h"
@@ -25,8 +26,18 @@ struct VirtualKeyboardRoute {
             if (event.samplePosition < 0 || event.samplePosition >= samples) continue;
             if (message.isAllNotesOff() || message.isAllSoundOff()) {
                 auto &notes = held[size_t(message.getChannel()-1)];
+                unsigned targets=0;
+                if(message.isAllSoundOff()) {
+                    for(const auto target:notes)if(target)targets|=1u<<(target-1);
+                    for(int channel=1;channel<=16;++channel)if(targets&(1u<<(channel-1))) {
+                        output.addEvent(MidiMessage::controllerEvent(channel,64,0),event.samplePosition);
+                        output.addEvent(MidiMessage::allSoundOff(channel),event.samplePosition);
+                    }
+                }
                 for (size_t note=0; note<notes.size(); ++note) if (notes[note]) {
-                    output.addEvent(MidiMessage::noteOff(notes[note],int(note)),event.samplePosition); notes[note]=0;
+                    if(!message.isAllSoundOff())
+                        output.addEvent(MidiMessage::noteOff(notes[note],int(note)),event.samplePosition);
+                    notes[note]=0;
                 }
                 continue;
             }
@@ -141,50 +152,64 @@ inline std::vector<PlaybackNote> takePlaybackNotes(const jaras::Track &track,
 class MIDIPlayback {
   public:
     struct Event { double time; PlaybackNote note; bool on; };
-    struct Sequence { std::vector<PlaybackNote> notes; std::vector<Event> events; };
+    struct Sequence {
+        std::vector<PlaybackNote> notes;
+        std::vector<Event> events;
+        jaras::MIDINoteChaseIndex chase;
+    };
     static Sequence sequence(std::vector<PlaybackNote> notes) {
-        Sequence result;result.notes=std::move(notes);result.events.reserve(result.notes.size()*2);
+        Sequence result; result.notes=std::move(notes);
+        std::stable_sort(result.notes.begin(),result.notes.end(),[](const auto& a,const auto& b){return a.start<b.start;});
+        result.events.reserve(result.notes.size()*2);
         for(const auto &note:result.notes){if(note.velocity>0)result.events.push_back({note.start,note,true});result.events.push_back({note.end,note,false});}
-        std::stable_sort(result.events.begin(),result.events.end(),[](const auto &a,const auto &b){return a.time==b.time?!a.on && b.on:a.time<b.time;});return result;
+        std::stable_sort(result.events.begin(),result.events.end(),[](const auto &a,const auto &b){return a.time==b.time?!a.on && b.on:a.time<b.time;});
+        result.chase.prepare(result.notes);
+        return result;
     }
-    static void appendExternal(const Sequence &sequence, MidiBuffer &messages,
+    static void appendExternal(const Sequence &sequence, BoundedMIDIBuffer &messages,
                                double &expected, jaras::PlaybackScope &previousScope,
                                double at, int count, double rate, jaras::PlaybackScope scope = {},
-                               bool running = true) {
+                               bool running = true, int destinationOffset = 0) noexcept {
+        if (count <= 0) return;
         if (!running) {
             if (expected != -1)
                 for (int channel = 1; channel <= 16; ++channel)
-                    messages.addEvent(MidiMessage::allNotesOff(channel), 0);
+                    if (!messages.addEvent(MidiMessage::allNotesOff(channel), destinationOffset)) break;
             expected = -1;
             return;
         }
-        if (std::abs(expected - at) > 1.5 / rate || previousScope != scope) {
+        if (!messages.overflowed() && (std::abs(expected - at) > 1.5 / rate || previousScope != scope)) {
             for (int channel = 1; channel <= 16; ++channel)
-                messages.addEvent(MidiMessage::allNotesOff(channel), 0);
-            for (const auto &note : sequence.notes)
-                if (note.velocity > 0 && scope.allows(note.playbackStart,note.regionOwnerIndex) &&
-                    note.start < at - 1e-9 && note.end > at + 1e-9)
-                    messages.addEvent(MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity), 0);
+                if (!messages.addEvent(MidiMessage::allNotesOff(channel), destinationOffset)) break;
+            const bool chased=sequence.chase.visit(sequence.notes,at,[&]{return messages.inspect();},[&](const PlaybackNote& note){
+                return note.velocity <= 0 || !scope.allows(note.playbackStart,note.regionOwnerIndex) ||
+                    messages.addEvent(MidiMessage::noteOn(note.channel,note.pitch,(uint8)note.velocity),destinationOffset);
+            });
+            if (!chased) messages.panic();
         }
         const double end = at + count / rate;
         auto event = std::lower_bound(sequence.events.begin(), sequence.events.end(), at - 1e-9,
             [](const Event &event, double value) { return event.time < value; });
         for (; event != sequence.events.end() && event->time < end - 1e-9; ++event) {
+            if (!messages.inspect()) break;
             const auto &note = event->note;
             if (!scope.allows(note.playbackStart,note.regionOwnerIndex)) continue;
-            messages.addEvent(event->on ? MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity)
-                                        : MidiMessage::noteOff(note.channel, note.pitch),
-                              jlimit(0, count - 1, (int)std::round((event->time - at) * rate)));
+            if (!messages.addEvent(event->on ? MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity)
+                                             : MidiMessage::noteOff(note.channel, note.pitch),
+                    destinationOffset+jlimit(0, count - 1, (int)std::round((event->time - at) * rate)))) break;
         }
+        // Overflow discards this block and releases every held voice. Advance
+        // the clock anyway: the next block accepts fresh events instead of
+        // repeatedly chasing the same oversized discarded note backlog.
         expected = end;
         previousScope = scope;
     }
     void replaceSequence(Sequence &next,bool stopHeld=false) noexcept {
-        notes.swap(next.notes);events.swap(next.events);if(stopHeld)reset();
+        std::swap(plan,next);if(stopHeld)reset();
     }
     MIDIPlayback(const std::vector<PlaybackNote> &source, const var &fx, const File &directory,
                  double sampleRate)
-        : notes(source), rate(sampleRate) {
+        : rate(sampleRate) {
         for (auto settings : instrumentAssets::settings(fx)) {
             const auto id = str(settings, "instrumentID");
             const auto file = instrumentAssets::resolve(id, directory);
@@ -202,8 +227,8 @@ class MIDIPlayback {
         }
         if (layers.empty())
             return;
-        auto plan=sequence(std::move(notes));replaceSequence(plan);
-        midi.ensureSize(1048576);
+        midi.prepare();
+        auto prepared=sequence(source);replaceSequence(prepared);
     }
     bool empty() const { return layers.empty(); }
     void configure(const var &fx) {
@@ -240,42 +265,26 @@ class MIDIPlayback {
             }
     }
     void render(int head, double at, AudioBuffer<float> &output, int start, int count, jaras::PlaybackScope scope = {}) {
-        if (layers.empty())
+        if (count <= 0 || layers.empty())
             return;
         midi.clear();
-        if (std::abs(expected[head] - at) > 1.5 / rate || scopes[head] != scope) {
-            scopes[head] = scope;
+        if (std::abs(expected[head] - at) > 1.5 / rate || scopes[head] != scope)
             reset(head);
-            for (const auto &note : notes)
-                if (note.velocity>0 && scope.allows(note.playbackStart,note.regionOwnerIndex) && note.start < at - 1e-9 && note.end > at + 1e-9)
-                    midi.addEvent(
-                        MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity), 0);
-        }
-        const double end = at + count / rate;
-        auto event =
-            std::lower_bound(events.begin(), events.end(), at - 1e-9,
-                             [](const Event &event, double value) { return event.time < value; });
-        for (; event != events.end() && event->time < end - 1e-9; ++event) {
-            const auto &note = event->note;
-            if (!scope.allows(note.playbackStart,note.regionOwnerIndex)) continue;
-            const int sample = jlimit(0, count - 1, (int)std::round((event->time - at) * rate));
-            midi.addEvent(event->on
-                              ? MidiMessage::noteOn(note.channel, note.pitch, (uint8)note.velocity)
-                              : MidiMessage::noteOff(note.channel, note.pitch),
-                          sample);
-        }
+        appendExternal(plan,midi,expected[head],scopes[head],at,count,rate,scope);
         for (auto &layer : layers)
             layer->synth[head]->render(output, midi, count, start);
-        expected[head] = end;
     }
+    std::uint64_t builderOverflows() const noexcept { return midi.overflows(); }
     void live(AudioBuffer<float> &output, const MidiBuffer &messages, int samples,
               int channel = 0) {
-        if (layers.empty())
+        if (samples <= 0 || layers.empty())
             return;
         midi.clear();
-        for (const auto event : messages)
-            if (channel <= 0 || event.getMessage().getChannel() == channel)
-                midi.addEvent(event.getMessage(), event.samplePosition);
+        for (const auto event : messages) {
+            if (!midi.inspect()) break;
+            if ((channel <= 0 || event.getMessage().getChannel() == channel) &&
+                !midi.addEvent(event.getMessage(), event.samplePosition)) break;
+        }
         // Live notes use a separate voice bank from both timeline heads.
         for (auto &layer : layers) {
             if (layer->live)
@@ -296,10 +305,9 @@ class MIDIPlayback {
     struct Layer {
         std::unique_ptr<Instrument> synth[2], live;
     };
-    std::vector<PlaybackNote> notes;
-    std::vector<Event> events;
+    Sequence plan;
     std::vector<std::unique_ptr<Layer>> layers;
-    MidiBuffer midi;
+    BoundedMIDIBuffer midi{false};
     double expected[2]{-1, -1}, rate;
     jaras::PlaybackScope scopes[2];
 };

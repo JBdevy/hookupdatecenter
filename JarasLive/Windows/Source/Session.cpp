@@ -1219,7 +1219,7 @@ void Session::toggleRecording() {
         return;
     }
     if (audio.isRecording()) {
-        auto takes = audio.stopTrackRecording();
+        auto capture = audio.detachTrackRecording();
         recordingActiveTracks.clear();
         core.execute({jaras::CommandKind::stopAll});
         publishTransport();
@@ -1227,16 +1227,23 @@ void Session::toggleRecording() {
         const auto projectID = project().id, songID = recordingSong;
         const auto start = recordingStart;
         const auto previews = recordingItems;
-        const auto drops = audio.recordingOverflows();
         const std::weak_ptr<int> lifetime = alive;
         busy = true;
         recordingFinalizing = true;
         message = String::fromUTF8("Finalizando gravação…");
         notify();
-        worker.addJob([this, lifetime, directory, projectID, songID, start, drops, previews,
-                       takes = std::move(takes)]() mutable {
+        worker.addJob([this, lifetime, directory, projectID, songID, start, previews,
+                       capture = std::move(capture)]() mutable {
             std::vector<std::pair<ID, jaras::AudioClip>> clips;
             StringArray failures;
+            std::vector<TrackCapture::Take> takes;
+            uint64 drops = 0;
+            if (capture) {
+                try { takes = capture->finish(); }
+                catch (const std::exception& failure) { failures.add(String::fromUTF8(failure.what())); }
+                drops = capture->overflows();
+                capture.reset();
+            }
             AudioFormatManager formats;
             registerAudioFormats(formats);
             for (auto &take : takes) {
@@ -1278,6 +1285,7 @@ void Session::toggleRecording() {
             MessageManager::callAsync([this, lifetime, projectID, songID, drops,
                                        clips = std::move(clips), failures] {
                 if (lifetime.expired()) return;
+                audio.recordingCompleted(drops);
                 busy = false;
                 recordingItems.clear(); ++revision;
                 if (project().id != projectID) { recordingFinalizing = false; recordingResume = RecordingResume::none; notify(); return; }

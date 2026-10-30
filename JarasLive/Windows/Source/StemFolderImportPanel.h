@@ -10,7 +10,7 @@ class StemBPMQuestion final : public Component {
         bool primary=false;
         void paintButton(Graphics& g,bool hover,bool down) override {
             g.setColour((primary?Colour(0xff60b746):Colour(0xff414141)).brighter(hover?.06f:0).darker(down?.1f:0));
-            g.fillRoundedRectangle(getLocalBounds().toFloat(),getHeight()/2.f);g.setColour(Colours::white);g.setFont(theme::mediumFont(confirmationStyle::buttonSize));g.drawText(getButtonText(),getLocalBounds(),Justification::centred);
+            g.fillRoundedRectangle(getLocalBounds().toFloat(),getHeight()/2.f);g.setColour(primary ? Colours::black : Colours::white);g.setFont(theme::mediumFont(confirmationStyle::buttonSize));g.drawText(getButtonText(),getLocalBounds(),Justification::centred);
         }
     } yes,no,cancel;
 public:
@@ -52,7 +52,7 @@ public:
         search.setTextToShowWhenEmpty(localization::translate("Search folders"),theme::secondary);
         search.onTextChange=[this]{filter();};
         for(auto* button:{&all,&back,&cancel,&next,&yes,&no})addAndMakeVisible(*button);
-        next.setColour(TextButton::buttonColourId,Colour(0xff3e7854));next.setColour(TextButton::textColourOffId,Colours::white);
+        next.setColour(TextButton::buttonColourId,Colour(0xff3e7854));next.setColour(TextButton::textColourOffId,Colours::black);
         cancel.setButtonText(localization::translate("Cancel"));back.setButtonText(localization::translate("Back"));yes.setButtonText(localization::translate("Yes"));no.setButtonText(localization::translate("No"));
         all.onClick=[this]{if(selected.size()==scan->folders.size())selected.clear();else {selected.clear();for(size_t i=0;i<scan->folders.size();++i)selected.push_back(i);}refreshOrder();};
         back.onClick=[this]{ModalSheet::dismiss(*this);};

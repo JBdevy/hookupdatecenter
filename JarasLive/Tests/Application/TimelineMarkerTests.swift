@@ -2,6 +2,22 @@ import XCTest
 @testable import JarasApplication
 
 final class TimelineMarkerTests: XCTestCase {
+    func testProgramChangeHeadsClipToRootRegionWithoutCollapsingStacks() {
+        var song = Project.empty(name: "PC heads").songs[0]
+        let root = Part(id: UUID(), name: "Root", startTime: 10, endTime: 20)
+        let child = Part(id: UUID(), name: "Child", startTime: 12, endTime: 15, parentRegionID: root.id)
+        song.parts = [root, child]
+        let markers = (0..<6).map { ProgramChangeMarker(id: UUID(), position: 19.5, program: $0, channel: 1) }
+        XCTAssertEqual(ProgramChangeLayout(markers).count, 6)
+        for marker in markers {
+            XCTAssertEqual(song.programChangeHeadWidth(at: marker.position, naturalWidth: 120, scale: 100), 50)
+            XCTAssertEqual(song.programChangeHeadWidth(at: marker.position, naturalWidth: 120, scale: 20), 0)
+        }
+        XCTAssertEqual(song.programChangeHeadWidth(at: 14.5, naturalWidth: 120, scale: 100), 120)
+        XCTAssertEqual(song.programChangeHeadWidth(at: 20, naturalWidth: 120, scale: 100), 120)
+        song.parts.append(Part(id: UUID(), name: "Overlap", startTime: 18, endTime: 19.75))
+        XCTAssertEqual(song.programChangeHeadWidth(at: 19.5, naturalWidth: 120, scale: 100), 25)
+    }
     func testForwardTempoHeadsUseSpaceUntilNextMarker() {
         let first = TimelineMarker(id: UUID(), name: "Tempo", position: 10, color: 0x999999, tempoBPM: 120)
         let second = TimelineMarker(id: UUID(), name: "Tempo", position: 12, color: 0x999999, tempoBPM: 90)

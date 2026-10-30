@@ -20,9 +20,14 @@ import AVFoundation
         guard project == nil || project == show.snapshot.project.id else { return }
         if let clip, FXModelLookup.clip(clip, in: show.snapshot.project) == nil { return }
         let node = suppliedNode ?? DesktopProjectTabs.shared.audio(for: show).effects(for: clip ?? track)?.externalNode(identifier)
-        guard let node else { return }
+        // A wrapper may exist even when its module failed to load. It has no
+        // live edits to capture; keep the document's blobs for Save and Undo.
+        guard let node, JarasVST3.isPluginLoaded(node, identifier: identifier) else { return }
         guard let state = JarasVST3.state(node, identifier: identifier) else {
-            if saving { throw ProjectError.invalid("Não foi possível capturar o estado atual do plugin. A operação foi cancelada.") }
+            if saving {
+                let name = settings(show: show, track: track, clip: clip).externalPlugins?.first { $0.id == identifier }?.name ?? identifier
+                throw ProjectError.invalid(String(format: JarasLocalization.string("Could not capture the current state of plugin %@. The operation was cancelled to preserve its settings."), name))
+            }
             return
         }
         var settings = settings(show: show, track: track, clip: clip)

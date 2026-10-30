@@ -5,6 +5,10 @@
 #include "FXSchema.h"
 #include "FXChain.h"
 #include "CatDynamicsAssets.h"
+#include "Appearance.h"
+#include "ClipEditing.h"
+#include "FrontendPresentation.h"
+#include "GridMediaClipboard.h"
 #include <shobjidl.h>
 #include <wrl/client.h>
 
@@ -39,8 +43,8 @@ struct FrontendBridge::RTAState {
     double lastPoll = 0, rate = 48000;
     ~RTAState() { for (auto &source : sources) if (source) source->removeReader(); }
 };
-FrontendBridge::FrontendBridge(Session &s, Auth &a, Emit output)
-    : session(s), auth(a), emit(std::move(output)), waveforms(std::make_unique<NativeFrontendWaveforms>(s)) {
+FrontendBridge::FrontendBridge(Session &s, Auth &a, Emit output, bool compact)
+    : session(s), auth(a), emit(std::move(output)), compactPresentation(compact), waveforms(std::make_unique<NativeFrontendWaveforms>(s)) {
     previousCanPlay = session.canPlay;
     previousIsPlaying = auth.isPlaying;
     previousAudioWarning = session.audioOutputWarning;
@@ -85,19 +89,22 @@ var FrontendBridge::transportJSON() const {
     put(value, "songID", optionalID(state.songId)); put(value, "recording", session.audio.isRecording());
     put(value, "paused", state.paused); put(value, "loop", state.loop.enabled);
     put(value, "subPlaying", state.subPlay.playing); put(value, "subPosition", state.subPlay.position);
+    put(value, "metronome", session.audio.metronomeEnabled.load());
     return value;
 }
 void FrontendBridge::publishSnapshot() {
     session.audio.instrumentAllowed = auth.allowed();
+    refreshClipboard();
     // Do not call Session::snapshot here: that captures external plugin state.
     // The UI only needs the already-owned project, encoded on the UI thread.
     if (lastProject != session.project().id) {
         lastProject = session.project().id; selectedTracks.clear(); selectedItems.clear(); selectedRegions.clear(); meterTracks.clear();
         waveforms->invalidate(); rta.reset();
     }
-    const auto encoded = ProjectCodec::encode(session.project(), session.original);
+    const auto encoded = compactPresentation ? frontendPresentation::project(session.project()) : ProjectCodec::encode(session.project(), session.original);
     var current;
-    for (const auto &song : list(get(encoded, "songs")))
+    if(compactPresentation) {if(session.song()) current=frontendPresentation::song(*session.song());}
+    else for (const auto &song : list(get(encoded, "songs")))
         if (session.song() && utf8(str(song, "id")) == session.song()->id) { current = song; break; }
     auto value = object(), selection = object(), access = object(), document = object();
     put(selection, "trackIDs", ids(selectedTracks)); put(selection, "itemIDs", ids(selectedItems)); put(selection, "regionIDs", ids(selectedRegions));
@@ -108,11 +115,19 @@ void FrontendBridge::publishSnapshot() {
     put(document, "projectID", text(session.project().id));
     put(value, "type", "snapshot"); put(value, "revision", (int64)session.revision);
     put(value, "project", encoded); put(value, "song", current); put(value, "selection", selection);
+    put(value, "clipboard", clipboardJSON());
     put(value, "transport", transportJSON()); put(value, "dirty", session.dirty); put(value, "document", document);
     put(value, "language", localization::english ? "en" : "pt"); put(value, "auth", access);
     put(value, "busy", session.busy); put(value, "progress", session.importProgress); put(value, "status", session.message);
     put(value, "canUndo", session.canUndo()); put(value, "canRedo", session.canRedo());
     put(value, "readOnly", jaras::projectSync::readOnly());
+    auto arms=object(), armed=object();
+    if(const auto *song=session.song())for(const auto &track:song->tracks) {
+        put(arms,Identifier(text(track.id)),session.recordArm(track.id));
+        put(armed,Identifier(text(track.id)),session.recordingArmed(track.id));
+    }
+    put(value,"recordArms",arms);
+    put(value,"recordArmed",armed);
     send(value);
     lastRevision = session.revision; previousBusy = session.busy; previousDirty = session.dirty;
     snapshotRequested = false;
@@ -134,6 +149,7 @@ void FrontendBridge::publishTelemetry() {
     put(value, "projectID", text(session.project().id)); send(value);
 }
 void FrontendBridge::timerCallback() {
+    refreshClipboard();
     if (rta && Time::getMillisecondCounterHiRes() * .001 - rta->lastPoll > 1) rta.reset();
     const auto authState = String((int)auth.allowed()) + String((int)auth.busy) + auth.title + auth.message + String((int)auth.requiresDeviceName);
     if (snapshotRequested || session.revision != lastRevision || session.dirty != previousDirty || session.busy != previousBusy ||
@@ -225,6 +241,30 @@ void FrontendBridge::validateProject(const var &request, const var &payload) con
     if (expected.isNotEmpty() && utf8(expected) != session.project().id)
         throw std::runtime_error("The project changed. Refresh the current project before editing.");
 }
+void FrontendBridge::validateClipboardScope(const var &payload) const {
+    // These new commands are tied to the grid that produced the keystroke.
+    // Legacy bridge commands retain their existing optional scope fields.
+    if (utf8(str(payload,"projectID")) != session.project().id || !session.song() ||
+        utf8(str(payload,"songID")) != session.song()->id)
+        throw std::runtime_error("The timeline changed. Copy the items again in the current timeline.");
+}
+void FrontendBridge::refreshClipboard() {
+    if (!itemClipboard) return;
+    if (itemClipboard->project == session.project().id &&
+        std::any_of(session.project().songs.begin(),session.project().songs.end(),[&](const auto &song){return song.id==itemClipboard->song;}) &&
+        gridMediaClipboard::ownsItems(true,itemClipboardSequence,GetClipboardSequenceNumber())) return;
+    itemClipboard.reset(); itemClipboardSequence.reset(); snapshotRequested = true;
+}
+var FrontendBridge::clipboardJSON() const {
+    auto value=object(); Array<var> cut;
+    put(value,"available",itemClipboard.has_value());
+    put(value,"moving",itemClipboard && itemClipboard->moving);
+    put(value,"projectID",itemClipboard ? text(itemClipboard->project) : String());
+    put(value,"songID",itemClipboard ? text(itemClipboard->song) : String());
+    if(itemClipboard && itemClipboard->moving)
+        for(const auto &track:itemClipboard->tracks)for(const auto &clip:track.clips)cut.add(text(clip.id));
+    put(value,"cutItemIDs",cut);return value;
+}
 void FrontendBridge::requireEditable() const {
     jaras::projectSync::requireWritable();
     if (session.busy) throw std::runtime_error("Wait for the current operation to finish.");
@@ -312,12 +352,18 @@ File FrontendBridge::chooseFile(bool saving, bool audioSample) {
     if (FAILED(selected->GetDisplayName(SIGDN_FILESYSPATH, &path))) throw std::runtime_error("Choose a local project file.");
     const File file{String(path)}; CoTaskMemFree(path); return file;
 }
-bool FrontendBridge::save(const File &requested) {
+void FrontendBridge::save(const File &requested, std::function<void(bool)> complete) {
     requireEditable();
     auto destination = requested != File() ? requested : session.document;
     if (destination == File()) destination = chooseFile(true);
-    if (destination == File()) return false;
-    session.save(destination); publishSnapshot(); return true;
+    if (destination == File()) { complete(false); return; }
+    const auto weak = std::weak_ptr<int>(lifetime);
+    session.saveAsync(destination, [this, weak, complete=std::move(complete)](String error) {
+        if (weak.expired()) return;
+        publishSnapshot();
+        if (error.isNotEmpty()) notice("CatLive", error);
+        complete(error.isEmpty());
+    });
 }
 void FrontendBridge::ask(String kind, String title, String message, Array<var> buttons,
                          std::function<void(String)> callback) {
@@ -344,7 +390,7 @@ void FrontendBridge::confirmLeaving(std::function<void(bool)> complete) {
             [this, complete](String choice) {
                 if (choice == "discard") complete(true);
                 else if (choice == "save") {
-                    try { complete(save()); }
+                    try { save({}, complete); }
                     catch (const std::exception &error) { notice("CatLive", String::fromUTF8(error.what())); complete(false); }
                 }
                 else complete(false);
@@ -360,6 +406,9 @@ void FrontendBridge::load(const File &file, std::function<void(String)> complete
     const auto finish = [this, weak, completed](String error) {
         if (weak.expired()) return;
         pendingDocumentAction = false;
+        // Opening the same file (or a copy retaining its UUIDs) is still a new
+        // document lifetime, as in Workspace::projectOpened.
+        if(error.isEmpty()){itemClipboard.reset();itemClipboardSequence.reset();}
         selectedTracks.clear(); selectedItems.clear(); selectedRegions.clear(); publishSnapshot();
         if (completed) completed(error);
     };
@@ -399,6 +448,26 @@ void FrontendBridge::requestClose() {
         });
     } catch (const std::exception &error) { pendingDocumentAction = false; notice("CatLive", String::fromUTF8(error.what())); }
 }
+void FrontendBridge::recoverPresentation(const String &error,std::function<void()> retry) {
+    // A failed renderer cannot draw an ImGui confirmation. Keep Session alive
+    // and use a native recovery prompt instead of discarding unsaved work.
+    auto owner=static_cast<HWND>(ownerWindow);
+    if(!session.dirty) {
+        const auto message=localized("The interface could not continue. Retry?\n\n","A interface não pôde continuar. Tentar novamente?\n\n")+error;
+        if(MessageBoxW(owner,message.toWideCharPointer(),L"CatLive",MB_RETRYCANCEL|MB_ICONERROR)==IDRETRY) retry();
+        else if(onCloseApproved)onCloseApproved();
+        return;
+    }
+    const auto message=localized(
+        "The interface could not continue. Your project is still in memory.\nYes: save and close.\nNo: close without saving.\nCancel: retry the interface.\n\n",
+        "A interface não pôde continuar. Seu projeto continua na memória.\nSim: salvar e fechar.\nNão: fechar sem salvar.\nCancelar: tentar abrir a interface novamente.\n\n")+error;
+    const int choice=MessageBoxW(owner,message.toWideCharPointer(),L"CatLive",MB_YESNOCANCEL|MB_ICONERROR|MB_DEFBUTTON3);
+    if(choice==IDNO){if(onCloseApproved)onCloseApproved();return;}
+    if(choice!=IDYES){retry();return;}
+    try {
+        save({},[this,retry](bool saved){if(saved){if(onCloseApproved)onCloseApproved();}else retry();});
+    }catch(const std::exception &failure){MessageBoxW(owner,String::fromUTF8(failure.what()).toWideCharPointer(),L"CatLive",MB_OK|MB_ICONERROR);retry();}
+}
 
 void FrontendBridge::receive(const String &json) {
     var request; var id;
@@ -432,6 +501,35 @@ void FrontendBridge::receive(const String &json) {
         if (pendingDocumentAction) throw std::runtime_error("Close the current confirmation first.");
         if (action == "effectsPreview" || action == "effectsCommit" || action == "effectsChooseSample") { reply(id, effects(action, payload)); return; }
         using C = jaras::CommandKind;
+        auto itemIDs=[&] {
+            std::set<ID> result;
+            if(!get(payload,"itemIDs").isArray())throw std::invalid_argument("Item selection is required.");
+            for(const auto &entry:list(get(payload,"itemIDs"))) {
+                const auto id=utf8(entry.toString());bool found=false;
+                if(const auto *song=session.song())for(const auto &track:song->tracks)for(const auto &clip:track.clips)if(clip.id==id)found=true;
+                if(!found)throw std::invalid_argument("Unknown item.");result.insert(id);
+            }
+            if(result.empty())throw std::invalid_argument("Select an item first.");
+            return result;
+        };
+        auto trackIDs=[&] {
+            std::set<ID> result;
+            if(!get(payload,"trackIDs").isArray())throw std::invalid_argument("Track selection is required.");
+            for(const auto &entry:list(get(payload,"trackIDs"))){auto id=utf8(entry.toString());requireTrack(id);result.insert(id);}
+            if(result.empty())throw std::invalid_argument("Select a track first.");return result;
+        };
+        if(action=="new") {
+            requireEditable();pendingDocumentAction=true;
+            confirmLeaving([this,id](bool proceed){
+                if(!proceed){pendingDocumentAction=false;reply(id,{},"Canceled");return;}
+                try {
+                    const auto file=chooseFile(true);if(file==File()){pendingDocumentAction=false;reply(id,{},"Canceled");return;}
+                    session.newProject(file.getFileNameWithoutExtension());
+                    const auto weak=std::weak_ptr<int>(lifetime);
+                    session.saveAsync(file,[this,weak,id](String error){if(weak.expired())return;pendingDocumentAction=false;publishSnapshot();reply(id,{},error);});
+                }catch(const std::exception &error){pendingDocumentAction=false;reply(id,{},String::fromUTF8(error.what()));}
+            });return;
+        }
         if (action == "open") {
             requireEditable();
             const auto path = str(payload, "path");
@@ -445,9 +543,31 @@ void FrontendBridge::receive(const String &json) {
                 catch (const std::exception &error) { reply(id, {}, String::fromUTF8(error.what())); }
             }); return;
         }
+        if(action=="importMedia") {
+            requireEditable();
+            if(utf8(str(payload,"projectID"))!=session.project().id||!session.song()||utf8(str(payload,"songID"))!=session.song()->id)
+                throw std::runtime_error(utf8(localized("The destination timeline changed.","O grid de destino mudou.")));
+            const auto paths=get(payload,"paths");
+            if(!paths.isArray()||list(paths).isEmpty()||list(paths).size()>1024)throw std::invalid_argument("Select media files to import.");
+            Array<File> files;
+            for(const auto& value:list(paths)) {
+                if(!value.isString()||value.toString().isEmpty()||!File::isAbsolutePath(value.toString()))throw std::invalid_argument("Choose absolute local media paths.");
+                const File file(value.toString());if(!files.contains(file))files.add(file);
+            }
+            const auto track=utf8(str(payload,"trackID"));if(!track.empty())requireTrack(track);
+            const auto position=finiteNumber(payload,"seconds"),gap=finiteNumber(payload,"gap");
+            if(position<0||gap<0||gap>60)throw std::invalid_argument("Invalid media position or gap.");
+            const auto layout=str(payload,"layout");
+            if(layout!="separateTracks"&&layout!="sameTrack"&&layout!="stacked")throw std::invalid_argument("Choose a media layout.");
+            const auto weak=std::weak_ptr<int>(lifetime);
+            session.importMedia(files,position,track,layout=="sameTrack"?MediaDropLayout::sameTrack:layout=="stacked"?MediaDropLayout::stacked:MediaDropLayout::separateTracks,gap,
+                [this,weak,id](String error){if(weak.expired())return;publishSnapshot();reply(id,{},error);},true);
+            publishSnapshot();return;
+        }
         if (action == "save") {
             const auto path = str(payload, "path");
-            if (!save(path.isEmpty() ? File() : File(path))) { reply(id, {}, "Canceled"); return; }
+            save(path.isEmpty() ? File() : File(path),[this,id](bool success){reply(id,{},success?String():String("Save was canceled or failed."));});
+            return;
         } else if (action == "play" || action == "togglePlay" || action == "pause" || action == "stop") {
             requireEditable();
             const bool starting = action == "play" || (action == "togglePlay" && !session.transport().playing);
@@ -455,9 +575,92 @@ void FrontendBridge::receive(const String &json) {
             const auto kind = action == "stop" ? C::stop : action == "pause" ? C::pause :
                 action == "togglePlay" && session.transport().playing ? C::pause : C::play;
             session.command(kind);
-        } else if (action == "seek") { requireEditable(); session.command(C::seek, {}, std::max(0., finiteNumber(payload, "seconds"))); }
+        } else if(action=="transport") {
+            requireEditable();const auto kind=str(payload,"kind");
+            const std::map<String,C> commands{{"subPlay",C::subPlay},{"subStop",C::subStop},{"toggleLoop",C::toggleLoop},
+                {"ignoreNext",C::ignoreNext},{"next",C::next},{"previous",C::previous},{"stopAll",C::stopAll},
+                {"queueRegion",C::queueRegion},{"cancelSection",C::cancelSection},{"queueSection",C::queueSection},{"editSeek",C::editSeek}};
+            const auto found=commands.find(kind);if(found==commands.end())throw std::invalid_argument("Unknown transport command.");
+            if(kind=="subPlay"&&(!auth.allowed()||auth.pendingRevocation))throw std::runtime_error(utf8(localized("Sign in to play.","Faça login para reproduzir.")));
+            const double value=kind=="editSeek"?std::max(0.,finiteNumber(payload,"value")):0.;
+            session.command(found->second,utf8(str(payload,"target")),value);
+        } else if(action=="tempo") {requireEditable();session.setTempo(finiteNumber(payload,"value"));}
+        else if(action=="metronome") {
+            requireEditable();if(!get(payload,"enabled").isBool())throw std::invalid_argument("Metronome state is required.");
+            const auto result=Appearance{}.set("jaras.metronome.enabled",flag(payload,"enabled"));
+            if(result.failed())throw std::runtime_error(utf8(result.getErrorMessage()));
+            session.audio.metronomeEnabled=flag(payload,"enabled");
+        } else if(action=="record") {
+            requireEditable();if(!session.audio.isRecording()&&(!auth.allowed()||auth.pendingRevocation))throw std::runtime_error(utf8(localized("Sign in to record.","Faça login para gravar.")));
+            session.toggleRecording();
+        } else if(action=="recordArm") {requireEditable();const auto id=utf8(str(payload,"trackID"));requireTrack(id);session.cycleRecordArm(id);}
+        else if(action=="renameTrack") {requireEditable();const auto id=utf8(str(payload,"trackID"));requireTrack(id);const auto name=str(payload,"name").trim();if(name.isEmpty())throw std::invalid_argument("A track name is required.");session.renameTrack(id,name);}
+        else if(action=="removeTracks") {requireEditable();session.removeTracks(trackIDs());selectedTracks.clear();}
+        else if(action=="copyItems" || action=="cutItems") {
+            validateClipboardScope(payload);
+            if(session.busy)throw std::runtime_error("Wait for the current operation to finish.");
+            const bool moving=action=="cutItems";
+            if(moving) {
+                requireEditable();
+                if(session.project().timelineMovementLocked.value_or(false))throw std::runtime_error("Unlock item movement first.");
+            }
+            auto copied=GridItemClipboard::copy(session.project(),session.song()->id,itemIDs(),moving);
+            if(!copied)throw std::invalid_argument("The selected items cannot be copied.");
+            session.programChangeClipboard.reset();session.programChangePasteReady=false;
+            itemClipboard=std::move(copied);itemClipboardSequence=GetClipboardSequenceNumber();
+            reply(id);publishSnapshot();return;
+        } else if(action=="pasteItems") {
+            validateClipboardScope(payload);requireEditable();refreshClipboard();
+            if(!itemClipboard)throw std::runtime_error("Copy items from this timeline before pasting. External file paste is not available in this interface yet.");
+            if(itemClipboard->song!=session.song()->id)throw std::runtime_error("Return to the copied items' timeline before pasting.");
+            if(itemClipboard->moving && session.project().timelineMovementLocked.value_or(false))throw std::runtime_error("Unlock item movement first.");
+            const auto position=get(payload,"seconds").isVoid()?session.transport().editPosition:finiteNumber(payload,"seconds");
+            const auto clipboard=*itemClipboard;
+            const auto entries=clipboard.items(session.project(),position);
+            // Preserve the shipping clipboard model and its atomic, undoable
+            // Session transaction. A failed paste leaves a pending cut intact.
+            session.edit([&](jaras::Project &project) {
+                auto edit=session.core;edit.pasteItems(clipboard.song,entries,clipboard.moving);project=edit.project();
+            });
+            selectedItems.clear();selectedTracks.clear();selectedRegions.clear();
+            for(const auto &track:entries) {
+                selectedTracks.insert(track.id);
+                for(const auto &clip:track.clips)selectedItems.insert(clip.id);
+            }
+            session.setRecordingSelection(selectedTracks.empty()?ID{}:*selectedTracks.begin(),selectedTracks);
+            if(clipboard.moving)itemClipboard=GridItemClipboard::copy(session.project(),session.song()->id,selectedItems);
+            reply(id);publishSnapshot();return;
+        } else if(action=="cancelItemCut") {
+            validateClipboardScope(payload);refreshClipboard();
+            if(itemClipboard && itemClipboard->moving){itemClipboard.reset();itemClipboardSequence.reset();}
+            reply(id);publishSnapshot();return;
+        }
+        else if(action=="removeItems") {requireEditable();session.removeClips(itemIDs());selectedItems.clear();}
+        else if(action=="splitItems") {requireEditable();session.splitClips(itemIDs(),std::max(0.,finiteNumber(payload,"seconds")));}
+        else if(action=="moveItems") {
+            requireEditable();const auto items=itemIDs();const auto delta=finiteNumber(payload,"delta");
+            if(session.project().timelineMovementLocked.value_or(false))throw std::runtime_error("Unlock item movement first.");
+            const auto destination=utf8(str(payload,"trackID"));if(!destination.empty())requireTrack(destination);
+            std::vector<std::pair<ID,double>> moves;
+            if(const auto *song=session.song())for(const auto &track:song->tracks)for(const auto &clip:track.clips)if(items.count(clip.id)){
+                if(clip.startTime+delta<0)throw std::invalid_argument("Items cannot move before the project start.");
+                moves.emplace_back(clip.id,clip.startTime+delta);
+            }
+            std::sort(moves.begin(),moves.end(),[delta](const auto &a,const auto &b){return delta>0?a.second>b.second:a.second<b.second;});
+            session.editTimeline([&](jaras::Project &project){for(const auto &move:moves)clipEditing::move(project,move.first,move.second,destination);});
+        } else if(action=="itemControls") {
+            requireEditable();const auto items=itemIDs();
+            const auto gain=get(payload,"gain"),pan=get(payload,"pan"),mute=get(payload,"muted");
+            const double gainValue=gain.isVoid()?1.:finiteNumber(payload,"gain"),panValue=pan.isVoid()?0.:finiteNumber(payload,"pan");
+            if(gainValue<0||gainValue>15.848932||panValue< -1||panValue>1||(!mute.isVoid()&&!mute.isBool()))throw std::invalid_argument("Invalid item control value.");
+            const auto songID=session.song()->id;
+            session.editItemControls([&](jaras::Project &project){for(auto &song:project.songs)if(song.id==songID)for(auto &track:song.tracks)for(auto &clip:track.clips)if(items.count(clip.id)){
+                if(!gain.isVoid())clip.gain=gainValue;if(!pan.isVoid())clip.pan=panValue;if(!mute.isVoid())clip.muted=(bool)mute;
+            }});
+        }
+        else if (action == "seek") { requireEditable(); session.command(C::seek, {}, std::max(0., finiteNumber(payload, "seconds"))); }
         else if (action == "selectRegion") {
-            requireEditable(); const auto region = utf8(str(payload, "regionID"));
+            requireEditable(); const auto region = utf8(str(payload, "entryID", str(payload, "regionID")));
             if (region.empty()) throw std::invalid_argument("A region is required.");
             session.command(C::selectRegion, region); selectedRegions = {region};
         } else if (action == "selectTracks" || action == "selection") setSelection(payload);

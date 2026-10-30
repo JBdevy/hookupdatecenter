@@ -23,6 +23,7 @@ class EnableButton final : public ToggleButton {
 };
 class KnobLook final : public LookAndFeel_V4 {
   public:
+    float diameter = 78;
     Font getSliderPopupFont(Slider &) override { return theme::font(12); }
     Label *createSliderTextBox(Slider &s) override {
         auto *l = LookAndFeel_V4::createSliderTextBox(s);
@@ -31,8 +32,11 @@ class KnobLook final : public LookAndFeel_V4 {
     }
     void drawRotarySlider(Graphics &g, int x, int y, int w, int h, float value, float start,
                           float end, Slider &) override {
-        const auto r = juce::Rectangle<float>((float)x, (float)y, (float)w, (float)h)
-                           .withSizeKeepingCentre(78, 78);
+        Graphics::ScopedSaveState state(g);
+        const float size = std::min(diameter, float(std::min(w, h)));
+        const float scale = size / 78.f;
+        g.addTransform(AffineTransform::scale(scale).translated(x + (w - size) * .5f, y + (h - size) * .5f));
+        const auto r = juce::Rectangle<float>(0, 0, 78, 78);
         const float cx = r.getCentreX(), cy = r.getCentreY(), radius = 36,
                     angle = start + value * (end - start);
         Path base;
@@ -81,6 +85,7 @@ class Knob final : public Component {
         };
         slider.onDragEnd = std::move(commit);
     }
+    void setDiameter(float size) { look.diameter = size; repaint(); }
     ~Knob() override { slider.setLookAndFeel(nullptr); }
     void paint(Graphics &g) override {
         g.setColour(theme::secondary);

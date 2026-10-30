@@ -49,6 +49,10 @@ public:
     bool pendingStemChange()const;
     void holdRemovedStems(const NativeFX &);
     void releaseRemovedStems();
+    // Reserve retirement storage on control, then move obsolete owners on the
+    // callback without destroying processors or reducing vector capacity.
+    void prepareRetirement(NativeFX& destination) const;
+    void retireRemovedStems(NativeFX& destination) noexcept;
     void resetStems();
     void shareStems(const NativeFX &);
     bool hasActiveStem()const;

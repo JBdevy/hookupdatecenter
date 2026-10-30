@@ -7,6 +7,11 @@ namespace catlive {
 // Source-anchored min/max columns at physical-pixel resolution; real PCM
 // extrema at close zoom. Connected contours keep fractional pans continuous.
 struct WaveformRenderer {
+    // Dense transients must keep the same pixel coverage while following the
+    // transport. Fractional raster translations otherwise brighten/dim them.
+    static float pixelAlignedPosition(float position, float physical) {
+        return std::round(position * physical) / physical;
+    }
     // ±1 PCM (0 dBFS) reaches the channel clipping border, not half that level.
     static float fullScale(float channelHeight) { return std::max(0.f, channelHeight - 1.f) * .5f; }
 
@@ -41,6 +46,8 @@ struct WaveformRenderer {
                      std::optional<double> itemGainOverride = std::nullopt, const jaras::Song *song = nullptr,
                      const ClipTempo *preparedTiming = nullptr, std::optional<double> itemPanOverride = std::nullopt) {
         if (!data || data->sourceChannels <= 0 || pixelsPerSecond <= 0) return;
+        const float physical = jlimit(1.f, 8.f, g.getInternalContext().getPhysicalPixelScaleFactor());
+        item.setX(pixelAlignedPosition(item.getX(), physical));
         const int mode = clip.channelMode.value_or(0);
         const int channels = (mode == 0 || mode == 4) ? data->sourceChannels : 1;
         const float top = item.getY() + 18, height = std::max(0.f, item.getBottom() - top - 2) / channels;
@@ -54,7 +61,6 @@ struct WaveformRenderer {
         const double loop = clip.loopLength.value_or(0), loopStart = clip.loopStart.value_or(0);
         const float baseAmplitude = fullScale(height) * (float)gain(clip,itemGainOverride);
         const FadeEnvelope fade(clip, item.getX(), pixelsPerSecond);
-        const float physical = jlimit(1.f, 8.f, g.getInternalContext().getPhysicalPixelScaleFactor());
         g.saveState();
         if (clipToItem) {Path outline;outline.addRoundedRectangle(item,3);g.reduceClipRegion(outline);}
         g.setColour(ink);

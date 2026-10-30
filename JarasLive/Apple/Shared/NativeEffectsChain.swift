@@ -203,7 +203,10 @@ final class NativeEffectsChain {
         instrumentMIDIInput = enabled
         for node in externalNodes.values { JarasVST3.instrumentMIDIInput(node, enabled: enabled) }
     }
-    func externalNode(_ identifier: String) -> AVAudioUnitEffect? { externalNodes[identifier] }
+    func externalNode(_ identifier: String) -> AVAudioUnitEffect? {
+        guard let node = externalNodes[identifier], JarasVST3.isPluginLoaded(node, identifier: identifier) else { return nil }
+        return node
+    }
     /// The processor already owns this state. A Save only updates the cached
     /// description, so a later native-parameter edit cannot restore an old preset.
     func rememberCapturedPluginState(_ plugin: ExternalPlugin, source: AVAudioUnitEffect) {
