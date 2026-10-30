@@ -2017,9 +2017,10 @@ let pitchBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
     }
     return Double(crossings) * outputFormat.sampleRate / Double(samples)
 }
-@MainActor func expectFrequency(_ value: Double) throws {
+@MainActor func expectFrequency(_ value: Double, line: UInt = #line) throws {
     let measured = try frequency()
-    precondition(abs(measured - value) < 5, "pitch PCM frequency \(measured), expected \(value)")
+    print("PITCH_PCM_MEASUREMENT line=\(line) rate=\(outputFormat.sampleRate) measured=\(measured) expected=\(value)")
+    precondition(abs(measured - value) < 5, "pitch PCM frequency \(measured), expected \(value), rate \(outputFormat.sampleRate), test line \(line)")
 }
 try expectFrequency(440)
 let noPitchNodes = pitchEngine.attachedNodes.count

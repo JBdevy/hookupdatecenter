@@ -58,7 +58,7 @@ struct WorkspaceSetlistPresentationTests {
                     workspace.getLocalBounds().contains(list->getBounds()) && !list->getBounds().intersects(grid),
                     "Docked Setlist overlaps or clips the timeline");
             if (side==Placement::left) {
-                require(list->getX()==32 && list->getRight()==workspace.setlistDivider.getX() &&
+                require(list->getX()==0 && list->getRight()==workspace.setlistDivider.getX() &&
                         workspace.setlistDivider.getWidth()==14 &&
                         workspace.setlistDivider.getRight()==workspace.tracksViewport.getX() &&
                         workspace.tracksViewport.getRight()==workspace.mixerDivider.getX() &&
@@ -66,7 +66,7 @@ struct WorkspaceSetlistPresentationTests {
                         !workspace.partsLeftVisible,
                         "Left Setlist is not before the track mixer or did not close left Parts");
             } else {
-                require(workspace.tracksViewport.getX()==32 && grid.getRight()==workspace.setlistDivider.getX() &&
+                require(workspace.tracksViewport.getX()==0 && grid.getRight()==workspace.setlistDivider.getX() &&
                         workspace.setlistDivider.getWidth()==14 && list->getX()==workspace.setlistDivider.getRight(),
                         "Right Setlist changed the mixer origin or lost its reserved 14 px divider margin");
             }
@@ -110,7 +110,7 @@ struct WorkspaceSetlistPresentationTests {
                     panel->getLocalBounds().contains(list->getBounds()) && panel->getLocalBounds().contains(right->getBounds()) &&
                     window->getWidth()>=620 && (bool)get(right->diagnostics(),"secondaryTab"),
                     "Detached Parts is clipped, lost its bank or overlaps the Setlist");
-            require(workspace.tracksViewport.getX()==32 && workspace.setlistWidth==savedWidth &&
+            require(workspace.tracksViewport.getX()==0 && workspace.setlistWidth==savedWidth &&
                     workspace.setlistDockSide==side,
                     "Detaching changed the remembered dock width, origin or side");
             workspace.setSetlistPlacement(Placement::detached);

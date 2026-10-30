@@ -213,7 +213,7 @@ void run(Test test, Require require, const File &directory) {
         require(JSON::toString(get(lastSnapshot,"selection"))==selectionBefore,"Failed paste changed item selection");
         require(request("cancelItemCut",scoped())&&request("undo",object())&&session.song()->tracks.size()==2,"Failed paste added an undo entry");
         require(request("copyItems",selected()),"Cannot stage same-document reload fixture");
-        const auto reload=directory.getNonexistentChildFile("bridge-clipboard-reload",".jl");
+        const auto reload=directory.getNonexistentChildFile("bridge-clipboard-reload","").getChildFile("Clipboard.jl");
         ProjectCodec::write(reload,ProjectCodec::encode(session.project()));session.dirty=false;
         bridge.openProject(reload);
         for(int n=0;n<150&&(session.busy||session.document!=reload);++n)floatingControlTests::pump();

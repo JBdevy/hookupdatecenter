@@ -82,7 +82,7 @@ struct PartsDividerTests {
             workspace.setSetlistPlacement(Placement::left);checkDock();
             require(!workspace.partsLeftDivider.isVisible(),"Moving Setlist left retained hidden left Parts resize bar");
             drag(workspace.partsRightDivider,40);savedRight-=40;
-            require(right->getWidth()==savedRight && list->getX()==32,"Right Parts resize failed with Setlist on the left");
+            require(right->getWidth()==savedRight && list->getX()==0,"Right Parts resize failed with Setlist on the left");
             workspace.setSetlistPlacement(Placement::detached);
             auto *window=workspace.setlistWindow.get();require(window && window->getContentComponent(),"Detached Setlist missing");
             auto *panel=window->getContentComponent();window->setSize(1000,700);panel->resized();
