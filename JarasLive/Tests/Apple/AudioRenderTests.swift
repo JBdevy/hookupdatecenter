@@ -8,11 +8,15 @@ setbuf(stdout, nil)
 // These assertions compare settled PCM levels, not the stretcher's startup
 // transient. Prime its reported latency and four maximum input slices before
 // sampling; the resulting window stays before the fixtures' future onset.
-@MainActor func settledPCMPeak(_ engine: AVAudioEngine, _ buffer: AVAudioPCMBuffer) throws -> Float {
+@MainActor func settlingBlocks(_ engine: AVAudioEngine, _ buffer: AVAudioPCMBuffer) -> Int {
     let rate = buffer.format.sampleRate
     let latency = engine.attachedNodes.map { max($0.auAudioUnit.latency, $0.outputPresentationLatency) }.max() ?? 0
     let slice = engine.attachedNodes.map { Int($0.auAudioUnit.maximumFramesToRender) }.max() ?? 8192
-    let warmup = (max(32768, Int(ceil(latency * rate)) + 4 * slice) + 511) / 512
+    return (max(32768, Int(ceil(latency * rate)) + 4 * slice) + 511) / 512
+}
+@MainActor func settledPCMPeak(_ engine: AVAudioEngine, _ buffer: AVAudioPCMBuffer) throws -> Float {
+    let rate = buffer.format.sampleRate
+    let warmup = settlingBlocks(engine, buffer)
     precondition(Double((warmup + 6) * 512) / rate < 2, "measurement must precede the future item's two-second onset")
     var peak: Float = 0
     for block in 0..<(warmup + 6) {
@@ -514,11 +518,16 @@ let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
 @MainActor func peak() throws -> Float {
     var value: Float = 0
     var rendered = 0, retries = 0
+    // Route/bypass changes can flush a full converter slice, particularly
+    // for 44.1 kHz sources rendered at 48 kHz. Measure settled routing gain
+    // using the same DSP warmup as the project-swap checks. Startup latency
+    // and sample continuity are tested separately above and below.
+    let warmup = settlingBlocks(engine, output)
     let deadline = ProcessInfo.processInfo.systemUptime + 5
     // Count PCM buffers, not attempts: AVAudioEngine may temporarily reject an
     // offline call while its graph changes. Apple requires retrying that status:
     // https://developer.apple.com/documentation/avfaudio/performing-offline-audio-processing
-    while rendered < 24 {
+    while rendered < warmup + 8 {
         let status = try engine.renderOffline(512, to: output)
         if status == .cannotDoInCurrentContext {
             retries += 1
@@ -529,7 +538,7 @@ let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
         }
         precondition(status == .success && output.frameLength == 512,
                      "peak measurement requires a complete PCM buffer: status=\(status.rawValue) frames=\(output.frameLength)")
-        if rendered > 15 {
+        if rendered >= warmup {
             for i in 0..<Int(output.frameLength) { value = max(value, abs(output.floatChannelData![0][i])) }
         }
         rendered += 1
@@ -2007,9 +2016,20 @@ try pitchAudio.update(pitchState, revision: 1)
 let pitchBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
 @MainActor func frequency() throws -> Double {
     var crossings = 0, samples = 0; var previous: Float = 0
-    for iteration in 0..<96 {
-        guard try pitchEngine.renderOffline(512, to: pitchBuffer) == .success else { continue }
-        if iteration < 32 { continue }
+    let warmup = settlingBlocks(pitchEngine, pitchBuffer)
+    var rendered = 0
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    while rendered < warmup + 64 {
+        let status = try pitchEngine.renderOffline(512, to: pitchBuffer)
+        if status == .cannotDoInCurrentContext {
+            precondition(ProcessInfo.processInfo.systemUptime < deadline, "pitch graph did not become ready")
+            Thread.sleep(forTimeInterval: 0.001)
+            continue
+        }
+        precondition(status == .success && pitchBuffer.frameLength == 512,
+                     "frequency measurement requires a complete PCM buffer")
+        rendered += 1
+        if rendered <= warmup { continue }
         for i in 0..<Int(pitchBuffer.frameLength) {
             let sample = pitchBuffer.floatChannelData![0][i]
             if previous < 0 && sample >= 0 { crossings += 1 }; previous = sample; samples += 1
