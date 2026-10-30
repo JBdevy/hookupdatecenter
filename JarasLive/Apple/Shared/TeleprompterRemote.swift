@@ -174,7 +174,7 @@ final class TeleprompterHTTPServer {
 .clock{padding:5px;border-width:1px;line-height:1.15}
 .title,.chords{text-align:center;padding:4px;overflow:hidden}.title{white-space:nowrap;text-overflow:ellipsis}.chords{border:1px solid transparent;border-radius:6px;white-space:pre-wrap;width:max-content;max-width:100%;margin-inline:auto;overflow-wrap:anywhere}
 .progress{height:5px;background:#ffffff20}.progress div{height:100%}#blocks{display:none;width:100%;height:100%;gap:8px;align-items:stretch;min-height:0}.block{font-weight:bold;padding:6px;border:1px solid;border-radius:6px;overflow:hidden;min-width:0;min-height:0;line-height:1.2;box-sizing:border-box}.block-title{border-bottom:2px solid;padding-bottom:6px;margin-bottom:6px}.preview-song{padding:0 3px 4px;margin-bottom:4px}
-video,img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}#connection{position:absolute;bottom:10px;right:10px;z-index:4;color:#ffdc52;font-size:12px;display:none}
+video,img{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}#connection{position:absolute;bottom:10px;right:10px;z-index:4;color:#ffdc52;font-size:12px;display:none}
 @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:.25}}.expired{animation:blink 1s infinite}
 </style></head><body><div id="screen"><video id="video" muted playsinline></video><img id="image" hidden><div id="top"></div><div id="content"><div id="lyrics"></div><div id="blocks"></div></div><div id="bottom"></div><div id="connection">Connecting…</div></div>
 <script>

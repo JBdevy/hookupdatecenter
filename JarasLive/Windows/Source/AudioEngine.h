@@ -33,6 +33,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         double position = 0, subPosition = 0;
         bool playing = false, subPlaying = false, loop = false;
         uint64 promotion = 0;
+        bool followMainClock = false; // automatic Subplay joins a running main head without seeking it
         bool preserveLatency = false; // scheduled musical transition, not a manual seek
         double loopStart = 0, loopEnd = 0;
         jaras::PlaybackScope scope[2], exclusiveScope[2];

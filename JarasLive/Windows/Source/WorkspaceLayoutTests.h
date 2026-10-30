@@ -762,8 +762,26 @@ struct WorkspaceLayoutTests {
             input->setText("Updated\nAm G");floatingControlTests::pump();
             require(*session.song()->tracks.front().clips.front().text=="Original","Typing changed the item before Apply");
             w.editTextItem(clip.id);require(w.floatingWindows.at("Editor de texto").get()==editor&&input->getText()=="Updated\nAm G","Reopening replaced the unfinished draft");
+            input->setHighlightedRegion({0,7});
+            const auto now=Time::getCurrentTime();
+            input->mouseDown(MouseEvent(Desktop::getInstance().getMainMouseSource(),{20,20},
+                ModifierKeys(ModifierKeys::rightButtonModifier),1,0,0,0,0,input,input,now,{20,20},now,1,false));
+            floatingControlTests::pump();
+            auto *palette=Component::getCurrentlyModalComponent();
+            require(palette!=nullptr,"Selected text did not open the colour palette");
+            Button *colour=nullptr;
+            std::function<void(Component*)> findColour=[&](Component *node){
+                if(auto *button=dynamic_cast<Button*>(node);button && button->getTooltip().startsWith("#"))colour=button;
+                for(auto *child:node->getChildren())findColour(child);
+            };
+            findColour(palette);require(colour!=nullptr,"Colour choices missing");
+            colour->onClick();floatingControlTests::pump();
+            require(Component::getCurrentlyModalComponent()==nullptr && editor->isVisible() && projection->isVisible(),
+                    "Choosing text colour closed the editor or projection");
+            require(input->getText()=="Updated\nAm G" && *session.song()->tracks.front().clips.front().text=="Original",
+                    "Choosing colour prematurely applied or changed the draft text");
             apply->onClick();floatingControlTests::pump();
-            require(!editor->isVisible()&&projection->isVisible()&&*session.song()->tracks.front().clips.front().text=="Updated\nAm G","Apply failed to commit and close only the text editor");
+            require(!editor->isVisible()&&projection->isVisible()&&ItemTextColors::plain(text(*session.song()->tracks.front().clips.front().text))=="Updated\nAm G","Apply failed to commit and close only the text editor");
             session.undo();require(*session.song()->tracks.front().clips.front().text=="Original","Text edit could not be undone");
             w.editTextItem(clip.id);editor=w.floatingWindows.at("Editor de texto").get();
             editor->closeButtonPressed();require(projection->isVisible(),"Cancel closed the projection");

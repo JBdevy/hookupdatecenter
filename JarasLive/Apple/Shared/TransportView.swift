@@ -789,7 +789,6 @@ private struct ProjectSaveButton: View {
                 }.padding(16).frame(width: 440)
             }
             #endif
-            .keyboardShortcut("s", modifiers: .command)
             .alert(Text(verbatim: confirmingSave ? JarasLocalization.string("Do you want to save this project?") : ""), isPresented: $confirmingSave) {
                 Button("Cancel", role: .cancel) {}.keyboardShortcut(.cancelAction)
                 Button("Save") { action() }.keyboardShortcut(.defaultAction)

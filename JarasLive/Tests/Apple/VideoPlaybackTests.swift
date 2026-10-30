@@ -215,6 +215,70 @@ import AVFoundation
     tpController.update(snapshot)
     precondition(tpController.player.currentItem == nil, "a video on the Video track never appears in the teleprompter")
     precondition(controller.player.currentItem != nil, "TP changes never stop the separate video decoder")
+    // The next video lives on another track and is ready at the exact boundary.
+    let transition = VideoPlayback(preferences: preferences)
+    transition.open(directory: directory); transition.setProjectionEnabled(true)
+    var transitionSnapshot = snapshot
+    var first = clip; first.startTime = 0; first.duration = 1
+    var second = clip; second.id = UUID(); second.startTime = 1; second.duration = 1
+    var upper = imported.tracks[0]; upper.clips = [first]
+    var lower = upper; lower.id = UUID(); lower.clips = [second]
+    transitionSnapshot.project.songs[0].tracks = [upper, lower]
+    transitionSnapshot.transport.playing = true; transitionSnapshot.transport.paused = false
+    transitionSnapshot.transport.position = 0
+    transition.update(transitionSnapshot)
+    let outgoingPlayer = transition.player
+    // Give the preloader time while leaving transport before the boundary.
+    try await Task.sleep(nanoseconds: 2_000_000_000)
+    transitionSnapshot.transport.position = 1
+    transition.update(transitionSnapshot)
+    precondition(transition.player !== outgoingPlayer, "Cross-track boundary reuses the prepared player")
+    precondition(transition.player.currentItem?.status == .readyToPlay, "Next video is already ready at transition")
+    try await Task.sleep(nanoseconds: 100_000_000)
+    precondition(transition.player.currentTime().seconds < 0.4, "Incoming source starts at its own offset")
+    transition.setProjectionEnabled(false)
+    precondition(transition.player.currentItem == nil, "Closing clears the prepared playback too")
+    print("VIDEO_CROSS_TRACK_PREPARED_TRANSITION_OK")
+    // A split of the same source must keep both player and item alive.
+    transitionSnapshot.project.songs[0].tracks[1].clips[0].sourceOffset = first.sourceOffset + first.duration * first.audioRate
+    transitionSnapshot.transport.position = 0.95
+    transition.setProjectionEnabled(true); transition.update(transitionSnapshot)
+    try await Task.sleep(nanoseconds: 250_000_000)
+    let continuousPlayer = transition.player, continuousItem = transition.player.currentItem
+    transitionSnapshot.transport.position = 1
+    transition.update(transitionSnapshot)
+    precondition(transition.player === continuousPlayer && transition.player.currentItem === continuousItem,
+                 "A continuous cut must not replace or reopen the decoder")
+    transition.setProjectionEnabled(false)
+    print("VIDEO_CONTIGUOUS_CUT_REUSES_PLAYER_AND_ITEM_OK")
+    let firstPlayer = AVPlayer(url: source), secondPlayer = AVPlayer(url: source)
+    firstPlayer.isMuted = true; secondPlayer.isMuted = true
+    let surface = VideoLayerView(player: firstPlayer, stretch: false)
+    let surfaceWindow = NSWindow(contentRect: NSRect(x: 10, y: 10, width: 160, height: 90),
+                                 styleMask: [.borderless], backing: .buffered, defer: false)
+    surfaceWindow.isReleasedWhenClosed = false
+    surfaceWindow.contentView = surface; surfaceWindow.orderBack(nil)
+    firstPlayer.play()
+    for _ in 0..<200 {
+        if surface.video.player === firstPlayer && surface.video.isReadyForDisplay { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    precondition(surface.video.player === firstPlayer && surface.video.isReadyForDisplay, "First layer has a drawable frame")
+    firstPlayer.pause()
+    surface.setPlayer(secondPlayer)
+    precondition(surface.video.player === firstPlayer && surface.video.isReadyForDisplay, "Outgoing frame stays visible while the next layer loads")
+    secondPlayer.play()
+    for _ in 0..<200 {
+        if surface.video.player === secondPlayer { break }
+        precondition(surface.video.player === firstPlayer && surface.video.isReadyForDisplay, "No empty active layer during the handoff")
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    precondition(surface.video.player === secondPlayer && surface.video.isReadyForDisplay, "Switch only to a drawable layer")
+    secondPlayer.replaceCurrentItem(with: nil)
+    try await Task.sleep(nanoseconds: 100_000_000)
+    precondition(surface.video.player == nil, "End of media must clear the retained frame")
+    surface.clear(); surfaceWindow.close()
+    print("VIDEO_LAYER_HANDOFF_PRESERVES_FRAME_UNTIL_READY_AND_CLEARS_AT_END_OK")
     controller.setProjectionEnabled(false); tpController.setProjectionEnabled(false)
     print("VIDEO_IMPORT_PERSISTENCE_SILENT_PLAYBACK_CURSOR_AND_CLOSE_OK")
     print("TELEPROMPTER_MEDIA_SOURCE_TEXT_OVERLAY_INDEPENDENT_STRETCH_AND_PREVIEW_OK")

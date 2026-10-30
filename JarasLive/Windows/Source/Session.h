@@ -265,7 +265,7 @@ class Session final : private Timer {
     TransportPresentationQueues presentationQueues;
     void timerCallback() override;
     void syncClock();
-    void publishTransport(bool preserveLatency = false, bool routingOnly = false);
+    void publishTransport(bool preserveLatency = false, bool routingOnly = false, bool followMainClock = false);
     void prepare();
     void prepareLiveGraph();
 };

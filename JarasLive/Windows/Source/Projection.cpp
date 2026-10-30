@@ -75,7 +75,9 @@ void Projection::paint(Graphics &g) {
     g.fillAll(Colours::black);
     if (image.isValid() && !(stage && stage->preview && flag(stage->settings(profile),"previewEnabled",true) && !flag(stage->settings(profile),"ignorePreview"))) {
         g.setOpacity(mediaOpacity);
-        const auto bounds = mediaBounds();
+        const auto viewport = mediaBounds();
+        const auto scale = stage ? jlimit(.25, 1.5, num(stage->settings(profile), "mediaScale", 100) / 100.) : 1.;
+        const auto bounds = viewport.toFloat().withSizeKeepingCentre((float)(viewport.getWidth()*scale), (float)(viewport.getHeight()*scale)).toNearestInt();
         const bool stretch = stage && flag(stage->settings(profile), "mediaStretch");
         g.drawImageWithin(image, bounds.getX(), bounds.getY(), bounds.getWidth(),
                           bounds.getHeight(),
@@ -88,7 +90,7 @@ void Projection::updateVideoFrame(double source,bool playing,double rate) {
     const auto bounds=mediaBounds();
     vshook_video::DecodedFrame frame;
     const auto path=utf8(videoFile.getFullPathName());
-    if(!videoDecoder.frameAt(path,clipID,source,playing,rate,
+    if(!videoDecoder->frameAt(path,videoPlaybackKey,source,playing,rate,
                              std::max(1,bounds.getWidth()),std::max(1,bounds.getHeight()),frame) ||
        !frame.pixels || frame.sequence==videoSequence)return;
     if(frame.width<=0||frame.height<=0||frame.stride<frame.width*4)return;
@@ -129,19 +131,18 @@ void Projection::paintVideoSurface(HDC dc) {
         FillRect(dc,&area,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));return;
     }
     const bool stretch=role=="video"?(bool)appearance.value("jaras.video.stretch", false):stage&&flag(stage->settings(profile),"mediaStretch");
-    int x=0,y=0,w=width,h=height;
-    if(!stretch) {
-        const double fit=std::min(double(width)/videoFrame.width,double(height)/videoFrame.height);
-        w=std::max(1,int(std::lround(videoFrame.width*fit)));
-        h=std::max(1,int(std::lround(videoFrame.height*fit)));
-        x=(width-w)/2;y=(height-h)/2;
-        if(y>0) {RECT top{0,0,width,y},bottom{0,y+h,width,height};
-            FillRect(dc,&top,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-            FillRect(dc,&bottom,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));}
-        if(x>0) {RECT left{0,y,x,y+h},right{x+w,y,width,y+h};
-            FillRect(dc,&left,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-            FillRect(dc,&right,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));}
-    }
+    const double scale = stage ? jlimit(.25, 1.5, num(stage->settings(profile), "mediaScale", 100) / 100.) : 1.;
+    const double fit = stretch ? 1. : std::min(double(width)/videoFrame.width,double(height)/videoFrame.height);
+    const int w=std::max(1,int(std::lround((stretch ? width : videoFrame.width*fit)*scale)));
+    const int h=std::max(1,int(std::lround((stretch ? height : videoFrame.height*fit)*scale)));
+    const int x=(width-w)/2,y=(height-h)/2;
+    // Never erase the displayed frame before drawing its replacement: clearing
+    // the whole HWND exposes a black flash on every frame. Only clear margins.
+    const int top = std::max(0, y), bottom = std::min(height, y + h);
+    if (top > 0) { RECT r{0,0,width,top}; FillRect(dc,&r,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH))); }
+    if (bottom < height) { RECT r{0,bottom,width,height}; FillRect(dc,&r,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH))); }
+    if (x > 0) { RECT r{0,top,x,bottom}; FillRect(dc,&r,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH))); }
+    if (x + w < width) { RECT r{x+w,top,width,bottom}; FillRect(dc,&r,static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH))); }
     BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
     info.bmiHeader.biWidth=videoFrame.width;
     info.bmiHeader.biHeight=-videoFrame.height;
@@ -221,8 +222,8 @@ juce::Rectangle<int> Projection::mediaBounds() const {
     if (role == "video") return getLocalBounds();
     if (!stage)
         return getLocalBounds().withTrimmedTop(34);
-    return getLocalBounds().reduced(8).withTrimmedTop(
-        flag(stage->settings(profile), "hideTransport") ? 0 : 108);
+    // Decorations overlay media; they must not shrink its viewport.
+    return getLocalBounds();
 }
 void Projection::paintOverChildren(Graphics &g) {
     if (stage)
@@ -277,6 +278,26 @@ void Projection::mouseDoubleClick(const MouseEvent &e) {
     if (!e.mods.isPopupMenu()) toggleFullScreen();
     else if(role=="video")if(auto *window=findParentComponentOfClass<DocumentWindow>())window->closeButtonPressed();
 }
+void Projection::prepareNextVideo(const jaras::AudioClip &current, double at, bool playing) {
+    if (!playing || current.startTime + current.duration - at > 5.) return;
+    const auto *song = session.song();
+    if (!song) return;
+    const double boundary = current.startTime + current.duration;
+    const auto *next = firstProjectionItem(*song, boundary, role);
+    if (!next || next->id == current.id || !next->audioFile || next->text) return;
+    if (preparedClip != next->id) {
+        try {
+            auto file = ProjectCodec::resolveMedia(session.mediaDirectory, next->audioFile->path);
+            if (file.hasFileExtension("png;jpg;jpeg;bmp;gif;tif;tiff")) return;
+            preparedDecoder->reset(); preparedClip = next->id; preparedFile = file;
+        } catch (...) { return; }
+    }
+    vshook_video::DecodedFrame first;
+    const auto bounds = mediaBounds();
+    preparedDecoder->frameAt(utf8(preparedFile.getFullPathName()), next->id,
+        next->sourceOffset + (boundary-next->startTime)*next->playbackRate, false,
+        next->playbackRate, std::max(1,bounds.getWidth()), std::max(1,bounds.getHeight()), first);
+}
 void Projection::timerCallback() {
     if (stage) {
         resized();
@@ -289,7 +310,7 @@ void Projection::timerCallback() {
         if (auto *song = session.song()) clip = firstProjectionItem(*song,at,role);
     if (!clip) {
         if(videoFrame.pixels||videoFile.existsAsFile()) {
-            videoFrame={};videoFile={};videoSequence=0;grayscaleSequence=0;grayscalePixels.clear();videoDecoder.reset();updateVideoSurface();repaint();
+            videoFrame={};videoFile={};videoSequence=0;grayscaleSequence=0;grayscalePixels.clear();videoDecoder->reset();updateVideoSurface();repaint();
         }
         textView.setVisible(false);
         if (image.isValid()) {
@@ -306,11 +327,29 @@ void Projection::timerCallback() {
     const auto opacity = (float)jaras::itemFadeGain(*clip, at);
     if (opacity != mediaOpacity) { mediaOpacity = opacity; if(videoSurface)InvalidateRect(videoSurface,nullptr,FALSE);repaint(); }
     if (clip->id != clipID || (clip->text && text(*clip->text) != lyrics)) {
+        File incomingFile;
+        if (clip->audioFile) {
+            try { incomingFile = ProjectCodec::resolveMedia(session.mediaDirectory, clip->audioFile->path); }
+            catch (...) {}
+        }
+        const double boundary = itemStart + itemDuration;
+        const bool continuous = transport.playing && loaded && incomingFile == videoFile &&
+            clip->startTime <= boundary && at >= boundary && at - boundary < .15 &&
+            std::abs(clip->playbackRate - itemRate) < .000001 &&
+            std::abs(clip->sourceOffset + (boundary - clip->startTime) * clip->playbackRate -
+                     (itemSourceOffset + itemDuration * itemRate)) < .000001;
         clipID = clip->id;
         itemStart = clip->startTime;
         itemDuration = clip->duration;
+        itemSourceOffset = clip->sourceOffset; itemRate = clip->playbackRate;
         loaded = false;
-        videoFrame={};videoFile={};videoSequence=0;grayscaleSequence=0;grayscalePixels.clear();videoDecoder.reset();updateVideoSurface();
+        const bool prepared = !continuous && preparedClip == clip->id && preparedFile == incomingFile;
+        if (prepared) { videoDecoder.swap(preparedDecoder); preparedClip.clear(); preparedFile={}; preparedDecoder->reset(); }
+        if (!continuous) {
+            videoPlaybackKey = clip->id;
+            videoSequence=0;grayscaleSequence=0;grayscalePixels.clear();
+            if (!prepared) { videoFrame={};videoFile={};videoDecoder->reset();updateVideoSurface(); }
+        }
         image = {};
         if (clip->text) {
             lyrics = text(*clip->text);
@@ -338,6 +377,7 @@ void Projection::timerCallback() {
         }
         repaint();
     }
+    prepareNextVideo(*clip, at, transport.playing);
     itemStart = clip->startTime;
     itemDuration = clip->duration;
     if (loaded) {

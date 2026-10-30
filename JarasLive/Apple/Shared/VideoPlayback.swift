@@ -22,7 +22,15 @@ typealias ProjectionImage = UIImage
     @Published private(set) var stretch: Bool
     @Published private(set) var image: ProjectionImage?
     @Published private(set) var opacity = 1.0
-    let player = AVPlayer()
+    @Published private(set) var player = AVPlayer()
+    private var activeURL: URL?
+    private var activeSourceOrigin = 0.0
+    private var activeSourceRate = 1.0
+    private var activeEnd = 0.0
+    private var preparedPlayer: AVPlayer?
+    private var preparedID: UUID?
+    private var preparedURL: URL?
+    private var preparation: Task<Void, Never>?
     #if os(macOS)
     private var window: NSWindow?
     #endif
@@ -118,9 +126,52 @@ typealias ProjectionImage = UIImage
         else if let snapshot { update(snapshot) }
     }
     #endif
-    private func reset() {
+    private func clearPreparation() {
+        preparation?.cancel(); preparation = nil
+        preparedPlayer?.pause(); preparedPlayer = nil; preparedID = nil; preparedURL = nil
+    }
+    private func prepareNextVideo(song: Song, clip: AudioClip, position: Double, playing: Bool, directory: URL) {
+        let boundary = clip.startTime + clip.duration
+        guard playing, boundary - position <= 5,
+              let next = song.firstProjectionItem(at: boundary, trackKind: trackKind == .video ? nil : trackKind),
+              next.id != clip.id, let file = next.audioFile else { return }
+        let url = directory.appendingPathComponent(file.path)
+        guard UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) != true else { return }
+        guard preparedID != next.id || preparedURL != url else { return }
+        clearPreparation(); preparedID = next.id; preparedURL = url
+        var source = next.sourceOffset + (boundary - next.startTime) * next.audioRate
+        if let length = next.loopLength, length > 0 {
+            let start = next.loopStart ?? next.sourceOffset
+            source = start + (source - start).truncatingRemainder(dividingBy: length)
+        }
+        let item = AVPlayerItem(url: url)
+        item.preferredForwardBufferDuration = 1
+        if trackKind == .video { item.preferredMaximumResolution = VideoMediaSettings.shared.size }
+        let candidate = AVPlayer(playerItem: item)
+        candidate.isMuted = true; candidate.volume = 0
+        candidate.automaticallyWaitsToMinimizeStalling = false
+        preparation = Task { [weak self] in
+            // Loading and seeking happen while the preceding clip still plays.
+            for _ in 0..<250 {
+                guard !Task.isCancelled else { return }
+                if item.status != .unknown { break }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            guard !Task.isCancelled, item.status == .readyToPlay else { return }
+            self?.applyVideoColor(to: item)
+            let sought = await candidate.seek(to: CMTime(seconds: max(0, source), preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
+            guard sought, !Task.isCancelled else { return }
+            let ready = await candidate.preroll(atRate: Float(next.audioRate))
+            guard ready, !Task.isCancelled, let self, self.preparedID == next.id, self.preparedURL == url else { return }
+            self.preparedPlayer = candidate
+        }
+    }
+    private func reset(preserveDisplayedFrame: Bool = false) {
+        clearPreparation()
+        activeURL = nil
         generation = UUID(); pendingSeek = nil; seeking = false
-        player.pause(); player.replaceCurrentItem(with: nil)
+        player.pause()
+        if !preserveDisplayedFrame { player.replaceCurrentItem(with: nil) }
         itemStatus = nil; clipID = nil; playbackRate = 0; lastPosition = nil; lastSourcePosition = nil
         lastSectionJumpSerial = nil
         if !message.isEmpty { message = "" }
@@ -170,9 +221,21 @@ typealias ProjectionImage = UIImage
         }
         let rate = transport.playing ? Float(clip.audioRate) : 0
         let changedClip = clipID != clip.id
-        if changedClip {
-            reset(); clipID = clip.id
-            let item = AVPlayerItem(url: url)
+        var usedPreparedPlayer = false
+        let continuousCut = changedClip && transport.playing && activeURL == url &&
+            position >= activeEnd && position - activeEnd < 0.15 &&
+            abs(clip.audioRate - activeSourceRate) < 0.000001 && clip.loopLength == nil &&
+            abs(clip.sourceOffset - clip.startTime * clip.audioRate - activeSourceOrigin) < 0.000001
+        if continuousCut { clipID = clip.id }
+        if changedClip && !continuousCut {
+            let prepared = preparedID == clip.id && preparedURL == url ? preparedPlayer : nil
+            preparedPlayer = nil
+            reset(preserveDisplayedFrame: true); clipID = clip.id
+            player = prepared ?? AVPlayer()
+            player.isMuted = true; player.volume = 0
+            player.automaticallyWaitsToMinimizeStalling = false
+            usedPreparedPlayer = prepared != nil
+            let item = prepared?.currentItem ?? AVPlayerItem(url: url)
             item.preferredForwardBufferDuration = 1
             if trackKind == .video { item.preferredMaximumResolution = VideoMediaSettings.shared.size }
             let requestedGeneration = generation
@@ -183,10 +246,11 @@ typealias ProjectionImage = UIImage
                     if let error { self.message = error }
                 }
             }
-            player.replaceCurrentItem(with: item)
-            applyVideoColor()
+            if prepared == nil { player.replaceCurrentItem(with: item); applyVideoColor() }
             message = ""
         }
+        activeURL = url; activeSourceOrigin = clip.sourceOffset - clip.startTime * clip.audioRate
+        activeSourceRate = clip.audioRate; activeEnd = clip.startTime + clip.duration
         // Explicit jumps and loop wraps cannot use the drift tolerance: a
         // short jump is intentional even when it is less than 120 ms.
         let sectionJumped = lastSectionJumpSerial != transport.sectionJumpSerial
@@ -194,14 +258,18 @@ typealias ProjectionImage = UIImage
         let jumped = lastPosition.map { position < $0 - 0.001 || abs(position - $0 - (playbackRate != 0 ? now-lastHost : 0)) > 0.12 } ?? true
         let playerTime = player.currentTime().seconds
         let drifted = rate != 0 && !seeking && now - lastCorrection > 1.8 && playerTime.isFinite && abs(playerTime - source) > 0.15
-        if changedClip || sectionJumped || jumped || sourceJumped || drifted || rate != playbackRate || (rate == 0 && lastPosition != position) {
+        if usedPreparedPlayer && rate != 0 {
+            lastCorrection = now
+            player.setRate(rate, time: CMTime(seconds: max(0, source), preferredTimescale: 60000), atHostTime: CMClockGetTime(CMClockGetHostTimeClock()))
+        } else if (changedClip && !continuousCut) || sectionJumped || jumped || sourceJumped || drifted || rate != playbackRate || (rate == 0 && lastPosition != position) {
             lastCorrection = now; seek(source, rate: rate)
         }
         playbackRate = rate; lastPosition = position; lastSourcePosition = source; lastHost = now
         lastSectionJumpSerial = transport.sectionJumpSerial
+        prepareNextVideo(song: song, clip: clip, position: position, playing: transport.playing, directory: directory)
     }
-    private func applyVideoColor() {
-        guard trackKind == .video, let item = player.currentItem else { return }
+    private func applyVideoColor(to preparedItem: AVPlayerItem? = nil) {
+        guard trackKind == .video, let item = preparedItem ?? player.currentItem else { return }
         let settings = VideoMediaSettings.shared
         let source = item.asset.tracks(withMediaType: .video).first
         let natural = source?.naturalSize ?? .zero
@@ -288,34 +356,75 @@ private struct NativeVideoLayer: NSViewRepresentable {
     let player: AVPlayer
     let stretch: Bool
     func makeNSView(context: Context) -> VideoLayerView { VideoLayerView(player: player, stretch: stretch) }
-    func updateNSView(_ view: VideoLayerView, context: Context) { view.setStretch(stretch) }
+    func updateNSView(_ view: VideoLayerView, context: Context) { view.setPlayer(player); view.setStretch(stretch) }
+    static func dismantleNSView(_ view: VideoLayerView, coordinator: ()) { view.clear() }
 }
-private final class VideoLayerView: NSView {
-    let video = AVPlayerLayer()
+/// A ready AVPlayerItem is not necessarily a drawable AVPlayerLayer yet.
+/// Keep the outgoing layer visible until the incoming layer has a real frame.
+final class VideoLayerView: NSView {
+    private(set) var video = AVPlayerLayer()
+    private var incoming: AVPlayerLayer?
+    private var readiness: NSKeyValueObservation?
+    private var itemObservation: NSKeyValueObservation?
+    private weak var requestedPlayer: AVPlayer?
     init(player: AVPlayer, stretch: Bool) {
         super.init(frame: .zero); wantsLayer = true
-        video.player = player; video.videoGravity = stretch ? .resize : .resizeAspect
+        video.videoGravity = stretch ? .resize : .resizeAspect
         layer?.addSublayer(video)
+        setPlayer(player)
+    }
+    func clear() {
+        readiness = nil; itemObservation = nil; requestedPlayer = nil
+        incoming?.player = nil; incoming?.removeFromSuperlayer(); incoming = nil
+        video.player = nil
+    }
+    func setPlayer(_ player: AVPlayer) {
+        guard requestedPlayer !== player else { return }
+        readiness = nil; itemObservation = nil
+        incoming?.player = nil; incoming?.removeFromSuperlayer(); incoming = nil
+        requestedPlayer = player
+        guard player.currentItem != nil else { video.player = player; return }
+        let next = AVPlayerLayer(player: player)
+        next.frame = bounds; next.videoGravity = video.videoGravity
+        incoming = next
+        // Decode behind the previous frame, without hiding the incoming layer.
+        layer?.insertSublayer(next, below: video)
+        readiness = next.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self, weak next] _, _ in
+            DispatchQueue.main.async {
+                guard let self, let next, self.incoming === next, next.isReadyForDisplay else { return }
+                CATransaction.begin(); CATransaction.setDisableActions(true)
+                let previous = self.video
+                self.video = next; self.incoming = nil; self.readiness = nil
+                previous.removeFromSuperlayer(); previous.player = nil
+                CATransaction.commit()
+            }
+        }
+        itemObservation = player.observe(\.currentItem, options: [.new]) { [weak self, weak player] _, _ in
+            DispatchQueue.main.async {
+                guard let self, let player, self.requestedPlayer === player, player.currentItem == nil else { return }
+                self.clear()
+            }
+        }
     }
     func setStretch(_ enabled: Bool) {
         let gravity: AVLayerVideoGravity = enabled ? .resize : .resizeAspect
-        guard video.videoGravity != gravity else { return }
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        video.videoGravity = gravity
+        video.videoGravity = gravity; incoming?.videoGravity = gravity
         CATransaction.commit()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layout() {
         super.layout(); CATransaction.begin(); CATransaction.setDisableActions(true)
-        video.frame = bounds; CATransaction.commit()
+        video.frame = bounds; incoming?.frame = bounds; CATransaction.commit()
     }
 }
+
 #else
 private struct NativeVideoLayer: UIViewRepresentable {
     let player: AVPlayer
     let stretch: Bool
     func makeUIView(context: Context) -> VideoLayerView { VideoLayerView(player: player, stretch: stretch) }
-    func updateUIView(_ view: VideoLayerView, context: Context) { view.setStretch(stretch) }
+    func updateUIView(_ view: VideoLayerView, context: Context) { if view.video.player !== player { view.video.player = player }; view.setStretch(stretch) }
     static func dismantleUIView(_ view: VideoLayerView, coordinator: ()) { view.video.player = nil }
 }
 private final class VideoLayerView: UIView {

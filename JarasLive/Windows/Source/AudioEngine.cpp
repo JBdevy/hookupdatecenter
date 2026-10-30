@@ -1568,7 +1568,7 @@ bool AudioEngine::preparingTransport() const {
 std::vector<AudioEngine::TransportRead> AudioEngine::transportReads(const State &state) {
     std::vector<TransportRead> reads;
     for(int head=0;head<2;++head) {
-        if(head==0?!state.playing:!state.subPlaying)continue;
+        if(head==0 ? (!state.playing || state.followMainClock) : !state.subPlaying)continue;
         const double cursor=head==0?state.position:state.subPosition;
         std::map<const Source*,std::vector<const Voice*>> activeSources;
         for(const auto &voice:voices)
@@ -1611,7 +1611,7 @@ std::vector<AudioEngine::TransportRead> AudioEngine::transportReads(const State 
 }
 void AudioEngine::commitPreparedTransport(const State &state,bool routingOnly) {
     Update update;update.kind=routingOnly?Update::routing:Update::transport;update.state=state;
-    update.resetElapsed=!routingOnly;
+    update.resetElapsed=!routingOnly && !state.followMainClock;
     if(!routingOnly){update.transportSerial=++transportSerial;++transportRepositions;}
     enqueue(update);
     if(routingOnly)timecodeMIDI.updateRouting(state.loop,state.loopStart,state.loopEnd,state.end,state.timecodePreferred);
@@ -2026,15 +2026,24 @@ void AudioEngine::applyUpdates(size_t budget, TrackCapture* capture, bool fromCa
             if(u.transportSerial)appliedTransportSerial=u.transportSerial;
         }
         else if (u.kind == Update::transport) {
+            auto incoming = u.state;
+            if (incoming.followMainClock && current.playing && incoming.playing) {
+                // The device kept rendering while the UI observed the trigger.
+                // Preserve that clock and the intended musical offset between
+                // heads, instead of seeking both back to an old UI snapshot.
+                incoming.subPosition += current.position - incoming.position;
+                incoming.position = current.position;
+            }
+            incoming.followMainClock = false;
             if(u.resetElapsed)elapsedSamples=0;
-            const bool startingFromStop=!offlineMode&&!offlineRendering&&!current.playing&&!current.subPlaying&&(u.state.playing||u.state.subPlaying);
+            const bool startingFromStop=!offlineMode&&!offlineRendering&&!current.playing&&!current.subPlaying&&(incoming.playing||incoming.subPlaying);
             bool changed[2]{};
             for(int h=0;h<2;h++) {
-                const bool before=h==0?current.playing:current.subPlaying,after=h==0?u.state.playing:u.state.subPlaying;
-                const double at=h==0?u.state.position:u.state.subPosition,old=h==0?current.position:current.subPosition;
-                changed[h]=!u.state.preserveLatency&&(before!=after||std::abs(at-old)>1.5/rate.load());
+                const bool before=h==0?current.playing:current.subPlaying,after=h==0?incoming.playing:incoming.subPlaying;
+                const double at=h==0?incoming.position:incoming.subPosition,old=h==0?current.position:current.subPosition;
+                changed[h]=!incoming.preserveLatency&&(before!=after||std::abs(at-old)>1.5/rate.load());
                 if(changed[h]){resetLatencyHead(h,at);playbackStartRamp[h]=startingFromStop&&after?at:-1;playbackStartFrame[h]=renderClock;}
-                else if(u.state.preserveLatency) {
+                else if(incoming.preserveLatency) {
                     if(before&&!after){tailFrames[h]=latencyPlan?latencyPlan->total:0;tailCursor[h]=at;}
                     else if(after)tailFrames[h]=0;
                 }
@@ -2042,11 +2051,11 @@ void AudioEngine::applyUpdates(size_t budget, TrackCapture* capture, bool fromCa
             // The shared separator follows the sum of both heads. Starting or
             // stopping SubPlay must not flush the main head's wet history.
             if((changed[0]&&changed[1])||
-               (changed[0]&&!current.subPlaying&&!u.state.subPlaying)||(changed[1]&&!current.playing&&!u.state.playing)) {
+               (changed[0]&&!current.subPlaying&&!incoming.subPlaying)||(changed[1]&&!current.playing&&!incoming.playing)) {
                 masterFX.resetStems();for(auto &bus:buses)bus->fx[0].resetStems();for(auto &voice:voices)voice->fx[0].resetStems();
                 if(latencyPlan){latencyPlan->masterLive.reset();latencyPlan->masterHardware.reset();}
             }
-            current = u.state;
+            current = incoming;
             if(u.transportSerial)appliedTransportSerial=u.transportSerial;
         }
         else if (u.kind == Update::routing) {

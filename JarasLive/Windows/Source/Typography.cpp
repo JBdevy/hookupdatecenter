@@ -8,7 +8,7 @@ namespace {
 constexpr float windowsTextScale = .9f;
 Font calibrated(Typeface::Ptr face, float points) {
     // Preserve natural glyph proportions instead of compressing text to fit.
-    return Font(FontOptions(face).withPointHeight(std::max(10.8f, points * windowsTextScale)));
+    return Font(FontOptions(face).withFallbacks({"Segoe UI Emoji", "Segoe UI Symbol"}).withFallbackEnabled(true).withPointHeight(std::max(10.8f, points * windowsTextScale)));
 }
 }
 Font mediumFont(float size) {

@@ -14,6 +14,8 @@ start = row.index('private struct TrackDragTitle:')
 native_title = row[start:row.index('\n#endif', start)]
 stubs = '''import AppKit
 import SwiftUI
+@MainActor final class NativeDragEdgeScroll { func begin(from: NSView) {}; func stop() {} }
+extension NSFont { static func jarasSystemFont(ofSize size: CGFloat, weight: NSFont.Weight) -> NSFont { systemFont(ofSize: size, weight: weight) } }
 final class TrackReorderState: NSObject {
  var source: NSObject?
  func begin(track: UUID) {}

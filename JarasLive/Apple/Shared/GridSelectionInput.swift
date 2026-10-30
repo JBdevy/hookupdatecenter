@@ -176,7 +176,13 @@ struct GridSelectionItem {
         #endif
     }
 
-    var editRect: CGRect? { textEditable && headerRect.width >= 33 * Self.headerScale ? CGRect(x: controlStart, y: rect.minY, width: 30 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil }
+    var editRect: CGRect? {
+        #if os(macOS)
+        return nil // Text items open with a double-click, as on Windows.
+        #else
+        return textEditable && headerRect.width >= 33 * Self.headerScale ? CGRect(x: controlStart, y: rect.minY, width: 30 * Self.headerScale, height: min(Self.headerHeight, rect.height)) : nil
+        #endif
+    }
     var titleInset: CGFloat { headerTitleInset(gainLabel: nil) }
     func headerTitleInset(gainLabel: String?) -> CGFloat {
         if editable && muteRect == nil { return headerRect.width }
@@ -1097,6 +1103,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             fadeItem = (item, left, nil); draggedItem = item.id; dragStart = event.locationInWindow
             return
         }
+        if item.textEditable && event.clickCount == 2 { editText?(item.id); return }
         if item.midiEditable && event.clickCount == 2 { editMIDI?(item.id); return }
         if let rect = item.editRect, rect.contains(timeline) {
             pressedHeader = (item.id, rect, .editText); dragStart = event.locationInWindow; return

@@ -1,6 +1,7 @@
 import Foundation
 
 public enum DAWAction: String, Codable, CaseIterable, Sendable {
+    case saveProject
     case previousProjectTab, nextProjectTab
     case transportFadeout
     case selectTrack, muteTrack, soloTrack, volumeTrack, panTrack
@@ -20,6 +21,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     public var repeats: Bool { [.tempoDown, .tempoUp, .nextRegion, .previousRegion, .nextTimelinePoint, .previousTimelinePoint].contains(self) }
     public var title: String {
         switch self {
+        case .saveProject: return "Salvar projeto"
         case .previousProjectTab: return "Previous project tab"
         case .nextProjectTab: return "Next project tab"
         case .transportFadeout: return "Fadeout"
@@ -76,6 +78,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         let key: UInt16, modifiers: UInt, label: String
         switch self {
         case .previousProjectTab, .nextProjectTab, .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts, .cancelSection, .reRenderItems, .unifyAudioItems: return nil
+        case .saveProject: (key, modifiers, label) = (1, command, "⌘S")
         case .muteTrack: (key, modifiers, label) = (46, 0, "M")
         case .soloTrack: (key, modifiers, label) = (1, shift, "⇧S")
         case .tempoDown: (key, modifiers, label) = (27, 0, "−")

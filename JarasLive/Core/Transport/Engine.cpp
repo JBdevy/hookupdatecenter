@@ -134,7 +134,7 @@ void Engine::configureRegionSetlist(RegionSetlist state) {
     refreshAutomaticRegionQueue();
     syncRegion();
 }
-std::optional<ID> Engine::automaticRegionQueueTarget() const {
+std::optional<ID> Engine::automaticRegionQueueTarget(bool ignoreBlockBoundary) const {
     if (!project_.regionSetlist || !project_.regionSetlist->autoAdvance || !transport_.regionId) return {};
     const auto* song = currentSong(); if (!song) return {};
     const auto& state = *project_.regionSetlist;
@@ -147,11 +147,11 @@ std::optional<ID> Engine::automaticRegionQueueTarget() const {
         if (it != list->regionIds.end()) for (++it; it != list->regionIds.end(); ++it) {
             // A block boundary is a boundary even if the following row resolves
             // to the current physical song and would otherwise be skipped.
-            if (state.autoUntilBlockEnd && state.blocks && std::any_of(state.blocks->begin(),state.blocks->end(),[&](const auto& b) {
+            if (!ignoreBlockBoundary && state.autoUntilBlockEnd && state.blocks && std::any_of(state.blocks->begin(),state.blocks->end(),[&](const auto& b) {
                 return b.songId == song->id && b.playlistId == state.selectedId && b.beforeRegionId == *it;
             })) return {};
             const auto* part = region(list->resolvedRegionId(*it));
-            if (part && !part->parentRegionID && part->id != listID) { target = *it; break; }
+            if (part && !part->parentRegionID && (ignoreBlockBoundary || part->id != listID)) { target = *it; break; }
         }
     } else {
         std::vector<const Part*> parts;
@@ -161,7 +161,7 @@ std::optional<ID> Engine::automaticRegionQueueTarget() const {
         if (it != parts.end() && ++it != parts.end()) target = (*it)->id;
     }
     if (!target) return {};
-    if (state.autoUntilBlockEnd && state.blocks) {
+    if (!ignoreBlockBoundary && state.autoUntilBlockEnd && state.blocks) {
         for (const auto& block : *state.blocks)
             if (block.songId == song->id && block.playlistId == state.selectedId && block.beforeRegionId == target) return {};
     }
@@ -1706,8 +1706,14 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
         // STOP applies only without a valid incoming queue. Both manual and
         // automatic queues own the transition; prepare-only is handled below.
         if (!ignoring && !queued && project_.regionSetlist && project_.regionSetlist->stopAtRegionEnd.value_or(false)) {
+            // STOP must retain the prepared destination at an automatic block
+            // boundary, just like the normal Auto completion path below.
+            const auto prepared = project_.regionSetlist->autoUntilBlockEnd
+                ? automaticRegionQueueTarget(true) : std::nullopt;
             transport_.position = active->endTime; transport_.playing = false; transport_.paused = false;
-            execute({CommandKind::subStop}); return;
+            execute({CommandKind::subStop});
+            if (prepared) execute({CommandKind::selectRegion, *prepared});
+            return;
         }
         if (finishCurrent_) { transport_.position = active->endTime; transport_.playing = false; transport_.queuedRegionId.reset(); transport_.queuedPlaylistEntryId.reset(); execute({CommandKind::subStop}); return; }
         if (queued) {
@@ -1736,7 +1742,11 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
             clearIgnoreNext(); execute({CommandKind::subStop}); return;
         }
         if (project_.regionSetlist && project_.regionSetlist->autoAdvance) {
-            transport_.position = active->endTime; transport_.playing = false; execute({CommandKind::subStop}); return;
+            const auto prepared = project_.regionSetlist->autoUntilBlockEnd ? automaticRegionQueueTarget(true) : std::nullopt;
+            transport_.position = active->endTime; transport_.playing = false; transport_.paused = false;
+            execute({CommandKind::subStop});
+            if (prepared) execute({CommandKind::selectRegion, *prepared});
+            return;
         }
         break;
     }

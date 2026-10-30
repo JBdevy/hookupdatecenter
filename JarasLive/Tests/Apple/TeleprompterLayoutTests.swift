@@ -38,6 +38,26 @@ MainActor.assumeIsolated {
         window.orderOut(nil); window.contentView = nil; window.close()
         return data
     }
+    // Media owns the entire viewport, regardless of decorations or fullscreen.
+    for fullscreen in [false, true] {
+        for clear in [false, true] {
+            for scale in [50.0, 100.0, 150.0] {
+                var settings = TeleprompterSettings()
+                settings.clearMode = clear; settings.mediaScale = scale; settings.windowBorderEnabled = false
+                let view = NSHostingView(rootView: TeleprompterProjectionLayout(
+                    content: .init(index: 1, text: "", chords: "", song: "", queued: "", progress: 0, style: .init(), settings: settings),
+                    fullscreen: fullscreen, timerValue: { ("", 1, false) }, media: { Color.red }))
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false; window.contentView = view; window.orderFrontRegardless()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.04)); view.layoutSubtreeIfNeeded()
+                let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                let edge = bitmap.colorAt(x: 2, y: 2)!.usingColorSpace(.sRGB)!
+                precondition((edge.redComponent > 0.5) == (scale >= 100), "Media scale must use full viewport including top edge")
+                window.orderOut(nil); window.contentView = nil; window.close()
+            }
+        }
+    }
     var coloredSettings = TeleprompterSettings()
     coloredSettings.clockEnabled = false; coloredSettings.localClockEnabled = false
     coloredSettings.songNameEnabled = false; coloredSettings.queueNameEnabled = false

@@ -1493,7 +1493,6 @@ private struct RemoteSidebarRail<Content: View>: View {
             case 6: // Undo / Redo
                 if !event.isRepeat { if shiftCommand { show.redo() } else { show.undo() } }
                 return true
-            case 1 where command: if !event.isRepeat { Task { await show.save() } }; return true
             case 0 where command:
                 if trackScrolling.selectionScope == .tracks {
                     selectedTracks = Set(visibleTracks.filter { groupableTracks.contains($0.id) }.map(\.id))

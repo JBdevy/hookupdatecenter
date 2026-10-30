@@ -103,7 +103,7 @@ private:
     std::optional<ID> entryForRegion(const std::optional<ID>& regionID, const std::optional<ID>& preferred = {}) const;
     void syncPlaylistEntries();
     // Returns an occurrence ID; queue transport still stores physical regions.
-    std::optional<ID> automaticRegionQueueTarget() const;
+    std::optional<ID> automaticRegionQueueTarget(bool ignoreBlockBoundary = false) const;
     void refreshAutomaticRegionQueue();
     void autoQueueRegion();
     void clearIgnoreNext();

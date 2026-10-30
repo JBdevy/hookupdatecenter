@@ -158,7 +158,13 @@ class TextItemPanel final : public Component {
             safe->editor.grabKeyboardFocus();
         });
         auto *host=getTopLevelComponent();
-        if(host)ModalSheet::open(*host,localization::translate("Text color"),std::move(panel),370,160);
+        if(host)ModalSheet::open(*host,localization::translate("Text color"),std::move(panel),370,160,
+            [safe=SafePointer<TextItemPanel>(this)] {
+                // Restore the editor only after the palette has left the modal stack.
+                if(!safe || !safe->isShowing())return;
+                safe->getTopLevelComponent()->toFront(true);
+                safe->editor.grabKeyboardFocus();
+            });
     }
     String encoded() {
         synchronize();std::vector<ItemTextColors::Run> runs;

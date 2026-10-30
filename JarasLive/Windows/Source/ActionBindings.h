@@ -89,6 +89,7 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"toggleSetlist", "Setlist show/hide", 4, "alt + S"},
         {"toggleMultiLoopBypass", "Multiloops BYPASS on/off", 4, ""},
         {"selectTrack", "Select Track", 5, "", true},
+        {"saveProject", "Salvar projeto", 5, "ctrl + S"},
         {"addTrack", "Add Track", 5, "ctrl + T"},
         {"splitItems", "Split stems", 5, "S"},
         {"projectStart", "Go to project start", 5, "Q"},

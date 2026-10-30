@@ -2243,6 +2243,29 @@ int runTests(const File &directory) {
             visible=visible || frame.pixels[y*frame.stride+x]>10 || frame.pixels[y*frame.stride+x+1]>10 || frame.pixels[y*frame.stride+x+2]>10;
         expect(visible,"Video projection decoded only black pixels");
     });
+    test("Projection prepared decoder retains its first frame when playback begins", [&] {
+        const auto video=File(__FILE__).getParentDirectory().getSiblingFile("Tests").getChildFile("Fixtures/tone-video.mp4");
+        auto active=std::make_unique<vshook_video::Decoder>();
+        auto prepared=std::make_unique<vshook_video::Decoder>();
+        vshook_video::DecodedFrame frame;
+        const auto deadline=Time::getMillisecondCounterHiRes()+5000;
+        while(Time::getMillisecondCounterHiRes()<deadline) {
+            if(prepared->frameAt(utf8(video.getFullPathName()),"incoming",.3,false,1,64,64,frame))break;
+            Thread::sleep(10);
+        }
+        expect(frame.pixels!=nullptr,"Incoming video must be ready before the boundary");
+        active.swap(prepared); prepared->reset();
+        vshook_video::DecodedFrame incoming;
+        expect(active->frameAt(utf8(video.getFullPathName()),"incoming",.3,true,1,64,64,incoming) && incoming.pixels,
+               "Starting the prepared video must not clear its published frame");
+        const auto started=Time::getMillisecondCounterHiRes();
+        while(Time::getMillisecondCounterHiRes()-started<250) {
+            const double elapsed=(Time::getMillisecondCounterHiRes()-started)/1000.;
+            active->frameAt(utf8(video.getFullPathName()),"incoming",.3+elapsed,true,1,64,64,incoming);
+            Thread::sleep(10);
+        }
+        expect(incoming.pixels && incoming.timestamp>.4,"Prepared playback must advance immediately after the boundary");
+    });
     test("Projection selects the first active media item in grid order on ordinary tracks", [&] {
         jaras::Song song;jaras::Track first,second;first.id=uuid();second.id=uuid();first.role.id=second.role.id="other";
         jaras::AudioClip a;a.id=uuid();a.startTime=2;a.duration=5;a.audioFile=jaras::AudioFile{"Videos/first.mp4",{}};
@@ -6758,6 +6781,25 @@ int runTests(const File &directory) {
         expect(!audio.preparingTransport(),"Arming a queue re-prepared the running sources");
         render();
         expect(audio.state().position>beforeRouting,"Routing update rewound the active source clock");
+        // Automatic Subplay must not reopen the outgoing source at its current
+        // position. The queue already warmed the incoming head independently.
+        for(int i=0;i<240;++i)render(); // Move outside the original pinned onset.
+        AudioEngine::State subDestination;subDestination.subPlaying=true;subDestination.subPosition=20;
+        audio.prewarmTransportDestination(subDestination);
+        for(int i=0;i<30;++i)floatingControlTests::pump();
+        auto joining=audio.state();joining.subPlaying=true;joining.subPosition=20.037;joining.followMainClock=true;
+        for(int i=0;i<3;++i)render(); // Device advances after the UI sampled its clock.
+        const auto mainAtJoin=audio.state().position;
+        const auto subAtJoin=joining.subPosition+mainAtJoin-joining.position;
+        audio.transportAsync(joining);
+        expect(!audio.preparingTransport(),"Automatic Subplay re-prepared outgoing audio and delayed its musical entry");
+        render();
+        expect(std::abs(audio.state().position-(mainAtJoin+256./48000.))<1e-7,
+               "Automatic Subplay rewound the outgoing music");
+        expect(std::abs(audio.state().subPosition-(subAtJoin+256./48000.))<1e-7,
+               "Automatic Subplay lost its Config Init offset while joining the device clock");
+        expect(std::abs((audio.state().subPosition-audio.state().position)-(joining.subPosition-joining.position))<1e-7,
+               "The configured incoming bar no longer aligns with the outgoing end");
         state.playing=false;state.position=0;audio.transportAsync(state);render();
         for(int i=0;i<180;++i)floatingControlTests::pump(); // Beyond the old two-second eviction.
         state.playing=true;audio.transportAsync(state);

@@ -27,9 +27,21 @@ final class ProjectionWindow: NSWindow {
     private static weak var lastFocusedTool: NSWindow?
     private static var orderingObserver: NSObjectProtocol?
     private static var orderingMonitor: Any?
+    private static var consumedPointerObserver: NSObjectProtocol?
     private static var orderingPending = false
+    private static let workspaceTools = NSHashTable<NSWindow>.weakObjects()
+    private static let toolLevels = NSMapTable<NSWindow, NSNumber>.weakToStrongObjects()
+    private static var activationObservers: [NSObjectProtocol] = []
+    static let workspaceToolLevel = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue + 1)
+    private static func updateToolLevels(active: Bool) {
+        for window in workspaceTools.allObjects {
+            let desired = toolLevels.object(forKey: window)?.intValue ?? workspaceToolLevel.rawValue
+            window.level = active ? NSWindow.Level(rawValue: desired) : .normal
+        }
+    }
+
     private static func clicked(_ window: NSWindow) {
-        guard let main = NSApp.windows.first(where: { !($0 is ProjectionWindow) && $0.title == "CatLive" }) else { return }
+        guard let main = NSApp.windows.first(where: { !($0 is ProjectionWindow) && $0.isVisible && $0.title == "CatLive" }) else { return }
         guard window === main else {
             lastFocusedTool = window
             return
@@ -62,8 +74,23 @@ final class ProjectionWindow: NSWindow {
     }
     static func followWorkspaceWindow(_ window: NSWindow) {
         window.parent?.removeChildWindow(window)
+        workspaceTools.add(window)
+        if toolLevels.object(forKey: window) == nil {
+            toolLevels.setObject(NSNumber(value: max(window.level.rawValue, workspaceToolLevel.rawValue)), forKey: window)
+        }
+        window.level = NSWindow.Level(rawValue: toolLevels.object(forKey: window)!.intValue)
         guard orderingObserver == nil else { return }
+        // Mouse-up can raise the main window after event monitors run.
+        // A dedicated in-app level makes tool ordering independent of that race.
+        activationObservers = [
+            NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in updateToolLevels(active: true) },
+            NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in updateToolLevels(active: false) }
+        ]
         orderingObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { notice in
+            if let window = notice.object as? NSWindow { Self.clicked(window) }
+        }
+        // Native grid input can consume the event before local monitors see it.
+        consumedPointerObserver = NotificationCenter.default.addObserver(forName: Notification.Name("catlive.workspacePointerDown"), object: nil, queue: .main) { notice in
             if let window = notice.object as? NSWindow { Self.clicked(window) }
         }
         orderingMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
@@ -176,7 +203,7 @@ final class ProjectionWindow: NSWindow {
         styleMask = .borderless; titleVisibility = .hidden; titlebarAppearsTransparent = true
         isMovable = false; isMovableByWindowBackground = false; hasShadow = false
         canHide = false; hidesOnDeactivate = false
-        level = .normal
+        level = Self.workspaceTools.contains(self) ? Self.workspaceToolLevel : .normal
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         setFrame(display.frame, display: false, animate: false)
         makeKeyAndOrderFront(nil)

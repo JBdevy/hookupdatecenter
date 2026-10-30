@@ -15,7 +15,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
     private var preview: Bool { settings.displaysPreview(content.preview) }
     var body: some View {
         GeometryReader { geometry in
-            if settings.isClear && !preview { media().scaleEffect(settings.mediaScale / 100).frame(maxWidth: .infinity, maxHeight: .infinity).clipped() }
+            if settings.isClear && !preview { media().frame(width: geometry.size.width, height: geometry.size.height).scaleEffect(settings.mediaScale / 100).frame(width: geometry.size.width, height: geometry.size.height).clipped() }
             else {
                 let animatedBorders = settings.rgbWindowBorderEnabled || settings.rgbClockBorderEnabled || settings.rgbTextBoxBorderEnabled || settings.rgbChordBorderEnabled
                 TimelineView(.periodic(from: .now,by: animatedBorders ? 0.2 : 0.5)) { context in
@@ -33,7 +33,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
                         .background {
                             ZStack {
                                 Color.black
-                                if !preview { media().scaleEffect(settings.mediaScale / 100).clipped() }
+                                if !preview { media().frame(width: geometry.size.width, height: geometry.size.height).scaleEffect(settings.mediaScale / 100).frame(width: geometry.size.width, height: geometry.size.height).clipped() }
                             }
                         }
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.windowBorderEnabled ? border(settings.borderColor,rgb: settings.rgbWindowBorderEnabled,date: context.date) : .clear,lineWidth: 2))

@@ -28,10 +28,18 @@ static void testAutoUntilBlockEnd() {
     expect(legacy.transport().playing && legacy.transport().regionId == "c", "default Auto crosses block headings");
 
     state.autoUntilBlockEnd = true; project.regionSetlist = state;
+    for (bool stop : {false, true}) {
+        auto combination = project; combination.regionSetlist->stopAtRegionEnd = stop;
+        Engine boundary; boundary.loadProject(combination); start(boundary, "b");
+        boundary.advance(10);
+        expect(!boundary.transport().playing && boundary.transport().regionId == "c" &&
+               boundary.transport().editPosition == 20,
+               "block end prepares the next block even when STOP is enabled");
+    }
     Engine limited; limited.loadProject(project); start(limited, "a");
     expect(limited.transport().queuedRegionId == "b", "block limit queues songs within the current block");
     limited.advance(80);
-    expect(!limited.transport().playing && limited.transport().position == 20 && limited.transport().regionId == "b" && !limited.transport().queuedRegionId,
+    expect(!limited.transport().playing && limited.transport().position == 20 && limited.transport().regionId == "c" && !limited.transport().queuedRegionId,
            "large ticks stop exactly at the last song of the block");
     expect(limited.project().regionSetlist->autoAdvance && limited.project().regionSetlist->autoUntilBlockEnd,
            "reaching a block boundary leaves Auto and its block policy enabled");
@@ -57,7 +65,7 @@ static void testAutoUntilBlockEnd() {
     expect(manual.transport().queuedRegionId == "c" && manual.project().regionSetlist->autoUntilBlockEnd,
            "manual queue crosses a block boundary without disabling the persistent policy");
     manual.advance(30);
-    expect(!manual.transport().playing && manual.transport().position == 40 && manual.transport().regionId == "d",
+    expect(!manual.transport().playing && manual.transport().position == 40 && manual.transport().regionId == "e",
            "after a manual cross-block queue, Auto runs only to the end of that destination block");
 
     Engine rename; rename.loadProject(project); start(rename, "a"); rename.advance(2);
@@ -85,7 +93,7 @@ static void testAutoUntilBlockEnd() {
     Engine order; order.loadProject(reordered); start(order, "c");
     expect(order.transport().queuedRegionId == "a", "block policy follows playlist sequence rather than timeline order");
     order.advance(30);
-    expect(!order.transport().playing && order.transport().position == 20 && order.transport().regionId == "b",
+    expect(!order.transport().playing && order.transport().position == 30 && order.transport().regionId == "d",
            "reordered playlist stops at its next heading even when time moves backwards");
 
     auto all = project; all.regionSetlist->selectedId.reset();
@@ -154,8 +162,8 @@ static void testAutoUntilBlockEnd() {
     expect(!ready.transport().playing && ready.transport().regionId == "b" && ready.transport().position == 10,
            "Without playback prepares the next song within a block");
     ready.execute({CommandKind::play}); ready.advance(10);
-    expect(!ready.transport().playing && ready.transport().regionId == "b" && ready.transport().position == 20 && !ready.transport().queuedRegionId,
-           "Without playback does not prepare the first song of the next block");
+    expect(!ready.transport().playing && ready.transport().regionId == "c" && ready.transport().position == 20 && !ready.transport().queuedRegionId,
+           "Without playback prepares the first song of the next block without playing");
 
     auto drawer = project;
     Part child{"drawer-child", "Child", 2, 5}; child.parentRegionID = "a";
@@ -346,6 +354,27 @@ static void testAutomaticSubplayBars() {
         p.songs[0].parts[1].subplayInitBars=count;
         TimelineMarker incoming{"incoming-tempo","Incoming",80,0};incoming.tempoBPM=60;incoming.tempoBeats=3;incoming.tempoUnit=4;
         p.songs[0].markers=std::vector<TimelineMarker>{incoming};check(p,60-count*3);
+    }
+    {
+        // Real-world long timeline coordinates: the onset tempo can differ by
+        // a few floating-point ULPs from its region's start after project edits.
+        auto p=fixture();p.songs[0].duration=11200;p.songs[0].bpm=190;
+        p.songs[0].parts={{"out","Outgoing",10349.400830000004,10680.864739000004},
+                          {"in","Incoming",11008.000000000004,11184.700105132964}};
+        p.regionSetlist->automaticSubplayNext=true;p.songs[0].parts[1].subplayInitBars=1;
+        TimelineMarker marker{"onset","Tempo",11008.000000000007,0};marker.tempoBPM=110;
+        marker.tempoBeats=4;marker.tempoUnit=4;p.songs[0].markers=std::vector<TimelineMarker>{marker};
+        const double lead=240./110.;
+        Engine e;e.loadProject(p);e.execute({CommandKind::selectRegion,"out"});e.execute({CommandKind::play});
+        e.advance(p.songs[0].parts[0].endTime-p.songs[0].parts[0].startTime-lead-.01);
+        expect(!e.transport().subPlay.playing,"One-bar intro started before its configured lead");
+        e.advance(.02);
+        expect(e.transport().subPlay.playing && std::abs(e.transport().subPlay.position-11008.01)<1e-7,
+               "One incoming 110 BPM bar was replaced by outgoing tempo or whole seconds");
+        e.advance(lead-.01);
+        expect(e.transport().playing && e.transport().subPlayPromotion==1 &&
+               std::abs(e.transport().position-(11008.+lead))<1e-7,
+               "Incoming music has not completed exactly its configured bar at handoff");
     }
     auto nextTempo=fixture();nextTempo.regionSetlist->automaticSubplayNext=true;nextTempo.songs[0].parts[1].subplayInitBars=2;
     TimelineMarker incoming{"incoming","Incoming",80,0};incoming.tempoBPM=60;incoming.tempoBeats=3;incoming.tempoUnit=4;

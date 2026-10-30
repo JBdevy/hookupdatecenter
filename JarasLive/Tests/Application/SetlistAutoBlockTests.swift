@@ -48,7 +48,8 @@ import XCTest
         }
     }
     func addTrack(id: UUID, name: String, role: TrackRole) throws {}
-    func advance(_ elapsed: Double) {}
+    var pendingAdvance: TransportState?
+    func advance(_ elapsed: Double) { if let next = pendingAdvance { transport = next; pendingAdvance = nil } }
     func finishCurrentSong(_ enabled: Bool) {}
 }
 
@@ -60,6 +61,31 @@ final class SetlistAutoBlockTests: XCTestCase {
                                   Part(id: UUID(), name: "Encore", startTime: 20, endTime: 30)]
         project.regionSetlist = RegionSetlist()
         return project
+    }
+
+    @MainActor func testPreparedDestinationBecomesBlueSelectionForQueueAndBlockEnd() throws {
+        for blockEnd in [false, true] {
+            var project = fixture()
+            project.regionSetlist?.autoAdvance = true
+            project.regionSetlist?.autoUntilBlockEnd = blockEnd
+            project.regionSetlist?.prepareWithoutPlayback = !blockEnd
+            let first = project.songs[0].parts[0], next = project.songs[0].parts[1]
+            let executor = AutoBlockExecutor()
+            let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+            show.focusRegion(first.id)
+            show.send(.play)
+            if !blockEnd { show.send(.queueRegion, target: next.id) }
+            var stopped = executor.transport
+            stopped.playing = false; stopped.regionId = next.id
+            stopped.position = next.startTime; stopped.editPosition = next.startTime
+            stopped.queuedRegionId = nil
+            executor.pendingAdvance = stopped
+            show.tick()
+            XCTAssertEqual(show.focusedRegion, next.id)
+            XCTAssertEqual(show.snapshot.transport.position, next.startTime)
+            XCTAssertFalse(show.snapshot.transport.playing)
+            show.send(.stopAll)
+        }
     }
 
     func testLegacySetlistWithoutSettingDecodesAsDisabledAndRoundTrips() throws {

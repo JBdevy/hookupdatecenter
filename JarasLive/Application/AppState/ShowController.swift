@@ -525,8 +525,10 @@ public struct ShowTimelinePresentationState: Equatable {
         focusedRegion = nil
     }
     private func focusPreparedRegion(previous: TransportState) {
-        guard !snapshot.transport.playing, let queued = previous.queuedRegionId,
-              snapshot.transport.regionId == queued else { return }
+        guard previous.playing, !snapshot.transport.playing, snapshot.transport.paused != true,
+              !snapshot.transport.subPlay.playing, let queued = snapshot.transport.regionId,
+              previous.queuedRegionId == queued || (regionSetlist.autoUntilBlockEnd == true &&
+                (previous.regionId != queued || previous.playlistEntryId != snapshot.transport.playlistEntryId)) else { return }
         regionNavigationTask?.cancel(); regionNavigationTask = nil
         navigationFocusPosition = nil
         focusedRegion = snapshot.transport.playlistEntryId ?? previous.queuedPlaylistEntryId ?? queued; regionFocusRequest = UUID()
@@ -692,6 +694,7 @@ public struct ShowTimelinePresentationState: Equatable {
         let track = action.needsTrack ? actionTrack(number: trackNumber) : nil
         if action.needsTrack && track == nil { message = "Track unavailable"; return }
         switch action {
+        case .saveProject: Task { await save() }
         case .selectTrack:
             if let track {
                 setMixerTrackSelection([track.id], anchor: track.id)
@@ -1475,7 +1478,9 @@ public struct ShowTimelinePresentationState: Equatable {
             var update = try executor.playbackSnapshot()
             if previous.playing, !update.transport.playing, update.transport.paused != true,
                !update.transport.subPlay.playing, previous.queuedRegionId == nil, update.transport.queuedRegionId == nil,
-               previous.songId == update.transport.songId, let id = focusedRegion, let song = current,
+               previous.songId == update.transport.songId,
+               !(regionSetlist.autoUntilBlockEnd == true && (previous.regionId != update.transport.regionId || previous.playlistEntryId != update.transport.playlistEntryId)),
+               let id = focusedRegion, let song = current,
                playlistRegion(id) != nil,
                !FinishedSetlistSelection.shouldClear(id, song: song, playlist: selectedRegionPlaylist,
                                                     before: previous, after: update.transport) {

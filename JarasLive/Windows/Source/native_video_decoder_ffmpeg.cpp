@@ -1307,6 +1307,13 @@ struct Decoder::Impl {
       return actual < -0.01 ||
         std::abs(actual - expected) > discontinuity;
     }
+    if (!previousPlaying && current.playing && displayTimestamp >= 0.0 &&
+        current.sourceTime >= displayTimestamp &&
+        current.sourceTime - displayTimestamp <= std::max(0.08, nominalFrameDuration * 2.0)) {
+      // The prepared frame is already decoded. Advance from it instead of
+      // seeking back to a keyframe on the first playing request.
+      return false;
+    }
     if (previousPlaying != current.playing) {
       // Stop e Play precisam sempre acordar exatamente no cursor atual.
       return std::abs(current.sourceTime - displayTimestamp) >

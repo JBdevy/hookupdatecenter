@@ -431,6 +431,13 @@ private struct WorkspaceToolContent<Content: View>: View {
         }
         let panel = makeWorkspacePanel(title: JarasLocalization.string(title), size: size, minimum: size)
         panel.identifier = NSUserInterfaceItemIdentifier("catlive.tool." + tool.rawValue)
+        if tool == .textItem {
+            // Keep the draft visible while the user focuses the projection.
+            // It remains an independent window, without a modal session.
+            panel.level = .floating
+            panel.hidesOnDeactivate = false
+            panel.collectionBehavior.insert(.fullScreenAuxiliary)
+        }
         panel.delegate = self
         let host = NSHostingView(rootView: WorkspaceToolContent(content: content(panel), updateTitle: { [weak panel] in
             panel?.title = JarasLocalization.string(title)

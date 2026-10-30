@@ -20,6 +20,8 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         if (value > 0) setlist->focusBlock(number);
     } else if (action == "previousProjectTab" || action == "nextProjectTab") {
         if (value > 0 && navigateProjectTab) navigateProjectTab(action == "previousProjectTab" ? -1 : 1);
+    } else if (action == "saveProject") {
+        if (value > 0) chooseSave(false);
     } else if (action == "transportFadeout") {
         triggerTransportFadeout();
     } else if (action == "selectTrack") {

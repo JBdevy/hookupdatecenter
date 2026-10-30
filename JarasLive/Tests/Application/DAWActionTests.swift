@@ -2,6 +2,20 @@ import XCTest
 @testable import JarasApplication
 
 final class DAWActionTests: XCTestCase {
+    func testSaveProjectDefaultsAndRemappingPersist() throws {
+        var bindings = DAWActionBindings(stored: [])
+        let original = try XCTUnwrap(DAWAction.saveProject.defaultKeyboard)
+        XCTAssertEqual(original.key, 1)
+        XCTAssertEqual(original.modifiers, 1 << 20)
+        XCTAssertEqual(bindings.matching(original), .saveProject)
+        let custom = ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)
+        XCTAssertTrue(bindings.setInput(custom, action: .saveProject, kind: "keyboard"))
+        XCTAssertNil(bindings.matching(original))
+        let data = try JSONEncoder().encode(bindings.entries)
+        let restored = DAWActionBindings(stored: try JSONDecoder().decode([DAWActionBinding].self, from: data))
+        XCTAssertEqual(restored.matching(custom), .saveProject)
+    }
+
     func testCancelQueuedSectionHasIndependentPersistentMIDIMapping() throws {
         let action = DAWAction.cancelSection
         XCTAssertTrue(action.supportsMIDI)

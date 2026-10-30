@@ -5454,7 +5454,9 @@ void Workspace::updateState() {
     // while it is open; otherwise the video would obscure its controls.
     if(auto *peer=getPeer()) {
         const auto main=static_cast<HWND>(peer->getNativeHandle());
-        const bool sheet=dynamic_cast<ModalSheet*>(Component::getCurrentlyModalComponent())!=nullptr;
+        const auto *activeSheet=dynamic_cast<ModalSheet*>(Component::getCurrentlyModalComponent());
+        // A palette inside an independent editor must not lower the projection.
+        const bool sheet=activeSheet && activeSheet->getPeer()==peer;
         auto followWorkspace = [&](DocumentWindow *window, bool fullscreen) {
             if (!window || !window->isVisible()) return;
             auto *floatingPeer=window->getPeer();if(!floatingPeer)return;
@@ -5462,7 +5464,7 @@ void Workspace::updateState() {
             const auto owner=reinterpret_cast<HWND>(GetWindowLongPtrW(handle,GWLP_HWNDPARENT));
             if ((sheet || fullscreen) && owner == main) {
                 SetWindowLongPtrW(handle,GWLP_HWNDPARENT,0);
-                if (sheet) SetWindowPos(handle,HWND_BOTTOM,0,0,0,0,
+                if (sheet && !fullscreen) SetWindowPos(handle,HWND_BOTTOM,0,0,0,0,
                                        SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
             } else if (!sheet && !fullscreen && owner != main) {
                 SetWindowLongPtrW(handle,GWLP_HWNDPARENT,reinterpret_cast<LONG_PTR>(main));
@@ -5682,7 +5684,9 @@ void Workspace::timerCallback() {
     if (fadeoutOverlay) fadeoutOverlay->update();
     timeline->refreshWaveforms();
     if (resourceUsage.sample()) repaint(footerBounds);
-    repaint(44, 43, 14, 64);
+    // Master bars are drawn at x=9/15, y=44 plus the 28px toolbar offset.
+    // Include the complete bars and antialiased edges in the timer invalidation.
+    repaint(8, 71, 14, 64);
     for (auto *row : rows) if (row->isShowing()) row->repaint(0, 0, 22 + row->groupIndent(), row->getHeight());
     controls["remote"]->setColour(TextButton::buttonColourId, remoteHost->enabled() ? theme::green : theme::liveOffRed);
     controls["remote"]->setColour(TextButton::textColourOffId, Colours::black);
@@ -5798,7 +5802,7 @@ bool Workspace::keyPressed(const KeyPress &key) {
         chooseOpen();
         return true;
     }
-    if (ctrl && !alt && code == 'S') {
+    if (ctrl && shift && !alt && code == 'S') {
         if (!projectReady || loginPanel)
             return false;
         ++shortcutCount;

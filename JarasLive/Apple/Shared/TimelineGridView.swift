@@ -334,7 +334,7 @@ private struct TimelineGridContent: View, Equatable {
                                             let silenced = show.current?.isSilenced(track) ?? song.isSilenced(track)
                                             VStack(spacing: 0) {
                                             TimelineLiveMixerRow(show: show, track: track, index: index) { liveTrack in
-                                            TrackMixerRow(show: show, projectID: show.snapshot.project.id, track: mixerMetadata(liveTrack), trackSelection: selectedTracks, nextTrack: index + 1 < song.tracks.count ? song.tracks[index + 1].id : nil, number: index + 1, selected: track.kind == .standard && selectedTracks.contains(track.id), silenced: silenced, showsMeterScale: true, showsFader: (slot.width ?? mountedLabelWidth) >= 180, showsInstrumentIcons: showsInstrumentIcons, compactHeight: audioHeight < 64, minimalHeight: audioHeight < 56, isFolder: index + 1 < song.tracks.count && song.tracks[index + 1].parentTrackID == track.id, groupDepth: groupDepths[track.id] ?? 0, lastChild: index + 1 == song.tracks.count || song.tracks[index + 1].parentTrackID != track.parentTrackID, groupSelection: selectedTracks.contains(track.id) && selectedTracks.count > 1 ? { show.groupTracks(selectedTracks) } : nil, select: { selectTrack(track.id, in: song) }, importVideo: { documents.chooseVideo(track: track.id) }, projectDirectory: documents.currentURL?.deletingLastPathComponent(), deleteTracks: { requestTrackDeletion($0) }).equatable()
+                                            TrackMixerRow(show: show, projectID: show.snapshot.project.id, track: mixerMetadata(liveTrack), trackSelection: selectedTracks, nextTrack: index + 1 < song.tracks.count ? song.tracks[index + 1].id : nil, number: index + 1, selected: selectedTracks.contains(track.id), silenced: silenced, showsMeterScale: true, showsFader: (slot.width ?? mountedLabelWidth) >= 180, showsInstrumentIcons: showsInstrumentIcons, compactHeight: audioHeight < 64, minimalHeight: audioHeight < 56, isFolder: index + 1 < song.tracks.count && song.tracks[index + 1].parentTrackID == track.id, groupDepth: groupDepths[track.id] ?? 0, lastChild: index + 1 == song.tracks.count || song.tracks[index + 1].parentTrackID != track.parentTrackID, groupSelection: selectedTracks.contains(track.id) && selectedTracks.count > 1 ? { show.groupTracks(selectedTracks) } : nil, select: { selectTrack(track.id, in: song) }, importVideo: { documents.chooseVideo(track: track.id) }, projectDirectory: documents.currentURL?.deletingLastPathComponent(), deleteTracks: { requestTrackDeletion($0) }).equatable()
                                             }.frame(height: audioHeight).clipped()
                                             TrackAutomationLaneHeaders(show: show, track: track, height: envelopeHeight)
                                                 .padding(.trailing, showsInstrumentIcons ? 40 : 0)
@@ -349,7 +349,7 @@ private struct TimelineGridContent: View, Equatable {
                                             let silenced = show.current?.isSilenced(track) ?? song.isSilenced(track)
                                             VStack(spacing: 0) {
                                             TimelineLiveMixerRow(show: show, track: track, index: index) { liveTrack in
-                                            TrackMixerRow(show: show, projectID: show.snapshot.project.id, track: mixerMetadata(liveTrack), trackSelection: selectedTracks, nextTrack: index + 1 < song.tracks.count ? song.tracks[index + 1].id : nil, number: index + 1, selected: track.kind == .standard && selectedTracks.contains(track.id), silenced: silenced, showsMeterScale: true, showsFader: mountedLabelWidth >= 180, showsInstrumentIcons: showsInstrumentIcons, compactHeight: rows.audioHeights[index] < 64, minimalHeight: rows.audioHeights[index] < 56, isFolder: index + 1 < song.tracks.count && song.tracks[index + 1].parentTrackID == track.id, groupDepth: groupDepths[track.id] ?? 0, lastChild: index + 1 == song.tracks.count || song.tracks[index + 1].parentTrackID != track.parentTrackID, groupSelection: selectedTracks.contains(track.id) && selectedTracks.count > 1 ? { show.groupTracks(selectedTracks) } : nil, select: { selectTrack(track.id, in: song) }, importVideo: { documents.chooseVideo(track: track.id) }, projectDirectory: documents.currentURL?.deletingLastPathComponent(), deleteTracks: { requestTrackDeletion($0) }).equatable()
+                                            TrackMixerRow(show: show, projectID: show.snapshot.project.id, track: mixerMetadata(liveTrack), trackSelection: selectedTracks, nextTrack: index + 1 < song.tracks.count ? song.tracks[index + 1].id : nil, number: index + 1, selected: selectedTracks.contains(track.id), silenced: silenced, showsMeterScale: true, showsFader: mountedLabelWidth >= 180, showsInstrumentIcons: showsInstrumentIcons, compactHeight: rows.audioHeights[index] < 64, minimalHeight: rows.audioHeights[index] < 56, isFolder: index + 1 < song.tracks.count && song.tracks[index + 1].parentTrackID == track.id, groupDepth: groupDepths[track.id] ?? 0, lastChild: index + 1 == song.tracks.count || song.tracks[index + 1].parentTrackID != track.parentTrackID, groupSelection: selectedTracks.contains(track.id) && selectedTracks.count > 1 ? { show.groupTracks(selectedTracks) } : nil, select: { selectTrack(track.id, in: song) }, importVideo: { documents.chooseVideo(track: track.id) }, projectDirectory: documents.currentURL?.deletingLastPathComponent(), deleteTracks: { requestTrackDeletion($0) }).equatable()
                                             }.frame(height: rows.audioHeights[index]).clipped()
                                             TrackAutomationLaneHeaders(show: show, track: track, height: rows.envelopeHeights[index])
                                                 .padding(.trailing, showsInstrumentIcons ? 40 : 0)
@@ -872,7 +872,7 @@ private struct TimelineGridContent: View, Equatable {
             if request.action == .reRenderItems { reRenderItems(selectedClips) }
             else if request.action == .unifyAudioItems { glueItems(selectedClips) }
         }
-        .onChange(of: show.splitItemsRequest) { request in if request > 0 { confirmSplit(selectedClips) } }
+        .onChange(of: show.splitItemsRequest) { request in if request > 0 { splitSelectedItems(selectedClips) } }
         .onChange(of: show.addTrackRequest) { request in if request > 0 { addingTrack = true } }
         .onChange(of: show.timelineMovementLocked) { locked in
             guard locked else { return }
@@ -938,7 +938,7 @@ private struct TimelineGridContent: View, Equatable {
                                              viewportSize: CGSize, audioBody: NativeTimelineAudioBodyConfiguration?) -> NativeTimelineBaseConfiguration {
         let controller = nativeBase
         let bands = song.tracks.enumerated().compactMap { index, track -> TimelineNativeGridBand? in
-            guard track.kind == .standard, selectedTracks.contains(track.id) else { return nil }
+            guard selectedTracks.contains(track.id) else { return nil }
             return TimelineNativeGridBand(rect: CGRect(x: 0, y: rulerHeight + rows.offsets[index], width: 0, height: rows.heights[index]),
                 color: NSColor(JarasTheme.panel).cgColor)
         }
@@ -1555,11 +1555,15 @@ private struct TimelineGridContent: View, Equatable {
         }
         return result
     }
-    private func confirmSplit(_ ids: Set<UUID>) {
+    private func splitSelectedItems(_ ids: Set<UUID>) {
         let position = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
         let eligible = show.current?.tracks.filter { $0.kind != .timecode }.flatMap(\.clips).filter { ids.contains($0.id) && position > $0.startTime && position < $0.startTime + $0.duration } ?? []
         guard !eligible.isEmpty else { return }
+        #if os(macOS)
+        show.splitItems(Set(eligible.map(\.id)), at: position)
+        #else
         itemsToSplit = Set(eligible.map(\.id)); splitPosition = position; confirmingSplit = true
+        #endif
     }
     private var deleteTarget: GridDeleteTarget {
         guard let song = show.current else { return .none }
@@ -1617,12 +1621,12 @@ private struct TimelineGridContent: View, Equatable {
         show.setMixerTrackSelection([], anchor: nil)
     }
     private func selectTrack(_ id: UUID, in song: Song) {
-        guard song.tracks.contains(where: { $0.id == id && $0.kind == .standard }) else { return }
+        guard song.tracks.contains(where: { $0.id == id }) else { return }
         #if os(macOS)
         let flags = TrackSelectionRouter.shared.selectionModifiers ?? NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags
         if flags.contains(.shift), let anchor = selectedTrack,
            let start = song.tracks.firstIndex(where: { $0.id == anchor }), let end = song.tracks.firstIndex(where: { $0.id == id }) {
-            selectedTracks = Set(song.tracks[min(start, end)...max(start, end)].filter { $0.kind == .standard }.map(\.id))
+            selectedTracks = Set(song.tracks[min(start, end)...max(start, end)].map(\.id))
             return
         }
         if flags.contains(.command) || flags.contains(.control) {
@@ -4852,7 +4856,7 @@ private struct TimelineBackdrop: View {
                 from: max(0, Double(tile.minX / scale)), to: Double(tile.maxX / scale),
                 pixelsPerSecond: scale, divisions: song.projectTime.divisions, labels: false) : []
             let bands = song.tracks.enumerated().compactMap { index, track -> TimelineNativeGridBand? in
-                guard track.kind == .standard, selectedTracks.contains(track.id) else { return nil }
+                guard selectedTracks.contains(track.id) else { return nil }
                 let rect = CGRect(x: tile.minX, y: rulerHeight + rows.offsets[index], width: tile.width, height: rows.heights[index])
                 guard rect.intersects(tile) else { return nil }
                 return TimelineNativeGridBand(rect: rect, color: NSColor(JarasTheme.panel).cgColor)
@@ -4890,7 +4894,7 @@ private struct TimelineBackdrop: View {
                 trackHeights: rows.heights, rulerHeight: rulerHeight, selectedTracks: selectedTracks,
                 gridStyle: [backgroundColor.value, primaryGridColor.value, secondaryGridColor.value, gridlines ? 1 : 0])) { context, size, tile, waveformOwner in
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(hex: UInt32(backgroundColor.value))))
-            for (index, track) in song.tracks.enumerated() where track.kind == .standard && selectedTracks.contains(track.id) {
+            for (index, track) in song.tracks.enumerated() where selectedTracks.contains(track.id) {
                 let band = CGRect(x: tile.minX, y: rulerHeight + rows.offsets[index], width: tile.width, height: rows.heights[index])
                 guard band.intersects(tile) else { continue }
                 context.fill(Path(band), with: .color(JarasTheme.panel))

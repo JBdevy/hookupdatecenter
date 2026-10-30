@@ -17,6 +17,19 @@ void addActionBindingsTests(const File &directory, Register &&test) {
     const auto require = [](bool okay, const char *message) {
         if (!okay) throw std::runtime_error(message);
     };
+    test("Save project default shortcut can be remapped and persisted", [&, require] {
+        auto file=directory.getNonexistentChildFile("save-action", ".json");
+        Appearance settings(file);AudioDeviceManager devices;ActionBindings bindings(settings,devices);
+        int calls=0;bindings.invoke=[&](const String &id,float,int){require(id=="saveProject","Wrong save action");++calls;};
+        auto key=KeyPress::createFromDescription("ctrl + S");
+        require(bindings.key(key)&&calls==1,"Default Ctrl S did not save");
+        bindings.key(key,true);require(calls==1,"Held shortcut repeated save");
+        require(bindings.assign("saveProject","keyboard","F8"),"Could not remap Save");
+        bindings.key(key);require(calls==1,"Old shortcut still invoked Save after remapping");
+        Appearance restored(file);ActionBindings reopened(restored,devices);
+        reopened.invoke=bindings.invoke;
+        require(reopened.key(KeyPress::createFromDescription("F8"))&&calls==2,"Saved binding did not reload");
+    });
     test("Cancel queued section MIDI persists and dispatches once per press", [&, require] {
         auto file=directory.getNonexistentChildFile("cancel-section-midi", ".json");
         Appearance settings(file);AudioDeviceManager devices;ActionBindings bindings(settings,devices);

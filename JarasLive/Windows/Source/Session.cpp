@@ -800,6 +800,14 @@ void Session::reconcileSetlistSelectionAfterAdvance(const jaras::TransportState 
         if(selectionChanged) selectionChanged();
     }
     const auto &after=transport();
+    if(before.playing && !after.playing && !after.paused && !after.subPlay.playing && after.regionId &&
+       (before.queuedRegionId == after.regionId ||
+        (project().regionSetlist && project().regionSetlist->autoUntilBlockEnd &&
+         (before.regionId != after.regionId || before.playlistEntryId != after.playlistEntryId)))) {
+        focusSetlistRegion(after.playlistEntryId ? after.playlistEntryId : after.regionId, true);
+        if(selectionChanged) selectionChanged();
+        return;
+    }
     if(before.playing && !after.playing && !after.paused && !after.subPlay.playing &&
        !before.queuedRegionId && !after.queuedRegionId && before.songId==after.songId && focusedRegion) {
         core.execute({jaras::CommandKind::selectRegion,*focusedRegion});
@@ -855,13 +863,15 @@ void Session::syncClock() {
         if (!aligned || transition || loopChanged || before.queuedSectionMarkerId != expected.queuedSectionMarkerId || before.exclusivePlaybackRegionId!=expected.exclusivePlaybackRegionId || before.subExclusivePlaybackRegionId!=expected.subExclusivePlaybackRegionId)
             // Loops already wrap at a sample boundary inside the audio engine.
             // Acknowledge the core's loop event without replaying its onset.
-            publishTransport(transition, aligned);
+            publishTransport(transition, aligned, !transition && before.playing && expected.playing &&
+                !before.subPlay.playing && expected.subPlay.playing);
     }
 }
-void Session::publishTransport(bool preserveLatency, bool routingOnly) {
+void Session::publishTransport(bool preserveLatency, bool routingOnly, bool followMainClock) {
     const auto &t = transport();
     AudioEngine::State state;
     state.preserveLatency = preserveLatency;
+    state.followMainClock = followMainClock;
     state.promotion = t.subPlayPromotion;
     state.position = t.position;
     state.timecodePreferred = audio.timecodePreferred(t.regionId);

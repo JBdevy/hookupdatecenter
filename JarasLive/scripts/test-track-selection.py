@@ -46,6 +46,10 @@ test='''
  let gapBefore=calls
  router.handle(event(.leftMouseDown));router.handle(event(.leftMouseUp));check(calls==gapBefore+1,"empty gap between actual controls cannot select the track")
  router.handle(event(.leftMouseDown,NSPoint(x:220,y:50)));router.handle(event(.leftMouseUp,NSPoint(x:220,y:50)));check(calls==gapBefore+1,"neighboring control lost its own interaction")
+ row.kind = .click; row.selected = false
+ let specialBefore = calls
+ router.handle(event(.leftMouseDown));router.handle(event(.leftMouseUp))
+ check(calls==specialBefore+1,"special track must receive selection")
  print("TRACK_SELECTION_PRESS_RELEASE_DRAG_AND_CONTROL_ROUTING_OK")
  window.orderOut(nil);_ = app
 }

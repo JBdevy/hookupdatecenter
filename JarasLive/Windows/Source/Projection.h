@@ -24,7 +24,13 @@ class Projection final : public Component, private Timer {
     Session &session;
     Appearance &appearance;
     String role;
-    vshook_video::Decoder videoDecoder;
+    std::unique_ptr<vshook_video::Decoder> videoDecoder = std::make_unique<vshook_video::Decoder>();
+    std::unique_ptr<vshook_video::Decoder> preparedDecoder = std::make_unique<vshook_video::Decoder>();
+    ID videoPlaybackKey;
+    double itemSourceOffset = 0, itemRate = 1;
+    ID preparedClip;
+    File preparedFile;
+    void prepareNextVideo(const jaras::AudioClip &, double position, bool playing);
     TextEditor textView;
     Image image;
     vshook_video::DecodedFrame videoFrame;

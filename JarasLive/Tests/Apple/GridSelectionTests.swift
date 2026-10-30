@@ -600,17 +600,17 @@ print("GRID_ITEM_FX_MUTE_HIT_AREAS_AND_MINI_KNOB_RESET_OK")
 let textID = UUID()
 grid.items = [GridSelectionItem(id: textID, rect: CGRect(x: 100,y: 100,width: 120,height: 60), editable: false, contextActions: false, textEditable: true)]
 let textItem = grid.items[0]
-precondition(textItem.muteRect == nil && textItem.fxRect == nil && textItem.gainKnobRect == nil && textItem.editRect != nil)
+precondition(textItem.muteRect == nil && textItem.fxRect == nil && textItem.gainKnobRect == nil && textItem.editRect == nil)
 var editedText: [UUID] = []
 grid.editText = { editedText.append($0) }
-let editCenter = CGPoint(x: textItem.editRect!.midX,y: textItem.editRect!.midY)
-precondition(grid.handlePointerEvent(event(.leftMouseDown,editCenter)) && editedText.isEmpty)
-precondition(grid.handlePointerEvent(event(.leftMouseUp,editCenter)) && editedText == [textID], "text Edit consumes release and only opens one editor")
+let editCenter = CGPoint(x: textItem.rect.midX,y: textItem.rect.midY)
 _ = grid.handlePointerEvent(event(.leftMouseDown,editCenter))
-_ = grid.handlePointerEvent(event(.leftMouseDragged,CGPoint(x: editCenter.x+10,y: editCenter.y)))
 _ = grid.handlePointerEvent(event(.leftMouseUp,editCenter))
-precondition(editedText == [textID], "dragging a text Edit button cancels rather than opening the dialog")
-print("GRID_TEXT_ITEM_EDIT_EXCLUSIVE_RELEASE_AND_CANCEL_OK")
+precondition(editedText.isEmpty, "Single click selects without opening the text editor")
+_ = grid.handlePointerEvent(event(.leftMouseDown,editCenter,clicks: 2))
+_ = grid.handlePointerEvent(event(.leftMouseUp,editCenter,clicks: 2))
+precondition(editedText == [textID], "Double-click opens the text editor exactly once")
+print("GRID_TEXT_ITEM_DOUBLE_CLICK_EDIT_OK")
 grid.interactionBlocked = true
 let seeksWhileEditing = seeks.count
 precondition(!grid.handlePointerEvent(event(.leftMouseDown,CGPoint(x: 320,y: 220))))

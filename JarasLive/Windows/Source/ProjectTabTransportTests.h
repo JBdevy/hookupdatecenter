@@ -51,6 +51,21 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         require(flag(playState(),"active"),"Reactivated tab did not refresh the running transport");
         session.command(jaras::CommandKind::stop);
     });
+    test("Block end prepares and selects the next playlist song with STOP on or off", [&] {
+        for(bool stop:{false,true}) {
+            Session session;session.inspection=true;session.audio.prepareOffline(48000);
+            auto project=fixture(0,0);auto &list=*project.regionSetlist;
+            list.stopAtRegionEnd=stop;list.autoUntilBlockEnd=true;
+            list.blocks=std::vector<jaras::SetlistBlock>{{"block-next",project.songs[0].id,"playlist","Next block",0,"second"}};
+            session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+            session.command(jaras::CommandKind::selectRegion,"first");session.command(jaras::CommandKind::play);
+            const auto before=session.transport();session.core.advance(.25);
+            session.reconcileSetlistSelectionAfterAdvance(before);
+            require(!session.transport().playing && session.transport().regionId=="second" &&
+                    session.transport().editPosition==.25 && session.focusedRegion=="second",
+                    "Block boundary stopped without the next song ready and selected blue");
+        }
+    });
     test("Project tabs return to idle timer cadence after an automatic region stop", [&] {
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
         auto project=fixture(0,0); project.regionSetlist->autoAdvance=false;

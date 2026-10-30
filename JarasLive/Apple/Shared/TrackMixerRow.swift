@@ -669,7 +669,7 @@ struct TrackMixerRow: View, Equatable {
     let showsMeterScale: Bool
     private var showsTrackMeterScale: Bool { showsMeterScale && trackShowsMeterReadouts(track.kind) }
     private var meterTextColor: Color {
-        Color(hex: JarasTheme.trackNameHex(track, emphasized: selected && track.kind == .standard, silenced: silenced))
+        Color(hex: JarasTheme.trackNameHex(track, emphasized: selected, silenced: silenced))
     }
     let showsFader: Bool
     var showsInstrumentIcons = false
@@ -734,7 +734,7 @@ struct TrackMixerRow: View, Equatable {
             name: track.name, color: track.color ?? JarasTheme.roleHex(track.role),
             nameEditable: editTargets.count == 1 && track.kind == .standard && track.role.rawValue != "vinhetas", instrumentIcon: track.instrumentIcon)
         let title = (number < 10 ? "0" : "") + String(number) + "  " + track.name
-        let titleColor = JarasTheme.trackNameHex(track, emphasized: selected && track.kind == .standard, silenced: silenced)
+        let titleColor = JarasTheme.trackNameHex(track, emphasized: selected, silenced: silenced)
         HStack(spacing: 4) {
             if track.parentTrackID != nil {
                 if groupDepth > 1 { Color.clear.frame(width: CGFloat(min(4, groupDepth - 1)) * 8) }
@@ -879,9 +879,9 @@ struct TrackMixerRow: View, Equatable {
         }.frame(maxHeight: .infinity).clipped()
             .background { HStack(spacing: 0) {
                 if track.parentTrackID != nil { JarasTheme.mixer.frame(width: 16) }
-                JarasTheme.track(track, emphasized: selected && track.kind == .standard).opacity(selected && track.kind == .standard ? 0.65 : 0.50).saturation(silenced ? 0 : 1)
+                JarasTheme.track(track, emphasized: selected).opacity(selected ? 0.65 : 0.50).saturation(silenced ? 0 : 1)
             }.allowsHitTesting(false) }
-            .overlay { Rectangle().stroke(selected && track.kind == .standard ? Color.white.opacity(0.65) : .clear, lineWidth: 1).padding(.leading, track.parentTrackID == nil ? 0 : 16).padding(.trailing, showsInstrumentIcons ? 40 : 0).allowsHitTesting(false) }
+            .overlay { Rectangle().stroke(selected ? Color.white.opacity(0.65) : .clear, lineWidth: 1).padding(.leading, track.parentTrackID == nil ? 0 : 16).padding(.trailing, showsInstrumentIcons ? 40 : 0).allowsHitTesting(false) }
             .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.line).frame(height: 1).padding(.leading, track.parentTrackID == nil ? 0 : 16).padding(.trailing, showsInstrumentIcons ? 40 : 0) }
             .background { GeometryReader { geometry in
                 if track.kind == .standard { Color.clear.onDrop(of: [TrackReorderState.type], delegate: TrackInsertionDrop(show: show, track: track.id, nextTrack: nextTrack, height: geometry.size.height, state: dragState)) }
@@ -4005,6 +4005,9 @@ final class EditorSelectionAreaView: NSView {
         }
     }
     func handlePointer(_ event: NSEvent) {
+            if let window = event.window {
+                NotificationCenter.default.post(name: Notification.Name("catlive.workspacePointerDown"), object: window)
+            }
             guard let window = event.window, window.attachedSheet == nil,
                   !NativeTimelineInputGate.shared.isBlocked(window) else { return }
             let candidates = areas.allObjects.filter {
