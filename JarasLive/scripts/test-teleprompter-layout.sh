@@ -24,7 +24,7 @@ helpers = '''extension Color {
 }
 '''
 colors = Path('Application/Project/ProjectModels.swift').read_text().split('public enum ItemTextColors {',1)[1]
-colors = 'public enum ItemTextColors {' + colors
+colors = 'public enum ItemTextColors {' + colors.split('/// Presentation only:',1)[0]
 views = Path('Apple/Shared/TextItemEditor.swift').read_text().split('extension ItemTextColors {',1)[1]
 views = 'extension ItemTextColors {' + views
 Path(sys.argv[1]).write_text(layout + protocol + config + helpers + colors + views + Path('Tests/Apple/TeleprompterLayoutTests.swift').read_text())

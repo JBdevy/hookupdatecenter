@@ -694,9 +694,10 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
                     clip.fadeIn.reset();
                     clip.fadeOut.reset();
                     clip.channelMode.reset();
-                } else if(sourceKind.isNotEmpty()) {
-                    clip.name=utf8("["+sourceKind+"] ")+clip.name;
-                    result.warnings.addIfNotAlreadyThere(migration::message("REAPER video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound."));
+                } else {
+                    // Skip empty/unsupported takes instead of creating silent placeholders.
+                    // Special video/teleprompter tracks were handled above.
+                    continue;
                 }
                 const auto hasInstrument=[](const var &fx,bool requireActive) {
                     const auto inserted=list(get(fx,"inserted"));

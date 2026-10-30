@@ -669,9 +669,10 @@ public enum ReaperProjectImporter {
                     if !hasTakeInstrument, !(track.fx?.externalPlugins ?? []).contains(where: { $0.category.contains("Instrument") && track.fx?.inserted.contains($0.effectKey) == true }) {
                         warnings.insert("MIDI notes were imported. Choose an instrument in CatLive; no compatible VST3 instrument was inserted on this track or take.")
                     }
-                } else if !kind.isEmpty {
-                    clip.name = "[\(kind)] " + clip.name
-                    warnings.insert("REAPER video and unsupported sources are retained as empty items. Render them to audio in REAPER to migrate their sound.")
+                } else {
+                    // Do not create silent placeholders or interrupt opening for
+                    // empty/unsupported takes. Special media tracks are handled above.
+                    continue
                 }
                 var takeAutomation = try importAutomation(take, fx: takeFX.envelopes, take: true, offset: clip.sourceOffset, scope: track.name + " / " + clip.name, warnings: &warnings)
                 if clip.midi != nil, var automation = takeAutomation {

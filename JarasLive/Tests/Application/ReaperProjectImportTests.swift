@@ -9,6 +9,39 @@ final class ReaperProjectImportTests: XCTestCase {
         try text.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
+    func testEmptyAndUnsupportedTakesDoNotBlockOpeningOrHideMissingAudio() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          <TRACK
+            NAME Audio
+            <ITEM
+              POSITION 0
+              LENGTH 2
+            >
+            <ITEM
+              POSITION 2
+              LENGTH 2
+              <SOURCE VIDEO
+                FILE "movie.mp4"
+              >
+            >
+            <ITEM
+              POSITION 4
+              LENGTH 2
+              <SOURCE WAVE
+                FILE "Stems/missing.wav"
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(source)
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips.count, 1)
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips[0].audioFile?.path, "Stems/missing.wav")
+        XCTAssertFalse(result.warnings.contains { $0.contains("unsupported sources") })
+    }
     func testThreeNestedFoldersKeepImmediateParentsAndCloseMultipleLevels() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -282,6 +315,9 @@ final class ReaperProjectImportTests: XCTestCase {
         POSITION 0
         LENGTH 2
         NAME "Before"
+        <SOURCE WAVE
+        FILE "Before.wav"
+        >
         >
         <ITEM
         POSITION nan
@@ -291,6 +327,9 @@ final class ReaperProjectImportTests: XCTestCase {
         POSITION 5
         LENGTH 2
         NAME "After"
+        <SOURCE WAVE
+        FILE "After.wav"
+        >
         >
         >
         MARKER 1 1 "Good marker" 0
@@ -531,7 +570,7 @@ final class ReaperProjectImportTests: XCTestCase {
         let mediaTrack = try XCTUnwrap(tracks.first { $0.clips.contains { $0.text == "Lyrics" } })
         XCTAssertEqual(mediaTrack.clips.count, 3)
         XCTAssertEqual(mediaTrack.clips.filter(\.isProjectionMedia).map(\.startTime).sorted(), [0, 4])
-        XCTAssertEqual(tracks.first { $0.name == "Audio" }?.clips.count, 2)
+        XCTAssertEqual(tracks.first { $0.name == "Audio" }?.clips.count, 0, "Empty audio placeholders are ignored")
         XCTAssertTrue(result.warnings.contains { $0.contains("Conflicting") && $0.contains("overlap") })
         XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
         XCTAssertEqual(try Data(contentsOf: source), original)

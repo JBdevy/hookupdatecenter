@@ -3,6 +3,7 @@
 #include "ProjectTabTransportTests.h"
 #include "AudioThreadSchedulingTests.h"
 #include "ItemLayout.h"
+#include "TextItemPanel.h"
 #include "native_video_decoder.h"
 #include <charconv>
 #include "SplitPlaybackTests.h"
@@ -1191,6 +1192,10 @@ int runTests(const File &directory) {
         expect(ItemTextColors::encode({{"Am\nG",{}}})=="Am\nG","Legacy plain text must stay plain");
         const auto malformed=ItemTextColors::prefix()+"[{\"text\":\"Am\",\"color\":16777216}]";
         expect(ItemTextColors::plain(malformed)==malformed,"Malformed data must stay literal");
+        const auto columns=ItemTextColors::encodeColumns(encoded,"Second");
+        expect(ItemTextColors::columns(columns).size()==2 && ItemTextColors::columns(columns)[0]==encoded,"Two columns lost selected word colors");
+        expect(ItemTextColors::plain(columns)==plain+"\nSecond","Two-column plain fallback is invalid");
+        expect(ItemTextColors::columns(ItemTextColors::encodeColumns(encoded,{})).size()==2,"Empty second column lost layout");
         auto project=projectFixture();jaras::Track track;track.id=uuid();track.name="Teleprompter";track.role.id="teleprompt";
         jaras::AudioClip clip;clip.id=uuid();clip.name="Colored words";clip.duration=1;clip.text=utf8(encoded);track.clips.push_back(clip);
         project.songs.front().tracks.push_back(track);
@@ -1198,6 +1203,43 @@ int runTests(const File &directory) {
         const auto &savedTracks=restored.songs.front().tracks;
         const auto saved=std::find_if(savedTracks.begin(),savedTracks.end(),[&](const auto &value){return value.id==track.id;});
         expect(saved!=savedTracks.end() && text(*saved->clips.front().text)==encoded,"Project save lost selected word colors");
+    });
+    test("Item text columns edit independently and confirm removal before returning to Default", [&] {
+        Component host;host.setBounds(0,0,800,500);
+        String committed;
+        TextItemPanel panel("First",[&](String value){committed=value;});
+        host.addAndMakeVisible(panel);panel.setBounds(50,50,700,336);
+        TextButton *mode=nullptr,*save=nullptr;TextEditor *first=nullptr,*secondEditor=nullptr;TextItemPanel *second=nullptr;
+        for(auto *child:panel.getChildren()) {
+            if(auto *button=dynamic_cast<TextButton*>(child)) {
+                if(button->getButtonText()=="Default")mode=button;
+                if(button->getButtonText()==localization::translate("Aplicar"))save=button;
+            }
+            if(auto *editor=dynamic_cast<TextEditor*>(child))first=editor;
+            if(auto *column=dynamic_cast<TextItemPanel*>(child))second=column;
+        }
+        expect(mode&&save&&first&&second,"Missing editor controls");
+        for(auto *child:second->getChildren())if(auto *editor=dynamic_cast<TextEditor*>(child))secondEditor=editor;
+        expect(secondEditor&&!second->isVisible(),"Default must show only the first column");
+        mode->onClick();expect(second->isVisible()&&first->getText()=="First"&&secondEditor->getText().isEmpty(),"Enabling columns moved or duplicated existing text");
+        secondEditor->setText("Second",false);save->onClick();
+        expect(ItemTextColors::columns(committed)==StringArray{"First","Second"},"Saving columns lost independent contents");
+        expect(first->getRight()<second->getX()&&second->getRight()<=panel.getWidth(),"Two editors overlap or extend outside the window");
+        auto output=directory.getChildFile("two-column-editor.png").createOutputStream();
+        if(output)PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),*output);
+        std::function<Component*(Component&,const String&)> find=[&](Component &parent,const String &id)->Component*{
+            if(parent.getComponentID()==id)return &parent;
+            for(auto *child:parent.getChildren())if(auto *result=find(*child,id))return result;return nullptr;
+        };
+        mode->onClick();
+        auto *cancel=dynamic_cast<Button*>(find(host,"confirmationCancel"));expect(cancel,"Removing a non-empty column must request confirmation");
+        cancel->triggerClick();floatingControlTests::pump();floatingControlTests::pump();
+        expect(second->isVisible()&&secondEditor->getText()=="Second","Cancel discarded the second column");
+        mode->onClick();
+        auto *accept=dynamic_cast<Button*>(find(host,"confirmationAccept"));expect(accept,"Missing remove-column confirmation");
+        accept->triggerClick();floatingControlTests::pump();floatingControlTests::pump();floatingControlTests::pump();
+        expect(!second->isVisible(),"Confirmed removal did not restore Default");save->onClick();
+        expect(committed=="First","Default did not preserve the first column");
     });
     test("Waveform pan attenuates only the opposite channel, including uncommitted drags", [&] {
         auto data=std::make_shared<WaveformCache::Data>();

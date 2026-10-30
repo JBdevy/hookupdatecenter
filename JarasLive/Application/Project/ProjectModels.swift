@@ -1285,9 +1285,24 @@ public enum ItemTextColors {
         public var color: UInt32?
         public init(text: String, color: UInt32? = nil) { self.text = text; self.color = color }
     }
+    public static let columnsPrefix = "\u{001e}CatLiveColumns/1\n"
+    public static func columns(_ value: String) -> [String] {
+        guard value.hasPrefix(columnsPrefix),
+              let data = String(value.dropFirst(columnsPrefix.count)).data(using: .utf8),
+              let result = try? JSONDecoder().decode([String].self, from: data), result.count == 2,
+              result.allSatisfy({ !$0.hasPrefix(columnsPrefix) }) else { return [value] }
+        return result
+    }
+    public static func encodeColumns(_ values: [String]) -> String {
+        guard values.count == 2, let data = try? JSONEncoder().encode(values),
+              let json = String(data: data, encoding: .utf8) else { return values.first ?? "" }
+        return columnsPrefix + json
+    }
     public static let prefix = "\u{001e}CatLiveText/1\n"
     public static let palette: [UInt32] = [0xffffff, 0xff4040, 0xff9638, 0xffe740, 0x54ef86, 0x40dfff, 0x5894ff, 0xd477ff]
     public static func runs(_ value: String) -> [Run] {
+        let parts = columns(value)
+        if parts.count == 2 { return runs(parts[0]) + [Run(text: "\n")] + runs(parts[1]) }
         guard value.hasPrefix(prefix), let data = String(value.dropFirst(prefix.count)).data(using: .utf8),
               let runs = try? JSONDecoder().decode([Run].self, from: data),
               runs.allSatisfy({ $0.color.map { $0 <= 0xffffff } ?? true }) else { return [Run(text: value)] }

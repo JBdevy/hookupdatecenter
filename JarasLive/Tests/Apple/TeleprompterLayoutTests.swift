@@ -179,6 +179,34 @@ MainActor.assumeIsolated {
         var scaledClear = clear; scaledClear.mediaScale = 50
         precondition(pixels(fixture(clear, index: index)) != pixels(fixture(scaledClear, index: index)), "media scale also works in media-only mode")
     }
+    for size in [CGSize(width: 800, height: 400), CGSize(width: 400, height: 800)] {
+        var settings = TeleprompterSettings(); settings.clockEnabled = false; settings.localClockEnabled = false
+        settings.songNameEnabled = false; settings.queueNameEnabled = false; settings.chordsEnabled = false
+        settings.windowBorderEnabled = false; settings.textBoxColor = 0x808080
+        let encoded = ItemTextColors.encodeColumns([
+            ItemTextColors.encode([.init(text: "FIRST", color: 0xff4040)]),
+            ItemTextColors.encode([.init(text: "SECOND", color: 0x54ef86)])])
+        var content = fixture(settings); content.text = ItemTextColors.plain(encoded); content.textStyled = encoded
+        let host = NSHostingView(rootView: TeleprompterProjectionLayout(content: content, fullscreen: false, timerValue: { ("", 1, false) }, media: { EmptyView() }))
+        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderFrontRegardless()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08)); host.layoutSubtreeIfNeeded()
+        let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        var redX = 0.0, redY = 0.0, greenX = 0.0, greenY = 0.0, redCount = 0.0, greenCount = 0.0
+        for y in stride(from: 0, to: bitmap.pixelsHigh, by: 2) {
+            for x in stride(from: 0, to: bitmap.pixelsWide, by: 2) {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                if color.redComponent > 0.65 && color.redComponent > color.greenComponent * 1.5 { redX += Double(x); redY += Double(y); redCount += 1 }
+                if color.greenComponent > 0.6 && color.greenComponent > color.redComponent * 1.3 { greenX += Double(x); greenY += Double(y); greenCount += 1 }
+            }
+        }
+        if let png = bitmap.representation(using: .png, properties: [:]) { try! png.write(to: URL(fileURLWithPath: "/tmp/catlive124-columns-\(Int(size.width)).png")) }
+        precondition(redCount > 20 && greenCount > 20, "Both independently colored columns must be visible")
+        if size.width > size.height { precondition(redX/redCount < greenX/greenCount, "Landscape orders columns left to right") }
+        else { precondition(redY/redCount < greenY/greenCount, "Portrait orders columns top to bottom") }
+        window.orderOut(nil); window.contentView = nil; window.close()
+    }
     let suite = "catlive-tp-live-test-" + UUID().uuidString
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }

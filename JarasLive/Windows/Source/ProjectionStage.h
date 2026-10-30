@@ -190,12 +190,20 @@ void Projection::paintStage(Graphics &g) {
             for(const auto &value:songs)row(value,false);
         }
     } else if (!clear && str(content,"text").isNotEmpty()) {
+        const auto columns=ItemTextColors::columns(str(content,"textStyled",str(content,"text")));
+        const auto fullBox=box;
+        for(int index=0;index<columns.size();++index) {
+            box=fullBox;
+            if(columns.size()==2) {
+                if(getWidth()>=getHeight()) { const float width=(fullBox.getWidth()-8)/2;box={fullBox.getX()+index*(width+8),fullBox.getY(),width,fullBox.getHeight()}; }
+                else { const float height=(fullBox.getHeight()-8)/2;box={fullBox.getX(),fullBox.getY()+index*(height+8),fullBox.getWidth(),height}; }
+            }
         if (flag(settings, "textBoxEnabled", true)) {
             g.setColour(border("textBoxColor", "rgbTextBoxBorderEnabled"));
             g.drawRoundedRectangle(box, 5, 1);
         }
         auto align = str(settings, "textAlignment", "center");
-        const auto text = display(str(content,"text"));
+        const auto text = display(ItemTextColors::plain(columns[index]));
         const auto lines = StringArray::fromLines(text);
         const auto baseFont = StageState::font(settings,"fontFamily",100.f);
         float longest = 1;
@@ -203,14 +211,16 @@ void Projection::paintStage(Graphics &g) {
         const auto textArea = box.reduced(6);
         const float fit = std::max(.01f,std::min(std::max(1.f,textArea.getWidth()) / longest,
             std::max(1.f,textArea.getHeight()) / (std::max(1,lines.size()) * baseFont.getHeight() * 1.2f)));
-        label(str(content,"textStyled",str(content,"text")), textArea, "fontFamily",
+        label(columns[index], textArea, "fontFamily",
               (float)(100 * fit * num(settings, "textScale", 100) / 100.),
               color("textColor"),
               align == "left"    ? Justification::centredLeft
               : align == "right" ? Justification::centredRight
                                  : Justification::centred,
               std::max(1,lines.size()));
+        }
     }
+
     if (!clear && flag(settings, "windowBorderEnabled", true)) {
         g.setColour(border("borderColor", "rgbWindowBorderEnabled"));
         g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.7f), 5, 1.4f);

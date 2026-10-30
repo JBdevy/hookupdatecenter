@@ -4,7 +4,22 @@ namespace catlive {
 struct ItemTextColors {
     struct Run { String text; std::optional<uint32> color; };
     static String prefix() { return String::charToString(30)+"CatLiveText/1\n"; }
+    static String columnsPrefix() { return String::charToString(30)+"CatLiveColumns/1\n"; }
+    static StringArray columns(const String &value) {
+        if(value.startsWith(columnsPrefix())) {
+            const auto data=JSON::parse(value.substring(columnsPrefix().length()));
+            if(auto *array=data.getArray();array && array->size()==2 && (*array)[0].isString() && (*array)[1].isString()
+               && !(*array)[0].toString().startsWith(columnsPrefix()) && !(*array)[1].toString().startsWith(columnsPrefix()))
+                return {(*array)[0].toString(),(*array)[1].toString()};
+        }
+        return {value};
+    }
+    static String encodeColumns(const String &first,const String &second) {
+        Array<var> values;values.add(first);values.add(second);return columnsPrefix()+JSON::toString(var(values),true);
+    }
     static std::vector<Run> runs(const String &value) {
+        const auto parts=columns(value);
+        if(parts.size()==2) { auto result=runs(parts[0]);result.push_back({"\n",{}});auto tail=runs(parts[1]);result.insert(result.end(),tail.begin(),tail.end());return result; }
         if(value.startsWith(prefix())) {
             const auto data=JSON::parse(value.substring(prefix().length()));
             if(data.isArray()) {

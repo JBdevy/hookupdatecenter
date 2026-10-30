@@ -2196,3 +2196,10 @@
 "Could not recover the file." = "Não foi possível recuperar o arquivo.";
 
 "Could not capture the current state of plugin %@. The operation was cancelled to preserve its settings." = "Não foi possível capturar o estado atual do plugin %@. A operação foi cancelada para preservar seus ajustes.";
+
+"2 columns" = "2 colunas";
+"Return to Default?" = "Voltar para Default?";
+"Remove second column" = "Remover segunda coluna";
+"The text in the second column must be removed to continue." = "O texto da segunda coluna precisa ser removido para continuar.";
+
+"Default text layout" = "Default";

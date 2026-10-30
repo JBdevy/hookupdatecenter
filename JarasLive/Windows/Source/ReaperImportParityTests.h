@@ -70,7 +70,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         const auto result = read(directory, body);
         require(result.project.songs[0].tracks.size() == 5, "Overlap discarded a track or project");
         for (const auto &track : result.project.songs[0].tracks) {
-            if (track.name == "Audio") { require(track.clips.size() == 2, "Audio overlaps must remain supported"); continue; }
+            if (track.name == "Audio") { require(track.clips.empty(), "Empty audio placeholders must be ignored"); continue; }
             const bool media = std::any_of(track.clips.begin(), track.clips.end(), [](const auto &clip) { return clip.audioFile.has_value(); });
             if (media) {
                 require(track.clips.size() == 3, "Text/media layers were merged or conflicting media retained");
@@ -254,9 +254,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                        "<ITEM\nPOSITION 0\nLENGTH 2\n<SOURCE VIDEO\nFILE source.mp4\n>\n>\n"
                        "<ITEM\nPOSITION 2\nLENGTH 3\n<SOURCE WAVE\nFILE offline.wav\n>\n>\n>\n");
         const auto &song = result.project.songs.front();
-        require(song.tracks[0].clips.size() == 2 && !song.tracks[0].clips[0].audioFile &&
-                    song.tracks[0].clips[0].name.rfind("[VIDEO]", 0) == 0 &&
-                    song.tracks[0].clips[1].audioFile,
+        require(song.tracks[0].clips.size() == 1 && song.tracks[0].clips[0].audioFile,
                 "Unsupported source recovery differs from Mac");
         require(song.parts.front().startTime == 0 && song.parts.front().endTime == 10 &&
                     !result.warnings.isEmpty(),

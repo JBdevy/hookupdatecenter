@@ -14,7 +14,7 @@ func inFront(_ a: NSWindow, _ b: NSWindow) -> Bool {
     return x < y
 }
 for textLength in [10000, 20000] {
-let window = makeWorkspacePanel(title: "Text Editor", size: NSSize(width: 430, height: 330), minimum: NSSize(width: 430, height: 330))
+let window = makeWorkspacePanel(title: "Text Editor", size: NSSize(width: 700, height: 360), minimum: NSSize(width: 700, height: 360))
 window.isReleasedWhenClosed = false
 var committed: [String] = [], closes = 0
 let host = NSHostingView(rootView: TextItemEditor(text: "", showHeader: false, apply: { committed.append($0); return true }, close: { closes += 1 }))
@@ -71,6 +71,28 @@ key(53)
 precondition(committed == ["Am\nG"] && closes == 2, "Escape cancels without another project edit")
 window.close()
 }
+let columnsWindow = makeWorkspacePanel(title: "Text Editor", size: NSSize(width: 700, height: 360), minimum: NSSize(width: 700, height: 360))
+columnsWindow.isReleasedWhenClosed = false
+var columnCommits: [String] = []
+let columnHost = NSHostingView(rootView: TextItemEditor(text: ItemTextColors.encodeColumns(["Primeira", "Segunda"]), showHeader: false, apply: { columnCommits.append($0); return true }, close: {}))
+columnsWindow.contentView = columnHost; columnsWindow.makeKeyAndOrderFront(nil)
+RunLoop.main.run(until: Date().addingTimeInterval(0.1)); columnHost.layoutSubtreeIfNeeded()
+func columnEditors(_ view: NSView) -> [NSTextView] {
+    if let editor = view as? NSTextView { return [editor] }
+    return view.subviews.flatMap(columnEditors)
+}
+let bitmap = columnHost.bitmapImageRepForCachingDisplay(in: columnHost.bounds)!
+columnHost.cacheDisplay(in: columnHost.bounds, to: bitmap)
+if let png = bitmap.representation(using: .png, properties: [:]) { try! png.write(to: URL(fileURLWithPath: "/tmp/catlive124-mac-editor.png")) }
+let editors = columnEditors(columnHost)
+precondition(editors.count == 2, "Two columns need two independently editable notepads")
+precondition(editors.map(\.string) == ["Primeira", "Segunda"], "Reopening must preserve the column assignment")
+precondition(editors.allSatisfy { $0.bounds.width > 200 }, "Both editors must fit without horizontal clipping")
+editors[1].insertText(" nova", replacementRange: NSRange(location: 7, length: 0))
+RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+(editors[1] as! TextItemNotepadView).apply()
+precondition(columnCommits.count == 1 && ItemTextColors.columns(columnCommits[0]) == ["Primeira", "Segunda nova"], "Editing the second column must not alter the first")
+columnsWindow.close()
 projection.close(); main.close()
 print("TEXT_NOTEPAD_UNLIMITED_PASTE_FOCUS_MULTILINE_APPLY_AND_CANCEL_OK")
 

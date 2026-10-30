@@ -3,10 +3,19 @@
 #include "Session.h"
 #include "ModalSheet.h"
 #include "ItemTextColors.h"
+#include "ConfirmationPanel.h"
 namespace catlive {
 class TextItemPanel final : public Component {
   public:
-    TextItemPanel(String initial, std::function<void(String)> save) : commit(std::move(save)) {
+    TextItemPanel(String initial, std::function<void(String)> save, bool isColumn=false) : commit(std::move(save)), embedded(isColumn) {
+        const auto parts=ItemTextColors::columns(initial);twoColumns=!embedded && parts.size()==2;
+        initial=parts[0];
+        if(!embedded) {
+            second=std::make_unique<TextItemPanel>(parts.size()==2?parts[1]:String{},[this](String){apply();},true);
+            addChildComponent(*second);second->setVisible(twoColumns);
+            addAndMakeVisible(columnMode);columnMode.setButtonText(twoColumns?localization::translate("2 columns"):"Default");
+            columnMode.onClick=[this]{toggleColumns();};
+        }
         addAndMakeVisible(editor);
         editor.setMultiLine(true, true);
         editor.setReturnKeyStartsNewLine(true);
@@ -33,6 +42,7 @@ class TextItemPanel final : public Component {
         addAndMakeVisible(confirm);
         cancel.onClick = [this] { ModalSheet::dismiss(*this); };
         confirm.onClick = [this] { apply(); };
+        cancel.setVisible(!embedded);confirm.setVisible(!embedded);
         cancel.setWantsKeyboardFocus(false);
         confirm.setWantsKeyboardFocus(false);
         confirm.setColour(TextButton::buttonColourId, Colour(0xff4d825c));
@@ -43,15 +53,20 @@ class TextItemPanel final : public Component {
     }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
+        if(embedded)return;
         g.setColour(theme::secondary);
         g.setFont(theme::font(11));
-        g.drawText(String(editor.getText().length()) + " caracteres", 18, 206, getWidth() - 36, 18,
+        g.drawText(String(editor.getText().length()) + " caracteres", 18, 232, getWidth() - 36, 18,
                    Justification::centredRight);
-        g.drawText("Ctrl+Enter para aplicar; Enter para uma nova linha.", 18, 232, getWidth() - 36,
+        g.drawText("Ctrl+Enter para aplicar; Enter para uma nova linha.", 18, 254, getWidth() - 36,
                    20, Justification::centredLeft);
     }
     void resized() override {
-        editor.setBounds(18, 12, getWidth() - 36, 180);
+        if(embedded){editor.setBounds(getLocalBounds());return;}
+        columnMode.setBounds(18,8,120,26);
+        const int width=twoColumns?(getWidth()-48)/2:getWidth()-36;
+        editor.setBounds(18,44,width,180);
+        if(second)second->setBounds(30+width,44,width,180);
         cancel.setBounds(18, getHeight() - 44, 82, 26);
         confirm.setBounds(getWidth() - 100, getHeight() - 44, 82, 26);
     }
@@ -86,6 +101,23 @@ class TextItemPanel final : public Component {
     std::function<void(String)> commit;
     std::vector<std::optional<uint32>> colors;
     String previous;
+    bool embedded=false,twoColumns=false;
+    TextButton columnMode;
+    std::unique_ptr<TextItemPanel> second;
+    void toggleColumns() {
+        if(twoColumns && ItemTextColors::plain(second->encoded()).isNotEmpty()) {
+            auto panel=std::make_unique<ConfirmationPanel>(localization::translate("Return to Default?"),
+                localization::translate("The text in the second column must be removed to continue."),
+                localization::translate("Remove second column"),true,false,
+                [safe=SafePointer<TextItemPanel>(this)]{if(safe){safe->second->editor.clear();safe->second->synchronize();safe->setColumns(false);}},[]{});
+            const int height=panel->getHeight();
+            ModalSheet::open(*getTopLevelComponent(),"",std::move(panel),confirmationStyle::width,height);
+        } else setColumns(!twoColumns);
+    }
+    void setColumns(bool value) {
+        twoColumns=value;second->setVisible(value);
+        columnMode.setButtonText(value?localization::translate("2 columns"):"Default");resized();repaint();
+    }
     void synchronize() {
         const auto now=editor.getText();if(now==previous)return;
         int first=0,lastOld=previous.length(),lastNew=now.length();
@@ -128,14 +160,17 @@ class TextItemPanel final : public Component {
         auto *host=getTopLevelComponent();
         if(host)ModalSheet::open(*host,localization::translate("Text color"),std::move(panel),370,160);
     }
-    void apply() {
+    String encoded() {
         synchronize();std::vector<ItemTextColors::Run> runs;
         for(int i=0;i<previous.length();++i) {
             const auto color=colors[(size_t)i];const auto character=String::charToString(previous[i]);
             if(!runs.empty() && runs.back().color==color)runs.back().text+=character;
             else runs.push_back({character,color});
         }
-        commit(ItemTextColors::encode(runs));
+        return ItemTextColors::encode(runs);
+    }
+    void apply() {
+        commit(twoColumns?ItemTextColors::encodeColumns(encoded(),second->encoded()):encoded());
     }
 };
 } // namespace catlive

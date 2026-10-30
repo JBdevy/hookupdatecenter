@@ -25,7 +25,7 @@ struct TeleprompterProjectionLayout<Media: View>: View {
                             ZStack {
                                 Color.clear
                                 if preview { previewGrid(size: area.size) }
-                                else if !content.text.isEmpty { lyricText(size: area.size,date: context.date) }
+                                else if !content.text.isEmpty { lyricColumns(size: area.size, landscape: geometry.size.width >= geometry.size.height, date: context.date) }
                             }.clipped()
                         }
                         decorations(top: false,date: context.date,size: geometry.size)
@@ -122,14 +122,37 @@ struct TeleprompterProjectionLayout<Media: View>: View {
         Text(settings.display(text)).font(tpFont(font,size: 22 * scale / 100)).foregroundStyle(Color(hex: color))
             .lineLimit(1).minimumScaleFactor(0.5).frame(maxWidth: .infinity)
     }
-    private func lyricText(size: CGSize,date: Date) -> some View {
-        let text = settings.display(ItemTextColors.plain(content.textStyled ?? content.text))
+    @ViewBuilder private func lyricColumns(size: CGSize, landscape: Bool, date: Date) -> some View {
+        let columns = ItemTextColors.columns(content.textStyled ?? content.text)
+        if columns.count == 2 {
+            if landscape {
+                HStack(spacing: 8) {
+                    ForEach(0..<2, id: \.self) { index in
+                        lyricText(columns[index], size: CGSize(width: max(1, (size.width-8)/2), height: size.height), date: date)
+                    }
+                }
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(0..<2, id: \.self) { index in
+                        lyricText(columns[index], size: CGSize(width: size.width, height: max(1, (size.height-8)/2)), date: date)
+                    }
+                }
+            }
+        } else { lyricText(columns[0], size: size, date: date) }
+    }
+    private func lyricText(_ value: String, size: CGSize,date: Date) -> some View {
+        let text = settings.display(ItemTextColors.plain(value))
         let lines = text.components(separatedBy: .newlines)
-        let longest = max(1,lines.map(\.count).max() ?? 1)
-        let font = max(1,min(max(1,size.width-12) / (Double(longest)*0.64),max(1,size.height-12) / (Double(max(1,lines.count))*1.2)) * settings.textScale / 100)
+        #if os(macOS)
+        let native = tpFontNames[settings.fontFamily]?.compactMap { NSFont(name: $0, size: 100) }.first ?? NSFont.systemFont(ofSize: 100, weight: .bold)
+        #else
+        let native = tpFontNames[settings.fontFamily]?.compactMap { UIFont(name: $0, size: 100) }.first ?? UIFont.boldSystemFont(ofSize: 100)
+        #endif
+        let longest = max(1, lines.map { ($0 as NSString).size(withAttributes: [.font: native]).width }.max() ?? 1)
+        let font = max(1,min(max(1,size.width-16) / longest * 100,max(1,size.height-12) / (Double(max(1,lines.count))*1.2)) * settings.textScale / 100)
         let alignment: Alignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
         let textAlignment: TextAlignment = settings.textAlignment == "left" ? .leading : settings.textAlignment == "right" ? .trailing : .center
-        return ItemTextColors.view(content.textStyled ?? content.text, display: settings.display).font(tpFont(settings.fontFamily,size: font)).foregroundStyle(Color(hex: settings.textColor))
+        return ItemTextColors.view(value, display: settings.display).font(tpFont(settings.fontFamily,size: font)).foregroundStyle(Color(hex: settings.textColor))
             .multilineTextAlignment(textAlignment).lineLimit(nil).minimumScaleFactor(0.3).padding(6)
             .frame(width: max(1,size.width),height: max(1,size.height),alignment: alignment)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(settings.textBoxEnabled ? border(settings.textBoxColor,rgb: settings.rgbTextBoxBorderEnabled,date: date) : .clear,lineWidth: 2))

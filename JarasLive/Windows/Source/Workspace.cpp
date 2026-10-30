@@ -2486,7 +2486,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         }
                         if(clip.text && !clip.text->empty() && right-left>=24) {
                             g.setFont(theme::font(14));g.setColour(Colours::white);
-                            if(text(*clip.text).startsWith(ItemTextColors::prefix()))
+                            if((text(*clip.text).startsWith(ItemTextColors::prefix()) || text(*clip.text).startsWith(ItemTextColors::columnsPrefix())))
                                 ItemTextColors::draw(g,text(*clip.text),{left+6,(float)itemY+23,std::max(1.f,right-left-12),std::max(1.f,(float)itemHeight-28)},theme::font(14),Colours::white,Justification::centred);
                             else g.drawFittedText(text(*clip.text),(int)left+6,(int)itemY+23,
                                 std::max(1,(int)(right-left)-12),std::max(1,(int)itemHeight-28),
@@ -7458,7 +7458,7 @@ void Workspace::editTextItem(ID id) {
                                                      window->second->closeButtonPressed();
                                              });
                                          }),
-                                     430, 308);
+                                     700, 336);
                     return;
                 }
 }

@@ -1724,5 +1724,9 @@
   "The active project alternative is ambiguous.": "A alternativa ativa do projeto é ambígua.",
   "Locate missing files": "Localizar arquivos ausentes",
   ": invalid project media path.": ": caminho de mídia do projeto inválido.",
-  "Could not recover the file.": "Não foi possível recuperar o arquivo."
+  "Could not recover the file.": "Não foi possível recuperar o arquivo.",
+  "2 columns": "2 colunas",
+  "Return to Default?": "Voltar para Default?",
+  "Remove second column": "Remover segunda coluna",
+  "The text in the second column must be removed to continue.": "O texto da segunda coluna precisa ser removido para continuar."
 }

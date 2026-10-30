@@ -393,7 +393,7 @@ private struct WorkspaceToolContent<Content: View>: View {
               let item = track.clips.first(where: { $0.id == id }) else { return }
         // Keep the draft in one independent tool window, above the projection
         // without bringing the whole workspace in front of that projection.
-        present(.textItem, title: "Text Editor", size: NSSize(width: 430, height: 330)) { panel in
+        present(.textItem, title: "Text Editor", size: NSSize(width: 700, height: 360)) { panel in
             TextItemEditor(text: item.text ?? "", showHeader: false,
                            apply: { show.updateTextItem(id, text: $0) },
                            close: { [weak panel] in panel?.close() })

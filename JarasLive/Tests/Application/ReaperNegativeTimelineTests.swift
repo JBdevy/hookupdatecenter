@@ -89,6 +89,9 @@ final class ReaperNegativeTimelineTests: XCTestCase {
             <ITEM
               POSITION 1
               LENGTH 4
+              <SOURCE WAVE
+                FILE visible.wav
+              >
             >
           >
         >
@@ -115,6 +118,9 @@ final class ReaperNegativeTimelineTests: XCTestCase {
                 <ITEM
                   POSITION 9
                   LENGTH 3
+                  <SOURCE WAVE
+                    FILE visible.wav
+                  >
                 >
               >
             >

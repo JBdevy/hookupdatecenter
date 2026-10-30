@@ -23,12 +23,18 @@ struct TextItemEditor: View {
     let close: () -> Void
     private let showHeader: Bool
     @State private var draft: String
+    @State private var secondDraft: String
+    @State private var twoColumns: Bool
+    @State private var confirmRemoveColumn = false
     init(text: String, showHeader: Bool = true, apply: @escaping (String) -> Bool, close: @escaping () -> Void) {
         self.apply = apply; self.close = close; self.showHeader = showHeader
-        _draft = State(initialValue: text)
+        let columns = ItemTextColors.columns(text)
+        _draft = State(initialValue: columns[0])
+        _secondDraft = State(initialValue: columns.count == 2 ? columns[1] : "")
+        _twoColumns = State(initialValue: columns.count == 2)
     }
     private func confirm() {
-        if apply(draft) { close() }
+        if apply(twoColumns ? ItemTextColors.encodeColumns([draft, secondDraft]) : draft) { close() }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -38,16 +44,17 @@ struct TextItemEditor: View {
                 Button(action: close) { Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle()) }
                     .buttonStyle(.plain).accessibilityLabel("Cancel")
             } }
-            #if os(macOS)
-            TextItemNotepad(text: $draft, apply: confirm, cancel: close)
-                .frame(height: 180)
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(JarasTheme.line, lineWidth: 1))
-            #else
-            TextEditor(text: $draft).frame(height: 180)
-            #endif
+            Button(LocalizedStringKey(twoColumns ? "2 columns" : "Default text layout")) {
+                if twoColumns && !ItemTextColors.plain(secondDraft).isEmpty { confirmRemoveColumn = true }
+                else { twoColumns.toggle() }
+            }.buttonStyle(.bordered)
+            HStack(spacing: 12) {
+                columnEditor($draft)
+                if twoColumns { columnEditor($secondDraft) }
+            }
             HStack {
                 Spacer()
-                Text("\(ItemTextColors.plain(draft).unicodeScalars.count)")
+                Text("\(ItemTextColors.plain(draft).unicodeScalars.count + (twoColumns ? ItemTextColors.plain(secondDraft).unicodeScalars.count : 0))")
                     .monospacedDigit()
                 Text("characters")
             }.font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
@@ -57,8 +64,21 @@ struct TextItemEditor: View {
                 Spacer()
                 Button("Apply", action: confirm).keyboardShortcut(.return, modifiers: .command)
             }.buttonStyle(.bordered)
-        }.padding(18).frame(width: 430)
+        }.padding(18).frame(width: 700)
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            .alert("Return to Default?", isPresented: $confirmRemoveColumn) {
+                Button("Cancel", role: .cancel) {}
+                Button("Remove second column", role: .destructive) { secondDraft = ""; twoColumns = false }
+            } message: { Text("The text in the second column must be removed to continue.") }
+    }
+    @ViewBuilder private func columnEditor(_ text: Binding<String>) -> some View {
+        #if os(macOS)
+        TextItemNotepad(text: text, apply: confirm, cancel: close)
+            .frame(height: 180)
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(JarasTheme.line, lineWidth: 1))
+        #else
+        TextEditor(text: text).frame(height: 180)
+        #endif
     }
 }
 
