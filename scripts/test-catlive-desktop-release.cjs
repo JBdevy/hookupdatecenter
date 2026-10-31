@@ -23,6 +23,15 @@ if (yaml) {
     assert(tests.env.CATLIVE_COMPATIBILITY_INPUT && tests.env.CATLIVE_COMPATIBILITY_OUTPUT);
     assert(tests.run.includes('testCrossPlatformReleaseFixtures') && tests.run.includes('test-daw-remote.sh'));
     assert(data.jobs['macos-pkg'].steps.some(step => step.run?.includes('build-catlive-pkg.py')));
+    const fullFX = data.on.workflow_dispatch.inputs.full_fx_tests;
+    assert.equal(fullFX.type, 'boolean');
+    assert.equal(fullFX.default, true, 'Full FX coverage remains enabled unless explicitly skipped for a release.');
+    const continuity = data.jobs['macos-pkg'].steps.find(step => step.run?.includes('NativeFXPlaybackTests.swift'));
+    assert.equal(continuity.if, '${{ inputs.full_fx_tests }}');
+    const rendering = data.jobs['macos-pkg'].steps.find(step => step.name === 'Validate audio rendering and unified song entry');
+    assert.equal(rendering.if, undefined, 'Skipping the full FX matrix must not skip ordinary audio rendering checks.');
+    const packaging = data.jobs['macos-pkg'].steps.find(step => step.run?.includes('test-build-catlive-pkg.py'));
+    assert.equal(packaging.if, undefined, 'Installer integrity checks must always run.');
     console.log('Release YAML parsed; parallel builds, exchange gate and installer-only publication validated.');
 }
 for (const required of ['needs: [windows, macos-pkg, compatibility]', 'CatLive-Mac-Fixtures', 'CatLive-Windows-Fixtures', 'verify-mac-roundtrip.cjs', '-Installer', 'bash scripts/test-audio.sh']) assert(workflow.includes(required), required);

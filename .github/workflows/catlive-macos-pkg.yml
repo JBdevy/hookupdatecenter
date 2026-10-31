@@ -15,6 +15,10 @@ on:
         description: 'Validar somente o Windows e gerar instalador de teste (sem publicar)'
         type: boolean
         default: false
+      full_fx_tests:
+        description: 'Executar a bateria completa de continuidade dos FX em 44,1 e 48 kHz'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -170,6 +174,7 @@ jobs:
         run: bash scripts/test-audio.sh
 
       - name: Validate native FX playback continuity at 44.1 and 48 kHz
+        if: ${{ inputs.full_fx_tests }}
         working-directory: JarasLive
         run: JARAS_AUDIO_TEST_SOURCE=Tests/Apple/NativeFXPlaybackTests.swift bash scripts/test-audio.sh
 
