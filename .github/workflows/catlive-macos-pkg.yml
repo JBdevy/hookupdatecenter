@@ -141,6 +141,7 @@ jobs:
         working-directory: JarasLive
         run: |
           python3 scripts/test-notarize-catlive-pkg.py
+          python3 scripts/test-build-catlive-pkg.py
           cmake -S . -B "$RUNNER_TEMP/catlive-core-tests"
           cmake --build "$RUNNER_TEMP/catlive-core-tests" --parallel 2
           ctest --test-dir "$RUNNER_TEMP/catlive-core-tests" --output-on-failure

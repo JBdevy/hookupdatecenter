@@ -2,7 +2,6 @@
 """Build the branded Installer.app product archive before signing/notarization."""
 
 import argparse
-import os
 from pathlib import Path
 import plistlib
 import re
@@ -32,15 +31,10 @@ def build_package(app: Path, destination: Path, version: str) -> None:
         shutil.copy2(root / "Installer/Assets/mac-background.png", resources)
         # A component package can otherwise discover an old copy of the app in
         # Downloads and update it there. Pin upgrades to /Applications as well.
-        # Hard links avoid duplicating the large, read-only signed runtimes.
-        def link_or_copy(source: str, target: str) -> str:
-            try:
-                os.link(source, target)
-            except OSError:
-                shutil.copy2(source, target)
-            return target
-
-        shutil.copytree(app, payload / app.name, symlinks=True, copy_function=link_or_copy)
+        # Keep independent inodes. pkgbuild can give a hard-linked resource's
+        # AppleDouble metadata the same archive identity as its file; extracting
+        # that package then leaves spurious ._* resources and breaks the seal.
+        shutil.copytree(app, payload / app.name, symlinks=True, copy_function=shutil.copy2)
         subprocess.run(["/usr/bin/pkgbuild", "--analyze", "--root", str(payload), str(components)], check=True)
         bundles = plistlib.loads(components.read_bytes())
         def pin_locations(entries: list) -> None:
